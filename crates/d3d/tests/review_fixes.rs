@@ -515,8 +515,10 @@ fn p1_9_alpha_test_with_the_builtin_shader_discards() {
     m.write_u32(l.render_state_slot(61), 0x80).unwrap(); // ALPHAREF
     bind_quad(&mut d, &mut m);
     quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0x40FF_FFFF); // fails the test
+    d.note_write(0x8000_0000 | VB_DATA, 80);
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     quad_vb(&mut m, 8.0, 0.0, 16.0, 8.0, 0xC0FF_FFFF); // passes
+    d.note_write(0x8000_0000 | VB_DATA, 80);
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     assert!(d.take_events().is_empty());
     let back = d.back_buffer().unwrap();
@@ -539,6 +541,7 @@ fn p1_9_alpha_test_with_the_builtin_shader_discards() {
     }
     d.set_viewport(&mut m, vp).unwrap();
     quad_vb(&mut m, 0.0, 0.0, 64.0, 64.0, 0xFF00_FF00);
+    d.note_write(0x8000_0000 | VB_DATA, 80);
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 20, 20), [0, 255, 0, 255], "inside the viewport");

@@ -10,9 +10,15 @@
 //! (`ThreadedBackend<NullBackend>`), whose spent stream buffers come back
 //! to the device for refilling.
 //!
-//! `cargo bench -p d3d --bench streams` prints ms per frame. Env:
-//! `H2_BENCH_FRAMES` (default 100), `H2_BENCH_DRAWS` (default 1000),
-//! `H2_BENCH_IMMEDIATE` (one draw in this many is immediate, default 4).
+//! Each configuration runs with the vertex cache off (every draw copies its
+//! windows, `H2_VERTEX_CACHE=0`) and on (`docs/d3d.md`, "Vertex cache"):
+//! the vertex buffers are static unless `H2_BENCH_DYNAMIC` is set, in which
+//! case the guest rewrites (and reports) one of the four sets every frame.
+//!
+//! `cargo bench -p d3d --bench streams` prints ms per frame and vertex
+//! bytes copied per frame. Env: `H2_BENCH_FRAMES` (default 100),
+//! `H2_BENCH_DRAWS` (default 1000), `H2_BENCH_IMMEDIATE` (one draw in this
+//! many is immediate, default 4), `H2_BENCH_DYNAMIC` (default 0).
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -35,6 +41,7 @@ struct Counting;
 
 static BIG_ALLOCS: AtomicU64 = AtomicU64::new(0);
 static IMMEDIATE_EVERY: AtomicU32 = AtomicU32::new(4);
+static DYNAMIC: AtomicU32 = AtomicU32::new(0);
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -111,7 +118,8 @@ const STREAM_INPUTS: u32 = MISC + 0x3200;
 const FUNCTION: u32 = MISC + 0x3400;
 const PSDEF: u32 = MISC + 0x3800;
 const PS_OBJECT: u32 = MISC + 0x3900;
-const INDICES: u32 = MISC + 0x10000;
+/// Index lists, in the contiguous view (so the index cache may keep them).
+const INDICES: u32 = 0x8000_0000 | 0x0300_0000;
 
 const VB_VERTS: u32 = 16384;
 /// Position (float4), colour (D3DCOLOR), texcoord (float2).
@@ -221,6 +229,16 @@ fn bind_vb<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, vb: u32) {
 fn frame<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, draws: u32, f: u32) {
     let mut rng = Rng(f as u64 + 11);
     let every = IMMEDIATE_EVERY.load(Ordering::Relaxed).max(1);
+    if DYNAMIC.load(Ordering::Relaxed) != 0 {
+        // Dynamic geometry: set 1 rewritten (and reported) every frame.
+        for s in 0..3 {
+            let len = VB_VERTS * STRIDES[s as usize];
+            let bytes: Vec<u8> = (0..len).map(|i| (i ^ f) as u8).collect();
+            let va = 0x8000_0000 | vb_data(1, s);
+            m.write(va, &bytes).unwrap();
+            d.note_write(va, len);
+        }
+    }
     d.clear(m, 0, 0, 0xF0, 0xFFFF_FFFF, 1.0, 0).unwrap();
     bind_vb(d, m, 0);
     for i in 0..draws {
@@ -253,6 +271,7 @@ fn run<B: Backend>(
     for f in 0..5 {
         frame(d, m, draws, f);
     }
+    let before = d.stats();
     let allocs = BIG_ALLOCS.load(Ordering::Relaxed);
     let start = Instant::now();
     let mut times = Vec::new();
@@ -263,9 +282,13 @@ fn run<B: Backend>(
     }
     let total = start.elapsed().as_secs_f64();
     let allocs = BIG_ALLOCS.load(Ordering::Relaxed) - allocs;
+    let after = d.stats();
     println!(
-        "  allocations of 4 KiB or more: {:.2} a draw",
-        allocs as f64 / (frames as f64 * draws as f64)
+        "  allocations of 4 KiB or more: {:.2} a draw; vertex bytes copied {:.0} KiB/frame, reused {:.0} KiB/frame, {} cache fills",
+        allocs as f64 / (frames as f64 * draws as f64),
+        (after.vertex_bytes_copied - before.vertex_bytes_copied) as f64 / 1024.0 / frames as f64,
+        (after.vertex_bytes_reused - before.vertex_bytes_reused) as f64 / 1024.0 / frames as f64,
+        after.vertex_cache_fills - before.vertex_cache_fills,
     );
     times.sort_by(f64::total_cmp);
     (total, times)
@@ -292,20 +315,33 @@ fn main() {
     let frames = env("H2_BENCH_FRAMES", 100);
     let draws = env("H2_BENCH_DRAWS", 1000);
     IMMEDIATE_EVERY.store(env("H2_BENCH_IMMEDIATE", 4), Ordering::Relaxed);
-    let (mut d, mut m) = setup(NullBackend::default());
-    let (total, times) = run(&mut d, &mut m, frames, draws);
-    report("streams bench", frames, draws, total, &times);
-    println!("backend draws {} sink {}", d.backend.draws, d.backend.sink);
+    DYNAMIC.store(env("H2_BENCH_DYNAMIC", 0), Ordering::Relaxed);
+    for cache in [false, true] {
+        let tag = if cache { "cache on" } else { "cache off" };
+        let budget = cache.then_some(d3d::vertex_cache::DEFAULT_BUDGET);
+        let (mut d, mut m) = setup(NullBackend::default());
+        d.set_vertex_cache(budget);
+        let (total, times) = run(&mut d, &mut m, frames, draws);
+        report(
+            &format!("streams bench, {tag}"),
+            frames,
+            draws,
+            total,
+            &times,
+        );
+        println!("backend draws {} sink {}", d.backend.draws, d.backend.sink);
 
-    let (mut d, mut m) = setup(ThreadedBackend::new(NullBackend::default()).unwrap());
-    let (total, times) = run(&mut d, &mut m, frames, draws);
-    report(
-        "streams bench, render thread (guest side)",
-        frames,
-        draws,
-        total,
-        &times,
-    );
-    let (n, sink) = d.backend.with_inner(|b| (b.draws, b.sink)).unwrap();
-    println!("backend draws {n} sink {sink}");
+        let (mut d, mut m) = setup(ThreadedBackend::new(NullBackend::default()).unwrap());
+        d.set_vertex_cache(budget);
+        let (total, times) = run(&mut d, &mut m, frames, draws);
+        report(
+            &format!("streams bench, render thread (guest side), {tag}"),
+            frames,
+            draws,
+            total,
+            &times,
+        );
+        let (n, sink) = d.backend.with_inner(|b| (b.draws, b.sink)).unwrap();
+        println!("backend draws {n} sink {sink}");
+    }
 }

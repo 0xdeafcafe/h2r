@@ -31,6 +31,7 @@ use crate::clear::{Clearer, MaskedClear};
 use crate::compile::{Compiler, Pending, PendingPipeline, Priority};
 use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
+use crate::persistent::{PersistentStats, PersistentVertices};
 use crate::pipeline::{
     PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
 };
@@ -311,6 +312,16 @@ pub struct Draw<'a> {
     /// says (`shaders::vsh::VertexOptions::input_fetch`); [`Draw::new`]
     /// picks [`FetchMode::Cpu`], where every attribute is a float format.
     pub vertex_fetch: FetchMode,
+    /// Per stream (by position; missing entries are `None`), an id under
+    /// which its bytes never change: the stream's host buffer is kept
+    /// across submissions and bound again by later draws of the id instead
+    /// of being staged in the upload ring ([`crate::persistent`]). Empty
+    /// (the default) stages every stream.
+    pub stream_ids: &'a [Option<u64>],
+    /// An id under which `indices` never change: the host index list is
+    /// kept across submissions like [`stream_ids`](Self::stream_ids)'
+    /// buffers. `None` (the default) stages it.
+    pub index_id: Option<u64>,
 }
 
 impl<'a> Draw<'a> {
@@ -337,6 +348,8 @@ impl<'a> Draw<'a> {
             count_samples: false,
             window: None,
             vertex_fetch: FetchMode::Cpu,
+            stream_ids: &[],
+            index_id: None,
         }
     }
 }
@@ -415,6 +428,8 @@ pub struct Renderer {
     vertex_fetch: FetchMode,
     /// Reused buffer for streams that are realigned or converted.
     scratch: Vec<u8>,
+    /// Host buffers of streams with an id ([`Draw::stream_ids`]).
+    persistent: PersistentVertices,
 }
 
 /// One draw, validated, with its pipeline built and its bytes staged in the
@@ -623,6 +638,7 @@ impl Renderer {
             count_fragment: None,
             vertex_fetch: FetchMode::from_env(),
             scratch: Vec::new(),
+            persistent: PersistentVertices::new(PersistentVertices::budget_from_env()),
         }
     }
 
@@ -847,18 +863,22 @@ impl Renderer {
             return Err(DrawError::CountDepthNotCopyable);
         }
         let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
-        let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
-            (HostPrimitive::Native(_), None) => None,
-            (HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
-            (HostPrimitive::Indexed(_, conv), None) => Some(conv),
-            (HostPrimitive::Indexed(_, conv), Some(user)) => {
+        // A kept index list (`Draw::index_id`) is bound as it is.
+        let kept_id = d.index_id.filter(|_| d.indices.is_some());
+        let kept = kept_id.and_then(|id| self.persistent.cached_indices(id, d.primitive));
+        let list: Option<Vec<u32>> = match (kept.is_some(), d.primitive.to_host(drawn), d.indices) {
+            (true, ..) => None,
+            (false, HostPrimitive::Native(_), None) => None,
+            (false, HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
+            (false, HostPrimitive::Indexed(_, conv), None) => Some(conv),
+            (false, HostPrimitive::Indexed(_, conv), Some(user)) => {
                 Some(conv.iter().map(|&c| user[c as usize]).collect())
             }
         };
         // An indexed strip needs the index format in the pipeline (wgpu
         // validates it; restart never triggers, indices are below
         // `vertex_count`).
-        if list.is_some()
+        if (list.is_some() || kept.is_some())
             && matches!(
                 key.primitive.topology,
                 wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip
@@ -902,11 +922,17 @@ impl Renderer {
         // vertices otherwise. An empty stream takes 4 bytes: slices are
         // never empty.
         let scratch = &mut self.scratch;
+        let persistent = &mut self.persistent;
         let vertex_buffers = plan
             .streams
             .iter()
             .zip(d.streams)
-            .map(|(sp, vs)| {
+            .enumerate()
+            .map(|(i, (sp, vs))| {
+                if let Some(&Some(id)) = d.stream_ids.get(i) {
+                    let (buf, len) = persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
+                    return (buf, 0, len);
+                }
                 let len = sp.host_bytes(d.vertex_count);
                 let (buf, off) = self
                     .vertices
@@ -916,13 +942,25 @@ impl Renderer {
                 (buf, off, (len as u64).max(4))
             })
             .collect();
-        let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
-        let indices = list.map(|idx| {
-            let bytes: &[u8] = bytemuck::cast_slice(&idx);
-            let len = (bytes.len() as u64).max(4);
-            let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
-            (buf, off, len)
-        });
+        let (vertices, indices) = match kept {
+            Some((buf, len, count)) => (count, Some((buf, 0, len))),
+            None => {
+                let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
+                let indices = list.map(|idx| match kept_id {
+                    Some(id) => {
+                        let (buf, len) = self.persistent.put_indices(ctx, id, d.primitive, &idx);
+                        (buf, 0, len)
+                    }
+                    None => {
+                        let bytes: &[u8] = bytemuck::cast_slice(&idx);
+                        let len = (bytes.len() as u64).max(4);
+                        let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
+                        (buf, off, len)
+                    }
+                });
+                (vertices, indices)
+            }
+        };
         let builtin = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
             let (ww, wh) = d.window.unwrap_or((w, h));
             let words = [
@@ -974,6 +1012,11 @@ impl Renderer {
     pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
         self.vertices.flush(queue);
         self.uniforms.flush(queue);
+    }
+
+    /// Counters of the persistent vertex buffers ([`Draw::stream_ids`]).
+    pub fn persistent_stats(&self) -> PersistentStats {
+        self.persistent.stats()
     }
 
     /// Lets the upload rings reuse their space: call after submitting every

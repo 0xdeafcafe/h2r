@@ -976,6 +976,71 @@ bound.
     range.
 - `UploadPolicy::Verify` hashes texels and palette entries together.
 
+### Vertex cache
+
+Most of a level's vertices (BSP, object models) never change, but every
+draw used to copy its whole vertex window out of guest memory, and the
+render thread then staged the same bytes in its upload ring. The vertex
+cache (`crates/d3d/src/vertex_cache.rs`) keeps them instead, under the
+same write-tracker contract as textures.
+
+- **Key.** A vertex window is keyed by guest address and length (the
+  stream's `Data` translated, plus offset and first vertex), so two index
+  windows over one buffer are two entries. An index list for
+  `DrawIndexedVertices` is keyed by its address and length, and only when
+  it lies in the view the tracker reports (`AddressMap::to_virtual` of
+  its own `to_data`: the contiguous `0x80000000 | pa` view); a list
+  elsewhere is read every time. `DrawVerticesUP` and immediate-mode
+  vertices are never cached.
+- **Validity.** An entry remembers the tracker generation when it read
+  the bytes, and is clean while no page it covers has a newer one. The
+  tracker is page-granular: a four-byte store re-reads every window on
+  that page.
+- **Hit.** The draw carries the snapshot (`StreamData::Cached`, or
+  `IndexData::Cached`: the smallest and largest index and the list
+  rebased by the smallest, so a clean list is not read, scanned or
+  rebuilt). No copy on the guest's thread. Each snapshot has an id that
+  is never reused; `GfxBackend` passes it to `gfx::Renderer`
+  (`Draw::stream_ids`, `Draw::index_id`), which keeps a GPU buffer per id
+  (`gfx::persistent`) and binds it again instead of staging the bytes.
+- **Admission.** A window is copied the first time it is seen (a *ghost*
+  entry remembers it) and snapshotted at its next use if still clean. A
+  window found written twice counts as dynamic (particles, decals,
+  streamed or skinned vertices) and is snapshotted again only after two
+  clean frames, so a buffer the guest rewrites every frame costs a lookup
+  and the old copy, not an allocation and a free.
+- **Bounds.** Both caches drop least recently used entries past a budget:
+  `H2_VERTEX_CACHE_MB` (default 128) of vertex snapshots, a quarter of it
+  for index lists, 65536 entries each; the renderer holds at most the
+  same budget of GPU buffers.
+- **Policies.** `UploadPolicy::Verify` reads the guest bytes on every hit
+  and compares them with the snapshot; a difference raises
+  `Event::MissedInvalidation` (header 0 for an index list), drops the
+  snapshot and draws the bytes just read. `UploadPolicy::Always` bypasses
+  both caches. `H2_VERTEX_CACHE=0` (or `Device::set_vertex_cache(None)`)
+  turns them off: every draw copies, as before.
+- **Counters.** `Stats::vertex_bytes_copied`, `vertex_bytes_reused`,
+  `vertex_cache_hits`, `vertex_cache_fills`, `index_cache_hits`; frame
+  stats get `vtx_copied` and `vtx_reused` (bytes per frame).
+  `gfx_backend::GfxBackend::persistent_vertex_stats` counts GPU buffer
+  hits and uploads.
+- **Evidence.** `tests/vertex_cache.rs` runs the same frames with the
+  cache on and off (static, a page rewritten, four bytes rewritten, an
+  index list rewritten, a buffer freed and its memory reused, a buffer
+  rewritten every frame) and requires identical draws through the
+  recording backend and the render thread, and identical pixels on the
+  GPU. `cargo bench -p d3d --bench streams` (1000 draws a frame, about
+  45 MiB of vertex windows): 3.05 ms/frame with the cache off, 1.33 with
+  it on (render thread, guest side: 4.17 and 1.84); 0 bytes copied a
+  frame instead of 46,165 KiB, and no allocation of 4 KiB or more instead
+  of 0.75 a draw. With one of four vertex buffer sets rewritten every
+  frame (`H2_BENCH_DYNAMIC=1`): 3.32 and 1.81 ms, 11,231 KiB copied a
+  frame, no snapshot taken after warm-up.
+
+What it relies on is rule 1 below: a guest store into vertex or index
+memory the barrier does not report leaves the cache drawing old
+vertices. Verify finds such a store.
+
 ### Invalidation contract
 
 The runtime has to keep these rules:

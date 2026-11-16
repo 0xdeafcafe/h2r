@@ -121,6 +121,8 @@ impl App {
                 count_samples: false,
                 window: None,
                 vertex_fetch: FetchMode::Cpu,
+                stream_ids: &[],
+                index_id: None,
             },
             Draw {
                 shader: SHADER_XYZRHW_DIFFUSE,
@@ -136,6 +138,8 @@ impl App {
                 count_samples: false,
                 window: None,
                 vertex_fetch: FetchMode::Cpu,
+                stream_ids: &[],
+                index_id: None,
             },
         ];
 
