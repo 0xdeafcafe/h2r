@@ -944,6 +944,9 @@ fn clips_are_planned_from_actions_and_animation_names() {
         st("combat", "any", "any", "landing_dead"),
         st("combat", "unarmed", "any", "idle"),
         st("combat", "dual", "any", "idle"),
+        st("combat", "rifle", "any", "airborne"),
+        st("combat", "rifle", "any", "land_soft"),
+        st("combat", "rifle", "any", "land_hard"),
     ];
     let names: Vec<String> = [
         "combat:rifle:throw_grenade:var0",
@@ -955,6 +958,10 @@ fn clips_are_planned_from_actions_and_animation_names() {
         "combat:rifle:ready",
         "combat:rifle:aim_still_up",
         "combat:pistol:hp:fire_1:var1",
+        "h_kill:front:gut:var1",
+        "s_kill:front:gut:var1",
+        "s_kill:front:gut:var0",
+        "s_kill:front:head:var0",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -964,9 +971,16 @@ fn clips_are_planned_from_actions_and_animation_names() {
     assert_eq!(
         got,
         [
+            // Dying and lying dead once for every class: a soft kill from
+            // the front (its first variant) beats a hard one.
+            ("any:die", ClipFrom::Animation(11)),
+            ("any:dead", ClipFrom::Action(4)),
             ("rifle:idle", ClipFrom::Action(0)),
             ("rifle:run", ClipFrom::Action(1)),
             ("rifle:crouch", ClipFrom::Action(2)),
+            ("rifle:airborne", ClipFrom::Action(7)),
+            ("rifle:land", ClipFrom::Action(8)),
+            ("rifle:land_hard", ClipFrom::Action(9)),
             // `:var0` counts; the battle rifle's melee beats the shotgun's;
             // a reload only per type goes to the first type by name.
             ("rifle:grenade", ClipFrom::Animation(0)),
@@ -974,18 +988,13 @@ fn clips_are_planned_from_actions_and_animation_names() {
             ("rifle:reload", ClipFrom::Animation(4)),
             ("rifle:fire", ClipFrom::Animation(5)),
             ("rifle:switch", ClipFrom::Animation(6)),
-            ("rifle:die", ClipFrom::Action(4)),
             ("pistol:fire", ClipFrom::Animation(8)),
-            ("pistol:die", ClipFrom::Action(4)),
-            ("missile:die", ClipFrom::Action(4)),
-            ("support:die", ClipFrom::Action(4)),
-            ("sword:die", ClipFrom::Action(4)),
             ("unarmed:idle", ClipFrom::Action(5)),
-            ("unarmed:die", ClipFrom::Action(4)),
-            ("flag:die", ClipFrom::Action(4)),
-            ("ball:die", ClipFrom::Action(4)),
         ]
     );
+    // Without a death animation, dying is the dead pose.
+    let plan = plan_clips(&stances, &names[..9]);
+    assert_eq!(plan[0], ("any:die".to_string(), ClipFrom::Action(4)));
     // No dual clips.
     assert!(plan.iter().all(|(n, _)| clip_class(n) != "dual"));
 }

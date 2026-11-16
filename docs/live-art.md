@@ -657,8 +657,10 @@ Keys (what telemetry sends):
   `rifle`, `pistol`, `missile`, `support`, `sword`, `unarmed`, `flag`,
   `ball` (what multiplayer weapons are held with; `dual`, vehicle seats and
   AI-only classes are left out), states `idle`, `walk`, `run`, `crouch`,
-  `airborne`, `land`, `grenade`, `melee`, `reload`, `fire`, `switch`,
-  `die`, each only where the graph has it. Every joint has a `rotation`
+  `airborne`, `land`, `land_hard`, `grenade`, `melee`, `reload`, `fire`,
+  `switch`, each only where the graph has it; and `any:die`, `any:dead`
+  for every class (before extractor 13, `die` per class was the dead
+  pose). Every joint has a `rotation`
   channel (normalised i16 `VEC4`, the core glTF option) and a
   `translation` channel (float `VEC3`), `LINEAR`, one key per frame at
   30 fps; a channel that never changes in the clip has a single key at
@@ -733,10 +735,17 @@ whole step takes about 0.6 s on 10 cores.
    of a name. Phantoms, Pelicans and some turrets have no seat markers.
 9. **Clips.** In the biped's graph and the graphs it inherits from (its
    own first). The locomotion states are actions of type `any`: `idle`,
-   `walk_front` (walk), `move_front` (run), `airborne`, `land_soft`
-   (land) in mode `combat`, `idle` in mode `crouch` (crouch), and
-   `landing_dead` of class `any` (die, the same clip for every class).
-   These go through the action table, so `unarmed` plays what the graph
+   `walk_front` (walk), `move_front` (run), `airborne` (the whole leap:
+   the game has no take-off clip), `land_soft` (land), `land_hard`
+   (land_hard) in mode `combat`, and `idle` in mode `crouch` (crouch).
+   Dying and lying dead are the same for every class, so they are written
+   once as `any:die` and `any:dead`, first in the glb: `die` is the death
+   animation of a soft kill from the front (`s_kill:front:gut`, its first
+   variant; else `h_kill:front:gut`, else the dead pose), `dead` the
+   action `landing_dead` of class `any` (the body on the ground; the viewer
+   holds the death clip's last frame, and uses this pose for a body it
+   never saw alive). These go
+   through the action table, so `unarmed` plays what the graph
    maps it to (the spartan's sword animations). The weapon states are
    per weapon type in the game (their table is not decoded), so they are
    found by animation name, `combat:<class>[:<type>]:<action>[:varN]`:
@@ -808,9 +817,9 @@ Do not commit anything they write.
   and upper-body replacements over locomotion, a viewer playing these
   clips does not. `fire` is the overlay applied over the default pose;
   `reload`, `melee` and `fire` are one representative weapon type's for the
-  whole class (the battle rifle's for `rifle`, and so on), and `die` is
-  the graph's `landing_dead` (multiplayer deaths are ragdolls in the
-  game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
+  whole class (the battle rifle's for `rifle`, and so on), and `any:die`
+  is one death animation for every way of dying (multiplayer deaths are
+  ragdolls in the game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
