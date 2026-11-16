@@ -926,6 +926,7 @@ dependencies = [
  "gltf",
  "hs",
  "iced-x86",
+ "image",
  "input",
  "ir",
  "kernel",
@@ -2524,6 +2525,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
