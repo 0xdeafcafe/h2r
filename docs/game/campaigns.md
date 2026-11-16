@@ -48,6 +48,9 @@ Pieces:
   slots. Today `MapEditor` only patches an existing map. The builder is the
   biggest missing piece, and Halo 1 needs it first. New maps made from
   scratch also need it ([maps.md](maps.md)).
+- **`crates/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
+  Halo 2 `mode` and `jmad` block trees for the builder
+  ([h1-models.md](../formats/h1-models.md)).
 - **The converter** (`crates/h1convert`, planned) works one tag group at a
   time, in the order of §3.
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, runs the

@@ -2331,6 +2331,7 @@ dependencies = [
  "map",
  "tags",
  "thiserror 2.0.21",
+ "xiso",
 ]
 
 [[package]]

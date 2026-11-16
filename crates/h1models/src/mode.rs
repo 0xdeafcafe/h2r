@@ -168,8 +168,7 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
                         .put_u8(1, i.permutation as u8)
                         .put_u8(2, i.node as u8)
                         .put_f32s(4, &i.translation)
-                        .put_f32s(0x10, &i.rotation)
-                        .put_f32(0x20, 1.0);
+                        .put_f32s(0x10, &i.rotation);
                     b
                 })
                 .collect::<Vec<_>>();
@@ -228,13 +227,14 @@ fn node_blocks(model: &Model) -> Vec<Block> {
                 .put_i16(0xa, -1)
                 .put_f32s(0xc, &n.translation)
                 .put_f32s(0x18, &n.rotation);
-            // Inverse: rows of the transposed rotation, then -R^T p.
+            // +0x28 default scale; +0x2c the inverse of the model-space
+            // transform: three basis vectors, then the position, -R^T p.
             let inv_p = [0, 1, 2].map(|c| -(0..3).map(|r| m[r][c] * p[r]).sum::<f32>());
+            b.put_f32(0x28, 1.0);
             for c in 0..3 {
-                b.put_f32s(0x28 + 12 * c, &[m[0][c], m[1][c], m[2][c]]);
+                b.put_f32s(0x2c + 12 * c, &[m[0][c], m[1][c], m[2][c]]);
             }
-            b.put_f32s(0x4c, &inv_p)
-                .put_f32(0x58, 1.0)
+            b.put_f32s(0x50, &inv_p)
                 .put_f32(0x5c, n.distance_from_parent);
             b
         })

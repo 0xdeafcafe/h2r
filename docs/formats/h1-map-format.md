@@ -41,6 +41,9 @@ here or in tests. The tests build invented maps and discs in memory
 Field offsets inside tags (the scenario's BSP block) are not on c20's tag
 page; those are marked S with a note.
 
+Model and animation tag layouts (`mode`, `antr`) are in
+[h1-models.md](h1-models.md), checked on real maps.
+
 ## Header and compression
 
 **S:** the header is `0x800` bytes and is stored uncompressed. `head`

@@ -807,3 +807,124 @@ fn real_graphs_round_trip() {
         );
     }
 }
+
+/// Checks the two Halo 2 `mode` layouts the converter writes but
+/// `crates/tags` does not decode, against every retail model of one map:
+/// marker groups at header `+0x58` (stride `0xc`; markers `0x24`) and each
+/// node's inverse model-space transform at `+0x28`.
+///
+/// `H2_DISC=disc/halo2.iso cargo test -p h1models --release -- --ignored retail_h2 --nocapture`
+#[test]
+#[ignore = "needs $H2_DISC"]
+fn retail_h2_mode_layouts() {
+    use std::io::BufReader;
+    let Some(disc) = std::env::var_os("H2_DISC") else {
+        return;
+    };
+    let stem = std::env::var("H2_MAP").unwrap_or_else(|_| "lockout".into());
+    let mut iso = xiso::Xiso::open(BufReader::new(std::fs::File::open(&disc).unwrap())).unwrap();
+    let entry = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| !e.is_dir && e.path.ends_with(&format!("{stem}.map")))
+        .unwrap();
+    let base = iso.partition_offset() + u64::from(entry.sector) * xiso::SECTOR;
+    let mut map = Map::from_region(
+        BufReader::new(std::fs::File::open(&disc).unwrap()),
+        base,
+        entry.size.into(),
+    )
+    .unwrap();
+    let ids: Vec<TagId> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group.0 == *b"mode" && t.location.is_some())
+        .map(|t| t.id)
+        .collect();
+    let (mut models, mut groups, mut markers, mut bad_markers) = (0, 0, 0, 0);
+    // Failing markers by reason: unnamed group, node, rotation, +0x20 not finite.
+    let mut why = [0usize; 4];
+    let mut nonzero_20 = 0;
+    let (mut nodes, mut inverse_ok, mut transposed_ok, mut scale_one) = (0, 0, 0, 0);
+    for id in ids {
+        let tag = map.read_tag_bytes(id).unwrap();
+        let addr = map.tag(id).unwrap().location.unwrap().address;
+        let strings = map.strings().to_vec();
+        let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let f32_at = |b: &[u8], o: usize| f32::from_bits(u32_at(b, o));
+        let elems = |count: u32, at: u32, stride: usize| -> Vec<&[u8]> {
+            if count == 0 {
+                return Vec::new();
+            }
+            let s = (at - addr) as usize;
+            tag[s..s + count as usize * stride].chunks(stride).collect()
+        };
+        models += 1;
+        let node_list = elems(u32_at(&tag, 0x48), u32_at(&tag, 0x4c), 0x60);
+        for g in elems(u32_at(&tag, 0x58), u32_at(&tag, 0x5c), 0xc) {
+            groups += 1;
+            let named = tags::StringId(u32_at(g, 0))
+                .resolve(&strings)
+                .ok()
+                .flatten()
+                .is_some_and(|s| !s.is_empty());
+            for m in elems(u32_at(g, 4), u32_at(g, 8), 0x24) {
+                markers += 1;
+                let q: f32 = (0..4).map(|k| f32_at(m, 0x10 + 4 * k).powi(2)).sum();
+                let reasons = [
+                    !named,
+                    usize::from(m[2]) >= node_list.len(),
+                    (q - 1.0).abs() >= 1e-2,
+                    !f32_at(m, 0x20).is_finite(),
+                ];
+                for (k, r) in reasons.iter().enumerate() {
+                    why[k] += usize::from(*r);
+                }
+                let ok = !reasons.iter().any(|&r| r);
+                nonzero_20 += usize::from(f32_at(m, 0x20) != 0.0);
+                bad_markers += usize::from(!ok);
+            }
+        }
+        // Inverse transform: composing the default pose's model-space
+        // transform with +0x28.. must give identity.
+        let pose: Vec<(i16, [f32; 4], [f32; 3])> = node_list
+            .iter()
+            .map(|n| {
+                (
+                    i16::from_le_bytes([n[4], n[5]]),
+                    std::array::from_fn(|k| f32_at(n, 0x18 + 4 * k)),
+                    std::array::from_fn(|k| f32_at(n, 0xc + 4 * k)),
+                )
+            })
+            .collect();
+        let world = crate::mode::world_transforms(&pose);
+        for (n, (m, p)) in node_list.iter().zip(&world) {
+            nodes += 1;
+            let inv: [[f32; 3]; 3] =
+                std::array::from_fn(|r| std::array::from_fn(|c| f32_at(n, 0x2c + 12 * r + 4 * c)));
+            let ip: [f32; 3] = std::array::from_fn(|k| f32_at(n, 0x50 + 4 * k));
+            // Either the stored vectors are the columns of R^T (ours) or its rows.
+            let check = |get: &dyn Fn(usize, usize) -> f32| {
+                (0..3).all(|r| {
+                    (0..3).all(|c| {
+                        let v: f32 = (0..3).map(|k| get(r, k) * m[k][c]).sum();
+                        (v - if r == c { 1.0 } else { 0.0 }).abs() < 1e-2
+                    }) && {
+                        let v: f32 = (0..3).map(|k| get(r, k) * p[k]).sum::<f32>() + ip[r];
+                        v.abs() < 1e-2
+                    }
+                })
+            };
+            let ok = check(&|r, k| inv[k][r]);
+            transposed_ok += usize::from(check(&|r, k| inv[r][k]));
+            scale_one += usize::from(f32_at(n, 0x28) == 1.0);
+            inverse_ok += usize::from(ok);
+        }
+    }
+    println!(
+        "{stem}: {models} models, {groups} marker groups, {markers} markers ({bad_markers} failing: {why:?}; {nonzero_20} with +0x20 nonzero), {nodes} nodes ({inverse_ok} match our inverse layout, {transposed_ok} its transpose, {scale_one} with scale 1)"
+    );
+    assert!(markers > 0 && bad_markers == 0);
+    assert!(inverse_ok * 100 >= nodes * 99, "inverse layout");
+}
