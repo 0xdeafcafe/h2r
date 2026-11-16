@@ -216,7 +216,7 @@ fn make_draw(rng: &mut Rng, shape: &[Stream]) -> ResolvedDraw {
             pixel_shader: Some(Box::new(w)),
             combiner_state: Box::new(words.render[..57].try_into().unwrap()),
         },
-        raw: Box::new(words.clone()),
+        raw: std::sync::Arc::new(words.clone()),
         viewport: Viewport {
             x: 0,
             y: 0,
