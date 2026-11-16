@@ -123,6 +123,11 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           move the event log (sqlite://, postgres://, file:)
                           and the blobs (a directory, s3://BUCKET) between
                           backends; idempotent and resumable
+  store check --blobs s3://BUCKET[/PREFIX] [--public] [--public-url URL] [--quick]
+                          try a bucket with real credentials: write, read,
+                          list, range read, conditional write, multipart
+                          upload and delete in a scratch prefix, pass or fail
+                          for each (docs/live/live-hosting.md)
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
@@ -177,6 +182,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
         ("menubar", _) => menubar(rest),
         ("store", Some("copy")) => store_copy(rest.shift()),
+        ("store", Some("check")) => store_check(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
         _ => bail!("unknown h2 live command {:?}\n\n{USAGE}", args.join(" ")),
     }
@@ -247,6 +253,15 @@ fn store_copy(args: Args) -> Result<()> {
         .build()
         .context("starting tokio")?
         .block_on(live_server::copy::run(args.0, &env))
+}
+
+/// `h2 live store check`: [`live_server::check::run`].
+fn store_check(args: Args) -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio")?
+        .block_on(live_server::check::run(args.0, &env))
 }
 
 fn serve(mut args: Args) -> Result<()> {

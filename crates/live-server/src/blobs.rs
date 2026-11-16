@@ -180,16 +180,24 @@ impl std::fmt::Debug for S3Config {
 }
 
 impl S3Config {
+    /// One setting (`name` is the plain `H2_LIVE_S3_*` form), or `None` if
+    /// unset or blank.
+    pub fn from_env_one(
+        env: &dyn Fn(&str) -> Option<String>,
+        name: &str,
+        public: bool,
+    ) -> Option<String> {
+        let public_name = name.replacen("H2_LIVE_S3_", "H2_LIVE_S3_PUBLIC_", 1);
+        public
+            .then(|| env(&public_name))
+            .flatten()
+            .or_else(|| env(name))
+            .filter(|v| !v.trim().is_empty())
+    }
+
     /// `public`: read `H2_LIVE_S3_PUBLIC_<NAME>` before `H2_LIVE_S3_<NAME>`.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>, public: bool) -> Result<Self> {
-        let get = |name: &str| {
-            let public_name = name.replacen("H2_LIVE_S3_", "H2_LIVE_S3_PUBLIC_", 1);
-            public
-                .then(|| env(&public_name))
-                .flatten()
-                .or_else(|| env(name))
-                .filter(|v| !v.trim().is_empty())
-        };
+        let get = |name: &str| Self::from_env_one(env, name, public);
         let need = |name: &str| {
             get(name).ok_or_else(|| BlobError::Config(format!("an s3:// blob store needs ${name}")))
         };
@@ -407,6 +415,27 @@ impl BlobStore {
         };
         match self.store.get_opts(&Self::key(key)?, options).await {
             Ok(r) => Ok(Some(r.bytes().await?)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// How the object is to be served, as the store kept it; `None` if there
+    /// is no object. A directory keeps none, so all of it is `None`.
+    pub async fn meta(&self, key: &str) -> Result<Option<Meta>> {
+        let options = GetOptions {
+            head: true,
+            ..GetOptions::default()
+        };
+        match self.store.get_opts(&Self::key(key)?, options).await {
+            Ok(r) => {
+                let get = |a: Attribute| r.attributes.get(&a).map(|v| v.as_ref().to_string());
+                Ok(Some(Meta {
+                    content_type: get(Attribute::ContentType),
+                    content_encoding: get(Attribute::ContentEncoding),
+                    cache_control: get(Attribute::CacheControl),
+                }))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
