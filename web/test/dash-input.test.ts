@@ -42,18 +42,18 @@ describe("keys", () => {
       ["ArrowUp", "up"], ["ArrowDown", "down"], ["ArrowLeft", "left"], ["ArrowRight", "right"],
       ["Enter", "select"], ["a", "select"], ["A", "select"],
       ["Escape", "back"], ["Backspace", "back"], ["b", "back"], ["B", "back"],
-      ["PageUp", "pageUp"], ["PageDown", "pageDown"],
+      ["PageUp", "pageUp"], ["PageDown", "pageDown"], ["x", "alt"], ["X", "alt"],
     ];
     for (const [k, a] of want) expect(keyAction(k)).toBe(a);
-    for (const k of ["x", " ", "Tab", "Shift", "F5"]) expect(keyAction(k)).toBeNull();
+    for (const k of ["y", " ", "Tab", "Shift", "F5"]) expect(keyAction(k)).toBeNull();
   });
 });
 
 describe("gamepad mapping", () => {
-  test("buttons: a and start select, b backs out, shoulders page, d-pad steers", () => {
-    const want: Array<[number, Action]> = [[0, "select"], [9, "select"], [1, "back"], [4, "pageUp"], [5, "pageDown"], [12, "up"], [13, "down"], [14, "left"], [15, "right"]];
+  test("buttons: a and start select, b backs out, x is alt, shoulders page, d-pad steers", () => {
+    const want: Array<[number, Action]> = [[0, "select"], [9, "select"], [1, "back"], [2, "alt"], [4, "pageUp"], [5, "pageDown"], [12, "up"], [13, "down"], [14, "left"], [15, "right"]];
     for (const [i, a] of want) expect([...padHeld(pad([i]))]).toEqual([a]);
-    expect(padHeld(pad([2, 3, 6, 7, 8, 10, 11, 16])).size).toBe(0);
+    expect(padHeld(pad([3, 6, 7, 8, 10, 11, 16])).size).toBe(0);
     expect(padHeld(pad()).size).toBe(0);
   });
 

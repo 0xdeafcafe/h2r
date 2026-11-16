@@ -138,8 +138,11 @@ export class MockRecovery {
         return fail(403, "forbidden", "wrong code, or no recovery set up");
       }
       this.locks.delete(lockKey);
+      (a.retired ??= []).push({ kid: a.key.kid, jwk: a.key.jwk, from: a.keyFrom, to: this.world.log.length + 1 });
       a.key = { kid: opened.jwk.kid, jwk: opened.jwk, privateKey: undefined as never };
       a.keyFrom = this.world.log.length + 1;
+      // A log event at the new key's position, so it has a date (the real server logs the key change).
+      this.world.append(`account-${a.xuid}`, [{ type: "AccountRecovered", data: { xuid: a.xuid, kid: opened.jwk.kid } }], null);
       return ok({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}` }, 201);
     }
     return null;

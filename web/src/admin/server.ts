@@ -23,6 +23,13 @@ export const INVITE_STREAM = "invites";
 export const INVITE_MAX_DAYS = 30;
 export const INVITE_DAY_CHOICES = [1, 7, 30] as const;
 
+/** The next invite length when the "lasts" row is cycled: 1, 7, 30 days
+ *  (the server caps an admin's invite at 30 days, so there is no "never"). */
+export function nextInviteDays(d: number, step: 1 | -1 = 1): number {
+  const c = INVITE_DAY_CHOICES as readonly number[];
+  return c[(Math.max(0, c.indexOf(d)) + step + c.length) % c.length]!;
+}
+
 export interface ServerCounts { accounts: number; online: number; live_games: number; sessions: number }
 
 export interface ServerFacts {

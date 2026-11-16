@@ -41,3 +41,10 @@
   .dx-recovery-grid--qr { grid-template-columns: 1fr; justify-items: center; }
   .dx-qr { width: calc(var(--u) * 200); height: calc(var(--u) * 200); }
 }
+
+/* The account plate's devices: one quiet line per key. */
+.dx-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(var(--u) * 2); }
+.dx-devices li { white-space: normal; }
+.dx-devices code { font: 500 .9em ui-monospace, Menlo, monospace; color: #e8ffd0; }
+.dx-devices .dx-device--old { opacity: .6; }
+.dx-pages .dx-plate dd.dx-secret { white-space: normal; overflow-wrap: anywhere; font: 500 .9em ui-monospace, Menlo, monospace; letter-spacing: .04em; color: #e8ffd0; }

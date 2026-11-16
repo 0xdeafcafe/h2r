@@ -1,18 +1,20 @@
-// The dashboard's recovery screens (src/state/recovery.ts is the API):
-//   - /dash/signup/recovery: the signed-in account's recovery code, counting
-//     down, its authenticator setup (secret and QR code), and set up / reset.
-//     Right after sign-up it opens here once, with the setup showing;
-//   - /dash/signup/recover: a new device takes an account over with its
-//     gamertag and a code.
+// The dashboard's account screens (src/state/recovery.ts is the API):
+//   - /dash/account: the signed-in account's recovery code, counting down,
+//     its authenticator setup (secret and QR code), set up / reset, and the
+//     devices it is signed in on (its keys). Right after sign-up it opens
+//     here once, with the setup showing;
+//   - /dash/recover: a new device takes an account over with its gamertag
+//     and a code.
 // Dashboard.tsx owns the layout (big pod, small pods, prompts); these are
 // the plates, the code in the big pod and their state.
 
-import { Show, createEffect, createMemo, createSignal, on, type Accessor } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, type Accessor } from "solid-js";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { now } from "../lib/now";
 import { qrEncode, qrPath } from "../lib/qr";
 import { fetchWellKnown } from "../api/server";
+import { fetchDevices, shortKid, type Device } from "../state/devices";
 import {
   codeError, fetchRecovery, groupSecret, normalizeCode, recoverAccount, RecoverError, secondsLeft, setupRecovery,
   type Recovery,
@@ -35,6 +37,8 @@ export interface RecoveryState {
   /** Just signed up: this is the first look at it. */
   isNew: Accessor<boolean>;
   showSetup: Accessor<boolean>;
+  /** The account's keys; null while loading or when unreadable. */
+  devices: Accessor<Device[] | null>;
   toggleSetup(): void;
   /** Seconds until the code rolls over. */
   left: Accessor<number>;
@@ -56,6 +60,7 @@ export function createRecovery(active: Accessor<boolean>): RecoveryState {
   const [showSetup, setShowSetup] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [confirming, setConfirming] = createSignal(false);
+  const [devices, setDevices] = createSignal<Device[] | null>(null);
   let seq = 0, fetching = false, lastFetch = 0;
 
   const ctx = () => {
@@ -86,6 +91,9 @@ export function createRecovery(active: Accessor<boolean>): RecoveryState {
   createEffect(on(() => [active(), identity.me()?.xuid, live.wellKnown()?.id], () => {
     if (!active()) return;
     setConfirming(false);
+    const who = identity.me();
+    setDevices(null);
+    if (who) void fetchDevices(live.server().api, who.gamertag).then((d) => { if (identity.me()?.xuid === who.xuid) setDevices(d); }, () => {});
     const me = identity.me(), f = fresh();
     if (me && f && f.xuid === me.xuid) {
       setFresh(null);
@@ -118,7 +126,7 @@ export function createRecovery(active: Accessor<boolean>): RecoveryState {
   }
 
   return {
-    rec, phase, error, isNew, showSetup, left, busy, confirming,
+    rec, phase, error, isNew, showSetup, left, busy, confirming, devices,
     toggleSetup: () => setShowSetup(!showSetup()),
     setupOrReset() {
       if (phase() === "ready" && !confirming()) { setConfirming(true); return; }
@@ -161,79 +169,63 @@ export function RecoveryCode(props: { state: RecoveryState }) {
   );
 }
 
-/** The recovery plate: the code's words, the authenticator setup, set up / reset. */
-export function RecoveryPlate(props: { state: RecoveryState; onDone: () => void }) {
+const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+/** The account plate: plain rows. Its actions are the pods and prompts
+ *  round it (Dashboard.tsx), so the plate itself is only read. */
+export function AccountPlate(props: { state: RecoveryState }) {
   const s = props.state;
-  const [copied, setCopied] = createSignal<"code" | "secret" | null>(null);
-  const flash = (what: "code" | "secret") => { setCopied(what); setTimeout(() => setCopied(null), 1500); };
-  const tag = () => identity.me()?.gamertag ?? "";
+  const me = () => identity.me();
   return (
-    <Plate small={s.isNew() ? "new account" : tag()} title={s.isNew() ? "set up recovery" : "recovery"} main>
+    <Plate small={s.isNew() ? "new account" : "h2 live"} title={s.isNew() ? "save your recovery" : "account"} main>
       <div class="dx-recovery-body">
-        <Show when={s.phase() === "loading"}><p class="dx-note">Loading…</p></Show>
-        <Show when={s.phase() === "error"}><p class="dx-error" role="alert">{s.error()}</p></Show>
-        <Show when={s.phase() === "none"}>
-          <p class="dx-signup-intro">No recovery yet. Set it up so you can sign in on a new device.</p>
-          <p class="dx-recovery-actions">
-            <button type="button" class="dx-go" disabled={s.busy()} onClick={() => s.setupOrReset()}>{s.busy() ? "setting up" : "set up recovery"}</button>
-          </p>
-          <Show when={s.error()}><p class="dx-error" role="alert">{s.error()}</p></Show>
-        </Show>
-        <Show when={s.phase() === "ready" && s.rec()}>
-          {(r) => (
-            <>
-              <Show when={s.isNew()}><p class="dx-signup-intro">Save this now. It's how you get back in if you lose this browser.</p></Show>
-              <div class="dx-recovery-grid" classList={{ "dx-recovery-grid--qr": s.showSetup() && !!r().otpauth }}>
-                <dl>
-                  <dt>code</dt>
-                  <dd>
-                    <span class="dx-copy">
-                      <code class="dx-rcode-inline">{r().code}</code>
-                      <button type="button" class="dx-forget" onClick={() => void s.copyCode().then((ok) => ok && flash("code"))}>{copied() === "code" ? "copied" : "copy"}</button>
-                    </span>
-                  </dd>
-                  <Show when={s.showSetup()}>
-                    <dt>secret</dt>
-                    <dd>
-                      <span class="dx-copy">
-                        <code class="dx-secret">{groupSecret(r().secret)}</code>
-                        <button type="button" class="dx-forget" onClick={() => void copyText(r().secret).then((ok) => ok && flash("secret"))}>{copied() === "secret" ? "copied" : "copy"}</button>
-                      </span>
-                    </dd>
-                    <Show when={r().otpauth}>
-                      <dt>app</dt>
-                      <dd><a class="dx-forget" href={r().otpauth}>open in authenticator</a></dd>
-                    </Show>
-                  </Show>
-                </dl>
-                <Show when={s.showSetup() && r().otpauth}>
-                  <QrCode text={r().otpauth} label={`authenticator setup for ${tag()}`} />
-                </Show>
-              </div>
-              <p class="dx-note">{NEW_DEVICE_NOTE}</p>
-              <Show when={s.showSetup()}>
-                <p class="dx-note">Scan the code with an authenticator app, or type the secret into it.</p>
+        <Show when={s.isNew()}><p class="dx-signup-intro">Keep this. It's how you get back in if you lose this browser.</p></Show>
+        <div class="dx-recovery-grid" classList={{ "dx-recovery-grid--qr": s.showSetup() && !!s.rec()?.otpauth }}>
+          <dl>
+            <dt>gamertag</dt><dd>{me()?.gamertag}</dd>
+            <dt>recovery</dt>
+            <dd>
+              <Switch>
+                <Match when={s.phase() === "loading"}>loading</Match>
+                <Match when={s.phase() === "none"}>not set up</Match>
+                <Match when={s.phase() === "error"}>unavailable</Match>
+                <Match when={s.rec()}>{(r) => <><b class="dx-rcode-inline">{r().code}</b> <span>{s.left()}s</span></>}</Match>
+              </Switch>
+            </dd>
+            <Show when={s.showSetup() && s.rec()}>
+              {(r) => <><dt>secret</dt><dd class="dx-secret">{groupSecret(r().secret)}</dd></>}
+            </Show>
+            <dt>devices</dt>
+            <dd>
+              <Show when={s.devices()} fallback={<span>loading</span>}>
+                {(list) => (
+                  <ul class="dx-devices">
+                    <For each={list()}>
+                      {(d) => (
+                        <li classList={{ "dx-device--old": !d.current }}>
+                          <code>{shortKid(d.kid)}</code>
+                          <span>{d.since ? ` since ${day(d.since)}` : d.from ? ` since event ${d.from}` : ""}</span>
+                          <span>{d.kid === me()?.kid ? " · this browser" : d.current ? "" : " · retired"}</span>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                )}
               </Show>
-              <Show when={s.error()}><p class="dx-error" role="alert">{s.error()}</p></Show>
-              <Show
-                when={s.confirming()}
-                fallback={
-                  <p class="dx-recovery-actions">
-                    <Show when={s.isNew()}><button type="button" class="dx-go" onClick={() => props.onDone()}>done</button></Show>
-                    <button type="button" class="dx-forget" onClick={() => s.toggleSetup()}>{s.showSetup() ? "hide authenticator setup" : "show authenticator setup"}</button>
-                    <Show when={!s.isNew()}><button type="button" class="dx-forget" onClick={() => s.setupOrReset()}>reset recovery</button></Show>
-                  </p>
-                }
-              >
-                <p class="dx-error">Reset recovery? The current secret stops working, in every authenticator app it's in.</p>
-                <p class="dx-recovery-actions">
-                  <button type="button" class="dx-go" disabled={s.busy()} onClick={() => s.setupOrReset()}>{s.busy() ? "resetting" : "reset"}</button>
-                  <button type="button" class="dx-forget" onClick={() => s.cancelReset()}>cancel</button>
-                </p>
-              </Show>
-            </>
-          )}
+            </dd>
+          </dl>
+          <Show when={s.showSetup() && s.rec()?.otpauth}>
+            {(uri) => <QrCode text={uri()} label={`authenticator setup for ${me()?.gamertag ?? ""}`} />}
+          </Show>
+        </div>
+        <Show when={s.confirming()}>
+          <p class="dx-error" role="alert">Reset recovery? The current secret stops working in every authenticator app it's in. Press select to reset, back to keep it.</p>
         </Show>
+        <Show when={s.error() && s.phase() !== "loading"}><p class="dx-error" role="alert">{s.error()}</p></Show>
+        <p class="dx-note">
+          {s.phase() === "none" ? "Set up recovery so you can sign in on a new device." : NEW_DEVICE_NOTE}
+          {s.showSetup() ? " Scan the code with an authenticator app, or type the secret into it." : ""}
+        </p>
       </div>
     </Plate>
   );
