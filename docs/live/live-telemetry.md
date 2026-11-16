@@ -7,7 +7,7 @@ not change guest state or return telemetry failures to the game.
 
 ## Sampling and hooks
 
-Four overrides are installed after the generated module is registered:
+Five overrides are installed after the generated module is registered (the last is optional):
 
 | Guest entry | Observation |
 |---|---|

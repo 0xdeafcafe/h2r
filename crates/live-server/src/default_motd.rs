@@ -76,7 +76,7 @@ mod tests {
             assert!(s.encode_utf16().count() <= 200, "{s}");
         }
         let file = m.build().unwrap();
-        // It fits the game's one attachment buffer (docs/live/live-motd-fetch.md §5).
+        // It fits the game's 0x8000-byte MOTD buffer (docs/live/live-motd.md §2).
         assert!(file.len() <= live_proto::motd::MAX_FILE, "{}", file.len());
         assert_eq!(Motd::parse(&file).unwrap(), m);
     }

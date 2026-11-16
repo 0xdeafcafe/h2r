@@ -16,10 +16,15 @@ dword `0x66696c6f` at +0x00, flags at +0x04, ASCII path at +0x08).
 > bytes, and a **validated 16-byte header** (CRC, version, size). §2 below
 > is rewritten from that trace (§2.0-§2.4); the older subsections are kept
 > for their addresses but their reading of the XONLINE calls is
-> superseded. The 2026-11-15 "message attachment" verdict
-> ([live-motd-fetch.md](live-motd-fetch.md)) was wrong: that path is the
-> game's voice/text message playback screen. The body formats in §3 and §5
-> stand, from offset 0x10.
+> superseded. An earlier (2026-11-15) "message attachment" reading was
+> wrong and its document is gone: the class at `0x002c7410` /
+> `0x002c74f9` / `0x002c788a` is the game's voice/text message playback
+> screen, whose property tags (`0x9c1` voice data, `0x3c2`, `0x4c3`,
+> `0x6c4`, `0x4c5`, `0x581`) are standard XDK message properties. It only
+> opens messages from the targeted player, and its 0x499a buffer feeds
+> voice playback, not the MOTD descriptors. `0x003ab6ea`
+> `XOnlineStorageDownloadToMemory` is the call these two files use
+> (§2.1'). The body formats in §3 and §5 stand, from offset 0x10.
 
 ## 1. The .data descriptors
 

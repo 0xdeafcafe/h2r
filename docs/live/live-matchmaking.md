@@ -135,9 +135,9 @@ wrappers `0x0008f070`/`0x0008f4b0`) and sends it with
 `0x0008f852`: XUID recipient list, the session id by value, the message
 handle) or, for one friend, `XOnlineFriendsGameInvite` (`0x003a07e5`,
 likely; wrapper `0x0008cfe0`, site `0x0008d03a`). The friends/invite UI
-reads message properties through the same `0x0008e9e0` reader as the title
-files; its remaining tags (`0x481`..`0x791`) serve the friends/invite UI
-([live-motd-fetch.md](live-motd-fetch.md) §3).
+reads message properties through the `0x0008e9e0` reader; its tags
+(`0x481`..`0x791`) serve the friends/invite UI. The title files do not use
+this path ([live-motd.md](live-motd.md) §2).
 
 On the receiving side: the invite notification arrives via
 `XOnlineGetNotificationEx` (`0x003a0798`) and presence carries the session
@@ -197,7 +197,7 @@ To confirm in the retail code, with addresses:
 
 `multiplayer_hopper.dat` is the playlist file, delivered after sign-in through
 per-title storage facility 4 (envelope and delivery:
-[live-motd.md](live-motd.md) §5, [live-motd-fetch.md](live-motd-fetch.md)).
+[live-motd.md](live-motd.md) §2 and §5).
 What matters for matchmaking:
 
 - The tag `matchmaking_hopper_descriptions` defines the universe of

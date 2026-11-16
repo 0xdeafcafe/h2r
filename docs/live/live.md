@@ -1,14 +1,17 @@
 # Xbox Live replacement
 
-Status: design, with the first server slice implemented (accounts and title
-files: `crates/live-proto`, `crates/live-server`, `h2 live ...` in
-[4.2](#42-cli) and [4.3](#43-service)). The opt-in client sign-in HLE is
-described in [Client HLE: sign-in](#client-hle-sign-in).
+Status: implemented in large part, with the sections below marking what is
+still design. The server (`crates/live-proto`, `crates/live-server`,
+`h2 live ...` in [4.2](#42-cli) and [4.3](#43-service)) has accounts,
+title files, friends, teams, sessions, invites and stats, and the opt-in
+client HLE (`crates/live-hle`) starts at
+[Client HLE: sign-in](#client-hle-sign-in). Sections 1 to 3 and 5 to 6 are
+the original design and investigation.
 
 The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
 gamertag, show the message of the day and playlists, keep a friends list
 with presence, and later matchmake and play. Accounts are made from the CLI
-for now. The service behind it is ours, event sourced on Postgres.
+or the web app. The service behind it is ours, event sourced on Postgres.
 
 ## 1. What the title links
 
@@ -125,13 +128,20 @@ play_live.rs; `h2 live --help` has every flag):
 
 ```
 h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
-              [--private] [--invite-only]
+              [--private] [--invite-only] [--admin GAMERTAG]...
               [--tls-cert PEM --tls-key PEM | --insecure-http]
 h2 live account create <gamertag> [--server URL] [--invite CODE]
 h2 live account import <file> [--server URL]
 h2 live account list [--server URL]
 h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
 h2 live motd set --file PATH [--server URL] [--data DIR]
+h2 live account export <gamertag> [--file PATH] [--server URL]
+h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
+h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
+h2 live friend add|accept|decline|remove|list ...
+h2 live team ...
+h2 live maps publish|list ...
+h2 live assets extract|check
 h2 live invite create [--days N] [--server URL] [--data DIR]
 h2 live q <what> [--server URL] [--json|--jsonl]
 h2 play <disc> --live | --live-server URL [--live-listen ADDR] [--gamertag NAME]
@@ -209,8 +219,9 @@ in each commit's build, so the banner's "Update ready" includes it. Without
 bun it says how to install it and runs without the web app; `H2_LIVE_WEB`
 points at a build of your own and skips this.
 
-Planned, not built: `h2 live friend add <gamertag> <gamertag>` (with
-friends).
+`h2 live friend add|accept|decline|remove|list` act as a local account
+(`--as GAMERTAG`): each writes a signed friend event on that account's
+stream (`crates/cli/src/live_cmd.rs`, `friend`).
 
 #### Game art
 
@@ -447,18 +458,18 @@ online, where and with whom. To keep that from flooding the log:
 2. **Signed in, offline service.** Link up, XNet startup, `XOnlineStartup`,
    `XOnlineGetUsers`, `XOnlineLogon` succeed for a CLI account with a fixed
    in-process stub. Success is the game showing the gamertag as online.
-3. **Service and MOTD.** Server slice done (`h2 live serve`, accounts in
-   Postgres, title storage serving files by name); what remains is decoding
-   the `message_of_the_day.dat` and `multiplayer_hopper.dat` formats and
-   having the client HLE fetch them.
+3. **Service and MOTD.** Done: `h2 live serve`, accounts, title storage
+   serving files by name, the `message_of_the_day.dat` and
+   `multiplayer_hopper.dat` formats ([live-motd.md](live-motd.md),
+   [live-admin.md](live-admin.md)) and the client HLE that fetches them.
 4. **Friends and presence.**
 5. **System Link over XNet HLE** (two local instances).
 6. **Matchmaking and custom games over Live**, then stats and clans.
 
 ## 6. Open questions
 
-- The `.data` tables at `0x004672b8` and `0x0046dd5c`: who reads them and
-  which call fetches the file.
+- The `.data` tables at `0x004672b8` and `0x0046dd5c` are answered in
+  [live-motd.md](live-motd.md) §1 and §2.
 - What `XOnlineLogon` failures the game checks for (title update required,
   service down) and which ones send it to the dashboard (`xonlinedash.xbe`
   is referenced from the image).
@@ -806,8 +817,8 @@ the title.
 ## Client HLE: menu polling and remaining stops
 
 The polling audit starts from the game wrappers in
-[live-boundary.md](live-boundary.md), and the per-frame message manager documented
-in [live-motd-fetch.md](live-motd-fetch.md). The owner observed a real signed-in
+[live-boundary.md](live-boundary.md), and the per-frame message screen noted in
+[live-motd.md](live-motd.md). The owner observed a real signed-in
 menu stop at `0x003a0827`; the no-invite path now matches the public XDK contract
 and the retail implementation. Other menu cases are statically audited and tested
 through synthetic guest stacks; browsing every screen has not been run here.
