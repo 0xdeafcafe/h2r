@@ -365,18 +365,31 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_FAULT_EVENT(pc, st) H2_EXIT_(H2_FAULT, H2_ENTRY, 0u, 0u, (st), (pc))
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
+/* A load or store: under the held gate the inline path (h2fastmem.h,
+ * H2_HELD_TRY) gives a host address and the access is one memcpy of the
+ * constant width, a single load or store. Otherwise one cold call
+ * (h2_access_cold) takes the gate and accesses, or drops it and runs the
+ * ordinary helper staged through b_; the handler adopts the gate state it
+ * leaves, and a failure leaves through the fault exit. Either way the
+ * handler's count (H2_ACC_ONE) takes the attempt. */
 #define H2_LD_(T, n, dst, pc, addr, restore)                                    \
     T dst = 0;                                                                  \
     do {                                                                        \
-        uint8_t b_[16];                                                         \
+        __label__ slow_, done_;                                                 \
         uint32_t a_ = (addr);                                                   \
+        uint8_t *p_, b_[16];                                                    \
+        H2FastPage pg_;                                                         \
+        H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        if (!h2_held_read(h2_mem_, &h2g_, a_, (n), b_)) {                       \
-            H2_GATE_DROP();                                                     \
-            uint32_t st_ = H2_MEM_READ_SLOW(ctx, (pc), a_, (n), 1u, b_);        \
-            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
-        }                                                                       \
+        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
+        memcpy(&dst, p_, (n));                                                  \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 0, b_);     \
+        h2_gate_adopt(&h2g_, c_.held);                                          \
+        if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
         memcpy(&dst, b_, (n));                                                  \
+    done_:;                                                                     \
     } while (0)
 #define H2_LD(T, n, dst, pc, addr) H2_LD_(T, n, dst, pc, addr, (void)0)
 /* Inside a REP body: a fault reports the EFLAGS the instruction began with
@@ -399,16 +412,22 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 
 #define H2_ST_(T, n, pc, addr, value, restore)                                  \
     do {                                                                        \
+        __label__ slow_, done_;                                                 \
         T v_ = (value);                                                         \
-        uint8_t b_[16];                                                         \
         uint32_t a_ = (addr);                                                   \
-        memcpy(b_, &v_, (n));                                                   \
+        uint8_t *p_, b_[16];                                                    \
+        H2FastPage pg_;                                                         \
+        H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        if (!h2_held_write(h2_mem_, &h2g_, a_, (n), b_)) {                      \
-            H2_GATE_DROP();                                                     \
-            uint32_t st_ = H2_MEM_WRITE_SLOW(ctx, (pc), a_, (n), 1u, b_);       \
-            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
-        }                                                                       \
+        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
+        memcpy(p_, &v_, (n));                                                   \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        memcpy(b_, &v_, (n));                                                   \
+        c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 1, b_);     \
+        h2_gate_adopt(&h2g_, c_.held);                                          \
+        if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
+    done_:;                                                                     \
     } while (0)
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)
 #define H2_STR(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (fl = rfl_, fd = rfd_))

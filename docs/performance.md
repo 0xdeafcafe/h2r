@@ -446,3 +446,76 @@ request, and pending interrupts.
 cargo test -p emit --test direct
 H2_PERF_KIND=call cargo test --release -p emit --test perf generated_runtime_benchmark -- --ignored --nocapture
 ```
+
+## Inline guest loads and stores (2026-11-16)
+
+`H2_LD`/`H2_ST` called `h2_held_read`/`h2_held_write`, generic over the
+width. Clang inlined them only in small handlers; in a handler with many
+access sites (every image shard) it kept one out-of-line copy per shard,
+so each access was a call, about 30 instructions, a `memcpy` with a
+run-time width and a 16-byte staging buffer on each side
+(`docs/architecture-review.md`, finding 1).
+
+Now the check is a macro (`H2_HELD_TRY`, `h2fastmem.h`) that is always
+inline: with the gate held, a span inside one page, the permission bit
+and a physical page inside RAM, the access is one load or store of the
+constant width at the host address. Anything else is a single call to
+`h2_access_cold`, which is out of line, cold and `preserve_most` (the site
+spills nothing around it): it takes the gate and retries, or drops it and
+runs the ordinary helper exactly as before. The hold keeps one pointer to
+the view instead of four fields, and remembers the physical page it last
+marked dirty, so repeated stores to a watched page skip the bitmap update.
+The tests jump to one label with every local declared in that label's
+scope: at the image's default `-O1`, a jump out of a scope with locals
+goes through a clang cleanup switch that `-O1` does not fold, which made
+an earlier version of this change 40% larger.
+
+The comparison asked for, a tiny non-inlined leaf per width, was built
+and measured too: smaller (`wide` 24.0 KB of `__text` at `-O1`), but at
+164-171 ns for `wide` it is only 1.5x faster than before, against 2.6x
+for the inline form, so it was dropped.
+
+`generated_runtime_benchmark`, release, median of 7, 5M iterations,
+accounting on (as the image builds), this machine under load from other
+lanes. `wide` is new: one loop with 112 access sites of widths 1, 2 and 4,
+the shape in which clang declined to inline the old accessors (the other
+kinds were already inlined, so they show only the shape change).
+
+| kind | `-O1` before | `-O1` after | `-O2` before | `-O2` after |
+|---|---:|---:|---:|---:|
+| read | 3.22 ns | 3.06 ns | 2.52 ns | 1.88 ns |
+| write | 2.48 ns | 2.09 ns | 2.60 ns | 2.21 ns |
+| frame | 11.1-11.4 ns | 9.6 ns | 8.73 ns | 6.92 ns |
+| wide (112 accesses) | 250 ns | 97 ns | 243 ns | 72 ns |
+| wide, `H2_ACCESS_COUNT=0` | 306 ns | 215 ns | | |
+
+`wide` per access: 2.23 ns before, 0.87 ns after at `-O1`. Without
+accounting each inline access still updates `f->accesses` in memory and
+tests the budget, which is why that row gains less; the image builds with
+accounting.
+
+`__text` of the benchmark's shard object (same flags as `h2 emit`):
+
+| module | `-O1` before | `-O1` after | `-O2` before | `-O2` after |
+|---|---:|---:|---:|---:|
+| wide | 28,524 B | 26,888 B (-5.7%) | 28,560 B | 22,376 B (-21.7%) |
+| frame | 4,052 B | 4,232 B (+4.4%) | 3,800 B | 3,304 B (-13.1%) |
+
+Proof: `inline_accesses_match_the_helper_path_at_every_width_and_edge`
+(every width 1, 2, 4, 8, 10, 16; offsets 0-15 and around each page end;
+crossing into RAM and into nothing; unmapped, read-only and MMIO sources
+and targets; a write-watched page stored to twice; a slice of 1 and of a
+million; accounting on and off) requires the same transfer, registers,
+memory, dirty pages, events and access count with the inline path on and
+off. `a_new_hold_marks_the_page_the_last_hold_dirtied` drains the watch
+from a host thread mid-loop and requires the next inline store to the same
+page to be marked. Both were checked by breaking the inline path (no dirty
+mark, an off-by-one crossing test, the read bit for stores, a hold that
+keeps the last-dirtied page): each break fails one of them.
+`held_gate_matches_the_helper_path_at_every_stop_and_fault` and the rest of
+`cargo test -p emit` pass unchanged.
+
+```sh
+H2_ACCESS_COUNT=1 H2_PERF_KIND=wide cargo test -p emit --release --test perf generated_runtime_benchmark -- --ignored --nocapture
+cargo test -p emit --test perf -- inline_accesses_match a_new_hold
+```

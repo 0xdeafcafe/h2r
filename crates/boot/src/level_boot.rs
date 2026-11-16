@@ -1,6 +1,7 @@
-//! Level boot: start a campaign level directly, in place of the main menu
-//! the game loads at boot (`h2 play --level`, `H2_LEVEL`), and mark the
-//! level's first frame for `H2_PERF_FROM=level`.
+//! Level boot: start a campaign level, or a local multiplayer game on one
+//! of the disc's multiplayer maps, in place of the main menu the game loads
+//! at boot (`h2 play --level`, `H2_LEVEL`), and mark the level's first frame
+//! for `H2_PERF_FROM=level`.
 //!
 //! The research and every address are in docs/level-boot.md. In short: the
 //! main loop asks for the main menu (`0x18f1c0`) while no game runs and none
@@ -9,7 +10,10 @@
 //! default local player, `0x138640`) and queues them (`0x18e790`). The first
 //! call is answered here instead with the same three calls building campaign
 //! options (mode 1) for the requested scenario and difficulty, filled the way
-//! the main menu's own campaign start (`0x23643f`) fills them. Every later
+//! the main menu's own campaign start (`0x23643f`) fills them. A
+//! multiplayer map gets mode 2 options filled the way the game's session
+//! start (`0x6ec80`) fills them for a local game, with a default Slayer
+//! variant from the game's own variant defaults (`0x19d220`). Every later
 //! call goes to the original, so a failed load still reaches the menu.
 //!
 //! Activation (`0x18f000`) runs the original, then reads what loaded from
@@ -19,6 +23,7 @@
 //! The logic is written over [`Gm`] so it is tested without a guest. Each
 //! step says one line on stderr, prefixed `level boot:`.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -40,6 +45,12 @@ pub const OPTIONS_NEW: u32 = 0x0013_8110;
 pub const OPTIONS_PLAYERS: u32 = 0x0013_8640;
 /// Queue game options for the next transition; the block in EAX.
 pub const OPTIONS_QUEUE: u32 = 0x0018_e790;
+/// Build a default game variant: stdcall `(variant out, goof game type)`,
+/// `ret 8`; code only (the name lookup is skipped while no globals tag is
+/// loaded).
+pub const VARIANT_DEFAULTS: u32 = 0x0019_d220;
+/// The game's options check: stdcall `(options)`, `ret 4`, AL 1 when valid.
+pub const OPTIONS_CHECK: u32 = 0x0013_8180;
 /// Game activation after the scenario's cache is loaded; options in EAX,
 /// returns AL (1 once the map and its first BSP are in).
 pub const GAME_ACTIVATE: u32 = 0x0018_f000;
@@ -59,8 +70,19 @@ pub const OPT_DIFFICULTY: u32 = 0x12a;
 pub const OPT_SPLIT: u32 = 0x12c;
 /// Its inverse, as the menu's start writes it.
 pub const OPT_SINGLE: u32 = 0x12d;
+/// Session kind byte: 1 for a local game (`0x6ec80` writes 1, 2 or 3 by
+/// session type; `OPTIONS_NEW` leaves 0).
+pub const OPT_SESSION: u32 = 0x5;
+/// The variant's content index (`0x6ec80`: from the session, else -1).
+pub const OPT_VARIANT_INDEX: u32 = 0x130;
+/// The game variant, `0x130` bytes.
+pub const OPT_VARIANT: u32 = 0x134;
+pub const VARIANT_SIZE: u32 = 0x130;
 pub const MODE_CAMPAIGN: u32 = 1;
+pub const MODE_MULTIPLAYER: u32 = 2;
 pub const MODE_MAINMENU: u32 = 3;
+/// `goof` game type 0, Slayer (docs/community-gametypes.md).
+pub const GAME_TYPE_SLAYER: u32 = 0;
 const GLOBALS_OPTIONS: u32 = 0x8;
 const GLOBALS_ACTIVE: u32 = 0x1120;
 
@@ -72,6 +94,13 @@ const MATG_CAMPAIGN: usize = 0x170;
 const LEVEL_SIZE: usize = 0x108;
 const LEVEL_PATH: usize = 8;
 const MAX_LEVELS: u32 = 256;
+/// The multiplayer level list (`0x19c5f0`; `h2 live` reads it too):
+/// `matg +0x178` element 0, block at `+0x10` of `0xc64`-byte levels, `+0`
+/// map id, `+0xb4c` scenario path.
+const MATG_MULTIPLAYER: usize = 0x178;
+const MP_BLOCK: usize = 0x10;
+const MP_LEVEL_SIZE: usize = 0xc64;
+const MP_LEVEL_PATH: usize = 0xb4c;
 
 /// Our guest memory: the alias the activation wrapper calls, then the
 /// options we build.
@@ -116,13 +145,23 @@ impl fmt::Display for Difficulty {
     }
 }
 
-/// A campaign map on the disc.
+/// Which game a level starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    Campaign,
+    /// A local game, one player, default Slayer.
+    Multiplayer,
+}
+
+/// A campaign or multiplayer map on the disc.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscLevel {
-    /// The map file's stem, `03a_oldmombasa`.
+    /// The map file's stem, `03a_oldmombasa`, `ascension`.
     pub name: String,
     /// The cache header's scenario path.
     pub scenario: String,
+    pub kind: Kind,
 }
 
 /// What to load in place of the main menu.
@@ -134,22 +173,44 @@ pub struct Request {
     /// the options default them) when the list does not name the scenario.
     pub campaign: u32,
     pub map: u32,
+    /// Campaign only.
     pub difficulty: Difficulty,
+    pub kind: Kind,
+}
+
+impl Request {
+    /// What the `requesting` line says after the name.
+    pub fn game(&self) -> String {
+        match self.kind {
+            Kind::Campaign => self.difficulty.to_string(),
+            Kind::Multiplayer => "slayer".into(),
+        }
+    }
 }
 
 /// The level called `name` (a map file stem or a scenario path, any case),
-/// or an error listing every campaign level.
+/// or an error listing every level, campaign then multiplayer.
 pub fn pick<'a>(levels: &'a [DiscLevel], name: &str) -> Result<&'a DiscLevel> {
     let n = name.trim().trim_end_matches(".map");
     if let Some(l) = levels.iter().find(|l| l.name.eq_ignore_ascii_case(n) || l.scenario.eq_ignore_ascii_case(n)) {
         return Ok(l);
     }
-    let mut names: Vec<&str> = levels.iter().map(|l| l.name.as_str()).collect();
-    names.sort_unstable();
-    if names.is_empty() {
-        bail!("no campaign level {name:?}: the disc has no campaign maps");
+    let list = |k: Kind| {
+        let mut v: Vec<&str> = levels.iter().filter(|l| l.kind == k).map(|l| l.name.as_str()).collect();
+        v.sort_unstable();
+        v
+    };
+    let (campaign, mp) = (list(Kind::Campaign), list(Kind::Multiplayer));
+    if campaign.is_empty() && mp.is_empty() {
+        bail!("no level {name:?}: the disc has no campaign or multiplayer maps");
     }
-    bail!("no campaign level {name:?}; the disc has:\n  {}", names.join("\n  "))
+    let mut msg = format!("no level {name:?}; the disc has:");
+    for (title, v) in [("campaign", campaign), ("multiplayer", mp)] {
+        if !v.is_empty() {
+            msg += &format!("\n {title}:\n  {}", v.join("\n  "));
+        }
+    }
+    bail!("{msg}")
 }
 
 /// `(campaign id, map id, scenario path)` for each level of a globals tag;
@@ -185,18 +246,53 @@ pub fn campaign_levels(matg: &[u8], read: &mut dyn FnMut(u32, u32) -> Option<Vec
         .collect()
 }
 
+/// `(map id, scenario path)` for each multiplayer level of a globals tag.
+pub fn multiplayer_levels(matg: &[u8], read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>) -> Vec<(u32, String)> {
+    let le = |b: &[u8], at: usize| b.get(at..at + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
+    let (Some(n), Some(addr)) = (le(matg, MATG_MULTIPLAYER), le(matg, MATG_MULTIPLAYER + 4)) else {
+        return Vec::new();
+    };
+    if n == 0 {
+        return Vec::new();
+    }
+    let Some(head) = read(addr, (MP_BLOCK + 8) as u32) else {
+        return Vec::new();
+    };
+    let (Some(count), Some(at)) = (le(&head, MP_BLOCK), le(&head, MP_BLOCK + 4)) else {
+        return Vec::new();
+    };
+    if count == 0 || count > MAX_LEVELS {
+        return Vec::new();
+    }
+    let Some(all) = read(at, count * MP_LEVEL_SIZE as u32) else {
+        return Vec::new();
+    };
+    all.as_chunks::<MP_LEVEL_SIZE>()
+        .0
+        .iter()
+        .filter_map(|e| {
+            let p = &e[MP_LEVEL_PATH..MP_LEVEL_PATH + 0x100];
+            let p = &p[..p.iter().position(|c| *c == 0).unwrap_or(p.len())];
+            Some((le(e, 0)?, String::from_utf8_lossy(p).into_owned()))
+        })
+        .collect()
+}
+
 /// The ids the level list gives `scenario`, if it names it.
 pub fn ids_for(levels: &[(u32, u32, String)], scenario: &str) -> Option<(u32, u32)> {
     levels.iter().find(|(_, _, p)| p.eq_ignore_ascii_case(scenario)).map(|(c, m, _)| (*c, *m))
 }
 
-/// The disc's campaign maps.
+/// The disc's campaign and multiplayer maps.
 pub fn disc_levels(disc: &Path) -> Result<Vec<DiscLevel>> {
     let mut out = Vec::new();
     for_each_map(disc, |stem, map| {
-        if map.header().cache_type == map::CacheType::Campaign {
-            out.push(DiscLevel { name: stem.to_string(), scenario: map.header().scenario_path.clone() });
-        }
+        let kind = match map.header().cache_type {
+            map::CacheType::Campaign => Kind::Campaign,
+            map::CacheType::Multiplayer => Kind::Multiplayer,
+            _ => return true,
+        };
+        out.push(DiscLevel { name: stem.to_string(), scenario: map.header().scenario_path.clone(), kind });
         true
     })?;
     Ok(out)
@@ -241,13 +337,19 @@ fn level_ids(disc: &Path, level: &DiscLevel) -> Option<(u32, u32)> {
             let off = m.file_offset(addr, size).ok()?;
             m.read_file_range(off, size.into()).ok()
         };
-        found = ids_for(&campaign_levels(&matg, &mut read), &level.scenario);
+        found = match level.kind {
+            Kind::Campaign => ids_for(&campaign_levels(&matg, &mut read), &level.scenario),
+            Kind::Multiplayer => multiplayer_levels(&matg, &mut read)
+                .iter()
+                .find(|(_, p)| p.eq_ignore_ascii_case(&level.scenario))
+                .map(|(m, _)| (u32::MAX, *m)),
+        };
         found.is_none()
     });
     found
 }
 
-/// Resolves `name` against the disc's campaign maps.
+/// Resolves `name` against the disc's campaign and multiplayer maps.
 pub fn resolve(disc: &Path, name: &str, difficulty: Difficulty) -> Result<Request> {
     let levels = disc_levels(disc)?;
     let level = pick(&levels, name)?;
@@ -261,7 +363,14 @@ pub fn resolve(disc: &Path, name: &str, difficulty: Difficulty) -> Result<Reques
         );
         (u32::MAX, u32::MAX)
     });
-    Ok(Request { name: level.name.clone(), scenario: level.scenario.clone(), campaign, map, difficulty })
+    Ok(Request {
+        name: level.name.clone(),
+        scenario: level.scenario.clone(),
+        campaign,
+        map,
+        difficulty,
+        kind: level.kind,
+    })
 }
 
 /// `H2_LEVEL` and `H2_DIFFICULTY`, resolved against `disc`; `None` when
@@ -318,8 +427,10 @@ pub fn loaded_at() -> Option<u64> {
 // ---- guest-side logic ----
 
 /// Writes the request into options `buf` that `OPTIONS_NEW` has cleared and
-/// defaulted, as the main menu's campaign start (`0x23643f`) fills them for
-/// one local player. A path longer than the field is refused.
+/// defaulted. A campaign level is filled as the main menu's campaign start
+/// (`0x23643f`) fills it for one local player; a multiplayer map as the
+/// session start (`0x6ec80`) fills a local game, before the variant is
+/// built into it. A path longer than the field is refused.
 pub fn fill_options<M: Gm>(m: &mut M, buf: u32, req: &Request) -> bool {
     let path = req.scenario.as_bytes();
     if path.len() >= OPT_PATH_LEN as usize || path.contains(&0) {
@@ -327,13 +438,72 @@ pub fn fill_options<M: Gm>(m: &mut M, buf: u32, req: &Request) -> bool {
     }
     let mut field = vec![0u8; OPT_PATH_LEN as usize];
     field[..path.len()].copy_from_slice(path);
-    m.set_u32(buf + OPT_MODE, MODE_CAMPAIGN)
-        && m.set_u32(buf + OPT_CAMPAIGN, req.campaign)
+    let common = m.set_u32(buf + OPT_CAMPAIGN, req.campaign)
         && m.set_u32(buf + OPT_MAP, req.map)
-        && m.wr(buf + OPT_PATH, &field)
-        && m.set_u16(buf + OPT_DIFFICULTY, req.difficulty.index())
-        && m.wr(buf + OPT_SPLIT, &[0])
-        && m.wr(buf + OPT_SINGLE, &[1])
+        && m.wr(buf + OPT_PATH, &field);
+    common
+        && match req.kind {
+            Kind::Campaign => {
+                m.set_u32(buf + OPT_MODE, MODE_CAMPAIGN)
+                    && m.set_u16(buf + OPT_DIFFICULTY, req.difficulty.index())
+                    && m.wr(buf + OPT_SPLIT, &[0])
+                    && m.wr(buf + OPT_SINGLE, &[1])
+            }
+            Kind::Multiplayer => {
+                m.set_u32(buf + OPT_MODE, MODE_MULTIPLAYER)
+                    && m.wr(buf + OPT_SESSION, &[1])
+                    && m.set_u32(buf + OPT_VARIANT_INDEX, u32::MAX)
+            }
+        }
+}
+
+/// One step of building the options, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// `OPTIONS_NEW`, the block in ESI.
+    New,
+    /// [`fill_options`].
+    Fill,
+    /// `VARIANT_DEFAULTS(options + OPT_VARIANT, GAME_TYPE_SLAYER)`.
+    Variant,
+    /// `OPTIONS_PLAYERS(1, options)`; after the mode is written, which it
+    /// reads.
+    Players,
+    /// `OPTIONS_CHECK(options)`, reported only.
+    Check,
+    /// `OPTIONS_QUEUE`, the block in EAX.
+    Queue,
+}
+
+/// The steps for `kind`.
+pub fn steps(kind: Kind) -> Vec<Step> {
+    match kind {
+        Kind::Campaign => vec![Step::New, Step::Fill, Step::Players, Step::Check, Step::Queue],
+        Kind::Multiplayer => vec![Step::New, Step::Fill, Step::Variant, Step::Players, Step::Check, Step::Queue],
+    }
+}
+
+/// A guest call: target, stack arguments (first argument first), and EAX
+/// and ESI when the callee takes them there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuestCall {
+    pub target: u32,
+    pub args: Vec<u32>,
+    pub eax: Option<u32>,
+    pub esi: Option<u32>,
+}
+
+/// The guest call for a step; `None` for [`Step::Fill`], which is ours.
+pub fn call_of(step: Step, buf: u32) -> Option<GuestCall> {
+    let (target, args, eax, esi) = match step {
+        Step::New => (OPTIONS_NEW, vec![], None, Some(buf)),
+        Step::Fill => return None,
+        Step::Variant => (VARIANT_DEFAULTS, vec![buf + OPT_VARIANT, GAME_TYPE_SLAYER], None, None),
+        Step::Players => (OPTIONS_PLAYERS, vec![1, buf], None, None),
+        Step::Check => (OPTIONS_CHECK, vec![buf], None, None),
+        Step::Queue => (OPTIONS_QUEUE, vec![], Some(buf), None),
+    };
+    Some(GuestCall { target, args, eax, esi })
 }
 
 /// The active game's mode and scenario path, once activation has set the
@@ -435,48 +605,89 @@ pub fn install(rt: &runtime::Runtime, req: Option<Request>, watch: bool) -> Resu
     Ok(())
 }
 
-/// In place of the first `request_mainmenu(reason)`: clear and default
-/// options at [`BUFFER`] (`OPTIONS_NEW`, ESI), fill them, add one default
-/// local player (`OPTIONS_PLAYERS(1, options)`), queue them (`OPTIONS_QUEUE`,
-/// EAX), then return as the original does (`ret 4`, ESI preserved).
+/// In place of the first `request_mainmenu(reason)`: run [`steps`] on the
+/// options at [`BUFFER`], then return as the original does (`ret 4`, ESI
+/// preserved; the game's functions preserve the other callee-saved
+/// registers).
 fn request_level(cpu: &mut CpuAbi, ctx: &mut ExecCtx, req: Arc<Request>) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
-    let mut mem = rt.memory();
+    let mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
     let reason = mem.u32(cpu.esp.wrapping_add(4))?;
-    let entry_esp = cpu.esp;
-    let saved_esi = cpu.esi;
+    drop(mem);
     eprintln!(
         "level boot: requesting {} {} (scenario {}, campaign {}, map {}; in place of the main menu, reason {reason})",
-        req.name, req.difficulty, req.scenario, req.campaign as i32, req.map as i32
+        req.name,
+        req.game(),
+        req.scenario,
+        req.campaign as i32,
+        req.map as i32
     );
-    cpu.esi = BUFFER;
-    ctx.call_guest(cpu, &mut mem, OPTIONS_NEW, move |cpu, ctx| {
-        let rt = Arc::clone(ctx.runtime());
-        let mut mem = rt.memory();
-        if !fill_options(&mut *mem, BUFFER, &req) {
-            // The hook is spent, so this reaches the original.
-            eprintln!("level boot: could not write the options; loading the main menu");
-            cpu.esi = saved_esi;
-            cpu.esp = entry_esp;
-            return Ok(TransferAbi::jump(REQUEST_MAINMENU));
+    let entry = Entry { ret_pc, esp: cpu.esp, esi: cpu.esi };
+    let todo = steps(req.kind).into();
+    run_from(cpu, ctx, req, todo, entry)
+}
+
+/// The caller's state at the hook.
+#[derive(Clone, Copy)]
+struct Entry {
+    ret_pc: u32,
+    esp: u32,
+    esi: u32,
+}
+
+fn run_from(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    req: Arc<Request>,
+    mut todo: VecDeque<Step>,
+    entry: Entry,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    while let Some(step) = todo.pop_front() {
+        if step == Step::Fill {
+            if !fill_options(&mut *mem, BUFFER, &req) {
+                // The hook is spent, so this reaches the original.
+                eprintln!("level boot: could not write the options; loading the main menu");
+                cpu.esi = entry.esi;
+                cpu.esp = entry.esp;
+                return Ok(TransferAbi::jump(REQUEST_MAINMENU));
+            }
+            continue;
         }
-        cpu.esp = cpu.esp.wrapping_sub(4);
-        mem.set_u32(cpu.esp, BUFFER)?;
-        cpu.esp = cpu.esp.wrapping_sub(4);
-        mem.set_u32(cpu.esp, 1)?;
-        ctx.call_guest(cpu, &mut mem, OPTIONS_PLAYERS, move |cpu, ctx| {
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            cpu.eax = BUFFER;
-            ctx.call_guest(cpu, &mut mem, OPTIONS_QUEUE, move |cpu, _| {
-                eprintln!("level boot: options queued");
-                cpu.esi = saved_esi;
-                cpu.esp = entry_esp.wrapping_add(8);
-                Ok(TransferAbi::ret(ret_pc))
-            })
-        })
-    })
+        let Some(GuestCall { target, args, eax, esi }) = call_of(step, BUFFER) else { continue };
+        for a in args.iter().rev() {
+            cpu.esp = cpu.esp.wrapping_sub(4);
+            mem.set_u32(cpu.esp, *a)?;
+        }
+        if let Some(v) = eax {
+            cpu.eax = v;
+        }
+        if let Some(v) = esi {
+            cpu.esi = v;
+        }
+        return ctx.call_guest(cpu, &mut mem, target, move |cpu, ctx| {
+            match step {
+                Step::Check if cpu.eax & 0xff != 0 => eprintln!("level boot: the game's options check passes"),
+                Step::Check => eprintln!(
+                    "level boot: the game's options check (0x138180) rejects the options; queueing them anyway"
+                ),
+                Step::Queue => {
+                    eprintln!("level boot: options queued");
+                    cpu.esi = entry.esi;
+                    cpu.esp = entry.esp.wrapping_add(8);
+                    return Ok(TransferAbi::ret(entry.ret_pc));
+                }
+                _ => {}
+            }
+            run_from(cpu, ctx, req, todo, entry)
+        });
+    }
+    // Not reached: the last step is the queue.
+    cpu.esi = entry.esi;
+    cpu.esp = entry.esp.wrapping_add(8);
+    Ok(TransferAbi::ret(entry.ret_pc))
 }
 
 #[cfg(test)]
@@ -513,6 +724,18 @@ mod tests {
             campaign: 1,
             map: 7,
             difficulty,
+            kind: Kind::Campaign,
+        }
+    }
+
+    fn mp_request() -> Request {
+        Request {
+            name: "ascension".into(),
+            scenario: r"scenarios\multi\ascension\ascension".into(),
+            campaign: u32::MAX,
+            map: 80,
+            difficulty: Difficulty::Normal,
+            kind: Kind::Multiplayer,
         }
     }
 
@@ -572,6 +795,76 @@ mod tests {
     }
 
     #[test]
+    fn fills_a_local_multiplayer_game_like_the_session_start() {
+        let mut m = Fake::default();
+        defaulted(&mut m, BUFFER);
+        let r = mp_request();
+        assert!(fill_options(&mut m, BUFFER, &r));
+        assert_eq!(m.u32(BUFFER + OPT_MODE), Some(MODE_MULTIPLAYER));
+        assert_eq!(m.u8(BUFFER + OPT_SESSION), Some(1), "local");
+        assert_eq!(m.u32(BUFFER + OPT_CAMPAIGN), Some(u32::MAX));
+        assert_eq!(m.u32(BUFFER + OPT_MAP), Some(80));
+        assert_eq!(path_at(&m, BUFFER + OPT_PATH), r.scenario);
+        assert_eq!(m.u32(BUFFER + OPT_VARIANT_INDEX), Some(u32::MAX));
+        // Campaign-only fields and the variant (built after) are untouched.
+        assert_eq!(m.u16(BUFFER + OPT_DIFFICULTY), Some(0xcccc));
+        assert_eq!((m.u8(BUFFER + OPT_SPLIT), m.u8(BUFFER + OPT_SINGLE)), (Some(0xcc), Some(0xcc)));
+        assert_eq!(m.u8(BUFFER + OPT_VARIANT), Some(0xcc));
+        assert_eq!(m.u8(BUFFER + OPT_VARIANT + VARIANT_SIZE - 1), Some(0xcc));
+        assert_eq!(r.game(), "slayer");
+        assert_eq!(request(Difficulty::Heroic).game(), "heroic");
+    }
+
+    #[test]
+    fn the_steps_build_then_queue() {
+        use Step::*;
+        assert_eq!(steps(Kind::Campaign), [New, Fill, Players, Check, Queue]);
+        // The variant goes into the cleared block; players after the mode
+        // is written (OPTIONS_PLAYERS reads it).
+        assert_eq!(steps(Kind::Multiplayer), [New, Fill, Variant, Players, Check, Queue]);
+        for k in [Kind::Campaign, Kind::Multiplayer] {
+            let s = steps(k);
+            let at = |x| s.iter().position(|y| *y == x).unwrap();
+            assert!(at(New) < at(Fill) && at(Fill) < at(Players) && at(Players) < at(Queue));
+            assert_eq!(s.last(), Some(&Queue));
+        }
+    }
+
+    #[test]
+    fn each_step_calls_the_game_with_its_arguments() {
+        let b = BUFFER;
+        assert_eq!(
+            call_of(Step::New, b),
+            Some(GuestCall { target: OPTIONS_NEW, args: vec![], eax: None, esi: Some(b) })
+        );
+        assert_eq!(call_of(Step::Fill, b), None);
+        assert_eq!(
+            call_of(Step::Variant, b),
+            Some(GuestCall {
+                target: VARIANT_DEFAULTS,
+                args: vec![b + OPT_VARIANT, GAME_TYPE_SLAYER],
+                eax: None,
+                esi: None
+            })
+        );
+        assert_eq!(
+            call_of(Step::Players, b),
+            Some(GuestCall { target: OPTIONS_PLAYERS, args: vec![1, b], eax: None, esi: None })
+        );
+        assert_eq!(
+            call_of(Step::Check, b),
+            Some(GuestCall { target: OPTIONS_CHECK, args: vec![b], eax: None, esi: None })
+        );
+        assert_eq!(
+            call_of(Step::Queue, b),
+            Some(GuestCall { target: OPTIONS_QUEUE, args: vec![], eax: Some(b), esi: None })
+        );
+        // The variant fits in the options block.
+        const { assert!(OPT_VARIANT + VARIANT_SIZE <= OPTIONS_SIZE) };
+        const { assert!(OPT_VARIANT_INDEX + 4 == OPT_VARIANT) };
+    }
+
+    #[test]
     fn unknown_ids_stay_unset_and_long_paths_are_refused() {
         let mut m = Fake::default();
         defaulted(&mut m, BUFFER);
@@ -620,7 +913,10 @@ mod tests {
         // is not the main menu.
         assert!(!is_wanted(None, MODE_MAINMENU, menu));
         assert!(is_wanted(None, MODE_CAMPAIGN, r"scenarios\solo\00a_introduction\00a_introduction"));
-        assert!(is_wanted(None, 2, r"scenarios\multi\example\example"));
+        assert!(is_wanted(None, MODE_MULTIPLAYER, r"scenarios\multi\example\example"));
+        let mp = mp_request();
+        assert!(is_wanted(Some(&mp), MODE_MULTIPLAYER, &mp.scenario));
+        assert!(!is_wanted(Some(&mp), MODE_MAINMENU, menu));
         assert_eq!(short(&r.scenario), "03a_oldmombasa");
     }
 
@@ -640,10 +936,17 @@ mod tests {
     }
 
     fn levels() -> Vec<DiscLevel> {
-        ["01a_tutorial", "03a_oldmombasa", "00a_introduction"]
-            .into_iter()
-            .map(|n| DiscLevel { name: n.into(), scenario: format!(r"scenarios\solo\{n}\{n}") })
-            .collect()
+        let solo = ["01a_tutorial", "03a_oldmombasa", "00a_introduction"].into_iter().map(|n| DiscLevel {
+            name: n.into(),
+            scenario: format!(r"scenarios\solo\{n}\{n}"),
+            kind: Kind::Campaign,
+        });
+        let multi = ["lockout", "ascension"].into_iter().map(|n| DiscLevel {
+            name: n.into(),
+            scenario: format!(r"scenarios\multi\{n}\{n}"),
+            kind: Kind::Multiplayer,
+        });
+        solo.chain(multi).collect()
     }
 
     #[test]
@@ -652,6 +955,8 @@ mod tests {
         assert_eq!(pick(&l, "03a_oldmombasa").unwrap().name, "03a_oldmombasa");
         assert_eq!(pick(&l, "03A_OldMombasa.map").unwrap().name, "03a_oldmombasa");
         assert_eq!(pick(&l, r"scenarios\solo\01a_tutorial\01a_tutorial").unwrap().name, "01a_tutorial");
+        let a = pick(&l, "Ascension").unwrap();
+        assert_eq!((a.name.as_str(), a.kind), ("ascension", Kind::Multiplayer));
     }
 
     #[test]
@@ -659,8 +964,12 @@ mod tests {
         let e = pick(&levels(), "03a_oldmombassa").unwrap_err().to_string();
         assert!(e.contains("03a_oldmombassa"), "{e}");
         let listed: Vec<&str> = e.lines().skip(1).map(str::trim).collect();
-        assert_eq!(listed, ["00a_introduction", "01a_tutorial", "03a_oldmombasa"], "sorted, one per line");
-        assert!(pick(&[], "x").unwrap_err().to_string().contains("no campaign maps"));
+        assert_eq!(
+            listed,
+            ["campaign:", "00a_introduction", "01a_tutorial", "03a_oldmombasa", "multiplayer:", "ascension", "lockout"],
+            "by kind, sorted, one per line"
+        );
+        assert!(pick(&[], "x").unwrap_err().to_string().contains("no campaign or multiplayer maps"));
     }
 
     /// A synthetic globals tag: the campaign block at `+0x170` points at
@@ -696,6 +1005,45 @@ mod tests {
         assert_eq!(ids_for(&all, r"scenarios\solo\05a_deltaapproach\05a_deltaapproach"), None);
     }
 
+    /// A synthetic globals tag with a multiplayer list at `+0x178`.
+    fn mp_matg(entries: &[(u32, &str)]) -> (Vec<u8>, BTreeMap<u32, Vec<u8>>) {
+        let mut tag = vec![0u8; 0x200];
+        tag[MATG_MULTIPLAYER..MATG_MULTIPLAYER + 4].copy_from_slice(&1u32.to_le_bytes());
+        tag[MATG_MULTIPLAYER + 4..MATG_MULTIPLAYER + 8].copy_from_slice(&0x1000u32.to_le_bytes());
+        let mut elem = vec![0u8; MP_BLOCK + 8];
+        elem[MP_BLOCK..MP_BLOCK + 4].copy_from_slice(&(entries.len() as u32).to_le_bytes());
+        elem[MP_BLOCK + 4..MP_BLOCK + 8].copy_from_slice(&0x3000u32.to_le_bytes());
+        let mut all = Vec::new();
+        for (id, p) in entries {
+            let mut e = vec![0u8; MP_LEVEL_SIZE];
+            e[0..4].copy_from_slice(&id.to_le_bytes());
+            e[MP_LEVEL_PATH..MP_LEVEL_PATH + p.len()].copy_from_slice(p.as_bytes());
+            all.extend(e);
+        }
+        (tag, BTreeMap::from([(0x1000, elem), (0x3000, all)]))
+    }
+
+    #[test]
+    fn reads_multiplayer_map_ids_from_the_globals() {
+        let (tag, mem) =
+            mp_matg(&[(80, r"scenarios\multi\ascension\ascension"), (81, r"scenarios\multi\lockout\lockout")]);
+        let mut read = |a: u32, n: u32| mem.get(&a).filter(|b| b.len() >= n as usize).map(|b| b[..n as usize].to_vec());
+        let all = multiplayer_levels(&tag, &mut read);
+        assert_eq!(
+            all,
+            [
+                (80, r"scenarios\multi\ascension\ascension".to_string()),
+                (81, r"scenarios\multi\lockout\lockout".to_string())
+            ]
+        );
+        // The campaign reader finds nothing in it, and the reverse.
+        assert!(campaign_levels(&tag, &mut read).is_empty());
+        let (ctag, cmem) = matg(&[(1, 5, "x")]);
+        let mut cread =
+            |a: u32, n: u32| cmem.get(&a).filter(|b| b.len() >= n as usize).map(|b| b[..n as usize].to_vec());
+        assert!(multiplayer_levels(&ctag, &mut cread).is_empty());
+    }
+
     #[test]
     fn a_missing_or_implausible_level_list_reads_as_empty() {
         let mut none = |_: u32, _: u32| None;
@@ -708,8 +1056,8 @@ mod tests {
     }
 
     /// Against your disc: `H2_DISC=disc/halo2.iso cargo test -p boot --lib
-    /// level_boot -- --ignored --nocapture`. Every campaign map resolves,
-    /// with ids from the level list.
+    /// level_boot -- --ignored --nocapture`. Every campaign and multiplayer
+    /// map resolves, with a map id from its level list.
     #[test]
     #[ignore = "reads the disc named by H2_DISC"]
     fn every_disc_level_resolves() {
@@ -718,7 +1066,8 @@ mod tests {
         assert!(!levels.is_empty());
         for l in &levels {
             let r = resolve(&disc, &l.name, Difficulty::Normal).unwrap();
-            eprintln!("{} {} campaign {} map {}", r.name, r.scenario, r.campaign as i32, r.map as i32);
+            assert_eq!(r.kind, l.kind);
+            eprintln!("{:?} {} {} campaign {} map {}", r.kind, r.name, r.scenario, r.campaign as i32, r.map as i32);
             assert_ne!(r.map, u32::MAX, "{} has no map id", r.name);
         }
     }
