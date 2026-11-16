@@ -75,7 +75,16 @@ report with Overview / Carnage / Medals / Weapons tabs), players and
 leaderboards (`/stats/players`), a player's service record, game history
 with its preview pane, and career stats with Tool of Destruction, the Medal
 Chest and compare (`/stats/players/:tag`, `/history`,
-`/career?compare=<tag>`), and the event log (`/stats/events`). The old
+`/career?compare=<tag>`), and the event log (`/stats/events`).
+Campaign and multiplayer are kept apart: K/D, wins, medals, EXP,
+leaderboards and clan records count multiplayer games only, and campaign
+has its own record (`/stats/players/:tag/campaign`: levels, completions,
+time played, deaths, co-op partners), its own history tab
+(`/history?tab=campaign`) and spotlight tab (`/stats?games=campaign`), and
+a mission report in place of the carnage report. A game's type is shown
+as Custom Game, Matchmaking: <playlist>, Campaign, Campaign Co-op or
+Campaign Online, with the difficulty (`src/state/gametype.ts`). The mock
+starts an occasional campaign game (`mock/coop.ts`). The old
 `/games/:id`, `/players/...` and `/events` paths redirect. The shell and
 shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
 thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
@@ -116,17 +125,21 @@ key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
 UI says so. "Download for h2" saves an `accounts.json`-style file for
 `h2 live account import <file>`.
 
-**Friends and teams** come from the server (docs/live-api.md "Friends" and
-"Teams"). The dashboard's friends and teams screens (`src/dash/Social.tsx`),
-the stats site's team directory and team pages (`/stats/teams`,
-`/stats/teams/:id`) and the Teams and Friends boxes on service records all
+**Friends and clans** come from the server (docs/live-api.md "Friends" and
+"Teams"). Halo 2's clans are built on the Xbox Live Teams API, so the
+protocol, the events and the code's types say team; everything the site
+shows says clan. The dashboard's friends and clans screens
+(`src/dash/Social.tsx`, `/dash/clans`), the stats site's clan directory and
+clan pages (`/stats/clans`, `/stats/clans/:id`; the old `/stats/teams`
+paths redirect) and the Clans and Friends boxes on service records all
 read them and follow the stream, so they change as events arrive
 (`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
 `POST /v1/events` with an `events.write` token, the same way `h2 live friend`
-and `h2 live team` send them (`src/state/sign.ts`). A team's combined stats
-are derived from games where two or more members played on the same side.
-The mock (`mock/social.ts`) seeds three teams and some friendships. A new web
-account gets a friend request and a team invitation a few seconds after
+and `h2 live team` send them (`src/state/sign.ts`). A clan's combined stats
+are derived from multiplayer games where two or more members played on the
+same side; its roster shows each member's role, rank and K/D.
+The mock (`mock/social.ts`) seeds three clans and some friendships. A new web
+account gets a friend request and a clan invitation a few seconds after
 signing up, and seeded players accept whatever you send them.
 
 **Fonts.** All bundled fonts are under the SIL Open Font Licence, each with

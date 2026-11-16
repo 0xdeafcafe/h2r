@@ -99,7 +99,20 @@ export interface AccountCreated { xuid: Xuid; gamertag: string }
 export interface GamertagReserved { xuid: Xuid }
 export interface TitleFilePublished { title_id: string; name: string; sha256: string; size: number }
 export interface PresenceData { xuid: Xuid; state?: string; game_id?: GameId | null }
-export interface GameStarted {
+/** What kind of game it was, all optional (older senders leave them out;
+ *  `gameKind` infers the kind). */
+export interface GameKindFields {
+  /** `custom`, `matchmaking` or `campaign`. */
+  kind?: string | null;
+  /** Matchmaking only: the playlist the game came from. */
+  playlist?: string | null;
+  playlist_id?: string | null;
+  /** Campaign only: `easy`, `normal`, `heroic` or `legendary`. */
+  difficulty?: string | null;
+  /** Campaign only: co-op partners on other machines. */
+  online?: boolean | null;
+}
+export interface GameStarted extends GameKindFields {
   game_id: GameId;
   /** The author who started the game, `acct:<xuid>@<server>` (written by the server). */
   host?: string;
@@ -152,19 +165,11 @@ export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: str
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; since: string }
 
-export interface GameSummary {
+export interface GameSummary extends GameKindFields {
   game_id: GameId;
   map: string;
   mode: string;
-  /** custom | matchmaking | campaign; older servers leave it out. */
-  kind?: string;
   variant?: string | null;
-  playlist?: string;
-  playlist_id?: string;
-  /** Campaign: easy | normal | heroic | legendary. */
-  difficulty?: string;
-  /** Campaign: co-op partners on other machines (not sent yet). */
-  online?: boolean;
   started_at: string;
   ended_at?: string | null;
   players: GamePlayer[];

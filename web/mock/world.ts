@@ -4,6 +4,7 @@
 import type { Frame, GamePlayer, MapOutline, PlayerScore, WireEvent } from "../src/api/types";
 import { MAPS, type MockMap } from "./maps";
 import { chainHashSync, newSigningKey, signJws, type SigningKey } from "./sign";
+import { AI_WEAPONS, CAMPAIGN_SHARE, multiplayerKind, planCampaign } from "./coop";
 
 export const HOST = "mock.h2live.local";
 const TICKS = 30;
@@ -59,6 +60,10 @@ interface SimPlayer {
 
 interface SimGame {
   id: string;
+  /** "multiplayer" or "campaign" (mock/coop.ts). */
+  mode: string;
+  /** Game-type fields for GameStarted and the summary: kind, playlist, difficulty, online. */
+  kind: Record<string, unknown>;
   map: MockMap;
   team_play: boolean;
   variant: string;
@@ -84,7 +89,8 @@ export type Listener = { onEvent(ev: WireEvent): void; onFrame(f: Frame): void }
  *  (mock/campaign.ts puts AI and vehicles in). */
 export type FrameHook = (frame: Frame, game: { id: string; map: MockMap; tick: number; mode?: string }) => void;
 
-let rngState = 0x2f6e2b1;
+const RNG_SEED = 0x2f6e2b1;
+let rngState = RNG_SEED;
 export function rand(): number {
   // mulberry32, deterministic per run so screenshots are comparable.
   rngState |= 0; rngState = (rngState + 0x6d2b79f5) | 0;
@@ -105,11 +111,19 @@ export class World {
   readonly files = new Map<string, { bytes: Uint8Array<ArrayBuffer>; sha256: string }>();
   readonly listeners = new Set<Listener>();
   readonly frameHooks: FrameHook[] = [];
+
+  constructor() {
+    // Every world starts the shared random sequence afresh, so one world's
+    // history doesn't depend on another's made before it (tests make many).
+    rngState = RNG_SEED;
+  }
   /** Virtual clock in ms; real time once caught up. */
   now = Date.now();
   live = false;
   tamperEvery = 0;
   private nextGameAt = 0;
+  /** How each live campaign game will end (mock/coop.ts). */
+  private readonly campaignEnd = new Map<string, string>();
   private nextPresenceAt = 0;
   private targetGames = 2;
 
@@ -210,13 +224,14 @@ export class World {
   startGame(): SimGame | null {
     const free = [...this.accounts.values()].filter((a) => !a.game_id && !a.external);
     if (free.length < 2) return null;
-    const map = pick(MAPS);
-    const team_play = rand() < 0.5;
-    const n = Math.min(16, 4 + Math.floor(rand() * 9));
-    const humans = free.sort(() => rand() - 0.5).slice(0, Math.min(free.length, Math.max(2, Math.floor(n * 0.6))));
+    const coop = rand() < CAMPAIGN_SHARE ? planCampaign(free.sort(() => rand() - 0.5), rand) : null;
+    const map = coop?.map ?? pick(MAPS);
+    const team_play = !coop && rand() < 0.5;
+    const n = coop ? coop.players.length : Math.min(16, 4 + Math.floor(rand() * 9));
+    const humans = coop ? free.slice(0, n) : free.sort(() => rand() - 0.5).slice(0, Math.min(free.length, Math.max(2, Math.floor(n * 0.6))));
     const id = hex(16);
-    const players: GamePlayer[] = [];
-    for (let i = 0; i < n; i++) {
+    const players: GamePlayer[] = coop?.players ?? [];
+    for (let i = players.length; i < n; i++) {
       const a = humans[i];
       players.push({
         index: i, name: a ? a.gamertag : `Guest ${i + 1}`, xuid: a?.xuid, team: team_play ? i % 2 : i, local: i === 0,
@@ -224,8 +239,10 @@ export class World {
     }
     const host = humans[0]!;
     const g: SimGame = {
-      id, map, team_play, variant: pick(team_play ? VARIANTS_TEAM : VARIANTS_FFA),
-      score_limit: team_play ? 40 : 15, time_limit_s: 300, tick: 0, host, console: CONSOLES[this.games.size % CONSOLES.length]!,
+      id, mode: coop ? "campaign" : "multiplayer", kind: coop ? coop.fields : multiplayerKind(rand),
+      map, team_play, variant: coop ? "" : pick(team_play ? VARIANTS_TEAM : VARIANTS_FFA),
+      // A campaign level has no limits to send; time_limit_s is how long it runs here.
+      score_limit: coop ? 0 : team_play ? 40 : 15, time_limit_s: coop?.seconds ?? 300, tick: 0, host, console: CONSOLES[this.games.size % CONSOLES.length]!,
       players: players.map((p) => {
         const w = pick(map.waypoints);
         return {
@@ -237,17 +254,20 @@ export class World {
       }),
       teams: new Map(team_play ? [[0, 0], [1, 0]] : []),
       started_at: new Date(this.now).toISOString(), ended_at: null, kills: [], frames: [], winner: null, end_reason: null,
-      killRate: 0.12 + n * 0.035,
+      killRate: coop ? 0.05 + n * 0.02 : 0.12 + n * 0.035,
     };
+    if (coop) this.campaignEnd.set(id, coop.reason);
     this.games.set(id, g);
     for (const a of humans) if (!a.online) this.presence(a, "SignedIn", "online", null);
     if (map.outline && !this.outlines.has(map.name)) this.outlines.set(map.name, map.outline);
     this.append(`game-${id}`, [{
       type: "GameStarted",
-      data: {
-        game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "multiplayer", variant: g.variant, team_play,
-        score_limit: g.score_limit, time_limit_s: g.time_limit_s, tick: 0, players,
-      },
+      data: coop
+        ? { game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "campaign", ...g.kind, team_play: false, tick: 0, players }
+        : {
+          game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "multiplayer", ...g.kind, variant: g.variant, team_play,
+          score_limit: g.score_limit, time_limit_s: g.time_limit_s, tick: 0, players,
+        },
     }], host);
     for (const a of humans) this.presence(a, "PresenceChanged", "playing", id);
     return g;
@@ -291,7 +311,12 @@ export class World {
       if (sp.burst <= 0 && rand() < 0.35 * dt) sp.burst = 2 + Math.floor(rand() * 7);
     }
 
-    if (rand() < g.killRate * dt) this.kill(g);
+    if (rand() < g.killRate * dt) {
+      if (g.mode === "campaign") this.campaignDeath(g);
+      else this.kill(g);
+    }
+    // Campaign players knock out the level's AI: kills on the scoreboard, no events.
+    if (g.mode === "campaign" && rand() < 0.15 * g.players.length * dt) this.campaignKill(g);
 
     const frame: Frame = {
       game_id: g.id, tick: g.tick,
@@ -326,6 +351,10 @@ export class World {
       this.append(`game-${g.id}`, [{ type: "GameFrame", data: { ...kept, source: `acct:${g.host.xuid}@${HOST}` } }], null);
     }
 
+    if (g.mode === "campaign") {
+      if (g.tick >= g.time_limit_s * TICKS) this.endGame(g, this.campaignEnd.get(g.id) ?? "finished");
+      return;
+    }
     const leader = g.team_play ? Math.max(...g.teams.values()) : Math.max(...g.players.map((p) => p.score.score));
     if (leader >= g.score_limit || g.tick >= g.time_limit_s * TICKS) this.endGame(g, "finished");
   }
@@ -376,6 +405,35 @@ export class World {
     g.kills.push({ ...kd, position: kev.position, at: kev.at });
   }
 
+  /** A campaign player dies to the level's AI: no killer, the AI's weapon. */
+  private campaignDeath(g: SimGame) {
+    const alive = g.players.filter((p) => p.alive);
+    if (!alive.length) return;
+    const victim = pick(alive);
+    victim.alive = false;
+    victim.respawnAt = g.tick + 4 * TICKS;
+    victim.score.deaths += 1;
+    const world = rand() < 0.15;
+    const kd: Record<string, unknown> = {
+      tick: g.tick, victim: victim.p.index, kind: world ? "world" : "kill",
+      pos: [round(victim.pos[0]), round(victim.pos[1]), round(victim.pos[2])],
+    };
+    if (!world) kd.weapon = pick(AI_WEAPONS);
+    const kev = this.append(`game-${g.id}`, [
+      { type: "PlayerKilled", data: kd },
+      { type: "ScoreChanged", data: this.scoreData(g) },
+    ], g.host)[0]!;
+    g.kills.push({ ...kd, position: kev.position, at: kev.at });
+  }
+
+  private campaignKill(g: SimGame) {
+    const alive = g.players.filter((p) => p.alive);
+    if (!alive.length) return;
+    pick(alive).score.kills += 1;
+    // Batched: one score update every few kills.
+    if (rand() < 0.3) this.append(`game-${g.id}`, [{ type: "ScoreChanged", data: this.scoreData(g) }], g.host);
+  }
+
   private scoreData(g: SimGame) {
     const d: Record<string, unknown> = { tick: g.tick, players: g.players.map((p) => ({ ...p.score })) };
     if (g.team_play) d.teams = [...g.teams.entries()].map(([team, score]) => ({ team, score }));
@@ -384,7 +442,9 @@ export class World {
 
   endGame(g: SimGame, reason: string) {
     let winner: { team: number } | { player: number } | null = null;
-    if (g.team_play) {
+    if (g.mode === "campaign") {
+      // A campaign game has no winner.
+    } else if (g.team_play) {
       const best = [...g.teams.entries()].sort((a, b) => b[1] - a[1]);
       if (best[0] && (!best[1] || best[0][1] > best[1][1])) winner = { team: best[0][0] };
     } else {
@@ -455,7 +515,7 @@ export class World {
 
   gameSummary(g: SimGame) {
     return {
-      game_id: g.id, map: g.map.name, mode: "multiplayer", variant: g.variant, started_at: g.started_at,
+      game_id: g.id, map: g.map.name, mode: g.mode, ...g.kind, variant: g.variant || null, started_at: g.started_at,
       ended_at: g.ended_at, players: g.players.map((p) => p.p),
       teams: g.team_play ? [...g.teams.entries()].map(([team, score]) => ({ team, score })) : null,
     };
@@ -463,8 +523,8 @@ export class World {
 
   gameDetail(g: SimGame) {
     return {
-      ...this.gameSummary(g), host: `acct:${g.host.xuid}@${HOST}`, console: g.console, team_play: g.team_play, score_limit: g.score_limit,
-      time_limit_s: g.time_limit_s, tick: 0, last_tick: g.tick, winner: g.winner, end_reason: g.end_reason,
+      ...this.gameSummary(g), host: `acct:${g.host.xuid}@${HOST}`, console: g.console, team_play: g.team_play,
+      score_limit: g.mode === "campaign" ? null : g.score_limit, time_limit_s: g.mode === "campaign" ? null : g.time_limit_s, tick: 0, last_tick: g.tick, winner: g.winner, end_reason: g.end_reason,
       scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50), position: this.log.length,
     };
   }

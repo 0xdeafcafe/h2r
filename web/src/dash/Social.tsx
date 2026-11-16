@@ -1,4 +1,4 @@
-// The dashboard's friends and teams screens, list screens in the console
+// The dashboard's friends and clans screens, list screens in the console
 // style: a tilted list panel, the preview pod and a detail plate with the
 // selected row's actions. Up / down pick a row, left / right pick an
 // action, A runs it, B goes back. Writes are signed as the signed-in
@@ -19,13 +19,13 @@ import { now } from "../lib/now";
 import { BigPod, Glyph, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
 import { ListPanel } from "./Dashboard";
-import { TeamEmblem, friendPresence, presenceLine } from "../stats/teamBits";
+import { ClanEmblem, friendPresence, presenceLine } from "../stats/clanBits";
 
 interface Row { key: string; label: string; meta?: string }
 interface Act { label: string; run: () => void | Promise<unknown>; danger?: boolean }
 
 export interface SocialProps {
-  section: "friends" | "teams";
+  section: "friends" | "clans";
   tag?: string;
   go: (href: string, dir: "deeper" | "back") => void;
   back: () => void;
@@ -39,8 +39,8 @@ export default function SocialScreen(props: SocialProps) {
   return (
     <Switch>
       <Match when={props.section === "friends"}><FriendsScreen {...props} /></Match>
-      <Match when={props.section === "teams" && !props.tag}><TeamsScreen {...props} /></Match>
-      <Match when={props.section === "teams" && props.tag} keyed>{(id) => <TeamScreen {...props} id={id} />}</Match>
+      <Match when={props.section === "clans" && !props.tag}><TeamsScreen {...props} /></Match>
+      <Match when={props.section === "clans" && props.tag} keyed>{(id) => <TeamScreen {...props} id={id} />}</Match>
     </Switch>
   );
 }
@@ -158,7 +158,7 @@ function FriendsScreen(props: SocialProps) {
   const rows = createMemo((): Row[] => {
     const d = doc();
     if (!identity.me()) return [];
-    const out: Row[] = [{ key: "+add", label: "add friend", meta: "by gamertag" }, { key: "+teams", label: "teams", meta: "xbox live teams" }];
+    const out: Row[] = [{ key: "+add", label: "add friend", meta: "by gamertag" }, { key: "+clans", label: "clans", meta: "on this server" }];
     if (!d) return out;
     for (const r of d.requests_in) out.push({ key: "in:" + r.xuid, label: r.gamertag, meta: "wants to be friends" });
     const fs = [...d.friends].sort((a, b) => Number(friendPresence(b).kind !== "offline") - Number(friendPresence(a).kind !== "offline"));
@@ -175,7 +175,7 @@ function FriendsScreen(props: SocialProps) {
       empty={identity.me() ? "loading friends" : "sign up to add friends"}
       form={(r) => (r?.key === "+add" ? "dash-add-friend" : null)}
       preview={(r) => (
-        <Show when={r && r.key !== "+add" && r.key !== "+teams"} fallback={<FriendGlyph />}>
+        <Show when={r && r.key !== "+add" && r.key !== "+clans"} fallback={<FriendGlyph />}>
           <Emblem seed={xuidOf(r)} size={220} class="dx-emblem" />
         </Show>
       )}
@@ -189,7 +189,7 @@ function FriendsScreen(props: SocialProps) {
             return resultText(await social.write(friendWrites.request(me().xuid, who.xuid)));
           }} />,
         };
-        if (r.key === "+teams") return { small: "friends", title: "teams", body: <p class="soc-note">Teams on this server: the ones you lead, belong to or are invited to, and every other team.</p> };
+        if (r.key === "+clans") return { small: "friends", title: "clans", body: <p class="soc-note">Clans on this server: the ones you lead, belong to or are invited to, and every other clan.</p> };
         const k = kindOf(r), x = xuidOf(r);
         const f = doc()?.friends.find((y) => y.xuid === x);
         const req = doc()?.requests_in.find((y) => y.xuid === x) ?? doc()?.requests_out.find((y) => y.xuid === x);
@@ -208,7 +208,7 @@ function FriendsScreen(props: SocialProps) {
       acts={(r): Act[] => {
         if (!identity.me()) return [{ label: "sign up", run: () => props.go("/dash/signup", "deeper") }];
         if (!r || r.key === "+add") return [];
-        if (r.key === "+teams") return [{ label: "open teams", run: () => props.go("/dash/teams", "deeper") }];
+        if (r.key === "+clans") return [{ label: "open clans", run: () => props.go("/dash/clans", "deeper") }];
         const k = kindOf(r), x = xuidOf(r);
         const profile: Act = { label: "profile", run: () => props.go(`/dash/players/${encodeURIComponent(r.label)}`, "deeper") };
         if (k === "in") return [
@@ -238,13 +238,13 @@ function FriendGlyph() {
   );
 }
 
-// ---------- teams ----------
+// ---------- clans (the protocol's teams) ----------
 
 function TeamsScreen(props: SocialProps) {
   const mine = () => { const me = identity.me(); return me ? social.teamsOf(me.xuid) : []; };
   const rows = createMemo((): Row[] => {
     const me = identity.me();
-    const out: Row[] = me ? [{ key: "+create", label: "create a team", meta: "you lead it" }] : [];
+    const out: Row[] = me ? [{ key: "+create", label: "create a clan", meta: "you lead it" }] : [];
     const seen = new Set<string>();
     for (const t of mine()) {
       seen.add(t.id);
@@ -260,16 +260,16 @@ function TeamsScreen(props: SocialProps) {
   });
   const team = (r: Row | undefined) => (r && r.key !== "+create" ? social.team(r.key) : null);
   return (
-    <SocialList {...props} title="teams" rows={rows()}
-      empty={social.teamsLoaded() ? "no teams on this server yet" : "loading teams"}
+    <SocialList {...props} title="clans" rows={rows()}
+      empty={social.teamsLoaded() ? "no clans on this server yet" : "loading clans"}
       form={(r) => (r?.key === "+create" ? "dash-create-team" : null)}
-      preview={(r) => <Show when={team(r)} keyed fallback={<Glyph name="career" />}>{(t) => <TeamEmblem team={t} size={220} class="dx-emblem" />}</Show>}
+      preview={(r) => <Show when={team(r)} keyed fallback={<Glyph name="career" />}>{(t) => <ClanEmblem team={t} size={220} class="dx-emblem" />}</Show>}
       plate={(r) => {
         const t = team(r);
-        if (!t) return { small: "new team", title: "create a team", body: <CreateTeamForm onCreated={(id) => props.go(`/dash/teams/${id}`, "deeper")} /> };
+        if (!t) return { small: "new clan", title: "create a clan", body: <CreateTeamForm onCreated={(id) => props.go(`/dash/clans/${id}`, "deeper")} /> };
         const role = roleOf(t, identity.me()?.xuid);
         return {
-          small: role ? (role === "recruit" ? "invited" : ROLE_LABEL[role]) : "team",
+          small: role ? (role === "recruit" ? "invited" : ROLE_LABEL[role]) : "clan",
           title: t.properties.name,
           body: <TeamFacts team={t} />,
         };
@@ -277,8 +277,8 @@ function TeamsScreen(props: SocialProps) {
       acts={(r): Act[] => {
         const t = team(r);
         if (!t) return [];
-        const open: Act = { label: "open", run: () => props.go(`/dash/teams/${t.id}`, "deeper") };
-        const page: Act = { label: "team page", run: () => props.go(`/stats/teams/${t.id}`, "deeper") };
+        const open: Act = { label: "open", run: () => props.go(`/dash/clans/${t.id}`, "deeper") };
+        const page: Act = { label: "clan page", run: () => props.go(`/stats/clans/${t.id}`, "deeper") };
         if (roleOf(t, identity.me()?.xuid) === "recruit") return [
           { label: "join", run: () => social.write(teamWrites.answer(t.id, true)) },
           { label: "decline", danger: true, run: () => social.write(teamWrites.answer(t.id, false)) },
@@ -297,7 +297,7 @@ function TeamFacts(props: { team: Team }) {
     <dl>
       <Show when={t().properties.motto}><dt>motto</dt><dd>{t().properties.motto}</dd></Show>
       <dt>leader</dt><dd>{leaderOf(t())?.identity.gamertag ?? "none"}</dd>
-      <dt>members</dt><dd>{Object.keys(t().members).length} <span>on the team</span> {online()} <span>online</span></dd>
+      <dt>members</dt><dd>{Object.keys(t().members).length} <span>in the clan</span> {online()} <span>online</span></dd>
       <dt>founded</dt><dd>{ago(t().created_at, now())}</dd>
     </dl>
   );
@@ -323,7 +323,7 @@ function CreateTeamForm(props: { onCreated: (id: string) => void }) {
       <input id="dash-team-name" value={name()} maxLength={15} onInput={(e) => setName(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="up to 15 characters" />
       <label for="dash-team-motto">motto</label>
       <input id="dash-team-motto" value={motto()} maxLength={255} onInput={(e) => setMotto(e.currentTarget.value)} autocomplete="off" placeholder="optional" />
-      <button type="submit" class="dx-go" disabled={social.busy() || !name().trim()}>create team</button>
+      <button type="submit" class="dx-go" disabled={social.busy() || !name().trim()}>create clan</button>
       <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
     </form>
   );
@@ -351,14 +351,14 @@ function TeamScreen(props: SocialProps & { id: string }) {
   return (
     <Show when={t()} fallback={<TeamMissing {...props} />}>
       {(team) => (
-        <SocialList {...props} title={team().properties.name} rows={rows()} empty="nobody on this team"
-          back={() => props.go("/dash/teams", "back")}
+        <SocialList {...props} title={team().properties.name} rows={rows()} empty="nobody in this clan"
+          back={() => props.go("/dash/clans", "back")}
           form={(r) => (r?.key === "+recruit" ? "dash-recruit" : null)}
-          preview={() => <TeamEmblem team={team()} size={220} class="dx-emblem" />}
+          preview={() => <ClanEmblem team={team()} size={220} class="dx-emblem" />}
           plate={(r) => {
             const m = member(r);
             if (!m) return {
-              small: team().properties.motto || "team", title: "recruit",
+              small: team().properties.motto || "clan", title: "recruit",
               body: <TagForm id="dash-recruit" label="gamertag" button="recruit" onSubmit={async (tag) => {
                 const who = await social.lookup(tag).catch(() => null);
                 if (!who) return "no account has that gamertag";
@@ -373,7 +373,7 @@ function TeamScreen(props: SocialProps & { id: string }) {
                 <dl>
                   <dt>status</dt><dd>{presenceLine({ xuid: m.identity.xuid, presence: null })}</dd>
                   <dt>{role === "recruit" ? "invited" : "joined"}</dt><dd>{ago(m.joined_at, now())}</dd>
-                  <dt>team</dt><dd>{team().properties.name}</dd>
+                  <dt>clan</dt><dd>{team().properties.name}</dd>
                   <Show when={p.kind === "offline" && p.account?.last_seen}><dt>seen</dt><dd>{ago(p.account!.last_seen, now())}</dd></Show>
                 </dl>
               ),
@@ -394,7 +394,7 @@ function TeamScreen(props: SocialProps & { id: string }) {
             const p = friendPresence({ xuid: target, presence: null });
             if (p.game_id) out.push({ label: "watch game", run: () => props.go(`/stats/games/${p.game_id}`, "deeper") });
             out.push({ label: "profile", run: () => props.go(`/dash/players/${encodeURIComponent(m.identity.gamertag)}`, "deeper") });
-            if (x === target && role !== "recruit" && role !== "leader") out.push({ label: "leave team", danger: true, run: () => social.write(teamWrites.remove(tm.id, x)) });
+            if (x === target && role !== "recruit" && role !== "leader") out.push({ label: "leave clan", danger: true, run: () => social.write(teamWrites.remove(tm.id, x)) });
             if (x && x !== target && target !== tm.creator && can(tm, x, PRIV.removeMember)) {
               out.push({ label: role === "recruit" ? "cancel invite" : "remove", danger: true, run: () => social.write(teamWrites.remove(tm.id, target)) });
             }
@@ -407,15 +407,15 @@ function TeamScreen(props: SocialProps & { id: string }) {
 }
 
 function TeamMissing(props: SocialProps) {
-  onMount(() => props.bind((a) => { if (a === "back" || a === "select") { props.go("/dash/teams", "back"); return true; } return false; }));
+  onMount(() => props.bind((a) => { if (a === "back" || a === "select") { props.go("/dash/clans", "back"); return true; } return false; }));
   onCleanup(() => props.bind(null));
   return (
     <div class="dx-screen dx-pods dx-pages">
       <div class="dx-centre"><BigPod wire><Glyph name="empty" /></BigPod></div>
-      <Plate small="teams" title={social.teamsLoaded() ? "no such team" : "loading"} main>
-        <p class="soc-note">{social.teamsLoaded() ? "That team is gone, or was never here." : "Reading this server's teams."}</p>
+      <Plate small="clans" title={social.teamsLoaded() ? "no such clan" : "loading"} main>
+        <p class="soc-note">{social.teamsLoaded() ? "That clan is gone, or was never here." : "Reading this server's clans."}</p>
       </Plate>
-      <Prompts onB={() => props.go("/dash/teams", "back")} />
+      <Prompts onB={() => props.go("/dash/clans", "back")} />
     </div>
   );
 }

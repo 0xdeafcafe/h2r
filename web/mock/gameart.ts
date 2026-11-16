@@ -11,6 +11,7 @@
 import { deflateSync } from "node:zlib";
 import { EMBLEM_COLOURS, type GameArtManifest } from "../src/lib/gameart";
 import { MAPS } from "./maps";
+import { LEVELS } from "./coop";
 
 // ---- a minimal PNG encoder (8-bit RGBA) ----
 
@@ -226,6 +227,12 @@ export function mockGameArt(packDir: string): MockGameArt {
   MAPS.forEach((m, i) => {
     if (m.outline) add(`map/${m.name}/preview`, `map/${m.name}.png`, 320, 180, () => encodePng(mapPreview(i)!, 320, 180));
     else skipped[`map/${m.name}/preview`] = "the mock map has no outline to draw";
+  });
+  // Campaign levels (mock/coop.ts) borrow their ground's picture; one is
+  // left without, so the pages' fallbacks show.
+  LEVELS.forEach((l, n) => {
+    const i = MAPS.findIndex((m) => m.outline === l.outline);
+    if (n % 4 !== 3 && i >= 0 && l.outline) add(`map/${l.name}/preview`, `map/${l.name}.png`, 320, 180, () => encodePng(mapPreview(i)!, 320, 180));
   });
   const manifest: GameArtManifest = {
     version: 1,

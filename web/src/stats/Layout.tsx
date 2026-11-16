@@ -9,7 +9,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, liveGames } from "../state/reducer";
 import { social } from "../state/social";
-import { friendPresence } from "./teamBits";
+import { friendPresence } from "./clanBits";
 import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
 import Wordmark from "./Wordmark";
@@ -74,7 +74,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           <A href={identity.me() ? playerHref(identity.me()!.gamertag) : "/dash/signup"}>My Stats</A>
           <A href="/stats" end>h2 live Online</A>
           <A href="/stats/players" end>Players</A>
-          <A href="/stats/teams">Teams</A>
+          <A href="/stats/clans">Clans</A>
           <A href="/stats/events">Event Log</A>
           <Show when={adminState.isMeAdmin() === true}><A href="/stats/admin" end>Admin</A></Show>
           <A href="/dash/server">Server</A>
