@@ -18,6 +18,7 @@
 //! guest-side code is the same for `h2 run --headless` and tests.
 
 pub mod audio_out;
+pub mod fps;
 pub mod frame;
 pub mod input_pump;
 pub mod keymap;
@@ -64,6 +65,10 @@ pub struct AppConfig {
     /// Wait for the display's vblank when presenting (`Fifo`). Off uses
     /// `AutoNoVsync` (tearing allowed); guest pacing is unaffected either way.
     pub vsync: bool,
+    /// How often the window presents (`H2_FPS`, [`fps::FpsTarget`]). The
+    /// guest never sees it: 30 is today's shell exactly, and above 30 only
+    /// the window's redraw rate changes (no interpolation yet).
+    pub fps: fps::FpsTarget,
     /// Pause the guest (and audio) while the window is not focused.
     pub pause_on_focus_loss: bool,
     /// Click to capture the mouse for look; Cmd or focus loss releases it.
@@ -111,6 +116,7 @@ impl Default for AppConfig {
             scaling: Scaling::Fit,
             filter: Filter::Linear,
             vsync: true,
+            fps: fps::FpsTarget::Thirty,
             pause_on_focus_loss: false,
             mouse_capture: true,
             gamepads: true,

@@ -37,6 +37,8 @@ live-telemetry = { path = "../live-telemetry" }
 input = { path = "../input", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 timeline = { path = "../timeline" }
+# The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
+lockstep = { path = "../lockstep" }
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../perf", optional = true }
 

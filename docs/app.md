@@ -66,7 +66,8 @@ FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 
 `AppConfig` (all have defaults): `title`, `window_size` (1280x960 points),
 `fullscreen`, `aspect` (`Standard` 4:3), `scaling` (`Fit`, `Integer`,
-`Stretch`), `filter` (`Linear`, `Nearest`), `vsync` (true), `pause_on_focus_loss`
+`Stretch`), `filter` (`Linear`, `Nearest`), `vsync` (true), `fps`
+(`fps::FpsTarget::Thirty`; `H2_FPS`, below), `pause_on_focus_loss`
 (false), `mouse_capture` (true), `gamepads` (true), `keyboard` (true),
 `bindings` (`input::bindings::Bindings`, from the TOML in docs/input.md),
 `audio` (true), `pacing` (`PacePolicy::REAL_TIME`), `keep_open_on_guest_exit`
@@ -423,6 +424,13 @@ surface, clearing the rest to black.
   ignored.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
+- **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
+  --fps`; `fps.rs`): at 30, the default, the window redraws when the guest
+  presents, as it always has. At 60 and 120 it also redraws on its own
+  `DisplaySchedule`; uncapped redraws every event-loop turn with vsync off.
+  Nothing reaches the guest, and until host replay exists
+  ([high-framerate.md](high-framerate.md)) the extra redraws show the
+  newest guest frame again: no smoother picture yet.
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 
@@ -525,6 +533,11 @@ it. A one-second window read 0.0 for a game presenting 1.4 times a second.
   trips, sleep on lead, lead allowance, rebase on lag, reset, a simulated
   10 s 60 Hz loop staying within the allowance, the rate meter, and the
   windowed rate (a 1.4 fps producer reads 1.4; old bursts age out).
+- `fps.rs`: `H2_FPS` parsing and default, 30 never self-scheduled, 60 and
+  120 redraws a second on the fake display clock, late redraws skip slots,
+  the phase-2 `alpha`. `tests/fps_lockstep.rs`: the toy guest's lockstep
+  trace is identical at all four settings with a presenter on the fake
+  clock (high-framerate.md, section 6).
 - `mailbox.rs`: handoff order, newest wins, drop counting, and a randomised
   interleaving checking the producer never writes the slot on screen.
 - `lifecycle.rs`: stop interrupts sleeps and pauses; a pause ends a sleep;

@@ -144,6 +144,7 @@ dependencies = [
  "font8x8",
  "gfx",
  "input",
+ "lockstep",
  "pollster",
  "thiserror 2.0.21",
  "timeline",
@@ -449,6 +450,7 @@ dependencies = [
  "lift",
  "live-hle",
  "live-telemetry",
+ "lockstep",
  "map",
  "perf",
  "png",
@@ -597,6 +599,7 @@ dependencies = [
  "lift",
  "live-proto",
  "live-server",
+ "lockstep",
  "map",
  "movies",
  "perf",
@@ -2156,6 +2159,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
+]
+
+[[package]]
+name = "lockstep"
+version = "0.1.0"
+dependencies = [
+ "input",
+ "runtime",
+ "xapi",
 ]
 
 [[package]]

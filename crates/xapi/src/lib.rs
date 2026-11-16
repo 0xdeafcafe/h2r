@@ -11,6 +11,7 @@ pub mod memory;
 pub mod register;
 pub mod saves;
 pub mod storage;
+pub mod tap;
 mod vfs_saves;
 pub mod vfs_storage;
 
@@ -72,6 +73,8 @@ pub struct Xapi<StorageBackend> {
     launch_request: Option<LaunchRequest>,
     pending_search: Option<PendingSearch>,
     searches: std::collections::BTreeMap<u32, PendingSearch>,
+    /// Sees every XInputGetState result before the guest does ([`tap`]).
+    input_tap: Option<Box<dyn tap::InputTap>>,
 }
 
 impl<StorageBackend: Storage> Xapi<StorageBackend> {
@@ -97,6 +100,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             launch_request: None,
             pending_search: None,
             searches: Default::default(),
+            input_tap: None,
         })
     }
 
@@ -107,6 +111,12 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         let handle = self.next_handle;
         self.next_handle = self.next_handle.checked_add(4).ok_or(Error::Win32(8))?;
         Ok(handle)
+    }
+
+    /// Routes every `XInputGetState` result through `tap` (recording or
+    /// replay, [`tap`]); `None` removes it.
+    pub fn set_input_tap(&mut self, tap: Option<Box<dyn tap::InputTap>>) {
+        self.input_tap = tap;
     }
 
     pub fn mount_utility_drive(&mut self, format: bool) -> Result<()> {

@@ -1,4 +1,9 @@
-# 60 and 120 fps (design, not built)
+# 60 and 120 fps (design; phase 1 built)
+
+**State.** Phase 1, the determinism harness, is built (section 6). The
+setting `H2_FPS=30|60|120|uncapped` (`h2 play --fps`) exists, but above 30
+it only makes the window present the newest guest frame more often. The
+picture is no smoother until phase 2's interpolated replay exists.
 
 This is the design for an opt-in presentation mode at 60 or 120 fps, or
 whatever a variable-refresh (VRR) display wants. The hard requirement is that
@@ -437,7 +442,8 @@ average). Aim is where players feel it. Two answers, in order:
 - **Settings.** The toggle is the `fps = 30 | 60 | 120` entry the
   settings-menu design reserves (`docs/settings-menu.md`, on the
   `doc-settings-keyboard` branch when this was written). 30 means off: no
-  replay, identical to today.
+  replay, identical to today. Built as `H2_FPS` / `h2 play --fps`
+  (section 6), for now without replay.
 
 ## 4. Super bouncing
 
@@ -539,7 +545,7 @@ Rough sizes, for one person who knows the d3d and gfx crates.
 | phase | work | size | exit test |
 |---|---|---|---|
 | 0 | **Prerequisite, not part of this:** levels at a steady 30 fps; render thread on by default | (frame-budget.md) | worst frame under 33 ms |
-| 1 | Determinism harness: per-tick guest-RAM hash, tick-keyed input recorder, run comparison, fake display clock | 1-2 weeks | two mode-off runs match; Heretic run matches with a replay that draws frame N unchanged |
+| 1 | **Built** (section 6): determinism harness: per-tick guest-RAM hash, tick-keyed input recorder, run comparison, fake display clock | 1-2 weeks | two mode-off runs match; Heretic run matches with a replay that draws frame N unchanged |
 | 2 | Camera interpolation: two-frame store, alpha from the pacer, view constants rebuilt and verified, cut detection, replay via bundles on the render thread, 60/120/VRR pacing, the setting | 2-4 weeks | identical hashes at 30/60/120; replay cost under 8 ms at 120 |
 | 3 | Objects: draw tagging by object, world recovery, node and skinning interpolation, first-person weapon, teleport snaps, shadows | 3-6 weeks | same; visual check in a level with moving actors |
 | 4 | Polish: particle and contrail matching (optional), visual aim prediction, cutscene checks | 2-3 weeks | same |
@@ -570,3 +576,104 @@ What must not change in any phase: the vblank source rate, the refresh word,
 the frame-interval word, the tick rate, the number of main-loop iterations
 per tick, the input poll cadence, and anything the guest can read. Every
 phase is gated on the per-tick hash test from phase 1.
+
+## 6. What is built (phase 1, and the setting)
+
+### The harness
+
+- **`crates/lockstep`.** `hash_guest` hashes the physical RAM that is in use
+  (pages mapped by any virtual range or held by a reservation), one word per
+  MiB plus one over the lot. It reads RAM from Rust through
+  `Guest::physical_ram`, so it is uncharged and writes nothing. `Recorder`
+  collects `Record`s (kind tick or present, sequence, logical clock, the
+  guest's tick count from `game_time + 8`, the hash) into a `Trace`, which
+  has a text form (`# h2 lockstep trace v1`, one line per record).
+  `compare` names the first differing record and the MiB of RAM that
+  differ, or says one run is a prefix of the other.
+- **Tick observer.** `install_tick_observer` post-hooks the tick function
+  (`TickHook::HALO2`: `game_tick` `0x00137fe0`, game-time pointer
+  `0x00510c54`, shadow page `0xa0ff9000`), the same way Live telemetry
+  wraps it. The original runs unchanged; the hash is taken when it returns.
+  The hook adds dispatch transfers and holds a continuation token in the
+  return slot during the tick, so **compare runs that all have it on**.
+  It refuses a tick that something else already overrides (telemetry, when
+  Live is on). Present records are taken between scheduler slices and
+  change nothing in the run.
+- **Input, keyed by read.** `xapi::tap` puts an `InputTap` on every
+  `XInputGetState`: `Recorder` logs the status and the 22 packet bytes the
+  guest got (stamped with the tick count), `Replayer` answers read *n* with
+  the log's read *n*. Keying by read rather than by time makes replay exact
+  whenever the host pumped input. The log (`# h2 input log v1`) is our
+  button and stick values, not game data. Only `XInputGetState` is
+  tapped, so record and replay over the same kind of always-connected pad.
+- **Fake display clock.** `app::fps::FakeDisplayClock` steps a fixed amount
+  per read, so a presenter "at 120" is reproducible in tests.
+
+### Using it on a headless run
+
+```sh
+H2_INPUT_RECORD=$TMPDIR/in.log H2_LOCKSTEP=$TMPDIR/a.trace h2 run <disc> ...
+H2_INPUT_REPLAY=$TMPDIR/in.log H2_LOCKSTEP=$TMPDIR/b.trace h2 run <disc> ...
+h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
+```
+
+`H2_LOCKSTEP_TICKS=0` keeps only the present records. Record and replay are
+exclusive. Wiring is `crates/boot/src/lockstep_glue.rs`; the report prints
+one `lockstep:` line (records written, reads replayed, reads past the end,
+handle mismatches). `h2 play` takes the same variables. Retail runs of this
+have not been made yet (no game runs in this lane): the first job for
+whoever has the disc is the two-run control above on the Heretic script.
+
+### The setting
+
+`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets
+`AppConfig::fps` (`app::fps::FpsTarget`). It reaches only the window:
+
+| setting | window |
+|---|---|
+| `30` (default) | a redraw per guest present, as before; the code path is unchanged |
+| `60`, `120` | also redraws on its own `DisplaySchedule` at that rate (late redraws skip slots, never burst); `vsync` as set |
+| `uncapped` | redraws every event-loop turn, vsync off |
+
+Between guest presents a redraw shows the newest guest frame again, so
+**above 30 nothing looks smoother yet**: that is phase 2. `app::fps::alpha`
+is phase 2's interpolation fraction (clamped, never extrapolates, 1 for a
+frame that ran no tick), tested but not used.
+
+### Tests
+
+- `cargo test -p lockstep`: the hash sees any changed word and a swap of
+  two, names the changed MiB; traces round-trip through text; compare finds
+  the first divergence and truncation; the clock counts as guest state. On
+  the toy guest (`lockstep::synthetic`: a generated tick handler, a
+  game-time record, an `XINPUT_STATE` input and a crouched-landing-on-a-seam
+  "super bounce"): equal inputs give equal traces; a replay reproduces the
+  recording whatever the live pad does; releasing crouch on the landing
+  read diverges exactly at that tick and loses the bounce; changing an
+  ignored packet byte is still caught; the observer refuses a wrapped tick.
+- `cargo test -p xapi`: the tap's log holds exactly the bytes the guest got,
+  replay gives them back over a different live pad, and a recorded failure
+  status comes back as the call's error.
+- `cargo test -p app`: `H2_FPS` parsing and its default; 30 is never due on
+  the schedule; 60 and 120 redraw 60 and 120 times a second on the fake
+  clock; a late window skips slots; alpha. `tests/fps_lockstep.rs` runs the
+  toy guest through the shell's triple buffer with a presenter on the fake
+  clock at all four settings: every guest frame reaches the screen, redraws
+  per guest frame are 1, 2, 4 and over 30, and the guest's trace is
+  identical at every setting. A control shows the check would catch a
+  guest that ran one extra tick.
+- `cargo test -p boot --lib lockstep`: the toy guest through boot's wiring
+  writes traces that compare identical, or diverge at the changed tick.
+
+### Next
+
+1. With the disc: the two-run control on the Heretic script, ticks on and
+   off, then the same at `H2_FPS=120` under `h2 play` (the trace must
+   match). Any mismatch with the mode off is a runtime determinism bug to
+   fix before phase 2.
+2. Phase 2: the two-frame store and per-view camera classification in d3d
+   (draws tagged by the view constants they use, verified bit-exact against
+   constants rebuilt from the observed camera), behind `FpsTarget` above 30,
+   then the bundle replay on the render thread with `alpha`.
+3. A per-present hash on the render-thread side, once replays exist, to
+   show the replay path leaves `Device` state unchanged.

@@ -27,3 +27,6 @@ anyhow.workspace = true
 [[bin]]
 name = "h2-app-demo"
 path = "src/bin/demo.rs"
+
+[dev-dependencies]
+lockstep = { path = "../lockstep" }

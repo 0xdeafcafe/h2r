@@ -610,3 +610,63 @@ fn feedback_stays_pending_until_signal_is_acknowledged() {
     assert!(xapi.take_signals().is_empty());
     assert_eq!(xapi.input_set_state(&mut memory, handle, 0x600), Ok(997));
 }
+
+#[test]
+fn an_input_tap_records_what_the_guest_read_and_a_replay_gives_it_back() {
+    use xapi::tap::{Recorder, Replayer};
+    let (mut xapi, mut memory, pads) = initialized();
+    memory.put(0x600, &[0, 8, 8, 0]);
+    let handle = xapi.input_open(&memory, 0x100, 0, 0, 0x600).unwrap();
+    let (recorder, log) = Recorder::new();
+    xapi.set_input_tap(Some(Box::new(recorder)));
+    let mut seen = Vec::new();
+    for pressed in [false, true, true, false] {
+        pads.south(pressed);
+        sync(&mut xapi, &mut memory, &mut Signals::default()).unwrap();
+        xapi.input_poll(handle).unwrap();
+        xapi.input_get_state(&mut memory, handle, 0x400).unwrap();
+        seen.push(memory::read::<{ State::SIZE }>(&memory, 0x400).unwrap());
+    }
+    let log = log.lock().unwrap().clone();
+    assert_eq!(
+        log.reads.iter().map(|r| r.packet).collect::<Vec<_>>(),
+        seen,
+        "the log holds exactly the bytes the guest got"
+    );
+    assert!(
+        log.reads
+            .iter()
+            .all(|r| r.status == 0 && r.handle == handle)
+    );
+    assert_ne!(seen[0], seen[1]);
+
+    // Replay with the live pad held down throughout: the guest still reads
+    // the recording, read for read.
+    let (replayer, stats) = Replayer::new(log.clone());
+    xapi.set_input_tap(Some(Box::new(replayer)));
+    pads.south(true);
+    sync(&mut xapi, &mut memory, &mut Signals::default()).unwrap();
+    xapi.input_poll(handle).unwrap();
+    for expected in &seen {
+        xapi.input_get_state(&mut memory, handle, 0x400).unwrap();
+        assert_eq!(
+            &memory::read::<{ State::SIZE }>(&memory, 0x400).unwrap(),
+            expected
+        );
+    }
+    assert_eq!(stats.lock().unwrap().replayed, 4);
+
+    // A recorded failure status comes back as the call's error.
+    let mut failing = log;
+    failing.reads[0].status = 1167;
+    let (replayer, _) = Replayer::new(failing);
+    xapi.set_input_tap(Some(Box::new(replayer)));
+    assert_eq!(
+        xapi.input_get_state(&mut memory, handle, 0x400),
+        Err(Error::Win32(1167))
+    );
+    assert_eq!(
+        memory::read::<{ State::SIZE }>(&memory, 0x400).unwrap(),
+        seen[0]
+    );
+}
