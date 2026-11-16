@@ -219,7 +219,7 @@ describe("actions and grenades as a view sees them", () => {
 });
 
 describe("damage as a view draws it", () => {
-  const hit = (over: Partial<SampledHit> = {}): SampledHit => ({ from: "p0", to: "p1", weapon: "smg", x: 5, y: 0, z: 0, amount: 10, kind: "bullet", ...over });
+  const hit = (over: Partial<SampledHit> = {}): SampledHit => ({ from: "p0", to: "p1", weapon: "smg", x: 5, y: 0, z: 0, amount: 0.1, kind: "bullet", ...over });
   const people = (victimAlive = true) => locator(
     [player({ index: 0, x: 0 }), player({ index: 1, x: 5, alive: victimAlive })],
     [player({ index: actorIndex("e1000"), x: 9, actor: { id: "e1000", team: "covenant" } })],
@@ -240,7 +240,7 @@ describe("damage as a view draws it", () => {
 
   test("a frame's pellets on one victim are one hit, their damage added up", () => {
     const merged = mergeHits([hit({ amount: 4 }), hit({ amount: 5 }), hit({ to: "e1000", amount: 1 }), hit({ amount: null }), hit({ kind: "melee", amount: 70 }), hit({ to: null }), hit({ to: null })]);
-    expect(merged.map((h) => [h.to, h.kind, h.amount])).toEqual([["p1", "bullet", 9], ["e1000", "bullet", 1], ["p1", "melee", 70], [null, "bullet", 10], [null, "bullet", 10]]);
+    expect(merged.map((h) => [h.to, h.kind, h.amount])).toEqual([["p1", "bullet", 9], ["e1000", "bullet", 1], ["p1", "melee", 70], [null, "bullet", 0.1], [null, "bullet", 0.1]]);
   });
 
   test("a hit draws a line from attacker to victim that fades fast, and a marker with the number that lingers", () => {
@@ -263,12 +263,12 @@ describe("damage as a view draws it", () => {
 
   test("sustained fire on one victim is one marker with a rising number; a new one after a pause", () => {
     const q = new HitQueue(), where = people();
-    q.observe({ tick: 30, hits: [hit({ amount: 6 })] }, 1000, where);
-    q.observe({ tick: 31, hits: [hit({ amount: 7, x: 6 })] }, 1033, where);
-    q.observe({ tick: 32, hits: [hit({ amount: 5, to: "e1000" })] }, 1066, where);
+    q.observe({ tick: 30, hits: [hit({ amount: 0.06 })] }, 1000, where);
+    q.observe({ tick: 31, hits: [hit({ amount: 0.07, x: 6 })] }, 1033, where);
+    q.observe({ tick: 32, hits: [hit({ amount: 0.05, to: "e1000" })] }, 1066, where);
     expect(q.live(1070, where).map((h) => [h.toId, h.text, h.x])).toEqual([["p1", "13", 6], ["e1000", "5", 5]]);
-    q.observe({ tick: 50, hits: [hit({ amount: 1.26 })] }, 1000 + HIT_FOLD_MS + 1, where);
-    expect(q.live(1000 + HIT_FOLD_MS + 2, where).map((h) => h.text)).toEqual(["13", "5", "1.3"]);
+    q.observe({ tick: 50, hits: [hit({ amount: 0.004 })] }, 1000 + HIT_FOLD_MS + 1, where);
+    expect(q.live(1000 + HIT_FOLD_MS + 2, where).map((h) => h.text)).toEqual(["13", "5", "<1"]);
   });
 
   test("a kill is marked as one, when the hit lands or when the victim is found dead after, and stays longer", () => {
@@ -302,8 +302,11 @@ describe("damage as a view draws it", () => {
     expect(q.live(2017, where)).toEqual([]);
     q.observe(null, 2100, where);
     expect(hitText(null)).toBe("");
-    expect(hitText(0.54)).toBe("0.5");
-    expect(hitText(45.6)).toBe("46");
+    // Amounts are shares of the victim's vitality: shown in percent.
+    expect(hitText(0.54)).toBe("54");
+    expect(hitText(1.2)).toBe("120");
+    expect(hitText(0.004)).toBe("<1");
+    expect(hitText(0)).toBe("0");
   });
 
   test("one feed for a view: actions throw grenades, hits find their people in the frame", () => {

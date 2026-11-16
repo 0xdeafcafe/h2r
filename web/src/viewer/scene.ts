@@ -37,7 +37,7 @@ import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./ma
 import { buildFeatures } from "./features3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
-import { cameraFit, markerScale, type Box3 } from "./camera";
+import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
 
 export type ViewMode = "orbit" | "top" | "follow";
@@ -633,16 +633,24 @@ export class ViewerScene {
       const s = follow !== null ? this.shown.get(follow) : undefined;
       if (s && this.bounds) {
         // Come in close behind the orbit the viewer already chose.
-        const target = new THREE.Vector3(...gameToGl(s.x, s.y, s.z + this.scale * 0.5));
+        const target = new THREE.Vector3(...gameToGl(s.x, s.y, s.z + this.focusHeight(follow)));
         const dir = this.camera.position.clone().sub(this.controls.target);
         if (was === "top" || dir.y / dir.length() > 0.9) dir.set(0.6, 0.55, 0.6);
-        const want = Math.min(dir.length(), cameraFit(this.bounds, this.camera.fov, this.camera.aspect).radius * 0.36);
-        this.moveCamera(target.clone().addScaledVector(dir.normalize(), Math.max(want, this.controls.minDistance * 2)), target, false);
+        // Close to the player, however big the level is.
+        const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
+        this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
       }
     } else if (top || was === "top") {
       this.frameCamera(false);
     }
     this.dirty = true;
+  }
+
+  /** How far above a player's feet the follow camera looks: the chest of
+   *  their model as it is drawn now, or of a capsule. */
+  private focusHeight(index: number | null): number {
+    const p = index !== null ? this.players.get(index) : undefined;
+    return p?.biped ? p.biped.height * p.turn.scale.x * 0.6 : this.scale * 0.5;
   }
 
   /** Back to the whole map, in the current mode. */
@@ -1058,7 +1066,7 @@ export class ViewerScene {
     } else if (this.mode === "follow" && this.followIndex !== null) {
       const s = this.shown.get(this.followIndex);
       if (s && s.alive) {
-        const want = new THREE.Vector3(...gameToGl(s.x, s.y, s.z + S * 0.5));
+        const want = new THREE.Vector3(...gameToGl(s.x, s.y, s.z + this.focusHeight(this.followIndex)));
         const t = this.opts.reducedMotion ? 1 : 1 - Math.exp(-6 * dt / 1000);
         const d = want.sub(this.controls.target).multiplyScalar(t);
         if (d.lengthSq() > 1e-10) {

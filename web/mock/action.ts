@@ -5,7 +5,8 @@
 // after a burst, and report a weapon swap; whoever fires turns on someone
 // near and the frame's `hits` say who was hit and how hard, a grenade's
 // blast hits whoever is near where it lands, and a death comes with the
-// hit that did it.
+// hit that did it. Amounts are shares of the victim's vitality, as the
+// contract has them.
 //
 // Two frame hooks (World.frameHooks and World.recordHooks): the first
 // decorates each live frame, the second gives the frame recorded once a
@@ -90,7 +91,7 @@ export function actionHooks(): { frame: FrameHook; record: FrameHook } {
         if (chance(0.03)) {
           actions.push("melee");
           const t = nearest(b, 1.6);
-          if (t) hits.push({ from: id, to: idOf(t), weapon: b.weapon ?? undefined, pos: [...t.pos], amount: 70, kind: "melee" });
+          if (t) hits.push({ from: id, to: idOf(t), weapon: b.weapon ?? undefined, pos: [...t.pos], amount: 0.7, kind: "melee" });
         }
         if (m.firing && !b.shots && rand() < 0.3) actions.push("reload");
         if (b.weapon && m.weapon && b.weapon !== m.weapon) actions.push("switch");
@@ -103,7 +104,7 @@ export function actionHooks(): { frame: FrameHook; record: FrameHook } {
             b.yaw = r2(Math.atan2(dy, dx));
             b.aim = [r4(dx / d), r4(dy / d), r4(dz / d)];
             if (rand() < (player ? 0.6 : 0.3)) {
-              hits.push({ from: id, to: idOf(t), weapon: b.weapon ?? undefined, pos: [...t.pos], amount: Math.round((4 + rand() * 9) * b.shots * 10) / 10, kind: "bullet" });
+              hits.push({ from: id, to: idOf(t), weapon: b.weapon ?? undefined, pos: [...t.pos], amount: Math.round((4 + rand() * 9) * b.shots * 10) / 1000, kind: "bullet" });
               const tm = movers.get(idOf(t));
               if (tm) tm.lastHitBy = id;
             }
@@ -111,7 +112,7 @@ export function actionHooks(): { frame: FrameHook; record: FrameHook } {
         }
       }
       // A death comes with the hit that did it.
-      if (player && m.alive && !alive) hits.push({ ...(m.lastHitBy ? { from: m.lastHitBy } : {}), to: id, pos: [...m.pos], amount: 45, kind: m.lastHitBy ? "bullet" : "fall" });
+      if (player && m.alive && !alive) hits.push({ ...(m.lastHitBy ? { from: m.lastHitBy } : {}), to: id, pos: [...m.pos], amount: 0.45, kind: m.lastHitBy ? "bullet" : "fall" });
       if (!alive) { m.airUntil = 0; m.crouchUntil = 0; m.lastHitBy = null; }
       const air = alive && game.tick < m.airUntil;
       if (air) {
@@ -134,7 +135,7 @@ export function actionHooks(): { frame: FrameHook; record: FrameHook } {
       for (const o of bodies) {
         if (!living(o)) continue;
         const d = Math.hypot(o.pos[0] - x.pos[0], o.pos[1] - x.pos[1], o.pos[2] - x.pos[2]);
-        if (d < 3.5) hits.push({ from: x.from, to: idOf(o), weapon: "grenade", pos: [...o.pos], amount: Math.round(60 * (1 - d / 4)), kind: "explosion" });
+        if (d < 3.5) hits.push({ from: x.from, to: idOf(o), weapon: "grenade", pos: [...o.pos], amount: Math.round(60 * (1 - d / 4)) / 100, kind: "explosion" });
       }
       return false;
     });

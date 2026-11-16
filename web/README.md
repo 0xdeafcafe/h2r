@@ -309,7 +309,8 @@ optional; a frame without them draws as before.
 - *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
   A hit draws a line from attacker to victim that fades in a quarter of a
   second, and a hit marker with the damage floating up from the victim for
-  under a second; sustained fire on one victim is one marker with a rising
+  under a second (the amount is a share of the victim's vitality, shown in
+  percent); sustained fire on one victim is one marker with a rising
   number; the last hit before a victim is found dead is the kill: red,
   ringed, bigger, and it stays longer. A grenade throw draws the arc of the
   throw from the hand along the aim (the frames don't carry the grenade

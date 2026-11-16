@@ -155,14 +155,16 @@ export interface LiveHit extends Hit {
   mark: number;
   /** 0 to 1 over the marker's life: how far the number has floated up. */
   rise: number;
-  /** The damage as shown: "12", "0.5", or "" when the frame gave none. */
+  /** The damage as shown, in percent of the victim's vitality: "35"; "" when the frame gave none. */
   text: string;
 }
 
-/** A damage amount as a short number. */
+/** A hit's damage as shown. The frames give it as a share of the victim's
+ *  vitality (body plus shield), so it reads in percent: "35" took a third. */
 export function hitText(amount: number | null): string {
   if (amount === null) return "";
-  return amount >= 10 ? String(Math.round(amount)) : String(Math.round(amount * 10) / 10);
+  const pct = amount * 100;
+  return pct >= 1 ? String(Math.round(pct)) : pct > 0 ? "<1" : "0";
 }
 
 /** One frame's hits with the same attacker, victim and kind folded into
