@@ -187,6 +187,12 @@ impl KeyPair {
         &self.public
     }
 
+    /// A 32-byte key for `label` derived from this key's seed with
+    /// HKDF-SHA256 ([`crate::recovery::seal::derive_key`]).
+    pub fn derive_key(&self, label: &str) -> [u8; 32] {
+        crate::recovery::seal::derive_key(&self.secret.to_bytes(), label)
+    }
+
     /// The private JWK (`d` set), the form WebCrypto exports.
     pub fn private_jwk(&self) -> PrivateJwk {
         let p = self.public.jwk();

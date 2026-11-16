@@ -68,11 +68,12 @@ shown `123-456`), the same scheme authenticator apps use.
   creation rate limit. With three codes valid at once, the first five
   guesses succeed with odds of about 1 in 67,000; after that each guess
   costs exponentially more time.
-- **Sealing.** Secrets are sealed with a key derived from the server key
-  (`SHA-256("h2live-recovery-seal-v1" 0x00 seed)`): a 16-byte nonce, the
-  secret XORed with `HMAC-SHA256(k, "enc" || nonce)`, and a 16-byte tag
-  `HMAC-SHA256(k, "tag" || nonce || ct)`. The log (Postgres or files) holds
-  only that. The server key never leaves the data directory.
+- **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
+  24-byte nonce per value, stored as base64url of nonce and ciphertext with
+  its tag) under a key derived from the server key with HKDF-SHA256 (info
+  `h2live-recovery-seal-v1`). The log (Postgres or files) holds only that.
+  The server key never leaves the data directory. Invite codes use another
+  key from the same derivation (info `h2live-invite-code-v1`).
 
 Public keys travel as JWK (`{"kty":"OKP","crv":"Ed25519","x":"..."}`) and
 are named by their RFC 7638 thumbprint (`kid`).

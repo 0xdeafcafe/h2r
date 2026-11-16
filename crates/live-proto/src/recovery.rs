@@ -242,55 +242,46 @@ impl RecoverRequest {
     }
 }
 
-/// Sealing for secrets kept at rest by the server (the TOTP secrets): with
-/// a 32-byte key, `nonce(16) || ct || tag(16)` where the key stream is
-/// HMAC-SHA256(key, "enc" || nonce) and the tag HMAC-SHA256(key, "tag" ||
-/// nonce || ct), truncated; base64url. For values up to 32 bytes.
+/// Sealing for secrets kept at rest by the server (the TOTP secrets):
+/// XChaCha20-Poly1305 with a random 24-byte nonce, stored as base64url of
+/// `nonce || ciphertext+tag`. The key comes from [`derive_key`].
 pub mod seal {
     use super::*;
-    use sha2::Sha256;
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 
-    fn prf(key: &[u8; 32], label: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("any key length");
-        mac.update(label);
-        for p in parts {
-            mac.update(p);
-        }
-        mac.finalize().into_bytes().into()
+    const NONCE: usize = 24;
+
+    /// A 32-byte key for `label` from input key material (the server key's
+    /// seed): HKDF-SHA256 with no salt and `label` as the info.
+    pub fn derive_key(ikm: &[u8], label: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        hkdf::Hkdf::<sha2::Sha256>::new(None, ikm)
+            .expand(label.as_bytes(), &mut out)
+            .expect("32 bytes is a valid HKDF-SHA256 length");
+        out
     }
 
     pub fn seal(key: &[u8; 32], plain: &[u8]) -> String {
-        assert!(plain.len() <= 32, "seal is for short secrets");
-        let mut nonce = [0u8; 16];
+        let mut nonce = [0u8; NONCE];
         getrandom::fill(&mut nonce).expect("the OS random source failed");
-        let stream = prf(key, b"enc", &[&nonce]);
-        let ct: Vec<u8> = plain.iter().zip(stream).map(|(p, k)| p ^ k).collect();
-        let tag = prf(key, b"tag", &[&nonce, &ct]);
+        let ct = XChaCha20Poly1305::new(key.into())
+            .encrypt(XNonce::from_slice(&nonce), plain)
+            .expect("XChaCha20-Poly1305 encryption does not fail");
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ct);
-        out.extend_from_slice(&tag[..16]);
         B64.encode(out)
     }
 
     pub fn open(key: &[u8; 32], sealed: &str) -> Option<Vec<u8>> {
         let raw = B64.decode(sealed).ok()?;
-        if raw.len() < 32 || raw.len() > 64 {
+        if raw.len() < NONCE + 16 {
             return None;
         }
-        let (nonce, rest) = raw.split_at(16);
-        let (ct, tag) = rest.split_at(rest.len() - 16);
-        let want = prf(key, b"tag", &[nonce, ct]);
-        // Constant-time enough for a 16-byte compare of a MAC.
-        if want[..16]
-            .iter()
-            .zip(tag)
-            .fold(0u8, |a, (x, y)| a | (x ^ y))
-            != 0
-        {
-            return None;
-        }
-        let stream = prf(key, b"enc", &[nonce]);
-        Some(ct.iter().zip(stream).map(|(c, k)| c ^ k).collect())
+        let (nonce, ct) = raw.split_at(NONCE);
+        XChaCha20Poly1305::new(key.into())
+            .decrypt(XNonce::from_slice(nonce), ct)
+            .ok()
     }
 }
 
@@ -339,6 +330,7 @@ pub mod invite_code {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sign::hex;
 
     #[test]
     fn rfc6238_sha1_vectors() {
@@ -435,6 +427,17 @@ mod tests {
         raw[20] ^= 1;
         assert_eq!(seal::open(&key, &B64.encode(raw)), None);
         assert_eq!(seal::open(&key, "short"), None);
+        // HKDF-SHA256 (RFC 5869 test case 3: no salt, no info), and labels
+        // separate keys.
+        let okm = seal::derive_key(&[0x0b; 22], "");
+        assert_eq!(
+            hex(&okm),
+            "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d"
+        );
+        assert_ne!(
+            seal::derive_key(&[1; 32], "a"),
+            seal::derive_key(&[1; 32], "b")
+        );
     }
 
     #[test]

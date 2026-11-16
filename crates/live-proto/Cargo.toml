@@ -18,6 +18,9 @@ sha2 = "0.10"
 # TOTP (RFC 6238) for account recovery.
 hmac = "0.12"
 sha1 = "0.10"
+# Sealing secrets at rest (XChaCha20-Poly1305, key from HKDF-SHA256).
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
 base64 = "0.22"
 getrandom = "0.3"
 time = { version = "0.3", features = ["formatting", "parsing"] }
