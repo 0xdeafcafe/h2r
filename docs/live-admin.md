@@ -234,7 +234,9 @@ re-extracted once.
 
 ```json
 { "version": 1, "source": "<the art manifest's source>",
-  "maps": [ { "id": 1, "name": "…", "description": "…", "key": "<map file stem>" } ],
+  "maps": [ { "id": 1, "name": "…", "description": "…", "key": "<map file stem>" },
+            { "id": 301, "name": "…", "description": "…", "key": "<map file stem>",
+              "kind": "campaign" } ],
   "playlists": [ { "key": "ffa", "title": "…", "description": "…" } ],
   "variants": [ { "name": "Team Slayer", "game_type": "slayer", "engine": 2 } ],
   "skipped": { "<list>": "why it is missing" } }
@@ -249,6 +251,20 @@ All three lists come from the main menu map (code:
   path, whose last part is `key`). These are exactly the ids a record may
   name. On the retail disc: the twelve shipped maps; the Map Pack's maps
   are not in this list, so presets naming them show them as unavailable.
+  After them come the campaign levels, with `"kind": "campaign"` (a
+  multiplayer entry has no `kind`). Their `id` is the level's map id, not a
+  hopper record id, so a playlist must not offer them; `key` is the level's
+  map file stem (what telemetry sends as `map`) and `name` the title the
+  level select shows. They are the levels the game can start (`matg
+  +0x170` element 0, `0x108`-byte entries: `+0` campaign id, `+4` map id,
+  `+8` scenario path; [level-boot.md](level-boot.md)), each named by the
+  level select's entry with the same campaign and map id (`matg +0x178`
+  element 0, block at `+0x8`, `0xb50`-byte entries: `+0` campaign id, `+4`
+  map id, `+8` the level's picture as a tag reference, `+0x10` nine 32-unit
+  UTF-16 names, `+0x250` nine 128-unit descriptions). On the retail disc:
+  all 15 campaign map files, no id shared with a multiplayer map. When they
+  cannot be read the multiplayer maps stay and `skipped` has
+  `maps/campaign`.
 - `playlists`: the `matchmaking_hopper_descriptions` strings, paired
   `<key>_title` / `<key>_description` (the seven compiled-in playlists,
   Rumble Pit to Training Ground).
