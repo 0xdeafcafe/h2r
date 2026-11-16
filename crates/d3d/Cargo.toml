@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "vertex_fetch"
 harness = false
+
+[[bench]]
+name = "render_churn"
+harness = false

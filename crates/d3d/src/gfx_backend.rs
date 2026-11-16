@@ -39,11 +39,14 @@
 //! Draws are batched: consecutive draws (and a clear before them) to the
 //! same colour and depth surfaces are recorded into one pending render
 //! pass, their vertex, index and uniform bytes packed into the renderer's
-//! and the shader provider's upload rings. Anything else that touches
-//! surfaces (another target, partial clears, surface reads, writes, copies
-//! and snapshots, destruction, present) first submits the pending pass, so
-//! the GPU sees the same operations in the same order as one pass per draw
-//! would give it. The pending pass is encoded as one render pass, except
+//! and the shader provider's upload rings. A draw to another target encodes
+//! the pending pass into a command encoder kept open across target
+//! switches; anything else that touches surfaces (partial clears, surface
+//! reads, writes, copies and snapshots, destruction, present) first encodes
+//! the pending pass and submits everything encoded, so the GPU sees the
+//! same operations in the same order as one pass per draw would give it,
+//! in one submission instead of one per target switch
+//! ([`GfxBackend::set_submit_per_pass`] restores those). The pending pass is encoded as one render pass, except
 //! that a draw that follows a draw writing only some colour channels starts
 //! a render pass of its own, and under the exact rule so does every draw
 //! whose program can `discard` (see [`GfxBackend::set_merge_passes`] and
@@ -120,6 +123,11 @@ struct PendingPass {
 /// render pass loads what the one before it stored.
 const MAX_ENCODED_PASSES: usize = 1024;
 
+/// Render passes encoded at target switches after which they are submitted
+/// without waiting for anything else to need it, so the GPU starts on a
+/// long frame before it ends.
+const SUBMIT_AFTER_PASSES: usize = 128;
+
 /// Rendering through `gfx`.
 pub struct GfxBackend {
     /// The GPU context.
@@ -167,6 +175,43 @@ pub struct GfxBackend {
     pub(crate) count_samples: bool,
     /// Fills of scaled surfaces from guest-size ones, made on first use.
     pub(crate) blitter: Option<gfx::blit::Blitter>,
+    /// The latest queue submission.
+    last_submit: Option<wgpu::SubmissionIndex>,
+    /// The latest submission when the previous frame was presented: what a
+    /// pipelined `D3DSWAP_FINISH` waits for.
+    prev_frame_end: Option<wgpu::SubmissionIndex>,
+    /// [`set_swap_finish`](Self::set_swap_finish).
+    swap_finish: SwapFinish,
+    /// Passes encoded but not submitted yet (a target switch encodes the
+    /// pending pass here instead of submitting it), and the render passes
+    /// they hold.
+    open: Option<(wgpu::CommandEncoder, usize)>,
+    /// [`set_submit_per_pass`](Self::set_submit_per_pass).
+    submit_per_pass: bool,
+}
+
+/// What `Swap` with `D3DSWAP_FINISH` waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwapFinish {
+    /// The previous frame's work (the default): the GPU runs this frame
+    /// while the render thread encodes the next one, and at most about one
+    /// frame is queued ahead of the GPU. Nothing the guest reads depends
+    /// on the wait: every read back (surfaces, the alias mirror,
+    /// visibility counts) waits for its own copy.
+    Pipelined,
+    /// Everything submitted, this frame included (`H2_GFX_SWAP_FINISH=full`).
+    Full,
+}
+
+impl SwapFinish {
+    /// `H2_GFX_SWAP_FINISH`: `full` waits for everything; anything else is
+    /// [`SwapFinish::Pipelined`].
+    pub fn from_env() -> Self {
+        match std::env::var("H2_GFX_SWAP_FINISH").as_deref() {
+            Ok("full") => SwapFinish::Full,
+            _ => SwapFinish::Pipelined,
+        }
+    }
 }
 
 /// How draws were grouped into passes and submissions.
@@ -182,6 +227,8 @@ pub struct BatchStats {
     pub render_passes: u64,
     /// Queue submissions.
     pub submits: u64,
+    /// Blocking waits for the GPU at `Swap` (`D3DSWAP_FINISH`).
+    pub swap_waits: u64,
 }
 
 impl GfxBackend {
@@ -230,7 +277,30 @@ impl GfxBackend {
             scales: HashMap::new(),
             count_samples: true,
             blitter: None,
+            last_submit: None,
+            prev_frame_end: None,
+            swap_finish: SwapFinish::from_env(),
+            open: None,
+            submit_per_pass: std::env::var("H2_GFX_SUBMIT").is_ok_and(|v| v == "pass"),
         }
+    }
+
+    /// Submit every pending pass on its own at a target switch (the old
+    /// behaviour; `H2_GFX_SUBMIT=pass`). By default a target switch only
+    /// encodes the pending pass, and the passes go to the GPU in one
+    /// submission when anything else needs them submitted ([`flush`]: a
+    /// read-back, a copy, a write to a surface, a present) or
+    /// [`SUBMIT_AFTER_PASSES`] render passes have built up.
+    ///
+    /// [`flush`]: Self::flush
+    pub fn set_submit_per_pass(&mut self, on: bool) {
+        self.submit_per_pass = on;
+    }
+
+    /// What `Swap` with `D3DSWAP_FINISH` waits for (default
+    /// [`SwapFinish::from_env`]).
+    pub fn set_swap_finish(&mut self, mode: SwapFinish) {
+        self.swap_finish = mode;
     }
 
     /// Textures over the depth buffer's memory made on the GPU (on by
@@ -379,8 +449,34 @@ impl GfxBackend {
             .map_err(|e| format!("{e:?}"))
     }
 
-    /// Submits the pending pass, if any.
+    /// Submits the pending pass, if any, and every pass encoded before it.
     pub fn flush(&mut self) -> Result<(), String> {
+        let encoded = self.encode_pending();
+        self.submit_open();
+        encoded
+    }
+
+    /// The encoder kept open (a new one if there is none) and its render
+    /// passes, after encoding the pending pass into it: for GPU-only work
+    /// that may wait for the next submission. Put it back in `self.open`.
+    fn take_open(&mut self) -> Result<(wgpu::CommandEncoder, usize), String> {
+        self.encode_pending()?;
+        Ok(self
+            .open
+            .take()
+            .unwrap_or_else(|| (self.ctx.device.create_command_encoder(&Default::default()), 0)))
+    }
+
+    /// Submits the passes encoded so far, if any.
+    fn submit_open(&mut self) {
+        if let Some((enc, _)) = self.open.take() {
+            self.submit(enc);
+        }
+    }
+
+    /// Encodes the pending pass, if any, after the passes encoded before it
+    /// (without submitting them).
+    fn encode_pending(&mut self) -> Result<(), String> {
         let Some(mut p) = self.pending.take() else {
             return Ok(());
         };
@@ -389,11 +485,17 @@ impl GfxBackend {
             && p.draws.len() > 1
             && !p.draws.iter().any(RecordedDraw::counts_samples)
         {
+            // It copies the attachments with submissions of its own: the
+            // passes before must be on the GPU first.
+            self.submit_open();
             self.merge_check(&mut p)?;
         }
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "flush pass")
             .arg("draws", p.draws.len() as u64);
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        let (mut enc, mut passes) = self
+            .open
+            .take()
+            .unwrap_or_else(|| (self.ctx.device.create_command_encoder(&Default::default()), 0));
         if let Some(d) = p.depth {
             self.store
                 .prepare_target(&self.ctx, &mut enc, p.color, d)
@@ -411,14 +513,15 @@ impl GfxBackend {
                 .any(RecordedDraw::counts_samples)
                 .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
-            self.stats.render_passes +=
-                Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
-                    .map_err(|e| e.to_string())? as u64;
+            let n = Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
+                .map_err(|e| e.to_string())?;
+            self.stats.render_passes += n as u64;
+            passes += n;
         }
         self.store
             .finish_target(&mut enc, p.color)
             .map_err(|e| e.to_string())?;
-        self.submit(enc);
+        self.open = Some((enc, passes));
         self.stats.passes += 1;
         Ok(())
     }
@@ -618,7 +721,10 @@ impl GfxBackend {
 
     /// Writes every staged upload, submits `enc` and lets the rings reuse
     /// their space.
+    /// Passes encoded but not submitted yet go first, in the same
+    /// submission.
     fn submit(&mut self, enc: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
+        let open = self.open.take().map(|(e, _)| e.finish());
         self.renderer.flush_uploads(&self.ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
@@ -627,8 +733,9 @@ impl GfxBackend {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit([enc.finish()])
+            self.ctx.queue.submit(open.into_iter().chain([enc.finish()]))
         };
+        self.last_submit = Some(index.clone());
         self.renderer.submitted();
         if let Some(s) = self.shaders.as_mut() {
             s.submitted();
@@ -655,17 +762,30 @@ impl GfxBackend {
         }))
     }
 
-    /// Submits the pending pass if it is for another target. Must run before
-    /// anything for a draw on `color` and `depth` is staged (the shader
-    /// provider's uniforms included): the submit lets every ring reuse what
-    /// was staged before it.
+    /// Encodes the pending pass if it is for another target (submits it
+    /// under [`set_submit_per_pass`](Self::set_submit_per_pass), or when
+    /// the passes not yet submitted reach [`SUBMIT_AFTER_PASSES`]). Must run
+    /// before anything for a draw on `color` and `depth` is staged (the
+    /// shader provider's uniforms included): a submit lets every ring reuse
+    /// what was staged before it.
     fn switch_to(&mut self, color: SurfaceId, depth: Option<SurfaceId>) -> Result<(), String> {
         if self
             .pending
             .as_ref()
             .is_some_and(|p| p.color != color || p.depth != depth)
         {
-            self.flush()?;
+            if self.submit_per_pass {
+                self.flush()?;
+            } else {
+                self.encode_pending()?;
+                if self
+                    .open
+                    .as_ref()
+                    .is_some_and(|&(_, n)| n >= SUBMIT_AFTER_PASSES)
+                {
+                    self.submit_open();
+                }
+            }
         }
         Ok(())
     }
@@ -701,12 +821,29 @@ impl GfxBackend {
                 None => hook(&self.ctx, &self.store, surface, flags, gamma),
             }
         }
+        let frame_end = self.last_submit.clone();
         if flags & 4 != 0 {
-            // D3DSWAP_FINISH: wait for the GPU.
-            let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
-            let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
-            let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+            // D3DSWAP_FINISH: wait for the GPU (for the previous frame's
+            // work, unless `SwapFinish::Full`).
+            let wait = match self.swap_finish {
+                SwapFinish::Full => Some(wgpu::PollType::wait_indefinitely()),
+                SwapFinish::Pipelined => {
+                    self.prev_frame_end
+                        .take()
+                        .map(|index| wgpu::PollType::Wait {
+                            submission_index: Some(index),
+                            timeout: None,
+                        })
+                }
+            };
+            if let Some(wait) = wait {
+                let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+                let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
+                self.stats.swap_waits += 1;
+                let _ = self.ctx.device.poll(wait);
+            }
         }
+        self.prev_frame_end = frame_end;
         // Reports from this frame and before are read later (Halo reads a
         // visibility test two frames after it ends): start their reads now,
         // so the read finds the count mapped instead of waiting.
@@ -907,11 +1044,13 @@ impl Backend for GfxBackend {
         timeline::phase::count(timeline::phase::Counter::Draws, 1);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "draw");
         // A full pass is submitted here, before the draw stages anything,
-        // like a target switch.
+        // like a target switch; so is one that would take the passes not
+        // yet submitted past the limit.
+        let open = self.open.as_ref().map_or(0, |&(_, n)| n);
         if self
             .pending
             .as_ref()
-            .is_some_and(|p| p.encoded >= MAX_ENCODED_PASSES)
+            .is_some_and(|p| p.encoded + open >= MAX_ENCODED_PASSES)
         {
             self.flush()?;
         }
@@ -1225,19 +1364,23 @@ impl Backend for GfxBackend {
 
     fn depth_level_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        // After the draws into it.
-        self.flush()?;
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let texture = s.texture().clone();
         let d = *s.desc();
         if texture.format() != wgpu::TextureFormat::Depth32FloatStencil8 || d.samples > 1 {
             return Ok(None);
         }
+        // After the draws into it, in the same submission: the pass writes
+        // only buffers and a texture of its own, so nothing else needs it
+        // on the GPU sooner (under `submit_per_pass`, submitted now).
+        let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let bits = self.depth_bits.get_or_insert_with(|| gfx::depth_bits::DepthBits::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
         let out = bits.convert(ctx, &mut enc, &texture, (d.width, d.height));
-        self.submit(enc);
+        self.open = Some((enc, passes));
+        if self.submit_per_pass {
+            self.submit_open();
+        }
         Ok(Some(self.host_texture(out, TextureKind::D2)))
     }
 
@@ -1323,7 +1466,7 @@ impl Backend for GfxBackend {
 
     fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
         self.flush()?;
-        self.mirror = Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        self.mirror = Some(gfx::churn::create_buffer(&self.ctx.device, &wgpu::BufferDescriptor {
             label: Some("d3d alias mirror"),
             size: (len.max(4) as u64).next_multiple_of(4),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
@@ -1341,6 +1484,7 @@ impl Backend for GfxBackend {
             return Err(format!("mirror_write of {} bytes at {offset:#x} into {}", bytes.len(), m.size()));
         }
         if !bytes.is_empty() {
+            gfx::churn::queue_write();
             self.ctx.queue.write_buffer(m, offset as u64, bytes);
         }
         Ok(())
@@ -1412,7 +1556,7 @@ impl Backend for GfxBackend {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging = gfx::churn::create_buffer(&self.ctx.device, &wgpu::BufferDescriptor {
             label: Some("d3d alias mirror read"),
             size: len as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -1534,13 +1678,17 @@ impl Backend for GfxBackend {
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
-        // After the counted draws before it.
-        self.flush()?;
+        // After the counted draws before it, in the same submission (the
+        // report that reads the counter submits; under `submit_per_pass`,
+        // submitted now).
+        let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
         counter.clear(&mut enc);
-        self.submit(enc);
+        self.open = Some((enc, passes));
+        if self.submit_per_pass {
+            self.submit_open();
+        }
         Ok(())
     }
 

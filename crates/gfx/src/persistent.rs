@@ -14,6 +14,14 @@
 //! way, as the host list (Xbox-only primitives rewritten) per id and
 //! primitive type.
 //!
+//! Buffers come in power-of-two size classes and are reused: a dropped
+//! one (evicted or replaced) waits until the owner reports a submit
+//! ([`PersistentVertices::submitted`]: every draw recorded with it is then
+//! on the queue), then goes to a free list the next new id takes from. A
+//! queued write lands after the work already submitted, so a reused buffer
+//! never changes under a draw that still reads it. Free buffers are held
+//! up to half the budget (an eviction frees a quarter at once).
+//!
 //! [`Draw::stream_ids`]: crate::renderer::Draw::stream_ids
 //! [`Draw::index_id`]: crate::renderer::Draw::index_id
 
@@ -65,6 +73,18 @@ pub struct PersistentStats {
     pub index_uploads: u64,
 }
 
+/// Smallest size class.
+const MIN_CLASS: u64 = 256;
+
+/// Free buffers by (size, index usage).
+#[derive(Default)]
+struct Pool {
+    free: HashMap<(u64, bool), Vec<wgpu::Buffer>>,
+    free_bytes: u64,
+    /// Dropped since the last submit.
+    retired: Vec<(bool, wgpu::Buffer)>,
+}
+
 /// Persistent vertex buffers by stream id.
 pub struct PersistentVertices {
     slots: HashMap<u64, Slot>,
@@ -72,6 +92,7 @@ pub struct PersistentVertices {
     budget: u64,
     tick: u64,
     stats: PersistentStats,
+    pool: Pool,
 }
 
 impl PersistentVertices {
@@ -83,6 +104,46 @@ impl PersistentVertices {
             budget,
             tick: 0,
             stats: PersistentStats::default(),
+            pool: Pool::default(),
+        }
+    }
+
+    /// A buffer of at least `size` bytes (its size class) for vertices or
+    /// (`index`) indices, reused if one is free.
+    fn buffer(&mut self, ctx: &GfxContext, size: u64, index: bool) -> wgpu::Buffer {
+        let class = size.max(MIN_CLASS).next_power_of_two();
+        if let Some(b) = self.pool.free.get_mut(&(class, index)).and_then(Vec::pop) {
+            self.pool.free_bytes -= class;
+            crate::churn::buffer_reused();
+            return b;
+        }
+        let (label, usage) = if index {
+            ("persistent indices", wgpu::BufferUsages::INDEX)
+        } else {
+            ("persistent vertices", wgpu::BufferUsages::VERTEX)
+        };
+        crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some(label),
+                size: class,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )
+    }
+
+    /// Every draw recorded so far has been submitted: buffers dropped
+    /// before now may be written again.
+    pub fn submitted(&mut self) {
+        let cap = self.budget / 2;
+        for (index, b) in self.pool.retired.drain(..) {
+            let class = b.size();
+            if self.pool.free_bytes + class > cap {
+                continue;
+            }
+            self.pool.free_bytes += class;
+            self.pool.free.entry((class, index)).or_default().push(b);
         }
     }
 
@@ -117,17 +178,17 @@ impl PersistentVertices {
             self.stats.hits += 1;
             return (s.buffer.clone(), bound);
         }
-        let size = bound.next_multiple_of(4);
-        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("persistent vertices"),
-            size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = self.buffer(ctx, bound.next_multiple_of(4), false);
+        let size = buffer.size();
         {
+            crate::churn::queue_write();
             let mut view = ctx
                 .queue
-                .write_buffer_with(&buffer, 0, wgpu::BufferSize::new(size).expect("non-empty"))
+                .write_buffer_with(
+                    &buffer,
+                    0,
+                    wgpu::BufferSize::new(bound.next_multiple_of(4)).expect("non-empty"),
+                )
                 .expect("staging view of a new buffer");
             plan.write_into(guest, vertex_count, view.slice(0..len), scratch);
         }
@@ -145,6 +206,7 @@ impl PersistentVertices {
             },
         ) {
             self.stats.held_bytes -= old.size;
+            self.pool.retired.push((false, old.buffer));
         }
         self.evict();
         (buffer, bound)
@@ -176,17 +238,13 @@ impl PersistentVertices {
         self.tick += 1;
         let bytes: &[u8] = bytemuck::cast_slice(list);
         let size = (bytes.len() as u64).max(4);
-        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("persistent indices"),
-            size,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = self.buffer(ctx, size, true);
         if !bytes.is_empty() {
+            crate::churn::queue_write();
             ctx.queue.write_buffer(&buffer, 0, bytes);
         }
         self.stats.index_uploads += 1;
-        self.stats.held_bytes += size;
+        self.stats.held_bytes += buffer.size();
         let slot = IndexSlot {
             buffer: buffer.clone(),
             size,
@@ -194,7 +252,8 @@ impl PersistentVertices {
             used: self.tick,
         };
         if let Some(old) = self.indices.insert((id, primitive), slot) {
-            self.stats.held_bytes -= old.size;
+            self.stats.held_bytes -= old.buffer.size();
+            self.pool.retired.push((true, old.buffer));
         }
         self.evict();
         (buffer, size)
@@ -205,10 +264,12 @@ impl PersistentVertices {
         self.stats
     }
 
-    /// Drops every buffer (draws already recorded keep theirs).
+    /// Drops every buffer (draws already recorded keep theirs; the pool
+    /// reuses them after the next submit).
     pub fn clear(&mut self) {
-        self.slots.clear();
-        self.indices.clear();
+        let retired = &mut self.pool.retired;
+        retired.extend(self.slots.drain().map(|(_, s)| (false, s.buffer)));
+        retired.extend(self.indices.drain().map(|(_, s)| (true, s.buffer)));
         self.stats.held_bytes = 0;
     }
 
@@ -236,10 +297,13 @@ impl PersistentVertices {
                 break;
             }
             let freed = match k {
-                Key::Vertices(id) => self.slots.remove(&id).map(|s| s.size),
-                Key::Indices(id, p) => self.indices.remove(&(id, p)).map(|s| s.size),
+                Key::Vertices(id) => self.slots.remove(&id).map(|s| (false, s.buffer)),
+                Key::Indices(id, p) => self.indices.remove(&(id, p)).map(|s| (true, s.buffer)),
             };
-            self.stats.held_bytes -= freed.unwrap_or(0);
+            if let Some((index, b)) = freed {
+                self.stats.held_bytes -= b.size();
+                self.pool.retired.push((index, b));
+            }
         }
     }
 }

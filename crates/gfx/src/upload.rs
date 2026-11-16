@@ -34,6 +34,7 @@ pub fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &DecodedT
         let rows = if tex.host.is_compressed() { h / 4 } else { h };
         let origin_z = if d.kind == TextureKind::Cube { l.face } else { 0 };
         let depth = if d.kind == TextureKind::Volume { l.depth } else { 1 };
+        crate::churn::queue_write();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
