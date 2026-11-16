@@ -436,3 +436,66 @@ fn golden_vectors_match_the_encoder() {
         );
     }
 }
+
+/// CPU per frame: what the game's sink worker spends serialising (JSON)
+/// or packing, and what the server spends taking a frame in (parse or
+/// decode, validate, normalise) and passing it on (JSON per reader, or one
+/// packed stream frame plus a recorded keyframe a second). Run with
+/// `cargo test -p live-proto --release pack::tests::measure -- --ignored
+/// --nocapture` for the numbers in docs/live-telemetry.md.
+#[test]
+#[ignore]
+fn measure_cpu_per_frame() {
+    use std::time::Instant;
+    for (name, frames) in [
+        ("multiplayer", samples::multiplayer(900)),
+        ("campaign", samples::campaign(900)),
+    ] {
+        let n = frames.len() as u32;
+        let start = Instant::now();
+        let texts: Vec<String> = frames
+            .iter()
+            .map(|f| {
+                serde_json::to_string(&crate::ClientMessage::Frame {
+                    frame: Box::new(f.clone()),
+                })
+                .unwrap()
+            })
+            .collect();
+        let json_out = start.elapsed() / n;
+        let start = Instant::now();
+        let mut enc = Encoder::new(0, 150);
+        let packed: Vec<Vec<u8>> = frames.iter().map(|f| enc.encode(f).unwrap().0).collect();
+        let pack_out = start.elapsed() / n;
+        let start = Instant::now();
+        for (i, text) in texts.iter().enumerate() {
+            let crate::ClientMessage::Frame { frame } = serde_json::from_str(text).unwrap() else {
+                unreachable!()
+            };
+            let mut frame = *frame;
+            validate_frame(&frame).unwrap();
+            normalize_frame(&mut frame);
+            std::hint::black_box(serde_json::to_string(&frame).unwrap());
+            if i % 15 == 0 {
+                std::hint::black_box(serde_json::to_value(&frame).unwrap());
+            }
+        }
+        let json_in = start.elapsed() / n;
+        let start = Instant::now();
+        let mut d = Decoder::new();
+        let mut out = Encoder::new(1, 15);
+        for (i, bytes) in packed.iter().enumerate() {
+            let mut frame = d.decode(bytes).unwrap().frame;
+            validate_frame(&frame).unwrap();
+            normalize_frame(&mut frame);
+            std::hint::black_box(out.encode(&frame).unwrap());
+            if i % 15 == 0 {
+                std::hint::black_box(to_base64(&encode_keyframe(&frame).unwrap()));
+            }
+        }
+        let pack_in = start.elapsed() / n;
+        println!(
+            "{name}: sender JSON {json_out:?} packed {pack_out:?}; server JSON {json_in:?} packed {pack_in:?}"
+        );
+    }
+}

@@ -187,6 +187,14 @@ impl Telemetry {
         } else {
             None
         };
+        // The scenario's placements, to tell moved and gone objects from
+        // those where the scenario put them; without them frames carry no
+        // objects.
+        let placements = if info.is_match() {
+            memory::placements(guest).unwrap_or_default()
+        } else {
+            Default::default()
+        };
         {
             let mut session = self.session.lock().unwrap();
             session.set_map_id(map_id);
@@ -194,6 +202,7 @@ impl Telemetry {
             if let Some(names) = names {
                 session.set_tag_names(names);
             }
+            session.set_placements(placements);
         }
         self.shots.lock().unwrap().clear();
         self.hits.lock().unwrap().clear();
@@ -220,6 +229,7 @@ impl Telemetry {
             snapshot.actors = world.actors;
             snapshot.vehicles = world.vehicles;
             snapshot.machines = world.machines;
+            snapshot.placed = world.placed;
         }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()

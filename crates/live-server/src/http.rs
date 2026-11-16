@@ -154,7 +154,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(get_file).put(put_file),
         )
         .route("/v1/maps/{map}/outline", get(outline).put(put_outline))
-        .route("/v1/maps", get(crate::content::list_maps).put(crate::content::put_map))
+        .route(
+            "/v1/maps",
+            get(crate::content::list_maps).put(crate::content::put_map),
+        )
         .route("/v1/maps/{map}", get(crate::content::get_map))
         .route("/v1/maps/{map}/image", get(crate::content::get_map_image))
         .route("/v1/maps/{map}/report", post(crate::content::report_map))
@@ -369,7 +372,7 @@ async fn cors(req: Request, next: Next) -> Response {
         );
         h.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("etag"),
+            HeaderValue::from_static("etag, x-next, x-position"),
         );
     }
     resp
@@ -543,6 +546,9 @@ struct StreamFilter {
     exclude: Vec<String>,
     /// `?games=`: live frames only for these games (default: all).
     games: Vec<String>,
+    /// `?frames=packed`: live frames as packed binary messages
+    /// (docs/live-telemetry.md, Packed frames); JSON otherwise.
+    packed: bool,
 }
 
 impl StreamFilter {
@@ -576,6 +582,11 @@ async fn stream(
         types: list_param(&p, &["types", "type"]),
         exclude: list_param(&p, &["exclude"]),
         games: list_param(&p, &["games"]),
+        packed: match p.get("frames").map(String::as_str) {
+            None | Some("") | Some("json") => false,
+            Some("packed") => true,
+            Some(_) => return Err(invalid("frames must be json or packed")),
+        },
     };
     let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
     Ok(ws
@@ -689,6 +700,14 @@ async fn run_stream(
         .await
         .map_err(|e| e.to_string())?;
     let probe = filter.query(0, 1);
+    let mut batch = PackedBatch::default();
+    if filter.packed {
+        // Start each live game's stream at its last keyframe.
+        for f in live.frames_since_keyframe(&filter.games) {
+            batch.add(&f);
+        }
+        batch.flush(&mut socket).await?;
+    }
     loop {
         let deadline = async {
             match expires {
@@ -716,15 +735,26 @@ async fn run_stream(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
             frame = frames.recv() => match frame {
-                Ok(f) => {
-                    if filter.games.is_empty() || filter.games.contains(&f.game_id) {
-                        send(&mut socket, &StreamMessage::Frame { frame: Box::new((*f).clone()) }).await.map_err(|e| e.to_string())?;
+                Ok(f) if filter.games.is_empty() || filter.games.contains(&f.frame.game_id) => {
+                    if filter.packed {
+                        batch.add(&f);
+                    } else {
+                        send(&mut socket, &StreamMessage::Frame { frame: Box::new(f.frame.clone()) }).await.map_err(|e| e.to_string())?;
                     }
                 }
-                // Frames are best effort: a slow reader skips some.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Ok(_) => {}
+                // Frames are best effort: a slow reader skips some. A packed
+                // one picks its streams up again from their last keyframes.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if filter.packed {
+                        for f in live.frames_since_keyframe(&filter.games) {
+                            batch.add(&f);
+                        }
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
+            _ = batch.due() => batch.flush(&mut socket).await?,
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
@@ -743,6 +773,60 @@ async fn run_stream(
                 return Ok(());
             }
         }
+    }
+}
+
+/// How long a packed reader's frames wait to share a message.
+const PACKED_BATCH: Duration = Duration::from_millis(100);
+
+/// A packed reader's next binary message: frames of every stream it
+/// follows, each only once and only after its base (a frame that does not
+/// follow the last one sent of its stream waits for a keyframe).
+#[derive(Default)]
+struct PackedBatch {
+    bytes: Vec<u8>,
+    due: Option<tokio::time::Instant>,
+    /// Each stream's last sequence number sent.
+    sent: HashMap<u64, u64>,
+}
+
+impl PackedBatch {
+    fn add(&mut self, f: &crate::games::LiveFrame) {
+        let Some(packed) = &f.packed else {
+            return;
+        };
+        let follows = match self.sent.get(&f.sid) {
+            Some(last) if f.seq <= *last => return,
+            Some(last) => f.seq == last + 1 || f.keyframe,
+            None => f.keyframe,
+        };
+        if !follows {
+            return;
+        }
+        self.sent.insert(f.sid, f.seq);
+        live_proto::pack::push_record(&mut self.bytes, packed);
+        self.due
+            .get_or_insert_with(|| tokio::time::Instant::now() + PACKED_BATCH);
+    }
+
+    /// Resolves when the batch should go out (never while it is empty).
+    async fn due(&self) {
+        match self.due {
+            Some(at) => tokio::time::sleep_until(at).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    async fn flush(&mut self, socket: &mut WebSocket) -> Result<(), String> {
+        self.due = None;
+        if self.bytes.is_empty() {
+            return Ok(());
+        }
+        let bytes = std::mem::take(&mut self.bytes);
+        socket
+            .send(Message::Binary(bytes.into()))
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -864,12 +948,47 @@ async fn game_frames(
     } else {
         crate::games::FRAMES_PAGE
     };
-    Ok(json(
-        StatusCode::OK,
-        &live
-            .recorded_frames(game_id(&id)?, from_tick, to_tick, paging.after, limit)
-            .await?,
-    ))
+    let packed = match p.get("format").map(String::as_str) {
+        None | Some("") | Some("json") => false,
+        Some("packed") => true,
+        Some(_) => return Err(invalid("format must be json or packed")),
+    };
+    if !packed {
+        return Ok(json(
+            StatusCode::OK,
+            &live
+                .recorded_frames(game_id(&id)?, from_tick, to_tick, paging.after, limit)
+                .await?,
+        ));
+    }
+    let page = live
+        .recorded_frame_data(game_id(&id)?, from_tick, to_tick, paging.after, limit)
+        .await?;
+    // A container of keyframes; the page's cursor and head in headers.
+    let mut body = Vec::new();
+    for item in &page.items {
+        if let Some(bytes) = crate::games::recorded_packed(item) {
+            live_proto::pack::push_record(&mut body, &bytes);
+        }
+    }
+    let mut resp = (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-h2-frames"),
+        )],
+        body,
+    )
+        .into_response();
+    let h = resp.headers_mut();
+    if let Some(next) = page
+        .next
+        .as_deref()
+        .and_then(|n| HeaderValue::from_str(n).ok())
+    {
+        h.insert("x-next", next);
+    }
+    h.insert("x-position", HeaderValue::from(page.position));
+    Ok(resp)
 }
 
 async fn game_events(

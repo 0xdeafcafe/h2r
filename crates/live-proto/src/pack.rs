@@ -299,7 +299,7 @@ impl Id {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Val {
     None,
     Bool(bool),
@@ -1042,18 +1042,16 @@ fn read_full(
     (0..n).map(|_| read_entity(r, schema, strings)).collect()
 }
 
-fn key_of(schema: &[Field], e: &Entity) -> Vec<Val> {
-    schema
-        .iter()
-        .zip(e)
-        .filter(|(f, _)| f.key)
-        .map(|(_, v)| v.clone())
-        .collect()
-}
-
-/// Key values compared without hashing floats: keys are ints and ids only.
-fn key_string(key: &[Val]) -> String {
-    format!("{key:?}")
+/// An entity's key: its key fields (at most two).
+fn key_of<'a>(schema: &[Field], e: &'a Entity) -> [Option<&'a Val>; 2] {
+    let mut key = [None; 2];
+    for (slot, (_, v)) in key
+        .iter_mut()
+        .zip(schema.iter().zip(e).filter(|(f, _)| f.key))
+    {
+        *slot = Some(v);
+    }
+    key
 }
 
 /// A list against the previous frame's: the count, then until it is
@@ -1062,18 +1060,28 @@ fn key_string(key: &[Val]) -> String {
 /// is (relative to the one after the last taken), a changed-field mask and
 /// the changed fields; or `0` and the whole entity.
 fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Entity], t: &Table) {
-    let mut keys: HashMap<String, usize> = HashMap::with_capacity(prev.len());
-    for (j, e) in prev.iter().enumerate() {
-        keys.entry(key_string(&key_of(schema, e))).or_insert(j);
-    }
-    let mut used = vec![false; prev.len()];
-    let matches: Vec<Option<usize>> = list
-        .iter()
-        .map(|e| {
-            let j = *keys.get(&key_string(&key_of(schema, e)))?;
-            (!std::mem::replace(&mut used[j], true)).then_some(j)
-        })
-        .collect();
+    // Most frames list the same entities in the same order: match by
+    // position, and only key a map when that fails.
+    let same_order = list.len() == prev.len()
+        && list
+            .iter()
+            .zip(prev)
+            .all(|(e, p)| key_of(schema, e) == key_of(schema, p));
+    let matches: Vec<Option<usize>> = if same_order {
+        (0..list.len()).map(Some).collect()
+    } else {
+        let mut keys: HashMap<[Option<&Val>; 2], usize> = HashMap::with_capacity(prev.len());
+        for (j, e) in prev.iter().enumerate() {
+            keys.entry(key_of(schema, e)).or_insert(j);
+        }
+        let mut used = vec![false; prev.len()];
+        list.iter()
+            .map(|e| {
+                let j = *keys.get(&key_of(schema, e))?;
+                (!std::mem::replace(&mut used[j], true)).then_some(j)
+            })
+            .collect()
+    };
     w.eg(list.len() as u64, 2);
     let mut cursor = 0usize;
     let mut i = 0;
@@ -1200,6 +1208,11 @@ impl Encoder {
 
     pub fn sid(&self) -> u64 {
         self.sid
+    }
+
+    /// The sequence number the next frame gets.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
     }
 
     /// The next frame is a keyframe.
@@ -1411,6 +1424,19 @@ pub fn decode_keyframe(bytes: &[u8]) -> Result<Frame> {
         return Err(PackError::Bad("not a keyframe"));
     }
     Ok(d.frame)
+}
+
+/// Bytes as base64url without padding (a recorded frame's `packed`).
+pub fn to_base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn from_base64(text: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim_end_matches('='))
+        .map_err(|_| PackError::Bad("packed frame is not base64url"))
 }
 
 // ---------------------------------------------------------- containers

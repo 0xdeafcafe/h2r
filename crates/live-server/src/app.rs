@@ -143,7 +143,7 @@ pub struct Live {
     policy: Policy,
     applied: watch::Receiver<u64>,
     feed: broadcast::Sender<Arc<RecordedEvent>>,
-    pub(crate) frames: broadcast::Sender<Arc<live_proto::game::Frame>>,
+    pub(crate) frames: broadcast::Sender<Arc<crate::games::LiveFrame>>,
     pub(crate) ingest: crate::games::IngestState,
     jtis: ReplayGuard,
     writes: RateLimiter,

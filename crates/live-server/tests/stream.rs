@@ -595,7 +595,11 @@ async fn frames_carry_species_aim_weapon_and_shots() {
     assert_eq!(player["species"], "elite");
     assert_eq!(player["weapon"], "battle_rifle");
     assert_eq!(player["shots"], 3);
-    assert_eq!(player["aim"], serde_json::json!([0.0, 0.6, 0.8]));
+    // Recorded frames are packed: the aim within the format's precision.
+    let aim: Vec<f64> = serde_json::from_value(player["aim"].clone()).unwrap();
+    for (got, want) in aim.iter().zip([0.0, 0.6, 0.8]) {
+        assert!((got - want).abs() < 1e-3, "{aim:?}");
+    }
 }
 
 #[tokio::test]
@@ -708,6 +712,24 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             up: [0.0, 0.0, 1.0],
             position: None,
         }],
+        objects: vec![
+            live_proto::game::FrameObject {
+                k: live_proto::game::ObjectKind::Crate,
+                i: 4,
+                p: Some([1.0, 2.0, 3.0]),
+                f: Some([0.0, 2.0, 0.0]),
+                u: Some([0.0, 0.0, 1.0]),
+                gone: false,
+            },
+            live_proto::game::FrameObject {
+                k: live_proto::game::ObjectKind::NetgameEquipment,
+                i: 2,
+                p: None,
+                f: None,
+                u: None,
+                gone: true,
+            },
+        ],
     };
     let mut bad_up = good.clone();
     bad_up.vehicles[0].up = [f64::NAN, 0.0, 1.0];
@@ -717,7 +739,18 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     bad_stance.actors[0].stance = Some("prone".into());
     let mut bad_position = good.clone();
     bad_position.machines[0].position = Some(2.0);
-    for bad in [bad_up, bad_species, bad_stance, bad_position] {
+    let mut bad_order = good.clone();
+    bad_order.objects.reverse();
+    let mut bad_gone = good.clone();
+    bad_gone.objects[1].p = Some([0.0; 3]);
+    for bad in [
+        bad_up,
+        bad_species,
+        bad_stance,
+        bad_position,
+        bad_order,
+        bad_gone,
+    ] {
         assert!(live.ingest_frame(&author, bad).await.is_err());
     }
 
@@ -727,7 +760,11 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     };
     assert_eq!(frame.vehicles[0].kind, "warthog");
     assert_eq!(frame.vehicles[0].forward, [1.0, 0.0, 0.0]);
-    assert_eq!(frame.actors[0].aim, Some([0.0, 0.6, 0.8]));
+    assert_eq!(
+        frame.actors[0].aim,
+        Some([0.0, 0.6, 0.8]),
+        "JSON readers get the frame as sent"
+    );
     assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
     assert_eq!(frame.actors[0].shots, Some(2));
 
@@ -754,4 +791,212 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     assert_eq!(recorded[0]["hits"][0]["to"], "p0");
     assert_eq!(recorded[0]["bsp"], 1);
     assert_eq!(recorded[0]["machines"][0]["node"], "scarab_0");
+    assert_eq!(recorded[0]["objects"][0]["k"], "crate");
+    assert_eq!(
+        recorded[0]["objects"][0]["f"],
+        serde_json::json!([0.0, 1.0, 0.0])
+    );
+    assert_eq!(recorded[0]["objects"][1]["gone"], true);
+}
+
+/// Reads a binary message of packed frames.
+async fn next_packed(
+    ws: &mut Socket,
+    d: &mut live_proto::pack::Decoder,
+) -> Vec<live_proto::game::Frame> {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("a message in time")
+            .unwrap()
+            .unwrap();
+        match msg {
+            Message::Binary(b) => {
+                return live_proto::pack::records(&b)
+                    .map(|r| d.decode(r.unwrap()).unwrap().frame)
+                    .collect();
+            }
+            Message::Text(t) => {
+                let m: StreamMessage = serde_json::from_str(&t).unwrap();
+                assert!(
+                    !matches!(m, StreamMessage::Frame { .. }),
+                    "a JSON frame on a packed stream"
+                );
+            }
+            Message::Ping(_) | Message::Pong(_) => continue,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn packed_frames_ingest_stream_and_record() {
+    use live_proto::game::{NewGame, Player};
+    use live_proto::pack;
+
+    let (live, addr) = serve(Policy::default()).await;
+    let (key, account) = create(&live, "Host").await;
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    let new = NewGame {
+        map: "lockout".into(),
+        mode: "multiplayer".into(),
+        players: vec![Player {
+            index: 0,
+            name: "Host".into(),
+            xuid: Some(account.xuid),
+            team: 0,
+            local: Some(true),
+            appearance: None,
+        }],
+        ..NewGame::default()
+    };
+    let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
+    let mut frames = live_proto::samples::multiplayer(6);
+    for f in &mut frames {
+        f.game_id = game_id.clone();
+    }
+    let mut json_reader = connect(addr, &format!("?games={game_id}&exclude=GameFrame")).await;
+    let mut packed_reader = connect(
+        addr,
+        &format!("?games={game_id}&exclude=GameFrame&frames=packed"),
+    )
+    .await;
+    for r in [&mut json_reader, &mut packed_reader] {
+        assert!(matches!(next(r).await, StreamMessage::CaughtUp { .. }));
+    }
+
+    let mut ws = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/ingest"))
+        .await
+        .unwrap()
+        .0;
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::Auth { token })
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    // The game's stream: a keyframe, then deltas, two frames a message.
+    let mut encoder = pack::Encoder::new(0, 100);
+    let mut d = pack::Decoder::new();
+    let mut seen = Vec::new();
+    let mut sent = Vec::new();
+    for pair in frames.chunks(2) {
+        let mut message = Vec::new();
+        for f in pair {
+            pack::push_record(&mut message, &encoder.encode(f).unwrap().0);
+        }
+        ws.send(Message::Binary(message.into())).await.unwrap();
+        // The pair's second frame falls inside the 15 Hz window.
+        let StreamMessage::Frame { frame } = next(&mut json_reader).await else {
+            panic!("expected a frame")
+        };
+        assert_eq!(frame.tick, pair[0].tick);
+        sent.push(*frame);
+        seen.extend(next_packed(&mut packed_reader, &mut d).await);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    // What JSON readers get (throttled frames' shots and hits carried
+    // into the next sent one), quantised.
+    let expect: Vec<_> = sent.iter().map(|f| pack::quantize(f).unwrap()).collect();
+    assert_eq!(seen, expect, "packed readers get the quantised frames");
+
+    // A reader that joins now starts from the game's last keyframe.
+    let mut late = connect(
+        addr,
+        &format!("?games={game_id}&exclude=GameFrame&frames=packed"),
+    )
+    .await;
+    assert!(matches!(
+        next(&mut late).await,
+        StreamMessage::CaughtUp { .. }
+    ));
+    let mut d = pack::Decoder::new();
+    let caught = next_packed(&mut late, &mut d).await;
+    assert_eq!(caught.last(), expect.last());
+
+    // A delta without its base is refused; the socket stays open.
+    let mut skip = pack::Encoder::new(0, 100);
+    skip.encode(&frames[0]).unwrap();
+    let mut message = Vec::new();
+    pack::push_record(&mut message, &skip.encode(&frames[1]).unwrap().0);
+    let mut fresh = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/ingest"))
+        .await
+        .unwrap()
+        .0;
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    fresh
+        .send(Message::Text(
+            serde_json::to_string(&ClientMessage::Auth { token })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    fresh.send(Message::Binary(message.into())).await.unwrap();
+    assert!(matches!(
+        reply(&mut fresh).await,
+        live_proto::IngestReply::Error { .. }
+    ));
+
+    // Recorded frames are stored packed and signed as such; JSON readers
+    // get them decoded, packed readers as a container of keyframes.
+    let mut data = Vec::new();
+    for _ in 0..50 {
+        data = live
+            .recorded_frame_data(&game_id, None, None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        if !data.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(data[0]["packed"].is_string() && data[0].get("players").is_none());
+    let json = live
+        .recorded_frames(&game_id, None, None, 0, 100)
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(json[0]["source"], account.id.as_str());
+    let first: live_proto::game::Frame = serde_json::from_value(json[0].clone()).unwrap();
+    assert_eq!(first.tick, expect[0].tick);
+    assert_eq!(first.players, expect[0].players);
+    // Off the test's one runtime thread, which the server needs.
+    let url = format!("http://{addr}/v1/games/{game_id}/frames?format=packed");
+    let (kind, bytes) = tokio::task::spawn_blocking(move || {
+        let body = ureq::get(&url).call().unwrap();
+        let kind = body.header("content-type").map(str::to_owned);
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut body.into_reader(), &mut bytes).unwrap();
+        (kind, bytes)
+    })
+    .await
+    .unwrap();
+    assert_eq!(kind.as_deref(), Some("application/x-h2-frames"));
+    let replay: Vec<_> = pack::records(&bytes)
+        .map(|r| pack::decode_keyframe(r.unwrap()).unwrap())
+        .collect();
+    assert_eq!(replay.len(), json.len());
+    assert_eq!(replay[0], first);
 }

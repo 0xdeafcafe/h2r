@@ -278,6 +278,7 @@ fn main() {
     let mut last_ping = Instant::now();
     let mut tick = 0u64;
     let mut n = 0usize;
+    let mut packer = live_proto::pack::Encoder::new(0, 150);
     while start.elapsed() < Duration::from_secs(seconds) {
         tick += 3;
         let t = tick as f64 / 30.0;
@@ -374,13 +375,36 @@ fn main() {
                     ..Default::default()
                 }))
                 .collect(),
+            // A crate pushed along a line, and the sniper rifle's spawn
+            // empty for half of every 20 seconds.
+            objects: [
+                live_proto::game::FrameObject {
+                    k: live_proto::game::ObjectKind::Crate,
+                    i: 0,
+                    p: Some([6.0 + (t * 0.5).sin() * 3.0, 4.0, 0.5]),
+                    f: Some([1.0, 0.0, 0.0]),
+                    u: Some([0.0, 0.0, 1.0]),
+                    gone: false,
+                },
+                live_proto::game::FrameObject {
+                    k: live_proto::game::ObjectKind::NetgameEquipment,
+                    i: 3,
+                    p: None,
+                    f: None,
+                    u: None,
+                    gone: true,
+                },
+            ]
+            .into_iter()
+            .filter(|o| !o.gone || (t as u64 / 10).is_multiple_of(2))
+            .collect(),
         };
-        send(
-            &mut ws,
-            &ClientMessage::Frame {
-                frame: Box::new(frame),
-            },
-        );
+        // Frames go packed (docs/live-telemetry.md, Packed frames).
+        let (record, _) = packer.encode(&frame).expect("packs");
+        let mut message = Vec::new();
+        live_proto::pack::push_record(&mut message, &record);
+        ws.send(tungstenite::Message::Binary(message.into()))
+            .expect("ingest send");
         // Presence lasts 90 s without a ping.
         if last_ping.elapsed() > Duration::from_secs(30) {
             last_ping = Instant::now();
