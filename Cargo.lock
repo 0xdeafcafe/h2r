@@ -1017,6 +1017,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "content"
+version = "0.1.0"
+dependencies = [
+ "map",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "coop"
 version = "0.1.0"
 dependencies = [
@@ -5838,6 +5850,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vfs"
 version = "0.1.0"
 dependencies = [
+ "content",
  "rustix 1.1.6",
  "thiserror 2.0.21",
  "xiso",

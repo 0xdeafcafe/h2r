@@ -1,0 +1,15 @@
+[package]
+name = "content"
+description = "Map packages: the manifest, MapId, PPF/IPS/BPS patch readers and the resolver that turns a package into the bytes of maps\\<name>.map (docs/maps.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+sha2 = "0.10"
+thiserror.workspace = true
+# The copy-time header checksum repaired after the file layers.
+map.workspace = true
