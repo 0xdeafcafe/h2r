@@ -151,7 +151,7 @@ h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [-
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
@@ -242,9 +242,21 @@ for a fixed one) with the identity in `live/server`, so its accounts are
 `h2 live serve`'s. With `--live` or `--live-server URL` it uses a running
 service instead. The
 account is the first local one for that server whose key the server still
-lists, else a new one named `--gamertag NAME` or after the OS user
-(letters and digits, a single space for anything else, numbered when
-taken). It prints the gamertag and, for the embedded server, the web app's
+lists. Otherwise the player's identity moves with them: the gamertag is
+`--gamertag NAME`, else the one last played on another server
+(`last_played` in accounts.json), else one made from the OS user name
+(letters and digits, a single space for anything else), and an account
+of that gamertag on another server lends its key, so the player keeps one
+key everywhere. If the gamertag is new to the server it is made there
+(on an invite-only server with `--invite CODE`, or an invite asked for on
+the terminal; long and 25-character codes both work). If the server has
+it already (made from the web or another device), `h2 play` asks on the
+terminal for the current recovery code (Account on the server's `/dash`,
+or an authenticator app) and adds this machine's key
+([live-security.md](live-security.md) §1, Recovery); without a terminal
+it stops and prints the `h2 live account recover <tag> --server URL`
+command. On the embedded server (`--live-local`) a taken default name is
+numbered instead. It prints the gamertag and, for the embedded server, the web app's
 URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.

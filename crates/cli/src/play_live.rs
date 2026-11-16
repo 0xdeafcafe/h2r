@@ -16,6 +16,7 @@ use live_proto::{Gamertag, ServerOverride};
 
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
+use live_proto::sign::KeyPair;
 
 /// The Live service `h2 play --live` signs in to: [`live_proto::DEFAULT_SERVER`],
 /// shared with the app builds.
@@ -41,6 +42,8 @@ pub struct LiveOpts {
     pub listen: Option<SocketAddr>,
     /// `--gamertag`: the account to play as (made if missing).
     pub gamertag: Option<String>,
+    /// `--invite CODE`: for making the account on an invite-only server.
+    pub invite: Option<String>,
     /// `--live-tunnel` (alias `--tunnel`), with `--live-tunnel-name NAME`
     /// (`--tunnel-name`) and `--live-tunnel-url https://HOST` (or
     /// `--hostname HOST`): publish the embedded server through cloudflared
@@ -91,6 +94,7 @@ impl LiveOpts {
             }
             "--hostname" => self.hostname = Some(value()?),
             "--no-tunnel-setup" => self.no_tunnel_setup = true,
+            "--invite" => self.invite = Some(value()?),
             "--gamertag" => {
                 let v = value()?;
                 Gamertag::new(&v).map_err(|e| anyhow::anyhow!("--gamertag {v:?}: {e}"))?;
@@ -117,6 +121,11 @@ impl LiveOpts {
             bail!(
                 "--gamertag is the Live account to play as; it goes with --live, --live-server \
                  or --live-local"
+            );
+        }
+        if self.invite.is_some() && !self.enabled {
+            bail!(
+                "--invite makes the Live account to play as; it goes with --live or --live-server"
             );
         }
         if self.server.is_some() && self.listen.is_some() {
@@ -291,11 +300,20 @@ pub fn start(
         (None, None) => bail!("no Live server: --live-local or a --live-server URL"),
     };
     let client = Client::at(&url)?;
+    let mut terminal = terminal_ask;
+    let ask: Ask = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        Some(&mut terminal)
+    } else {
+        None
+    };
     let (account, created) = bootstrap(
         &client,
         &places.accounts,
         opts.gamertag.as_deref(),
         default_name,
+        opts.invite.as_deref(),
+        embedded.is_some(),
+        ask,
     )?;
     if created {
         eprintln!(
@@ -372,20 +390,71 @@ pub fn start(
     })
 }
 
-/// The account to play as on `client`'s server: the first local one (named
-/// `want`, if given) whose key the server still lists as current, else a
-/// new one, named `want` or after `default_name` (numbered if taken).
-/// Returns it and whether it was made now.
+/// Asks the player a question on the terminal; `None` when stdin is not one.
+pub type Ask<'a> = Option<&'a mut dyn FnMut(&str) -> Result<String>>;
+
+/// The terminal's [`Ask`]: the question on stderr, the answer from stdin.
+pub fn terminal_ask(question: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+    eprint!("{question} ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// Seconds since the epoch an account was last picked to play
+/// (`last_played` in accounts.json); 0 if never.
+fn last_played(a: &LocalAccount) -> i64 {
+    a.extra
+        .get("last_played")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0)
+}
+
+/// A gamertag as a shell word.
+fn shell_word(s: &str) -> String {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The account to play as on `client`'s server (docs/live/live.md
+/// "Playing on Live"):
+///
+/// 1. a local one there (named `want`, if given) whose key the server
+///    still lists as current;
+/// 2. else the player's identity from another server: `want`, else the
+///    gamertag of the most recently played local account elsewhere, else
+///    one from `default_name` (the OS user name), keeping that account's
+///    key when there is one:
+///    - not on this server yet: created with that key (with `invite`, or
+///      one asked for, when the server is invite-only);
+///    - already there (made from another device or the web): recovered
+///      with a code the player types, adding this machine's key;
+///    - on the embedded server (`local`) a taken default name is numbered
+///      instead, as before.
+///
+/// `ask` is how to ask the player (None: not a terminal, so fail with the
+/// command to run). Returns the account and whether it was added now.
 pub fn bootstrap(
     client: &Client,
     accounts_path: &Path,
     want: Option<&str>,
     default_name: &str,
+    invite: Option<&str>,
+    local: bool,
+    mut ask: Ask,
 ) -> Result<(LocalAccount, bool)> {
     let mut accounts = live_accounts::load(accounts_path)?;
-    let on_server = |a: &&LocalAccount| a.is_on(&client.base, &client.discovery.id);
-    let named = |a: &&LocalAccount| want.is_none_or(|w| a.gamertag.eq_ignore_ascii_case(w));
-    for a in accounts.iter().filter(on_server).filter(named) {
+    let here = |a: &LocalAccount| a.is_on(&client.base, &client.discovery.id);
+    let named = |a: &LocalAccount| want.is_none_or(|w| a.gamertag.eq_ignore_ascii_case(w));
+    let mut found = None;
+    for a in accounts.iter().filter(|a| here(a) && named(a)) {
         let Ok(key) = a.key_pair() else { continue };
         let keys = match client.keys(a.xuid) {
             Ok(k) => k,
@@ -397,20 +466,170 @@ pub fn bootstrap(
             .iter()
             .any(|k| k.kid == key.kid() && k.valid_to.is_none())
         {
-            return Ok((a.clone(), false));
+            found = Some(a.clone());
+            break;
         }
     }
-    let base = want.map_or_else(
-        || live_accounts::gamertag_from(default_name),
-        str::to_string,
-    );
+    if let Some(account) = found {
+        return Ok((keep(accounts_path, &mut accounts, account)?, false));
+    }
+
+    // The player's identity on other servers, most recently played last.
+    let mut elsewhere: Vec<(usize, &LocalAccount)> = accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !here(a) && named(a) && a.key_pair().is_ok())
+        .collect();
+    elsewhere.sort_by_key(|(i, a)| (last_played(a), *i));
+    let prior = elsewhere.last().map(|(_, a)| (*a).clone());
+    let base = want
+        .map(str::to_string)
+        .or_else(|| prior.as_ref().map(|a| a.gamertag.clone()))
+        .unwrap_or_else(|| live_accounts::gamertag_from(default_name));
+    let reuse = prior
+        .filter(|a| a.gamertag.eq_ignore_ascii_case(&base))
+        .and_then(|a| a.key_pair().ok());
+    let tag = Gamertag::new(&base).with_context(|| format!("{base:?} is not a valid gamertag"))?;
+
+    if local {
+        return numbered(
+            client,
+            accounts_path,
+            &mut accounts,
+            &base,
+            want.is_none(),
+            reuse,
+        );
+    }
+
+    let exists = match client.get::<serde_json::Value>(
+        &format!("/accounts/{}", crate::live_query::path_part(tag.as_str())),
+        &[],
+    ) {
+        Ok(_) => true,
+        Err(e) if status_of(&e) == Some(404) => false,
+        Err(e) => return Err(e),
+    };
+    let host = &client.discovery.id;
+    let account = if exists {
+        let Some(ask) = ask.as_mut() else {
+            bail!(
+                "{tag} is already an account on {host} and this machine has no key for it. \
+                 Recover it here with a code from Account on {}/dash or your authenticator app:\n  \
+                 h2 live account recover {} --server {}",
+                client.base,
+                shell_word(tag.as_str()),
+                client.base
+            );
+        };
+        let mut key = reuse.unwrap_or_else(KeyPair::generate);
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let code = ask(&format!(
+                "{tag} is on {host} already; enter the code from Account on {}/dash or your authenticator:",
+                client.base
+            ))?;
+            let key_now = KeyPair::from_secret_b64(&key.secret_b64()).expect("our own key");
+            match crate::live_recovery::recover_with_key(
+                client,
+                accounts_path,
+                &tag,
+                &code,
+                key_now,
+            ) {
+                Ok(a) => break a,
+                // The key is taken (by another account): a fresh one.
+                Err(e) if status_of(&e) == Some(409) => key = KeyPair::generate(),
+                Err(e) if status_of(&e) == Some(429) || tries >= 3 => return Err(e),
+                // A wrong or mistyped code: ask again, same key.
+                Err(e) => eprintln!("live: {e:#}"),
+            }
+            accounts = live_accounts::load(accounts_path)?;
+        }
+    } else {
+        let invite_only = client
+            .get::<serde_json::Value>("/server", &[])
+            .ok()
+            .and_then(|v| v["invite_only"].as_bool())
+            .unwrap_or(false);
+        let mut code = invite.map(str::to_string);
+        if invite_only && code.is_none() {
+            let Some(ask) = ask.as_mut() else {
+                bail!(
+                    "{host} needs an invite code to make {tag} there: pass --invite CODE (an \
+                     admin makes one on the Server screen at {}/dash). If {tag} is yours \
+                     on {host} already, recover it: h2 live account recover {} --server {}",
+                    client.base,
+                    shell_word(tag.as_str()),
+                    client.base
+                );
+            };
+            code = Some(ask(&format!(
+                "{host} needs an invite to make {tag} there; enter an invite code:"
+            ))?);
+        }
+        let key = reuse.unwrap_or_else(KeyPair::generate);
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let key_now = KeyPair::from_secret_b64(&key.secret_b64()).expect("our own key");
+            match client.create_account_with(key_now, tag.as_str(), code.clone()) {
+                Ok((created, key)) => {
+                    accounts.retain(|a| !(here(a) && a.gamertag.eq_ignore_ascii_case(&base)));
+                    break LocalAccount::new(
+                        created.xuid,
+                        created.gamertag.as_str(),
+                        &client.base,
+                        &client.discovery,
+                        &key,
+                    );
+                }
+                Err(e) if status_of(&e) == Some(403) && tries < 3 && ask.is_some() => {
+                    eprintln!("live: {e:#}");
+                    let ask = ask.as_mut().expect("checked");
+                    code = Some(ask("enter an invite code:")?);
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("creating {tag} on {host}"));
+                }
+            }
+        }
+    };
+    Ok((keep(accounts_path, &mut accounts, account)?, true))
+}
+
+/// Stores `account` (replacing the same xuid) stamped as just played.
+fn keep(
+    path: &Path,
+    accounts: &mut Vec<LocalAccount>,
+    mut account: LocalAccount,
+) -> Result<LocalAccount> {
+    account
+        .extra
+        .insert("last_played".into(), crate::live_cmd::now().into());
+    live_accounts::upsert(accounts, account.clone());
+    live_accounts::save(path, accounts)?;
+    Ok(account)
+}
+
+/// A server on this machine: `base`, numbered while taken if `number`.
+fn numbered(
+    client: &Client,
+    accounts_path: &Path,
+    accounts: &mut Vec<LocalAccount>,
+    base: &str,
+    number: bool,
+    mut reuse: Option<KeyPair>,
+) -> Result<(LocalAccount, bool)> {
     for n in 1..=20 {
         let tag = if n == 1 {
-            base.clone()
+            base.to_string()
         } else {
-            live_accounts::numbered(&base, n)
+            live_accounts::numbered(base, n)
         };
-        match client.create_account(&tag, None) {
+        let key = reuse.take().unwrap_or_else(KeyPair::generate);
+        match client.create_account_with(key, &tag, None) {
             Ok((created, key)) => {
                 let account = LocalAccount::new(
                     created.xuid,
@@ -425,11 +644,9 @@ pub fn bootstrap(
                     !(a.is_on(&client.base, &client.discovery.id)
                         && a.gamertag.eq_ignore_ascii_case(&tag))
                 });
-                live_accounts::upsert(&mut accounts, account.clone());
-                live_accounts::save(accounts_path, &accounts)?;
-                return Ok((account, true));
+                return Ok((keep(accounts_path, accounts, account)?, true));
             }
-            Err(e) if status_of(&e) == Some(409) && want.is_none() => continue,
+            Err(e) if status_of(&e) == Some(409) && number => continue,
             Err(e) => {
                 return Err(e).with_context(|| format!("creating {tag:?} on {}", client.base));
             }
@@ -437,7 +654,7 @@ pub fn bootstrap(
     }
     bail!(
         "every gamertag from {base:?} to {:?} is taken; pass --gamertag",
-        live_accounts::numbered(&base, 20)
+        live_accounts::numbered(base, 20)
     )
 }
 
@@ -482,6 +699,156 @@ pub fn os_user() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An embedded server in `dir` with `policy`, and a client for it.
+    fn server_at(
+        dir: &Path,
+        name: &str,
+        policy: live_server::Policy,
+    ) -> (live_server::Embedded, Client) {
+        // Each its own server id, as two real servers would have.
+        live_server::ServerIdentity::open(&dir.join(name), Some(&format!("{name}.test"))).unwrap();
+        let server = live_server::start_embedded_with(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir.join(name),
+            Default::default(),
+            policy,
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        (server, client)
+    }
+
+    fn kid_of(a: &LocalAccount) -> String {
+        a.key_pair().unwrap().kid().to_string()
+    }
+
+    #[test]
+    fn moving_servers_keeps_the_gamertag_and_key() {
+        let dir = temp("move");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (afr, _) = bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        // Not on b yet: made there with the same key, not the OS name.
+        let (moved, created) =
+            bootstrap(&new, &accounts, None, "os.user", None, false, None).unwrap();
+        assert!(created);
+        assert_eq!(moved.gamertag, "afr");
+        assert_eq!(kid_of(&moved), kid_of(&afr));
+        assert_eq!(live_accounts::load(&accounts).unwrap().len(), 2);
+        // Next time it is simply found.
+        let (again, created) =
+            bootstrap(&new, &accounts, None, "os.user", None, false, None).unwrap();
+        assert!(!created);
+        assert_eq!(again.xuid, moved.xuid);
+    }
+
+    #[test]
+    fn the_most_recently_played_identity_is_the_one_moved() {
+        let dir = temp("recent");
+        let accounts = dir.join("accounts.json");
+        let (_a, a) = server_at(&dir, "a", Default::default());
+        let (_b, b) = server_at(&dir, "b", Default::default());
+        let (_c, c) = server_at(&dir, "c", Default::default());
+        bootstrap(&a, &accounts, Some("Older"), "x", None, true, None).unwrap();
+        bootstrap(&b, &accounts, Some("Newer"), "x", None, true, None).unwrap();
+        // Play as Older again: it is now the latest.
+        let mut all = live_accounts::load(&accounts).unwrap();
+        for e in all.iter_mut() {
+            let t = if e.gamertag == "Older" { 200 } else { 100 };
+            e.extra.insert("last_played".into(), t.into());
+        }
+        live_accounts::save(&accounts, &all).unwrap();
+        let (moved, _) = bootstrap(&c, &accounts, None, "x", None, false, None).unwrap();
+        assert_eq!(moved.gamertag, "Older");
+    }
+
+    #[test]
+    fn a_gamertag_already_there_is_recovered_with_a_code() {
+        let dir = temp("recover");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (afr, _) = bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        // afr signed up on b from the web: a key this machine lacks.
+        let (web, _) = new.create_account("afr", None).unwrap();
+        let secret =
+            live_proto::recovery::TotpSecret::from_base32(&web.recovery.expect("recovery").secret)
+                .unwrap();
+
+        // Not a terminal: the command to run.
+        let err = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&format!(
+                "h2 live account recover afr --server {}",
+                new.base
+            )),
+            "{msg}"
+        );
+
+        // A terminal: a wrong code, then the right one.
+        let mut asked = Vec::new();
+        let mut answers = vec![
+            format!(
+                "{:06}",
+                (secret.code_at(crate::live_cmd::now()) + 1) % 1_000_000
+            ),
+            live_proto::recovery::format_code(secret.code_at(crate::live_cmd::now())),
+        ]
+        .into_iter();
+        let mut ask = |q: &str| {
+            asked.push(q.to_string());
+            Ok(answers.next().unwrap())
+        };
+        let (got, added) =
+            bootstrap(&new, &accounts, None, "x", None, false, Some(&mut ask)).unwrap();
+        assert!(added);
+        assert_eq!((got.xuid, got.gamertag.as_str()), (web.xuid, "afr"));
+        assert_eq!(kid_of(&got), kid_of(&afr), "one key for the player");
+        assert!(
+            asked[0].contains("afr is on") && asked[0].contains("/dash"),
+            "{asked:?}"
+        );
+        let keys = new.keys(web.xuid).unwrap();
+        assert!(keys.keys.iter().any(|k| k.kid == kid_of(&afr)));
+        // Found from now on.
+        let (again, added) = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap();
+        assert!(!added);
+        assert_eq!(again.xuid, web.xuid);
+    }
+
+    #[test]
+    fn an_invite_only_server_takes_an_invite_from_the_flag_or_the_terminal() {
+        let dir = temp("invite");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let policy = || live_server::Policy {
+            invite_only: true,
+            ..Default::default()
+        };
+        let (_b, new) = server_at(&dir, "b", policy());
+        bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        let op = live_server::ServerIdentity::load(&dir.join("b")).unwrap();
+        let invite =
+            || live_proto::sign::Invite::issue(&op.key, &op.id, crate::live_cmd::now() + 3600);
+
+        let err = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap_err();
+        assert!(format!("{err:#}").contains("--invite CODE"), "{err:#}");
+        let (got, _) = bootstrap(&new, &accounts, None, "x", Some(&invite()), false, None).unwrap();
+        assert_eq!(got.gamertag, "afr");
+
+        // Another server, the invite typed at the terminal.
+        let (_c, third) = server_at(&dir, "c", policy());
+        let op = live_server::ServerIdentity::load(&dir.join("c")).unwrap();
+        let code = live_proto::sign::Invite::issue(&op.key, &op.id, crate::live_cmd::now() + 3600);
+        let mut ask = |_: &str| Ok(code.clone());
+        let (got, _) =
+            bootstrap(&third, &accounts, None, "x", None, false, Some(&mut ask)).unwrap();
+        assert_eq!(got.gamertag, "afr");
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("h2-play-live-{name}-{}", std::process::id()));
@@ -663,17 +1030,36 @@ mod tests {
 
         // The same server again: the account is found, not made.
         let client = Client::at(&session.server).unwrap();
-        let (again, created) = bootstrap(&client, &places.accounts, None, "test.user").unwrap();
+        let (again, created) = bootstrap(
+            &client,
+            &places.accounts,
+            None,
+            "test.user",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         assert!(!created);
         assert_eq!(again.xuid, session.account.xuid);
         // Another name is made beside it; a taken default is numbered.
-        let (other, created) = bootstrap(&client, &places.accounts, Some("Other"), "x").unwrap();
+        let (other, created) = bootstrap(
+            &client,
+            &places.accounts,
+            Some("Other"),
+            "x",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         assert!(created && other.gamertag == "Other");
         let elsewhere = dir.join("elsewhere.json");
-        let (numbered, _) = bootstrap(&client, &elsewhere, None, "test.user").unwrap();
+        let (numbered, _) =
+            bootstrap(&client, &elsewhere, None, "test.user", None, true, None).unwrap();
         assert_eq!(numbered.gamertag, "test user2");
         // A chosen name someone else has is an error.
-        assert!(bootstrap(&client, &elsewhere, Some("Other"), "x").is_err());
+        assert!(bootstrap(&client, &elsewhere, Some("Other"), "x", None, true, None).is_err());
         assert_eq!(live_accounts::load(&places.accounts).unwrap().len(), 2);
 
         // Stopping the session stops the server.

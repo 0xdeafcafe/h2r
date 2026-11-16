@@ -528,7 +528,17 @@ impl Client {
         gamertag: &str,
         invite: Option<String>,
     ) -> Result<(CreatedAccount, KeyPair)> {
-        let key = KeyPair::generate();
+        self.create_account_with(KeyPair::generate(), gamertag, invite)
+    }
+
+    /// Registers a new account with `key` (one this machine already uses
+    /// on another server, so the identity stays the same).
+    pub(crate) fn create_account_with(
+        &self,
+        key: KeyPair,
+        gamertag: &str,
+        invite: Option<String>,
+    ) -> Result<(CreatedAccount, KeyPair)> {
         let req = self
             .agent
             .post(&self.url("/accounts"))
