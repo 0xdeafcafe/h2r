@@ -253,7 +253,7 @@ mod tests {
 
     const LEVEL: &[u8] = b"the disc's own level map";
 
-    pub(crate) fn iso(t: &Temp) -> PathBuf {
+    fn iso(t: &Temp) -> PathBuf {
         crate::map_override::tests::iso_at(&t.0, LEVEL)
     }
 

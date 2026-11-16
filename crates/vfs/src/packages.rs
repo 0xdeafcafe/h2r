@@ -80,7 +80,11 @@ struct Slot {
 /// sizes of the directory, `active.toml`, and each package's directory and
 /// manifest. Equal stamps mean nothing a scan reads has changed.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Stamp(Vec<(String, Option<SystemTime>, Option<(SystemTime, u64)>)>);
+struct Stamp(Vec<StampEntry>);
+
+/// One stamped path: its name, the directory's mtime, and the file's
+/// mtime and size.
+type StampEntry = (String, Option<SystemTime>, Option<(SystemTime, u64)>);
 
 fn modified(path: &Path) -> Option<(SystemTime, u64)> {
     let m = std::fs::metadata(path).ok()?;

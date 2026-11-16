@@ -563,7 +563,7 @@ mod tests {
         assert!(told.lock().unwrap().is_empty(), "a check installs nothing");
         let dir = g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
         assert_eq!(dir, maps.join(format!("live-{}", &id.to_string()[..16])));
-        assert_eq!(*told.lock().unwrap(), [dir.clone()], "the boot is told");
+        assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&dir), "the boot is told");
         assert_eq!(std::fs::read(dir.join("patches/snipers.ips")).unwrap(), patch);
         let lib = Library::open(&maps);
         assert_eq!(lib.packages()[0].id, id);
