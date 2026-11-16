@@ -258,9 +258,10 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
  * local, h2acc, one before each attempted access (the faulting one
  * included). The accesses themselves charge nothing: h2fastmem.h's inline
  * RAM path skips its own count and its slow path takes the uncharged
- * h2abi_v1_read/write_counted. Handlers settle the count
- * with h2abi_v1_charge: on every way out (the shared epilogue)
- * and before anything that spends or observes the slice (H2_ACC_SETTLE).
+ * h2abi_v1_read/write_counted. Handlers settle the count on every way
+ * out (the shared epilogue's h2abi_v1_exit, H2_EXIT_LATE_) and with
+ * h2abi_v1_charge before anything that spends or observes the slice
+ * (H2_ACC_SETTLE).
  * The local never escapes, so clang merges the increments along a path.
  * Loops compare it with the budget read on entry (h2left, from
  * h2abi_v1_budget) where they poll, so they leave at the safe point where
@@ -383,13 +384,39 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     H2_EPILOGUE_BODY()
 #define H2_EPILOGUE_BODY()                                                      \
     H2_GATE_DROP();                                                             \
-    H2_ACC_FLUSH();                                                             \
+    H2_EXIT_EARLY_();                                                           \
     H2_SPILL_HOMED_();                                                          \
     /* Canonical EFLAGS has bit 1 set even where the handler left it alone. */ \
     if (!H2_HOMED(8)) cpu->eflags |= 2u;                                        \
     cpu->eip = x_eip;                                                           \
-    H2_FAST_RELEASE(); H2_PERF_FLUSH();                                                         \
+    H2_EXIT_LATE_(); H2_PERF_FLUSH();                                           \
     return h2_transfer(x_kind, x_route, x_target, x_resume, x_event)
+/* What the epilogue settles with the runtime: the handler's own count
+ * (accounting) and the inline RAM view's (H2_FASTMEM). H2_EXIT_CALL (the
+ * default) does both in one h2abi_v1_exit, after the spill so nothing but
+ * the x_* locals lives across the call; 0 is the earlier pair, a charge
+ * before the spill and a release after it, kept for the equivalence tests.
+ * Nothing between the two touches guest memory or the slice, so they
+ * settle the same counts in the same order. */
+#ifndef H2_EXIT_CALL
+#define H2_EXIT_CALL 1
+#endif
+#if H2_ACCOUNTING
+#define H2_ACC_COUNT_() h2acc
+#else
+#define H2_ACC_COUNT_() 0u
+#endif
+#if H2_EXIT_CALL && H2_FASTMEM
+#define H2_EXIT_EARLY_() ((void)0)
+#define H2_EXIT_LATE_() h2abi_v1_exit(ctx, H2_ACC_COUNT_())
+#elif H2_EXIT_CALL
+/* No view to settle: the charge alone, after the spill. */
+#define H2_EXIT_EARLY_() ((void)0)
+#define H2_EXIT_LATE_() H2_ACC_FLUSH()
+#else
+#define H2_EXIT_EARLY_() H2_ACC_FLUSH()
+#define H2_EXIT_LATE_() H2_FAST_RELEASE()
+#endif
 
 #define H2_EXIT_(kind, route, target, resume, event, eip)                       \
     do {                                                                        \

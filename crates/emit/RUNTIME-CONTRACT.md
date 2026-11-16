@@ -37,9 +37,13 @@ or null to retain the Rust path. `h2fastmem.h` defines the extension layout;
 its 64-bit host sizes are asserted in both C and Rust. The named extension
 functions do not change ABI v2 layouts. A bridge must forward them explicitly;
 use a versioned install symbol with an explicit size when extending its table.
-The test bridge uses `h2bridge_install_v2(table, size)` and
-`h2bridge_layout_v2`; installation rejects a wrong size before reading the
-table. Its original eight-callback install/layout symbols remain compatible,
+The test bridge uses `h2bridge_install_v3(table, size)` and
+`h2bridge_layout_v3`; installation rejects a wrong size before reading the
+table. v3 added the `exit` slot (`h2abi_v1_exit`); `h2bridge_install_v2` and
+`h2bridge_layout_v2` still take the table without it and make `exit` the
+charge-then-release pair it replaces. The boot bridge does the same with
+`h2boot_install_v3`; boot installs a module built before it through its
+`h2boot_install_v2`, the table without `exit`. Its original eight-callback install/layout symbols remain compatible,
 with profiling disabled and null fast views. Tooling using that legacy bridge
 must adopt the v2 table and forward both fast callbacks to measure inline RAM.
 
@@ -97,8 +101,10 @@ callback that takes the context.
 Each successful fast access increments its context-local count. The access
 that reaches the supplied budget atomically raises SLICE on the existing
 preempt word. Slow helpers settle pending fast accesses before charging their
-own access, and `h2abi_v1_fast_release(ctx)` settles them at the common epilogue,
-including faults and preemption. Runtime invocation also settles as a backstop.
+own access, and the common epilogue settles them, including faults and
+preemption, with `h2abi_v1_exit(ctx, n)`: the release (`h2abi_v1_fast_release`)
+and the accounting charge of `n` (none when 0) in one call. Modules built
+before it make the two calls, and both stay exported. Runtime invocation also settles as a backstop.
 The two paths therefore charge identical access budgets and guest work.
 `enable_fast_memory(false)` is a per-context comparison/diagnostic switch.
 
@@ -282,7 +288,7 @@ and every other stop are the same.
 
 Accounting is independent of lazy flags (crates/opt). A poll, REP poll or
 fault leaves through the shared epilogue, which materialises the pending
-flags and then charges the count before spilling; neither step reads what the
+flags and then charges the count (`h2abi_v1_exit`, after the spill); neither step reads what the
 other writes. Nothing is pending at a REP poll: a `Repeat` settles every flag
 before its loop, and its body's flag writes are never lazy or removed.
 

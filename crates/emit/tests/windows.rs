@@ -115,8 +115,18 @@ fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols()
         .unwrap_or_else(|e| panic!("{e}"));
 
     for (dll, bridge) in [
-        (&emit_dll, &["h2bridge_install", "h2bridge_install_v2", "h2bridge_layout", "h2bridge_layout_v2"][..]),
-        (&boot_dll, &["h2boot_install_v2"][..]),
+        (
+            &emit_dll,
+            &[
+                "h2bridge_install",
+                "h2bridge_install_v2",
+                "h2bridge_install_v3",
+                "h2bridge_layout",
+                "h2bridge_layout_v2",
+                "h2bridge_layout_v3",
+            ][..],
+        ),
+        (&boot_dll, &["h2boot_install_v3"][..]),
     ] {
         let header = readobj(&readobj_tool, &["--file-headers"], dll);
         assert!(header.contains("IMAGE_FILE_MACHINE_AMD64"), "{header}");

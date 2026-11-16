@@ -312,8 +312,22 @@ enum Mode {
     Disabled,
     /// Built with direct calls and using them.
     On,
+    /// [`Mode::Off`] and [`Mode::On`] built with the handler exits from
+    /// before `h2abi_v1_exit` (`H2_EXIT_CALL=0`: a charge, then a release)
+    /// and installed as such a module is, through the v2 bridge table.
+    OldOff,
+    OldOn,
 }
-const MODES: [Mode; 3] = [Mode::Off, Mode::Disabled, Mode::On];
+const MODES: [Mode; 5] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn];
+
+impl Mode {
+    fn direct(self) -> bool {
+        !matches!(self, Mode::Off | Mode::OldOff)
+    }
+    fn old(self) -> bool {
+        matches!(self, Mode::OldOff | Mode::OldOn)
+    }
+}
 
 struct Module {
     _lib: libloading::Library,
@@ -321,18 +335,21 @@ struct Module {
     version: runtime::ffi::GeneratedAbiVersion,
 }
 
-fn build(direct: bool) -> Module {
+fn build(direct: bool, old: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}"));
     let src = dir.join("src");
     emit::write_module_with(&owners, &src, emit::Codegen { accounting: true, ..emit::Codegen::default() }).unwrap();
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();
-    let flag = format!(
+    let mut flag = format!(
         "#undef H2_DIRECT_CALLS\n#define H2_DIRECT_CALLS {}\n",
         u8::from(direct)
     );
+    if old {
+        flag += "#define H2_EXIT_CALL 0\n";
+    }
     std::fs::write(&header, format!("{flag}{content}")).unwrap();
     emit::compile::install_header(&src, &common::abi_header().unwrap()).unwrap();
     let b = emit::compile::build(&src, &dir, emit::compile::Arch::host(), 2).unwrap();
@@ -342,7 +359,7 @@ fn build(direct: bool) -> Module {
     let lib = unsafe { libloading::Library::new(&dylib) }.unwrap();
     unsafe {
         let install: libloading::Symbol<unsafe extern "C" fn(*const *const (), usize) -> u32> =
-            lib.get(b"h2bridge_install_v2").unwrap();
+            lib.get(if old { b"h2bridge_install_v2".as_slice() } else { b"h2bridge_install_v3" }).unwrap();
         let callbacks = [
             runtime::ffi::h2abi_v1_read as *const (),
             runtime::ffi::h2abi_v1_write as *const (),
@@ -359,8 +376,11 @@ fn build(direct: bool) -> Module {
             runtime::ffi::h2abi_v1_write_counted as *const (),
             runtime::ffi::h2abi_v1_charge as *const (),
             runtime::ffi::h2abi_v1_budget as *const (),
+            runtime::ffi::h2abi_v1_exit as *const (),
         ];
-        assert_eq!(install(callbacks.as_ptr(), size_of_val(&callbacks)), 1);
+        // An old module's table ends before `exit`.
+        let callbacks = &callbacks[..callbacks.len() - usize::from(old)];
+        assert_eq!(install(callbacks.as_ptr(), size_of_val(callbacks)), 1);
         let table: libloading::Symbol<*const runtime::generated::H2GenModule> =
             lib.get(b"h2gen_module").unwrap();
         let version = *lib
@@ -380,18 +400,19 @@ fn build(direct: bool) -> Module {
     }
 }
 
-/// Both builds, once per test binary.
-fn modules() -> &'static [Module; 2] {
-    struct Shared([Module; 2]);
+/// Every build, once per test binary: direct calls off and on, then the
+/// same two with the old exits.
+fn modules() -> &'static [Module; 4] {
+    struct Shared([Module; 4]);
     // SAFETY: the tables are immutable statics of libraries kept loaded.
     unsafe impl Sync for Shared {}
     unsafe impl Send for Shared {}
     static M: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
-    &M.get_or_init(|| Shared([build(false), build(true)])).0
+    &M.get_or_init(|| Shared([build(false, false), build(true, false), build(false, true), build(true, true)])).0
 }
 
 fn dispatch(mode: Mode) -> Dispatch {
-    let m = &modules()[usize::from(mode != Mode::Off)];
+    let m = &modules()[usize::from(mode.direct()) + 2 * usize::from(mode.old())];
     let mut d = Dispatch::default();
     unsafe { d.register_generated_module(&*m.table, m.version) }.unwrap();
     d
@@ -407,6 +428,10 @@ struct Outcome {
     backtrace: Vec<runtime::GuestFrame>,
     preempted: Option<TransferAbi>,
     transfers: u64,
+    /// The context's access accounting after the run: accesses charged
+    /// (`Profile::memory_accessors`), those the inline RAM view made, the
+    /// slice spent, the budget left (`h2abi_v1_budget`), the preempt word.
+    accounting: [u64; 5],
 }
 
 struct Machine {
@@ -422,7 +447,7 @@ impl Machine {
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch(mode)), 1);
-        ctx.enable_direct_calls(mode == Mode::On);
+        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn));
         ctx.enable_profiling(true);
         Machine {
             ctx,
@@ -447,7 +472,19 @@ impl Machine {
     fn outcome(&mut self, transfer: TransferAbi) -> Outcome {
         let mut memory = vec![0; 8192];
         self.ctx.memory().read_bytes(DATA, &mut memory, 1).unwrap();
+        let pending = u64::from(self.ctx.preempt_pending());
+        // SAFETY: the context is live and nothing else is using it.
+        let budget = unsafe { runtime::ffi::h2abi_v1_budget((&mut self.ctx as *mut ExecCtx).cast()) };
+        let p = self.ctx.profile().unwrap();
+        let accounting = [
+            p.memory_accessors,
+            p.fast_memory_accesses,
+            self.ctx.slice_spent(),
+            budget,
+            pending,
+        ];
         Outcome {
+            accounting,
             transfer,
             cpu: self.cpu,
             memory,
@@ -513,7 +550,12 @@ impl Machine {
 
 #[test]
 fn nested_calls_and_a_stdcall_callee() {
-    agree("nested", run_twice(NEST));
+    agree("nested", |m| {
+        let out = run_twice(NEST)(m);
+        // The accounting compared is real: accesses were charged.
+        assert!(out.iter().all(|o| o.accounting[0] > 0), "{:?}", out[1].accounting);
+        out
+    });
     // 3 trips: A->B, B->C and both returns, all direct on the second run.
     assert_eq!(direct_count(NEST, None), 12);
 }
