@@ -251,6 +251,28 @@ points! { ALL;
     /// Queue new game options (EAX = the options; `+0` the mode, 1 a
     /// campaign). The menu's campaign start and level boot both end here.
     OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/skulls.md";
+    /// Open a screen: build a 0x20-byte request for the player mask and
+    /// call `loader` with it (stdcall).
+    OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";
+    /// Allocate a UI object of `size` bytes (stdcall); 0 when out of memory.
+    UI_ALLOC @ 0x001a_47fd: [fn(size: stack 0) -> eax ret 4]; "docs/ui.md";
+    /// The Controls screen loader (stdcall, the request).
+    CONTROLS_LOADER @ 0x002b_7714: [fn(request: stack 0) -> eax ret 4]; "docs/ui.md";
+    /// The Controls screen constructor: the screen in EDI, the request's
+    /// `+4`, `+8` and `+2` (word) on the stack; the screen in EAX.
+    CONTROLS_SCREEN_CTOR @ 0x002b_7752: [fn(screen: edi, a: stack 0, b: stack 1, player: stack 2) -> eax ret 12]; "docs/ui.md";
+    /// Push a constructed screen (EDI) opened by the request in EBX; it
+    /// calls screen slot 21. Who pops what is not read: entries restore
+    /// the stack themselves.
+    SCREEN_PUSH @ 0x0014_7f6d: [opaque]; "docs/ui.md";
+    /// Screen vtable slot 18 of the Controls class: set up the current pane
+    /// (header, then the pane's widgets).
+    SCREEN_SETUP_PANE @ 0x0023_047e: [fn(screen: ecx, arg: stack 0) ret 4]; "docs/ui.md";
+    /// Set a text widget's string id (the widget in EDI).
+    TEXT_SET @ 0x0025_3b1a: [fn(text: edi, id: stack 0) ret 4]; "docs/ui.md";
+    /// An item widget's `index`-th text widget of kind 6 (thiscall on the
+    /// item; the game pushes 0, the index, 6), or 0.
+    ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/playstation-audio.md";
 }
 
 globals! { GLOBALS;
@@ -267,6 +289,10 @@ globals! { GLOBALS;
     TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
     /// Holds the guest address of the 16-byte tag-entry table.
     TAG_ENTRIES @ 0x004e_3b44; "docs/engine/tag_get_checked.md";
+    /// The Controls screen's vtable (28 slots).
+    CONTROLS_SCREEN_VTABLE @ 0x0045_be30; "docs/ui.md";
+    /// The Controls list handler's vtable (22 slots).
+    CONTROLS_LIST_VTABLE @ 0x0045_d240; "docs/ui.md";
 }
 
 /// The point at `base`, if the table names one.

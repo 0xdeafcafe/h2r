@@ -161,3 +161,44 @@ fn tags_resolve_by_handle_and_group() {
     );
     assert_eq!(tags.scenario(&g), Ok(Some(b)));
 }
+
+#[test]
+fn a_controls_shaped_screen_reaches_its_list_items_press_record_and_slots() {
+    use engine::view::ui::{self, ListHandler, PressRecord, Screen};
+    const SCREEN: u32 = 0x0060_0000;
+    const VTABLE: u32 = 0x0061_0000;
+    let mut g = FakeGuest::new();
+    g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE);
+    let screen = Screen::at(SCREEN);
+    screen.set_id(&mut g, 39).unwrap();
+    let list = screen.list();
+    assert_eq!(list, ListHandler::at(SCREEN + 0x614));
+    assert_eq!(screen.header(), SCREEN + 0x80);
+    // The rows: a datum array built by the ported allocator, as the
+    // constructor builds it.
+    let d = fake::datums::<ui::Row>(&mut g, 0x0070_0000, 6);
+    let rows: Vec<_> = (0..6).map(|_| fake::push(&mut g, &d).0).collect();
+    list.set_rows(&mut g, d.array.addr).unwrap();
+    // The third item shows row 2.
+    let item = list.item(2);
+    assert_eq!(item.addr, SCREEN + 0x614 + 0x88 + 2 * 0x80);
+    item.set_parent(&mut g, list.addr).unwrap();
+    item.set_row(&mut g, Some(rows[2])).unwrap();
+    assert_eq!(item.row_index(&g), Ok(Some(2)));
+    assert_eq!(item.parent(&g), Ok(list.addr));
+    let array = list.row_array(&g).unwrap();
+    assert_eq!(array.live(&g, 16).unwrap().len(), 6);
+    // The press record calls its function on its target.
+    let press = list.press(ui::CONTROLS_PRESS);
+    assert_eq!(press, PressRecord::at(SCREEN + 0x614 + 0x388));
+    press.set_target(&mut g, list.addr).unwrap();
+    press.set_function(&mut g, 0x002c_8719).unwrap();
+    assert_eq!(g.u32(SCREEN + 0x614 + 0x388 + 0x14), Ok(0x002c_8719));
+    // Slots are read from the vtable the handler points at.
+    g.map(VTABLE, 4 * ui::list_slot::COUNT);
+    g.put_u32(VTABLE + 4 * ui::list_slot::ROW_TEXT, 0x1234);
+    list.set_vtable(&mut g, VTABLE).unwrap();
+    let vt = list.vtable(&g).unwrap();
+    assert_eq!(ui::slot(&g, vt, ui::list_slot::ROW_TEXT), Ok(0x1234));
+    assert_eq!(screen.id(&g), Ok(39));
+}
