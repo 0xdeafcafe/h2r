@@ -414,6 +414,7 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         "0x00223240 RENDER_FRAME: observe_before [render-timing:frame] -> original -> observe_after [render-timing:frame]",
         "0x002234e0 RENDER_GAME_VIEWS: observe_before [render-timing:game_views] -> original -> observe_after [render-timing:game_views]",
         "0x00031c80 SCENE_CALL_00031c80: observe_before [render-timing:scene call] -> original",
+        "0x0001a170 SHADER_CALL_0001a170: observe_before [render-timing:shader call] -> original",
         // A scene callee that is also a stage: the call site first.
         "0x00044550 LAYER_DRAW: observe_before [render-timing:scene call, render-timing:layer_draw] -> original -> observe_after [render-timing:layer_draw]",
     ] {
@@ -426,6 +427,12 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         .filter(|l| l.contains("[render-timing:scene call] -> original"))
         .count();
     assert_eq!(calls, feature::render_timing::SCENE_CALLEES.len() - 1);
+    // And every shader-draw callee.
+    let calls = text
+        .lines()
+        .filter(|l| l.contains("[render-timing:shader call] -> original"))
+        .count();
+    assert_eq!(calls, feature::render_timing::SHADER_CALLEES.len());
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
     assert_eq!(
         shadows,

@@ -22,6 +22,13 @@
 //! call site's. The scene passes' own code between calls is a handful of
 //! instructions and goes to the call before it.
 //!
+//! **Shader draw.** Shader draw begin (`0x0001bbf0`) ends in the shader
+//! draw `0x00016b90`, which calls 21 functions ([`SHADER_CALLEES`]): the
+//! state cache's checks and its D3D state setters. Those calls are split
+//! the same way, as the shader-begin stage's call sites, and every stage
+//! and site also counts the D3D entries it made
+//! ([`timeline::phase::scope_entries`]).
+//!
 //! Off by default (`H2_FEATURES=render-timing`): each hooked function
 //! leaves the direct-call path. The 37 callees are observed from every
 //! caller, not only the scene passes; the line reports how many calls a
@@ -121,16 +128,29 @@ impl Stage {
     }
 }
 
-/// The render front-end's two clocks: guest code and D3D entries.
+/// The render front-end's clocks: guest code and D3D entries, and a count
+/// of D3D entries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Now {
     pub guest: u64,
     pub d3d: u64,
+    pub d3d_calls: u64,
 }
 
 impl Now {
     pub fn new(guest: u64, d3d: u64) -> Self {
-        Now { guest, d3d }
+        Now {
+            guest,
+            d3d,
+            d3d_calls: 0,
+        }
+    }
+    pub fn with_calls(guest: u64, d3d: u64, d3d_calls: u64) -> Self {
+        Now {
+            guest,
+            d3d,
+            d3d_calls,
+        }
     }
 }
 
@@ -139,6 +159,8 @@ impl Now {
 pub struct Time {
     pub guest: u64,
     pub d3d: u64,
+    /// D3D entries called.
+    pub d3d_calls: u64,
 }
 
 impl Time {
@@ -148,10 +170,18 @@ impl Time {
     fn add(&mut self, o: Time) {
         self.guest += o.guest;
         self.d3d += o.d3d;
+        self.d3d_calls += o.d3d_calls;
+    }
+    fn since(now: Now, mark: Now) -> Time {
+        Time {
+            guest: now.guest.saturating_sub(mark.guest),
+            d3d: now.d3d.saturating_sub(mark.d3d),
+            d3d_calls: now.d3d_calls.saturating_sub(mark.d3d_calls),
+        }
     }
 }
 
-/// One call site in `render_scene_passes`.
+/// One call site in `render_scene_passes` or the shader draw `0x00016b90`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Site {
     pub target: u32,
@@ -210,6 +240,54 @@ pub fn in_scene_passes(ret: u32) -> bool {
     ret > points::RENDER_SCENE_PASSES.base && ret <= SCENE_PASSES_END
 }
 
+/// The shader draw `0x00016b90` that shader draw begin ends in (its tail
+/// call): the state cache at `0x00485b48` and its D3D state setters
+/// (docs/layer-draw.md).
+pub const SHADER_DRAW: u32 = 0x0001_6b90;
+/// Its extent: return addresses in here are its calls.
+pub const SHADER_DRAW_END: u32 = 0x0001_6f59;
+
+/// The functions `0x00016b90` calls directly (read with `h2 disasm`).
+pub const SHADER_CALLEES: [u32; 21] = [
+    0x0001_6f60,
+    0x0001_7000,
+    0x0001_7170,
+    0x0001_7420,
+    0x0001_74d0,
+    0x0001_8900,
+    0x0001_89a0,
+    0x0001_8a90,
+    0x0001_8d70,
+    0x0001_8e80,
+    0x0001_8ee0,
+    0x0001_9be0,
+    0x0001_9ca0,
+    0x0001_a170,
+    0x0001_ab50,
+    0x0001_ae70,
+    0x0001_b050,
+    0x0001_b0a0,
+    0x0001_ba00,
+    0x0001_cf50,
+    0x0013_7bd0,
+];
+
+/// Whether `ret` is a call in `0x00016b90`.
+pub fn in_shader_draw(ret: u32) -> bool {
+    ret > SHADER_DRAW && ret <= SHADER_DRAW_END
+}
+
+/// The stage whose call sites `ret` is one of, if any.
+pub fn site_stage(ret: u32) -> Option<Stage> {
+    if in_scene_passes(ret) {
+        Some(Stage::ScenePasses)
+    } else if in_shader_draw(ret) {
+        Some(Stage::ShaderBegin)
+    } else {
+        None
+    }
+}
+
 /// Time and calls per stage, and per scene-pass call site.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
@@ -251,8 +329,8 @@ impl Totals {
     /// A stage with its call sites folded in (`scene_passes` as a whole).
     pub fn stage_with_sites(&self, st: Stage) -> Time {
         let mut t = self.time[st as usize];
-        if st == Stage::ScenePasses {
-            for s in self.sites.values() {
+        for (ret, s) in &self.sites {
+            if site_stage(*ret) == Some(st) {
                 t.add(s.time);
             }
         }
@@ -326,38 +404,62 @@ impl Totals {
         for st in &Stage::ALL[1..] {
             s += &format!(" {} {:.1}", st.label(), self.calls[*st as usize] as f64 / n);
         }
+        s += "; d3d calls/frame";
+        for st in Stage::ALL {
+            let c = self.stage_with_sites(st).d3d_calls;
+            if c != 0 {
+                s += &format!(" {} {:.1}", st.label(), c as f64 / n);
+            }
+        }
         s += &format!("; foreign {:.0}", self.foreign as f64 / n);
         s
     }
 
     /// The `top` scene-pass call sites by ms/frame, one per line:
-    /// `site 0x0002c06a -> 0x0002c370 3.21 ms (guest 2.90 d3d 0.31) 1.0 calls`.
+    /// `site 0x0002c06a -> 0x0002c370 3.21 ms (guest 2.90 d3d 0.31) 1.0 calls 12.0 d3d calls`.
     pub fn top_sites(&self, top: usize) -> Vec<String> {
+        self.sites_of(Stage::ScenePasses, top)
+    }
+
+    /// Every call site of the shader draw `0x00016b90`, by ms/frame, in
+    /// the same form as [`top_sites`](Self::top_sites).
+    pub fn shader_sites(&self) -> Vec<String> {
+        self.sites_of(Stage::ShaderBegin, SHADER_CALLEES.len() + 2)
+    }
+
+    fn sites_of(&self, stage: Stage, top: usize) -> Vec<String> {
         let n = self.frames.max(1) as f64;
         let ms = |ns: u64| ns as f64 / 1e6 / n;
-        let mut v: Vec<(&u32, &Site)> = self.sites.iter().collect();
+        let mut v: Vec<(&u32, &Site)> = self
+            .sites
+            .iter()
+            .filter(|(ret, _)| site_stage(**ret) == Some(stage))
+            .collect();
         v.sort_by(|a, b| b.1.time.total().cmp(&a.1.time.total()).then(a.0.cmp(b.0)));
-        let own = self.time[Stage::ScenePasses as usize];
+        let own = self.time[stage as usize];
         let mut out: Vec<String> = v
             .into_iter()
             .take(top)
             .map(|(site, s)| {
                 format!(
-                    "site {:#010x} -> {:#010x} {:.2} ms (guest {:.2} d3d {:.2}) {:.1} calls",
+                    "site {:#010x} -> {:#010x} {:.2} ms (guest {:.2} d3d {:.2}) {:.1} calls {:.1} d3d calls",
                     site - 5,
                     s.target,
                     ms(s.time.total()),
                     ms(s.time.guest),
                     ms(s.time.d3d),
-                    s.calls as f64 / n
+                    s.calls as f64 / n,
+                    s.time.d3d_calls as f64 / n
                 )
             })
             .collect();
         out.push(format!(
-            "scene_passes own code {:.2} ms (guest {:.2} d3d {:.2})",
+            "{} own code {:.2} ms (guest {:.2} d3d {:.2}) {:.1} d3d calls",
+            stage.label(),
             ms(own.total()),
             ms(own.guest),
-            ms(own.d3d)
+            ms(own.d3d),
+            own.d3d_calls as f64 / n
         ));
         out
     }
@@ -384,10 +486,7 @@ pub struct StageClock {
 
 impl StageClock {
     fn charge_top(&mut self, now: Now) {
-        let d = Time {
-            guest: now.guest.saturating_sub(self.mark.guest),
-            d3d: now.d3d.saturating_sub(self.mark.d3d),
-        };
+        let d = Time::since(now, self.mark);
         if let Some(top) = self.stack.last() {
             match top.site {
                 Some(site) => self.acc.sites.entry(site).or_default().time.add(d),
@@ -403,11 +502,12 @@ impl StageClock {
         self.acc.calls[stage as usize] += 1;
     }
 
-    /// A scene callee was entered, returning to `ret`. Counted as a call
-    /// site when the scene passes are running and `ret` is in them.
+    /// A scene or shader-draw callee was entered, returning to `ret`.
+    /// Counted as a call site when `ret` is in the scene passes or the
+    /// shader draw and that stage is running.
     pub fn call(&mut self, target: u32, ret: u32, now: Now) {
         let top = self.stack.last().map(|e| e.stage);
-        if top != Some(Stage::ScenePasses) || !in_scene_passes(ret) {
+        if top.is_none() || site_stage(ret) != top {
             if !self.stack.is_empty() {
                 self.acc.foreign += 1;
             }
@@ -451,10 +551,7 @@ impl StageClock {
     pub fn layer_leave(&mut self, now: Now) {
         if let Some((layer, at)) = self.layers.pop() {
             let l = self.acc.layers.entry(layer).or_default();
-            l.time.add(Time {
-                guest: now.guest.saturating_sub(at.guest),
-                d3d: now.d3d.saturating_sub(at.d3d),
-            });
+            l.time.add(Time::since(now, at));
             l.draws += 1;
         }
     }
@@ -511,9 +608,10 @@ impl RenderTiming {
     /// Reads the frame stats' scope clocks and logs once a second.
     pub fn new() -> Self {
         let mut t = Self::with_clock(Arc::new(|| {
-            Some(Now::new(
+            Some(Now::with_calls(
                 phase::scope_ns(Phase::Render)?,
                 phase::scope_ns(Phase::D3d)?,
+                phase::scope_entries(Phase::D3d)?,
             ))
         }));
         t.log_every_ns = Some(1_000_000_000);
@@ -545,16 +643,18 @@ impl RenderTiming {
     }
 }
 
-/// A point for each scene callee: the table's own where it names one.
+/// A point for each scene and shader-draw callee: the table's own where it
+/// names one.
 fn callee_points() -> &'static [&'static Point] {
     static POINTS: OnceLock<Vec<&'static Point>> = OnceLock::new();
     POINTS.get_or_init(|| {
         SCENE_CALLEES
             .iter()
-            .map(|&a| {
+            .map(|&a| (a, "SCENE_CALL"))
+            .chain(SHADER_CALLEES.iter().map(|&a| (a, "SHADER_CALL")))
+            .map(|(a, kind)| {
                 points::by_base(a).unwrap_or_else(|| {
-                    let name: &'static str =
-                        Box::leak(format!("SCENE_CALL_{a:08x}").into_boxed_str());
+                    let name: &'static str = Box::leak(format!("{kind}_{a:08x}").into_boxed_str());
                     Box::leak(Box::new(Point::new(
                         name,
                         a,
@@ -589,7 +689,7 @@ impl Feature for RenderTiming {
                 if s.stages.depth() == 0 {
                     return;
                 }
-                if !in_scene_passes(ret) {
+                if site_stage(ret).is_none() {
                     s.stages.acc.foreign += 1;
                     return;
                 }
@@ -600,7 +700,12 @@ impl Feature for RenderTiming {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.stages.call(target, ret, now);
             };
-            b.raw().observe_before(point, "scene call", call).optional();
+            let label = if SHADER_CALLEES.contains(&target) {
+                "shader call"
+            } else {
+                "scene call"
+            };
+            b.raw().observe_before(point, label, call).optional();
         }
         for stage in Stage::ALL {
             let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
@@ -687,12 +792,22 @@ fn log(s: &mut State, every: Option<u64>) {
     for l in w.layer_lines() {
         eprintln!("render-timing:   {l}");
     }
+    for l in w.shader_sites() {
+        eprintln!("render-timing:   shader {l}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn tm(guest: u64, d3d: u64) -> Time {
+        Time {
+            guest,
+            d3d,
+            d3d_calls: 0,
+        }
+    }
     fn g(t: u64) -> Now {
         Now::new(t, 0)
     }
@@ -748,7 +863,7 @@ mod tests {
             t.sites[&a],
             Site {
                 target: 0x0004_4370,
-                time: Time { guest: 7, d3d: 4 },
+                time: tm(7, 4),
                 calls: 1
             }
         );
@@ -756,18 +871,12 @@ mod tests {
             t.sites[&b],
             Site {
                 target: 0x0003_1c80,
-                time: Time { guest: 3, d3d: 0 },
+                time: tm(3, 0),
                 calls: 1
             }
         );
-        assert_eq!(
-            t.time[Stage::ScenePasses as usize],
-            Time { guest: 2, d3d: 0 }
-        );
-        assert_eq!(
-            t.time[Stage::LightPasses as usize],
-            Time { guest: 8, d3d: 5 }
-        );
+        assert_eq!(t.time[Stage::ScenePasses as usize], tm(2, 0));
+        assert_eq!(t.time[Stage::LightPasses as usize], tm(8, 5));
         assert_eq!(t.foreign, 1);
         assert_eq!(
             t.render_ns(),
@@ -775,10 +884,7 @@ mod tests {
             "stages and sites are the whole guest time"
         );
         assert_eq!(t.d3d_ns(), 9);
-        assert_eq!(
-            t.stage_with_sites(Stage::ScenePasses),
-            Time { guest: 12, d3d: 4 }
-        );
+        assert_eq!(t.stage_with_sites(Stage::ScenePasses), tm(12, 4));
         let top = t.top_sites(15);
         assert_eq!(top.len(), 3);
         assert!(
@@ -786,6 +892,56 @@ mod tests {
             "{top:?}"
         );
         assert!(top[2].starts_with("scene_passes own code"), "{top:?}");
+    }
+
+    #[test]
+    fn shader_draw_calls_split_shader_begin_and_count_d3d_calls() {
+        let n = |guest, d3d, calls| Now::with_calls(guest, d3d, calls);
+        let a = SHADER_DRAW + 0x36e; // returns from 0x0001a170 (render states)
+        let b = SHADER_DRAW + 0x3a7; // and from 0x0001cf50 (SetTexture)
+        let mut c = StageClock::default();
+        c.enter(Stage::Frame, n(0, 0, 0));
+        c.enter(Stage::ShaderBegin, n(1, 0, 0));
+        c.call(0x0001_a170, a, n(3, 0, 0)); // shader_begin own 2
+        // A scene callee's site does not count inside the shader draw.
+        c.call(
+            0x0004_4370,
+            points::RENDER_SCENE_PASSES.base + 0x3f,
+            n(4, 0, 0),
+        );
+        c.call(0x0001_cf50, b, n(9, 6, 9)); // site a: guest 6 d3d 6, 9 calls
+        c.leave(Stage::ShaderBegin, n(10, 7, 10)); // site b: guest 1 d3d 1, 1 call
+        assert!(c.leave(Stage::Frame, n(11, 7, 10)));
+        let t = c.take();
+        assert_eq!(
+            t.sites[&a].time,
+            Time {
+                guest: 6,
+                d3d: 6,
+                d3d_calls: 9
+            }
+        );
+        assert_eq!(t.sites[&b].time.d3d_calls, 1);
+        assert_eq!(t.foreign, 1);
+        assert_eq!(
+            t.stage_with_sites(Stage::ShaderBegin),
+            Time {
+                guest: 9,
+                d3d: 7,
+                d3d_calls: 10
+            }
+        );
+        assert_eq!(t.stage_with_sites(Stage::ScenePasses), Time::default());
+        assert!(t.top_sites(15)[0].starts_with("scene_passes own code"));
+        let lines = t.shader_sites();
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[0].starts_with(&format!("site {:#010x} -> 0x0001a170", a - 5)),
+            "{lines:?}"
+        );
+        assert!(lines[0].ends_with("1.0 calls 9.0 d3d calls"), "{lines:?}");
+        assert!(lines[2].starts_with("shader_begin own code"), "{lines:?}");
+        assert!(t.line().contains("; d3d calls/frame shader_begin 10.0;"));
     }
 
     #[test]
@@ -832,16 +988,16 @@ mod tests {
         assert!(c.leave(Stage::Frame, Now::new(16, 8)));
         let t = c.take();
         let l = t.layers[&1];
-        assert_eq!(l.time, Time { guest: 14, d3d: 8 });
+        assert_eq!(l.time, tm(14, 8));
         assert_eq!((l.draws, l.entries), (1, 40));
         let time = |s: Stage| t.time[s as usize];
-        assert_eq!(time(Stage::LayerDraw), Time { guest: 3, d3d: 0 });
-        assert_eq!(time(Stage::LayerSetup), Time { guest: 1, d3d: 1 });
-        assert_eq!(time(Stage::LayerEntries), Time { guest: 4, d3d: 0 });
-        assert_eq!(time(Stage::LayerBuild), Time { guest: 3, d3d: 0 });
-        assert_eq!(time(Stage::ShaderBegin), Time { guest: 1, d3d: 2 });
-        assert_eq!(time(Stage::Geometry), Time { guest: 2, d3d: 5 });
-        assert_eq!(t.sites[&(base + 0x205)].time, Time { guest: 1, d3d: 0 });
+        assert_eq!(time(Stage::LayerDraw), tm(3, 0));
+        assert_eq!(time(Stage::LayerSetup), tm(1, 1));
+        assert_eq!(time(Stage::LayerEntries), tm(4, 0));
+        assert_eq!(time(Stage::LayerBuild), tm(3, 0));
+        assert_eq!(time(Stage::ShaderBegin), tm(1, 2));
+        assert_eq!(time(Stage::Geometry), tm(2, 5));
+        assert_eq!(t.sites[&(base + 0x205)].time, tm(1, 0));
         assert_eq!(t.render_ns(), 16);
         assert_eq!(
             t.layer_lines(),
@@ -851,10 +1007,7 @@ mod tests {
 
     #[test]
     fn the_line_names_every_stage() {
-        let ms = |guest: u64, d3d: u64| Time {
-            guest: guest * 500_000,
-            d3d: d3d * 500_000,
-        };
+        let ms = |guest: u64, d3d: u64| tm(guest * 500_000, d3d * 500_000);
         let t = Totals {
             frames: 2,
             time: [
@@ -863,7 +1016,10 @@ mod tests {
                 ms(0, 0),
                 ms(4, 0),
                 ms(56, 4),
-                ms(12, 2),
+                Time {
+                    d3d_calls: 600,
+                    ..ms(12, 2)
+                },
                 ms(0, 0),
                 ms(0, 0),
                 ms(0, 0),
@@ -878,7 +1034,7 @@ mod tests {
         };
         assert_eq!(
             t.line(),
-            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50 + layer_draw 0.00 + layer_setup 0.00 + layer_entries 0.00 + layer_build 0.00 + shader_begin 0.00 + geometry 0.00; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0 layer_draw 0.0 layer_setup 0.0 layer_entries 0.0 layer_build 0.0 shader_begin 0.0 geometry 0.0; foreign 150"
+            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50 + layer_draw 0.00 + layer_setup 0.00 + layer_entries 0.00 + layer_build 0.00 + shader_begin 0.00 + geometry 0.00; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0 layer_draw 0.0 layer_setup 0.0 layer_entries 0.0 layer_build 0.0 shader_begin 0.0 geometry 0.0; d3d calls/frame light_passes 300.0; foreign 150"
         );
     }
 }
