@@ -221,6 +221,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/healthz", get(healthz))
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
+        .route(
+            "/v1/accounts/{gamertag}/recover",
+            post(crate::recovery::post_recover),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/recovery",
+            get(crate::recovery::get_recovery).post(crate::recovery::post_recovery),
+        )
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
         .route(
             "/v1/accounts/by-xuid/{xuid}",
@@ -863,10 +871,24 @@ async fn create_invite(
 ) -> ApiResult<Response> {
     let body = body_bytes(body)?;
     if !body.iter().all(u8::is_ascii_whitespace) {
-        let jws = std::str::from_utf8(&body)
+        let text = std::str::from_utf8(&body)
             .map_err(|_| invalid("the body must be a compact JWS"))?
             .trim();
-        let v = crate::invites::create(&live, bearer(&headers), jws).await?;
+        // A bare JWS, or `{"event": <jws>, "code": <custom code>}`.
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WithCode {
+            event: String,
+            code: Option<String>,
+        }
+        let (jws, code) = if text.starts_with('{') {
+            let w: WithCode =
+                serde_json::from_str(text).map_err(|e| invalid(format!("body: {e}")))?;
+            (w.event, w.code)
+        } else {
+            (text.to_string(), None)
+        };
+        let v = crate::invites::create(&live, bearer(&headers), &jws, code.as_deref()).await?;
         return Ok(json(StatusCode::CREATED, &v));
     }
     let days = p
@@ -874,11 +896,9 @@ async fn create_invite(
         .map(|d| d.parse().map_err(|_| invalid("days must be a number")))
         .transpose()?
         .unwrap_or(7);
-    let invite = live.create_invite(bearer(&headers), days)?;
-    Ok(json(
-        StatusCode::CREATED,
-        &serde_json::json!({"invite": invite}),
-    ))
+    live.authorize_operator(bearer(&headers), lxm::INVITES_WRITE)?;
+    let v = crate::invites::create_operator(&live, days, p.get("code").map(String::as_str)).await?;
+    Ok(json(StatusCode::CREATED, &v))
 }
 
 async fn list_games(

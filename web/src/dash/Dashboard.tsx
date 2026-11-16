@@ -4,8 +4,8 @@
 //     turns to bring the selected one into focus;
 //   - list screens (live now, friends, players, game history): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, server, invites): one big pod,
-//     four small ones around it and an info plate.
+//   - pod screens (settings, a player, sign up, recovery, server, invites):
+//     one big pod, four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
 
@@ -26,10 +26,12 @@ function rowType(g: GameState): string {
 }
 import { isCampaign } from "../state/reducer";
 import { mapPicture } from "../components/MapPicture";
-import { accountsFile, createAccount, gamertagError, SignUpError } from "../state/account";
+import { accountsFile, gamertagError, signUp, SignUpError } from "../state/account";
+import { AccountPlate, RecoverPlate, RecoveryCode, createRecovery, keepFreshRecovery } from "./Recovery";
+import "../styles/dash-recovery.css";
 import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
 import { ConnectPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
-import { serverPods } from "../admin/server";
+import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Emblem from "../components/Emblem";
@@ -50,9 +52,9 @@ import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
 import "../styles/social.css";
+import { lockedHint, menuFor, type SectionId } from "./menu";
 
-type SectionId = "live" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server";
-type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
@@ -62,14 +64,15 @@ const LABELS: Record<SectionId, () => string> = {
   players: () => "players",
   history: () => "game history",
   settings: () => "settings",
-  signup: () => (identity.me() ? "profile" : "sign up"),
+  signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
+  signin: () => "sign in",
+  recover: () => "recover account",
+  account: () => "account",
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
 
-/** The main menu: four items, five once signed in (friends, with clans inside).
- *  Sign up / profile and the server live under settings. */
-const menuItems = (): SectionId[] => (identity.me() ? ["live", "sessions", "friends", "players", "history", "settings"] : ["live", "sessions", "players", "history", "settings"]);
+const menuItems = (): SectionId[] => menuFor(!!identity.me());
 /** The menu item a section belongs under. Clans live inside friends (inside
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
@@ -87,6 +90,7 @@ interface Sat { label: string; glyph: GlyphName; act?: () => void; lit?: boolean
 // Kept outside the component: the route remounts it between "/" and
 // "/dash/...", and the menu should come back where it was left.
 const [menuId, setMenuId] = createSignal<SectionId>("live");
+let menuTouched = false;
 const listSel: Partial<Record<SectionId, number>> = {};
 let booted = false;
 let lastScreen: ScreenId | null = null;
@@ -136,14 +140,23 @@ export default function Dashboard() {
     if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
     if (s === "settings") return "settings";
+    // /dash/recover (and the older /dash/signup/recover): a new device takes
+    // an account over; /dash/account (and /dash/signup/recovery): the
+    // signed-in account. Signed out, /dash/account is the sign-in list.
+    if (s === "recover" || (s === "signup" && params.tag === "recover")) return "recover";
+    if ((s === "account" || (s === "signup" && params.tag === "recovery")) && identity.me()) return "recovery";
+    if (s === "signin" || s === "account") return "list";
     if (s === "signup") return identity.me() ? "player" : "signup";
     return viewed() ? "player" : "list";
   });
 
-  createEffect(() => { const s = section(); if (s) setMenuId(menuHome(s)); });
+  createEffect(() => { const s = section(); if (s) { menuTouched = true; setMenuId(menuHome(s)); } });
   const items = createMemo(menuItems);
+  // Until someone moves it, the focus sits on the first item: "sign in"
+  // signed out, "live now" signed in (the account loads a moment later).
+  createEffect(on(items, (it) => { if (!menuTouched) setMenuId(it[0]!); }));
   const menu = createMemo(() => Math.max(0, items().indexOf(menuId())));
-  const setMenu = (i: number) => { const id = items()[i]; if (id) setMenuId(id); };
+  const setMenu = (i: number) => { const id = items()[i]; if (id) { menuTouched = true; setMenuId(id); } };
 
   // Transitions: the leaving screen plays out, then the route changes and
   // the new screen plays in. "deeper" zooms in, "back" zooms out.
@@ -186,6 +199,15 @@ export default function Dashboard() {
           .map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
       case "history":
         return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: rowType(g) }));
+      case "signin": case "account": {
+        // The accounts this browser keeps for this server, then the other ways in.
+        const me = identity.me();
+        return [
+          ...identity.accounts().map((a) => ({ key: a.xuid, label: a.gamertag, meta: me?.xuid === a.xuid ? "signed in" : "kept here" })),
+          { key: "#recover", label: "recover account", meta: "gamertag and code" },
+          { key: "#create", label: "create account", meta: "new gamertag" },
+        ];
+      }
       default:
         return [];
     }
@@ -201,6 +223,15 @@ export default function Dashboard() {
     const s = section();
     if (!r || !s) return;
     setSel(i);
+    if (s === "signin" || s === "account") {
+      if (r.key === "#recover") go("/dash/recover", "deeper");
+      else if (r.key === "#create") go("/dash/signup", "deeper");
+      else {
+        const a = identity.accounts().find((x) => x.xuid === r.key);
+        if (a) { identity.signIn(a); go("/", "back"); }
+      }
+      return;
+    }
     if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
@@ -208,7 +239,8 @@ export default function Dashboard() {
   // The server screens (Server.tsx): /dash/server, /dash/server/invites, /dash/server/connect.
   const serverSub = () => (section() === "server" ? params.tag ?? null : null);
   const serverInfo = createServerInfo(() => section() === "server");
-  let inviteControls: InviteControls | null = null;
+  const [inviteCtl, setInviteCtl] = createSignal<InviteControls | null>(null);
+  const recovery = createRecovery(() => screen() === "recovery");
 
   // The four small pods of a pod screen.
   const [sat, setSat] = createSignal(0);
@@ -241,6 +273,23 @@ export default function Dashboard() {
           { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
           { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
         ];
+      case "recovery": {
+        const ready = recovery.phase() === "ready";
+        return [
+          { label: "copy code", glyph: "sign", act: ready ? () => void recovery.copyCode() : undefined },
+          { label: recovery.showSetup() ? "hide setup" : "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
+          {
+            label: recovery.confirming() ? "confirm reset" : ready ? "reset recovery" : "set up recovery", glyph: "gear",
+            act: recovery.phase() === "ready" || recovery.phase() === "none" ? () => recovery.setupOrReset() : undefined,
+          },
+          { label: "sign out", glyph: "exit", act: () => { identity.signOut(); go("/", "back"); } },
+        ];
+      }
+      case "recover":
+        return [
+          { label: "new key", glyph: "key" }, { label: "your code", glyph: "sign" },
+          { label: "this browser", glyph: "store" }, { label: "create account", glyph: "career", act: () => go("/dash/signup", "deeper") },
+        ];
       case "signup":
         return [
           { label: "new key", glyph: "key" }, { label: "signed request", glyph: "sign" },
@@ -251,7 +300,7 @@ export default function Dashboard() {
         if (sub !== "connect") {
           return serverPods(sub === "invites" ? "invites" : "overview", serverInfo.admin()).map((p): Sat => ({
             label: p.label, glyph: p.glyph,
-            act: p.run ? () => (p.run === "create" ? inviteControls?.create() : inviteControls?.copy()) : () => go(p.to!, p.back ? "back" : "deeper"),
+            act: p.run ? () => (p.run === "create" ? inviteCtl()?.create() : inviteCtl()?.copy()) : () => go(p.to!, p.back ? "back" : "deeper"),
           }));
         }
         const here = live.server().base;
@@ -295,7 +344,9 @@ export default function Dashboard() {
     (document.activeElement as HTMLElement | null)?.blur();
     const s = section();
     if (screen() === "menu") return;
-    if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
+    if (screen() === "recovery" && recovery.confirming()) recovery.cancelReset();
+    else if (screen() === "recovery" || screen() === "recover") go(s === "signup" ? "/dash/signup" : "/", "back");
+    else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
@@ -305,9 +356,18 @@ export default function Dashboard() {
   function select() {
     switch (screen()) {
       case "social": case "sessions": socialAct?.("select"); break;
-      case "menu": go(`/dash/${items()[menu()]!}`, "deeper"); break;
+      case "menu": {
+        const id = items()[menu()]!;
+        if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
+        break;
+      }
+      case "recovery":
+        if (recovery.confirming()) recovery.setupOrReset();
+        else sats()[sat()]?.act?.();
+        break;
       case "list": openRow(sel()); break;
       case "signup": (document.getElementById("dash-signup") as HTMLFormElement | null)?.requestSubmit(); break;
+      case "recover": (document.getElementById("dash-recover") as HTMLFormElement | null)?.requestSubmit(); break;
       default: {
         const s = sats()[sat()];
         if (s?.act) s.act();
@@ -338,6 +398,8 @@ export default function Dashboard() {
         else return false;
         return true;
       default: {
+        // The invites screen's rows take the input first.
+        if (screen() === "server" && serverSub() === "invites" && inviteCtl()?.act(a)) return true;
         // Pods sit 0 top left, 1 bottom left, 2 bottom right, 3 top right.
         const i = sat();
         if (a === "back") back();
@@ -353,14 +415,17 @@ export default function Dashboard() {
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
-    if (typing && e.key !== "Escape") return;
+    // A field in a column of rows (data-nav) still lets up and down move on.
+    const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
+    if (typing && e.key !== "Escape" && !rowField) return;
     const a = keyAction(e.key);
     if (a && act(a)) e.preventDefault();
   }
   // A gamepad steers the same way; in a form its stick leaves the text caret alone.
   function onPad(a: Action) {
     const typing = document.activeElement?.closest?.("input, textarea, select");
-    if (typing && a !== "select" && a !== "back") return;
+    const rowField = typing && (document.activeElement as HTMLElement).dataset?.nav && (a === "up" || a === "down");
+    if (typing && a !== "select" && a !== "back" && !rowField) return;
     act(a);
   }
   onMount(() => {
@@ -456,8 +521,8 @@ export default function Dashboard() {
       <header class="dx-top">
         <span class="dx-brand">h2 live</span>
         <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
-        <Show when={identity.me()} fallback={<Show when={section() !== "signup"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signup" onClick={(e) => { e.preventDefault(); go("/dash/signup", "deeper"); }}>sign up</a></Show>}>
-          {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (section() !== "signup") go("/dash/signup", "deeper"); }}>{me().gamertag}</a>}
+        <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
+          {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
         </Show>
         <a class="dx-chip dx-chip--link" href="/stats">stats site</a>
       </header>
@@ -467,7 +532,10 @@ export default function Dashboard() {
           <Match when={screen() === "menu"}>
             <div class="dx-screen dx-menu" onWheel={onWheel}>
               <Orb turn={-turn() * RING_STEP_DEG} />
-              <div class="dx-orb-count"><b>{liveGames(live.state).length}</b> live <i /> <b>{online().length}</b> online</div>
+              <Show when={identity.me()}>{(me) => <div class="dx-orb-me">{me().gamertag}</div>}</Show>
+              <div class="dx-orb-count" title={live.wellKnown()?.id ?? new URL(live.server().base).host}>
+                <span class="dx-orb-server">{live.wellKnown()?.id ?? new URL(live.server().base).host}</span> <i /> <b>{liveGames(live.state).length}</b> live <i /> <b>{online().length}</b> online
+              </div>
               <Show when={motdHeader(motd())}>{(h) => <p class="dx-motd">{h()}</p>}</Show>
               <nav class="dx-arc" aria-label="Dashboard" style={{ "--n": String(items().length) }}>
                 <For each={items()}>
@@ -476,7 +544,8 @@ export default function Dashboard() {
                     return (
                       <button
                         class="dx-item"
-                        classList={{ on: menu() === i(), hov: hover() === i(), "dx-item--far": at().opacity < 0.12 }}
+                        classList={{ on: menu() === i(), hov: hover() === i(), "dx-item--far": at().opacity < 0.12, "dx-item--locked": !!lockedHint(id, !!identity.me()) }}
+                        aria-disabled={lockedHint(id, !!identity.me()) ? "true" : undefined}
                         style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--dr": at().drop.toFixed(2), "--lit": at().lit.toFixed(3) }}
                         onMouseEnter={() => hoverOn(i())}
                         onMouseLeave={hoverOff}
@@ -486,7 +555,7 @@ export default function Dashboard() {
                       >
                         <Vine />
                         <Pod seed={i()} />
-                        <span class="dx-bar"><Bracket /><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
+                        <span class="dx-bar"><Bracket /><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span><Show when={lockedHint(id, !!identity.me())}>{(h) => <span class="dx-bar-hint">{h()}</span>}</Show></span>
                       </button>
                     );
                   }}
@@ -499,6 +568,7 @@ export default function Dashboard() {
           <Match when={screen() === "list"}>
             <div class="dx-screen dx-list dx-pages">
               <ListPanel title={title()} rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty={emptyText(section())} />
+              <Show when={section() === "signin" || section() === "account"} fallback={<>
               <div class="dx-preview">
                 <BigPod>
                   <Show when={section() === "live" || section() === "history"} fallback={
@@ -512,6 +582,16 @@ export default function Dashboard() {
                 <Show when={selAccount()}>{(a) => <PlayerPlate account={a()} />}</Show>
               }>
                 <Show when={selGame()}>{(g) => <GamePlate game={g()} />}</Show>
+              </Show>
+              </>}>
+                <div class="dx-preview">
+                  <BigPod>
+                    <Show when={rows()[sel()]?.key.startsWith("#") === false ? rows()[sel()]!.key : null} keyed fallback={<Glyph name="key" />}>
+                      {(xuid) => <Emblem seed={xuid} size={220} class="dx-emblem" />}
+                    </Show>
+                  </BigPod>
+                </div>
+                <SignInPlate />
               </Show>
               <Prompts onA={select} onB={back} />
             </div>
@@ -548,8 +628,34 @@ export default function Dashboard() {
             <div class="dx-screen dx-pods dx-pods--form dx-pages">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={-1} onSel={() => {}} />
-              <SignUpPlate />
+              <SignUpPlate onRecovery={() => navigate("/dash/account")} />
               <Prompts onA={select} onB={back} aLabel="create" />
+            </div>
+          </Match>
+
+          <Match when={screen() === "recovery"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-recovery">
+              <div class="dx-centre">
+                <BigPod wire>
+                  <Show when={recovery.phase() === "ready" && recovery.rec()} fallback={<Glyph name="key" />}><RecoveryCode state={recovery} /></Show>
+                </BigPod>
+              </div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <AccountPlate state={recovery} />
+              <Prompts
+                onA={select} onB={back}
+                aLabel={recovery.confirming() ? "reset" : "select"}
+                bLabel={recovery.confirming() ? "keep" : recovery.isNew() ? "done" : "back"}
+              />
+            </div>
+          </Match>
+
+          <Match when={screen() === "recover"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-recover">
+              <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <RecoverPlate onDone={() => go("/dash/signup", "deeper", true)} />
+              <Prompts onA={select} onB={back} aLabel="recover" />
             </div>
           </Match>
 
@@ -562,7 +668,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "connect"}>
-            <div class="dx-screen dx-pods dx-pods--form">
+            <div class="dx-screen dx-pods dx-pods--form dx-pages">
               <div class="dx-centre"><BigPod wire><Glyph name="server" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <ConnectPlate onUse={useServer} busy={serverBusy()} err={serverErr()} />
@@ -571,16 +677,16 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "invites"}>
-            <div class="dx-screen dx-pods dx-pods--form dx-server">
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <InvitesPlate info={serverInfo} bind={(c) => { inviteControls = c; }} />
-              <Prompts onA={select} onB={back} />
+              <InvitesPlate info={serverInfo} bind={setInviteCtl} />
+              <Prompts onA={() => act("select")} onB={back} onX={inviteCtl()?.revokable() ? () => act("alt") : undefined} xLabel="revoke" />
             </div>
           </Match>
 
           <Match when={screen() === "server"}>
-            <div class="dx-screen dx-pods dx-pods--form dx-server" classList={{ "dx-server--admin": !!serverInfo.status() }}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server" classList={{ "dx-server--admin": !!serverInfo.status() }}>
               <div class="dx-centre"><BigPod wire><Glyph name="globe" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <ServerPlate info={serverInfo} />
@@ -750,10 +856,30 @@ function Sats(props: { sats: Sat[]; sel: number; onSel: (i: number) => void }) {
   );
 }
 
-function SignUpPlate() {
+/** The sign-in list's plate: what signing in here means. */
+function SignInPlate() {
+  return (
+    <Plate small="h2 live" title="sign in">
+      <dl>
+        <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
+        <dt>kept here</dt><dd>{identity.accounts().length} <span>{identity.accounts().length === 1 ? "account" : "accounts"}</span></dd>
+      </dl>
+      <p class="dx-note">New device? Recover your account with its gamertag and a code. Coming from the game? Open the sign-in link it shows.</p>
+    </Plate>
+  );
+}
+
+function SignUpPlate(props: { onRecovery: () => void }) {
   const [tag, setTag] = createSignal("");
   const [invite, setInvite] = createSignal("");
   const [busy, setBusy] = createSignal(false);
+  // The invite field only where the server asks for one (GET /v1/server);
+  // an older server without it gets the field, to be safe.
+  const [inviteOnly, setInviteOnly] = createSignal<boolean | null>(null);
+  createEffect(on(() => live.server().api, (api) => {
+    setInviteOnly(null);
+    fetchServerFacts(api).then((f) => setInviteOnly(f ? f.invite_only : true), () => setInviteOnly(true));
+  }));
   const [err, setErr] = createSignal<string | null>(null);
   async function submit(e: Event) {
     e.preventDefault();
@@ -763,8 +889,10 @@ function SignUpPlate() {
     setBusy(true);
     try {
       const wk = live.wellKnown() ?? (await fetchWellKnown(live.server().base));
-      const a = await createAccount(live.server().api, live.server().base, wk.id, tag().trim(), invite().trim() || undefined);
-      await identity.add(a);
+      const { account, recovery } = await signUp(live.server().api, live.server().base, wk.id, tag().trim(), (inviteOnly() !== false && invite().trim()) || undefined);
+      // The recovery setup shows once, on the next screen (an older server sends none).
+      if (recovery) { keepFreshRecovery(account.xuid, recovery); props.onRecovery(); }
+      await identity.add(account);
     } catch (x) {
       setErr(x instanceof SignUpError ? x.message : `couldn't sign up: ${(x as Error).message}`);
     } finally {
@@ -773,13 +901,15 @@ function SignUpPlate() {
   }
   onMount(() => { if (matchMedia("(pointer: fine)").matches) document.getElementById("dash-gamertag")?.focus({ preventScroll: true }); });
   return (
-    <Plate small="new account" title="sign up" main>
+    <Plate small="new account" title="create account" main>
       <p class="dx-signup-intro">Choose your name. Join the game.</p>
       <form id="dash-signup" class="dx-form" onSubmit={submit}>
         <label for="dash-gamertag">gamertag</label>
         <input id="dash-gamertag" value={tag()} maxLength={15} onInput={(e) => setTag(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="your name, up to 15 characters" aria-describedby="dash-signup-note" />
-        <label for="dash-invite">invite code</label>
-        <input id="dash-invite" value={invite()} onInput={(e) => setInvite(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="if the server needs one" />
+        <Show when={inviteOnly() === true}>
+          <label for="dash-invite">invite code</label>
+          <input id="dash-invite" value={invite()} onInput={(e) => setInvite(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="from a friend on this server" />
+        </Show>
         <button type="submit" class="dx-go" disabled={busy()}>{busy() ? "signing up" : "create account"}</button>
         <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
         <p id="dash-signup-note" class="dx-note">

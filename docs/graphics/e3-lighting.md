@@ -41,8 +41,18 @@ and for headless `h2 run`.
 | The aim was one stencil-based model for all lighting, fully dynamic, inspired by SIGGRAPH papers. | P\* | Marty O'Donnell and Jaime Griesemer in Vice's oral history, <https://www.vice.com/en/article/the-complete-untold-history-of-halo-an-oral-history/> |
 | It was tested with weapon-fire and grenade lighting on a night version of a Halo 1 map, in January 2003. | P\* | Perez, via Halopedia citing Bungie.net |
 | Visible in the demo: sharp sun shadows, self-shadowing on characters and vehicles, shadow-casting street lamps, headlight and muzzle-flash lighting. | C | <https://www.halopedia.org/Halo_2_E3_demo> |
-| "Doom 3-style" unified lighting. | C | Wiki and forum wording. No developer statement using it was found. |
-| Normal maps and specular under those lights, light counts, the shader maths. | None | No developer statement was found. Retail has bump mapping regardless (below). |
+| Perez, on the January 2003 screenshot: "taken in January '03 with the graphics engine we went to E3 2003 with." The pstencil engine "just barely poked along at 30fps after herculean effort." | P | Bungie.net, "One Final Effort", 16 April 2010, read on the haloman30 Bungie.net archive mirror |
+| Perez: "we were trying to combine lightmaps for ambient lighting with stencil for directional sources." | P | As above. This is the one first-hand statement of the shading split. |
+| Freidin's pstencil added stencil shadows "using some new techniques that can only be done on the Xbox". He names no technique. | P | Freidin profile (above) |
+| During E3 demo preparation, Jason Jones blames the Pelican for "generating these immense shadow volumes" and calls it "so expensive". | P\* | *Behind the Scenes: Making of Halo 2* (B-roll), via Halopedia's transcript |
+| Joseph Staten, after E3: the aim had been "stencil shadows on everything, real-time reflections in the Master Chief's visor", and they found it impossible. | P\* | Same documentary, via Halopedia's transcript |
+| The August 2002 announcement trailer showed stencil shadows and "extensive use of normal maps"; Halo 2 was to use normal maps everywhere, after Halo 1 used them mostly on the level. | C | TCRF "Prerelease:Halo 2" and Oozer3993's "Assembling a Cathedral out of a Hurricane", both read as search excerpts |
+| Lehto: the stencil version "looked cool" but was too expensive and dropped after the announcement trailer. | P\* | Marcus Lehto on X, January 2020, via Halopedia |
+| The demo's restoration lost "colored gels" support (projected coloured light), which affected Johnson's briefing scene. | C | Digsite's lead ("General") in Halo Waypoint's "Cutting Room Floor: Modding Evolved, Part 1", 2022 |
+| Bloom is computed differently from retail, giving a soft glow over the whole mission. | C | Halopedia's E3 demo page |
+| Forum readings of the E3 footage, 2003-04: every dynamic object casts shadows and self-shadows; a Ghost was seen casting several shadows at once. | C | Beyond3D, "Halo 2 Gameplay Video" (DemoCoder) and "halo 2...multiple shadows cast" (AlNom), read as search excerpts |
+| "Doom 3-style" unified lighting. | C | Wiki and forum wording. No developer statement using it was found. A 2003 forum poster noted Bungie never claimed a unified model; the oral history's "completely dynamic lighting" (Griesemer, Vice) is the closest. |
+| Normal maps and specular under those lights, light counts, falloff, the shader maths. | None | No developer statement on any of these. Freidin speaks only of "per-pixel effects" and approximating real lighting "in the Xbox pixel shader". The footage shows bump relief and strong specular (below, S). Retail has bump mapping regardless (below). |
 
 **Whether the E3 demo itself ran pstencil is disputed.** Perez and O'Donnell
 place it in the demo. Marcus Lehto and Nate Walpole say it was dropped after
@@ -54,6 +64,176 @@ not say outright that the demo build runs pstencil
 We have not examined that material and will not. For this design it does not
 matter which account is right. The target is the look, described in the
 table above.
+
+The weight of public evidence is that the demo did run stencil volumes:
+
+| Account | Says | Label |
+|---|---|---|
+| Perez (2010) | The January 2003 engine is the one taken to E3; it was stencil for direct light. | P |
+| Jason Jones in the making-of B-roll | The Pelican's shadow volumes were hurting the demo during E3 preparation. | P\* |
+| TCRF on the May 2003 builds | pstencil was supposedly cut in February 2003, but the May 3 builds and the E3 demo "seem to feature" it, with stencil shadow volumes rather than the later shadow buffer; the Xbox builds have it, the Windows build has no working lighting. The Master Chief ("cyborg") shader type there is specific to stencil, with a new bump map. | C, read as search excerpts |
+| Vice and Clawsome Gamer (December 2025) | Put pstencil in the May 3 build and credit the demo with "dramatic stencil shadow lighting", without saying the May 11 build runs it. | C |
+| Lehto, Walpole (X, 2020) | Dropped after the August 2002 trailer. | P\* |
+| Modders on the Steam Workshop (2024) | One says pstencil was already cut by E3 and everything is shadow maps; another disagrees, citing the "razor sharp" shadows and the Pelican remark. | C, read as search excerpts |
+
+The modders' claim predates the leak and is about the restoration, which runs
+on the retail engine. Nothing public written after the leak says the May 11
+build lacks stencil volumes.
+
+**Digsite is not a leak.** It is the codename of a community modding group
+that worked with 343 Industries (now Halo Studios) on cut content: "Digsite
+Alpha" for pre-release Halo, "Digsite Delta" for Halo 2. It rebuilt the E3
+level for the retail MCC engine from 343's internal archives and released it
+free on the Steam Workshop on 9 November 2024, with a public GitHub
+repository (`digsite/H2E3`) whose README points to replacement shaders for
+the "not pstencil" lights. We used only its published prose: two Halo
+Waypoint articles, the GitHub README and its description of the shaders, and
+Halopedia's account of Ken Peters' 2024 talk. Separately, press and TCRF
+report that the Digsite project's own repository leaked in December 2024 and
+that more from it, including the E3 build, leaked in December 2025. Those
+files are leaked material and are out of bounds.
+
+## How it was meant to work (public sources)
+
+What the public record supports, put together. Labels as above. Researched
+2026-11-16.
+
+### The model
+
+- **Direct light dynamic, ambient baked.** Every direct source (sun, lamps,
+  headlights, weapon fire, explosions) was a stencil-shadowed light; the
+  lightmap supplied only ambient (Perez, **P**). The night Blood Gulch test
+  was lit by weapon fire and grenades (Perez via Halopedia, **P\***).
+- **Everything casts, including onto itself.** "Stencil shadows on
+  everything" (Staten, **P\***); characters and vehicles self-shadow, and
+  the sun self-shadows objects, which retail does only for dynamic lights
+  (Halopedia, **C**). The Pelican cast volumes big enough to fill the screen
+  (Jones, **P\***).
+- **Per-pixel shading with normal maps on everything.** Normal maps were to
+  be everywhere (**C**); Freidin's work was per-pixel
+  maths in the NV2A pixel shader (**P**); the stencil-specific Master Chief
+  shader came with a new bump map (TCRF, **C**). Visor reflections were a
+  goal (Staten, **P\***).
+- **Coloured projected lights.** Gels were used and were lost in the
+  restoration (Digsite, **C**). Retail lights still have a gel (see "What is
+  still unknown").
+- **Not known from any public source:** light counts, falloff curves, the
+  specular model, how many lights shadowed at once, how the ambient term was
+  computed at night, or which Xbox-only technique Freidin meant. Nothing
+  public describes how the sun's shadow and the lightmap were combined
+  beyond "lightmaps for ambient".
+
+### The techniques of the time
+
+Bungie cited "SIGGRAPH papers" without naming them (Griesemer, Vice,
+**P\***). The public techniques it could have built on, none of them
+confirmed as Bungie's source (**S**):
+
+- Shadow volumes: Crow, 1977; stencil-buffer volumes, Heidmann, 1991.
+- Depth-fail ("Carmack's reverse"): Bilodeau and Songy, 1998-99 (patent
+  US 6,384,822); Carmack's email to Kilgard, May 2000; made robust with caps,
+  depth clamp and an infinite far plane by Everitt and Kilgard, NVIDIA, March
+  2002, which also proposes two-sided stencil.
+- Hardware shadow maps: Williams, 1978; Everitt, Rege and Cebenoyan,
+  "Hardware Shadow Mapping", NVIDIA, 2001-02, for GeForce3-class depth
+  textures with a hardware comparison. The NV2A is of that class and retail
+  Halo 2 uses exactly this ("What replaced it").
+- Per-pixel bump-mapped lighting on fixed-function combiners: Kilgard, GDC
+  2000. The NV2A's register combiners are the same family.
+
+Doom 3, the period's reference for this look, used depth-fail volumes with
+per-pixel normal-mapped lights and no lightmaps. Halo 2's plan differs in one
+way that matters to us: it kept lightmaps for ambient (Perez, **P**).
+
+### The public footage
+
+Bungie's "Halo 2: Full E3 2003 Trailer", the real-time demo, credited to Bungie
+and released after the show, on the Internet Archive (`halo2_e3_realtimedemo_hires`, 9:04, added
+June 2004). We watched the 480x324 file as frame grids every three seconds
+and single frames at the times below. Times are into that file. At this
+resolution edge sharpness is judged only on large shadows. Everything in this
+table is our reading, so **S**.
+
+| Time | What is seen |
+|---|---|
+| 1:07 | The Pelican lands; a large dark shape lies under it on the pad. |
+| 1:45 | Medical bay: bright floor, marines shaded with dark undersides. |
+| 2:00-2:09 | Interior: shadowed areas read as near black. Marines and the gun are silhouettes against a crisp-edged sunlit patch on the floor. |
+| 3:19 | The turret's muzzle flash lights the Chief's back and the turret yellow-white. |
+| 5:00-5:03 | Street lamps throw bright pools on the road below them. |
+| 5:24 | Overpass shadows cross the road with sharp edges. |
+| 5:44-5:49 | Under an overpass, a bright patch on the road moves ahead of the Warthog: headlights. The Warthog itself stays dark. |
+| 6:27 | Chief and marine on the Warthog in shade are almost black, lit only at the edges. |
+| 6:33, 8:36-8:42 | The Brute and Elites show strong bump relief and specular glints on armour. |
+| 7:12 | A lamp pool under an overpass, edge crisp. |
+
+Not judgeable at this resolution: whether shadows leak through thin geometry,
+contact shadows under feet, and how many shadows one object casts. The 343
+Industries community stream from November 2018 on the Internet Archive is
+1080p and would settle some of these; we did not watch it.
+
+### Target look
+
+What phases 4 and 5 should be judged against. Each item has its source.
+
+1. **Hard shadow edges, no visible filtering**, from the sun and from local
+   lights, on large and small casters. Halopedia's "sharp rather than
+   softened" (**C**); Steam commenter's "razor sharp" (**C**); footage 2:00,
+   5:24, 7:12 (**S**).
+2. **Characters and vehicles cast onto the world and onto themselves under
+   the sun**, not only under dynamic lights. Staten (**P\***), Halopedia
+   (**C**), Beyond3D (**C**).
+3. **Large vehicles cast large shadows** (the Pelican). Jones (**P\***),
+   footage 1:07 (**S**).
+4. **Several shadows per object where several lights reach it.** Beyond3D on
+   the Ghost (**C**).
+5. **Lamps cast shadows and throw pools of light** that read as discrete
+   shapes on the ground. Halopedia (**C**), footage 5:00, 7:12 (**S**).
+6. **Vehicle headlights light the road in front** and move with the vehicle.
+   Halopedia (**C**), footage 5:44-5:49 (**S**).
+7. **Weapon fire and explosions light their surroundings**, including the
+   firer. Perez via Halopedia (**P\***), Halopedia on the turret (**C**),
+   footage 3:19 (**S**).
+8. **Shadowed areas are very dark**: low ambient, high contrast, characters
+   close to silhouettes in shade. Footage 2:00-2:09, 6:27 (**S**) only; no
+   statement.
+9. **Lightmaps give the ambient only;** direct light is dynamic. Perez
+   (**P**). For us this stays the lightmap problem below; the item is met for
+   objects and lights, not for the level's baked sun.
+10. **Dynamic lights shade per pixel through normal maps**, so armour and
+    walls show relief under a moving light. Freidin (**P**), normal maps
+    everywhere (**C**), footage 6:33, 8:36 (**S**).
+11. **Specular highlights from dynamic lights** on armour and visors. Staten
+    on the visor (**P\***), footage 8:36-8:42 (**S**).
+12. **Coloured, projected lights (gels)** where a light has one. Digsite
+    (**C**).
+13. **Out of scope but part of the look:** the demo's different bloom
+    (Halopedia, **C**).
+
+### What this means for the technique
+
+Nothing public argues that the look needs stencil volumes. Every description
+of the look is about properties a high-resolution, one-tap shadow map also
+has: hard edges, everything casting, self-shadowing. The only public argument
+for volumes is the Steam commenter's that 2003 hardware could not afford a
+shadow map sharp enough, which is about the Xbox, not about us.
+
+The public reasons Bungie left volumes are the ones our phase 3 measured.
+Perez: "geometry/lighting fidelity compromises" (**P**), that is, meshes
+simplified and closed so volumes work. Griesemer: the shadows did not work
+at all in exteriors (**P\***, Halopedia's paraphrase of his X post). Jones: the Pelican's volumes filled
+the screen (**P\***), which is fill cost. Butcher: the engine could not
+support the environments a Halo game needs (**P\***). Retail and Halo 3 both
+went to shadow maps. Shadow maps are the faithful choice for the look and the
+unfaithful one only for the mechanism, which the non-goals already exclude.
+What volumes would still buy, exact edges at grazing angles and no bias, is
+what items 1 and 2 test, so the shadow-map path should be judged against them
+at the resolutions we ship.
+
+One community claim to discount: that retail still has true stencil lights
+(Zanzibar's swinging lights, Foundation's fan room; ResetEra, 2018, **C**).
+Phase 0 found no shadow-volume path in retail (**R**); those are lights
+without the "no stencil shadow" flag, drawn with shadow buffers.
 
 ## Why it was cut
 
@@ -768,3 +948,76 @@ article.
   <https://icode4.coffee/?p=738>
 - The Cutting Room Floor, "Proto:Halo 2": <https://tcrf.net/Proto:Halo_2>
   (not read)
+
+Added 2026-11-16, all accessed that day. Same rules: cited, not copied, no
+leaked file opened. TCRF served a page of instructions aimed at AI agents in
+place of its articles, so TCRF is read through search excerpts only; Beyond3D
+and the Steam Workshop refused the fetch and are search excerpts too. The
+Bungie.net article was read in full on an archive mirror, so its quotes above
+are P.
+
+- Bungie.net, "One Final Effort", urk, 16 April 2010:
+  <https://halo.bungie.net/News/content.aspx?cid=25650>, read at
+  <https://bnetarchive.haloman30.com/News/contenta239.html?type=topnews&cid=25650>
+- Bernie Freidin profile (above), re-read for exact wording
+- Halopedia, "Pstencil" and "Behind the Scenes: Making of Halo 2" (above),
+  re-read for the Jones, Staten, Lehto, Walpole and Griesemer citations
+- Oozer3993, "An Oral History of the Halo 2 E3 2003 Demo" and "Assembling a
+  Cathedral out of a Hurricane", Medium (search excerpts; the site refused
+  the fetch):
+  <https://medium.com/@Oozer3993/an-oral-history-of-the-halo-2-e3-2003-demo-700d978b92dc>,
+  <https://medium.com/@Oozer3993/assembling-a-cathedral-out-of-a-hurricane-the-making-of-halo-2-24652d08d29a>
+- GameWatcher, "Bungie 'literally scrapped' Halo 2's E3 engine", 4 December
+  2010, quoting Butcher's Eurogamer interview (search excerpt):
+  <https://www.gamewatcher.com/2010-12-04-bungie-literally-scrapped-halo-2-s-e3-engine-too-much-for-xbox>
+- The Cutting Room Floor, "Proto:Halo 2/May 3, 2003 Builds and Tools",
+  "Proto:Halo 2/E3 2003 Demo", "Prerelease:Halo 2" (search excerpts only):
+  <https://tcrf.net/Proto:Halo_2/May_3,_2003_Builds_and_Tools>,
+  <https://tcrf.net/Proto:Halo_2/E3_2003_Demo>, <https://tcrf.net/Prerelease:Halo_2>
+- Vice, Denny Connolly, 29 December 2025 (above), re-read; Clawsome Gamer,
+  Jake Bishop, 28 December 2025:
+  <https://clawsomegamer.com/halo-2-e3-2003-demo-build-leaks-playable-earth-city/>
+- Video Games Chronicle on the December 2024 leak and its link to the Digsite
+  project (search excerpt):
+  <https://www.videogameschronicle.com/news/over-25-years-of-classic-halo-content-has-leaked-online/>
+- Halo Waypoint, Alex Wakeford, "Cutting Room Floor: Modding Evolved, Part 1"
+  (2022) and "Digsite Demos: Halo 2" (2024):
+  <https://www.halowaypoint.com/news/cutting-room-floor>,
+  <https://www.halowaypoint.com/news/digsite-demos-halo-2>
+- Digsite, `H2E3` README (prose only): <https://github.com/digsite/H2E3>;
+  Steam Workshop item <https://steamcommunity.com/sharedfiles/filedetails/?id=3360515088>
+  and its discussion threads (search excerpts)
+- Steam Workshop, "Halo 2 Restored Lighting" comments (search excerpts):
+  <https://steamcommunity.com/sharedfiles/filedetails/comments/3276750116>
+- Beyond3D forum, 2003-04 threads "Halo 2 Gameplay Video", "New Halo 2
+  screenshot", "halo 2...multiple shadows cast" (search excerpts):
+  <https://forum.beyond3d.com/threads/halo-2-gameplay-video.4586/>,
+  <https://forum.beyond3d.com/threads/new-halo-2-screenshot.6578/>,
+  <https://forum.beyond3d.com/threads/halo-2-multiple-shadows-cast-im-probably-late.11504/>
+- ResetEra, "DF Retro Extra: Halo 2 - Revisiting E3 2003's Impossible Xbox
+  Demo!" (2018), on Digital Foundry's video of 6 June 2018, which we did not
+  watch: <https://www.resetera.com/threads/df-retro-extra-halo-2-revisiting-e3-2003s-impossible-xbox-demo.47186/>
+- Bungie, "Halo 2: Full E3 2003 Trailer", Internet Archive, watched as
+  described: <https://archive.org/details/halo2_e3_realtimedemo_hires>. Not
+  watched: 343 Industries' 2018 stream,
+  <https://archive.org/details/halo-2-e3-2003-demo-stream-from-343-never-before-seen-alphasbetas-1080p-60-fps>
+- F. C. Crow, "Shadow Algorithms for Computer Graphics", SIGGRAPH 1977
+- T. Heidmann, "Real Shadows, Real Time", IRIS Universe 18, 1991
+- L. Williams, "Casting Curved Shadows on Curved Surfaces", SIGGRAPH 1978
+- C. Everitt and M. J. Kilgard, "Practical and Robust Stenciled Shadow
+  Volumes for Hardware-Accelerated Rendering", NVIDIA, 2002:
+  <https://arxiv.org/abs/cs/0301002>
+- J. Carmack, email to M. Kilgard on depth-fail shadow volumes, May 2000, as
+  described in the paper above and in Wikipedia's "Shadow volume"
+  (<https://en.wikipedia.org/wiki/Shadow_volume>); W. Bilodeau and M. Songy,
+  US patent 6,384,822
+- C. Everitt, A. Rege and C. Cebenoyan, "Hardware Shadow Mapping", NVIDIA
+  white paper, 2001-02 (bibliographic record only)
+- M. J. Kilgard, "A Practical and Robust Bump-mapping Technique for Today's
+  GPUs", GDC 2000:
+  <https://developer.download.nvidia.com/assets/gamedev/docs/bumpmap.pdf>
+  (not read beyond its abstract)
+- H. Chen and X. Liu, "Lighting and Material of Halo 3", SIGGRAPH 2008 course
+  notes, read as search excerpts; the excerpts mention Halo 2 only for its
+  lightmap parameterisation:
+  <https://www.realtimerendering.com/advances/s2008/SIGGRAPH-Lighting%20of%20Halo%203.pdf>

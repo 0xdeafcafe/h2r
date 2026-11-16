@@ -81,15 +81,15 @@ shot() {
 }
 
 # The window: a multiplayer map framed, nothing selected.
-shot window --pick coagulation
+shot window --pick ascension
 # A weapon spawn selected, with the move gizmo.
-shot scenario-weapon --pick coagulation --select netgameequipment:3 --focus --camera 40,30,22
-# A grenade spawn on another map, a Warthog parked beside it.
-shot scenario-zanzibar --pick zanzibar --select netgameequipment:25 --focus --camera 30,25,14
+shot scenario-weapon --pick ascension --select netgameequipment:0 --focus --camera 40,35,25
+# Another map: Lockout's battle rifle spawn among its towers.
+shot scenario-lockout --pick lockout --select netgameequipment:0 --focus --camera 40,35,25
 # Save as package.
-shot scenario-package --pick coagulation --dialog package
+shot scenario-package --pick ascension --dialog package
 # Unsaved changes, asked on quit.
-shot unsaved-prompt --pick coagulation --select netgameequipment:3 --focus --camera 40,30,22 --dialog unsaved
+shot unsaved-prompt --pick ascension --select netgameequipment:0 --focus --camera 40,35,25 --dialog unsaved
 # A built-in game variant, read-only.
 shot variants-builtin --tool variants --variant 3
 # An editable copy of it.

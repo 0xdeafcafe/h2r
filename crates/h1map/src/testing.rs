@@ -302,3 +302,60 @@ pub fn campaign_disc() -> Vec<u8> {
     let maps: Vec<(&str, Vec<u8>)> = names.iter().map(|n| (n.as_str(), map.clone())).collect();
     disc_image(crate::disc::HALO1_TITLE_ID, &maps)
 }
+
+/// An invented collision BSP: the unit cube `[0, 1]^3` is open space (leaf
+/// 0) and everything else is solid. Six planes face inward; node `i` tests
+/// plane `i`, its back child is solid and its front child the next node (the
+/// leaf after the last). One surface, the floor, is a quad of four edges.
+/// Returns the bytes, their base address and the element's offset.
+pub fn collision_room(base: u32) -> (Vec<u8>, usize) {
+    let mut blocks: Vec<Vec<u8>> = vec![Vec::new(); 8];
+    let i32s = |v: &[i32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let f32s = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    // Planes n.p - d = 0, normals pointing into the cube.
+    let planes: [[f32; 4]; 6] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0, -1.0],
+    ];
+    for (i, p) in planes.iter().enumerate() {
+        blocks[1].extend(f32s(p));
+        let front = if i == 5 { i32::MIN } else { i as i32 + 1 };
+        blocks[0].extend(i32s(&[i as i32, -1, front]));
+    }
+    // Leaf 0: one 2D reference, to surface 0 on plane 4 (the floor).
+    blocks[2].extend([0, 0, 1, 0]);
+    blocks[2].extend(0i32.to_le_bytes());
+    blocks[3].extend(i32s(&[4, i32::MIN]));
+    // One 2D node, unused by the surface ref, both children surface 0.
+    blocks[4].extend(f32s(&[1.0, 0.0, 0.5]));
+    blocks[4].extend(i32s(&[i32::MIN, i32::MIN]));
+    // Surface 0: plane 4, first edge 0, flags 0, breakable -1, material 0.
+    blocks[5].extend(i32s(&[4, 0]));
+    blocks[5].extend([0, 0xff, 0, 0]);
+    let corners: [[f32; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    for (i, c) in corners.iter().enumerate() {
+        let next = (i as i32 + 1) % 4;
+        // start, end, forward, reverse, left surface, right surface (none).
+        blocks[6].extend(i32s(&[i as i32, next, next, next, 0, -1]));
+        blocks[7].extend(f32s(c));
+        blocks[7].extend(i32s(&[i as i32]));
+    }
+    let counts = [6u32, 6, 1, 1, 1, 1, 4, 4];
+    let mut out = vec![0u8; 0x60];
+    for (i, b) in blocks.iter().enumerate() {
+        let addr = base + out.len() as u32;
+        put(&mut out, i * 12, counts[i]);
+        put(&mut out, i * 12 + 4, addr);
+        out.extend(b);
+    }
+    (out, 0)
+}

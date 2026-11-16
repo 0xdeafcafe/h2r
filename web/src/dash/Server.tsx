@@ -6,21 +6,23 @@
 // Dashboard.tsx owns the screen layout (the big pod, the four small pods
 // and the prompts); these are the info plates and their data.
 
-import { For, Show, createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, type Accessor } from "solid-js";
+import type { Action } from "./input";
 import { A } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { adminState } from "../admin/state";
 import { forget, recentServers } from "../api/server";
 import {
-  INVITE_DAY_CHOICES,
+  CUSTOM_CODE_MAX,
+  nextInviteDays,
   artWords,
+  customCodeError,
   createInvite,
   fetchAdminStatus,
   fetchInvites,
   fetchServerFacts,
   formatUptime,
-  grantCommand,
   reachWords,
   revokeInvite,
   type AdminStatus,
@@ -134,8 +136,7 @@ function AdminPlate(props: { s: AdminStatus }) {
           {(c) => <><dt>players</dt><dd>{c().accounts} <span>accounts</span> {c().online} <span>online</span> {c().live_games} <span>live</span></dd></>}
         </Show>
         <Show when={s().data_dir}><dt>data</dt><dd title={s().data_dir!}>{s().data_dir}</dd></Show>
-        <dt>content</dt><dd><A href="/stats/admin?tab=content">custom maps, reports, uploads</A></dd>
-        <dt>new admin</dt><dd><CopyCode text={grantCommand("GAMERTAG")} /></dd>
+        <dt>content</dt><dd><A class="dx-plain-link" href="/stats/admin?tab=content">custom maps, reports, uploads</A></dd>
       </dl>
     </Plate>
   );
@@ -158,20 +159,38 @@ export async function copyText(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
 
-export interface InviteControls { create(): void; copy(): void }
+export interface InviteControls {
+  create(): void;
+  copy(): void;
+  /** One step of keyboard or gamepad input on the invite rows; whether it meant anything. */
+  act(a: Action): boolean;
+  /** The selected row is an open invite (X revokes it). */
+  revokable: Accessor<boolean>;
+}
 
-/** Making, copying and revoking invite codes (admins). */
+type InviteRow =
+  | { kind: "days" }
+  | { kind: "code" }
+  | { kind: "create" }
+  | { kind: "made"; invite: string }
+  | { kind: "open"; item: InviteItem };
+
+/** Making, copying and revoking invite codes (admins): a column of rows
+ *  (blades) moved through with up and down; A acts on the row, X revokes. */
 export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls) => void }) {
   const [days, setDays] = createSignal<number>(7);
-  const [made, setMade] = createSignal<{ invite: string; exp: number } | null>(null);
+  const [custom, setCustom] = createSignal("");
+  const [made, setMade] = createSignal<{ invite: string; exp: number; custom?: boolean } | null>(null);
   const [list, setList] = createSignal<InviteItem[]>([]);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
-  const [copied, setCopied] = createSignal(false);
+  const [flash, setFlash] = createSignal<string | null>(null);
+  const [sel, setSel] = createSignal(0);
   const ctx = () => {
     const me = identity.me(), wk = live.wellKnown();
     return me && wk ? { me, aud: wk.id, api: live.server().api } : null;
   };
+  const say = (t: string) => { setFlash(t); setTimeout(() => setFlash((f) => (f === t ? null : f)), 1800); };
   async function load() {
     const c = ctx();
     if (!c || props.info.admin() !== true) return;
@@ -181,20 +200,24 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
   async function create() {
     const c = ctx();
     if (!c || busy()) return;
+    const want = custom().trim();
+    const bad = want ? customCodeError(want) : null;
+    if (bad) { setErr(`own code: ${bad}`); return; }
     setBusy(true); setErr(null);
     try {
-      const r = await createInvite(c.api, c.aud, c.me, days());
+      const r = await createInvite(c.api, c.aud, c.me, days(), undefined, undefined, want || undefined);
       setMade(r);
-      setCopied(await copyText(r.invite));
+      setCustom("");
+      if (await copyText(r.invite)) say("code copied");
       await load();
       props.info.refresh();
     } catch (x) {
       setErr(`couldn't make an invite: ${(x as Error).message}`);
     } finally { setBusy(false); }
   }
-  async function copy() {
-    const m = made() ?? (list().find((i) => i.invite) ? { invite: list().find((i) => i.invite)!.invite!, exp: 0 } : null);
-    if (m) setCopied(await copyText(m.invite));
+  async function copy(code?: string | null) {
+    const c = code ?? made()?.invite ?? list().find((i) => i.invite)?.invite;
+    if (c && (await copyText(c))) say("code copied");
   }
   async function revoke(jti: string) {
     const c = ctx();
@@ -205,56 +228,118 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
       if (made() && list().find((i) => i.jti === jti)?.invite === made()!.invite) setMade(null);
       await load();
       props.info.refresh();
+      say("invite revoked");
     } catch (x) { setErr(`couldn't revoke: ${(x as Error).message}`); }
   }
-  props.bind({ create: () => void create(), copy: () => void copy() });
   const open = () => list().filter((i) => i.state === "open");
   const recent = () => list().filter((i) => i.state !== "open").slice(0, 3);
+  const rows = createMemo((): InviteRow[] => {
+    const m = made();
+    return [
+      { kind: "days" }, { kind: "code" }, { kind: "create" },
+      ...(m ? [{ kind: "made" as const, invite: m.invite }] : []),
+      ...open().filter((i) => !m || i.invite !== m.invite).map((item) => ({ kind: "open" as const, item })),
+    ];
+  });
+  createEffect(() => { if (sel() >= rows().length) setSel(Math.max(0, rows().length - 1)); });
+  const focusRow = (i: number) => queueMicrotask(() => document.getElementById(`dash-inv-row-${i}`)?.focus({ preventScroll: false }));
+  const move = (i: number) => { setSel(i); focusRow(i); };
+  function activate(r: InviteRow | undefined) {
+    if (!r) return;
+    switch (r.kind) {
+      case "days": setDays(nextInviteDays(days())); break;
+      case "code": focusRow(sel()); break;
+      case "create": void create(); break;
+      case "made": void copy(r.invite); break;
+      case "open": if (r.item.invite) void copy(r.item.invite); else say("custom code: you chose it, so it isn't shown"); break;
+    }
+  }
+  const selected = () => rows()[sel()];
+  const revokable = () => selected()?.kind === "open";
+  props.bind({
+    create: () => void create(),
+    copy: () => void copy(),
+    revokable,
+    act(a) {
+      if (props.info.admin() !== true) return false;
+      const n = rows().length;
+      switch (a) {
+        case "up": move(Math.max(0, sel() - 1)); return true;
+        case "down": move(Math.min(n - 1, sel() + 1)); return true;
+        case "left": case "right":
+          if (selected()?.kind !== "days") return false;
+          setDays(nextInviteDays(days(), a === "right" ? 1 : -1));
+          return true;
+        case "select": activate(selected()); return true;
+        case "alt": { const r = selected(); if (r?.kind === "open") void revoke(r.item.jti); return r?.kind === "open"; }
+        default: return false;
+      }
+    },
+  });
   const until = (exp: number) => new Date(exp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const daysWord = (d: number) => (d === 1 ? "1 day" : `${d} days`);
   return (
-    <Plate small={props.info.facts()?.invite_only ? "invite only" : "sign-up open"} title="invites" main>
+    <Plate small="h2 live" title="invites" main>
       <Show when={props.info.admin() === true} fallback={<p class="dx-note">Only an admin of {host()} makes invite codes.</p>}>
-        <form id="dash-invite-form" class="dx-form dx-invites" onSubmit={(e) => { e.preventDefault(); void create(); }}>
-          <label for="dash-invite-days">lasts</label>
-          <span class="dx-days" role="radiogroup" aria-label="how long the invite lasts">
-            <For each={INVITE_DAY_CHOICES}>
-              {(d) => (
-                <button type="button" role="radio" aria-checked={days() === d} classList={{ on: days() === d }} onClick={() => setDays(d)}>
-                  {d === 1 ? "1 day" : `${d} days`}
-                </button>
-              )}
-            </For>
-          </span>
-          <button type="submit" class="dx-go" disabled={busy()}>{busy() ? "making" : "new invite"}</button>
-          <Show when={made()}>
-            {(m) => (
-              <>
-                <label for="dash-invite-code">code</label>
-                <input id="dash-invite-code" readOnly value={m().invite} onFocus={(e) => e.currentTarget.select()} />
-                <p class="dx-note">{copied() ? "Copied. " : ""}One sign-up, until {until(m().exp)}. Send it to one friend.</p>
-              </>
-            )}
-          </Show>
-          <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
-          <Show when={!props.info.facts()?.invite_only}>
-            <p class="dx-note">Sign-up is open on this server, so nobody needs a code until it runs with --invite-only.</p>
-          </Show>
-        </form>
-        <Show when={open().length || recent().length}>
-          <ul class="dx-invite-list">
-            <For each={open()}>
-              {(i) => (
-                <li>
-                  <span>open until {until(i.exp)}{i.by_gamertag ? ` · ${i.by_gamertag}` : ""}</span>
-                  <button type="button" class="dx-forget" onClick={() => void copyText(i.invite ?? "")}>copy</button>
-                  <button type="button" class="dx-forget" onClick={() => void revoke(i.jti)}>revoke</button>
+        <dl>
+          <dt>sign-up</dt><dd>{props.info.facts()?.invite_only ? "invite code needed" : "open to anyone"}</dd>
+        </dl>
+        <ul class="dx-blades" role="listbox" aria-label="invites">
+          <For each={rows()}>
+            {(r, i) => {
+              const on = () => sel() === i();
+              const common = { id: `dash-inv-row-${i()}`, onMouseEnter: () => setSel(i()), onFocus: () => setSel(i()) };
+              return (
+                <li classList={{ on: on() }} role="option" aria-selected={on()}>
+                  <Switch>
+                    <Match when={r.kind === "days"}>
+                      <button type="button" class="dx-blade" {...common} onClick={() => activate(r)}>
+                        <span>lasts</span><b>‹ {daysWord(days())} ›</b>
+                      </button>
+                    </Match>
+                    <Match when={r.kind === "code"}>
+                      <label class="dx-blade dx-blade--input" for={`dash-inv-row-${i()}`}>
+                        <span>own code</span>
+                        <input
+                          {...common} data-nav="rows" value={custom()} maxLength={CUSTOM_CODE_MAX} autocomplete="off" spellcheck={false}
+                          placeholder="optional" onInput={(e) => setCustom(e.currentTarget.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void create(); } }}
+                        />
+                      </label>
+                    </Match>
+                    <Match when={r.kind === "create"}>
+                      <button type="button" class="dx-blade dx-blade--go" {...common} disabled={busy()} onClick={() => activate(r)}>
+                        <span>{busy() ? "making invite" : "new invite"}</span><b>{custom().trim() ? "own code" : "random code"}</b>
+                      </button>
+                    </Match>
+                    <Match when={r.kind === "made" ? r : null}>
+                      {(m) => (
+                        <button type="button" class="dx-blade dx-blade--code" {...common} onClick={() => activate(r)}>
+                          <span>new</span><b class="dx-invite-code">{m().invite}</b>
+                        </button>
+                      )}
+                    </Match>
+                    <Match when={r.kind === "open" ? r.item : null}>
+                      {(it) => (
+                        <button type="button" class="dx-blade" {...common} onClick={() => activate(r)}>
+                          <span>{it().custom ? "custom code" : <code class="dx-invite-code">{it().invite}</code>}</span>
+                          <b>until {until(it().exp)}</b>
+                        </button>
+                      )}
+                    </Match>
+                  </Switch>
                 </li>
-              )}
-            </For>
-            <For each={recent()}>
-              {(i) => <li class="dx-invite-old"><span>{i.state}{i.used_by_gamertag ? ` by ${i.used_by_gamertag}` : ""}{i.by_gamertag ? ` · from ${i.by_gamertag}` : ""}</span></li>}
-            </For>
-          </ul>
+              );
+            }}
+          </For>
+          <For each={recent()}>
+            {(i) => <li class="dx-blade-old"><span>{i.custom ? "custom code" : "invite"}</span><b>{i.state}{i.used_by_gamertag ? ` by ${i.used_by_gamertag}` : ""}</b></li>}
+          </For>
+        </ul>
+        <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
+        <Show when={flash()}><p class="dx-note dx-flash" role="status">{flash()}</p></Show>
+        <Show when={!props.info.facts()?.invite_only}>
+          <p class="dx-note">Sign-up is open here, so nobody needs a code yet.</p>
         </Show>
       </Show>
     </Plate>

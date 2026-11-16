@@ -477,6 +477,27 @@ In the mock (`bun run dev`), `H2_MOCK_ADMIN=1` makes every account signed
 up in the browser an admin, and the mock serves these endpoints
 (`web/mock/admin.ts`; it parses but does not verify tokens and events).
 
+### Invite codes people type
+
+Every invite the log knows has a short code. Generated ones look like old
+Xbox Live codes: 25 characters in five groups (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`)
+from `BCDFGHJKMPQRTVWXY2346789` (no vowels, no 0/O, 1/I/L, 5/S). The code is
+derived from the invite's `jti` with a key derived from the server key, so
+it is never in the log and the list can show it again while the invite is
+open. An admin may pick a code instead (4 to 32 printable characters):
+`POST /v1/invites` with `{"event": <InviteCreated JWS>, "code": "..."}`.
+That code goes beside the signed event, never inside it; the server logs
+only its MAC, as a server-signed `InviteCodeSet {jti, mac}` in the same
+append, and the list shows it as a custom code. Codes match ignoring case,
+spaces and dashes; a custom code already held by an open invite is refused
+(409). The operator's invites (`h2 live invite create`, also `--code`)
+are now logged the same way, as server-signed `InviteCreated` events. The
+long signed codes from before still redeem.
+
+From the CLI: `h2 live invite create [--days N] [--code TEXT]` signs as the
+operator (`--data`) or, with `--as GAMERTAG`, as an admin account; `h2
+live invite list` and `h2 live invite revoke <jti> --as GAMERTAG`.
+
 ## 6. Security notes
 
 - Grant and revoke are operator-only (a server-key token with `lxm`

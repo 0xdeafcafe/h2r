@@ -515,3 +515,208 @@ async fn revoked_invites_and_ex_admins_invites_do_not_sign_up() {
     assert_eq!(v["invites"]["revoked"], 1);
     assert_eq!(v["invites"]["open"], 1);
 }
+
+#[tokio::test]
+async fn short_codes_generated_and_custom_sign_up_once_in_any_case() {
+    let h = server(true, false).await;
+    let boss = account(&h, "Boss").await;
+    // Generated: 25 characters in five groups, not in the log.
+    let jti = random_id();
+    let r = create_invite(&h, &boss, created_event(&h, &boss, &jti, now() + 86_400)).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let code = r.json()["invite"].as_str().unwrap().to_string();
+    assert_eq!(r.json()["custom"], false);
+    assert_eq!(code.len(), 29);
+    assert_eq!(code.matches('-').count(), 4);
+    assert!(
+        code.bytes()
+            .all(|b| b == b'-' || live_proto::recovery::invite_code::ALPHABET.contains(&b))
+    );
+    let log = h.get("/v1/events?stream=invites").await.json();
+    assert!(!log.to_string().contains(&code));
+    // Listed again while open.
+    let list = h
+        .call(
+            Method::GET,
+            "/v1/invites",
+            &[h.bearer(&boss, ADMIN_READ)],
+            Body::empty(),
+        )
+        .await
+        .json();
+    assert_eq!(list["items"][0]["invite"], code.as_str());
+
+    // Custom: the admin's text beside the event; logged only as a MAC.
+    let jti2 = random_id();
+    let body = json!({
+        "event": created_event(&h, &boss, &jti2, now() + 86_400),
+        "code": "Party Time",
+    })
+    .to_string();
+    let r = create_invite(&h, &boss, body).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert_eq!(
+        (r.json()["invite"].as_str(), r.json()["custom"].as_bool()),
+        (Some("Party Time"), Some(true))
+    );
+    let log = h.get("/v1/events?stream=invites").await.json();
+    assert!(!log.to_string().to_lowercase().contains("party"));
+    // The same code again while it is open: refused.
+    let body = json!({
+        "event": created_event(&h, &boss, &random_id(), now() + 86_400),
+        "code": "party-time",
+    })
+    .to_string();
+    assert_eq!(
+        create_invite(&h, &boss, body).await.status,
+        StatusCode::CONFLICT
+    );
+    // Too short.
+    let body =
+        json!({"event": created_event(&h, &boss, &random_id(), now() + 86_400), "code": "abc"})
+            .to_string();
+    assert_eq!(
+        create_invite(&h, &boss, body).await.status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Redeemed ignoring case, spaces and dashes; once.
+    assert_eq!(
+        sign_up(&h, "One", &code.to_lowercase().replace('-', " "))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        sign_up(&h, "Two", &code).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        sign_up(&h, "Three", "PARTYTIME").await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        sign_up(&h, "Four", "party time").await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        sign_up(&h, "Five", "nothing like it").await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    // Revoked codes stop working.
+    let jti3 = random_id();
+    let r = create_invite(&h, &boss, created_event(&h, &boss, &jti3, now() + 86_400)).await;
+    let code3 = r.json()["invite"].as_str().unwrap().to_string();
+    assert_eq!(revoke(&h, &boss, &jti3).await.status, StatusCode::OK);
+    assert_eq!(
+        sign_up(&h, "Six", &code3).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    let list = h
+        .call(
+            Method::GET,
+            "/v1/invites",
+            &[h.bearer(&boss, ADMIN_READ)],
+            Body::empty(),
+        )
+        .await
+        .json();
+    let custom = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["jti"] == jti2.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (custom["custom"].as_bool(), custom["state"].as_str()),
+        (Some(true), Some("used"))
+    );
+}
+
+#[tokio::test]
+async fn operator_invites_are_logged_with_short_codes_and_survive_a_restart() {
+    let store: Arc<dyn live_server::store::EventStore> = Arc::new(MemoryStore::new());
+    let policy = || Policy {
+        invite_only: true,
+        ..Policy::default()
+    };
+    let (dir, code, custom);
+    {
+        let h = start(store.clone(), policy()).await;
+        let r = h
+            .call(
+                Method::POST,
+                "/v1/invites?days=2",
+                &[operator_auth(&h, lxm::INVITES_WRITE)],
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(
+            r.status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+        code = r.json()["invite"].as_str().unwrap().to_string();
+        assert_eq!(code.len(), 29);
+        let r = h
+            .call(
+                Method::POST,
+                "/v1/invites?code=LAN%20Night",
+                &[operator_auth(&h, lxm::INVITES_WRITE)],
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(
+            r.status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+        custom = r.json()["invite"].as_str().unwrap().to_string();
+        let log = h.get("/v1/events?stream=invites").await.json();
+        assert_eq!(log["items"][0]["author"], "server:live.test");
+        // Keep the server key for the restart.
+        dir = common::temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["server.key", "server.json"] {
+            std::fs::copy(h.dir.join(f), dir.join(f)).unwrap();
+        }
+    }
+    let identity = live_server::ServerIdentity::open(&dir, Some("live.test")).unwrap();
+    let live = live_server::Live::start(store, identity, policy())
+        .await
+        .unwrap();
+    let h = Harness {
+        app: live_server::http::router(live.clone()),
+        live,
+        operator: live_server::ServerIdentity::load(&dir).unwrap().key,
+        id: "live.test".into(),
+        dir,
+    };
+    assert_eq!(
+        sign_up(&h, "Later", &code).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        sign_up(&h, "Lan", "lan night").await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(custom, "LAN Night");
+    // The long signed form still works.
+    let long = live_proto::sign::Invite::issue(&h.operator, &h.id, now() + 3600);
+    assert_eq!(sign_up(&h, "Old", &long).await.status, StatusCode::CREATED);
+}

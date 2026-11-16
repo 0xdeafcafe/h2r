@@ -132,13 +132,13 @@ Click a map in the **Maps** list. The status bar says `opened <map>`,
 with how many triangles and placements it has and how much of its art
 could be drawn.
 
-![Coagulation open with a battle rifle spawn selected: the outliner, the textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
+![Ascension open with a battle rifle spawn selected: the outliner, the lit, textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
 
 - **Outliner**: a **Filter placements** box, **Duplicate** and
   **Delete**, and one group per kind of object with its count, for
   example `Netgame equipment (61)`. Click a group to expand it, and an
   entry to select it; double-click an entry to point the camera at it.
-- **Viewport**: the level in 3D with its textures, the placed objects'
+- **Viewport**: the level in 3D with its textures and baked lighting, the placed objects'
   models, and a small coloured marker for each placement. The toolbar
   above it has **Move (W)**, **Rotate (E)**, **Local** (gizmo in the
   object's own axes), **Frame** and **Focus**.
@@ -159,7 +159,7 @@ Moving around the viewport:
 | Left-click | Select the placement under the pointer |
 | Drag the gizmo | Move or rotate the selection |
 
-![Zanzibar: a grenade spawn selected by the beach, a Warthog parked beside it](../images/editor/scenario-zanzibar.jpg)
+![Lockout: a battle rifle spawn selected among the towers, flags and spawn points marked around it](../images/editor/scenario-lockout.jpg)
 
 ### Move a weapon spawn and play it
 
@@ -210,7 +210,7 @@ are never changed.
 
 **As a map package (recommended).** Choose **File > Save as package...**.
 
-![The Save as package window over Coagulation: Name, Author, Description, Image, Directory and the active-package checkbox](../images/editor/scenario-package.jpg)
+![The Save as package window over Ascension: Name, Author, Description, Image, Directory and the active-package checkbox](../images/editor/scenario-package.jpg)
 
 - **Name**: what the package is called (required).
 - **Author**, **Description**: optional.
@@ -453,7 +453,7 @@ tool, and offers **Save** (or **Save as...** when a file name is needed),
 **Discard** or **Cancel**. Quitting with changes in several tools asks
 about each in turn.
 
-![The Unsaved changes window over Coagulation: Save as..., Discard and Cancel](../images/editor/unsaved-prompt.jpg)
+![The Unsaved changes window over Ascension: Save as..., Discard and Cancel](../images/editor/unsaved-prompt.jpg)
 
 **"the open map has unsaved edits: save or undo them first".** **Open
 package...** won't replace a map with unsaved changes. Save it (as a
@@ -505,9 +505,12 @@ Playlists tool has no disc to read map names from. Open your disc with
 fit the game's 128 KiB download buffer, or the game would ignore it and
 keep its built-in playlists. Remove some entries.
 
-**Parts of a level are untextured or an object has only a marker.** The
-status bar says how many shaders and objects could be drawn; the rest
-show flat-shaded or as markers only. Editing works the same.
+**Parts of a level are untextured, dark, or an object has only a
+marker.** The viewport draws the level's textures with its baked
+lighting, but not everything the game draws (no detail maps or the real
+sky, for example), and the outsides of a few buildings still come out
+dark. The status bar says how many shaders and objects could be drawn;
+the rest show flat-shaded or as markers only. Editing works the same.
 
 **The panels are in a mess.** **View > Reset layout**.
 

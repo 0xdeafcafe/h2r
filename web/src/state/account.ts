@@ -11,6 +11,7 @@
 // CryptoKey. Anyone with access to this browser profile can read it.
 
 import { b64urlEncode, canonicalJson, jwkThumbprint } from "./verify";
+import { parseRecovery, type Recovery } from "./recovery";
 
 export const TYP_ACCOUNT = "h2live-account";
 
@@ -61,8 +62,8 @@ export async function signAccountRequest(key: NewKey, gamertag: string, aud: str
   return signCompact(key.privateKey, { alg: "EdDSA", kid: key.publicJwk.kid, typ: TYP_ACCOUNT }, canonicalJson(body));
 }
 
-/** What `POST /v1/accounts` answers. */
-export interface CreatedAccount { xuid: string; gamertag: string; id: string }
+/** What `POST /v1/accounts` answers; `recovery` from servers that set it up. */
+export interface CreatedAccount { xuid: string; gamertag: string; id: string; recovery?: unknown }
 
 /** One entry of `accounts.json`, the same fields `h2 live account create`
  *  writes, so `h2 live account import <file>` can take it. */
@@ -83,10 +84,12 @@ export class SignUpError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 
-export async function createAccount(
+/** Signs up: the account entry to keep, and the recovery setup to show
+ *  once (null from a server that sends none). */
+export async function signUp(
   apiRoot: string, serverBase: string, serverId: string, gamertag: string, invite?: string,
   fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
-): Promise<LocalAccount> {
+): Promise<{ account: LocalAccount; recovery: Recovery | null }> {
   const bad = gamertagError(gamertag);
   if (bad) throw new SignUpError("invalid", `That gamertag won't work: ${bad}.`);
   const key = await generateKey();
@@ -100,9 +103,19 @@ export async function createAccount(
   }
   const created = (await r.json()) as CreatedAccount;
   return {
-    xuid: created.xuid, gamertag: created.gamertag, id: created.id, server: serverBase, server_id: serverId,
-    kid: key.publicJwk.kid, key: key.d, x: key.publicJwk.x,
+    account: {
+      xuid: created.xuid, gamertag: created.gamertag, id: created.id, server: serverBase, server_id: serverId,
+      kid: key.publicJwk.kid, key: key.d, x: key.publicJwk.x,
+    },
+    recovery: parseRecovery(created.recovery),
   };
+}
+
+export async function createAccount(
+  apiRoot: string, serverBase: string, serverId: string, gamertag: string, invite?: string,
+  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
+): Promise<LocalAccount> {
+  return (await signUp(apiRoot, serverBase, serverId, gamertag, invite, fetchFn, nowMs)).account;
 }
 
 /** The file `h2 live account import` reads: an array like accounts.json,

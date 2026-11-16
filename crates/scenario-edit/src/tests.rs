@@ -769,6 +769,77 @@ fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
     );
 }
 
+/// Framing drops the few placements far outside a level.
+#[test]
+fn trimmed_bounds_drop_outliers() {
+    let mut points: Vec<geometry::Vec3> = (0..40)
+        .map(|i| [i as f32 % 10.0, (i / 10) as f32, 0.0])
+        .collect();
+    points.push([500.0, -300.0, 80.0]);
+    let b = crate::session::trimmed_bounds(&points, 0.04);
+    assert_eq!(b.max, [9.0, 3.0, 0.0]);
+    assert_eq!(b.min, [0.0, 0.0, 0.0]);
+    // Few points: at least the middle one is kept.
+    let one = crate::session::trimmed_bounds(&[[1.0, 2.0, 3.0]], 0.5);
+    assert_eq!((one.min, one.max), ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]));
+}
+
+/// Lockout regression: a few of its placements sit far outside the level,
+/// so framing every placement left the level small in the view. Trimmed
+/// framing must come in at least a quarter closer than the full bounds
+/// would.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_lockout_frames_its_level_not_its_outliers() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "lockout").unwrap();
+    let mut s = crate::Session::new();
+    s.build_scenes = false;
+    s.open_named(source.clone(), "lockout").unwrap();
+    let mut all = geometry::Bounds::EMPTY;
+    s.markers().iter().for_each(|m| all.add(m.position));
+    let full = all.radius() * geometry::FRAME_DISTANCE;
+    let cam = *s.camera();
+    assert!(
+        cam.distance < full * 0.75,
+        "framed from {} (all placements: {full})",
+        cam.distance
+    );
+}
+
+/// The BSP is lit by its lightmap pages: most of Zanzibar's solid world
+/// draws through one.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_zanzibar_world_is_lightmapped() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "zanzibar").unwrap();
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "zanzibar").unwrap();
+    let scene = s.scene().unwrap();
+    assert!(scene.stats.lightmap_pages > 50, "{:?}", scene.stats);
+    let (lit, all) = scene
+        .world
+        .batches
+        .iter()
+        .filter(|b| b.blend != crate::scene::Blend::Translucent)
+        .fold((0, 0), |(l, a), b| {
+            let n = b.indices.len() / 3;
+            (l + if b.lightmap.is_some() { n } else { 0 }, a + n)
+        });
+    assert!(lit * 10 > all * 9, "{lit} of {all} solid triangles lit");
+    // Pages are palette colours, opaque, and not all one value.
+    let page = &scene.textures[scene.world.batches.iter().find_map(|b| b.lightmap).unwrap()];
+    assert!(page.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+    assert!(
+        page.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] != page.rgba[..3])
+    );
+}
+
 /// Reads every map on the owner's disc (`H2_DISC`, else `disc/halo2.iso`),
 /// read-only, and checks the field claims marked V in `layout`.
 #[test]

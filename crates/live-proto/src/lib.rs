@@ -13,6 +13,7 @@ pub mod mailbox;
 pub mod maps;
 pub mod motd;
 pub mod pack;
+pub mod recovery;
 #[doc(hidden)]
 pub mod samples;
 pub mod session;
@@ -282,6 +283,10 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
+    /// Reading the account's own recovery secret and current code.
+    pub const RECOVERY_READ: &str = "recovery.read";
+    /// Setting up or resetting the account's recovery secret.
+    pub const RECOVERY_WRITE: &str = "recovery.write";
     /// Content uploads, package publishing and reports (docs/game/maps.md §5).
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
@@ -378,6 +383,10 @@ pub struct CreatedAccount {
     pub gamertag: Gamertag,
     /// The author id: `acct:<xuid>@<server id>`.
     pub id: String,
+    /// On creation: the account's new recovery secret and current code
+    /// ([`recovery`]), shown to the user once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<recovery::RecoveryInfo>,
 }
 
 /// An entry of `GET /v1/accounts`.

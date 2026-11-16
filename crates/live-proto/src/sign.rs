@@ -16,6 +16,8 @@ use crate::jcs;
 pub const TYP_EVENT: &str = "h2live-event";
 /// JWS `typ` of an account-creation request.
 pub const TYP_ACCOUNT: &str = "h2live-account";
+/// JWS `typ` of an account-recovery request ([`crate::recovery`]).
+pub const TYP_RECOVER: &str = "h2live-recover";
 /// JWS `typ` of a server-signed invite code.
 pub const TYP_INVITE: &str = "h2live-invite";
 /// JWS `typ` of a request token.
@@ -183,6 +185,12 @@ impl KeyPair {
 
     pub fn public(&self) -> &PublicKey {
         &self.public
+    }
+
+    /// A 32-byte key for `label` derived from this key's seed with
+    /// HKDF-SHA256 ([`crate::recovery::seal::derive_key`]).
+    pub fn derive_key(&self, label: &str) -> [u8; 32] {
+        crate::recovery::seal::derive_key(&self.secret.to_bytes(), label)
     }
 
     /// The private JWK (`d` set), the form WebCrypto exports.

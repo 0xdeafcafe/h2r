@@ -131,6 +131,9 @@ h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
               [--private] [--invite-only] [--admin GAMERTAG]...
               [--tls-cert PEM --tls-key PEM | --insecure-http]
 h2 live account create <gamertag> [--server URL] [--invite CODE]
+h2 live account code [--as GAMERTAG] [--server URL]
+h2 live account recovery [--reset] [--as GAMERTAG] [--server URL]
+h2 live account recover <gamertag> [--code CODE] [--server URL]
 h2 live account import <file> [--server URL]
 h2 live account list [--server URL]
 h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
@@ -142,7 +145,9 @@ h2 live friend add|accept|decline|remove|list ...
 h2 live team ...
 h2 live maps publish|list ...
 h2 live assets extract|check
-h2 live invite create [--days N] [--server URL] [--data DIR]
+h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
+h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
+h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
 h2 play <disc> [--live | --live-server URL | --offline] [--live-listen ADDR] [--gamertag NAME]
 ```
@@ -164,6 +169,15 @@ the movies directory and the VFS data root ([storage.md](../runtime/storage.md))
   base64url `d`, which still reads). `account create` generates the key
   locally, signs the creation request (with `aud` = the server id and
   `iat`) and stores it; the server only ever sees the public half.
+  `account create` also prints the account's recovery code and
+  authenticator key ([live-security.md](live-security.md) §1, Recovery).
+  To use the account somewhere else, `h2 live account code` on a machine
+  that has it (or the web dashboard's recovery screen, or an authenticator
+  app) shows the current six-digit code, and `h2 live account recover
+  <gamertag>` on the new machine (or Recover in the web app) makes a new
+  key there and adds it with that code; no invite needed. `h2 live
+  account recovery` shows the authenticator key again, sets recovery up
+  on an account made before it existed, and with `--reset` replaces it.
   `account import` takes the entry the web app downloads after a browser
   sign-up (`{xuid, gamertag, server, key}`, or a list of them), checks that
   the key parses and is a current key of that XUID on the server
@@ -1058,6 +1072,7 @@ The text depends on the boot's `LiveConfig`:
 | Live | Server | Message |
 |---|---|---|
 | off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` |
+| on | URL, no account | "No Live account on this machine yet.", `h2 live account create <tag>`, or recover at `<URL>/dash/signup/recover` |
 | on | URL | "Can't reach the h2 live server at" and the URL, then the same advice |
 | on | none | stock text (local sign-in cannot fail to connect) |
 
@@ -1087,6 +1102,86 @@ runs the hook through the real Runner with the fixture module's leaf
 standing in for the fill, and checks that only error `0x23` changes, that
 install refuses to wrap an existing override and skips a missing original,
 and that local-only Live installs nothing. They need no XBE or game build.
+
+"No account" means the boot's accounts file (or its absence) holds no entry
+with a private-JWK key (`live_hle::account_setup::load`); an unreadable file
+keeps the "can't reach" text and is left to sign-in to report. Whether the
+retail game reaches error `0x23` at all with zero accounts listed is not yet
+checked in a run.
+
+### In-game account setup
+
+Making or recovering a Live account from inside the game. Built so far: the
+host calls and the screen's logic. Not yet built: the screen itself.
+
+**Host side, `live_hle::account_setup`** (no guest memory; blocking HTTP, so
+run each call on a `Job` thread and poll it from the frame loop):
+
+- `create(server_url, gamertag, invite)` makes a key, signs an
+  `AccountRequest` for the server id from discovery, and `POST`s
+  `/v1/accounts`. It returns the `LocalEntry` and the `RecoveryInfo` to show
+  once. The invite goes as typed (trimmed; empty means none).
+- `recover(server_url, gamertag, code)` makes a key and `POST`s a signed
+  `RecoverRequest` with the code to `/v1/accounts/{gamertag}/recover`.
+- `recovery_code(server_url, entry)` and `reset_recovery` read or replace
+  the secret with a self-issued `recovery.read` / `recovery.write` token.
+- `needs_invite(server_url)` reads `invite_only` from `GET /v1/server`.
+  It returns `None` when a private server won't say; a "needs an invite"
+  refusal then turns the invite field on.
+- `save(path, entry)` adds the entry to an accounts file in the CLI's shape
+  (`{xuid, gamertag, id, server, server_id, kid, key}`). It replaces an entry
+  with the same xuid, or one with the same gamertag on the same server. It
+  writes other entries back with every field they had, and writes mode 0600
+  through a temporary file and a rename. `shared_accounts_path` maps the
+  per-session `play-accounts.json` to the `accounts.json` beside it.
+- Each call refuses plain HTTP to anything but loopback (`Insecure`) before
+  it makes a request. Its `SetupError` is one short line for the player:
+  gamertag taken, needs an invite, invite not valid, no such gamertag, no
+  recovery set up, wrong code, locked out for N minutes (from the server's
+  429), busy, can't reach the server, or couldn't save. None of these
+  messages includes a key, a reply body or the code that was typed.
+- `Hle::reload_accounts()` reads the accounts file again, so a saved entry
+  is listed by `XOnlineGetUsers` and signs in without a restart. Accounts
+  that are signed in stay signed in, and if the file is broken nothing
+  changes.
+
+**Screen logic, `boot::account_screen::AccountScreen`** (pure Rust): a menu
+with Create, Recover and Cancel. Create asks for a gamertag, then an invite
+if the server needs one, then works, then shows "Write this down" (the
+current code with its seconds left, the authenticator key in groups of
+four, and how to recover). Recover asks for a gamertag, then the code, then
+works. A picks, B goes back, and B never skips the secret. The glue opens
+the keyboard for each `Effect::Keyboard` and answers with `typed`. It runs
+each `Effect::Start` as a `Job`, saves the entry, and answers with
+`finished`. On `Effect::Close { signed_up: true }` it calls
+`reload_accounts`. Page text is at most five lines of 40 characters, broken
+with `\r\n` and never holding `|`, as for the notice.
+
+**Pending (needs facts from a run):** the entry point and the drawing.
+Either of these would do:
+
+1. A list screen like Video and Skulls (`list_class`), opened from a row or
+   from the error `0x23` dialog's button. This needs the retail handler for
+   that button, or a menu to put the row on.
+2. The keyboard as text entry: open the retail keyboard screen (factory
+   `0x0023784f`, screen id `0xa7`) on demand with our buffer, and read the
+   text back when it is accepted. `keyboard_glue` only types into a keyboard
+   the game has already opened.
+
+The game also has to choose which file to save into. It only knows
+`LiveConfig.accounts_path`, which under `h2 play --live` is the session's
+`play-accounts.json`, rewritten on every start. So the glue should save to
+both that file and `shared_accounts_path(..)`, or `LiveConfig` should carry
+the shared path.
+
+Tests: `crates/live-hle/tests/account_setup.rs` covers create, recover with
+the code from the returned secret, a wrong code, a used code, an unknown
+gamertag, lockout, reset, an unreachable server, saving with other entries
+kept at 0600, and a saved account signing in after `reload_accounts`. All of
+them run against the in-process memory server.
+`crates/live-hle/src/account_setup.rs` maps refusals to errors.
+`crates/boot/src/account_screen.rs` covers every transition and checks that
+every page fits.
 
 ## Client HLE: outgoing messages
 

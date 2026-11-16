@@ -1,6 +1,8 @@
 // The server screen's endpoints for the mock (docs/live/live-admin.md §5):
 // GET /v1/server, GET /v1/admin/status, and admin invites (GET/POST
-// /v1/invites, POST /v1/invites/{jti}/revoke).
+// /v1/invites, POST /v1/invites/{jti}/revoke). Invite codes are short:
+// generated ones 25 characters in five groups, or the admin's own (sent as
+// JSON {event, code}), matched ignoring case, spaces and dashes.
 //
 // H2_MOCK_ADMIN=1 makes every account signed up in the browser an admin
 // (their account reads carry `admin: true`, so the dashboard and the stats
@@ -8,7 +10,6 @@
 // not verified; the real server checks both signatures and the admin.
 
 import { HOST, type World } from "./world";
-import { signJws } from "./sign";
 import { parseJws } from "../src/state/verify";
 
 const MAX_DAYS = 30;
@@ -17,7 +18,21 @@ export interface Reply { status: number; body: unknown }
 const ok = (body: unknown, status = 200): Reply => ({ status, body });
 const fail = (status: number, error: string, message: string): Reply => ({ status, body: { error, message } });
 
-interface MockInvite { jti: string; by: string; at: string; exp: number; position: number; revoked: boolean }
+interface MockInvite { jti: string; by: string; at: string; exp: number; position: number; revoked: boolean; code: string; custom: boolean }
+
+/** The generated codes' alphabet: no vowels, no look-alikes. */
+export const INVITE_ALPHABET = "BCDFGHJKMPQRTVWXY2346789";
+
+export function generateInviteCode(): string {
+  const b = crypto.getRandomValues(new Uint8Array(25));
+  const chars = [...b].map((x) => INVITE_ALPHABET[x % INVITE_ALPHABET.length]).join("");
+  return chars.match(/.{5}/g)!.join("-");
+}
+
+/** How codes compare: case, spaces and dashes don't matter. */
+export function inviteKey(code: string): string {
+  return code.replace(/[\s-]/g, "").toUpperCase();
+}
 
 export class Admin {
   readonly startedAt = Date.now();
@@ -59,8 +74,10 @@ export class Admin {
     return i.revoked ? "revoked" : i.exp < Date.now() / 1000 ? "expired" : "open";
   }
 
-  private code(i: MockInvite): string {
-    return signJws(this.world.serverKey, { aud: HOST, jti: i.jti, exp: i.exp });
+  /** The open invite a typed code names, if any. */
+  inviteFor(code: string): MockInvite | undefined {
+    const k = inviteKey(code);
+    return [...this.invites.values()].find((i) => inviteKey(i.code) === k && this.state(i) === "open");
   }
 
   async handle(req: Request, u: URL): Promise<Reply | null> {
@@ -92,14 +109,24 @@ export class Admin {
       const items = [...this.invites.values()].sort((a, b) => b.position - a.position).map((i) => {
         const state = this.state(i);
         const tag = this.world.accounts.get(/^acct:([0-9a-f]{16})@/.exec(i.by)?.[1] ?? "")?.gamertag;
-        return { jti: i.jti, by: i.by, by_gamertag: tag, at: i.at, exp: i.exp, state, ...(state === "open" ? { invite: this.code(i) } : {}) };
+        return { jti: i.jti, by: i.by, by_gamertag: tag, at: i.at, exp: i.exp, state, custom: i.custom, invite: state === "open" && !i.custom ? i.code : null };
       });
       return ok({ items, position: this.world.log.length });
     }
     if (path === "/v1/invites" && req.method === "POST") {
       const c = this.caller(auth, "invites.write");
       if (!c.ok) return c.reply;
-      const ev = parseJws((await req.text()).trim())?.payload as { stream?: string; type?: string; author?: string; at?: string; data?: { jti?: unknown; exp?: unknown } } | undefined;
+      const text = (await req.text()).trim();
+      let compact = text, custom: string | null = null;
+      if (text.startsWith("{")) {
+        let b: { event?: unknown; code?: unknown };
+        try { b = JSON.parse(text); } catch { return fail(400, "invalid", "expected a JWS or JSON {event, code}"); }
+        if (typeof b.event !== "string" || typeof b.code !== "string") return fail(400, "invalid", "expected JSON {event, code}");
+        if (b.code.length < 4 || b.code.length > 32 || !/^[\x20-\x7e]+$/.test(b.code)) return fail(400, "invalid", "a code is 4 to 32 printable ASCII characters");
+        compact = b.event;
+        custom = b.code;
+      }
+      const ev = parseJws(compact)?.payload as { stream?: string; type?: string; author?: string; at?: string; data?: { jti?: unknown; exp?: unknown } } | undefined;
       if (!ev || ev.stream !== "invites" || ev.type !== "InviteCreated") return fail(400, "invalid", "expected an InviteCreated event on invites");
       if (ev.author !== c.author) return fail(403, "forbidden", "the event's author is not the token's issuer");
       const { jti, exp } = ev.data ?? {};
@@ -107,10 +134,14 @@ export class Admin {
       if (typeof jti !== "string" || jti.length < 16) return fail(400, "invalid", "jti is 16 to 64 of [A-Za-z0-9_-]");
       if (typeof exp !== "number" || exp <= now || exp > now + MAX_DAYS * 86400 + 300) return fail(400, "invalid", `exp is in the future, at most ${MAX_DAYS} days`);
       if (this.invites.has(jti)) return fail(409, "conflict", "that jti is taken");
+      if (custom !== null && this.inviteFor(custom)) return fail(409, "conflict", "an open invite already has that code");
       const [w] = this.world.append("invites", [{ type: "InviteCreated", data: { jti, exp } }], null);
-      const i: MockInvite = { jti, by: c.author, at: ev.at ?? new Date().toISOString(), exp, position: w?.position ?? this.world.log.length, revoked: false };
+      const i: MockInvite = {
+        jti, by: c.author, at: ev.at ?? new Date().toISOString(), exp, position: w?.position ?? this.world.log.length, revoked: false,
+        code: custom ?? generateInviteCode(), custom: custom !== null,
+      };
       this.invites.set(jti, i);
-      return ok({ invite: this.code(i), jti, exp, position: i.position }, 201);
+      return ok({ invite: i.code, jti, exp, position: i.position, custom: i.custom }, 201);
     }
     const m = path.match(/^\/v1\/invites\/([^/]+)\/revoke$/);
     if (m && req.method === "POST") {
