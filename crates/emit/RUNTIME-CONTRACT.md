@@ -497,6 +497,11 @@ Its semantics:
     pending, the budget spent) is returned unchanged as this handler's own
     transfer, without running the epilogue: `CpuAbi` is as the callee left
     it. The runner then handles it at its safe point as it would have.
+    A host that recovers from STOPs therefore does it in the runner, not by
+    wrapping handlers: a wrapper is not the callee's handler, so no direct
+    call would match it. `Dispatch::set_stop_recovery` installs a hook the
+    runner calls with every STOP a generated handler returns, handed up or
+    not, and the CPU as it is; the runner carries on with what it returns.
   - After every invocation the runner takes back the budget left (direct
     transfers count in `transfers` and `direct_transfers`) and replays the
     frames still recorded into the shadow stack as it would have recorded

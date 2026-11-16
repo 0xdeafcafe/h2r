@@ -1,6 +1,7 @@
 //! Explicit guest transfers and callbacks use a bounded host stack.
 use crate::{
     CpuAbi, Event, ExecCtx, TransferAbi, abi,
+    dispatch::Handler,
     handler::{Invocation, execute},
     kernel,
 };
@@ -183,10 +184,18 @@ impl Runner {
             }
             cpu.eip = transfer.target_pc;
             ctx.frames.enter(function);
+            let generated = matches!(handler, Handler::Native(_));
             // Direct calls the handler makes spend this run's transfers.
             ctx.direct_begin(remaining);
             transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);
             remaining = ctx.direct_end(remaining);
+            if generated
+                && transfer.kind == abi::STOP
+                && transfer.valid_abi()
+                && let Some(recover) = ctx.runtime().stop_recovery()
+            {
+                transfer = recover(cpu, ctx, transfer);
+            }
         }
     }
 }

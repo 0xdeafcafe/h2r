@@ -4,10 +4,13 @@
 //! reaches an address the generated module can enter again, then hand
 //! back an ordinary transfer.
 //!
-//! Every generated entry and resume is registered with the runtime through
-//! one native trampoline, which looks up the real handler by selector,
-//! calls it, and runs the fallback on an unsupported-instruction STOP. The
-//! runtime, kernel and Machine see nothing different.
+//! Every generated entry is registered with the runtime as itself; the
+//! runtime hands each STOP a generated handler returns to [`recover`]
+//! (`Dispatch::set_stop_recovery`), which runs the fallback on an
+//! unsupported-instruction STOP. The kernel and Machine see nothing
+//! different. (Until 2026-11 every entry went through one [`trampoline`]
+//! instead, which also kept the runtime's direct calls from ever matching;
+//! `H2_BOOT_TRAMPOLINE=1` still registers that way, for comparison.)
 //!
 //! The lifter lowers x87 itself now (docs/FLOAT.md), so this is a safety
 //! net, not the design: it keeps a boot or trace running through any
@@ -364,7 +367,44 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     }
 }
 
-/// The one native handler every generated entry and resume is registered with.
+/// What the boot does with a STOP a generated handler returns: with
+/// recovery on, an unknown switch target its site's table holds is taken
+/// and a lifter-unsupported instruction is interpreted, both by [`run`];
+/// any other STOP (or recovery off) is returned as it is. The runtime calls
+/// this for every generated STOP ([`runtime::Dispatch::set_stop_recovery`],
+/// installed by [`install_stop_recovery`]), so the handlers themselves are
+/// registered directly and run with no wrapper.
+pub fn recover(cpu: &mut CpuAbi, ctx: &mut ExecCtx, t: TransferAbi) -> TransferAbi {
+    recover_if(RECOVERY.load(std::sync::atomic::Ordering::SeqCst), cpu, ctx, t)
+}
+
+fn recover_if(on: bool, cpu: &mut CpuAbi, ctx: &mut ExecCtx, t: TransferAbi) -> TransferAbi {
+    if t.kind != abi::STOP || !on {
+        return t;
+    }
+    if let Some(target) = crate::shim::take_unknown_switch(ctx.thread_id, cpu.eip)
+        && unread_allowed(cpu.eip, target)
+    {
+        // A switch generated with too few cases: take the jump.
+        cpu.eip = target;
+        return run(cpu, ctx);
+    }
+    if !crate::shim::is_unsupported(ctx.thread_id, cpu.eip) {
+        return t;
+    }
+    run(cpu, ctx)
+}
+
+/// Have the runtime pass every generated STOP to [`recover`].
+pub fn install_stop_recovery(rt: &runtime::Runtime) {
+    rt.edit_dispatch(|d| d.set_stop_recovery(recover));
+}
+
+/// One native handler for every generated entry and resume, which looks the
+/// real handler up by selector, calls it, and [`recover`]s its STOP. Only
+/// with `H2_BOOT_TRAMPOLINE=1` (see `load_module`), to compare against the
+/// old registration: the runtime's direct calls never match it, so every
+/// call between generated functions goes through the runner.
 ///
 /// # Safety
 /// Called by the runtime with the live, exclusive CPU/context pair.
@@ -382,17 +422,7 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
     }
     // SAFETY: the handler has returned; the pair is ours again.
     let (cpu, ctx) = unsafe { (&mut *cpu, &mut *ctx.cast::<ExecCtx>()) };
-    if let Some(target) = crate::shim::take_unknown_switch(ctx.thread_id, cpu.eip)
-        && unread_allowed(cpu.eip, target)
-    {
-        // A switch generated with too few cases: take the jump.
-        cpu.eip = target;
-        return run(cpu, ctx);
-    }
-    if !crate::shim::is_unsupported(ctx.thread_id, cpu.eip) {
-        return t;
-    }
-    run(cpu, ctx)
+    recover(cpu, ctx, t)
 }
 
 /// Jump-table targets the analyzer did not read; see [`unread_targets`].
@@ -594,6 +624,29 @@ mod tests {
         let t = unsafe { trampoline(&mut cpu, std::ptr::null_mut(), 0x3000) };
         assert_eq!((t.kind, t.event_id), (abi::STOP, 7));
         assert_eq!(cpu.eip, 0x3000);
+    }
+
+    #[test]
+    fn recovery_leaves_every_other_stop_as_it_is() {
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        // A thread id no other test uses: the shim's tables are global.
+        let mut ctx = ExecCtx::new(rt, 0x7e57);
+        let mut cpu = CpuAbi { eip: 0x5000, ..Default::default() };
+        // A STOP that is not the lifter's, and a FAULT.
+        let id = crate::shim::record_ctx(&mut ctx, 0x5000, "guest exception/stop 8 hlt".into());
+        for t in [TransferAbi::stop(id), TransferAbi::fault(id)] {
+            let back = recover_if(true, &mut cpu, &mut ctx, t);
+            assert_eq!((back.kind, back.event_id, cpu.eip), (t.kind, id, 0x5000));
+        }
+        // An unknown switch target no table allows is not taken.
+        crate::shim::note_unknown_switch(0x7e57, 0x5000, 0x6000);
+        let back = recover_if(true, &mut cpu, &mut ctx, TransferAbi::stop(id));
+        assert_eq!((back.kind, cpu.eip), (abi::STOP, 0x5000));
+        assert_eq!(crate::shim::take_unknown_switch(0x7e57, 0x5000), None, "consumed");
+        // Recovery off: even the lifter's own STOP stays.
+        let id = crate::shim::record_ctx(&mut ctx, 0x5000, "unsupported instruction at 0x5000: x (y)".into());
+        let back = recover_if(false, &mut cpu, &mut ctx, TransferAbi::stop(id));
+        assert_eq!((back.kind, back.event_id), (abi::STOP, id));
     }
 
     #[test]
