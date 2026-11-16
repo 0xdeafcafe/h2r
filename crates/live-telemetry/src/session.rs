@@ -179,6 +179,7 @@ impl Session {
             difficulty,
             // Live co-op does not exist yet.
             online: None,
+            map_id: None,
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),

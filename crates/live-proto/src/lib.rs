@@ -10,6 +10,7 @@ pub mod game;
 pub mod hopper;
 pub mod jcs;
 pub mod mailbox;
+pub mod maps;
 pub mod motd;
 pub mod session;
 pub mod sign;

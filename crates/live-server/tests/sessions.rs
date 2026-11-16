@@ -35,6 +35,7 @@ fn new() -> NewSession {
         name: Some("Test lobby".into()),
         language: Some("en".into()),
         visibility: Default::default(),
+        map_id: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {

@@ -761,9 +761,20 @@ async fn list_games(
         Some(_) => return Err(invalid("state is live or ended")),
     };
     let before = (paging.after > 0).then_some(paging.after);
+    let filter = crate::games::GameFilter {
+        map: p.get("map").filter(|m| !m.is_empty()).cloned(),
+        map_id: match p.get("map_id").map(String::as_str) {
+            None | Some("") => None,
+            Some("none") => Some(None),
+            Some(id) => Some(Some(
+                id.parse()
+                    .map_err(|_| invalid("map_id is 64 hex digits or none"))?,
+            )),
+        },
+    };
     Ok(json(
         StatusCode::OK,
-        &live.games(state, before, paging.limit),
+        &live.games_where(state, &filter, before, paging.limit),
     ))
 }
 

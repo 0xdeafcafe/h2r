@@ -688,6 +688,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         name: None,
         language: None,
         visibility: s.visibility,
+        map_id: None,
     }
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {
