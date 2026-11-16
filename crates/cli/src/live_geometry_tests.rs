@@ -993,11 +993,13 @@ fn geometry_from_the_disc() {
     );
     for s in &x.stats {
         report += &format!(
-            "{:<20} {:<11} bsps {}/{} src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
+            "{:<20} {:<11} bsps {}/{} machines {:>3} ({:>6} tris) src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
             s.stem,
             format!("{:?}", s.kind.unwrap()),
             s.bsps,
             s.scenario_bsps,
+            s.machines,
+            s.machine_triangles,
             s.source_triangles,
             s.triangles,
             s.vertices,
@@ -1052,6 +1054,19 @@ fn geometry_from_the_disc() {
             serde_json::from_slice(&fs::read(out.join(e.views.as_ref().unwrap())).unwrap())
                 .unwrap();
         assert_eq!(views.views.len(), 5, "{stem}");
+    }
+
+    // The machine levels' top and one iso view, for review.
+    let shots = check.join("machines");
+    let _ = fs::remove_dir_all(&shots);
+    fs::create_dir_all(&shots).unwrap();
+    for stem in ["zanzibar", "ascension"] {
+        for view in ["top", "iso-ne"] {
+            let from = out.join("map").join(stem).join(format!("views/{view}.png"));
+            if from.exists() {
+                fs::copy(&from, shots.join(format!("{stem}-{view}.png"))).unwrap();
+            }
+        }
     }
 
     // The top view without the cutaway, side by side with it, at half
@@ -1123,4 +1138,204 @@ fn image_rgba(path: &Path) -> Result<Vec<u8>> {
     let info = reader.next_frame(&mut buf)?;
     buf.truncate(info.buffer_size());
     Ok(buf)
+}
+
+// ---- Machines --------------------------------------------------------------
+
+/// An invented placement record: palette index, position, yaw/pitch/roll,
+/// scale.
+fn placement_record(palette: i16, pos: [f32; 3], rot: [f32; 3], scale: f32) -> Vec<u8> {
+    let mut b = vec![0xaau8; 0x48];
+    b[0..2].copy_from_slice(&palette.to_le_bytes());
+    for (k, v) in pos.iter().chain(&rot).chain([&scale]).enumerate() {
+        put32(&mut b, 8 + 4 * k, v.to_bits());
+    }
+    b
+}
+
+fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+}
+
+#[test]
+fn placements_read_yaw_then_pitch_then_roll_and_scale() {
+    use std::f32::consts::FRAC_PI_2 as Q;
+    let at =
+        Placement::parse(&placement_record(3, [10.0, 20.0, 30.0], [Q, 0.0, 0.0], 2.0)).unwrap();
+    assert_eq!(at.palette, 3);
+    assert_eq!(at.position, [10.0, 20.0, 30.0]);
+    // Yaw turns forward (+x) to +y, about +z.
+    assert!(close(at.axes()[0], [0.0, 1.0, 0.0]));
+    assert!(
+        close(at.transform([1.0, 0.0, 0.0]), [10.0, 22.0, 30.0]),
+        "scaled by 2"
+    );
+    assert!(
+        close(at.rotate([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]),
+        "directions unscaled"
+    );
+    // Pitch tips forward up.
+    let pitch = Placement {
+        rotation: [0.0, Q, 0.0],
+        ..at
+    };
+    assert!(close(pitch.axes()[0], [0.0, 0.0, 1.0]));
+    // Roll turns left (+y) up, about forward.
+    let roll = Placement {
+        rotation: [0.0, 0.0, Q],
+        ..at
+    };
+    assert!(close(roll.axes()[1], [0.0, 0.0, 1.0]));
+    assert!(close(roll.axes()[0], [1.0, 0.0, 0.0]));
+    // Order: roll, then pitch, then yaw (outermost). With yaw and pitch
+    // both 90°, up ends at −y; pitching after the yaw would leave it at −x.
+    let both = Placement {
+        rotation: [Q, Q, 0.0],
+        ..at
+    };
+    let [f, l, u] = both.axes();
+    assert!(close(f, [0.0, 0.0, 1.0]));
+    assert!(close(l, [-1.0, 0.0, 0.0]));
+    assert!(close(u, [0.0, -1.0, 0.0]));
+    // Scale zero (and below) means one.
+    let unit = Placement { scale: 0.0, ..at };
+    assert_eq!(unit.scale(), 1.0);
+    assert!(close(unit.transform([1.0, 0.0, 0.0]), [10.0, 21.0, 30.0]));
+    assert!(Placement::parse(&[0u8; 0x20]).is_none(), "short record");
+}
+
+#[test]
+fn the_glb_matrix_is_the_placement_in_gltf_axes() {
+    let at = Placement {
+        palette: 0,
+        position: [3.0, -4.0, 5.0],
+        rotation: [0.7, -0.3, 1.1],
+        scale: 1.5,
+    };
+    let m = at.gltf_matrix();
+    for p in [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [2.0, -3.0, 0.5],
+    ] {
+        let g = to_gltf(p);
+        let out: [f32; 3] =
+            std::array::from_fn(|r| m[r] * g[0] + m[4 + r] * g[1] + m[8 + r] * g[2] + m[12 + r]);
+        assert!(close(out, to_gltf(at.transform(p))), "{p:?}");
+    }
+    assert_eq!(&m[3..4], &[0.0]);
+    assert_eq!(m[15], 1.0);
+}
+
+#[test]
+fn machines_are_metal_shared_meshes_under_a_machines_node() {
+    // A model: a box (unnamed shader -> metal, even its top) and a glass
+    // pane.
+    let mut tris: Vec<Tri> = cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0])
+        .into_iter()
+        .map(|t| Tri {
+            surface: machine_surface(None),
+            ..t
+        })
+        .collect();
+    tris.extend(flat(-1.0, -1.0, 1.0, 1.0, 3.0, true).map(|t| Tri {
+        surface: machine_surface(Some("objects\\thing\\shaders\\glass_pane")),
+        ..t
+    }));
+    let model = MachineModel {
+        stem: "wheel".into(),
+        mesh: object_mesh(&tris),
+    };
+    let classes: Vec<Class> = model.mesh.primitives.iter().map(|(c, _)| *c).collect();
+    assert_eq!(classes, [Class::Metal, Class::Glass]);
+    assert_eq!(model.mesh.triangles(), 14);
+
+    let ground = build_mesh(&flat(-20.0, -20.0, 20.0, 20.0, 0.0, true));
+    let level = Level::build("lvl", MapKind::Multiplayer, vec![(0, Ok(ground))]).unwrap();
+    let at = |i: usize, x: f32| PlacedMachine {
+        name: format!("wheel_{i}"),
+        model: 0,
+        at: Placement {
+            palette: 0,
+            position: [x, 0.0, 0.0],
+            rotation: [0.0; 3],
+            scale: 1.0,
+        },
+    };
+    let level = level.with_machines(vec![model], vec![at(0, -5.0), at(2, 5.0)]);
+    // The views draw both copies, placed; the level's counts and bounds are
+    // the BSP's.
+    let placed: usize = level
+        .mesh
+        .objects
+        .iter()
+        .map(|(_, p)| p.indices.len() / 3)
+        .sum();
+    assert_eq!(placed, 28);
+    assert_eq!(level.mesh.triangles(), 2);
+    assert_eq!(level.mesh.bounds.max[2], 0.0);
+    assert!(
+        level.mesh.objects[0]
+            .1
+            .positions
+            .iter()
+            .any(|p| close(*p, [6.0, 1.0, 2.0]))
+    );
+
+    let glb = level.glb();
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(
+        node_names(&doc),
+        ["structure", "machines", "wheel_0", "wheel_2"]
+    );
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 1]));
+    let machines = &doc["nodes"][1];
+    assert!(machines.get("mesh").is_none());
+    assert_eq!(machines["children"], serde_json::json!([2, 3]));
+    assert!(
+        doc["nodes"][0].get("matrix").is_none(),
+        "the level is world space"
+    );
+    // One mesh for both placements, each with its own matrix.
+    assert_eq!(doc["meshes"].as_array().unwrap().len(), 2);
+    assert_eq!(doc["nodes"][2]["mesh"], doc["nodes"][3]["mesh"]);
+    let tx = |n: usize| doc["nodes"][n]["matrix"][12].as_f64().unwrap();
+    assert_eq!((tx(2), tx(3)), (-5.0, 5.0));
+    let names: Vec<&str> = doc["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["floor", "metal", "glass"]);
+}
+
+#[test]
+fn the_cutaway_never_erases_a_machine() {
+    // A box hovering over the ground: its underside is a ceiling with a top
+    // above it and floor below, so as level geometry the top view cuts it.
+    let ground = flat(0.0, 0.0, 40.0, 40.0, 0.0, true).to_vec();
+    let hover = cuboid([10.0, 10.0, 2.0], [30.0, 30.0, 6.0]);
+    let (w, h) = (200usize, 200usize);
+    let top_at_centre = |mesh: &LevelMesh| {
+        let frame = mesh.bounds;
+        let clip = crate::live_render::clip_box(&frame);
+        let cam = fit_box(basis(None), &frame, w as f32, h as f32, 0.0);
+        let cut = crate::live_render::Cutaway::new(mesh, &cam, &clip, w, h);
+        let (d, _) = crate::live_render::gbuffer(mesh, &cam, &clip, Some(&cut), 1, w, h);
+        let q = apply(&cam.world_to_pixel(), [20.0, 20.0, 0.0]);
+        -d[q[1] as usize * w + q[0] as usize]
+    };
+    let as_level = build_mesh(&[ground.clone(), hover.clone()].concat());
+    assert_eq!(top_at_centre(&as_level), 0.0, "level geometry is cut");
+    let mut with_object = build_mesh(&[ground, hover.clone()].concat());
+    with_object.primitives = build_mesh(&flat(0.0, 0.0, 40.0, 40.0, 0.0, true)).primitives;
+    with_object.objects = object_mesh(&hover).primitives;
+    assert_eq!(
+        top_at_centre(&with_object),
+        6.0,
+        "the machine keeps its top"
+    );
 }

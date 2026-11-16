@@ -39,6 +39,7 @@ pub const GEOMETRY_VERSION: u32 = 1;
 pub const GENERATOR: &str = "h2 live art";
 
 const SHAD: FourCC = FourCC(*b"shad");
+const MACH: FourCC = FourCC(*b"mach");
 
 /// A surface class: the glTF material and the colour it is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -366,6 +367,10 @@ pub struct Primitive {
 pub struct LevelMesh {
     pub primitives: Vec<(Class, Primitive)>,
     pub bounds: Bounds,
+    /// Placed objects (machines), a primitive per class: drawn in the views
+    /// and casting shadows, but never cut away by the top view's cutaway
+    /// and not part of `bounds`, the frame or the counts.
+    pub objects: Vec<(Class, Primitive)>,
 }
 
 impl LevelMesh {
@@ -471,6 +476,7 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
             .map(|(c, b)| (c, b.prim))
             .collect(),
         bounds,
+        objects: Vec::new(),
     }
 }
 
@@ -644,7 +650,11 @@ pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
 /// coordinates), `extras`, and child nodes. Nodes carry no transforms.
 pub struct GlbNode<'a> {
     pub name: String,
+    /// Its mesh; a mesh given to several nodes (the same slice) is written
+    /// once, named by the first node that has it.
     pub mesh: Option<&'a [(Class, Primitive)]>,
+    /// Column-major glTF transform (placed objects only).
+    pub matrix: Option<[f32; 16]>,
     pub extras: Option<serde_json::Value>,
     pub children: Vec<GlbNode<'a>>,
 }
@@ -654,9 +664,14 @@ impl<'a> GlbNode<'a> {
         GlbNode {
             name: name.into(),
             mesh: Some(&mesh.primitives),
+            matrix: None,
             extras: None,
             children: Vec::new(),
         }
+    }
+
+    pub fn named(self, name: String) -> Self {
+        GlbNode { name, ..self }
     }
 }
 
@@ -685,6 +700,7 @@ pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> 
         materials: Vec<Value>,
         material_of: BTreeMap<Class, usize>,
         meshes: Vec<Value>,
+        mesh_of: HashMap<*const (Class, Primitive), usize>,
         nodes: Vec<Value>,
     }
     impl Out {
@@ -763,18 +779,29 @@ pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> 
         fn node(&mut self, n: &GlbNode) -> usize {
             let at = self.nodes.len();
             self.nodes.push(json!({"name": n.name}));
-            let prims: Vec<Value> = n
-                .mesh
-                .unwrap_or(&[])
-                .iter()
-                .filter(|(_, p)| !p.indices.is_empty())
-                .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
-                .map(|(c, p)| self.primitive(c, &p))
-                .collect();
-            if !prims.is_empty() {
-                self.meshes
-                    .push(json!({"name": n.name, "primitives": prims}));
-                self.nodes[at]["mesh"] = json!(self.meshes.len() - 1);
+            let src = n.mesh.unwrap_or(&[]);
+            let mesh = match self.mesh_of.get(&src.as_ptr()) {
+                Some(&m) if !src.is_empty() => Some(m),
+                _ => {
+                    let prims: Vec<Value> = src
+                        .iter()
+                        .filter(|(_, p)| !p.indices.is_empty())
+                        .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
+                        .map(|(c, p)| self.primitive(c, &p))
+                        .collect();
+                    (!prims.is_empty()).then(|| {
+                        self.meshes
+                            .push(json!({"name": n.name, "primitives": prims}));
+                        self.mesh_of.insert(src.as_ptr(), self.meshes.len() - 1);
+                        self.meshes.len() - 1
+                    })
+                }
+            };
+            if let Some(m) = mesh {
+                self.nodes[at]["mesh"] = json!(m);
+            }
+            if let Some(m) = n.matrix {
+                self.nodes[at]["matrix"] = json!(m);
             }
             if let Some(e) = &n.extras {
                 self.nodes[at]["extras"] = e.clone();
@@ -793,6 +820,7 @@ pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> 
         materials: Vec::new(),
         material_of: BTreeMap::new(),
         meshes: Vec::new(),
+        mesh_of: HashMap::new(),
         nodes: Vec::new(),
     };
     let top: Vec<usize> = roots.iter().map(|n| o.node(n)).collect();
@@ -918,6 +946,9 @@ pub struct MapStats {
     /// BSPs in the scenario, and how many made it into `map.glb`.
     pub scenario_bsps: usize,
     pub bsps: usize,
+    /// Machines placed, and their triangles (not in `triangles`).
+    pub machines: usize,
+    pub machine_triangles: usize,
     pub source_triangles: usize,
     pub triangles: usize,
     pub vertices: usize,
@@ -1006,6 +1037,366 @@ fn material_surfaces(map: &mut MapReader, bsp: TagId) -> (Vec<Surface>, usize) {
     }
 }
 
+// ---- Machines ------------------------------------------------------------
+
+/// Scenario machine placements (`scnr+0xa8`, stride 0x48) and their palette
+/// (`scnr+0xb0`, stride 0x28, tag reference first): the object type table's
+/// `mach` entry (docs/objects.md).
+const MACHINES: usize = 0xa8;
+const MACHINE_STRIDE: usize = 0x48;
+const MACHINE_PALETTE: usize = 0xb0;
+const PALETTE_STRIDE: usize = 0x28;
+
+/// Where a scenario object sits: the common head of every placement record
+/// (palette index at +0, position at +8, yaw/pitch/roll in radians at
+/// +0x14, scale at +0x20). The rotation order and the scale-zero-is-one rule
+/// follow the public scenario object definition; the disc check confirms
+/// that the records read this way land on the level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub palette: i16,
+    pub position: [f32; 3],
+    /// Yaw about +z, then pitch (positive tips forward up), then roll about
+    /// the forward axis.
+    pub rotation: [f32; 3],
+    pub scale: f32,
+}
+
+impl Placement {
+    pub fn parse(b: &[u8]) -> Option<Placement> {
+        let f = |o: usize| Some(f32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
+        Some(Placement {
+            palette: i16::from_le_bytes(b.get(0..2)?.try_into().ok()?),
+            position: [f(8)?, f(0xc)?, f(0x10)?],
+            rotation: [f(0x14)?, f(0x18)?, f(0x1c)?],
+            scale: f(0x20)?,
+        })
+    }
+
+    /// The object's forward, left and up axes in the world:
+    /// `Rz(yaw) · Ry(−pitch) · Rx(roll)` applied to +x, +y and +z.
+    pub fn axes(&self) -> [[f32; 3]; 3] {
+        let [yaw, pitch, roll] = self.rotation;
+        let (sy, cy) = yaw.sin_cos();
+        let (sp, cp) = pitch.sin_cos();
+        let (sr, cr) = roll.sin_cos();
+        let rot = |v: [f32; 3]| {
+            // Roll about x.
+            let v = [v[0], cr * v[1] - sr * v[2], sr * v[1] + cr * v[2]];
+            // Pitch: +x tips towards +z.
+            let v = [cp * v[0] - sp * v[2], v[1], sp * v[0] + cp * v[2]];
+            // Yaw about z.
+            [cy * v[0] - sy * v[1], sy * v[0] + cy * v[1], v[2]]
+        };
+        [
+            rot([1.0, 0.0, 0.0]),
+            rot([0.0, 1.0, 0.0]),
+            rot([0.0, 0.0, 1.0]),
+        ]
+    }
+
+    /// A scale of zero (or less, or not a number) means 1.
+    pub fn scale(&self) -> f32 {
+        if self.scale > 0.0 { self.scale } else { 1.0 }
+    }
+
+    /// A model-space point in the world.
+    pub fn transform(&self, p: [f32; 3]) -> [f32; 3] {
+        let [f, l, u] = self.axes();
+        let s = self.scale();
+        std::array::from_fn(|k| self.position[k] + s * (p[0] * f[k] + p[1] * l[k] + p[2] * u[k]))
+    }
+
+    /// The placement as a column-major glTF node matrix, for a mesh whose
+    /// points are glTF `(x, z, -y)` of model space: columns
+    /// `C(s·forward)`, `C(s·up)`, `C(−s·left)` and `C(position)`, where
+    /// `C` is [`to_gltf`].
+    pub fn gltf_matrix(&self) -> [f32; 16] {
+        let [f, l, u] = self.axes();
+        let s = self.scale();
+        let c0 = to_gltf(f.map(|v| s * v));
+        let c1 = to_gltf(u.map(|v| s * v));
+        let c2 = to_gltf(l.map(|v| -s * v));
+        let t = to_gltf(self.position);
+        [
+            c0[0], c0[1], c0[2], 0.0, c1[0], c1[1], c1[2], 0.0, c2[0], c2[1], c2[2], 0.0, t[0],
+            t[1], t[2], 1.0,
+        ]
+    }
+
+    /// A model-space direction in the world (unscaled).
+    pub fn rotate(&self, n: [f32; 3]) -> [f32; 3] {
+        let [f, l, u] = self.axes();
+        std::array::from_fn(|k| n[0] * f[k] + n[1] * l[k] + n[2] * u[k])
+    }
+}
+
+/// A machine's model, model space, ready to place.
+#[derive(Clone, Debug)]
+pub struct MachineModel {
+    /// The last path component of the `mach` tag's name.
+    pub stem: String,
+    /// Model space, welded; see [`object_mesh`].
+    pub mesh: LevelMesh,
+}
+
+/// A placed object's mesh: welded like the level, but every surface is
+/// `metal` unless its shader names it glass, water or foliage (facing does
+/// not make an object's top a floor).
+pub fn object_mesh(tris: &[Tri]) -> LevelMesh {
+    let mesh = build_mesh(tris);
+    let bounds = mesh.bounds;
+    let mut by: BTreeMap<Class, Vec<LevelMesh>> = BTreeMap::new();
+    for (c, p) in mesh.primitives {
+        let c = match c {
+            Class::Glass | Class::Water | Class::Foliage => c,
+            _ => Class::Metal,
+        };
+        by.entry(c).or_default().push(LevelMesh {
+            primitives: vec![(c, p)],
+            bounds,
+            objects: Vec::new(),
+        });
+    }
+    LevelMesh {
+        primitives: by.values().flat_map(|m| merge(m).primitives).collect(),
+        bounds,
+        objects: Vec::new(),
+    }
+}
+
+/// A mesh's primitives moved from model space to where `at` puts them.
+pub fn place_mesh(mesh: &LevelMesh, at: &Placement) -> Vec<(Class, Primitive)> {
+    mesh.primitives
+        .iter()
+        .map(|(c, p)| {
+            (
+                *c,
+                Primitive {
+                    positions: p.positions.iter().map(|&v| at.transform(v)).collect(),
+                    normals: p.normals.iter().map(|&n| at.rotate(n)).collect(),
+                    indices: p.indices.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// One machine placement: its node name (`<tag stem>_<placement index>`),
+/// which of the level's machine models it shows, and where.
+#[derive(Clone, Debug)]
+pub struct PlacedMachine {
+    pub name: String,
+    pub model: usize,
+    pub at: Placement,
+}
+
+/// What a machine's shader name says: as for the level, except an
+/// unnamed surface is metal.
+fn machine_surface(name: Option<&str>) -> Surface {
+    match name.map_or(Surface::Unknown, surface_from_name) {
+        Surface::Unknown => Surface::Class(Class::Metal),
+        s => s,
+    }
+}
+
+/// Highest detail level drawn for a placed object (0 lowest, 5 highest):
+/// high enough to read as the object, low enough to keep a level's
+/// `map.glb` small.
+pub const OBJECT_LOD: usize = 3;
+
+/// Each region's first permutation at the highest detail level up to
+/// [`OBJECT_LOD`] it has (or its lowest above that), without repeats.
+pub fn object_sections(model: &tags::model::RenderModelGeometry) -> Vec<usize> {
+    let mut out = Vec::new();
+    for r in &model.regions {
+        let Some(p) = r.permutations.first() else {
+            continue;
+        };
+        let pick = p.lod_sections[..=OBJECT_LOD]
+            .iter()
+            .rev()
+            .chain(&p.lod_sections[OBJECT_LOD + 1..])
+            .flatten()
+            .next();
+        if let Some(&s) = pick
+            && !out.contains(&s)
+        {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// The drawn triangles of a render model's [`object_sections`], in model
+/// space.
+pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Surface]) -> Vec<Tri> {
+    let mut out = Vec::new();
+    for si in object_sections(model) {
+        let Some(s) = model.sections.get(si) else {
+            continue;
+        };
+        let v = &s.vertices;
+        for part in s.geometry.parts.iter().filter(|p| p.is_drawn()) {
+            let surface = surfaces
+                .get(usize::from(part.material))
+                .copied()
+                .unwrap_or(Surface::Class(Class::Metal));
+            if surface == Surface::Sky {
+                continue;
+            }
+            for t in s.geometry.part_triangles(part) {
+                let i = t.map(usize::from);
+                let Some(p) = i
+                    .iter()
+                    .map(|&i| v.positions.get(i).copied())
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                out.push(Tri {
+                    p: [p[0], p[1], p[2]],
+                    n: i.map(|i| v.normals.get(i).copied().unwrap_or([0.0; 3])),
+                    surface,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A `mach` tag's model: object `model` (`hlmt`) -> `render_model`
+/// (`mode`), through the typed object decoder.
+/// `Ok(None)` for a machine with no model (nothing to draw).
+fn machine_model(
+    map: &mut MapReader,
+    ctx: &tags::object::Context,
+    files: &mut ResourceFiles,
+    mach: TagId,
+) -> Result<Option<MachineModel>> {
+    let tag = ctx.decode(mach)?;
+    if tag.group != MACH {
+        return Err(anyhow!("palette entry is not a machine"));
+    }
+    let obje = tag.layer("obje").context("no object header")?;
+    let header = tags::object::ObjectHeader::from_record(obje)?;
+    if header.model.id == TagId::NULL {
+        return Ok(None);
+    }
+    let name = tag.name.clone().unwrap_or_default();
+    let hlmt = ctx
+        .decode(header.model.id)
+        .with_context(|| format!("{name}: object model"))?;
+    let mode = hlmt
+        .layer("hlmt")
+        .and_then(|r| r.tag_ref("render_model"))
+        .filter(|r| r.id != TagId::NULL)
+        .context("no render model")?;
+    let model = tags::model::RenderModelGeometry::read(map, mode.id, &mut Raw(files))
+        .with_context(|| format!("{name}: render model"))?;
+    let surfaces: Vec<Surface> = model
+        .materials
+        .iter()
+        .map(|m| {
+            let name = map.tag(m.shader.id).ok().and_then(|t| t.name.clone());
+            machine_surface(name.as_deref())
+        })
+        .collect();
+    let stem = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string();
+    let tris = model_triangles(&model, &surfaces);
+    if tris.is_empty() {
+        return Err(anyhow!(
+            "{name}: no drawn triangles in {} sections ({} regions)",
+            model.sections.len(),
+            model.regions.len()
+        ));
+    }
+    Ok(Some(MachineModel {
+        stem,
+        mesh: object_mesh(&tris),
+    }))
+}
+
+/// The scenario's machine models (each read once) and placements. A
+/// placement that cannot be read goes to `skipped` under
+/// `map/<stem>/machine_<index>`; one whose machine has no model is not
+/// drawn.
+fn load_machines(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    stem: &str,
+    skipped: &mut BTreeMap<String, String>,
+) -> Result<(Vec<MachineModel>, Vec<PlacedMachine>)> {
+    let scenario = map.scenario().context("no scenario")?.clone();
+    let location = scenario.location.context("scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    let root = view.at(0, MACHINE_PALETTE + 8)?;
+    let placements = view.block(root, MACHINES, MACHINE_STRIDE)?;
+    if placements.is_empty() {
+        return Ok(Default::default());
+    }
+    let palette: Vec<TagId> = view
+        .block(root, MACHINE_PALETTE, PALETTE_STRIDE)?
+        .into_iter()
+        .map(|e| TagId(u32::from_le_bytes([e[4], e[5], e[6], e[7]])))
+        .collect();
+    let ctx = tags::object::Context::read(map)?;
+    // Palette index -> index into `models`, or why not.
+    let mut loaded: HashMap<i16, Result<Option<usize>, String>> = HashMap::new();
+    let mut models = Vec::new();
+    let mut out = Vec::new();
+    for (i, rec) in placements.into_iter().enumerate() {
+        let key = format!("map/{stem}/machine_{i}");
+        let Some(at) = Placement::parse(rec) else {
+            skipped.insert(key, "short placement record".into());
+            continue;
+        };
+        let Some(&id) = usize::try_from(at.palette)
+            .ok()
+            .and_then(|p| palette.get(p))
+        else {
+            // No palette entry: nothing is placed (the engine skips these).
+            continue;
+        };
+        if id == TagId::NULL {
+            continue;
+        }
+        if !at
+            .position
+            .iter()
+            .chain(&at.rotation)
+            .all(|v| v.is_finite())
+        {
+            skipped.insert(key, "placement is not finite".into());
+            continue;
+        }
+        let model =
+            loaded
+                .entry(at.palette)
+                .or_insert_with(|| match machine_model(map, &ctx, files, id) {
+                    Ok(Some(m)) => {
+                        models.push(m);
+                        Ok(Some(models.len() - 1))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(format!("{e:#}")),
+                });
+        match model {
+            Ok(None) => {}
+            Ok(Some(m)) => out.push(PlacedMachine {
+                name: format!("{}_{i}", models[*m].stem),
+                model: *m,
+                at,
+            }),
+            Err(why) => {
+                skipped.insert(key, why.clone());
+            }
+        }
+    }
+    Ok((models, out))
+}
+
 /// A loaded map, ready to draw.
 pub struct Level {
     pub stem: String,
@@ -1014,7 +1405,10 @@ pub struct Level {
     pub bsp_count: usize,
     /// Every BSP that loaded: its index in the scenario and its mesh.
     pub bsps: Vec<(usize, LevelMesh)>,
-    /// All of them together, for the views.
+    /// The scenario's machine models (model space) and placements.
+    pub machine_models: Vec<MachineModel>,
+    pub machines: Vec<PlacedMachine>,
+    /// All BSPs together, with the machines as `objects`, for the views.
     pub mesh: LevelMesh,
     pub frame: Bounds,
     pub shadow: ShadowMap,
@@ -1061,6 +1455,8 @@ impl Level {
             kind,
             bsp_count,
             bsps: kept,
+            machine_models: Vec::new(),
+            machines: Vec::new(),
             mesh,
             frame,
             shadow,
@@ -1068,10 +1464,30 @@ impl Level {
         })
     }
 
+    /// Adds placed machines: kept for `map.glb` and drawn in the views.
+    pub fn with_machines(mut self, models: Vec<MachineModel>, placed: Vec<PlacedMachine>) -> Level {
+        let world: Vec<LevelMesh> = placed
+            .iter()
+            .map(|m| LevelMesh {
+                primitives: place_mesh(&models[m.model].mesh, &m.at),
+                bounds: Bounds::EMPTY,
+                objects: Vec::new(),
+            })
+            .collect();
+        self.mesh.objects = merge(&world).primitives;
+        self.shadow = live_render::shadow_map(&self.mesh, &self.frame);
+        self.machine_models = models;
+        self.machines = placed;
+        self
+    }
+
     /// The `map.glb` nodes: `structure` when the scenario has one BSP,
-    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp`.
+    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp`; then,
+    /// when there are any, a `machines` node with a child per placed
+    /// machine.
     pub fn nodes(&self) -> Vec<GlbNode<'_>> {
-        self.bsps
+        let mut nodes: Vec<GlbNode<'_>> = self
+            .bsps
             .iter()
             .map(|(i, m)| {
                 if self.bsp_count == 1 {
@@ -1083,7 +1499,28 @@ impl Level {
                     }
                 }
             })
-            .collect()
+            .collect();
+        if !self.machines.is_empty() {
+            nodes.push(GlbNode {
+                name: "machines".into(),
+                mesh: None,
+                extras: None,
+                matrix: None,
+                children: self
+                    .machines
+                    .iter()
+                    .map(|m| {
+                        let model = &self.machine_models[m.model];
+                        GlbNode {
+                            matrix: Some(m.at.gltf_matrix()),
+                            ..GlbNode::mesh(model.stem.clone(), &model.mesh)
+                        }
+                        .named(m.name.clone())
+                    })
+                    .collect(),
+            });
+        }
+        nodes
     }
 
     pub fn glb(&self) -> Vec<u8> {
@@ -1110,6 +1547,7 @@ pub fn merge<'a>(meshes: impl IntoIterator<Item = &'a LevelMesh>) -> LevelMesh {
     LevelMesh {
         primitives: by.into_iter().collect(),
         bounds,
+        objects: Vec::new(),
     }
 }
 
@@ -1135,7 +1573,22 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         })();
         bsps.push((i, mesh));
     }
-    let level = Level::build(m.name(), kind, bsps)?;
+    let mut level = Level::build(m.name(), kind, bsps)?;
+    let mut skipped = BTreeMap::new();
+    match load_machines(&mut map, &mut files, m.name(), &mut skipped) {
+        Ok((models, placed)) => {
+            stats.machines = placed.len();
+            stats.machine_triangles = placed
+                .iter()
+                .map(|p| models[p.model].mesh.triangles())
+                .sum();
+            level = level.with_machines(models, placed);
+        }
+        Err(e) => {
+            skipped.insert(format!("map/{}/machines", m.name()), format!("{e:#}"));
+        }
+    }
+    level.skipped.extend(skipped);
     stats.kind = Some(kind);
     stats.scenario_bsps = level.bsp_count;
     stats.bsps = level.bsps.len();

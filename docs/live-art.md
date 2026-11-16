@@ -61,14 +61,26 @@ key) is 5, so a disc extracted by an older build is extracted again.
   mesh): `floor`, `wall`, `metal`, `glass`, `water`, `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
   `glass` and `water` are `alphaMode: BLEND`. Single-sided: the level's
   triangles face into the playable space, so back faces should be culled.
+- **Machines.** When the scenario places machines (`mach` objects: doors,
+  lifts, the turning wheel and the like), a root node `machines` (no mesh)
+  follows the BSP nodes with a child per placement, named
+  `<tag stem>_<placement index>`. A child's mesh is the machine's render
+  model in model space (same axes conversion), shared by every placement
+  of that machine and named after the first, and the child has a
+  `matrix`: the placement's rotation, uniform scale and position in glTF
+  axes. These are the only nodes with a transform. Machines are all class
+  `metal`, unless their shader names them glass, water or foliage. The
+  model is drawn at rest (no animation): each region's first permutation
+  at the highest detail level up to 3 of 5 it has.
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below).
-- Retail multiplayer maps come out at 11k to 31k triangles and 0.3 to
-  1.1 MB. Campaign levels (1 to 8 BSPs) come out at 38k to 412k triangles
-  and 1.1 to 14.4 MB; nothing is simplified away (the largest, with 356k
-  triangles and 538k vertices, is just under the 15 MB a browser should be
-  asked to fetch). Before `EXTRACTOR_VERSION` 5 indices were u32.
+- Retail multiplayer maps come out at 11k to 31k triangles of level and
+  0.3 to 1.1 MB (0 to 6 machines). Campaign levels (1 to 8 BSPs) come out
+  at 38k to 412k triangles of level, 6 to 206 machines, and 1.2 to 15.9 MB;
+  the level is not simplified. The largest (356k triangles and 538k
+  vertices of level, 108 machines) is about the most a browser should be
+  asked to fetch. Before `EXTRACTOR_VERSION` 5 indices were u32.
 
 ### `views.json`
 
@@ -122,6 +134,25 @@ view), the same for every view.
    `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used
    and becomes its own mesh (steps 3 to 5 run per BSP); the views draw them
    all together. A BSP that fails to read is skipped on its own.
+   **Machines** come next: the scenario's machine placements (`scnr+0xa8`,
+   stride `0x48`) and palette (`scnr+0xb0`, stride `0x28`, tag reference
+   first), from the object type table (docs/objects.md). A placement record
+   starts with the palette index (`+0`), position (`+8`), yaw, pitch and
+   roll in radians (`+0x14`) and scale (`+0x20`, 0 meaning 1): the public
+   scenario object layout, checked on the disc by the retail machines
+   landing on their levels (the Zanzibar wheel stands in its gate). The
+   rotation is `Rz(yaw) · Ry(−pitch) · Rx(roll)`: forward is `+x`, pitch
+   tips it up, roll turns left (`+y`) up. The machine's `obje` model
+   (`hlmt`) gives the `render_model`, decoded by `tags::model`, vertices in
+   model space. Each machine is read once per level. A machine without a
+   model is not drawn; one whose model fails to read or has nothing drawn
+   is listed under `skipped` as `map/<stem>/machine_<index>` (on the retail
+   disc: a few volumes and trays with only undrawn parts, and nine campaign
+   machines whose `hlmt` is not in the level). Machines are drawn in every
+   view and cast shadows, but the top view's cutaway (step 8) neither cuts
+   them nor counts their surfaces: a closed model hanging over a floor
+   would otherwise read as a roof and vanish. They are not part of the
+   frame, `bounds` or the triangle counts.
 3. **Triangles.** `tags::structure::StructureRender` and the shared section
    decoder ([structure-bsp.md](structure-bsp.md)): every cluster as stored and
    every instanced-geometry placement transformed (`translation + scale ×
@@ -177,7 +208,7 @@ view), the same for every view.
    upper storey) and a floor at least 0.6 units below it (headroom for a
    crouching player): everything nearer than that ceiling is not drawn
    there, nor its shadow. Single-sided ceilings with nothing above them are
-   already invisible from above and need no cut. Cut regions are then
+   already invisible from above and need no cut. Machines take no part. Cut regions are then
    opened (eroded and dilated by a 0.8-unit square), so regions narrower
    than about 1.6 units, such as bridges and walkways over open ground,
    keep their top. Walls have no ceiling inside them, so they keep their
@@ -200,7 +231,9 @@ cargo test --release -p cli geometry_from_the_disc -- --ignored --nocapture
 
 writes the outputs, a timing report, the shader names behind the classes,
 a contact sheet of every view and, under `cutaway/`, each top view with and
-without the cutaway side by side to a directory outside the repository (the
+without the cutaway side by side, and under `machines/` the top and
+`iso-ne` views of two multiplayer maps with large machines, to a
+directory outside the repository (the
 path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR` in the test). Do not commit
 anything it writes.
 
@@ -217,5 +250,9 @@ anything it writes.
 - The frame is a heuristic too. It keeps every retail map's playable area on
   the disc this was checked against, but a map with a dense, detailed
   backdrop could be framed wider than its play space.
-- No textures, lightmaps or object geometry (scenery, crates, vehicles):
-  only the BSP.
+- No textures or lightmaps, and no object geometry but machines
+  (scenery, crates and vehicles are not drawn). Machines are at rest: a
+  door is drawn as its model's default pose has it, and the wheel does not
+  turn.
+- Campaign levels sit in large backdrop planes (sea or ground around the
+  playable strip); the frame keeps much of that in their views.
