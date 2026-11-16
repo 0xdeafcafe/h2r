@@ -32,6 +32,14 @@ pub struct Bridge {
     write_counted: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *const u8) -> u32,
     charge: unsafe extern "C" fn(*mut ExecCtxOpaque, u64),
     budget: unsafe extern "C" fn(*mut ExecCtxOpaque) -> u64,
+    /// New in `h2boot_install_v3`: a v2 table is this one without it.
+    exit: unsafe extern "C" fn(*mut ExecCtxOpaque, u64),
+}
+
+impl Bridge {
+    /// The size `h2boot_install_v2` takes: a module built before `exit`
+    /// still calls `charge` and `fast_release`, which stay in the table.
+    pub const V2_SIZE: usize = std::mem::offset_of!(Bridge, exit);
 }
 
 pub fn bridge() -> Bridge {
@@ -59,6 +67,7 @@ pub fn bridge_with_fast_memory(enabled: bool) -> Bridge {
         write_counted: ffi::h2abi_v1_write_counted,
         charge: ffi::h2abi_v1_charge,
         budget: ffi::h2abi_v1_budget,
+        exit: ffi::h2abi_v1_exit,
     }
 }
 

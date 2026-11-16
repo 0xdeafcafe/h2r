@@ -159,8 +159,14 @@ pub const FEATURE_ACCOUNTING: u32 = 1;
 /// module's handlers read the direct-call block through the context's second
 /// word and may invoke each other's handlers directly ([`crate::direct`]).
 pub const FEATURE_DIRECT_CALLS: u32 = 2;
+/// Module feature (`H2GEN_FEATURE_DIRECT_VIEW`, with `H2_DIRECT_CALLS`,
+/// `H2_FASTMEM` and `H2_DIRECT_VIEW`): a direct caller lends its inline RAM
+/// view to the callee through the direct-call block's last word, so the
+/// callee neither acquires nor releases one ([`crate::direct`]). A runtime
+/// whose block ends before that word must refuse the module.
+pub const FEATURE_DIRECT_VIEW: u32 = 4;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 = FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS;
+pub const FEATURES: u32 = FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

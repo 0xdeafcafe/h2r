@@ -306,6 +306,31 @@ pub struct Module {
     pub resumes: usize,
 }
 
+/// Install `bridge` into a generated dylib's boot bridge: the whole table
+/// where it has `h2boot_install_v3`, else (a module built before
+/// `h2abi_v1_exit`) the v2 prefix, whose `charge` and `fast_release` its
+/// handlers still call. Returns the version installed.
+///
+/// # Safety
+/// `lib` must be a dylib built with [`BRIDGE`] (any version) for this host.
+pub unsafe fn install_bridge(lib: &libloading::Library, bridge: &shim::Bridge) -> Result<u32> {
+    type Install = unsafe extern "C" fn(*const shim::Bridge, usize) -> u32;
+    let (version, size, install) = unsafe {
+        if let Ok(f) = lib.get::<Install>(b"h2boot_install_v3") {
+            (3, std::mem::size_of::<shim::Bridge>(), *f)
+        } else {
+            let f = lib
+                .get::<Install>(b"h2boot_install_v2")
+                .context("boot bridge predates optional callbacks; rebuild the generated module")?;
+            (2, shim::Bridge::V2_SIZE, *f)
+        }
+    };
+    if unsafe { install(bridge, size) } != 1 {
+        bail!("boot bridge layout mismatch; rebuild the generated module");
+    }
+    Ok(version)
+}
+
 /// Load the generated dylib, install the bridge, and register every entry
 /// and resume with the runtime's dispatch (RUNTIME-CONTRACT.md §3).
 ///
@@ -318,11 +343,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         if version() != runtime::cpu::ABI_VERSION {
             bail!("module ABI {} != runtime {}", version(), runtime::cpu::ABI_VERSION);
         }
-        let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge, usize) -> u32> =
-            lib.get(b"h2boot_install_v2").context("boot bridge predates optional callbacks; rebuild the generated module")?;
-        if install(&shim::bridge(), std::mem::size_of::<shim::Bridge>()) != 1 {
-            bail!("boot bridge layout mismatch; rebuild the generated module");
-        }
+        install_bridge(&lib, &shim::bridge())?;
         let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
             lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();

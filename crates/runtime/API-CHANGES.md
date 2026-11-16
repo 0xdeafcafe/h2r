@@ -463,3 +463,24 @@ four new exports, `ffi::h2abi_v1_read_counted` and `h2abi_v1_write_counted`
 (the accessors without the charge), `h2abi_v1_charge(ctx, n)` and
 `h2abi_v1_budget(ctx)`. A bridge that loads such a module forwards them.
 Modules without the bit, and every helper, charge as before.
+
+## One call at a handler's exit
+
+`ffi::h2abi_v1_exit(ctx, n)` settles the inline RAM view's count and then
+spends `n` accesses (none when 0): exactly `h2abi_v1_charge(ctx, n)` (when
+`n` is not 0) followed by `h2abi_v1_fast_release(ctx)`. Generated modules
+call it once at the shared epilogue instead of the pair. The pair stays
+exported, and modules built before still call it. The boot bridge table
+gains a last slot, `exit`, installed by `h2boot_install_v3`; boot still
+installs an older module's table through its `h2boot_install_v2`, without
+the slot. No ABI version or module feature changes.
+
+## A direct callee runs on its caller's view
+
+`generated::FEATURE_DIRECT_VIEW` (4) marks a direct-call module built with
+`H2_FASTMEM` (and not `H2_DIRECT_VIEW=0`): a direct caller lends its inline
+RAM view through a new last word of the direct-call block, `view`, so the
+callee neither acquires nor releases one. The block grows by a pointer;
+modules built before ignore it, and a runtime without it refuses a module
+with the bit. The runtime clears `view` before it invokes a native handler.
+Access counts, charges and slice expiry are the same as before.

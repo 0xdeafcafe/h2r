@@ -22,6 +22,12 @@
 //! - `depth`/`cap`: C nesting, which uses host stack.
 //! - `frames`: direct CALL/JUMPs whose handler handed a transfer up without
 //!   returning inline; the runner replays them into the shadow stack.
+//! - `view`: the inline RAM view a direct caller lends the handler it is
+//!   invoking, so that handler skips `h2abi_v1_fast_acquire` and the
+//!   release (module feature
+//!   [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)). The
+//!   callee's entry clears it; [`crate::ffi`] clears it before every native
+//!   invocation from Rust.
 //!
 //! [`edit_dispatch`]: crate::Runtime::edit_dispatch
 use crate::{ExecCtx, GuestFn, abi, dispatch::Handler};
@@ -67,12 +73,16 @@ pub(crate) struct DirectState {
     _pad: u32,
     frames: [Frame; MAX_DEPTH as usize],
     slots: [Slot; SLOTS],
+    /// The inline RAM view a direct caller lends its callee (module feature
+    /// [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)):
+    /// set just before the call, taken and cleared by the callee's entry.
+    view: *mut crate::ffi::FastAccess,
 }
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<Slot>() == 24 && size_of::<Frame>() == 16);
-    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 24 * 256);
+    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 24 * 256 + 8);
 };
 
 /// `h2_direct_slot` in h2gen.h.
@@ -122,6 +132,7 @@ impl Direct {
             _pad: 0,
             frames: [Frame::default(); MAX_DEPTH as usize],
             slots: [Slot::default(); SLOTS],
+            view: std::ptr::null_mut(),
         });
         let owned = NonNull::from(Box::leak(state));
         (Direct { owned }, DirectPtr(owned.as_ptr()))
@@ -167,6 +178,12 @@ impl ExecCtx {
     /// [`DEFAULT_DEPTH`]). A call past it goes through the runner.
     pub fn set_direct_call_depth(&mut self, depth: u32) {
         self.direct.state().cap = depth.min(MAX_DEPTH);
+    }
+    /// About to invoke a native handler from Rust: nothing lends it a view,
+    /// whatever a direct call into a handler that does not take one left.
+    #[inline]
+    pub(crate) fn direct_clear_view(&mut self) {
+        self.direct.state().view = std::ptr::null_mut();
     }
     /// The runner is about to invoke a handler with `remaining` transfers
     /// left.

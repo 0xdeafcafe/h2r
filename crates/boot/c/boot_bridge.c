@@ -22,12 +22,15 @@ typedef struct H2BootBridge {
     uint32_t (*write_counted)(ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, const uint8_t *);
     void (*charge)(ExecCtxOpaque *, uint64_t);
     uint64_t (*budget)(ExecCtxOpaque *);
+    void (*exit)(ExecCtxOpaque *, uint64_t);
 } H2BootBridge;
 
 static H2BootBridge bridge;
 
-/* A distinct symbol prevents an old host from installing a shorter table. */
-H2_EXPORT uint32_t h2boot_install_v2(const H2BootBridge *b, size_t size) {
+/* A distinct symbol prevents an old host from installing a shorter table.
+ * v3 added `exit`. A module with this bridge loads only on a host that
+ * installs v3; the host still installs an older module's v2 table. */
+H2_EXPORT uint32_t h2boot_install_v3(const H2BootBridge *b, size_t size) {
     if (!b || size != sizeof bridge) return 0;
     bridge = *b;
     return 1;
@@ -81,3 +84,4 @@ uint32_t h2abi_v1_write_counted(ExecCtxOpaque *c, uint32_t pc, uint32_t addr, ui
 }
 void h2abi_v1_charge(ExecCtxOpaque *c, uint64_t accesses) { bridge.charge(c, accesses); }
 uint64_t h2abi_v1_budget(ExecCtxOpaque *c) { return bridge.budget(c); }
+void h2abi_v1_exit(ExecCtxOpaque *c, uint64_t accesses) { bridge.exit(c, accesses); }
