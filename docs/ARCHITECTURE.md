@@ -31,7 +31,8 @@ favours the parts that editing and modding touch:
 4. Physics and AI, last. Their floating-point behaviour needs the most care.
 
 Platform code (window, input, audio, file access) lives in its own layer,
-so a tvOS or Xbox port only swaps that layer.
+so a tvOS or Xbox port only swaps that layer (docs/runtime/tvos.md; Windows and the Xbox
+groundwork in docs/runtime/windows.md).
 
 ## The path to good Rust
 

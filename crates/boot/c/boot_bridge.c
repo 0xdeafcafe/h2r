@@ -27,7 +27,7 @@ typedef struct H2BootBridge {
 static H2BootBridge bridge;
 
 /* A distinct symbol prevents an old host from installing a shorter table. */
-uint32_t h2boot_install_v2(const H2BootBridge *b, size_t size) {
+H2_EXPORT uint32_t h2boot_install_v2(const H2BootBridge *b, size_t size) {
     if (!b || size != sizeof bridge) return 0;
     bridge = *b;
     return 1;

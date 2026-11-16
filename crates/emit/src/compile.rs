@@ -119,7 +119,19 @@ pub enum Arch {
     /// iOS and iPadOS on an iPhone or iPad (docs/runtime/ios.md). Cross-compiled on
     /// a Mac against the iphoneos SDK; never the host there.
     Arm64Ios,
+    /// 64-bit Windows (docs/runtime/windows.md), the MSVC ABI: a DLL for desktop
+    /// Windows and, later, the UWP app on an Xbox in Dev Mode.
+    /// Cross-compiled on a Mac with clang against the MSVC CRT and Windows
+    /// SDK headers an xwin splat provides ([`XWIN_ENV`]), linked by
+    /// `lld-link` ([`windows_tool`]).
+    X86_64Windows,
 }
+
+/// The environment variable naming the xwin splat (the MSVC CRT and Windows
+/// SDK, `xwin splat --output <dir>`) a Windows module compiles and links
+/// against: `<dir>/crt/include`, `<dir>/sdk/include/ucrt`, and the
+/// matching `lib/` directories. `platform/windows/env.sh` sets it.
+pub const XWIN_ENV: &str = "H2_XWIN";
 
 /// The oldest tvOS the generated module (and the app around it) supports.
 /// The Rust side's `TVOS_DEPLOYMENT_TARGET` must match (platform/tvos).
@@ -139,6 +151,7 @@ impl Arch {
             Arch::X86_64 => "x86_64",
             Arch::Arm64Tvos => "arm64-tvos",
             Arch::Arm64Ios => "arm64-ios",
+            Arch::X86_64Windows => "x86_64-windows",
         }
     }
 
@@ -150,6 +163,7 @@ impl Arch {
             Arch::Arm64Tvos => "arm64-apple-tvos17.0",
             // Keep in step with IOS_DEPLOYMENT_TARGET.
             Arch::Arm64Ios => "arm64-apple-ios17.0",
+            Arch::X86_64Windows => "x86_64-pc-windows-msvc",
         }
     }
 
@@ -159,19 +173,44 @@ impl Arch {
         match self {
             Arch::Arm64Tvos => Some("appletvos"),
             Arch::Arm64Ios => Some("iphoneos"),
-            Arch::Arm64 | Arch::X86_64 => None,
+            Arch::Arm64 | Arch::X86_64 | Arch::X86_64Windows => None,
         }
     }
 
     /// The clang arguments that select this target: `-target` and, for a
-    /// non-macOS SDK, `-isysroot` (found once with `xcrun`).
+    /// non-macOS SDK, `-isysroot` (found once with `xcrun`); for Windows,
+    /// the DLL C runtime and the xwin splat's headers ([`XWIN_ENV`]).
     pub fn target_args(self) -> Result<Vec<String>, Error> {
         let mut v = vec!["-target".to_owned(), self.triple().to_owned()];
         if let Some(sdk) = self.sdk() {
             v.push("-isysroot".into());
             v.push(sdk_path(sdk)?);
         }
+        if self == Arch::X86_64Windows {
+            v.extend(windows_target_args(&xwin_dir()?));
+        }
         Ok(v)
+    }
+
+    /// The Mac this crate builds on: [`Arch::host`] unless that is not a
+    /// Mac, then Apple silicon. Only its "not Windows" matters to callers.
+    fn host_macos() -> Arch {
+        match Arch::host() {
+            Arch::X86_64 => Arch::X86_64,
+            _ => Arch::Arm64,
+        }
+    }
+
+    /// Whether this is the Windows target: a DLL linked by `lld-link`,
+    /// archived by `llvm-ar`.
+    pub fn is_windows(self) -> bool {
+        self == Arch::X86_64Windows
+    }
+
+    /// The file name of the linked game module: `h2game.dll` on Windows,
+    /// `libh2game.dylib` elsewhere.
+    pub fn module_file_name(self) -> &'static str {
+        if self.is_windows() { "h2game.dll" } else { "libh2game.dylib" }
     }
 
     /// The architecture this process runs on.
@@ -180,6 +219,8 @@ impl Arch {
             Arch::Arm64Tvos
         } else if cfg!(target_os = "ios") {
             Arch::Arm64Ios
+        } else if cfg!(windows) {
+            Arch::X86_64Windows
         } else if cfg!(target_arch = "x86_64") {
             Arch::X86_64
         } else {
@@ -188,20 +229,22 @@ impl Arch {
     }
 
     /// What `h2 build` (`boot::build`) compiles for: `H2_EMIT_TARGET`
-    /// (`tvos`, `ios`, or `host`/`macos`/unset for the host), see [`Arch::target_from`].
+    /// (`tvos`, `ios`, `windows`, or `host`/`macos`/unset for the host), see
+    /// [`Arch::target_from`].
     pub fn target() -> Result<Arch, Error> {
         Arch::target_from(std::env::var("H2_EMIT_TARGET").ok().as_deref())
     }
 
-    /// [`Arch::target`] for a given `H2_EMIT_TARGET` value. `macos` on a
-    /// tvOS or iOS host is refused: nothing builds there.
+    /// [`Arch::target`] for a given `H2_EMIT_TARGET` value. `macos` is the
+    /// host only on a Mac: a tvOS, iOS or Windows host has no macOS to build for.
     pub fn target_from(value: Option<&str>) -> Result<Arch, Error> {
         match value.unwrap_or("") {
             "" | "host" => Ok(Arch::host()),
             "tvos" => Ok(Arch::Arm64Tvos),
             "ios" => Ok(Arch::Arm64Ios),
+            "windows" => Ok(Arch::X86_64Windows),
             "macos" if Arch::host().is_macos() => Ok(Arch::host()),
-            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos, tvos or ios"))),
+            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos, tvos, ios or windows"))),
         }
     }
 
@@ -212,7 +255,7 @@ impl Arch {
     pub fn install_name(self, out: &Path) -> OsString {
         match self {
             Arch::Arm64Tvos | Arch::Arm64Ios => "@rpath/h2game.framework/h2game".into(),
-            Arch::Arm64 | Arch::X86_64 => out.as_os_str().to_owned(),
+            Arch::Arm64 | Arch::X86_64 | Arch::X86_64Windows => out.as_os_str().to_owned(),
         }
     }
 
@@ -220,6 +263,76 @@ impl Arch {
     pub fn is_macos(self) -> bool {
         matches!(self, Arch::Arm64 | Arch::X86_64)
     }
+}
+
+/// The xwin splat [`XWIN_ENV`] names, checked to hold the CRT headers.
+pub fn xwin_dir() -> Result<PathBuf, Error> {
+    let dir = std::env::var_os(XWIN_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| err(format!("{XWIN_ENV} is not set: a Windows module needs an xwin splat of the MSVC CRT and Windows SDK (docs/runtime/windows.md)")))?;
+    if !dir.join("crt/include").is_dir() || !dir.join("sdk/include/ucrt").is_dir() {
+        return Err(err(format!("{XWIN_ENV}={}: no crt/include or sdk/include/ucrt (an xwin splat?)", dir.display())));
+    }
+    Ok(dir)
+}
+
+/// The Windows target's clang arguments past `-target`, for the splat at
+/// `xwin`: the DLL C runtime (msvcrt/ucrt, the CRT the Rust host links, so
+/// the process has one) and the CRT and UCRT headers as system headers.
+pub fn windows_target_args(xwin: &Path) -> Vec<String> {
+    let include = |p: &str| xwin.join(p).to_string_lossy().into_owned();
+    vec![
+        "-fms-runtime-lib=dll".into(),
+        "-isystem".into(),
+        include("crt/include"),
+        "-isystem".into(),
+        include("sdk/include/ucrt"),
+    ]
+}
+
+/// `lld-link`'s arguments for linking `objects` into the DLL `out` against
+/// the splat at `xwin`. Exports are the definitions the sources mark
+/// `H2_EXPORT` (h2abi.h); no import library is written.
+pub fn windows_link_args(xwin: &Path, out: &Path, objects: &[PathBuf]) -> Vec<OsString> {
+    let mut v: Vec<OsString> = ["/dll", "/nologo", "/machine:x64", "/noimplib", "/incremental:no"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    for lib in ["crt/lib/x86_64", "sdk/lib/ucrt/x86_64", "sdk/lib/um/x86_64"] {
+        let mut a = OsString::from("/libpath:");
+        a.push(xwin.join(lib));
+        v.push(a);
+    }
+    let mut o = OsString::from("/out:");
+    o.push(out);
+    v.push(o);
+    v.extend(objects.iter().map(|p| p.as_os_str().to_owned()));
+    v
+}
+
+/// Where Homebrew keeps the LLVM tools a Windows build uses, when neither
+/// the environment nor `PATH` names them.
+const LLVM_TOOL_DIRS: &[&str] = &[
+    "/opt/homebrew/opt/lld@22/bin",
+    "/opt/homebrew/opt/llvm@22/bin",
+    "/opt/homebrew/opt/lld/bin",
+    "/opt/homebrew/opt/llvm/bin",
+    "/usr/local/opt/lld/bin",
+    "/usr/local/opt/llvm/bin",
+];
+
+/// An LLVM tool for the Windows target (`lld-link`, `llvm-ar`): from the
+/// directories in `H2_LLD` and `H2_LLVM` (platform/windows/env.sh), then
+/// `PATH`, then Homebrew's [`LLVM_TOOL_DIRS`].
+pub fn windows_tool(name: &str) -> Result<PathBuf, Error> {
+    let env: Vec<OsString> = ["H2_LLD", "H2_LLVM"].iter().filter_map(std::env::var_os).collect();
+    let homebrew = std::env::join_paths(LLVM_TOOL_DIRS).ok();
+    env.into_iter()
+        .chain(std::env::var_os("PATH"))
+        .chain(homebrew)
+        .find_map(|dirs| resolve_on_path(name, Some(dirs)))
+        .ok_or_else(|| err(format!("{name} not found (set H2_LLD/H2_LLVM, or `brew install lld@22 llvm@22`)")))
 }
 
 /// `xcrun --sdk <sdk> --show-sdk-path`, once per process.
@@ -254,7 +367,8 @@ pub fn architectures(selection: Option<&str>) -> Result<Vec<Arch>, Error> {
         "x86_64" => Ok(vec![Arch::X86_64]),
         "tvos" => Ok(vec![Arch::Arm64Tvos]),
         "ios" => Ok(vec![Arch::Arm64Ios]),
-        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64, tvos or ios"))),
+        "windows" => Ok(vec![Arch::X86_64Windows]),
+        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64, tvos, ios or windows"))),
     }
 }
 
@@ -330,10 +444,21 @@ pub const TOOLCHAIN_PROBES: &[(&str, &[&str])] = &[
 /// `name` resolved on a `PATH`-style list: the first entry holding an
 /// executable file of that name, as `Command` would find it.
 pub fn resolve_on_path(name: &str, path: Option<OsString>) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(&path?)
-        .map(|d| d.join(name))
-        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+    std::env::split_paths(&path?).map(|d| d.join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| executable(&m)))
+}
+
+/// Whether a file's metadata says it can be run: an executable bit on Unix.
+/// Elsewhere (Windows, where the emitter is only compile-checked) any file.
+fn executable(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.is_file() && m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        m.is_file()
+    }
 }
 
 /// The C compiler: `clang` resolved on `PATH` once. The build invokes this
@@ -560,21 +685,31 @@ fn touch(path: &Path) -> std::io::Result<()> {
 
 /// The member names of the static library `lib`, from `ar -t`.
 pub fn archive_members(lib: &Path) -> Result<Vec<String>, Error> {
-    let o = Command::new("ar").arg("-t").arg(lib).output().map_err(|e| err(format!("running ar: {e}")))?;
+    archive_members_with(Path::new("ar"), lib)
+}
+
+/// [`archive_members`] for `arch`'s archives: `llvm-ar t` for Windows,
+/// whose `llvm-lib` archives name members by the path they were given.
+pub fn archive_members_for(arch: Arch, lib: &Path) -> Result<Vec<String>, Error> {
+    if arch.is_windows() { archive_members_with(&windows_tool("llvm-ar")?, lib) } else { archive_members(lib) }
+}
+
+fn archive_members_with(ar: &Path, lib: &Path) -> Result<Vec<String>, Error> {
+    let o = Command::new(ar).arg("t").arg(lib).output().map_err(|e| err(format!("running {}: {e}", ar.display())))?;
     if !o.status.success() {
-        return Err(Error(format!("ar -t {}: {}", lib.display(), String::from_utf8_lossy(&o.stderr))));
+        return Err(Error(format!("{} t {}: {}", ar.display(), lib.display(), String::from_utf8_lossy(&o.stderr))));
     }
     Ok(String::from_utf8_lossy(&o.stdout)
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with("__.SYMDEF"))
-        .map(str::to_owned)
+        .map(|l| Path::new(l).file_name().map_or_else(|| l.to_owned(), |n| n.to_string_lossy().into_owned()))
         .collect())
 }
 
 /// Whether `lib` holds exactly the objects `names` (sorted).
-fn archive_matches(lib: &Path, names: &[String]) -> bool {
+fn archive_matches(arch: Arch, lib: &Path, names: &[String]) -> bool {
     lib.exists()
-        && archive_members(lib).is_ok_and(|mut m| {
+        && archive_members_for(arch, lib).is_ok_and(|mut m| {
             m.sort();
             m == names
         })
@@ -585,23 +720,31 @@ fn archive_matches(lib: &Path, names: &[String]) -> bool {
 /// Apple's libtool warns about a missing input and still exits 0, so any
 /// diagnostic from it is a failure too. On failure `library` is untouched.
 pub fn archive(library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
+    archive_for(Arch::host_macos(), library, objects)
+}
+
+/// [`archive`] for `arch`'s objects: `llvm-lib` for Windows (Apple's
+/// libtool takes only Mach-O), libtool otherwise.
+pub fn archive_for(arch: Arch, library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
     let mut names: Vec<String> = objects.iter().map(|o| o.file_name().unwrap().to_string_lossy().into_owned()).collect();
     names.sort();
     if let Some(o) = objects.iter().find(|o| !o.is_file()) {
         return Err(Error(format!("archiving {}: {} is missing", library.display(), o.display())));
     }
     let tmp = Temporary::new(library).map_err(err)?;
-    let out = Command::new("libtool")
-        .args(["-static", "-no_warning_for_no_symbols", "-o"])
-        .arg(tmp.path())
-        .args(objects)
-        .output()
-        .map_err(|e| err(format!("running libtool: {e}")))?;
+    let out = if arch.is_windows() {
+        let mut out = OsString::from("/out:");
+        out.push(tmp.path());
+        Command::new(windows_tool("llvm-lib")?).arg("/nologo").arg(out).args(objects).output()
+    } else {
+        Command::new("libtool").args(["-static", "-no_warning_for_no_symbols", "-o"]).arg(tmp.path()).args(objects).output()
+    }
+    .map_err(|e| err(format!("running the archiver: {e}")))?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() || !stderr.trim().is_empty() {
-        return Err(err(format!("libtool: {stderr}")));
+        return Err(err(format!("archiving: {stderr}")));
     }
-    if !archive_matches(tmp.path(), &names) {
+    if !archive_matches(arch, tmp.path(), &names) {
         return Err(err(format!("libtool: {} does not hold exactly the {} objects given", tmp.path().display(), names.len())));
     }
     tmp.publish(library).map_err(err)
@@ -785,8 +928,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     names.sort();
     // Written by earlier versions, which trusted it over the archive.
     let _ = std::fs::remove_file(library.with_extension("a.members"));
-    if !archive_matches(&library, &names) {
-        archive(&library, &objects)?;
+    if !archive_matches(arch, &library, &names) {
+        archive_for(arch, &library, &objects)?;
     }
     let library_bytes = std::fs::metadata(&library).map(|m| m.len()).unwrap_or(0);
     Ok(Build {
@@ -805,7 +948,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
 }
 
 /// Link a build's objects plus extra C sources (a test bridge providing the
-/// ABI symbols) into a loadable dylib for the host.
+/// ABI symbols) into a loadable dylib for the host, or a DLL for Windows
+/// (`lld-link`, exporting what the sources mark `H2_EXPORT`).
 pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &Path) -> Result<(), Error> {
     let cc = compiler()?;
     let flags = cflags()?;
@@ -835,15 +979,19 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
         args.push(obj);
     }
     let temporary = Temporary::new(out).map_err(err)?;
-    let o = Command::new(&cc)
-        .args(&target)
-        .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
-        .arg(build.arch.install_name(out))
-        .arg("-o")
-        .arg(temporary.path())
-        .args(&args)
-        .output()
-        .map_err(err)?;
+    let o = if build.arch.is_windows() {
+        Command::new(windows_tool("lld-link")?).args(windows_link_args(&xwin_dir()?, temporary.path(), &args)).output()
+    } else {
+        Command::new(&cc)
+            .args(&target)
+            .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
+            .arg(build.arch.install_name(out))
+            .arg("-o")
+            .arg(temporary.path())
+            .args(&args)
+            .output()
+    }
+    .map_err(err)?;
     if !o.status.success() {
         return Err(Error(format!("linking dylib: {}", String::from_utf8_lossy(&o.stderr))));
     }
@@ -881,6 +1029,56 @@ mod tests {
             assert!(!a.is_macos());
         }
         assert!(Arch::Arm64.is_macos() && Arch::X86_64.is_macos());
+    }
+
+    #[test]
+    fn windows_is_asked_for_by_name_and_never_the_mac_host() {
+        assert_eq!(Arch::target_from(Some("windows")).unwrap(), Arch::X86_64Windows);
+        assert_eq!(architectures(Some("windows")).unwrap(), vec![Arch::X86_64Windows]);
+        assert!(!Arch::ALL.contains(&Arch::X86_64Windows), "--arch all stays the macOS release pair");
+        assert!(Arch::target_from(Some("win64")).is_err());
+        if cfg!(target_vendor = "apple") {
+            assert_ne!(Arch::host(), Arch::X86_64Windows);
+            assert!(!Arch::host().is_windows());
+        }
+        assert_eq!(Arch::host() == Arch::X86_64Windows, cfg!(windows));
+    }
+
+    #[test]
+    fn windows_objects_are_named_and_keyed_apart_and_link_as_a_dll() {
+        assert_eq!(Arch::X86_64Windows.triple(), "x86_64-pc-windows-msvc");
+        assert_eq!(Arch::X86_64Windows.sdk(), None);
+        for other in [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos] {
+            assert_ne!(Arch::X86_64Windows.name(), other.name(), "object and pin names");
+            let key = |a| common_key(b"h2gen", b"h2abi", a, &[], "toolchain");
+            assert_ne!(key(Arch::X86_64Windows), key(other));
+            assert!(!other.is_windows());
+            assert_eq!(other.module_file_name(), "libh2game.dylib");
+        }
+        assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
+        let xwin = Path::new("/x");
+        assert_eq!(
+            windows_target_args(xwin),
+            ["-fms-runtime-lib=dll", "-isystem", "/x/crt/include", "-isystem", "/x/sdk/include/ucrt"]
+        );
+        let link = windows_link_args(xwin, Path::new("/o/h2game.dll"), &[PathBuf::from("/o/a.o"), PathBuf::from("/o/b.o")]);
+        let link: Vec<&str> = link.iter().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            link,
+            [
+                "/dll",
+                "/nologo",
+                "/machine:x64",
+                "/noimplib",
+                "/incremental:no",
+                "/libpath:/x/crt/lib/x86_64",
+                "/libpath:/x/sdk/lib/ucrt/x86_64",
+                "/libpath:/x/sdk/lib/um/x86_64",
+                "/out:/o/h2game.dll",
+                "/o/a.o",
+                "/o/b.o",
+            ]
+        );
     }
 
     #[test]

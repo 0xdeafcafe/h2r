@@ -75,6 +75,14 @@ uint64_t h2abi_v1_budget(ExecCtxOpaque *);
  * Extension symbol only: ordinary ABI v2 modules do not require it. */
 void h2abi_v1_profile(ExecCtxOpaque *, uint64_t loop_polls, uint64_t x87_helpers);
 
+/* What the host looks up in a loaded module (h2gen_module and its ABI
+ * probe, the bridges' install functions). A Windows DLL exports only what
+ * is marked; a macOS dylib exports every global, so it expands to nothing. */
+#if defined(_WIN32)
+#define H2_EXPORT __declspec(dllexport)
+#else
+#define H2_EXPORT
+#endif
 /* Define once in each generated module's registration object. Registration
  * passes h2gen_abi_version to register_generated_object. */
 #define H2_DEFINE_GENERATED_ABI_NAMED(name) \

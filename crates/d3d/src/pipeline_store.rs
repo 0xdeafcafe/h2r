@@ -34,33 +34,55 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "pipelines-v2.jsonl";
 
 /// Where the cache lives: `H2_PIPELINE_CACHE` (a file path, or `off`),
-/// else `~/Library/Caches/h2recomp/` on macOS and `$XDG_CACHE_HOME/h2recomp/`
-/// (`~/.cache/h2recomp/`) elsewhere, under [`FILE_NAME`]. `None` turns it off.
+/// else `~/Library/Caches/h2recomp/` on macOS, `%LOCALAPPDATA%\h2recomp\cache\`
+/// on Windows and `$XDG_CACHE_HOME/h2recomp/` (`~/.cache/h2recomp/`)
+/// elsewhere, under [`FILE_NAME`]. `None` turns it off.
 pub fn default_path() -> Option<PathBuf> {
     path_from(
+        Host::THIS,
         std::env::var_os("H2_PIPELINE_CACHE"),
         std::env::var_os("XDG_CACHE_HOME"),
         std::env::var_os("HOME"),
+        std::env::var_os("LOCALAPPDATA"),
     )
 }
 
+/// Whose cache-directory convention [`default_path`] follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Host {
+    Apple,
+    Windows,
+    Xdg,
+}
+
+impl Host {
+    const THIS: Host = if cfg!(target_vendor = "apple") {
+        Host::Apple
+    } else if cfg!(windows) {
+        Host::Windows
+    } else {
+        Host::Xdg
+    };
+}
+
 fn path_from(
+    host: Host,
     var: Option<std::ffi::OsString>,
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
+    local_app_data: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
     match var {
         Some(v) if v == "off" || v == "0" || v.is_empty() => return None,
         Some(v) => return Some(PathBuf::from(v)),
         None => {}
     }
-    let dir = if cfg!(target_vendor = "apple") {
-        PathBuf::from(home?).join("Library/Caches")
-    } else {
-        xdg.map(PathBuf::from)
-            .or_else(|| Some(PathBuf::from(home?).join(".cache")))?
+    let dir = match host {
+        Host::Apple => PathBuf::from(home?).join("Library/Caches").join("h2recomp"),
+        Host::Windows => PathBuf::from(local_app_data.filter(|v| !v.is_empty())?).join("h2recomp").join("cache"),
+        Host::Xdg => xdg.map(PathBuf::from).or_else(|| Some(PathBuf::from(home?).join(".cache")))?.join("h2recomp"),
     };
-    Some(dir.join("h2recomp").join(FILE_NAME))
+    Some(dir.join(FILE_NAME))
 }
 
 /// One line of the file.
@@ -335,16 +357,18 @@ mod tests {
     #[test]
     fn path_choice() {
         let os = |s: &str| Some(std::ffi::OsString::from(s));
-        assert_eq!(path_from(os("off"), None, os("/h")), None);
-        assert_eq!(
-            path_from(os("/x/p.jsonl"), None, os("/h")),
-            Some(PathBuf::from("/x/p.jsonl"))
-        );
-        let want = if cfg!(target_vendor = "apple") {
-            PathBuf::from("/h/Library/Caches/h2recomp").join(FILE_NAME)
-        } else {
-            PathBuf::from("/c/h2recomp").join(FILE_NAME)
-        };
-        assert_eq!(path_from(None, os("/c"), os("/h")), Some(want));
+        for host in [Host::Apple, Host::Windows, Host::Xdg] {
+            assert_eq!(path_from(host, os("off"), None, os("/h"), os("/l")), None);
+            assert_eq!(path_from(host, os("/x/p.jsonl"), None, os("/h"), os("/l")), Some(PathBuf::from("/x/p.jsonl")));
+        }
+        let all = |host| path_from(host, None, os("/c"), os("/h"), os("/l"));
+        assert_eq!(all(Host::Apple), Some(PathBuf::from("/h/Library/Caches/h2recomp").join(FILE_NAME)));
+        assert_eq!(all(Host::Xdg), Some(PathBuf::from("/c/h2recomp").join(FILE_NAME)));
+        assert_eq!(path_from(Host::Xdg, None, None, os("/h"), None), Some(PathBuf::from("/h/.cache/h2recomp").join(FILE_NAME)));
+        assert_eq!(all(Host::Windows), Some(PathBuf::from("/l").join("h2recomp").join("cache").join(FILE_NAME)));
+        // Windows has no HOME to fall back on: no LOCALAPPDATA, no cache.
+        assert_eq!(path_from(Host::Windows, None, os("/c"), os("/h"), None), None);
+        assert_eq!(path_from(Host::Windows, None, None, None, os("")), None);
+        assert_eq!(Host::THIS, if cfg!(target_vendor = "apple") { Host::Apple } else if cfg!(windows) { Host::Windows } else { Host::Xdg });
     }
 }

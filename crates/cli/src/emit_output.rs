@@ -1,7 +1,9 @@
 //! Output locations and the lock covering an entire CLI emission transaction.
 use std::fs::{self, File, OpenOptions};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -78,10 +80,30 @@ pub struct OutputLock {
 }
 
 impl OutputLock {
+    #[cfg(unix)]
     pub fn acquire(out: &Path) -> io::Result<Self> {
         Self::acquire_with(out, libc::LOCK_EX)
     }
 
+    /// Windows (compile-checked only: `h2 emit` runs on a Mac): std's
+    /// exclusive `LockFileEx` lock on the same file. Windows has no
+    /// `O_NOFOLLOW`; [`reject_symlinks`] still runs under the lock.
+    #[cfg(windows)]
+    pub fn acquire(out: &Path) -> io::Result<Self> {
+        fs::create_dir_all(out)?;
+        let out = fs::canonicalize(out)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(out.join(".h2-emit.lock"))?;
+        file.lock()?;
+        reject_symlinks(&out)?;
+        Ok(Self { _file: file })
+    }
+
+    #[cfg(unix)]
     fn acquire_with(out: &Path, operation: libc::c_int) -> io::Result<Self> {
         fs::create_dir_all(out)?;
         let out = fs::canonicalize(out)?;

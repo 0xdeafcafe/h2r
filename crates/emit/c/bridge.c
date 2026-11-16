@@ -26,7 +26,7 @@ static H2Bridge bridge;
 
 /* Version the install symbol and check size before reading the table: a
  * prefix layout check cannot distinguish an old size from a new offset. */
-uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
+H2_EXPORT uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
     if (size != sizeof bridge) return 0;
     bridge = *b;
     return 1;
@@ -34,7 +34,7 @@ uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
 
 /* The table's layout, so a Rust copy can check it before installing:
  * slots 0-14 give each callback's offset in declaration order, 15 the size. */
-size_t h2bridge_layout_v2(uint32_t slot) {
+H2_EXPORT size_t h2bridge_layout_v2(uint32_t slot) {
     static const size_t layout[] = {
         offsetof(H2Bridge, read),  offsetof(H2Bridge, write), offsetof(H2Bridge, event),
         offsetof(H2Bridge, unsupported), offsetof(H2Bridge, rdtsc), offsetof(H2Bridge, rmw),
@@ -62,7 +62,7 @@ static uint32_t legacy_write_counted(ExecCtxOpaque *c, uint32_t pc, uint32_t add
 }
 static void legacy_charge(ExecCtxOpaque *c, uint64_t n) { (void)c; (void)n; }
 static uint64_t legacy_budget(ExecCtxOpaque *c) { (void)c; return UINT64_MAX; }
-void h2bridge_install(const void *b) {
+H2_EXPORT void h2bridge_install(const void *b) {
     memcpy(&bridge, b, offsetof(H2Bridge, profile));
     bridge.profile = legacy_profile;
     bridge.fast_acquire = legacy_fast_acquire;
@@ -72,7 +72,7 @@ void h2bridge_install(const void *b) {
     bridge.charge = legacy_charge;
     bridge.budget = legacy_budget;
 }
-size_t h2bridge_layout(uint32_t slot) {
+H2_EXPORT size_t h2bridge_layout(uint32_t slot) {
     return slot < 8 ? h2bridge_layout_v2(slot) : slot == 8 ? offsetof(H2Bridge, profile) : 0;
 }
 

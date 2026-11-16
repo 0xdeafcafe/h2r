@@ -423,7 +423,7 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
 
 /// The registration object: ABI version export and the entry/resume tables.
 fn registry(owners: &[Owner], home: &BTreeMap<u32, String>, banner: &str, codegen: Codegen) -> String {
-    let mut s = format!("{banner}#include \"h2gen.h\"\n\nH2_DEFINE_GENERATED_ABI_NAMED(h2gen_module_abi_version)\n\n");
+    let mut s = format!("{banner}#include \"h2gen.h\"\n\nH2_EXPORT H2_DEFINE_GENERATED_ABI_NAMED(h2gen_module_abi_version)\n\n");
     let stems: BTreeSet<&String> = home.values().collect();
     for stem in stems {
         s.push_str(&format!("uint32_t h2gen_abi_version_{stem}(void);\n"));
@@ -448,7 +448,7 @@ fn registry(owners: &[Owner], home: &BTreeMap<u32, String>, banner: &str, codege
     }
     s.push_str("    {0u, 0u, 0u},\n};\n\n");
     s.push_str(&format!(
-        "const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes}};\n",
+        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes}};\n",
         entries.len(),
         resumes.len(),
         if codegen.accounting { "H2GEN_FEATURE_ACCOUNTING | H2GEN_FEATURE_DIRECT" } else { "H2GEN_FEATURE_DIRECT" }
