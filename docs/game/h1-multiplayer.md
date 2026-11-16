@@ -168,11 +168,88 @@ enum, and the disc agrees (`h1convert/tests/h2_scenario.rs`: 0 and 1 once
 per team on all 12 maps, 4 always neutral, 7 and 8 in equal numbers, 10
 to 16 runs of boundary points); not yet confirmed from engine code.
 
-Not cleared yet: the base's other level-bound scenario data (decals,
-lights, cutscene flags, trigger volumes, decorators). They don't affect
-loading as far as known, but would show up in the wrong place.
+**Trigger volumes (Built, `convert::park_trigger_volumes`).** The base's
+trigger volumes (`scnr+0x108`, stride `0x44`, E `0x0011c383`..
+`0x0011c392`; the engine builds each volume's frame from the directions at
+`+0x0c` and `+0x18` and the origin at `+0x24`, E `0x0011c40c`..
+`0x0011c417`) are its kill zones and script triggers, shaped for its own
+geometry. They aren't removed, since scripts, the kill list and BSP
+switches (`scnr+0x130`, `0xe` entries, E `0x0014b6d6`) hold their
+indices; each origin moves to `(0, 0, -1e6)`, where nothing ever is.
 
-## The converted structure BSP: what the engine reads
+Not cleared yet: decals, lights and decorators. Their scenario blocks
+aren't located in engine code yet (the trigger volumes above were found
+by following the scenario pointer `[0x4e0350]`; the same scan lists
+every scenario block the engine reads, `h1mp-scripts/scnr.py` in the
+reading notes). They don't affect loading as far as known, but would show
+up in the wrong place: decals stuck to air, lights shining from nowhere.
+Decorators may matter more, if their placements carry cluster indices
+past the converted structure's clusters; check first.
+
+## The converted structure BSP (**Built** as `h1convert::structure`)
+
+`Structure::write` writes the `sbsp` and `ltmp` below as `map::build`
+block trees into the base's own `sbsp`/`ltmp` slots (same datums, so
+nothing that names them changes), each cluster's render geometry as a raw
+`blkh` block, and adds a built BSP section; `Prepared::build` then points
+the base scenario's BSP descriptor (file offset, size, address) at it.
+The base's old BSP region stays in the file, unused.
+
+- **Render geometry.** Each Halo 1 lightmap material is a mesh: its
+  vertices (position, packed normal/binormal/tangent, texture and lightmap
+  coordinates, which both games store alike) and its triangles from the
+  render surfaces. Triangles are turned to Halo 2's winding, decided once
+  per level by majority against the packed normals: Halo 1's beavercreek
+  needed flipping. Meshes are packed into sections of at most 65535
+  vertices and indices (the section's `u16` counts), so a large level
+  becomes several clusters; parts never span sections. Streams written:
+  `01` position, `18` texture coordinate, `1b` frame, `1f` lightmap
+  coordinate. Part kind 2 (a drawn kind; which drawn kind means what is
+  unknown), triangle-list flag, one subpart per part.
+- **Clusters see each other.** The visibility rows have every cluster's
+  bit set, and every collision leaf is in cluster 0, so everything is
+  drawn from everywhere. Halo 1's own portals and clusters are the
+  improvement for large levels.
+- **Materials.** One structure material per Halo 1 shader, all naming the
+  base's first structure material's shader for now (`Templates`); one
+  collision material per Halo 1 collision material, copies of the base's
+  first (no pointers in it), `+0x0a` = -1. Choosing a base shader per Halo
+  1 shader is the next visual step.
+- **The sky is the base's.** Cluster `+0x6e` is the cluster's sky index
+  into the scenario's skies (`scnr+0x8`, 8-byte references; E
+  `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to the first sky
+  when the scenario has one). Every cluster gets 0, so the base's first
+  sky. Halo 1's skies are models and bitmaps of their own and convert
+  with the Halo 1 sandbox work. The base per map (`convert::MAPS`) is
+  chosen for its sky: Lockout's snow for Ice Fields and Sidewinder,
+  Beaver Creek's otherwise.
+- **Lightmap.** One group, the structure checksum (FNV-1a of the
+  positions), no bitmap, a render info entry `{-1, -1}` per cluster.
+  Levels render unlit (the default texture path) until Halo 1's lightmap
+  pages are converted.
+
+**Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
+and a 30,000-triangle one into an invented map and reads them back with
+Halo 2's own decoders: `tags::structure` (clusters, parts, materials,
+every vertex, triangles, the lightmap group), `tags::collision` (the
+collision BSP equals the converted one), and the root's leaves,
+visibility, bounds, Havok box, MOPP block and the one-element blocks. The
+ignored `beavercreek_converts_onto_its_halo_2_base_and_reads_back` does
+the whole conversion on the real maps: Halo 1's beavercreek onto the
+disc's Beaver Creek gives one cluster, 4242 vertices, 3317 triangles, 18
+materials, 13 collision materials, 70 spawns, 88 flags, 28 items; the map
+reads back with a valid checksum, its scenario's descriptor leads to the
+new structure, every cluster loads, and the trigger volumes are parked.
+Those two tests use a stand-in MOPP block (a header and `00`, which emits
+nothing); nothing written for play does.
+
+Not covered by the engine reading and left empty: root blocks at `+0x4c`,
+`+0x94`, `+0x148` and `+0x1d0`, which every retail multiplayer BSP fills
+(see the disc survey under "Still to do"). No direct read of them from
+the active BSP pointer was found; if the game faults on load, these are
+the first suspects.
+
+## What the engine reads
 
 Read from the retail XBE's code (static reading only; **E** cites the
 instruction, **Guess** is inference). The scan followed every load of the
@@ -241,15 +318,95 @@ group block empty. Lighting from Halo 1's lightmap pages comes later. The
 load itself validates only the region's `sbsp` FourCC (E `0x122b6d`); a
 checksum mismatch only leaves the lightmap unused.
 
+## Converting a map (**Built**: `h1convert::convert`, `h2 h1 convert`)
+
+The library entry point, for the CLI and the editor:
+
+```rust
+let p = h1convert::convert::prepare(&h1, source_sha256, &mut base, Sandbox::Halo2)?;
+// p: placements, structure counts, what wasn't placed (a dry run's report)
+let done = h1convert::convert::convert(&h1, source_sha256, &mut base, Sandbox::Halo2)?;
+// done.name ("h1_beavercreek"), done.bytes (the map), done.manifest
+```
+
+`convert(h1, source_sha256, base, sandbox)` takes the Halo 1 map's file
+hash as well as the map (the `[origin]` below needs it, and `H1Map` holds
+the inflated bytes, not the file). It is `prepare`, then the MOPP code
+from `convert::structure_mopp`, then `Prepared::build`.
+`structure_mopp` is where `mopp::build_structure(&bsp)` goes; until that
+crate is merged it returns `Error::MoppNotMerged` ("MOPP writer not
+merged yet: ..."), so **no map is written**. `Sandbox::Halo1` returns
+`Error::Halo1Sandbox` until phase 4.
+
+```sh
+cargo h2 h1 convert disc/halo1.iso beavercreek --out ~/h2-h1maps [--sandbox h2] [--base beavercreek] [--disc disc/halo2.iso] [--force]
+cargo h2 h1 convert path/to/beavercreek.map --dry-run
+```
+
+The Halo 1 map is a `.map` file or a disc and a map name; the base comes
+from the Halo 2 disc (`--disc`, else `$H2_DISC`, else `disc/halo2.iso`).
+It prints the structure (clusters, vertices, triangles, materials), the
+placements and what wasn't placed, then writes the package
+`DIR/h1_<map>/`: `manifest.toml` and the variant's map at
+`<sandbox>/h1_<map>.map` (`h2/h1_beavercreek.map`). A second run with the
+other sandbox adds its variant to the same manifest. `--dry-run` does
+everything but write and prints what it would write, and that it would
+refuse while the MOPP writer is missing.
+
+**Package.** One package per converted map at `<data>/maps/h1_<map>/`,
+one `[[variant]]` per sandbox, each a whole map with its origin (the form
+the editor reads, `editor_core::packages::halo1_origins`):
+
+```toml
+[package]
+format = 1
+name = "Battle Creek"
+
+[base]
+map = "h1_beavercreek"
+derived = true
+
+[list]
+base = "beavercreek"
+
+[[variant]]
+file = "h2/h1_beavercreek.map"
+sha256 = "<the map's SHA-256>"
+origin = { game = "halo1", map = "beavercreek", sandbox = "h2", source_sha256 = "<the Halo 1 map file's SHA-256>" }
+
+[[variant]]
+file = "h1/h1_beavercreek.map"   # once the Halo 1 sandbox exists
+sha256 = "..."
+origin = { game = "halo1", map = "beavercreek", sandbox = "h1", source_sha256 = "..." }
+```
+
+`content::Manifest` holds them (`variants`, `content::Variant`,
+`content::Origin`; `sha256` is ours beyond the editor's form, which
+ignores it). A variant package is derived and has no `[[patch]]`;
+sandboxes are `h1` or `h2`, one variant each. `Manifest::select_variant`
+gives the plain derived manifest of one variant (its file as the one
+layer), so each variant has its own `MapId` from its bytes, and `origin`
+is in no `MapId`. The resolver (`content::Library`) loads the default
+variant: `h1` if the package has it, else the first. Retail-style and
+other manifests parse and resolve unchanged (the existing content
+tests).
+
+**Not done yet:** the sandbox setting and `boot::new_maps` choosing by
+it. The plan: a `multiplayer.halo1_sandbox` `settings::Def` (choice
+`h1`/`h2`, default `h1`, `Restart`) in `boot::setting_defs`; the library
+gets the choice (`Manifest::select_variant(Some(..))` in place of `None`
+in `content::resolve::load`, through a `Library` option that
+`new_maps::install` sets from the setting).
+
 ## Still to do, in order
 
-1. **MOPP writer** for the structure (the blocker above).
-2. **Structure BSP and lightmap** per the table above, laid into the
-   base's `sbsp`/`ltmp` slots as a new BSP section (map-builder.md), with
-   the scenario's BSP descriptor pointed at it. Render geometry: Halo 1's
-   materials as one raw cluster section (structure-bsp.md), shaders on
-   the base's existing `shad` tags.
-   What the disc shows ( (`structure_bsp_root_blocks_on_the_disc`,
+1. **MOPP writer** (the `mopp` lane): `mopp::build_structure`, called
+   from `convert::structure_mopp`. Then a converted map can be written
+   and played.
+2. **Decals, lights, decorators** of the base (above).
+3. **Shaders** per Halo 1 shader instead of one, and **lightmaps** from
+   Halo 1's lightmap pages.
+   What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at
    `+0x0c` (collision materials, 20), `+0x14` (collision BSP), `+0x2c`
@@ -259,15 +416,12 @@ checksum mismatch only leaves the lightmap unused.
    `+0x138`/`+0x140` (instanced geometry, `0xc8`/`0x58`), `+0x148`,
    `+0x150`, `+0x1d0` (one element), `+0x1e0` (bytes, up to 160 KB: a
    likely Havok MOPP code block), `+0x21c`, `+0x224`, `+0x234` (one
-   element each). The rest are used by some maps only. Each of these needs
-   a meaning, or an engine reading that shows it can be empty, before a
-   converted `sbsp` can be written.
-3. **Sky** onto the base's sky.
-4. **`h2 h1 convert <iso|map> --out DIR [--sandbox h2|h1] [--base MAP]`**
-   writing `h1_<map>.map` (both variants) and a manifest; then
-   load-testing with `H2_MAP_DIR` as `h2 map testbuild` does.
+   element each). The rest are used by some maps only. The converter
+   writes `+0x4c`, `+0x94`, `+0x148` and `+0x1d0` empty without an engine
+   reading that allows it (above).
+4. **Precision variants** at round start (the AR rule above).
 5. **The setting and the map list** (below).
-6. **Halo 1 sandbox** (below).
+6. **Halo 1 sandbox** (below), and Halo 1's skies with it.
 
 ## The setting and the map list (design)
 
@@ -278,12 +432,13 @@ checksum mismatch only leaves the lightmap unused.
 - **Packaging:** each converted map is a new map in the sense of
   [maps.md](maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
   `boot::new_maps` installs each as a content package with its
-  `patch.lvl` record, and 1.0 lists it. The import writes one package per
-  map holding both variants (`h2/<map>.map`, `h1/<map>.map`).
+  `patch.lvl` record, and 1.0 lists it. One package per map holding both
+  variants, each a `[[variant]]` with its `origin` (above).
 - **Where the choice happens:** in `boot::new_maps`, which already writes
   each new map's `.map` into its content directory at boot. It writes the
-  variant the setting names. That is the one place the game's map file is
-  chosen for a new map; the VFS and the content resolver need no change.
+  variant the setting names, through the resolver's variant selection
+  (above). That is the one place the game's map file is chosen for a new
+  map.
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
