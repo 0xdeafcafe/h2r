@@ -72,6 +72,7 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
             return Ok(GameInfo {
                 map: text(guest, layout::CACHE_MAP_NAME, 32)?,
                 mode: format!("unknown_{other}"),
+                difficulty: None,
                 variant: None,
                 team_play: false,
                 score_limit: None,
@@ -85,9 +86,16 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
     let variant_name = layout::variant_name(engine)
         .map(str::to_owned)
         .or_else(|| (engine > 0).then(|| format!("engine_{engine}")));
+    let difficulty = if mode == "campaign" {
+        let value = guest.u16(options + layout::OPTIONS_DIFFICULTY)? as i16;
+        layout::difficulty_name(value).map(str::to_owned)
+    } else {
+        None
+    };
     Ok(GameInfo {
         map: text(guest, layout::CACHE_MAP_NAME, 32)?,
         mode: mode.into(),
+        difficulty,
         variant: variant_name,
         team_play: guest.u32(variant + layout::VARIANT_FLAGS)? & 1 != 0,
         score_limit: nonzero(i32(guest.u32(variant + layout::VARIANT_SCORE_LIMIT)?)),
@@ -686,9 +694,17 @@ mod tests {
             )
             .unwrap();
 
+        // Whatever is at the difficulty word, multiplayer has none.
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_DIFFICULTY,
+                2,
+            )
+            .unwrap();
         let info = game_info(&guest).unwrap();
         assert_eq!(info.map, "lockout");
         assert_eq!(info.mode, "multiplayer");
+        assert_eq!(info.difficulty, None);
         assert_eq!(info.variant.as_deref(), Some("Slayer"));
         assert!(info.team_play);
         assert_eq!(info.score_limit, Some(50));
@@ -1032,5 +1048,27 @@ mod tests {
         guest.set_u16(second + layout::STAT_SCORE, 10).unwrap();
         let tied = snapshot(&guest).unwrap();
         assert_eq!(tied.winner(false), None);
+    }
+
+    #[test]
+    fn campaign_difficulty_comes_from_the_options() {
+        let mut guest = fixture::memory();
+        let options = fixture::GLOBALS + layout::OPTIONS;
+        guest.set_u32(options + layout::OPTIONS_TYPE, 1).unwrap();
+        for (value, name) in [
+            (0, Some("easy")),
+            (1, Some("normal")),
+            (2, Some("heroic")),
+            (3, Some("legendary")),
+            (4, None),
+            (0xffff, None),
+        ] {
+            guest
+                .set_u16(options + layout::OPTIONS_DIFFICULTY, value)
+                .unwrap();
+            let info = game_info(&guest).unwrap();
+            assert_eq!(info.mode, "campaign");
+            assert_eq!(info.difficulty.as_deref(), name, "{value}");
+        }
     }
 }

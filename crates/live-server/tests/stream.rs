@@ -291,6 +291,7 @@ async fn ingest_fans_out_and_records_frames() {
             local: Some(true),
             appearance: None,
         }],
+        ..NewGame::default()
     };
     let game_id = live
         .start_game(Some(&token(&key, &account.id, lxm::GAMES_WRITE)), new)
@@ -460,6 +461,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
             local: Some(true),
             appearance: None,
         }],
+        ..NewGame::default()
     };
     let token = issue_token(
         &key,
@@ -620,6 +622,8 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             local: Some(true),
             appearance: None,
         }],
+        difficulty: Some("heroic".into()),
+        ..NewGame::default()
     };
     let token = issue_token(
         &key,
@@ -628,7 +632,25 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         lxm::GAMES_WRITE,
         live_server::app::now(),
     );
+    let mut bad = new.clone();
+    bad.difficulty = Some("mythic".into());
+    assert!(live.start_game(Some(&token), bad).await.is_err());
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
     let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
+    let summary = live.games(None, None, 10).items.remove(0);
+    assert_eq!(summary.game_id, game_id);
+    assert_eq!(summary.kind, "campaign", "inferred from mode");
+    assert_eq!(summary.difficulty.as_deref(), Some("heroic"));
+    let detail = serde_json::to_value(live.game(&game_id).unwrap()).unwrap();
+    assert_eq!(detail["kind"], "campaign");
+    assert_eq!(detail["difficulty"], "heroic");
+    assert_eq!(detail.get("playlist"), None);
     let author = Author::parse(&account.id).unwrap();
     let mut reader = connect(addr, &format!("?games={game_id}&exclude=GameFrame")).await;
     assert!(matches!(

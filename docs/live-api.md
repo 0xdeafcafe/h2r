@@ -49,7 +49,7 @@ Event types so far (payload fields):
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?` |
-| `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players` |
+| `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
@@ -127,6 +127,19 @@ vectors normalised; actors' shots carry over dropped frames like players'.
 Campaign plays as one game per mission (mode `campaign`, no scores): a
 checkpoint revert or restart of the same mission continues it.
 
+A game start (`POST /v1/games`, `GameStarted`) may also say what kind of
+game it is; all five fields are optional and old senders leave them out:
+
+| field | values | rules |
+|---|---|---|
+| `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
+| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only |
+| `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
+| `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
+
+Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
+games) and the others when the start had them.
+
 `GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
 up to 15 Hz and are not stored. A live frame's `shots` count since the
 previous live frame; a recorded frame's since the previous recorded frame
@@ -144,7 +157,7 @@ replays show the firing of the whole second.
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, team_play, started_at, ended_at?, players, teams?}` |
+| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?}` |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |

@@ -118,6 +118,8 @@ pub struct Weapon {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameInfo {
     pub map: String,
+    /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
+    pub difficulty: Option<String>,
     pub mode: String,
     pub variant: Option<String>,
     pub team_play: bool,

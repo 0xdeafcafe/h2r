@@ -63,6 +63,13 @@ impl Telemetry {
         *self.maps.lock().unwrap() = Some(locator);
     }
 
+    /// The matchmaking playlist (name, id) the next multiplayer game comes
+    /// from, or `None` for custom games. Nothing sets it yet: live-hle has
+    /// no matchmaking (sessions are all advertised `custom`).
+    pub fn set_playlist(&self, playlist: Option<(String, String)>) {
+        self.session.lock().unwrap().set_playlist(playlist);
+    }
+
     /// The loaded map's names, if the host has its file and the file's
     /// scenario datum is the guest's.
     fn tag_names(&self, guest: &runtime::Guest, map: &str) -> Option<TagNames> {
@@ -651,6 +658,12 @@ mod tests {
                 30,
             )
             .unwrap();
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_DIFFICULTY,
+                3,
+            )
+            .unwrap();
         // Campaign has no statborg.
         guest
             .set_u32(fixture::ENGINE + layout::ENGINE_STATBORG, 0)
@@ -679,6 +692,8 @@ mod tests {
         let started: Vec<_> = rows.iter().filter(|r| r["type"] == "GameStarted").collect();
         assert_eq!(started.len(), 1, "{rows:?}");
         assert_eq!(started[0]["data"]["mode"], "campaign");
+        assert_eq!(started[0]["data"]["kind"], "campaign");
+        assert_eq!(started[0]["data"]["difficulty"], "legendary");
         assert!(rows.iter().all(|r| r["type"] != "GameEnded"));
         let frame = rows
             .iter()
@@ -717,6 +732,7 @@ mod tests {
         let info = GameInfo {
             map: "lockout".into(),
             mode: "main_menu".into(),
+            difficulty: None,
             variant: None,
             team_play: false,
             score_limit: None,

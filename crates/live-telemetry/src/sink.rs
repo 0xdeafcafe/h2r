@@ -233,6 +233,7 @@ mod tests {
             &GameInfo {
                 map: "lockout".into(),
                 mode: "multiplayer".into(),
+                difficulty: None,
                 variant: Some("Slayer".into()),
                 team_play: false,
                 score_limit: Some(25),

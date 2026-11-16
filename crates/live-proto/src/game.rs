@@ -94,7 +94,7 @@ impl Appearance {
 }
 
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewGame {
     #[serde(default)]
     pub console: Option<String>,
@@ -110,6 +110,39 @@ pub struct NewGame {
     #[serde(default)]
     pub tick: Option<u64>,
     pub players: Vec<Player>,
+    /// `custom`, `matchmaking` or `campaign`; old senders leave it out and
+    /// [`NewGame::kind`] infers it from `mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Matchmaking only: the playlist (hopper) name and id the game came
+    /// from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
+    /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<String>,
+    /// Campaign only: the co-op partners are on other machines (Live co-op).
+    /// Local split-screen co-op is more than one player without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
+}
+
+/// The game kinds `NewGame.kind` may name.
+pub const GAME_KINDS: [&str; 3] = ["custom", "matchmaking", "campaign"];
+/// The campaign difficulties `NewGame.difficulty` may name, easiest first.
+pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
+
+impl NewGame {
+    /// `kind`, or for old senders `campaign` when `mode` is, else `custom`.
+    pub fn kind(&self) -> &str {
+        match &self.kind {
+            Some(kind) => kind,
+            None if self.mode == "campaign" => "campaign",
+            None => "custom",
+        }
+    }
 }
 
 /// `GameStarted` data, written by the server: the request plus the id it
@@ -323,8 +356,19 @@ pub struct GameSummary {
     pub game_id: String,
     pub map: String,
     pub mode: String,
+    /// Always set: the game's `kind`, or the one inferred from `mode`.
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
     pub team_play: bool,
     /// `live` or `ended`.
     pub state: String,
@@ -445,6 +489,39 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     }
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
+    }
+    if let Some(kind) = &game.kind {
+        if !GAME_KINDS.contains(&kind.as_str()) {
+            return Err("kind must be custom, matchmaking or campaign".into());
+        }
+        if (kind == "campaign") != (game.mode == "campaign") {
+            return Err("kind campaign goes with mode campaign, and only with it".into());
+        }
+    }
+    let kind = game.kind();
+    if (game.playlist.is_some() || game.playlist_id.is_some()) && kind != "matchmaking" {
+        return Err("playlist is for matchmaking games".into());
+    }
+    if let Some(name) = &game.playlist
+        && (name.is_empty() || name.chars().count() > 32 || name.chars().any(char::is_control))
+    {
+        return Err("playlist is 1 to 32 characters, no control characters".into());
+    }
+    if let Some(id) = &game.playlist_id
+        && !valid_id(id)
+    {
+        return Err("playlist_id must be [A-Za-z0-9_-]{1,64}".into());
+    }
+    if let Some(difficulty) = &game.difficulty {
+        if kind != "campaign" {
+            return Err("difficulty is for campaign games".into());
+        }
+        if !DIFFICULTIES.contains(&difficulty.as_str()) {
+            return Err("difficulty must be easy, normal, heroic or legendary".into());
+        }
+    }
+    if game.online.is_some() && kind != "campaign" {
+        return Err("online is for campaign games".into());
     }
     Ok(())
 }
@@ -712,6 +789,9 @@ mod tests {
             .is_err()
         );
 
+        assert_eq!(g.kind(), "custom", "inferred for old senders");
+        assert_eq!(serde_json::to_value(&g).unwrap().get("kind"), None);
+
         let started = GameStarted {
             game_id: "g1".into(),
             host: "acct:x@h".into(),
@@ -967,5 +1047,98 @@ mod tests {
             serde_json::from_value::<Winner>(json!({"player": 3})).unwrap(),
             Winner::Player { player: 3 }
         );
+    }
+
+    #[test]
+    fn game_kinds_playlists_and_difficulty() {
+        let campaign = NewGame {
+            map: "03a_oldmombasa".into(),
+            mode: "campaign".into(),
+            ..NewGame::default()
+        };
+        let custom = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            ..NewGame::default()
+        };
+        assert_eq!(campaign.kind(), "campaign");
+        let ok = [
+            NewGame {
+                kind: Some("campaign".into()),
+                difficulty: Some("legendary".into()),
+                online: Some(false),
+                ..campaign.clone()
+            },
+            NewGame {
+                difficulty: Some("easy".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                kind: Some("custom".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("Team Slayer".into()),
+                playlist_id: Some("3".into()),
+                ..custom.clone()
+            },
+        ];
+        for g in &ok {
+            assert_eq!(validate_new(g), Ok(()), "{g:?}");
+        }
+        let v = serde_json::to_value(&ok[3]).unwrap();
+        assert_eq!(v["kind"], "matchmaking");
+        assert_eq!(v["playlist"], "Team Slayer");
+        assert_eq!(serde_json::from_value::<NewGame>(v).unwrap(), ok[3]);
+
+        let bad = [
+            NewGame {
+                kind: Some("firefight".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("campaign".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("custom".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                playlist: Some("Rumble Pit".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("x".repeat(33)),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("Team\nSlayer".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist_id: Some("a b".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                difficulty: Some("normal".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                difficulty: Some("mythic".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                online: Some(true),
+                ..custom.clone()
+            },
+        ];
+        for g in &bad {
+            assert!(validate_new(g).is_err(), "{g:?}");
+        }
     }
 }

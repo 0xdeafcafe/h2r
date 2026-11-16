@@ -53,6 +53,8 @@ pub struct Session {
     /// player's roster entries carry its XUID.
     signed_in: Option<live_proto::Xuid>,
     current: Option<Match>,
+    /// Set while the console is in a matchmaking game: (name, id).
+    playlist: Option<(String, String)>,
     output: Vec<Output>,
 }
 
@@ -63,6 +65,7 @@ impl Session {
             console,
             signed_in: None,
             current: None,
+            playlist: None,
             output: Vec::new(),
         }
     }
@@ -80,6 +83,12 @@ impl Session {
         for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
             p.player.xuid = Some(xuid);
         }
+    }
+
+    /// The matchmaking playlist (name, id) multiplayer games start from;
+    /// `None` makes them custom games.
+    pub fn set_playlist(&mut self, playlist: Option<(String, String)>) {
+        self.playlist = playlist;
     }
 
     pub fn take_output(&mut self) -> Vec<Output> {
@@ -124,6 +133,22 @@ impl Session {
             return;
         }
         let game_id = live_proto::sign::random_id();
+        let campaign = info.mode == "campaign";
+        let playlist = if campaign {
+            None
+        } else {
+            self.playlist.clone()
+        };
+        let kind = match (campaign, &playlist) {
+            (true, _) => "campaign",
+            (false, Some(_)) => "matchmaking",
+            (false, None) => "custom",
+        };
+        let difficulty = if campaign {
+            info.difficulty.clone()
+        } else {
+            None
+        };
         let game = live_proto::game::NewGame {
             console: self.console.clone(),
             map: info.map.clone(),
@@ -134,6 +159,12 @@ impl Session {
             time_limit_s: info.time_limit_s,
             tick: Some(info.tick),
             players: players.iter().map(|p| p.wire_player()).collect(),
+            kind: Some(kind.into()),
+            playlist: playlist.as_ref().map(|p| p.0.clone()),
+            playlist_id: playlist.map(|p| p.1),
+            difficulty,
+            // Live co-op does not exist yet.
+            online: None,
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),
@@ -527,6 +558,7 @@ mod tests {
         GameInfo {
             map: "lockout".into(),
             mode: "multiplayer".into(),
+            difficulty: None,
             variant: Some("Slayer".into()),
             team_play: false,
             score_limit: Some(25),
@@ -913,6 +945,7 @@ mod tests {
         GameInfo {
             map: "03a_oldmombasa".into(),
             mode: "campaign".into(),
+            difficulty: Some("heroic".into()),
             variant: None,
             team_play: false,
             score_limit: None,
@@ -951,6 +984,48 @@ mod tests {
         // Multiplayer re-activations stay separate games, as before.
         session.start(&info(), vec![player(0, 0)]);
         assert_eq!(kinds(&mut session), ["GameEnded", "GameStarted"]);
+    }
+
+    fn started(session: &mut Session) -> live_proto::game::NewGame {
+        let event = session
+            .take_output()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "GameStarted" => Some(e),
+                _ => None,
+            })
+            .expect("a GameStarted");
+        let game: live_proto::game::GameStarted = serde_json::from_value(event.data).unwrap();
+        assert_eq!(live_proto::game::validate_new(&game.game), Ok(()));
+        game.game
+    }
+
+    #[test]
+    fn games_say_their_kind_playlist_and_difficulty() {
+        let mut session = Session::new("test", None);
+        session.start(&campaign(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("campaign"));
+        assert_eq!(game.difficulty.as_deref(), Some("heroic"));
+        assert_eq!((game.playlist, game.online), (None, None));
+
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("custom"));
+        assert_eq!((game.playlist, game.difficulty), (None, None));
+
+        session.set_playlist(Some(("Team Slayer".into(), "3".into())));
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("matchmaking"));
+        assert_eq!(game.playlist.as_deref(), Some("Team Slayer"));
+        assert_eq!(game.playlist_id.as_deref(), Some("3"));
+
+        // A playlist never makes a campaign game a matchmaking one.
+        session.start(&campaign(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("campaign"));
+        assert_eq!(game.playlist, None);
     }
 
     fn actor(slot: u32, pos: [f64; 3], team: i16) -> crate::event::ActorState {

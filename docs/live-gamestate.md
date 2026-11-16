@@ -97,6 +97,7 @@ The main game-engine update is called at `0x0013803c` (`0x0015c150`), and end/po
 |---|---:|---|---|---|---|
 | scenario type | `O+0x00` | `i32` | confirmed | `1` campaign, `2` multiplayer, `3` main menu; other accepted values unresolved |
 | tick rate | `O+0x06` | `i16` | confirmed | Copied to `T+0x02` |
+| campaign difficulty | `O+0x12a` | `i16` | confirmed | 0 easy, 1 normal, 2 heroic, 3 legendary; `0x00138110` defaults it to 1, the menu's campaign start (`0x0023643f`) sets it, level boot writes it ([level-boot.md](level-boot.md)) |
 | scenario path | `O+0x1c` | `char[256]` | confirmed | Consumed by cache acquisition at `0x0018eaa0` |
 | initial BSP index | `O+0x120` | `i16` | confirmed | Read by `0x0018f000` |
 | inline variant | `O+0x134` | 0x130 bytes | confirmed | Multiplayer construction and sanitizer at `0x0019d650` |

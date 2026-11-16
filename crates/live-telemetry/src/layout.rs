@@ -17,6 +17,18 @@ pub const PLAYER_KILLED: u32 = 0x0015_ce70;
 pub const OPTIONS: u32 = 0x8;
 pub const OPTIONS_TYPE: u32 = 0x0;
 pub const OPTIONS_TICK_RATE: u32 = 0x6;
+/// Campaign difficulty, `i16`: 0 easy, 1 normal, 2 heroic, 3 legendary.
+/// Confirmed: `0x00138110` defaults it to 1 and the menu's campaign start
+/// (`0x0023643f`) sets it from the selection; level boot writes it the same
+/// way (docs/level-boot.md).
+pub const OPTIONS_DIFFICULTY: u32 = 0x12a;
+
+/// The campaign difficulty's name, `None` outside 0..=3.
+pub fn difficulty_name(value: i16) -> Option<&'static str> {
+    usize::try_from(value)
+        .ok()
+        .and_then(|i| live_proto::game::DIFFICULTIES.get(i).copied())
+}
 pub const VARIANT: u32 = 0x134;
 pub const VARIANT_ENGINE: u32 = 0x44;
 pub const VARIANT_FLAGS: u32 = 0x48;

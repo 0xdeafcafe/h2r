@@ -79,6 +79,16 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   forward and up vectors; a vehicle whose vectors are not finite and
   non-zero is left out.
 
+Game starts say their `kind`: `campaign` for campaign mode, with
+`difficulty` from the active options' `+0x12a` word (0 easy to 3
+legendary; anything else leaves it out); multiplayer games are `custom`
+unless the host has called `Telemetry::set_playlist`, which makes them
+`matchmaking` with that playlist name and id. Nothing calls it yet:
+live-hle has no matchmaking (its sessions are all advertised `custom` with
+no hopper, `crates/live-hle/src/sessions.rs`), so the playlist source is
+the HLE's search/match state once phase 2 of
+[live-matchmaking.md](live-matchmaking.md) lands. `online` is never sent.
+
 Campaign: the map activation `0x0018f000` also runs on every checkpoint
 revert and mission restart (`0x0018e700` re-activates with a copy of the
 active options). A re-activation of the campaign map the current game is on
