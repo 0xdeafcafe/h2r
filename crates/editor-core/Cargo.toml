@@ -17,4 +17,6 @@ content.workspace = true
 variants = { path = "../variants" }
 # Halo 1 maps, read-only, and converted packages' manifests read as plain TOML.
 h1map = { path = "../h1map" }
+# Halo 1 base maps and lightmap pages for the viewport.
+h1bitmaps = { path = "../h1bitmaps" }
 toml = "0.9"

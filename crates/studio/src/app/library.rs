@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use editor_core::halo1::{self, H1Kind, H1Source, H1View};
 use editor_core::packages::{self, Halo1Origin, PackageEntry};
-use scenario_edit::geometry::{Marker, Tri};
+use scenario_edit::geometry::{Marker, Tri, WorldPart};
+use scenario_edit::scene::{Blend, Image, ReferencePart, Scene, reference_scene};
 use scenario_edit::{BlockKind, MapSource as EditSource, Reference};
 
 use super::{App, ToolKind};
@@ -25,6 +26,47 @@ pub fn block_of(kind: H1Kind) -> BlockKind {
 /// The Halo 1 kind shown as `block`, if any.
 pub fn kind_of(block: BlockKind) -> Option<H1Kind> {
     H1Kind::ALL.into_iter().find(|k| block_of(*k) == block)
+}
+
+/// A Halo 1 map's art in the viewport's terms: its BSPs' base maps and
+/// lightmap pages drawn through the Halo 2 scene and renderer.
+pub fn scene(v: &H1View) -> Scene {
+    use editor_core::halo1_art::{H1Blend, H1Picture};
+    let image = |p: &H1Picture| Image {
+        width: p.width,
+        height: p.height,
+        rgba: p.rgba.clone(),
+    };
+    let parts: Vec<ReferencePart> = v
+        .art
+        .parts
+        .iter()
+        .map(|p| ReferencePart {
+            part: WorldPart {
+                transparent: p.blend == H1Blend::Translucent,
+                positions: p.positions.clone(),
+                normals: p.normals.clone(),
+                uvs: p.uvs.clone(),
+                tris: p.tris.clone(),
+                lightmap_uvs: p.lightmap_uvs.clone(),
+                ..WorldPart::default()
+            },
+            texture: p.texture,
+            lightmap: p.lightmap,
+            blend: match p.blend {
+                H1Blend::Opaque => Blend::Opaque,
+                H1Blend::Mask => Blend::Mask,
+                H1Blend::Translucent => Blend::Translucent,
+            },
+        })
+        .collect();
+    reference_scene(
+        v.art.textures.iter().map(image).collect(),
+        v.art.lightmaps.iter().map(image).collect(),
+        &parts,
+        v.art.shaders,
+        v.art.textured,
+    )
 }
 
 /// A Halo 1 map's triangles in the viewport's terms.
@@ -156,6 +198,7 @@ impl App {
             name: name.to_owned(),
             world: tris(&view),
             markers: markers(&view),
+            scene: Some(Arc::new(scene(&view))),
         });
         self.forget_library_state();
         self.loaded = None;
