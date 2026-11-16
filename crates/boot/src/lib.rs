@@ -32,6 +32,7 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
 pub mod map_slots;
+pub mod new_maps;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -40,6 +41,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_mp;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
@@ -71,9 +73,18 @@ pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/inclu
 /// File name of the linked module inside the build directory.
 pub const DYLIB: &str = "libh2game.dylib";
 
-/// Read `default.xbe` from an XISO, or a raw XBE.
+/// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
+/// disc's files (the tvOS bundle, docs/tvos.md).
 pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
+    if path.is_dir() {
+        let xbe = std::fs::read_dir(path)
+            .with_context(|| format!("listing {}", path.display()))?
+            .flatten()
+            .find(|e| e.file_name().eq_ignore_ascii_case("default.xbe"))
+            .with_context(|| format!("no default.xbe in {}", path.display()))?;
+        return Ok(std::fs::read(xbe.path())?);
+    }
     let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic)?;
@@ -104,8 +115,21 @@ pub fn build_stamp(xbe_bytes: &[u8]) -> String {
 }
 
 fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -> String {
+    let target = emit::compile::Arch::target().unwrap_or(emit::compile::Arch::host());
+    stamp_for(xbe_bytes, passes, codegen, flags, target)
+}
+
+/// The stamp for a module compiled for `target`. A macOS stamp is the same
+/// as before targets existed; a tvOS one names its triple, so a module
+/// cross-built on a Mac with `H2_EMIT_TARGET=tvos` matches what the app
+/// computes on the Apple TV (where the host is tvOS) and nothing else.
+fn stamp_for(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String], target: emit::compile::Arch) -> String {
+    let target = match target {
+        emit::compile::Arch::Arm64Tvos => format!(" target {}", target.triple()),
+        _ => String::new(),
+    };
     format!(
-        "xbe {:016x} generator {} passes {passes} codegen {codegen} abi {} flags {flags:?}\n",
+        "xbe {:016x} generator {} passes {passes} codegen {codegen} abi {} flags {flags:?}{target}\n",
         fallback::fnv64(xbe_bytes),
         env!("GENERATOR_SOURCE_HASH"),
         runtime::cpu::ABI_VERSION
@@ -220,7 +244,8 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     drop(owners);
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
-    let arch = emit::compile::Arch::host();
+    // The host, or tvOS with H2_EMIT_TARGET=tvos (docs/tvos.md).
+    let arch = emit::compile::Arch::target().map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
         "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
@@ -544,6 +569,10 @@ pub fn run_hosted_with_live(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
+    // Packages for maps the disc doesn't have become content packages
+    // under T:\$c, which the main menu reads for its map list
+    // (docs/maps.md §4); before the VFS lists that folder.
+    new_maps::install_at_boot(&opts.data_root, &opts.disc);
     // Map packages from <data>/maps (docs/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
@@ -663,6 +692,16 @@ pub fn run_hosted_with_live(
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
     let skulls_on = skulls::install(&mut features, host.settings.clone()).context("installing the skulls")?;
+    // Skulls in multiplayer games: the host's set, advertised to guests on
+    // our Live service and applied on every machine at game start
+    // (docs/skulls.md "In multiplayer").
+    let skulls_mp_on = skulls_mp::install(
+        &mut features,
+        host.settings.clone(),
+        _live.clone(),
+        _telemetry.clone(),
+    )
+    .context("installing the multiplayer skulls")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -755,6 +794,9 @@ pub fn run_hosted_with_live(
     }
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
         eprintln!("{}", skulls::report(&plan, &installed, store));
+    }
+    if let Some(store) = host.settings.as_ref().filter(|_| skulls_mp_on) {
+        eprintln!("{}", skulls_mp::report(&plan, &installed, store));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
@@ -1186,6 +1228,31 @@ mod tests {
         assert_ne!(base, stamp_with(b"synthetic", "all", &all_locals, &flags), "H2_REG_HOMES");
         assert_ne!(base, stamp_with(b"synthetic", "none", &off, &flags), "H2_PASSES");
         assert_eq!(base, stamp_with(b"synthetic", "all", &off, &flags));
+    }
+
+    #[test]
+    fn a_tvos_stamp_names_its_target_and_a_macos_one_is_unchanged() {
+        use emit::compile::Arch;
+        let flags = vec!["-O1".to_owned()];
+        let mac = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64);
+        assert_eq!(mac, stamp_for(b"synthetic", "all", "c", &flags, Arch::X86_64));
+        assert!(!mac.contains("target"), "macOS stamps stay as they were: {mac}");
+        let tv = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos);
+        assert_ne!(mac, tv);
+        assert!(tv.trim_end().ends_with(" target arm64-apple-tvos17.0"), "{tv}");
+    }
+
+    #[test]
+    fn read_xbe_takes_a_directory_holding_the_disc_files() {
+        let dir = std::env::temp_dir().join(format!("h2boot-dir-disc-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("maps")).unwrap();
+        std::fs::write(dir.join("Default.XBE"), b"XBEH synthetic").unwrap();
+        assert_eq!(read_xbe(&dir).unwrap(), b"XBEH synthetic");
+        std::fs::write(dir.join("raw.xbe"), b"XBEH raw").unwrap();
+        assert_eq!(read_xbe(&dir.join("raw.xbe")).unwrap(), b"XBEH raw");
+        std::fs::remove_file(dir.join("Default.XBE")).unwrap();
+        assert!(read_xbe(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

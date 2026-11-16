@@ -35,6 +35,14 @@
 //! fragment program. Every sample that survives the fixed-function tests is
 //! counted.
 //!
+//! A program whose fragment stage writes the depth (the NV2A's W-buffer,
+//! which Halo runs in) names its own count entry
+//! ([`ShaderProgram::count_entry`](crate::pipeline::ShaderProgram::count_entry)):
+//! it writes the same depth and 1 in red, and the count pass uses it in
+//! place of the generic fragment. Otherwise the replay would test the
+//! rasterized z against depths that hold w, and count nothing in front of
+//! anything drawn.
+//!
 //! [`PixelCounter::clear`] and [`PixelCounter::report`] record into the
 //! caller's encoder, so they stay in order with the counted passes;
 //! [`PixelReport::read`] waits for the GPU and must only be called once

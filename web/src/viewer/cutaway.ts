@@ -20,7 +20,8 @@ export type MeshRole = "level" | "machine" | "hidden";
 /** A mesh's role from its own and its ancestors' names, outermost first. */
 export function meshRole(names: readonly string[]): MeshRole {
   if (names.some((n) => /^collision/i.test(n))) return "hidden";
-  if (names.some((n) => /^machines?(_\d+)?$/i.test(n))) return "machine";
+  // Placed objects are drawn whole like machines.
+  if (names.some((n) => /^(machines?|scenario)(_\d+)?$/i.test(n))) return "machine";
   return "level";
 }
 

@@ -215,8 +215,9 @@ order:
 
 Rows 3 and 4 never reach the retail row text or press. The retail press
 remembers rows 0 to 2 for the next visit (`[0x510a18]`, read by `0x231170`
-when it is under 4), so the cursor never returns to our rows. That is
-harmless.
+when it is under 4). Our row's press stores 3 there, so the cursor comes
+back to it (below, "Back from the browser"). Content Download stores
+nothing, as in retail.
 
 **The fifth item widget.** A list scrolls when it has more rows than child
 item widgets. `0x24c515` compares the row count with the children that
@@ -264,6 +265,34 @@ row's pane when its focus moves (`0x24c50a`). The pane hook hands it 4 for
 our row and 3 for Content Download, through a word of ours rather than the
 caller's. On a tag that was not extended our row keeps the shown pane.
 
+**Back from the browser.** The game keeps no history of screens. A
+screen's back handler opens its parent by loader, with a back request
+(kind 7, built by `0x149f49`), and the screen push (`0x147f6d`) replaces
+the window's screen. The browser's handler (slot 10, `0x2536a6`) does that
+on B or Back (event 5, button 1 or 13) unless `0x148044` says otherwise,
+and it always names the System Link screen's loader `0x252433` (that
+screen in its LAN mode, `[screen+0x610] = 2`), whatever the byte at
+`+0x93c`. On the LAN path that is where the player came from. From our row
+it is not, and in game back landed on the controller screen.
+
+The Live menu's own children are opened the way our row opens the
+browser (OptiMatch: `0x149f1e(1 << player, 0x230c8d)`), so nothing about
+the opening needed to change. Retail goes back to the Live menu with a
+kind-7 request for `0x2310b7` (`0x19b0ad`). So boot hooks two functions:
+
+- the browser's event handler: when the screen's vtable is `0x45a558` and
+  its `+0x93c` byte is set (only our row opens that mode), it raises a
+  flag, runs the original and clears the flag;
+- the System Link loader `0x252433`: with the flag up and a kind-7
+  request, it points the request's loader (`+0x1c`) at `0x2310b7` and
+  calls the Live menu's loader with the same request. Otherwise it is the
+  original.
+
+A LAN browser never raises the flag, so main menu → System Link → back is
+retail. Our row press also stores row 3 in `[0x510a18]`, the row the Live
+menu's cursor starts on (`0x231170`, rows 0 to 3; the retail press stores
+rows 0 to 2 the same way), so back lands on Custom Game Browser.
+
 **The Map Pack dialog.** The game shows its errors in two dialog classes
 that look an error id up in the shared UI globals (`0x23661f`: ESI = a
 0x20-byte entry, the id on the stack, `ret 4`; an unknown id gets error 1's
@@ -301,7 +330,7 @@ label is not shortened.
 | Create rule, reader-filtered list, `?visibility=` | `crates/live-server/src/sessions.rs`, `Live::read_caller` | `crates/live-server/tests/session_visibility.rs`: anonymous/stranger/friend/host lists, update, observed vs declared, loopback |
 | HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live-hle/src/sessions.rs` | `crates/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
 | `live.visibility` setting, HLE binding | `crates/boot/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
-| Live menu rows, fifth item widget, tag, Map Pack dialog, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; privacy mapping and squad gates; install without a game |
+| Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
 | Web "Find a game" shows "open to", hides invite-only | `web/src/lib/sessions.ts`, `web/src/dash/Sessions.tsx` | `web/test/sessions.test.ts` |
 
 `H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
@@ -342,6 +371,11 @@ friends. Then check:
    - It should search over Live: the HLE logs a session search, and no LAN
      broadcast goes out.
    - The title may still say "System Link" in its header.
+   - Press B. The Xbox Live menu comes back with the cursor on Custom Game
+     Browser, not the controller screen. stderr: `custom games: back from
+     the live browser to the xbox live menu`.
+   - From the main menu, System Link, then B in its browser: the same
+     screens as before this change (retail), and no such stderr line.
 4. **A friend's game.** A creates a party and starts a custom game lobby. On
    B, the game appears in the browser with A's name, map and player count.
    This proves the QoS listener data is decoded.

@@ -30,6 +30,12 @@
 //! text ([`MAPPACK_ERROR`]) instead of retail's leave-for-the-dashboard
 //! confirmation (`0x19b5af`, error `0xa3`).
 //!
+//! **Back.** The browser's back press (`0x2536a6`) always opens the System
+//! Link screen (`0x252433`), its LAN parent. While a Live-mode browser
+//! handles an event, that call goes to the Live menu's loader (`0x2310b7`)
+//! instead, and our row press leaves the Live menu's cursor on our row
+//! ([`browser_is_live`], [`back_loader`], [`remember_row`]).
+//!
 //! **The fifth item widget.** The handler embeds four item widgets
 //! (`+0x88`, 0x80 bytes each, built by `0x24abae`), and a list scrolls when
 //! it has more rows than child item widgets (`0x24c515` counts children with
@@ -76,6 +82,26 @@ pub const ROW_TEXT: u32 = 0x0023_0f36;
 pub const ROW_CHOSEN: u32 = 0x0023_0f92;
 /// The System Link browser's Live-mode loader (stdcall, request, `ret 4`).
 pub const LIVE_BROWSER_LOADER: u32 = 0x0025_31c9;
+/// The browser screen's vtable and its Live byte (0 LAN, 1 Live).
+pub const BROWSER_VTABLE: u32 = 0x0045_a558;
+const BROWSER_LIVE: u32 = 0x93c;
+/// The browser's event handler (screen slot 10, thiscall, the event at
+/// `[esp+4]`, `ret 4`). On B or Back (event 5, button 1 or 13) it opens
+/// the System Link screen's loader with a back request, whatever the mode.
+pub const BROWSER_EVENT: u32 = 0x0025_36a6;
+/// The loader that back press opens (stdcall, request, `ret 4`): the
+/// System Link screen in its LAN mode (`[screen+0x610] = 2`).
+pub const BROWSER_BACK_LOADER: u32 = 0x0025_2433;
+/// The Xbox Live menu's loader (stdcall, request, `ret 4`); `0x19b0ad`
+/// goes back to it with the same kind of request.
+pub const LIVE_MENU_LOADER: u32 = 0x0023_10b7;
+/// A request's kind word (`+0`) when it is a back transition, and where the
+/// request keeps its loader.
+const REQUEST_BACK: u16 = 7;
+const REQUEST_LOADER: u32 = 0x1c;
+/// The row the Live menu puts its cursor on when built (`0x231170` reads
+/// it when 0 to 3; the retail press stores rows 0 to 2).
+const LAST_ROW: u32 = 0x0051_0a18;
 /// Our row's label. It fits: the list skin's text rectangle is 190 units
 /// wide, and the label renders 136 wide in conduit-12 (180 in conduit-16).
 pub const TEXT_ID: u32 = ID_BASE + 0x32;
@@ -189,6 +215,41 @@ pub fn pane_of(row: i16, panes: u32) -> Pane {
         (Row::Browser, false) => Pane::Keep,
         (Row::Download, _) => Pane::Show(RETAIL_DOWNLOAD_ROW),
     }
+}
+
+// ---- back from the Live browser ----
+//
+// The game has no history of screens: a screen's back handler opens its
+// parent by loader with a back request (kind 7). The browser's handler
+// (`0x2536a6`) always names the System Link screen (`0x252433`), its parent
+// on the LAN path. Opened from our row, that is not where the player came
+// from (in game, back landed on the controller screen). So while a Live-mode
+// browser handles an event, the System Link loader is swapped for the Live
+// menu's, the way `0x19b0ad` goes back to it; and our row press leaves the
+// Live menu's cursor on our row.
+
+/// Whether `screen` is the browser in its Live mode, the one only our row
+/// opens. A LAN browser (byte 0) or another screen: `false`.
+pub fn browser_is_live<M: Gm>(m: &M, screen: u32) -> bool {
+    m.u32(screen) == Some(BROWSER_VTABLE)
+        && m.u8(screen.wrapping_add(BROWSER_LIVE))
+            .is_some_and(|b| b != 0)
+}
+
+/// For a call to the System Link loader made while a Live browser handles
+/// an event: when `request` is a back request, point it at the Live menu's
+/// loader and return that loader to call instead. Anything else: `None`,
+/// nothing written.
+pub fn back_loader<M: Gm>(m: &mut M, request: u32) -> Option<u32> {
+    (m.u16(request)? == REQUEST_BACK
+        && m.set_u32(request.wrapping_add(REQUEST_LOADER), LIVE_MENU_LOADER))
+    .then_some(LIVE_MENU_LOADER)
+}
+
+/// Leave the Live menu's cursor on our row for when the browser goes back
+/// to it (the retail press stores rows 0 to 2 the same way).
+pub fn remember_row<M: Gm>(m: &mut M) -> bool {
+    m.set_u32(LAST_ROW, ROW as u32)
 }
 
 /// The strings the rows and the dialog show, as `(id, text)`.
@@ -815,6 +876,74 @@ mod tests {
         m.set_u32(0x5000 + 4, 2);
         assert_eq!(chosen_row(&m, esp), Some(ROW));
         assert_eq!(player_mask(&m, esp), Some(1 << 2));
+    }
+
+    /// A browser screen as its constructor leaves it: the vtable, and the
+    /// Live byte its loader passed (0 from `0x253185`, 1 from `0x2531c9`).
+    fn browser(m: &mut Fake, screen: u32, live: u8) {
+        m.set_u32(screen, BROWSER_VTABLE);
+        m.wr(screen + BROWSER_LIVE, &[live]);
+    }
+
+    /// The back request the browser's handler builds (`0x149f49` with kind
+    /// 7) for the System Link loader: kind, mask, the screen's +0x74/+0x78,
+    /// three -1 words, the loader.
+    fn back_request(m: &mut Fake, at: u32, kind: u16) {
+        m.set_u16(at, kind);
+        m.set_u16(at + 2, 1);
+        m.set_u32(at + 4, 5);
+        m.set_u32(at + 8, 4);
+        m.set_u32(at + 0xc, 0);
+        for off in [0x10, 0x14, 0x18] {
+            m.set_u32(at + off, u32::MAX);
+        }
+        m.set_u32(at + REQUEST_LOADER, BROWSER_BACK_LOADER);
+    }
+
+    #[test]
+    fn only_the_live_browser_goes_back_to_the_live_menu() {
+        let mut m = Fake::default();
+        let (lan, live, other) = (0x20_0000, 0x21_0000, 0x22_0000);
+        browser(&mut m, lan, 0);
+        browser(&mut m, live, 1);
+        m.set_u32(other, 0x0045_be30);
+        m.wr(other + BROWSER_LIVE, &[1]);
+        // The LAN browser (main menu, System Link) is left as retail.
+        assert!(!browser_is_live(&m, lan));
+        assert!(browser_is_live(&m, live));
+        assert!(!browser_is_live(&m, other), "another screen with a 1 there");
+        assert!(!browser_is_live(&m, 0x30_0000), "nothing mapped");
+    }
+
+    #[test]
+    fn a_back_request_is_sent_to_the_live_menu() {
+        let mut m = Fake::default();
+        let req = 0x7000;
+        back_request(&mut m, req, REQUEST_BACK);
+        let before = bytes(&m, req, 0x1c);
+        assert_eq!(back_loader(&mut m, req), Some(LIVE_MENU_LOADER));
+        assert_eq!(m.u32(req + REQUEST_LOADER), Some(LIVE_MENU_LOADER));
+        // Kind, mask, the window words and the rest go to the Live menu's
+        // loader as the browser built them, as `0x19b0ad` builds its own.
+        assert_eq!(bytes(&m, req, 0x1c), before);
+        // An opening request (kind 0, `0x149f1e`) is not a back press.
+        let open = 0x7100;
+        back_request(&mut m, open, 0);
+        assert_eq!(back_loader(&mut m, open), None);
+        assert_eq!(m.u32(open + REQUEST_LOADER), Some(BROWSER_BACK_LOADER));
+        assert_eq!(back_loader(&mut m, 0x9_0000), None, "unmapped");
+    }
+
+    #[test]
+    fn our_press_leaves_the_cursor_on_our_row() {
+        let mut m = Fake::default();
+        m.set_u32(LAST_ROW, 1);
+        assert!(remember_row(&mut m));
+        // `0x231170` restores rows 0 to 3, so ours is restored.
+        let row = m.u32(LAST_ROW).unwrap() as i32;
+        assert_eq!(row, ROW as i32);
+        assert!((0..4).contains(&row));
+        assert_eq!(row_kind(row as i16), Row::Browser);
     }
 
     #[test]

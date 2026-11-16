@@ -18,6 +18,9 @@
 #![forbid(unsafe_code)]
 
 pub mod edit;
+/// An invented cache for tests and the editor's screenshots.
+#[doc(hidden)]
+pub mod fixture;
 pub mod geometry;
 pub mod layout;
 pub mod package;

@@ -127,6 +127,21 @@ no hopper, `crates/live-hle/src/sessions.rs`), so the playlist source is
 the HLE's search/match state once phase 2 of
 [live-matchmaking.md](live-matchmaking.md) lands. `online` is never sent.
 
+Games also say their `skulls` (docs/skulls.md): ascending indices, left
+out when none are on (and by every sender before the field, which the
+server reads as none). A campaign game reads the skull array at `0x4f55dc`
+when the map activates, after our campaign start wrote the profiles'
+choice into it; a checkpoint revert continues the game and does not read it
+again. A multiplayer game cannot use the array: every reader of it tests
+for a campaign, and it still holds whatever the last campaign turned on.
+Its skulls are the set the boot applied at that game's start
+(`Telemetry::set_multiplayer_skulls`, from `boot::skulls_mp`): the host's
+choice, or on a guest the host's advertised one; only 4 (Famine) and 6
+(Blind) are ever named. Indices run to 63, so skulls of our own past the
+retail fifteen fit. The server keeps the field in `GameStarted`, returns it
+in game summaries, details and recent games, and filters by it
+(`GET /v1/games?skulls=4,6`, [live-api.md](live-api.md)).
+
 Campaign: the map activation `0x0018f000` also runs on every checkpoint
 revert and mission restart (`0x0018e700` re-activates with a copy of the
 active options). A re-activation of the campaign map the current game is on

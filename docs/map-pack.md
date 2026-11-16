@@ -268,7 +268,8 @@ installer stay on the disc.
 
 ### Tests
 
-- `cli` `patch_lvl::tests` (synthetic records): the CRC against the
+- `content` `patch_lvl::tests` (synthetic records; the module moved from
+  `cli` so the boot can build records too): the CRC against the
   CRC-32 check value, a v3 record's own CRC recomputed, the v2 mapping
   (copied span, dropped checksum, shift, map id, new CRC that 1.0's check
   accepts), and refusals of wrong lengths, versions, types and CRCs.
@@ -616,7 +617,7 @@ import now does (stamp version 3), and removes the older packages.
 
 Built: option 1, in `h2 import-mappack` (section 5): nine packages, offer
 IDs `4d530064000001NN` to `...03NN`, a v2 `patch.lvl` per map made by
-`cli` `patch_lvl::v2_from_v3`, the file table copied, the disc's
+`content` `patch_lvl::v2_from_v3`, the file table copied, the disc's
 `patch.lvl` never installed. On the user's disc the test in section 5 finds
 nine packages whose `patch.lvl` passes 1.0's check. The design as written
 before it was built:

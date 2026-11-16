@@ -40,6 +40,8 @@ import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { buildFeatures } from "./features3d";
+import { TextureSwap, loadFlats, type TexturePair } from "./textures3d";
+import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
@@ -157,6 +159,11 @@ export class ViewerScene {
   private machineNodes = new Map<string, MachineNode>();
   private shownMachines = new Map<string, SampledMachine>();
   private looseMachines = new Map<string, VehicleObj>();
+  // The level and its objects textured or in flat class colours (textures3d.ts).
+  private textures = new TextureSwap();
+  /** The scenario's placed objects (scenario3d.ts): what frames move by
+   *  `find(kind, index)` or `apply(objects)`. */
+  readonly scenarioObjects = new ScenarioObjects(() => { this.dirty = true; });
   private features: MapFeatures | null = null;
   private featureGroup: THREE.Group | null = null;
   private featuresOn = true;
@@ -284,6 +291,10 @@ export class ViewerScene {
     try {
       const gltf = await new GLTFLoader().loadAsync(url);
       if (this.disposed) return false;
+      // Textured primitives' class materials, for the flat look.
+      const flats = await loadFlats(gltf);
+      if (this.disposed) return false;
+      const pairs: TexturePair[] = [];
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
       // `machines` and its children), every mesh is found by walking it once.
@@ -301,7 +312,8 @@ export class ViewerScene {
       };
       const walk = (o: THREE.Object3D, names: string[], aside = false) => {
         const path = o.name ? [...names, o.name] : names;
-        aside ||= isBackdrop(o.name) || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
+        // (Placed objects don't frame the camera either: some stand far out.)
+        aside ||= isBackdrop(o.name) || o.name === "scenario" || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
         const role = meshRole(path);
         if (role === "hidden") { o.visible = false; return; }
         const mesh = o as THREE.Mesh;
@@ -313,8 +325,11 @@ export class ViewerScene {
         if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          let flat = Array.isArray(mesh.material) ? undefined : flats.get(mesh);
+          if (flat && role === "machine") flat = own(flat);
+          if (flat) pairs.push({ mesh, textured: mesh.material as THREE.Material, flat });
           let solid = true;
-          for (const m of mats) {
+          for (const m of flat ? [...mats, flat] : mats) {
             // Only faces turned to the sun cast: a level seen from above has its
             // ceilings culled, so they shouldn't black out the rooms below either.
             m.shadowSide = THREE.FrontSide;
@@ -340,6 +355,8 @@ export class ViewerScene {
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
       this.look.adopt(root, assetExtras, url);
+      this.textures.adopt(pairs);
+      this.scenarioObjects.adopt(root, this.textures);
       // The level's machines: each child of `machines` can be moved by the frames.
       root.traverse((o) => {
         if (o.name !== "machines") return;
@@ -369,6 +386,15 @@ export class ViewerScene {
     }
     this.dirty = true;
   }
+
+  /** Surface pictures on (the default) or the flat class colours. */
+  setTextures(on: boolean) { if (this.textures.set(on)) this.dirty = true; }
+  /** Whether the level has any pictures to turn off. */
+  hasTextures(): boolean { return this.textures.has(); }
+  /** The kinds of placed object the level has (scenario3d.ts's names). */
+  objectKinds(): string[] { return this.scenarioObjects.kinds(); }
+  setObjects(on: boolean) { this.scenarioObjects.setShown(on); }
+  setObjectKind(kind: string, on: boolean) { this.scenarioObjects.setKind(kind, on); }
 
   /** Whether the level has teleporters or lifts to show. */
   hasFeatures(): boolean { return !!this.features; }
@@ -551,6 +577,8 @@ export class ViewerScene {
 
   private clearMap() {
     if (!this.map) return;
+    this.textures.clear();
+    this.scenarioObjects.clear();
     this.scene.remove(this.map);
     this.map.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -1171,6 +1199,7 @@ export class ViewerScene {
 
   private draw(dt: number) {
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
+    this.scenarioObjects.beforeDraw();
     // The soft ground stands in for a sky's horizon only when there is none.
     this.ground.visible = !this.look.skyShown();
     if (this.composer && this.aoWanted) this.composer.render();

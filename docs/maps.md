@@ -3,7 +3,8 @@
 Status: design, with the foundation built: `crates/content` (manifest,
 `MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`
 (including packages installed while the game runs, §3), the boot wiring,
-and the scenario editor's "Save as package" and "Open package" (§8). Sections marked **Built** say exactly what exists; see also
+the scenario editor's "Save as package" and "Open package" (§8), and new
+maps in 1.0's map list (§4). Sections marked **Built** say exactly what exists; see also
 §7. Agreed with the Live session (network side) and built on
 the feature engine's content packs ([feature-engine.md](feature-engine.md),
 "Content packs"). What exists today: the editor (`h2-editor`,
@@ -196,14 +197,188 @@ installed content package's `patch.lvl` (version 2). The map pack's own
 `patch.lvl` only names Lockout; its new maps are listed in `patch_v3.lvl`,
 which only the title update reads ([map-pack.md](map-pack.md)).
 
-So the cheap route for both **new maps** and the **Map Pack**: the vfs
-serves a synthesised `patch.lvl` listing the maps we want, inside a
-content package under `T:\$c`. If the 2005 DLC maps load in the 1.0
-engine, the Map Pack becomes playable without porting the title update
-(17-28 days by [title-updates.md](title-updates.md)). Whether they do is
-being checked statically (map-pack.md, "Playing the map pack on 1.0").
-If they don't, the update port stays the route for DLC, and new maps
-still use this path.
+So the route for both **new maps** and the **Map Pack**: a content package
+under `T:\$c` per map, with a `patch.lvl` listing it. The Map Pack is
+installed this way by `h2 import-mappack` ([map-pack.md](map-pack.md) §5,
+§8). New maps are below.
+
+### New maps (**Built**)
+
+A package whose map name the disc doesn't have (`[base] derived = true`
+and `[base] map` not in the disc's `\maps`) can't replace a disc map, so
+the vfs never serves it as `\maps\<name>.map` (§7). Instead
+`boot::new_maps` installs it as a content package of its own, at every
+boot before the VFS is mounted (so before the game lists `T:\$c`), and on
+demand with
+
+```sh
+cargo h2 maps install [--data DIR] [--disc disc/halo2.iso]
+```
+
+For each new map name (one package per name, by the choice rule of §7) it
+writes `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`:
+
+| file | what |
+|---|---|
+| `<map>.map` | the map, resolved by the content resolver (`Library::resolve_package`) and written here once; written again only when the package's `MapId` changes. A copy the resolver materialised in `maps/cache` is removed, so the map is stored once |
+| `patch.lvl` | a version 2 record built by `content::map_list` (fields below), checked with 1.0's own check before writing |
+| `ContentMeta.xbx` | synthesised, then signed by `kernel::content::sign` (below) |
+| the package's image | copied under its own name, if it has one |
+| `h2recomp-map.toml` | which package (directory, map name, `MapId`) the directory holds |
+
+Small files are rewritten only when their bytes change, through a
+temporary file and a rename. A failing package (a layer whose hash no
+longer matches, a map name over 38 bytes, which FATX can't hold with
+`.map`) is skipped with its reason, and the game starts anyway.
+
+**Removal.** A directory in the new-map offer range that isn't one this
+install produced (its package was deleted, or its `MapId` and so its map id
+changed) is removed. Nothing else under `$c` is touched: not the Map
+Pack's packages, not anything else.
+
+**Retail unchanged.** With no `<data>/maps`, or no derived package for a
+name the disc lacks, nothing is written and nothing under `$c` is created;
+with no derived package at all the disc isn't even read.
+
+#### The record's fields
+
+Layout in [map-pack.md](map-pack.md) 8.1. The manifest gains an optional
+`[list]` table, which is display data and not part of the `MapId`:
+
+```toml
+[list]
+base = "lockout"       # a retail map: its own list entry gives the rest
+sort = 300             # optional
+name.ja = "..."        # optional, per language: en ja de fr es it ko zh pt
+description.ja = "..." # optional
+```
+
+| field | source |
+|---|---|
+| type | 1 |
+| scenario path | `scenarios\multi\<map>\<map>`. 1.0 uses only its basename, and opens `<content dir>\<map>.map` |
+| map id | below |
+| `+0x110` | `-1`, as in every shipped record; 1.0 never reads it |
+| names (9 x 32 UTF-16 units) | `[list] name.<lang>`, else `[package] name`, in every language; cut to 31 units at a character boundary |
+| descriptions (9 x 128) | `[list] description.<lang>`, else `[package] description`, else empty |
+| sort order | `[list] sort`, else 1000: after every retail map (10 to 120 on the user's disc) and Map Pack map (130 to 210) |
+| flags, team counts | the `[list] base` map's own element of `mainmenu.map`'s level list (globals `+0x178`, element 0, block `+0x10`, `0xc64`-byte elements: flags `+0xc50`, team counts `+0xc54`). Without a base, the list's first retail element (lowest sort order) on the user's disc. Only with no readable list at all: flags 0 and eight for every count |
+| preview | the package image; else the base's own picture; else a plain card |
+
+The language order is the game's: on the user's disc only index 7 holds
+Han characters on the retail and Map Pack entries (Chinese), which fits
+en, ja, de, fr, es, it, ko, zh, pt (the Japanese and Korean entries use the
+Latin names). That is the order `ContentMeta.xbx` names use too.
+
+**The preview** is 207 rows of 220 pixels, top row first, 32 bits each in
+the D3D `A8R8G8B8` linear layout (bytes B, G, R, A): 1.0 copies it row by
+row into the slot's bitmap (`0x370` bytes a row), and rendering a Map Pack
+record that way gives the right picture. Every shipped record has the same
+alpha: a one-pixel opaque frame, `0xbf` inside, and a 16-pixel transparent
+triangle cut from the bottom-right corner, its edge opaque.
+`map_list::preview_alpha` draws that shape and the ignored test below
+checks it against all nine Map Pack records. A PNG or JPEG (`png`,
+`zune-jpeg`) is scaled to cover 220x207 (bilinear) and cropped to its
+centre. The base's picture is the level element's bitmap (tag reference at
+`+0x4`, datum `+0x8`), decoded by `assets::decode_image` with
+`mainmenu.map` and `shared.map` as its resource files, then given the same
+treatment. The plain card is a vertical gradient in a colour from the
+`MapId`.
+
+#### Map ids and offer IDs
+
+- **Map ids** are `0x10000 + (the MapId's first four bytes, little-endian)
+  mod 0x7ffe_ffff`, so in `0x0001_0000..=0x7fff_fffe`. Retail ids on the
+  user's disc are `0xa` to `0x320`, the Map Pack's `0x3e8` to `0x516`, so
+  the range is clear of both (asserted by the ignored test). On a collision
+  with a retail id from the disc's own list or another new map, the next
+  free id up is taken, wrapping in the range; choices are made in `MapId`
+  order, so they don't depend on directory order. 1.0 compares ids for
+  equality only (map-pack.md 8.3), and a new map gets a free slot (38).
+  Since the id follows the `MapId`, editing a map's bytes gives it a new id
+  (and a new directory); a display change keeps both.
+- **Offer IDs**: Halo 2's title ID in the high half, `0x8000_0000 | map id`
+  in the low half (`4d530064800NNNNN`-style). The Map Pack uses
+  `0x0101..0x03ff` and the disc packages `1..3`, so the top bit keeps them
+  apart.
+
+#### ContentMeta.xbx
+
+Synthesised in the shape of the Map Pack's (map-pack.md §7): `XCSF`,
+header size `0x88`, `+0x1c` = 1, title ID, the offer ID at `+0x28`, `+0x30`
+= 1, the names (UTF-16 INI with a byte order mark: `[Default]`, then `[EN]`
+`[JA]` `[DE]` `[FR]` `[ES]` `[IT]` `[KO]` `[TW]`, each `Name=`) at `0x88`
+with their size and SHA-1, and the file table 32-byte aligned after them
+with its size and SHA-1. The table lists no files (count 0): 1.0 never
+hashes a package's files (map-pack.md 8.4); XAPI checks the table against
+its digest, which holds. When the Map Pack is installed, the header's
+words at `+0x1c`, `+0x30` and `+0x6c..0x88` come from one of its
+`ContentMeta.xbx` instead. Then `kernel::content::sign` sets the installed
+flag and signs it for this console. **Unchecked:** whether anything in 1.0
+minds an empty file table. The Map Pack's packages carry a table that no
+longer matches their files, and 1.0 accepts them (or will, per 8.6).
+
+`ContentImage.xbx` (an XPR icon for the dashboard) isn't made: 1.0's
+list path reads only `ContentMeta.xbx` and `patch.lvl`.
+
+#### Tests
+
+- `content` `map_list::tests`: a record built from a manifest passes 1.0's
+  check (version, CRC, type, path) and reads back field for field; names
+  and descriptions per language with fallbacks and cutting; `[list]`
+  validation and that it isn't in the `MapId`; the alpha shape; PNG
+  decoding, cover scaling, cropping and BGRA order; the preview fallback
+  (image, base, card); ids in range, independent of order, around
+  collisions and wrapping; offers apart from the Map Pack's; base entries
+  read from a level element.
+- `boot` `new_maps::tests` (temp data dirs, a fake disc): install end to
+  end (map bytes, `patch.lvl`, flags and teams from the base, the base's
+  preview, `ContentMeta.xbx` signed as `kernel::content` checks it, names
+  and table digests), refresh (nothing rewritten; a display change rewrites
+  only `patch.lvl`; a new `MapId` moves the package and removes the old
+  directory), removal when the source is gone, other content untouched,
+  retail unchanged (no folder, no derived packages, a derived package for a
+  disc map: nothing written, the disc not read), ids clear of retail ids
+  and each other, image and default sources, the Map Pack template, and
+  bad packages skipped.
+- `boot` `real_disc_base_entry_and_record` (ignored; reads the user's disc
+  and, if beside it, `mappack.iso`; writes nothing): 50 level elements, 12
+  used, all retail ids below the new range; Lockout's element decodes to a
+  preview; a record for a derived map with Lockout as its base passes 1.0's
+  check with Lockout's flags and team counts; every Map Pack record's alpha
+  is `preview_alpha`'s. Passes on the user's disc.
+  `H2_DISC=disc/halo2.iso cargo test -p boot --lib real_disc -- --ignored --nocapture`
+
+#### The check (for the user)
+
+Put a derived package for a new name in `<data>/maps/`, for example a copy
+of a multiplayer map as `coldsnap.map`:
+
+```toml
+[package]
+format = 1
+name = "Coldsnap"
+description = "A new map"
+image = "preview.png"   # optional
+
+[base]
+map = "coldsnap"
+derived = true
+
+[[patch]]
+file = "coldsnap.map"
+sha256 = "<sha256 of coldsnap.map>"
+
+[list]
+base = "lockout"
+```
+
+Start the game (`h2 play`). The console prints `new maps: 1 in the map
+list (coldsnap), 1 written`. In a local custom game's map choice,
+**Coldsnap should be listed last, with its name and preview** (the
+package image, else Lockout's picture). Start a game on it: it should
+load from `T:\$c\<offer ID>\coldsnap.map` and reach spawn. Then delete
+the package and start again: the map leaves the list.
 
 ## 5. Sharing (Live)
 
@@ -374,7 +549,7 @@ fetches do not send yet.
 |---|---|---|
 | content | **Built.** `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
 | editor | **Built** (§8): save as package (one PPF3 or BPS layer against the base, manifest, image, optional `active.toml`), open packages; `map-variant` packs not yet | content |
-| map list | synthesised `patch.lvl` for new maps (and the Map Pack, if 1.0 loads it) | the 1.0 research |
+| map list | **Built** (§4): new maps as content packages with a built `patch.lvl`; the Map Pack through `h2 import-mappack` | the 1.0 research |
 | live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
 | realtime | **Built:** packages installed mid-session served at the next open, stale cache slots dropped (§3). Next: the editor-to-game socket for `map-variant` edits | feature engine loader hook |
 | formats | SPPF and Serenity readers | sample patches from the user |
@@ -419,7 +594,8 @@ and is at most 512 KB. Unknown keys are refused.
    with a notice when there was more than one.
 
 Names match ASCII case-insensitively. Only maps the disc has are served
-(a package for a new name stays unseen until the map list work).
+here; a derived package for a new name goes into the map list as a
+content package instead (§4).
 
 **Resolution**, on the map's first use, and again only after its chosen
 package changes (§3):

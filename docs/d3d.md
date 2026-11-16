@@ -1709,7 +1709,13 @@ checks these branches.
   registered shader drops the cached count pipelines along with the
   others. A compute pass then adds up the texels
   inside the draw's scissor into a `u32` (`PixelCounter`). With
-  multisampling it counts samples, as the NV2A does. Limit: the count
+  multisampling it counts samples, as the NV2A does. W-buffered draws
+  (all of Halo's 3D, `ZEnable(2)`) store w from the fragment stage, so a
+  W-buffered program's count pass runs the program's own count entry
+  (`shaders::psh::COUNT_DEPTH_ENTRY`, `ShaderProgram::count_entry`),
+  which writes the same depth; until it did, the count tested the
+  rasterized z against stored w and every flare in front of geometry
+  counted 0 (see "Lens flares" below). Limit: the count
   pass does not run the draw's own fragment program, so alpha test and
   `discard` do not reject samples there. The flare's occlusion draws do
   not depend on them.
@@ -1722,6 +1728,44 @@ checks these branches.
   `pixel_counter_*` tests (within-draw depth and stencil at 1x and 4x, a
   replaced shader, a depth that cannot be copied). The ignored `visibility_conventions`
   checks the call sites and conventions in the image.
+
+### Lens flares
+
+The visibility tests feed lens flares, and through them some scripted
+lights. Static trace, all addresses guest VAs:
+
+- A `lens` attachment on an object (definition `+0x94`, classes `lens`,
+  `MGS2`, `tdtl`) is not instantiated by the attachment constructor; the
+  object render walk `0x41c80 → 0x41c20 → 0x41980` submits it every frame
+  at its marker through `0x2dba0`. Lights (`ligh +0x94`, `0xc3340`), the
+  sky's sun (`0x3eec0`) and effect parts (`0x179d23`) submit theirs the
+  same way.
+- `0x2dba0` registers the flare in the visibility array at `0x51f40c`
+  (32-byte entries, `0x209b0`). The test pass `0x2dd30` (called from
+  `0x2c2e4`) sets `ZEnable(2)`, colour writes off, `LESSEQUAL` without
+  depth writes, and runs `0x20bb0` with the callback `0x2e540`: a quad of
+  half-size `[2, 128]` pixels around the projected flare, pushed inline
+  (`BEGIN_END` quads, four `VERTEX_DATA4F` on register 0) through a game
+  vertex program, its expected count the quad's area.
+- The reader `0x20770` divides the landed count by that area, clamps it to
+  `[0, 1]`, scales it to a byte (x256, at most 255) and smooths it into
+  the entry's visibility byte. The draw pass `0x2df00` (from `0x13b7e`,
+  callback `0x2e9e0`) draws the flares; that it scales them by the byte is
+  inference (the callback is not traced in detail).
+
+So a count of 0 is an invisible flare. Under the W-buffer the quad's
+rasterized z is about 1 (or 0.5 with depth clamp), above every stored w
+except the cleared far plane, so before the count entry only flares seen
+against the sky showed. The Armory's look test lights the top and bottom
+lights by creating `looker_light_top_red` / `looker_light_bottom_red`
+(`test_mindread_up`/`_down` in `01a_tutorial`'s scripts, as the sergeant
+asks): each is a model-less `mach` (tag `ss_look_device\looker_light_red`)
+whose one attachment is that `lens`.
+In front of the ring the flare counted 0 and the light never lit. The
+script's look gates do not depend on it: they pass on
+`objects_can_see_object` or `player0_looking_up`/`_down`, so the test
+could be passed in the dark. Test: `shaders_render.rs`
+`w_buffered_visibility_test_counts_against_the_stored_w`.
 
 ## Resource destruction
 

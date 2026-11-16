@@ -17,6 +17,7 @@ pub mod pack;
 pub mod samples;
 pub mod session;
 pub mod sign;
+pub mod skulls;
 pub mod team;
 pub mod title_file;
 

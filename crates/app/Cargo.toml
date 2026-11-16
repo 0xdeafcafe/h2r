@@ -8,7 +8,9 @@ license.workspace = true
 [features]
 default = ["gamepads"]
 # GameController on macOS, gilrs elsewhere.
-gamepads = ["input/game-controller", "input/gilrs", "input/hid"]
+gamepads = ["game-controller", "input/gilrs", "input/hid"]
+# GameController alone: what tvOS builds with (no gilrs or IOKit HID there).
+game-controller = ["input/game-controller"]
 
 [dependencies]
 gfx = { path = "../gfx" }
@@ -17,12 +19,16 @@ audio = { path = "../audio" }
 xapi = { path = "../xapi" }
 timeline = { path = "../timeline" }
 wgpu = "30"
-winit = "0.30"
 cpal = "0.18"
 pollster = "1"
 font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
 thiserror.workspace = true
 anyhow.workspace = true
+
+# winit has no tvOS backend; the tvOS app hosts the shell itself
+# (src/embedded.rs, platform/tvos).
+[target.'cfg(not(target_os = "tvos"))'.dependencies]
+winit = "0.30"
 
 [[bin]]
 name = "h2-app-demo"

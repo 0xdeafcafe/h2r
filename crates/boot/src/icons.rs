@@ -9,6 +9,25 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// One bit per (set, button) alias glyph that every font holds: four sets
+/// of 18 need more than one word.
+#[derive(Debug)]
+struct Available([AtomicU64; 2]);
+
+impl Available {
+    fn all() -> Self {
+        Available([AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)])
+    }
+    fn has(&self, bit: u128) -> bool {
+        let (lo, hi) = (bit as u64, (bit >> 64) as u64);
+        self.0[0].load(Ordering::Relaxed) & lo != 0 || self.0[1].load(Ordering::Relaxed) & hi != 0
+    }
+    fn keep(&self, mask: u128) {
+        self.0[0].fetch_and(mask as u64, Ordering::Relaxed);
+        self.0[1].fetch_and((mask >> 64) as u64, Ordering::Relaxed);
+    }
+}
+
 use font::icons::{
     BUTTON_UNITS, Button, IconChoice, IconSet, KeyIcon, KeyLabels, MouseIcon, key_label,
     replacements, shown_unit,
@@ -32,7 +51,7 @@ pub struct IconOptions {
     pub gamepads: bool,
 }
 
-/// `H2_ICONS`: `auto`, `xbox`, `xbox360`, `playstation` or `keyboard`.
+/// `H2_ICONS`: `auto`, `xbox`, `xbox360`, `playstation`, `keyboard` or `remote`.
 /// `Ok(None)` when unset.
 pub fn choice_from_env() -> anyhow::Result<Option<IconChoice>> {
     match std::env::var("H2_ICONS") {
@@ -135,7 +154,7 @@ pub struct Icons {
     initial: IconSet,
     active: Option<ActiveDevice>,
     keys: KeyLabels,
-    available: Arc<AtomicU64>,
+    available: Arc<Available>,
 }
 
 impl Icons {
@@ -164,7 +183,7 @@ impl Icons {
                 .resolve(None, options.gamepads, bindings.is_some()),
             active,
             keys: bindings.map(key_labels).unwrap_or_default(),
-            available: Arc::new(AtomicU64::new(u64::MAX)),
+            available: Arc::new(Available::all()),
         }
     }
 
@@ -185,6 +204,7 @@ impl Icons {
             (IconChoice::Auto, Some(DeviceKind::Keyboard)) => IconSet::Keyboard,
             (IconChoice::Auto, Some(DeviceKind::Xbox)) => IconSet::Xbox360,
             (IconChoice::Auto, Some(DeviceKind::PlayStation)) => IconSet::PlayStation,
+            (IconChoice::Auto, Some(DeviceKind::Remote)) => IconSet::Remote,
             (IconChoice::Auto, None) => self.initial,
         }
     }
@@ -192,7 +212,7 @@ impl Icons {
     /// The code unit to draw for `unit` right now.
     pub fn shown(&self, unit: u16) -> u16 {
         let shown = shown_unit(self.current(), unit, &self.keys);
-        if alias_bit(shown).is_some_and(|bit| self.available.load(Ordering::Relaxed) & bit == 0) {
+        if alias_bit(shown).is_some_and(|bit| !self.available.has(bit)) {
             unit
         } else {
             shown
@@ -207,21 +227,21 @@ impl Icons {
     }
 }
 
-fn alias_bit(unit: u16) -> Option<u64> {
+fn alias_bit(unit: u16) -> Option<u128> {
     font::icons::ALIAS_BASES
         .iter()
         .enumerate()
         .find_map(|(set, (_, base))| {
             let offset = unit.checked_sub(*base)?;
             (offset < BUTTON_UNITS.len() as u16)
-                .then(|| 1u64 << (set * BUTTON_UNITS.len() + usize::from(offset)))
+                .then(|| 1u128 << (set * BUTTON_UNITS.len() + usize::from(offset)))
         })
 }
 
 /// Adds the icon sets to every font file under `maps\fonts`.
 pub struct FontRewrite {
     keys: KeyLabels,
-    available: Arc<AtomicU64>,
+    available: Arc<Available>,
 }
 
 impl FontRewrite {
@@ -239,23 +259,21 @@ impl FontRewrite {
             let mask = new
                 .iter()
                 .filter_map(|r| alias_bit(r.unit))
-                .fold(0, |mask, bit| mask | bit);
+                .fold(0u128, |mask, bit| mask | bit);
             Some((out, mask))
         })();
         // Every opened font must support a substitution. A missing glyph or
         // declined rewrite disables it globally; never draw a filler or a
         // mod's unrelated glyph. Existing original code points remain intact.
-        self.available.fetch_and(
-            patched.as_ref().map_or(0, |(_, mask)| *mask),
-            Ordering::Relaxed,
-        );
+        self.available
+            .keep(patched.as_ref().map_or(0, |(_, mask)| *mask));
         patched.map(|(out, _)| out)
     }
 }
 
 impl vfs::Rewrite for FontRewrite {
     fn skipped(&mut self, path: &str) {
-        self.available.store(0, Ordering::Relaxed);
+        self.available.keep(0);
         crate::log::note(&format!(
             "icons: {path} exceeds the rewrite limit; keeping original prompts"
         ));
@@ -402,6 +420,19 @@ mod tests {
         assert_eq!((icons.shown(0xe104), icons.shown(0xe100)), (0xe224, 0xe220));
         active.set(DeviceKind::Xbox);
         assert_eq!(icons.current(), IconSet::Xbox360);
+        active.set(DeviceKind::Remote);
+        assert_eq!(icons.current(), IconSet::Remote);
+        assert_eq!(
+            (icons.shown(0xe100), icons.shown(0xe10c)),
+            (0xe260, 0xe26c),
+            "A and Start"
+        );
+        assert_eq!(
+            icons.shown(0xe102),
+            0xe102,
+            "X: the remote has none, so Xbox"
+        );
+        active.set(DeviceKind::Xbox);
         // Units that are not buttons are never touched.
         for unit in [0x41, 0xe0ff, 0xe112, 0xe200] {
             assert_eq!(icons.shown(unit), unit);
@@ -411,6 +442,34 @@ mod tests {
         assert_eq!(kb.current(), IconSet::Keyboard);
         let headless = Icons::with_parts(options("auto", false), None, None);
         assert_eq!(headless.current(), IconSet::Xbox);
+    }
+
+    #[test]
+    fn availability_covers_every_set_past_the_first_word() {
+        let a = Available::all();
+        // The remote's right stick click: bit 3 * 18 + 17 = 71.
+        let remote_a = alias_bit(0xe271).unwrap();
+        let ps_a = alias_bit(0xe220).unwrap();
+        assert!(
+            remote_a >> 64 != 0,
+            "the fourth set's last bits are in the second word"
+        );
+        assert!(a.has(remote_a) && a.has(ps_a));
+        a.keep(!remote_a);
+        assert!(!a.has(remote_a) && a.has(ps_a));
+        a.keep(0);
+        assert!(!a.has(ps_a));
+        let units = font::icons::ALIAS_BASES.len() * BUTTON_UNITS.len();
+        assert!(units <= 128);
+        let mut seen = 0u128;
+        for (_, base) in font::icons::ALIAS_BASES {
+            for i in 0..BUTTON_UNITS.len() as u16 {
+                let bit = alias_bit(base + i).unwrap();
+                assert_eq!(seen & bit, 0, "{:#x}", base + i);
+                seen |= bit;
+            }
+        }
+        assert_eq!(seen.count_ones() as usize, units);
     }
 
     #[test]
@@ -541,12 +600,14 @@ mod tests {
             DeviceKind::PlayStation,
             DeviceKind::Keyboard,
             DeviceKind::Xbox,
+            DeviceKind::Remote,
         ] {
             active.set(kind);
             let expected = match kind {
                 DeviceKind::PlayStation => 0xe220,
                 DeviceKind::Keyboard => 0xe240,
                 DeviceKind::Xbox => 0xe100,
+                DeviceKind::Remote => 0xe260,
             };
             for (addr, arg) in [(GLYPH_LOOKUP, 4), (GLYPH_LOOKUP_CALLBACK, 12)] {
                 for unit in [0xe100, 0x41] {

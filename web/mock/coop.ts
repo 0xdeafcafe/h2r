@@ -58,5 +58,22 @@ export function multiplayerKind(rand: () => number): { kind: "custom" } | { kind
   return { kind: "matchmaking", playlist: name, playlist_id: id };
 }
 
+/** Skulls for a mock game, picked from its id so the same game always has
+ *  the same ones and the simulation's random numbers are not touched. About
+ *  a third of games have some: campaign any of the fifteen, multiplayer
+ *  only Famine (4) and Blind (6), the ones that work there. None is empty
+ *  (the field is left out, as the server does). */
+export function mockSkulls(id: string, campaign: boolean): number[] {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619) >>> 0;
+  const next = () => { h = (Math.imul(h, 1664525) + 1013904223) >>> 0; return h / 0x100000000; };
+  if (next() > 0.4) return [];
+  const pool = campaign ? Array.from({ length: 15 }, (_, i) => i) : [4, 6];
+  const out = new Set<number>();
+  const n = campaign ? 1 + Math.floor(next() * next() * 4) : 1 + Math.floor(next() * 2);
+  while (out.size < n && out.size < pool.length) out.add(pool[Math.floor(next() * pool.length)]!);
+  return [...out].sort((a, b) => a - b);
+}
+
 /** What an AI kills a campaign player with. */
 export const AI_WEAPONS = ["plasma_pistol", "plasma_rifle", "needler", "carbine"];

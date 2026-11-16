@@ -49,6 +49,9 @@ pub struct LocalSession {
     /// The host's loaded map, exactly (docs/maps.md §5), when a package
     /// serves it; None for the disc's own map or when nothing says.
     pub map_id: Option<live_proto::maps::MapId>,
+    /// The skulls the host has on for its next game (docs/skulls.md "In
+    /// multiplayer"), when any.
+    pub skulls: Option<Vec<u8>>,
 }
 struct Record {
     session: LocalSession,
@@ -116,7 +119,15 @@ pub(crate) struct Sessions {
     /// Reads the host's loaded map's `MapId` (boot: the cache header's map
     /// name through the VFS).
     map_probe: Option<MapProbe>,
+    /// The host's multiplayer skulls, for new and updated advertisements.
+    skulls: Option<Vec<u8>>,
+    /// Reads them afresh (boot: the signed-in profiles' choice) each time
+    /// the game advertises or updates a lobby.
+    skulls_probe: Option<SkullsProbe>,
 }
+/// The host's multiplayer skulls as of now (None for none), read with guest
+/// memory held: it must take no lock that guest memory may come after.
+pub type SkullsProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Vec<u8>> + Send + Sync>;
 /// Reads the `MapId` of the map the host has loaded, when a package serves
 /// it; None for the disc's own map.
 pub type MapProbe =
@@ -175,11 +186,49 @@ impl Sessions {
     pub fn visibility(&self) -> Visibility {
         self.visibility
     }
+    /// The host's multiplayer skulls changed (boot, at the lobby's Skulls
+    /// screen and at each game start): new advertisements carry them, and
+    /// open ones are updated now, so guests that look again see them.
+    pub fn set_skulls(
+        &mut self,
+        skulls: Option<Vec<u8>>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.skulls = skulls;
+        self.background.retain(|p| p.take().is_none());
+        for (id, record) in &mut self.records {
+            if record.session.skulls == self.skulls {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        skulls: Some(self.skulls.clone().unwrap_or_default()),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.skulls = self.skulls.clone();
+        }
+    }
+    /// The ids of the sessions this console advertises.
+    pub fn own_ids(&self) -> Vec<[u8; 8]> {
+        self.records.keys().copied().collect()
+    }
     pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
         self.probe = probe;
     }
     pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
         self.map_probe = probe;
+    }
+    pub fn set_skulls_probe(&mut self, probe: Option<SkullsProbe>) {
+        self.skulls_probe = probe;
     }
     pub fn clear(&mut self) {
         self.records.clear();
@@ -275,6 +324,9 @@ impl Sessions {
                     self.visibility = v;
                 }
                 let map_id = self.map_probe.as_ref().and_then(|probe| probe(m));
+                if let Some(probe) = &self.skulls_probe {
+                    self.skulls = probe(m);
+                }
                 let (id, key, mut session) = if op == Op::Create {
                     if self.records.len() >= MAX_SESSIONS {
                         return hr(OUT_OF_MEMORY);
@@ -292,6 +344,7 @@ impl Sessions {
                             revision: 0,
                             visibility: self.visibility,
                             map_id,
+                            skulls: self.skulls.clone(),
                         },
                     )
                 } else {
@@ -303,6 +356,7 @@ impl Sessions {
                 };
                 session.slots = slots;
                 session.visibility = self.visibility;
+                session.skulls = self.skulls.clone();
                 // A session keeps its map id once it has one (the wire has
                 // no way back to none).
                 if map_id.is_some() {
@@ -351,6 +405,13 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.map_id != Some(*m))
                                 }),
+                                // Only a change, as for visibility; empty
+                                // says the host turned them all off.
+                                skulls: self
+                                    .records
+                                    .get(&id)
+                                    .is_none_or(|r| r.session.skulls != session.skulls)
+                                    .then(|| session.skulls.clone().unwrap_or_default()),
                                 ..Default::default()
                             },
                         }
@@ -714,6 +775,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         language: None,
         visibility: s.visibility,
         map_id: s.map_id,
+        skulls: s.skulls.clone(),
     }
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {

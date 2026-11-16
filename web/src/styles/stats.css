@@ -463,3 +463,29 @@
 .s-thumb--pic.s-thumb--live .s-thumb-pic { filter: brightness(.5) saturate(.8); }
 .s-mappic { flex: none; width: 34px; height: 20px; object-fit: cover; border: 1px solid #777; }
 .s-grid .s-who .gametype-icon { margin-right: 0; }
+
+/* Skulls: icons, badge rows, the filter chips and the "played with" list.
+   The skull is bone on dark with a dark mark on its brow. */
+.skull { display: inline-block; vertical-align: middle; flex: none; }
+.skull-bone { fill: #d9dee7; stroke: #0c1420; stroke-width: .6; }
+.skull--gold .skull-bone { fill: #e2b53f; stroke: #3a2a05; }
+.skull-hole { fill: #0c1420; }
+.skull-mark { fill: none; stroke: #0c1420; stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; }
+.skull-mark--fill { fill: #0c1420; }
+.skulls { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.skulls > li { display: inline-flex; align-items: center; gap: 4px; }
+.skulls--names { gap: 4px 12px; }
+.skulls--names > li { padding: 2px 7px 2px 3px; font: 12px/16px var(--font-ui); color: #dfe7f2; background: #0e1a2c; border: 1px solid #33496a; border-radius: 3px; }
+.skulls--names > li small { color: #9d9d9d; }
+.s-item-skulls { margin-top: 3px; }
+.s-who .skulls { margin-left: 4px; }
+.s-skull-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 8px; padding: 6px 8px; background: #1a1a1a; border: 1px solid #3f3f3f; }
+.s-skull-tier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; }
+.s-skull-filter > span, .s-skull-tier > span { margin-right: 4px; font: bold 12px/22px var(--font-ui); color: #cfcfcf; }
+.s-skull-chip { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 3px; font: 12px/22px var(--font-ui); color: #cfcfcf; cursor: pointer; background: #262626; border: 1px solid #3f3f3f; border-radius: 3px; }
+.s-skull-chip:hover { background: #333; }
+.s-skull-chip[aria-pressed="true"] { color: #fff; border-color: #6f93c4; background: #16304f; }
+.s-skull-chip:not([aria-pressed="true"]) .skull { opacity: .55; }
+.s-skull-filter .s-linkbtn { margin-left: 6px; font-size: 12px !important; }
+.s-game-skulls { margin: 4px 0; }
+.s-skulls-played { margin: 0 8px 8px; padding: 6px 4px; }

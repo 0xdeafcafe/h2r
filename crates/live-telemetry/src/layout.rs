@@ -25,6 +25,11 @@ pub const OPTIONS_TICK_RATE: u32 = 0x6;
 /// (`0x0023643f`) sets it from the selection; level boot writes it the same
 /// way (docs/level-boot.md).
 pub const OPTIONS_DIFFICULTY: u32 = 0x12a;
+/// The skull array (docs/skulls.md): one byte per skull, 1 = on. Written
+/// only by the pickup (`0x1df3e0`) and our campaign start; every reader
+/// gates on a campaign (confirmed).
+pub const SKULLS: u32 = 0x004f_55dc;
+pub const SKULL_COUNT: usize = 15;
 
 /// The campaign difficulty's name, `None` outside 0..=3.
 pub fn difficulty_name(value: i16) -> Option<&'static str> {

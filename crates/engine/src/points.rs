@@ -267,6 +267,22 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/e3-lighting.md";
     /// `render_light_passes`: draws one dynamic light's passes.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/e3-lighting.md";
+    /// Draws the current layer (`[0x00467130]`) of the current list: layer
+    /// setup, then `LAYER_ENTRIES` for the layers in its mask.
+    LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/layer-draw.md";
+    /// The layer draw's setup call (ESI = `0x00485b48`).
+    LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/layer-draw.md";
+    /// Draws a list's entries for a layer: builds them, then calls each
+    /// entry type's handler. EDI the list, EBX the layer, stack 0 an
+    /// argument (`[0x00467134]`), `ret 4`.
+    LAYER_ENTRIES @ 0x0003_bc30: [fn(list: edi, layer: ebx, arg: stack 0) ret 4]; "docs/layer-draw.md";
+    /// Builds a layer's entries (0x18 bytes each) into the caller's buffer;
+    /// the count in EAX. Stdcall `(list, arg, layer, buffer)`.
+    LAYER_BUILD @ 0x0003_bab0: [fn(list: stack 0, arg: stack 1, layer: stack 2, buffer: stack 3) -> eax ret 16]; "docs/layer-draw.md";
+    /// Shader draw begin: per draw.
+    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/shader-instances.md";
+    /// `submit_structure_or_model_geometry`: per draw.
+    GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/structure-bsp.md";
     /// The top-level Settings list's row text (thiscall on the list, the
     /// item and a word).
     SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
@@ -283,6 +299,26 @@ points! { ALL;
     /// The campaign difficulty list's row chosen: clamps the row to 0..3,
     /// stores the difficulty and starts the campaign.
     DIFFICULTY_ROW_CHOSEN @ 0x002c_9d38: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
+    /// The Game Setup dialog's list handler constructor (screen 23,
+    /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
+    /// the "squad setting list" rows (action word at datum `+2`) for the
+    /// lobby's kind.
+    SQUAD_SETTINGS_LIST_CTOR @ 0x002b_b4d2: [fn(list: esi, a: stack 0) ret 4]; "docs/skulls.md";
+    /// The Game Setup list's row text: looks the row's action up in a table
+    /// of nine; an unknown action leaves the text as it was.
+    SQUAD_SETTINGS_ROW_TEXT @ 0x002b_b74f: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
+    /// The Game Setup list's row chosen: jumps through a ten-entry table by
+    /// the row's action with no bounds check.
+    SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
+    /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
+    HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/skulls.md";
+    /// Draws the first-person weapons of one local user (stdcall, four
+    /// arguments, EAX the result); skipped whole in a campaign with Blind on.
+    FIRST_PERSON_RENDER @ 0x0016_5f16: [fn(user: stack 0, a: stack 1, b: stack 2, c: stack 3) -> eax ret 16]; "docs/skulls.md";
+    /// A weapon object made from its scenario placement (stdcall: the
+    /// object datum, the placement); its rounds are the placement's
+    /// `+0x4c`, halved in a campaign with Famine on.
+    WEAPON_FROM_PLACEMENT @ 0x000f_da00: [fn(object: stack 0, placement: stack 1) ret 8]; "docs/skulls.md";
     /// Open a screen: build a 0x20-byte request for the player mask and
     /// call `loader` with it (stdcall).
     OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";

@@ -23,6 +23,8 @@
 
 use crate::memory::{GuestMemory, MemFault};
 
+pub mod layer;
+
 /// The registers a port sets and reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Regs {

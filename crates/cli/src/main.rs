@@ -22,6 +22,8 @@ mod live_catalog;
 mod live_features;
 mod live_geometry;
 mod live_layers;
+mod live_looks;
+mod live_scenario;
 mod live_models;
 mod live_weapons;
 mod live_render;
@@ -35,7 +37,6 @@ mod mappack_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
-mod patch_lvl;
 #[cfg(unix)]
 mod follow;
 mod play_cmd;

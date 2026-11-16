@@ -9,6 +9,8 @@ fn tri(p: [[f32; 3]; 3]) -> Tri {
         p,
         n: [n; 3],
         surface: Surface::Unknown,
+        uv: [[0.0; 2]; 3],
+        look: None,
     }
 }
 
@@ -249,6 +251,7 @@ fn big_primitives_split_so_indices_fit_in_u16() {
         positions: (0..n).map(|i| [i as f32, (i % 2) as f32, 0.0]).collect(),
         normals: vec![[0.0, 0.0, 1.0]; n],
         indices: (0..n as u32 - 2).flat_map(|i| [i, i + 1, i + 2]).collect(),
+        ..Primitive::default()
     };
     let parts = split_u16(&p);
     assert_eq!(parts.len(), 2);
@@ -1295,6 +1298,18 @@ fn geometry_from_the_disc() {
             s.classes
         );
     }
+    for s in &x.stats {
+        report += &format!(
+            "{:<20} glb {:>6} KiB looks {:>4} pictures {:>6} KiB objects {:>4} ({:>3} models, {:>7} model tris)\n",
+            s.stem,
+            s.glb_bytes / 1024,
+            s.looks,
+            s.texture_bytes / 1024,
+            s.objects,
+            s.object_models,
+            s.object_model_triangles
+        );
+    }
     // Layers and skies: what each level got.
     for s in &x.stats {
         report += &format!(
@@ -1832,10 +1847,10 @@ fn a_layer_material_comes_out_as_layer_triangles_not_level() {
     let (bsp, mut raw) = synthetic_bsp(2);
     let decal = Surface::Layer(Layer::decal(Blend::Multiply));
     // The synthetic sections draw with material 1.
-    let (tris, layers, failed) = bsp_geometry(&bsp, &mut raw, &[decal, Surface::Unknown]);
+    let (tris, layers, failed) = bsp_geometry(&bsp, &mut raw, &[decal, Surface::Unknown], &[]);
     assert_eq!(failed, 0);
     assert_eq!((tris.len(), layers.len()), (2, 0));
-    let (tris, layers, _) = bsp_geometry(&bsp, &mut raw, &[Surface::Unknown, decal]);
+    let (tris, layers, _) = bsp_geometry(&bsp, &mut raw, &[Surface::Unknown, decal], &[]);
     assert_eq!(
         (tris.len(), layers.len()),
         (0, 2),
@@ -2180,4 +2195,239 @@ fn sky_materials_blend_by_template_words_and_the_sky_is_in_the_extras() {
     assert!(sky.get("clear").is_none());
     let back: SkyInfo = serde_json::from_value(sky.clone()).unwrap();
     assert_eq!(back, level.sky.clone().unwrap());
+}
+
+/// A look with a solid picture of `w` × `w` pixels from `bitmap`.
+fn test_look(shader: u32, bitmap: u32, w: u32) -> crate::live_looks::Look {
+    crate::live_looks::Look {
+        shader,
+        name: format!("shader_{shader}"),
+        cutout: crate::live_looks::Cutout::Opaque,
+        texture: std::sync::Arc::new(crate::live_layers::Texture {
+            bitmap,
+            image: crate::live_models::Image {
+                width: w,
+                height: w,
+                rgba: (0..w * w)
+                    .flat_map(|i| [(i % 251) as u8, 90, 40, 255])
+                    .collect(),
+            },
+        }),
+    }
+}
+
+/// `t` textured with look `k`, texture coordinates from its corners' x and y.
+fn looked(t: Tri, k: Option<u32>) -> Tri {
+    Tri {
+        look: k,
+        uv: t.p.map(|p| [p[0] / 4.0, p[1] / 4.0]),
+        ..t
+    }
+}
+
+#[test]
+fn textured_triangles_get_a_primitive_per_class_and_look_with_uvs() {
+    let mut tris: Vec<Tri> = cuboid([0.0; 3], [4.0, 4.0, 2.0])
+        .into_iter()
+        .map(|t| looked(t, Some(0)))
+        .collect();
+    tris.extend(flat(10.0, 0.0, 14.0, 4.0, 0.0, true).map(|t| looked(t, Some(1))));
+    tris.extend(flat(20.0, 0.0, 24.0, 4.0, 0.0, true).map(|t| looked(t, None)));
+    tris.extend(flat(30.0, 0.0, 34.0, 4.0, 0.0, true).map(|t| Tri {
+        surface: Surface::Class(Class::Glass),
+        ..looked(t, Some(0))
+    }));
+    let mesh = build_mesh(&tris);
+    let keys: Vec<(Class, Option<u32>)> =
+        mesh.primitives.iter().map(|(c, p)| (*c, p.look)).collect();
+    assert_eq!(
+        keys,
+        [
+            (Class::Floor, None),
+            (Class::Floor, Some(0)),
+            (Class::Floor, Some(1)),
+            (Class::Wall, Some(0)),
+            (Class::Glass, None),
+            (Class::Default, Some(0)),
+        ],
+        "glass keeps its colour; facing still splits floor from wall"
+    );
+    for (_, p) in &mesh.primitives {
+        if p.look.is_some() {
+            assert_eq!(p.uvs.len(), p.positions.len());
+        } else {
+            assert!(p.uvs.is_empty());
+        }
+    }
+    // The box's top: 4 corners, each with its own coordinate.
+    let top = &mesh.primitives[1].1;
+    assert_eq!(top.positions.len(), 4);
+    for (p, uv) in top.positions.iter().zip(&top.uvs) {
+        assert_eq!(*uv, [p[0] / 4.0, p[1] / 4.0]);
+    }
+    // A corner shared by two faces with different coordinates is not welded.
+    let seam = [
+        looked(tri([[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), Some(0)),
+        Tri {
+            uv: [[0.5; 2]; 3],
+            ..looked(
+                tri([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]),
+                Some(0),
+            )
+        },
+    ];
+    assert_eq!(build_mesh(&seam).primitives[0].1.positions.len(), 6);
+    // Split and merged primitives keep their coordinates and look.
+    let merged = merge([&mesh, &mesh]);
+    assert_eq!(merged.primitives.len(), mesh.primitives.len());
+    for (_, p) in &merged.primitives {
+        assert_eq!(
+            p.uvs.len(),
+            if p.look.is_some() {
+                p.positions.len()
+            } else {
+                0
+            }
+        );
+    }
+    let n = MAX_PRIMITIVE_VERTICES + 10;
+    let big = Primitive {
+        positions: (0..n).map(|i| [i as f32, (i % 2) as f32, 0.0]).collect(),
+        normals: vec![[0.0, 0.0, 1.0]; n],
+        uvs: (0..n).map(|i| [i as f32, 0.0]).collect(),
+        indices: (0..n as u32 - 2).flat_map(|i| [i, i + 1, i + 2]).collect(),
+        look: Some(3),
+    };
+    for q in split_u16(&big) {
+        assert_eq!(q.look, Some(3));
+        assert_eq!(q.uvs.len(), q.positions.len());
+        for (p, uv) in q.positions.iter().zip(&q.uvs) {
+            assert_eq!(p[0], uv[0]);
+        }
+    }
+}
+
+#[test]
+fn textured_primitives_name_their_class_material_and_share_pictures() {
+    let mut looks = crate::live_looks::Looks::default();
+    looks.add(test_look(100, 7, 64));
+    looks.add(test_look(101, 7, 64)); // same bitmap, another shader
+    let mut tris: Vec<Tri> = flat(0.0, 0.0, 4.0, 4.0, 0.0, true)
+        .map(|t| looked(t, Some(0)))
+        .to_vec();
+    tris.extend(flat(10.0, 0.0, 14.0, 4.0, 0.0, true).map(|t| looked(t, Some(1))));
+    tris.extend(flat(20.0, 0.0, 24.0, 4.0, 0.0, true).map(|t| looked(t, None)));
+    let mut level = Level::build(
+        "lvl",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&tris)))],
+    )
+    .unwrap();
+    level.looks = looks;
+    let (glb, pictures) = level.glb_and_picture_bytes();
+    assert!(pictures > 0);
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, bin) = parse_glb(&glb);
+    assert_eq!(
+        doc["images"].as_array().unwrap().len(),
+        1,
+        "one picture per bitmap"
+    );
+    assert_eq!(doc["images"][0]["mimeType"], "image/jpeg");
+    let materials = doc["materials"].as_array().unwrap();
+    let prims = doc["meshes"][0]["primitives"].as_array().unwrap();
+    assert_eq!(prims.len(), 3);
+    let mut textured = 0;
+    for p in prims {
+        let m = &materials[p["material"].as_u64().unwrap() as usize];
+        match p.get("extras") {
+            Some(e) => {
+                textured += 1;
+                assert_eq!(e["class"], "floor");
+                let flat = &materials[e["flat"].as_u64().unwrap() as usize];
+                assert_eq!(flat["name"], "floor");
+                assert!(
+                    flat["pbrMetallicRoughness"]
+                        .get("baseColorTexture")
+                        .is_none()
+                );
+                assert_eq!(m["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
+                assert_eq!(m["extras"]["look"], true);
+                let (uv, n) = accessor(&doc, &bin, p["attributes"]["TEXCOORD_0"].as_u64().unwrap());
+                assert_eq!(n, 4);
+                assert_eq!(uv.len(), 4 * 8);
+            }
+            None => {
+                assert_eq!(m["name"], "floor");
+                assert!(p["attributes"].get("TEXCOORD_0").is_none());
+            }
+        }
+    }
+    assert_eq!(textured, 2);
+    let names: Vec<&str> = materials
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["floor", "shader_100", "shader_101"]);
+}
+
+#[test]
+fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
+    use crate::live_scenario::PlacedObject;
+    let model = MachineModel {
+        stem: "crate_packing".into(),
+        mesh: object_mesh(&cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 1.0])),
+    };
+    let ground = build_mesh(&flat(-20.0, -20.0, 20.0, 20.0, 0.0, true));
+    let mut level = Level::build("lvl", MapKind::Multiplayer, vec![(0, Ok(ground))]).unwrap();
+    let at = |kind: &'static str, index: usize, x: f32| PlacedObject {
+        kind,
+        index,
+        model: 0,
+        at: Placement {
+            palette: 0,
+            position: [x, 2.0, 0.5],
+            rotation: [0.0; 3],
+            scale: 0.0,
+        },
+        bsp: Some(0),
+        item: (kind == "netgame").then(|| "weap".to_string()),
+    };
+    level.object_models = vec![model];
+    level.objects = vec![
+        at("bloc", 3, -5.0),
+        at("bloc", 7, 5.0),
+        at("netgame", 0, 1.0),
+    ];
+    let glb = level.glb();
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(
+        node_names(&doc),
+        ["structure", "scenario", "bloc_3", "bloc_7", "netgame_0"]
+    );
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 1]));
+    assert!(doc["nodes"][1].get("mesh").is_none());
+    assert_eq!(
+        doc["nodes"][2]["mesh"], doc["nodes"][3]["mesh"],
+        "one mesh, placed twice"
+    );
+    assert_eq!(doc["meshes"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        doc["meshes"][1]["name"], "bloc_3",
+        "named after the first placement"
+    );
+    assert_eq!(doc["nodes"][3]["matrix"][12], 5.0);
+    assert_eq!(doc["nodes"][3]["matrix"][14], -2.0, "game y is glTF -z");
+    assert_eq!(
+        doc["nodes"][3]["extras"],
+        serde_json::json!({
+            "kind": "bloc", "index": 7, "tag": "crate_packing",
+            "pos": [5.0, 2.0, 0.5], "forward": [1.0, 0.0, 0.0],
+            "up": [0.0, 0.0, 1.0], "scale": 1.0, "bsp": 0
+        })
+    );
+    assert_eq!(doc["nodes"][4]["extras"]["item"], "weap");
+    // Objects are not in the views' mesh: the pictures are unchanged.
+    assert!(level.mesh.objects.is_empty());
 }

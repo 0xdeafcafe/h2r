@@ -8,6 +8,8 @@
 //! - [`Library`]: the packages under `<data>/maps/`, and the resolver that
 //!   turns a map name into the bytes to serve.
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
+//! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
+//!   read from the Map Pack and built for new maps.
 //!
 //! Nothing here holds game data: packages name the user's disc maps by name
 //! and hash, and the tests use synthetic maps.
@@ -15,7 +17,9 @@ mod canonical;
 mod hash;
 mod id;
 pub mod manifest;
+pub mod map_list;
 pub mod patch;
+pub mod patch_lvl;
 mod resolve;
 pub mod store;
 

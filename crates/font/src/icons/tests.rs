@@ -5,7 +5,12 @@ use crate::patch::apply;
 use crate::testutil::{G, build};
 use crate::{MAX_GLYPH_BYTES, decode_pixels};
 
-const SETS: [IconSet; 3] = [IconSet::Xbox360, IconSet::PlayStation, IconSet::Keyboard];
+const SETS: [IconSet; 4] = [
+    IconSet::Xbox360,
+    IconSet::PlayStation,
+    IconSet::Keyboard,
+    IconSet::Remote,
+];
 
 /// Every button bound, the way the default bindings would.
 fn keys() -> KeyLabels {
@@ -430,12 +435,18 @@ fn sets_replace_only_what_differs_from_the_xbox_pad() {
         ]
     );
     assert_eq!(replaced(IconSet::Keyboard).len(), BUTTON_UNITS.len());
+    assert_eq!(
+        replaced(IconSet::Remote),
+        [A, B, DpadUp, DpadDown, DpadLeft, DpadRight, Start],
+        "what the remote has; the rest stay Xbox"
+    );
     // `replaces` and `icon` agree for every set and button.
     for set in [
         IconSet::Xbox,
         IconSet::Xbox360,
         IconSet::PlayStation,
         IconSet::Keyboard,
+        IconSet::Remote,
     ] {
         for (_, b) in BUTTON_UNITS {
             assert_eq!(
@@ -471,6 +482,13 @@ fn each_set_has_its_own_code_units_inside_the_icon_range() {
         0xe100
     );
     assert_eq!(shown_unit(IconSet::Xbox, 0xe104, &keys), 0xe104);
+    assert_eq!(shown_unit(IconSet::Remote, 0xe100, &keys), 0xe260, "A");
+    assert_eq!(shown_unit(IconSet::Remote, 0xe10c, &keys), 0xe26c, "Start");
+    assert_eq!(
+        shown_unit(IconSet::Remote, 0xe102, &keys),
+        0xe102,
+        "X stays Xbox"
+    );
     // Not a button: untouched in every set.
     for unit in [0x41, 0xe0ff, 0xe112, 0xe204] {
         assert_eq!(shown_unit(IconSet::Keyboard, unit, &keys), unit);
@@ -534,6 +552,7 @@ fn choice_parses_and_resolves() {
         ("Xbox360", IconChoice::Set(IconSet::Xbox360)),
         (" playstation ", IconChoice::Set(IconSet::PlayStation)),
         ("KEYBOARD", IconChoice::Set(IconSet::Keyboard)),
+        ("remote", IconChoice::Set(IconSet::Remote)),
     ] {
         assert_eq!(text.parse::<IconChoice>(), Ok(want));
     }
@@ -563,6 +582,10 @@ fn choice_parses_and_resolves() {
         IconSet::Xbox360
     );
     // Before discovery prefer the keyboard; neither keeps retail.
+    assert_eq!(
+        auto.resolve(Some("Apple TV Remote"), true, false),
+        IconSet::Remote
+    );
     assert_eq!(auto.resolve(None, true, true), IconSet::Keyboard);
     assert_eq!(auto.resolve(None, false, true), IconSet::Keyboard);
     assert_eq!(auto.resolve(None, false, false), IconSet::Xbox);
@@ -633,8 +656,9 @@ fn replacements_add_every_set_beside_the_retail_glyphs() {
     let keys = keys();
     assert!(alias_range_free(&font));
     let reps = replacements(&font, &keys);
-    // Two bumpers, eight PlayStation pictures, every keyboard button.
-    assert_eq!(reps.len(), 2 + 10 + BUTTON_UNITS.len());
+    // Two bumpers, ten PlayStation pictures, every keyboard button and the
+    // remote's seven.
+    assert_eq!(reps.len(), 2 + 10 + BUTTON_UNITS.len() + 7);
     let out = apply(&data, &reps).unwrap();
     let patched = Font::parse(&out).unwrap();
     assert_eq!(
@@ -713,8 +737,10 @@ fn replacements_use_each_fonts_own_cell_height_and_skip_missing_glyphs() {
     );
     let font = Font::parse(&data).unwrap();
     let reps = replacements(&font, &KeyLabels::new());
-    // Only the PlayStation set has a picture for A with no key labels.
-    assert_eq!(reps.len(), 1);
+    // Only the PlayStation and remote sets have a picture for A with no key
+    // labels.
+    assert_eq!(reps.len(), 2);
+    assert_eq!((reps[1].unit, reps[1].height), (0xe260, 16));
     assert_eq!(
         (reps[0].unit, reps[0].width, reps[0].height),
         (0xe220, 16, 16)
@@ -798,4 +824,68 @@ fn face_footprint_and_bevel_fit_the_original_cell() {
         brightness(3, 5) > brightness(12, 14),
         "upper-left bevel must catch the light"
     );
+}
+
+#[test]
+fn remote_icons_are_monochrome_clickpads_a_chevron_and_play_pause() {
+    use Button::*;
+    let keys = KeyLabels::new();
+    let get = |b| icon(IconSet::Remote, b, 18, &keys).unwrap();
+    let opaque = |i: &Icon, x: usize, y: usize| i.pixels[y * usize::from(i.width) + x] >> 12;
+    for b in [A, B, Start, DpadUp, DpadDown, DpadLeft, DpadRight] {
+        let i = get(b);
+        // White only (the text colour is applied by the game), as the
+        // retail d-pad glyphs are.
+        assert!(
+            i.pixels
+                .iter()
+                .all(|p| p & 0x0fff == 0x0fff || p >> 12 == 0),
+            "{b:?}"
+        );
+    }
+    // A fills the centre of the clickpad; the d-pad pictures do not.
+    let (a, up) = (get(A), get(DpadUp));
+    assert_eq!(opaque(&a, 8, 9), 15);
+    assert!(opaque(&up, 8, 9) < 15);
+    // Each direction lights its own side: up is bright at the top of the
+    // ring and faint at the bottom, and the four are different pictures.
+    assert!(opaque(&up, 8, 1) > opaque(&up, 8, 16), "up lights the top");
+    let down = get(DpadDown);
+    assert!(
+        opaque(&down, 8, 16) > opaque(&down, 8, 1),
+        "down lights the bottom"
+    );
+    let (left, right) = (get(DpadLeft), get(DpadRight));
+    assert!(opaque(&left, 1, 9) > opaque(&left, 14, 9));
+    assert!(opaque(&right, 14, 9) > opaque(&right, 1, 9));
+    let pics = [&up, &down, &left, &right, &a];
+    for (i, p) in pics.iter().enumerate() {
+        for q in &pics[i + 1..] {
+            assert_ne!(p.pixels, q.pixels);
+        }
+    }
+    // Left and right mirror each other.
+    let w = usize::from(left.width);
+    for y in 0..18 {
+        for x in 0..w {
+            assert_eq!(
+                opaque(&left, x, y),
+                opaque(&right, w - 1 - x, y),
+                "({x}, {y})"
+            );
+        }
+    }
+    // B: the chevron's point is on the left, its arms on the right.
+    let b = get(B);
+    assert!(opaque(&b, 5, 9) >= 12, "the point");
+    assert!(opaque(&b, 9, 6) >= 8 && opaque(&b, 9, 12) >= 8, "the arms");
+    assert!(opaque(&b, 10, 9) < 8, "open between the arms");
+    // Start: a triangle then two bars with a gap, wider than tall.
+    let s = get(Start);
+    assert!(s.width > 12);
+    let row: Vec<u16> = (0..usize::from(s.width))
+        .map(|x| opaque(&s, x, 9))
+        .collect();
+    let runs = row.windows(2).filter(|w| w[0] < 8 && w[1] >= 8).count() + usize::from(row[0] >= 8);
+    assert_eq!(runs, 3, "triangle, bar, bar across the middle: {row:?}");
 }

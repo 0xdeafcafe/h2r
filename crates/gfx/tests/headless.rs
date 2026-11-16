@@ -263,11 +263,11 @@ fn registered_shader_is_used() {
     });
     assert!(!renderer.register_shader(
         SHADER_XYZRHW_DIFFUSE,
-        ShaderProgram { module: module.clone(), layout: layout.clone(), vs_entry: "vs_main".into(), fs_entry: "fs_main".into() }
+        ShaderProgram { module: module.clone(), layout: layout.clone(), vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None }
     ));
     assert!(renderer.register_shader(
         ShaderId(5),
-        ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into() }
+        ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None }
     ));
     let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
     let verts = [vertex(0.0, 0.0, 0), vertex(16.0, 0.0, 0), vertex(0.0, 16.0, 0)].concat();
@@ -828,7 +828,7 @@ fn pixel_counter_follows_a_replaced_shader() {
             bind_group_layouts: &[],
             immediate_size: 0,
         });
-        ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into() }
+        ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None }
     };
     let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
     let c = 0xFFFF_FFFF;

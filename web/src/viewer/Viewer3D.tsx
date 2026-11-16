@@ -10,6 +10,8 @@ import { clampCut, nextSee, stepCut, type SeeMode } from "./cutaway";
 import type { LevelInfo } from "./level3d";
 import { modelsAnimate } from "./models";
 import { zoneInPlay, type ZonePick } from "./zones";
+import { savePref, texturesPref } from "./textures3d";
+import { KIND_LABELS } from "./scenario3d";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
 import "./viewer.css";
 
@@ -87,6 +89,28 @@ export default function Viewer3D(props: Viewer3DProps) {
     s.setZonePick(zonePick());
     setLevel(s.levelInfo());
   };
+  // Surface pictures (remembered), and the scenario's placed objects with
+  // each kind on or off.
+  const [textures, setTextures] = createSignal(texturesPref());
+  const [hasTextures, setHasTextures] = createSignal(false);
+  const flipTextures = () => { const on = !textures(); setTextures(on); savePref(on); scene?.setTextures(on); };
+  const [objectKinds, setObjectKinds] = createSignal<string[]>([]);
+  const [objects, setObjects] = createSignal(true);
+  const [hiddenKinds, setHiddenKinds] = createSignal<ReadonlySet<string>>(new Set());
+  const flipKind = (k: string) => {
+    const hidden = new Set(hiddenKinds());
+    const on = hidden.has(k);
+    if (on) hidden.delete(k); else hidden.add(k);
+    setHiddenKinds(hidden);
+    scene?.setObjectKind(k, on);
+  };
+  const applyObjects = (s: ViewerScene) => {
+    setHasTextures(s.hasTextures());
+    s.setTextures(textures());
+    setObjectKinds(s.objectKinds());
+    s.setObjects(objects());
+    for (const k of s.objectKinds()) s.setObjectKind(k, !hiddenKinds().has(k));
+  };
   // Teleporters, their links and lifts, when the level's glb lists any.
   const [hasFeatures, setHasFeatures] = createSignal(false);
   const [features, setFeatures] = createSignal(true);
@@ -122,6 +146,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     s.onAoDropped = () => setAo(false);
     if (ao()) setAo(s.setAo(true));
     s.setSeeMode(see());
+    s.setTextures(textures());
     setRange(s.cutRange());
     applyCut();
     const resize = () => { const r = host.getBoundingClientRect(); s.resize(Math.round(r.width), Math.round(r.height)); };
@@ -162,7 +187,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (props.glb() !== url) return;
       setMapState(ok ? "map" : "grid");
       // The map's own heights are the cut's range now.
-      if (scene) { setRange(scene.cutRange()); applyCut(); setZonePick("auto"); applyLevel(scene); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
+      if (scene) { setRange(scene.cutRange()); applyCut(); setZonePick("auto"); applyLevel(scene); applyObjects(scene); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
     });
   }));
 
@@ -232,8 +257,19 @@ export default function Viewer3D(props: Viewer3DProps) {
                   <label title="The level's sky, drawn around the camera"><input type="checkbox" checked={show().sky} onChange={() => flip("sky")} /> Sky</label>
                 </Show>
                 <label title="Fog: the level's own, measured from what the camera looks at"><input type="checkbox" checked={show().fog} onChange={() => flip("fog")} /> Fog</label>
+                <Show when={objectKinds().length > 0}>
+                  <label title="The objects the level places: scenery, crates, weapons and their spawns, vehicles, controls"><input type="checkbox" checked={objects()} onChange={() => { setObjects(!objects()); scene?.setObjects(objects()); }} /> Objects</label>
+                  <For each={objectKinds()}>{(k) => (
+                    <label class="v3-menu-sub" title={`Placed objects of this kind (${k})`}>
+                      <input type="checkbox" checked={!hiddenKinds().has(k)} disabled={!objects()} onChange={() => flipKind(k)} /> {KIND_LABELS[k] ?? k}
+                    </label>
+                  )}</For>
+                </Show>
               </div>
             </details>
+          </Show>
+          <Show when={hasTextures()}>
+            <button classList={{ on: textures() }} aria-pressed={textures()} onClick={flipTextures} title="The level's surface pictures, or plain colours by kind of surface (floor, wall, metal, ...)">Textures</button>
           </Show>
           <Show when={hasFeatures()}>
             <button classList={{ on: features() }} aria-pressed={features()} onClick={() => { setFeatures(!features()); scene?.setFeatures(features()); }} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>

@@ -32,7 +32,7 @@
 //! arithmetic, and allocations are bounded ([`MAX_VERTICES`],
 //! [`MAX_SPAN`]) before anything is read.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
@@ -635,13 +635,25 @@ fn vertex_limit(entry: &'static str, count: u32) -> Result<(), D3dError> {
     Ok(())
 }
 
+/// What `Device::vertex_setup` derived from a vertex program's attribute
+/// format words (`+0x14`, 64 words): the streams and attributes they read.
+/// The strides are filled in from the bound streams at each draw.
+struct VertexMemo {
+    vaf: [u32; 64],
+    streams: Vec<StreamLayout>,
+}
+
 /// One Direct3D device.
 pub struct Device<B: Backend> {
     cfg: DeviceConfig,
     /// The slot types of the build's render-state table, resolved once.
     translator: Translator,
-    /// The last state translated, reused while the guest arrays are unchanged.
-    translated: Option<(Box<StateWords>, DrawState)>,
+    /// The last vertex program's attribute format words and the stream
+    /// layout they give (`vertex_setup`).
+    vertex_memo: Option<VertexMemo>,
+    /// The last state translated, part by part: a part is reused while its
+    /// guest words are unchanged.
+    translated: crate::state::TranslateMemo,
     /// The host backend.
     pub backend: B,
     created: bool,
@@ -687,7 +699,7 @@ pub struct Device<B: Backend> {
     immediate: Immediate,
     consumed: u32,
     /// State as the GPU has seen it (see the module docs).
-    pushed: Option<StateWords>,
+    pushed: Option<Arc<StateWords>>,
     /// A latched push-buffer failure.
     fault: Option<String>,
     swap_count: u32,
@@ -805,7 +817,7 @@ struct DrawParts {
     streams: Vec<StreamBytes>,
     /// Indices into `streams` (indexed draws).
     indices: Option<IndexData>,
-    words: StateWords,
+    words: Arc<StateWords>,
 }
 
 impl<B: Backend> Device<B> {
@@ -814,7 +826,8 @@ impl<B: Backend> Device<B> {
         Self {
             cfg,
             translator: Translator::new(&RenderStateTable::default()),
-            translated: None,
+            translated: Default::default(),
+            vertex_memo: None,
             backend,
             created: false,
             params: None,
@@ -823,7 +836,7 @@ impl<B: Backend> Device<B> {
             back_header: 0,
             frame_headers: Vec::new(),
             depth_header: 0,
-            other_surfaces: HashMap::new(),
+            other_surfaces: HashMap::default(),
             render_target: 0,
             depth_stencil: 0,
             textures: [0; 4],
@@ -851,7 +864,7 @@ impl<B: Backend> Device<B> {
                 min_z: 0.0,
                 max_z: 1.0,
             },
-            transforms: HashMap::new(),
+            transforms: HashMap::default(),
             scissors: Vec::new(),
             scissor_exclusive: false,
             immediate: Immediate::default(),
@@ -862,7 +875,7 @@ impl<B: Backend> Device<B> {
             fence: 0,
             fence_at: cfg.push_buffer.addr,
             regs: None,
-            cache: HashMap::new(),
+            cache: HashMap::default(),
             tracker: WriteTracker::new(),
             events: Vec::new(),
             last_stop: None,
@@ -870,30 +883,30 @@ impl<B: Backend> Device<B> {
             encode: None,
             hw: HwState::default(),
             display: display::Display::default(),
-            rtt: HashMap::new(),
+            rtt: HashMap::default(),
             depth_generation: 0,
             depth_color: None,
             depth_color_newer: false,
             depth_copy: None,
             depth_alias_decodes: Vec::new(),
             depth_read_generation: None,
-            depth_alias: HashMap::new(),
-            depth_level_tex: HashMap::new(),
+            depth_alias: HashMap::default(),
+            depth_level_tex: HashMap::default(),
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
-            rtt_synced: HashMap::new(),
-            rtt_stores: HashMap::new(),
+            rtt_synced: HashMap::default(),
+            rtt_stores: HashMap::default(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
             mirror_depth: std::env::var_os("H2_D3D_MIRROR_DEPTH").is_none_or(|v| v != "0"),
             mirror: None,
-            mirror_stale: HashSet::new(),
+            mirror_stale: HashSet::default(),
             rtt_direct: true,
             active_callback: None,
             undelivered: None,
-            visibility: HashMap::new(),
+            visibility: HashMap::default(),
             visibility_poll: std::env::var_os("H2_D3D_VISIBILITY_POLL").is_none_or(|v| v != "0"),
             glyph_smoothing: crate::glyph::smoothing_from_env(),
             pending_destroys: Vec::new(),
-            torn_down: HashSet::new(),
+            torn_down: HashSet::default(),
         }
     }
 
@@ -1133,7 +1146,7 @@ impl<B: Backend> Device<B> {
         mem.write_u32(l.dirty_flags, 0)?;
         let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
         defaults.write(mem, &l)?;
-        self.pushed = Some(defaults);
+        self.pushed = Some(Arc::new(defaults));
         if pp_device != 0 {
             mem.write_u32(pp_device, dev)?;
         }
@@ -1776,14 +1789,14 @@ impl<B: Backend> Device<B> {
     // ---------------------------------------------------------------------
 
     fn refresh_pushed(&mut self, mem: &dyn GuestMemory) -> Result<(), D3dError> {
-        self.pushed = Some(self.state(mem)?);
+        self.pushed = Some(Arc::new(self.state(mem)?));
         Ok(())
     }
 
-    fn pushed_state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
+    fn pushed_state(&self, mem: &dyn GuestMemory) -> Result<Arc<StateWords>, D3dError> {
         match &self.pushed {
             Some(s) => Ok(s.clone()),
-            None => self.state(mem),
+            None => Ok(Arc::new(self.state(mem)?)),
         }
     }
 
@@ -1797,7 +1810,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         mem.write_u32(self.cfg.layout.render_state_slot(guest_slot), value)?;
         if let Some(p) = &mut self.pushed {
-            p.render[guest_slot as usize] = value;
+            Arc::make_mut(p).render[guest_slot as usize] = value;
         }
         Ok(())
     }
@@ -1866,7 +1879,7 @@ impl<B: Backend> Device<B> {
             self.refresh_pushed(mem)?;
         }
         let p = self.pushed.as_mut().expect("just set");
-        p.render[slot as usize] = value;
+        Arc::make_mut(p).render[slot as usize] = value;
         Ok(())
     }
 
@@ -1916,7 +1929,7 @@ impl<B: Backend> Device<B> {
         }
         mem.write_u32(self.cfg.layout.texture_state_slot(stage, state), value)?;
         if let Some(p) = &mut self.pushed {
-            p.stages[stage as usize][state as usize] = value;
+            Arc::make_mut(p).stages[stage as usize][state as usize] = value;
         }
         Ok(())
     }
@@ -3146,7 +3159,7 @@ impl<B: Backend> Device<B> {
     /// Builds the vertex layout and processing mode for the current shader,
     /// plus the stream bindings it reads.
     fn vertex_setup(
-        &self,
+        &mut self,
         mem: &dyn GuestMemory,
         entry: &'static str,
     ) -> Result<(VertexLayout, VertexProcessing, Vec<StreamSource>), D3dError> {
@@ -3172,6 +3185,28 @@ impl<B: Backend> Device<B> {
         }
         let obj = h & !1;
         let vaf = crate::guest::read_array::<64>(mem, at(obj, 0x14)?)?;
+        // The streams and attributes are a function of the attribute
+        // format words alone; only the strides come from the bound streams.
+        if let Some(m) = &self.vertex_memo
+            && m.vaf == vaf
+        {
+            let mut by_stream = m.streams.clone();
+            for s in &mut by_stream {
+                s.stride = bound(s.stream as usize).stride;
+            }
+            let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
+            return Ok((
+                VertexLayout {
+                    streams: by_stream,
+                    pretransformed: false,
+                },
+                VertexProcessing::Program {
+                    start: self.program_start,
+                    microcode: self.microcode(),
+                },
+                streams,
+            ));
+        }
         let mut by_stream: Vec<StreamLayout> = Vec::new();
         for reg in 0..16usize {
             let (stream, offset, format) =
@@ -3207,6 +3242,10 @@ impl<B: Backend> Device<B> {
         }
         by_stream.sort_by_key(|s| s.stream);
         let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
+        self.vertex_memo = Some(VertexMemo {
+            vaf,
+            streams: by_stream.clone(),
+        });
         let layout = VertexLayout {
             streams: by_stream,
             pretransformed: false,
@@ -3715,7 +3754,7 @@ impl<B: Backend> Device<B> {
             indices: parts.indices,
             state,
             extras,
-            raw: Box::new(parts.words),
+            raw: parts.words,
             shader,
             viewport: self.viewport,
             clip: Some(clip),
@@ -3770,14 +3809,7 @@ impl<B: Backend> Device<B> {
     /// [`StateWords::translate`] through the memo: consecutive draws mostly
     /// see the same arrays.
     fn translate_state(&mut self, words: &StateWords) -> DrawState {
-        if let Some((w, s)) = &self.translated
-            && **w == *words
-        {
-            return s.clone();
-        }
-        let s = self.translator.translate(words);
-        self.translated = Some((Box::new(words.clone()), s.clone()));
-        s
+        self.translated.translate(&self.translator, words)
     }
 
     fn state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
@@ -3786,8 +3818,10 @@ impl<B: Backend> Device<B> {
 
     /// State for an API draw: D3D commits all pending state first, so the
     /// live arrays are what the GPU sees, and they become the pushed state.
-    fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
-        let s = self.state(mem)?;
+    /// The draw and the pushed snapshot share the words until either side
+    /// changes (a setter copies the snapshot then, `Arc::make_mut`).
+    fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<Arc<StateWords>, D3dError> {
+        let s = Arc::new(self.state(mem)?);
         self.pushed = Some(s.clone());
         Ok(s)
     }

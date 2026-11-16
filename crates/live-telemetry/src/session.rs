@@ -75,6 +75,9 @@ pub struct Session {
     /// The `MapId` of the map the next game starts on, when a package
     /// serves it (None: the disc's own map).
     map_id: Option<live_proto::maps::MapId>,
+    /// The skulls the next multiplayer games run with (the host's set, as
+    /// the boot applied it); campaign games read theirs from the array.
+    multiplayer_skulls: Option<Vec<u8>>,
     output: Vec<Output>,
 }
 
@@ -87,6 +90,7 @@ impl Session {
             current: None,
             playlist: None,
             map_id: None,
+            multiplayer_skulls: None,
             output: Vec::new(),
         }
     }
@@ -116,6 +120,14 @@ impl Session {
     /// (`NewGame.map_id`, docs/maps.md §5).
     pub fn set_map_id(&mut self, map_id: Option<live_proto::maps::MapId>) {
         self.map_id = map_id;
+    }
+
+    /// The skulls multiplayer games run with from now on
+    /// (`NewGame.skulls`): only ones that work there are kept.
+    pub fn set_multiplayer_skulls(&mut self, skulls: Option<Vec<u8>>) {
+        self.multiplayer_skulls = skulls
+            .and_then(live_proto::skulls::normalize)
+            .filter(|s| live_proto::skulls::multiplayer_ok(s));
     }
 
     pub fn take_output(&mut self) -> Vec<Output> {
@@ -195,6 +207,11 @@ impl Session {
             // Live co-op does not exist yet.
             online: None,
             map_id: self.map_id,
+            skulls: if campaign {
+                info.skulls.clone()
+            } else {
+                self.multiplayer_skulls.clone()
+            },
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),
@@ -879,6 +896,7 @@ mod tests {
             map: "lockout".into(),
             mode: "multiplayer".into(),
             difficulty: None,
+            skulls: None,
             variant: Some("Slayer".into()),
             team_play: false,
             score_limit: Some(25),
@@ -1273,6 +1291,7 @@ mod tests {
             map: "03a_oldmombasa".into(),
             mode: "campaign".into(),
             difficulty: Some("heroic".into()),
+            skulls: None,
             variant: None,
             team_play: false,
             score_limit: None,
@@ -1338,6 +1357,33 @@ mod tests {
         let game = started(&mut session);
         assert_eq!(game.map_id, Some(id));
         assert_eq!(game.map, info().map, "map stays the base map's name");
+    }
+
+    #[test]
+    fn games_carry_their_skulls() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(started(&mut session).skulls, None, "none on is left out");
+        // Multiplayer: the host's set as the boot applied it.
+        session.set_multiplayer_skulls(Some(vec![6, 4]));
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(started(&mut session).skulls, Some(vec![4, 6]));
+        // A skull that does nothing in multiplayer is never claimed.
+        session.set_multiplayer_skulls(Some(vec![12]));
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(started(&mut session).skulls, None);
+        // Campaign: the array as read, whatever the multiplayer set.
+        session.set_multiplayer_skulls(Some(vec![6]));
+        let campaign = GameInfo {
+            map: "03a_oldmombasa".into(),
+            mode: "campaign".into(),
+            skulls: Some(vec![0, 12]),
+            ..info()
+        };
+        session.start(&campaign, vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.skulls, Some(vec![0, 12]));
+        assert_eq!(live_proto::game::validate_new(&game), Ok(()));
     }
 
     #[test]

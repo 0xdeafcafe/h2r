@@ -2,7 +2,7 @@
 // with its tabs, and the menu column with the finder and server reports.
 
 import { gameMapTitle } from "../state/maps";
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { spotlightTab, type SpotlightTab } from "./modes";
 import { live } from "../state/live";
@@ -17,6 +17,8 @@ import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
+import SkullIcon, { SkullBadges } from "../components/SkullIcon";
+import { filterBySkulls, formatSkullsParam, parseSkullsParam, skullTitle, skullsOfTier, toggleSkull } from "../lib/skulls";
 import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, fireteam, gameTitle, hostName, playlist } from "./Side";
 import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
@@ -54,6 +56,7 @@ function CampaignItem(props: { game: GameState }) {
           <h4><A href={href()}>{gameMapTitle(g())}</A></h4>
           <p>{gameTypeLine(g())}, {usDate(g().started_at)}</p>
           <p class="s-item-dim">{Object.keys(g().players).length} {Object.keys(g().players).length === 1 ? "player" : "players"}</p>
+          <div class="s-item-skulls"><SkullBadges skulls={g().skulls} size={18} /></div>
         </div>
         <div class="s-item-author">
           <div>Players: <b>{fireteam(g())}</b></div>
@@ -91,6 +94,7 @@ function MultiplayerItem(props: { game: GameState }) {
           <h4><GametypeIcon variant={g().variant} /><A href={href()}>{gameTitle(g())}</A></h4>
           <p>{playlist(g())} on {gameMapTitle(g())}, {usDate(g().started_at)}</p>
           <p class="s-item-dim">{Object.keys(g().players).length} players{g().score_limit ? `, first to ${g().score_limit}` : ""}</p>
+          <div class="s-item-skulls"><SkullBadges skulls={g().skulls} size={18} /></div>
         </div>
         <div class="s-item-author">
           <div>{g().status === "live" ? "Host" : "Winner"}: <Show when={g().status === "live"} fallback={<b>{winnerName(g())}</b>}>
@@ -152,11 +156,48 @@ function Featured(props: { game: GameState | undefined; online: number }) {
   );
 }
 
+/** Toggle chips for the skulls: a game must have had all the chosen ones on. */
+function SkullFilter(props: { wanted: number[]; onChange: (next: number[]) => void }) {
+  return (
+    <div class="s-skull-filter" role="group" aria-label="Filter by skulls">
+      <For each={(["gold", "silver"] as const)}>
+        {(tier) => (
+          <div class="s-skull-tier" role="group" aria-label={`${tier === "gold" ? "Gold" : "Silver"} skulls`}>
+            <span>{tier === "gold" ? "Gold" : "Silver"}</span>
+            <For each={skullsOfTier(tier)}>
+              {(s) => (
+                <button type="button" class="s-skull-chip" aria-pressed={props.wanted.includes(s.index)} title={skullTitle(s.index)}
+                  onClick={() => props.onChange(toggleSkull(props.wanted, s.index))}>
+                  <SkullIcon index={s.index} size={18} title={false} />{s.name}
+                </button>
+              )}
+            </For>
+          </div>
+        )}
+      </For>
+      <Show when={props.wanted.length}><button type="button" class="s-linkbtn" onClick={() => props.onChange([])}>clear</button></Show>
+    </div>
+  );
+}
+
 export default function Games() {
   const PER = 8;
   // The tab rides the URL (`?games=campaign`), so a campaign list can be linked.
-  const [search, setSearch] = useSearchParams<{ games?: string }>();
+  const [search, setSearch] = useSearchParams<{ games?: string; skulls?: string }>();
   const [page, setPage] = createSignal(0);
+  // The skull filter rides the URL too (`?skulls=10,14`), as it does the API call.
+  const wanted = createMemo(() => parseSkullsParam(search.skulls));
+  const pickSkulls = (next: number[]) => { setSearch({ skulls: formatSkullsParam(next) }, { replace: true, scroll: false }); setPage(0); };
+  // With a filter on, ask the server for the matching games, which reaches past the snapshot's newest 100.
+  createEffect(() => {
+    const w = wanted();
+    if (!w.length) return;
+    const ac = new AbortController();
+    onCleanup(() => ac.abort());
+    for (const state of ["live", "ended"] as const) {
+      live.api().games(state, 100, ac.signal, w).then((p) => { if (!ac.signal.aborted) live.ingestGames(p.items); }, () => {});
+    }
+  });
   const games = createMemo(() => liveGames(live.state));
   // Multiplayer by default; campaign games have their own tab.
   const ended = createMemo(() => endedGames(live.state, 500, "multiplayer"));
@@ -185,7 +226,8 @@ export default function Games() {
     }
     return { kills, games: n, campaign };
   });
-  const list = createMemo(() => {
+  const list = createMemo(() => filterBySkulls(unfiltered(), wanted(), (g) => g.skulls));
+  const unfiltered = createMemo(() => {
     switch (active()) {
       // Live games first; recent ones fill the rest of the page.
       case "live": return [...games(), ...ended().slice(0, Math.max(0, PER - games().length))];
@@ -244,12 +286,13 @@ export default function Games() {
               { id: "campaign", label: `Campaign (${campaign().length})` },
             ]} />
             <div class="s-matte s-items">
+              <SkullFilter wanted={wanted()} onChange={pickSkulls} />
               <div class="s-items-more">
-                <Show when={pages() > 1} fallback={<span>{list().length} {list().length === 1 ? "game" : "games"}</span>}>
+                <Show when={pages() > 1} fallback={<span>{list().length} {list().length === 1 ? "game" : "games"}{wanted().length ? " with those skulls" : ""}</span>}>
                   <button class="s-linkbtn" onClick={() => setPage((pg() + 1) % pages())}>click here for more games</button>
                 </Show>
               </div>
-              <For each={list().slice(pg() * PER, pg() * PER + PER)} fallback={<p class="s-empty">No games on record yet. The lobby is warming up.</p>}>
+              <For each={list().slice(pg() * PER, pg() * PER + PER)} fallback={<p class="s-empty">{wanted().length ? "No games with all of those skulls on record." : "No games on record yet. The lobby is warming up."}</p>}>
                 {(g) => <GameItem game={g} />}
               </For>
               <Show when={pages() > 1}><div class="s-items-pager"><Pager page={pg()} pages={pages()} total={list().length} per={PER} onPage={setPage} /></div></Show>

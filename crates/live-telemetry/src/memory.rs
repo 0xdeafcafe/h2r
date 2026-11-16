@@ -71,6 +71,7 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
                 map: text(guest, layout::CACHE_MAP_NAME, 32)?,
                 mode: format!("unknown_{other}"),
                 difficulty: None,
+                skulls: None,
                 variant: None,
                 team_play: false,
                 score_limit: None,
@@ -90,10 +91,25 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
     } else {
         None
     };
+    // Every skull reader in the game tests for a campaign first
+    // (docs/skulls.md "In multiplayer"), so the array says what is on only
+    // in one; a multiplayer game's skulls are the host's choice, which the
+    // boot hands to `Telemetry::set_multiplayer_skulls`.
+    let skulls = if mode == "campaign" {
+        let mut on = [0u8; layout::SKULL_COUNT];
+        // Unreadable says nothing rather than failing the whole start.
+        guest
+            .read_bytes(layout::SKULLS, &mut on, 1)
+            .ok()
+            .and_then(|_| live_proto::skulls::from_flags(&on.map(|b| b != 0)))
+    } else {
+        None
+    };
     Ok(GameInfo {
         map: text(guest, layout::CACHE_MAP_NAME, 32)?,
         mode: mode.into(),
         difficulty,
+        skulls,
         variant: variant_name,
         team_play: guest.u32(variant + layout::VARIANT_FLAGS)? & 1 != 0,
         score_limit: nonzero(i32(guest.u32(variant + layout::VARIANT_SCORE_LIMIT)?)),
@@ -1422,6 +1438,21 @@ mod tests {
         guest.set_u16(second + layout::STAT_SCORE, 10).unwrap();
         let tied = snapshot(&guest).unwrap();
         assert_eq!(tied.winner(false), None);
+    }
+
+    #[test]
+    fn campaign_skulls_come_from_the_array_and_multiplayer_has_none_there() {
+        let mut guest = fixture::memory();
+        let options = fixture::GLOBALS + layout::OPTIONS;
+        guest.set_u32(options + layout::OPTIONS_TYPE, 1).unwrap();
+        assert_eq!(game_info(&guest).unwrap().skulls, None, "none on");
+        guest.set_u8(layout::SKULLS + 12, 1).unwrap();
+        guest.set_u8(layout::SKULLS + 6, 1).unwrap();
+        assert_eq!(game_info(&guest).unwrap().skulls, Some(vec![6, 12]));
+        // The array is never cleared, but in multiplayer every reader skips
+        // it: a leftover campaign skull is not this game's.
+        guest.set_u32(options + layout::OPTIONS_TYPE, 2).unwrap();
+        assert_eq!(game_info(&guest).unwrap().skulls, None);
     }
 
     #[test]

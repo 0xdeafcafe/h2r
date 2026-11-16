@@ -1396,6 +1396,38 @@ fn w_buffer_writes_frag_depth_without_discard() {
     common::check(&on.module());
 }
 
+/// A W-buffered program also carries the pixel-count pass's fragment
+/// (`COUNT_DEPTH_ENTRY`): 1 in red and the depth `fs_main` writes, from the
+/// one helper both call, so a visibility test compares what the draws
+/// stored. A Z-buffered program has none (its count uses the rasterized
+/// depth).
+#[test]
+fn w_buffer_programs_have_a_count_entry_with_the_same_depth() {
+    let d = PixelShaderDef::default();
+    let on = psh::translate(
+        &d,
+        &PixelOptions {
+            w_buffer: true,
+            ..Default::default()
+        },
+    );
+    let off = psh::translate(&d, &PixelOptions::default());
+    let entry = format!("fn {}(", psh::COUNT_DEPTH_ENTRY);
+    assert!(!off.body.contains(&entry));
+    let count = on.body.split(&entry).nth(1).expect("count entry");
+    let count = &count[..count.find("\n}\n").expect("count entry body")];
+    assert!(count.contains("vec4f(1.0, 0.0, 0.0, 0.0)"), "{count}");
+    assert!(count.contains("xps_w_depth("), "{count}");
+    let main = on.body.split("fn fs_main(").nth(1).expect("fs_main");
+    assert!(main.contains("xps_w_depth(v.position)"), "{main}");
+    assert_eq!(
+        on.body.matches("1.0 / position.w").count(),
+        1,
+        "one depth formula"
+    );
+    common::check(&on.module());
+}
+
 /// The level loading screen's sweep (`0x2a8d0` with its multiply flag, the
 /// combiners built at `0x2ac13`): stage 0 writes `t0 + blue * c0[0].a`
 /// back into `t0`, stage 1 tints it (`r0`) and takes the texel alpha

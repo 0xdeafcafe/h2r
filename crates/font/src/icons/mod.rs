@@ -78,6 +78,9 @@ pub enum IconSet {
     Xbox360,
     PlayStation,
     Keyboard,
+    /// The Apple TV remote (tvOS): a clickpad ring, a back chevron and
+    /// play/pause. Buttons it lacks keep the retail Xbox glyphs.
+    Remote,
 }
 
 /// The `icons` setting: a fixed set, or one picked from the input devices.
@@ -97,9 +100,10 @@ impl FromStr for IconChoice {
             "xbox360" => IconChoice::Set(IconSet::Xbox360),
             "playstation" => IconChoice::Set(IconSet::PlayStation),
             "keyboard" => IconChoice::Set(IconSet::Keyboard),
+            "remote" => IconChoice::Set(IconSet::Remote),
             _ => {
                 return Err(format!(
-                    "unknown icon set {s:?} (want auto, xbox, xbox360, playstation or keyboard)"
+                    "unknown icon set {s:?} (want auto, xbox, xbox360, playstation, keyboard or remote)"
                 ));
             }
         })
@@ -116,6 +120,9 @@ impl IconChoice {
             (IconChoice::Set(set), _) => set,
             (IconChoice::Auto, Some(name)) => {
                 let n = name.to_ascii_lowercase();
+                if n == "apple tv remote" || n.contains("siri remote") {
+                    return IconSet::Remote;
+                }
                 let sony = [
                     "dualshock",
                     "dualsense",
@@ -222,10 +229,11 @@ pub const MAX_HEIGHT: u16 = 64;
 /// set's base plus the button's offset from U+E100. These ranges are inside
 /// the engine's icon range (U+E000 to U+E3FF) and hold no glyph in any font
 /// on the retail disc.
-pub const ALIAS_BASES: [(IconSet, u16); 3] = [
+pub const ALIAS_BASES: [(IconSet, u16); 4] = [
     (IconSet::Xbox360, 0xe200),
     (IconSet::PlayStation, 0xe220),
     (IconSet::Keyboard, 0xe240),
+    (IconSet::Remote, 0xe260),
 ];
 
 /// The retail code unit of the first button glyph.
@@ -254,6 +262,9 @@ pub fn replaces(set: IconSet, button: Button, keys: &KeyLabels) -> bool {
             A | B | X | Y | Black | White | LeftTrigger | RightTrigger | Start | Back
         ),
         IconSet::Keyboard => keys.contains_key(&button),
+        // What a remote has: the clickpad (A and the d-pad), Back (B) and
+        // Play/Pause (Start). The rest stay Xbox.
+        IconSet::Remote => matches!(button, A | B | Start | DpadUp | DpadDown | DpadLeft | DpadRight),
     }
 }
 
@@ -292,6 +303,13 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
         (IconSet::PlayStation, Y) => (face(h, Symbol::Triangle), false),
         (IconSet::PlayStation, Start) => (face(h, Symbol::Options), false),
         (IconSet::PlayStation, Back) => (face(h, Symbol::Share), false),
+        (IconSet::Remote, A) => (clickpad(h, Pad::Centre), true),
+        (IconSet::Remote, DpadUp) => (clickpad(h, Pad::Up), true),
+        (IconSet::Remote, DpadDown) => (clickpad(h, Pad::Down), true),
+        (IconSet::Remote, DpadLeft) => (clickpad(h, Pad::Left), true),
+        (IconSet::Remote, DpadRight) => (clickpad(h, Pad::Right), true),
+        (IconSet::Remote, B) => (back_chevron(h), true),
+        (IconSet::Remote, Start) => (play_pause(h), true),
         (IconSet::Keyboard, b) => match keys.get(&b)? {
             KeyIcon::Key(label) => {
                 let label: String = label.chars().take(MAX_LABEL_CHARS).collect();
@@ -523,6 +541,92 @@ fn mouse(h: usize, lit: MouseIcon) -> Canvas {
     } else {
         c.fill_flat(segment((xc, y0 + 1.0), (xc, split), 1.0), KEY_RIM);
     }
+    c
+}
+
+/// The part of the remote's clickpad a picture lights.
+#[derive(Clone, Copy, PartialEq)]
+enum Pad {
+    Centre,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// The clickpad, seen from above: a ring, with the side pressed lit (a
+/// d-pad direction) or a filled centre (the click, A). Monochrome, so it
+/// takes the text colour, as the retail d-pad glyphs do.
+fn clickpad(h: usize, lit: Pad) -> Canvas {
+    const W: usize = 16;
+    let (cx, cy) = (W as f32 / 2.0, h as f32 / 2.0);
+    let r = (W.min(h) as f32 / 2.0 - 0.5).max(3.0);
+    let ring = circle(cx, cy, r);
+    let mut c = Canvas::new(W, h);
+    c.fill_flat(&ring, white(IDLE_BODY));
+    let (dx, dy) = match lit {
+        Pad::Centre => (0.0, 0.0),
+        Pad::Up => (0.0, -1.0),
+        Pad::Down => (0.0, 1.0),
+        Pad::Left => (-1.0, 0.0),
+        Pad::Right => (1.0, 0.0),
+    };
+    // The lit quarter of the ring: points within 45 degrees of the side.
+    let side = |x: f32, y: f32| {
+        let (vx, vy) = (x - cx, y - cy);
+        let len = (vx * vx + vy * vy).sqrt().max(1e-3);
+        (vx * dx + vy * dy) / len >= std::f32::consts::FRAC_1_SQRT_2
+    };
+    c.fill(inner_outline(&ring, 1.0), |x, y| {
+        if lit != Pad::Centre && side(x, y) { white(SOLID) } else { white(IDLE_EDGE) }
+    });
+    match lit {
+        Pad::Centre => c.fill_flat(circle(cx, cy, r * 0.45), white(SOLID)),
+        _ => {
+            // A thick band just inside the lit side, so it reads at 9 px.
+            let band = both(&ring, move |x: f32, y: f32| {
+                let along = (x - cx) * dx + (y - cy) * dy;
+                // Inside (negative) where `along` is past 55% of the radius.
+                r * 0.55 - along
+            });
+            c.fill(&band, |x, y| if side(x, y) { white(LIT_BODY) } else { white(0.0) });
+            c.fill_flat(circle(cx, cy, r * 0.18), white(IDLE_EDGE));
+        }
+    }
+    c
+}
+
+/// Back: a "<" chevron in a faint button ring.
+fn back_chevron(h: usize) -> Canvas {
+    const W: usize = 16;
+    let (cx, cy) = (W as f32 / 2.0, h as f32 / 2.0);
+    let r = (W.min(h) as f32 / 2.0 - 0.5).max(3.0);
+    let ring = circle(cx, cy, r);
+    let mut c = Canvas::new(W, h);
+    c.fill_flat(&ring, white(IDLE_BODY));
+    c.fill_flat(inner_outline(&ring, 1.0), white(IDLE_EDGE));
+    let s = r * 0.45;
+    let t = (r / 4.0).clamp(1.2, 2.0);
+    c.fill_flat(segment((cx + s * 0.5, cy - s), (cx - s * 0.6, cy), t), white(SOLID));
+    c.fill_flat(segment((cx - s * 0.6, cy), (cx + s * 0.5, cy + s), t), white(SOLID));
+    c
+}
+
+/// Play/Pause: a right-pointing triangle and two bars, side by side.
+fn play_pause(h: usize) -> Canvas {
+    let hf = h as f32;
+    let s = (hf * 0.62).clamp(6.0, 20.0);
+    let (y0, y1) = ((hf - s) / 2.0, (hf + s) / 2.0);
+    let tri_w = s * 0.8;
+    let bar = (s * 0.2).max(1.5);
+    let gap = (s * 0.15).max(1.0);
+    let w = (1.0 + tri_w + gap * 2.0 + bar * 3.0 + 1.0).ceil() as usize;
+    let mut c = Canvas::new(w, h);
+    let x0 = 1.0;
+    c.fill_flat(polygon([(x0, y0), (x0 + tri_w, hf / 2.0), (x0, y1)]), white(SOLID));
+    let bx = x0 + tri_w + gap * 2.0;
+    c.fill_flat(round_rect(bx, y0, bx + bar, y1, 0.0), white(SOLID));
+    c.fill_flat(round_rect(bx + bar * 2.0, y0, bx + bar * 3.0, y1, 0.0), white(SOLID));
     c
 }
 

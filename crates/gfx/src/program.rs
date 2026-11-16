@@ -174,6 +174,7 @@ impl ProgramBindings {
             layout,
             vs_entry: "vs_main".into(),
             fs_entry: "fs_main".into(),
+            count_entry: None,
         }
     }
 

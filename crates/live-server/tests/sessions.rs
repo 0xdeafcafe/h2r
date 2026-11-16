@@ -36,6 +36,7 @@ fn new() -> NewSession {
         language: Some("en".into()),
         visibility: Default::default(),
         map_id: None,
+        skulls: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {

@@ -7,7 +7,7 @@ use font::{Font, RenderOptions};
 
 use crate::safe_out::OutDir;
 
-const USAGE: &str = "usage: h2 font [disc.iso] <font> <text> --out <file.png> [--color RRGGBB[AA]] [--bg RRGGBB[AA]] [--glyph-colors] [--icons xbox|xbox360|playstation|keyboard] [--bindings FILE] [--force] [--disc disc.iso]\n       h2 font --all [disc.iso]\n\n<font> is a file under /maps/fonts, e.g. conduit-13 or jpn_DFGHSMGoth_anti_con-13.\n<text> is UTF-8 on the command line and laid out as UTF-16; \\r or \\n start a new line.\nThe PNG has a transparent background; existing files are not replaced unless --force.\n--all parses and fully validates every font file and exits non-zero on any failure.";
+const USAGE: &str = "usage: h2 font [disc.iso] <font> <text> --out <file.png> [--color RRGGBB[AA]] [--bg RRGGBB[AA]] [--glyph-colors] [--icons xbox|xbox360|playstation|keyboard|remote] [--bindings FILE] [--force] [--disc disc.iso]\n       h2 font --all [disc.iso]\n\n<font> is a file under /maps/fonts, e.g. conduit-13 or jpn_DFGHSMGoth_anti_con-13.\n<text> is UTF-8 on the command line and laid out as UTF-16; \\r or \\n start a new line.\nThe PNG has a transparent background; existing files are not replaced unless --force.\n--all parses and fully validates every font file and exits non-zero on any failure.";
 
 fn read_fonts(
     disc: &std::path::Path,

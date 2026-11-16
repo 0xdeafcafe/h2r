@@ -44,7 +44,9 @@ title ID is `0x4D530064`.
 
 The title suffix follows `Config.title_id`. Installed content (downloaded,
 or installed from a disc such as the Map Pack, [map-pack.md](map-pack.md))
-lives under `T:\$c\<offer ID as 16 hex digits>\`. `Config::title_data_dir`
+lives under `T:\$c\<offer ID as 16 hex digits>\`, and so do new maps from
+map packages ([maps.md](maps.md) §4, offer IDs with bit 31 of the low half
+set). `Config::title_data_dir`
 and `Config::content_dir(offer)` give the host paths, and `vfs::offer_id`
 builds an offer ID from a title ID and content number. X/Y and the default Z mapping
 are this runtime's reference layout. A retail title's utility partition is

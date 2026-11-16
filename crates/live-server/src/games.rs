@@ -216,15 +216,38 @@ pub struct GameFilter {
     pub map: Option<String>,
     /// `Some(None)`: only games with no `MapId`; `Some(Some(id))`: that map.
     pub map_id: Option<Option<live_proto::maps::MapId>>,
+    /// Only games that had every one of these skulls on (`?skulls=4,6`).
+    pub skulls: Vec<u8>,
 }
 
 impl GameFilter {
     pub fn matches(&self, g: &live_proto::game::NewGame) -> bool {
+        let on = g.skulls.as_deref().unwrap_or_default();
         self.map
             .as_ref()
             .is_none_or(|m| g.map.eq_ignore_ascii_case(m))
             && self.map_id.is_none_or(|id| g.map_id == id)
+            && self.skulls.iter().all(|s| on.contains(s))
     }
+}
+
+/// `?skulls=` as `GET /v1/games` takes it: comma-separated skull indices.
+pub fn parse_skulls(v: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.parse::<u8>() {
+            Ok(n) if n < live_proto::skulls::LIMIT => out.push(n),
+            _ => {
+                return Err(format!(
+                    "skulls is a comma-separated list of 0 to {}",
+                    live_proto::skulls::LIMIT - 1
+                ));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 impl Live {

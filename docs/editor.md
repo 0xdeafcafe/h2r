@@ -1,5 +1,9 @@
 # h2-editor
 
+To *use* the editor (open a map, move a weapon, make a game variant, edit
+a playlist), read the user guide, [editor-guide.md](editor-guide.md).
+This page is for developers.
+
 `h2-editor` (`crates/editor`) is a native editor suite for the files
 h2recomp's game reads: a Rust app on egui and wgpu (eframe), in the
 spirit of the original tools' Sapien. It hosts tools:
@@ -203,3 +207,14 @@ The presets' playlist texts are the preset's own; the disc's
 To put a saved file on a Live server, run `h2 live hopper import <file>`
 on the server's machine (docs/live-admin.md); the editor does not publish
 by itself.
+
+## Screenshots
+
+The user guide's pictures (`docs/images/editor/`) are drawn by the ignored
+test `screenshots` (`src/screenshots.rs`): the real `Shell` and tools over
+made-up data (scenario-edit's invented fixture map, an invented settings
+schema, variants, playlists and map names), rendered offscreen with
+egui-wgpu into a texture and written as PNGs. Widgets are found through
+their AccessKit labels and clicked with pointer events. Regenerate them
+with `cargo test -p editor screenshots -- --ignored`; never commit
+screenshots taken with a real disc.
