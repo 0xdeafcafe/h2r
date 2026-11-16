@@ -1284,6 +1284,7 @@ fn logical(max_queued: Duration) -> dsound::OutputConfig {
         pacing: dsound::Pacing::Logical {
             origin: 0,
             max_queued,
+            playout: None,
         },
         halt_when: None,
         side: None,

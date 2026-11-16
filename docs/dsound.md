@@ -371,7 +371,8 @@ published, events are delivered with no guard held, and stream callbacks
   `advance_to` calls, so a runner that stops calling it while the game
   waits on a stream event with no timeout would hang the game.
 
-`Output::stats()` reports rendered and dropped frames, wakes, the rate,
+`Output::stats()` reports rendered and dropped frames, wakes, late wakes,
+the playout's state, the rate,
 whether it halted, and the sink's counters. Dropping the `Output` stops and
 joins the thread, drops the sink and releases the lease. With device
 pacing a `Stop` from `do_work` ends the thread and is recorded by
@@ -418,6 +419,77 @@ waits on those events (Halo's streams use events and poll
 Never combine a render pump with a device, the output thread or the app's
 discard renderer. `frames_rendered()` counts what the shim's manual,
 `DoWork` and pump paths rendered (not the output thread: see its stats).
+
+### Playout: the jitter buffer (logical pacing)
+
+`Pacing::Logical { playout: Some(Playout) }` is what `h2 play` uses
+(`boot::dsound_glue`). The runner renders in a burst at each slice
+boundary, and logical time trails wall time by the frame's work. The app's
+pacer lets logical time lead wall time by at most 2 ms. The device pulls at
+its own steady rate. Before the buffer, the thread wrote each burst straight
+into the device ring. The ring then held about one burst (a mean of about
+18 ms in the simulation below), and any frame that ran long was a dropout.
+Each dropout was a click, and only those dropouts built any cushion. The
+playout:
+
+- holds playback until `target_ms` (default 50) of audio is waiting in the
+  sink plus the queue, at the start and again after the device runs dry, so
+  a dropout is one clean gap;
+- after a dropout, raises the target by `step_ms` (25), up to
+  `max_target_ms` (150), and after `relax_after` (30 s) of clean play lowers
+  it by 1 ms a second;
+- trims the playback rate by at most `MAX_RATE_TRIM` (0.5%, about 9 cents)
+  to hold the average fill at the target. This absorbs device clock drift
+  and bleeds off the latency a hitch leaves behind. The trim is a linear
+  resample (`LinearResampler::set_step`). It also converts the mixer's
+  48 kHz to the device rate.
+
+`H2_AUDIO_LATENCY_MS` (10..=500) sets the starting target. `None` keeps the
+old write-at-once behaviour, which the exact-sample tests use. Guest-visible
+behaviour does not change: packets still complete when they are rendered on
+the logical clock. They are heard about one target later.
+
+`output::sim` tests it on a virtual clock. The device pulls 512-frame
+callbacks; the output thread wakes every 5 ms with jitter and a 15 ms stall
+every 500 ms (a device probe); a paced guest renders at 60 Hz (3-15 ms of
+work) or 30 Hz (8-31 ms). Immediate playout underruns. The playout has no
+underrun, discontinuity or drop at 48 kHz or 44.1 kHz, with a mean fill
+under 50 ms. With a 100 ms hitch every 4 s it costs at most two clean gaps
+before the target covers the hitch.
+
+### Audio stats
+
+`H2_AUDIO_STATS=1` (`boot::dsound_glue::AudioReport`) prints one line every
+5 s on stderr. Counters are the change over that window:
+
+```
+audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev underruns +2 (512 frames) | dropped +0 | late wakes +1 (max gap 21.5ms) | stream starves +2 (900 frames) unrouted +0 frames | callbacks waiting max 3 | rendered 100% of real time
+```
+
+- `fill (min-max)`: audio waiting for the device, now and over the window.
+  `(buffering)` means the playout is waiting to reach its target.
+- `target`, `trim`: the playout's target and its rate trim in ppm
+  (+ is faster).
+- `dropouts`: times the device ran dry while playing, one gap each.
+  `dev underruns` counts the device callbacks that came up short; a gap
+  spans several.
+- `dropped`: rendered audio thrown away (the 250 ms queue overflowed, or
+  the sink refused it).
+- `late wakes`, `max gap`: the output thread was held up for more than
+  10 ms past its period (a device probe, the host).
+- `stream starves`: a stream ran out of packets and was fed again within
+  250 ms (`audio::StreamHealth`). The game fed it late, and the gap is
+  in the audio itself, before the device.
+- `unrouted`: frames streams consumed, completing their packets, whose
+  mix bins reached nothing: an empty list, or sends only to mix-ins that
+  are not playing. The game believes those played. A dialogue line that is
+  skipped but still counted shows here.
+- `callbacks waiting max`: the most stream callbacks queued for the next
+  guest override call.
+- `rendered % of real time`: logical audio time over wall time. Under
+  100% means the guest ran slower than real time, and the device must run
+  dry.
+- `pad ...`: the controller speaker's sink, when configured.
 
 ## Memory model
 
@@ -875,6 +947,7 @@ let output = hle.spawn_output(
 //     pacing: dsound::Pacing::Logical {
 //         origin: k.clock().counter(),
 //         max_queued: Duration::from_millis(250),
+//         playout: Some(dsound::Playout::default()), // None: exact samples
 //     },
 //     halt_when: None,
 // })?;

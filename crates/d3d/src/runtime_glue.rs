@@ -198,6 +198,8 @@ where
         let dev = device.clone();
         let hook = on_stop.clone();
         let _ = dispatch.register_override(addr, name, move |cpu, ctx, _selector| {
+            // Frame stats: the D3D entries are their own phase.
+            let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
             let regs = regs(cpu);
             let (result, fault) = {
                 let mut guest = ctx.memory();

@@ -364,13 +364,13 @@ fn an_async_implementation_is_a_chains_body() {
 /// `render_scene_passes`; the other stages are missing and dropped.
 #[test]
 fn render_timing_times_each_stage_exclusively() {
-    use feature::render_timing::{RenderTiming, Stage};
+    use feature::render_timing::{Now, RenderTiming, Stage};
     const MAIN: u32 = 0x40_1000;
     let rt = runtime();
     let ticks = Arc::new(AtomicU32::new(0));
     let clock = {
         let ticks = Arc::clone(&ticks);
-        Arc::new(move || Some(ticks.fetch_add(10, Ordering::SeqCst) as u64))
+        Arc::new(move || Some(Now::new(ticks.fetch_add(10, Ordering::SeqCst) as u64, 0)))
     };
     let timing = RenderTiming::with_clock(clock);
     let mut r = Registry::new(Switches::parse("render-timing").unwrap());
@@ -394,8 +394,8 @@ fn render_timing_times_each_stage_exclusively() {
     assert_eq!(t.frames, 2);
     // Clock reads per frame: enter frame 0, enter scene 10, leave scene 20,
     // leave frame 30.
-    assert_eq!(t.ns[Stage::Frame as usize], 2 * 20);
-    assert_eq!(t.ns[Stage::ScenePasses as usize], 2 * 10);
+    assert_eq!(t.time[Stage::Frame as usize].guest, 2 * 20);
+    assert_eq!(t.time[Stage::ScenePasses as usize].guest, 2 * 10);
     assert_eq!(t.calls[Stage::ScenePasses as usize], 2);
     assert_eq!(t.render_ns(), 60);
 }
@@ -455,7 +455,7 @@ fn render_timing_feeds_the_frame_stats() {
         "thread 2's slice is not render: {guest}"
     );
     assert!(
-        t.ns[Stage::ScenePasses as usize] >= 3_000_000,
+        t.time[Stage::ScenePasses as usize].guest >= 3_000_000,
         "the work is inside the scene passes: {t:?}"
     );
     assert!(w.phase_ms[Phase::Render as usize] >= 3.0, "{w:?}");

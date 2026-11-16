@@ -404,17 +404,26 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
 
     let mut r = Registry::new(Switches::parse("render-timing").unwrap());
     assert!(r.add(&RenderTiming::new()).unwrap());
-    let text = r.build(&feature::Base).unwrap().text();
-    assert_eq!(
-        text,
-        "\
-feature render-timing: on
-0x0002b5d0 RENDER_VIEWS: observe_before [render-timing:views] -> original -> observe_after [render-timing:views]
-0x0002b790 RENDER_GAME_VIEW: observe_before [render-timing:game_view] -> original -> observe_after [render-timing:game_view]
-0x0002bcd0 RENDER_SCENE_PASSES: observe_before [render-timing:scene_passes] -> original -> observe_after [render-timing:scene_passes]
-0x00031170 RENDER_LIGHT_PASSES: observe_before [render-timing:light_passes] -> original -> observe_after [render-timing:light_passes]
-0x00223240 RENDER_FRAME: observe_before [render-timing:frame] -> original -> observe_after [render-timing:frame]
-0x002234e0 RENDER_GAME_VIEWS: observe_before [render-timing:game_views] -> original -> observe_after [render-timing:game_views]
-"
-    );
+    let plan = r.build(&feature::Base).unwrap();
+    let text = plan.text();
+    for line in [
+        "0x0002b5d0 RENDER_VIEWS: observe_before [render-timing:views] -> original -> observe_after [render-timing:views]",
+        "0x0002b790 RENDER_GAME_VIEW: observe_before [render-timing:game_view] -> original -> observe_after [render-timing:game_view]",
+        "0x0002bcd0 RENDER_SCENE_PASSES: observe_before [render-timing:scene_passes] -> original -> observe_after [render-timing:scene_passes]",
+        "0x00031170 RENDER_LIGHT_PASSES: observe_before [render-timing:light_passes] -> original -> observe_after [render-timing:light_passes]",
+        "0x00223240 RENDER_FRAME: observe_before [render-timing:frame] -> original -> observe_after [render-timing:frame]",
+        "0x002234e0 RENDER_GAME_VIEWS: observe_before [render-timing:game_views] -> original -> observe_after [render-timing:game_views]",
+        "0x00031c80 SCENE_CALL_00031c80: observe_before [render-timing:scene call] -> original",
+    ] {
+        assert!(text.contains(&format!("{line}\n")), "{line}\n{text}");
+    }
+    // Every scene-pass callee is observed before only: no shadow, no
+    // continuation.
+    let calls = text
+        .lines()
+        .filter(|l| l.contains("[render-timing:scene call] -> original"))
+        .count();
+    assert_eq!(calls, feature::render_timing::SCENE_CALLEES.len());
+    let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
+    assert_eq!(shadows, 6, "only the stages run something after the body");
 }

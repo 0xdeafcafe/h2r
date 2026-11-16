@@ -29,7 +29,9 @@ pub mod testing;
 pub mod xwma;
 
 pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};
-pub use output::{Output, OutputConfig, OutputStats, Pacing, SideOpener, SideOutput, SideStats};
+pub use output::{
+    Output, OutputConfig, OutputStats, Pacing, Playout, PlayoutStats, SideOpener, SideOutput, SideStats,
+};
 pub use register::{
     EventRef, Events, Hle, Pump, RegisterError, Registration, register, unregister,
 };

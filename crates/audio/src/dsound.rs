@@ -496,6 +496,9 @@ pub struct Stream {
     next_id: u64,
     completed: Vec<(PacketId, PacketStatus)>,
     fx_state: FxState,
+    /// The mixer frame at which it ran out of packets while playing, until
+    /// it plays again (the mixer's starvation count).
+    pub(crate) dry_at: Option<u64>,
 }
 
 impl Stream {
@@ -510,6 +513,7 @@ impl Stream {
             next_id: 1,
             completed: Vec::new(),
             fx_state: FxState::default(),
+            dry_at: None,
         })
     }
 
@@ -544,6 +548,7 @@ impl Stream {
         }
         self.pos = 0.0;
         self.history.clear();
+        self.dry_at = None;
         // What plays next is a new sound: effects start over.
         self.fx_state.reset();
     }
