@@ -125,3 +125,69 @@ instructions of the scene passes after it.
 take an observer pair with a shadow call each; that cost is charged to
 `shader_begin` and `geometry` themselves (and their callers' exclusive
 time is not inflated). Read their absolute numbers as an upper bound.
+
+## Shader draw begin (`0x0001bbf0`, `0x00016b90`)
+
+The first 4x numbers (Old Mombasa) put `shader_begin` at 7.36 ms over 481
+calls, about 15 µs each (an upper bound), against 0.88 ms for
+`layer_build`. So the shader draw is the target, not the build.
+
+**`0x0001bbf0`** is small. On the first draw after a layer draw sets
+byte `0x004670bc` it runs the layer setup `0x00016b10`, sets a fixed
+handful of render states directly (LogicOp, ZEnable, Simple `0x40354`,
+`0x40300`, `0x40340`, ZBias, SampleAlpha, CullMode, FrontFace, through the
+D3D entries) and clears the byte. Every call then copies four words
+from the shader tag (`[0x004e3b44]` tag table, group `shad`) to
+`0x00485a64..0x00485a70` and tail-calls the shader draw `0x00016b90` with
+the state cache `0x00485b48` and five of its own stack arguments.
+
+**`0x00016b90`** already has a state cache. The context at `0x00485b48`
+holds the last shader (`+0x00`), template and pass (`+0x20`, `+0x24`), and
+dirty masks (`+0x30..+0x40`, `+0x58`). It compares the new pass and
+template with the cached ones and the shader with the last. Only on a
+change does it rebuild the parameter blocks (`0x00016f60`, `0x00017000`)
+and switch passes (`0x00018900`, `0x000189a0`). The rest runs on every
+call, changed or not:
+
+| Callee | What it does (read so far) |
+|---|---|
+| `0x0001ae70` | per-draw parameter evaluation; no D3D entry |
+| `0x0001ba00` or `rep movsd` | the pass's 0xf0-byte block into `+0x1424`, only on a change or dirty bit |
+| `0x00017170` | only on a change or dirty bit |
+| `0x000174d0`, `0x00018a90`, `0x00019be0`, `0x00019ca0` | not read yet; no D3D entry directly |
+| `0x0001a170` | the pass's list of per-draw render states: one `SetRenderState_*` per list entry, every call, with no comparison against D3D's shadow (`0x00407498`) |
+| `0x0001ab50` | the same for texture stage states (`SetTextureState_*`) |
+| `0x00017420` | four more setters (`0x000176a0`, `0x00017960`, `0x00017b60`, `0x00018560`); `0x00017b60` has the same render-state switch |
+| `0x00018d70` | pixel-shader constants: only the dirty ones (mask `+0x1730`), written straight into the push buffer |
+| `0x00018e80` | vertex-shader constants: only the dirty ones (mask `+0x1734`), `SetVertexShaderConstant1Fast` |
+| `0x0001b0a0` | not read yet |
+| `0x0001cf50` | `SetTexture` for the stages whose texture changed (cache at `0x0051f3c8`, current at `0x0051f3d8`) |
+| `0x0001b050` | `SetPixelShader`, only when `+0x1514` says the pass or a dirty bit changed it |
+| `0x00018ee0` | otherwise, a render-state list like `0x0001a170` |
+
+So the original already skips unchanged textures, constants and pixel
+shaders. What runs on every call regardless is the parameter evaluation
+and the render-state lists, whose D3D entries are unconditional. A
+render state set to the value D3D's shadow already holds is the obvious
+redundant call. Skipping a whole shader begin would also need the
+parameter evaluation's inputs to be unchanged, and the read has not
+bounded them yet.
+
+### Breakdown by call (`render-timing`)
+
+The 21 direct callees of `0x00016b90` are now `shader_begin`'s call
+sites, split the same way as the scene passes' (a call's time runs to the
+next call, so `0x00016b90`'s own code between calls goes to the call
+before it). Every stage and site also counts the D3D entries it made
+(`timeline::phase::scope_entries(Phase::D3d)`):
+
+```text
+render-timing: ... ; d3d calls/frame shader_begin 9000.0 geometry 400.0 ...; foreign 2000
+render-timing:   shader site 0x00016ef9 -> 0x0001a170 2.10 ms (guest 1.20 d3d 0.90) 481.0 calls 3500.0 d3d calls
+render-timing:   shader shader_begin own code 0.80 ms (guest 0.80 d3d 0.00) 40.0 d3d calls
+```
+
+(illustrative). `d3d calls / calls` per site is how many D3D entries one
+shader draw makes there. The 21 extra observers run on every shader draw
+and are charged to the sites; `foreign` now also counts their calls from
+elsewhere (`0x00018900` is called by the layer setup too).
