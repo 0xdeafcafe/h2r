@@ -178,6 +178,16 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.draw(color, depth, draw, textures);
         self.forget(r)
     }
+    fn draw_owned(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: d3d::backend::ResolvedDraw,
+        textures: [Option<&u32>; 4],
+    ) -> (Result<d3d::backend::DrawOutcome, String>, Vec<d3d::backend::StreamBytes>) {
+        let r = self.0.draw_owned(color, depth, draw, textures);
+        self.forget(r)
+    }
     fn frame_stats(&mut self) {
         self.0.frame_stats()
     }

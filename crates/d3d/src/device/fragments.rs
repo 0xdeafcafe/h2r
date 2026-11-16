@@ -88,7 +88,7 @@ impl<B: Backend> Device<B> {
         mem: &dyn GuestMemory,
     ) -> Result<([u32; 4], [u32; 4]), D3dError> {
         let dev = mem.read_u32(self.cfg.layout.p_device)?;
-        let vp = mem.read_words(dev + field::VIEWPORT, 6)?;
+        let vp = crate::guest::read_array::<6>(mem, dev + field::VIEWPORT)?;
         let ssx = Self::fu(mem, dev + field::SUPERSAMPLE_X)?;
         let ssy = Self::fu(mem, dev + field::SUPERSAMPLE_Y)?;
         let zs = Self::fu(mem, dev + field::Z_SCALE)?;
@@ -199,7 +199,7 @@ impl<B: Backend> Device<B> {
             }
             (field::CLIP_PROGRAM, clip_flags & 2 != 0)
         } else {
-            let vp = mem.read_words(dev + field::VIEWPORT, 6)?;
+            let vp = crate::guest::read_array::<6>(mem, dev + field::VIEWPORT)?;
             let bias = self.supersample_bias(mem, dev)?;
             let a = unsigned(vp[0]) * Self::fu(mem, dev + field::SUPERSAMPLE_X)?
                 + Self::fu(mem, dev + field::SCREEN_OFFSET_X)?
@@ -285,7 +285,7 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3D_UpdateProjectionViewportTransform";
         self.live(E)?;
         let dev = mem.read_u32(self.cfg.layout.p_device)?;
-        let vp = mem.read_words(dev + field::VIEWPORT, 6)?;
+        let vp = crate::guest::read_array::<6>(mem, dev + field::VIEWPORT)?;
         let ssx = Self::fu(mem, dev + field::SUPERSAMPLE_X)?;
         let ssy = Self::fu(mem, dev + field::SUPERSAMPLE_Y)?;
         let zs = Self::fu(mem, dev + field::Z_SCALE)?;
@@ -598,7 +598,7 @@ impl<B: Backend> Device<B> {
 
 /// Reads a row-major 4x4 `f32` matrix.
 pub(crate) fn read_matrix(mem: &dyn GuestMemory, addr: u32) -> Result<[f32; 16], D3dError> {
-    let w = mem.read_words(addr, 16)?;
+    let w = crate::guest::read_array::<16>(mem, addr)?;
     Ok(std::array::from_fn(|i| f32::from_bits(w[i])))
 }
 

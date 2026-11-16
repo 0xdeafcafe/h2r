@@ -281,6 +281,20 @@ pub trait Backend: Send {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String>;
+    /// [`draw`](Self::draw) of a draw the caller is done with, so a backend
+    /// that keeps it past the call (the render thread) takes it instead of
+    /// copying it. Also returns stream buffers for the caller to fill next
+    /// time: the draw's own, or an earlier draw's the backend is done with.
+    fn draw_owned(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        let r = self.draw(color, depth, &draw, textures);
+        (r, draw.streams)
+    }
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}

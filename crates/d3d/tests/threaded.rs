@@ -327,3 +327,84 @@ fn an_untranslatable_draw_is_skipped_the_same_way() {
     let (pb, _) = b.backend.with_surface(back, |g, s| g.read_color(s)).unwrap();
     assert_eq!(pa, pb);
 }
+
+/// A fixed sequence of backend calls, long enough to cross the render
+/// thread's batch size many times: surfaces, clears, draws (handed over and
+/// copied, with textures and without), uploads and texture drops, reads,
+/// pixel counts (each draw counts, so a count is only right after every
+/// draw before it ran) and presents. Returns every value the caller saw.
+fn batched_calls<B: Backend<Surface = u32>>(b: &mut B, draw: &d3d::ResolvedDraw) -> Vec<String> {
+    let desc = gfx::TextureDesc::new(gfx::D3DFormat::LinA8R8G8B8, gfx::texture::TextureKind::D2, 4, 4, 1, 1);
+    let decoded = gfx::texture::decode_texture(&desc, &[0x11; 64], None, Default::default()).unwrap();
+    let mut seen = Vec::new();
+    let s = b.create_surface(gfx::D3DFormat::A8R8G8B8, 64, 64, false).unwrap();
+    let z = b.create_surface(gfx::D3DFormat::D24S8, 64, 64, true).unwrap();
+    let mut live: Vec<B::Texture> = Vec::new();
+    b.clear_pixel_count().unwrap();
+    for i in 0..(3 * d3d::threaded::BATCH as u32 + 17) {
+        match i % 7 {
+            0 => live.push(b.upload_texture(&decoded).unwrap()),
+            1 if live.len() > 2 => drop(live.remove(0)),
+            2 => b.clear(s, Some(z), gfx::Clear::NONE).unwrap(),
+            _ => {
+                let mut d = draw.clone();
+                d.vertex_count = 4 + i % 3;
+                let tex = [live.last(), None, None, None];
+                let r = if i % 2 == 0 {
+                    b.draw_owned(s, Some(z), d, tex).0
+                } else {
+                    b.draw(s, Some(z), &d, tex)
+                };
+                seen.push(format!("draw {i} {r:?}"));
+            }
+        }
+        if i % 23 == 0 {
+            let t = b.report_pixel_count().unwrap().unwrap();
+            seen.push(format!("count {i} {:?}", b.read_pixel_count(t)));
+        }
+        if i % 41 == 0 {
+            let layout = d3d::GuestLayoutKind::Linear { pitch: 256 };
+            let px = b.read_surface(s, gfx::D3DFormat::A8R8G8B8, 64, 64, layout).unwrap();
+            seen.push(format!("read {i} {}", px.len()));
+        }
+        if i % 60 == 59 {
+            b.present(s, 0).unwrap();
+        }
+    }
+    drop(live);
+    b.destroy_surface(z).unwrap();
+    seen
+}
+
+/// Batching changes neither the order of the backend calls nor what a
+/// read sees: the same calls as the synchronous backend, in the same
+/// order, and the same answers, with and without a lagging render thread.
+#[test]
+fn batched_commands_run_in_order_and_reads_see_everything_before_them() {
+    let (a, _, _) = scenario(RecordingBackend::new());
+    let mut draw = a
+        .backend
+        .calls
+        .iter()
+        .find_map(|c| match c {
+            d3d::backend::Recorded::Draw { draw, .. } => Some(draw.clone()),
+            _ => None,
+        })
+        .expect("a draw");
+    draw.hw.zpass_count_enable = true;
+    let mut direct = RecordingBackend::new();
+    let seen_a = batched_calls(&mut direct, &draw);
+    assert!(seen_a.iter().any(|s| s.starts_with("count") && !s.ends_with("Ok(0)")), "{seen_a:?}");
+    for jitter in [None, Some(7)] {
+        let mut t = ThreadedBackend::new(RecordingBackend::new()).unwrap();
+        if let Some(seed) = jitter {
+            t = t.with_jitter(seed);
+        }
+        let seen_b = batched_calls(&mut t, &draw);
+        assert_eq!(seen_a, seen_b, "jitter {jitter:?}");
+        let calls = t.with_inner(|r| r.calls.clone()).unwrap();
+        assert!(calls.len() > 3 * d3d::threaded::BATCH, "{}", calls.len());
+        assert_eq!(direct.calls, calls, "jitter {jitter:?}");
+        assert_eq!(t.misses(), 0);
+    }
+}

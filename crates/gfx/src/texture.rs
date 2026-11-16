@@ -136,7 +136,7 @@ impl TextureDesc {
         let levels = if format.layout() == Layout::Linear { 1 } else { levels.min(max_levels(width, height, depth)) };
         let desc = Self { format, kind, width, height, depth, levels, pitch };
         // Reject a pitch smaller than one row now rather than panicking later.
-        desc.layout()?;
+        desc.total_size()?;
         Ok(desc)
     }
 
@@ -148,6 +148,19 @@ impl TextureDesc {
     /// Computes where every level lives in guest memory.
     pub fn layout(&self) -> Result<TextureLayout, TextureError> {
         let mut levels = Vec::with_capacity(self.levels as usize);
+        let (face_stride, faces, total_size) = self.walk_levels(|l| levels.push(l))?;
+        Ok(TextureLayout { levels, face_stride, faces, total_size })
+    }
+
+    /// [`layout`](Self::layout)'s `total_size` (same errors), without
+    /// building the level list: the per-bind size checks.
+    pub fn total_size(&self) -> Result<usize, TextureError> {
+        Ok(self.walk_levels(|_| {})?.2)
+    }
+
+    /// Calls `levels` with every level of one face, in order; returns the
+    /// face stride, face count and total size.
+    fn walk_levels(&self, mut levels: impl FnMut(LevelLayout)) -> Result<(usize, u32, usize), TextureError> {
         let (mut w, mut h, mut d) = (self.width, self.height, self.depth);
         let mut offset = 0usize;
         match self.format.layout() {
@@ -157,7 +170,7 @@ impl TextureDesc {
                     return Err(TextureError::InvalidHeader("linear pitch smaller than one row"));
                 }
                 let size = self.pitch as usize * h as usize;
-                levels.push(LevelLayout { level: 0, width: w, height: h, depth: 1, offset: 0, size });
+                levels(LevelLayout { level: 0, width: w, height: h, depth: 1, offset: 0, size });
                 offset = size;
             }
             layout => {
@@ -169,7 +182,7 @@ impl TextureDesc {
                         let bpt = self.format.bytes_per_texel().expect("uncompressed") as usize;
                         w as usize * h as usize * d as usize * bpt
                     };
-                    levels.push(LevelLayout { level, width: w, height: h, depth: d, offset, size });
+                    levels(LevelLayout { level, width: w, height: h, depth: d, offset, size });
                     offset += size;
                     w = (w / 2).max(1);
                     h = (h / 2).max(1);
@@ -185,7 +198,7 @@ impl TextureDesc {
         };
         // The last face is not padded.
         let total_size = face_stride * (faces as usize - 1) + offset;
-        Ok(TextureLayout { levels, face_stride, faces, total_size })
+        Ok((face_stride, faces, total_size))
     }
 }
 
@@ -480,6 +493,21 @@ mod tests {
         let sizes: Vec<_> = l.levels.iter().map(|l| l.size).collect();
         // 8x8 = 4 blocks, 4x4 = 1, 2x2 = 1 (padded), 1x1 = 1 (padded).
         assert_eq!(sizes, vec![32, 8, 8, 8]);
+    }
+
+    #[test]
+    fn total_size_matches_layout() {
+        let mut short = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 16, 4, 1, 1);
+        short.pitch = 32;
+        for d in [
+            TextureDesc::new(D3DFormat::Dxt1, TextureKind::D2, 8, 8, 1, 4),
+            TextureDesc::new(D3DFormat::A8R8G8B8, TextureKind::Cube, 4, 4, 1, 3),
+            TextureDesc::new(D3DFormat::A8R8G8B8, TextureKind::Volume, 8, 4, 4, 3),
+            TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 20, 6, 1, 1),
+            short,
+        ] {
+            assert_eq!(d.total_size().ok(), d.layout().ok().map(|l| l.total_size), "{d:?}");
+        }
     }
 
     #[test]

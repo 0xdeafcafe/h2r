@@ -118,6 +118,18 @@ pub fn decode_one(
     at: u32,
     to: u32,
 ) -> Result<(u32, Option<MethodCall>), PushError> {
+    decode_one_into(mem, at, to, &mut Vec::new())
+}
+
+/// [`decode_one`], reading the data words into `words`' storage (taken
+/// for the returned call's `data`; give it back for the next command), so
+/// the per-entry drain does not allocate.
+pub fn decode_one_into(
+    mem: &dyn GuestMemory,
+    at: u32,
+    to: u32,
+    words: &mut Vec<u32>,
+) -> Result<(u32, Option<MethodCall>), PushError> {
     if to < at || to - at < 4 {
         return Err(PushError::Truncated {
             at,
@@ -157,7 +169,8 @@ pub fn decode_one(
             available,
         });
     }
-    let data = mem.read_words(at + 4, count as usize)?;
+    read_words_into(mem, at + 4, count as usize, words)?;
+    let data = std::mem::take(words);
     let next = at + 4 + 4 * count;
     Ok((
         next,
@@ -168,6 +181,34 @@ pub fn decode_one(
             data,
         }),
     ))
+}
+
+/// [`GuestMemory::read_words`] into `out` (replacing what it held): one
+/// guest read, with the same limits and errors, through a stack buffer.
+fn read_words_into(
+    mem: &dyn GuestMemory,
+    addr: u32,
+    n: usize,
+    out: &mut Vec<u32>,
+) -> Result<(), GuestError> {
+    const WORDS: usize = 64;
+    out.clear();
+    if n > WORDS {
+        out.extend(mem.read_words(addr, n)?);
+        return Ok(());
+    }
+    crate::guest::check_range(addr, 4 * n)?;
+    let mut bytes = [0u8; 4 * WORDS];
+    let bytes = &mut bytes[..4 * n];
+    mem.read(addr, bytes)?;
+    out.extend(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c)),
+    );
+    Ok(())
 }
 
 /// Splits `[from, to)` into method calls.
@@ -600,6 +641,39 @@ mod tests {
 
     fn header(method: u32, count: u32) -> u32 {
         (count << 18) | method
+    }
+
+    /// Reusing the word storage gives `read_words`' words and faults, for
+    /// commands below and above the stack buffer's 64 words.
+    #[test]
+    fn decode_one_into_matches_read_words() {
+        let mut m = SparseMemory::new();
+        m.map(0x1000, 0x1000);
+        let mut words = vec![0xAAAA_AAAA; 3];
+        for count in [1u32, 5, 64, 65, 300] {
+            m.write_u32(0x1000, header(method::INLINE_ARRAY, count) | 0x4000_0000)
+                .unwrap();
+            for i in 0..count {
+                m.write_u32(0x1004 + 4 * i, i * 7 + count).unwrap();
+            }
+            let end = 0x1004 + 4 * count;
+            let (next, call) = decode_one_into(&m, 0x1000, end, &mut words).unwrap();
+            let call = call.unwrap();
+            assert_eq!(next, end);
+            assert_eq!(call.data, m.read_words(0x1004, count as usize).unwrap());
+            words = call.data;
+        }
+        // A command running off mapped memory faults as `read_words` does.
+        for count in [4u32, 100] {
+            let at = 0x2000 - 8;
+            m.write_u32(at, header(method::INLINE_ARRAY, count))
+                .unwrap();
+            let e = decode_one_into(&m, at, at + 4 + 4 * count, &mut words).unwrap_err();
+            let PushError::Guest(e) = e else {
+                panic!("{e:?}")
+            };
+            assert_eq!(e, m.read_words(at + 4, count as usize).unwrap_err());
+        }
     }
 
     #[test]

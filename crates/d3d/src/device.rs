@@ -645,6 +645,8 @@ pub struct Device<B: Backend> {
     stream_pool: Vec<Vec<u8>>,
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
+    /// Data words of the push-buffer command being executed, reused.
+    push_words: Vec<u32>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
     program_start: u32,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
@@ -786,6 +788,7 @@ impl<B: Backend> Device<B> {
             stream_pool: Vec::new(),
             stream_pool_bytes: 0,
             stream_scratch: Vec::new(),
+            push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
             constants: Box::new([0; CONSTANTS * 4]),
@@ -1484,7 +1487,8 @@ impl<B: Backend> Device<B> {
             ));
         }
         while self.consumed < put {
-            let (next, call) = pushbuf::decode_one(mem, self.consumed, put)?;
+            let (next, call) =
+                pushbuf::decode_one_into(mem, self.consumed, put, &mut self.push_words)?;
             if let Some(c) = &call {
                 let words = c.data.len();
                 for (i, (m, w)) in c.writes().enumerate() {
@@ -1554,8 +1558,9 @@ impl<B: Backend> Device<B> {
                 }
             }
             // Consumed only once fully executed.
-            if let Some(c) = &call {
+            if let Some(c) = call {
                 self.stats.push_words += 1 + c.data.len() as u64;
+                self.push_words = c.data;
             }
             self.consumed = next;
         }
@@ -2184,7 +2189,7 @@ impl<B: Backend> Device<B> {
         let mut new = Vec::new();
         if handle != 0 {
             for i in 0..count {
-                let w = mem.read_words(at(inputs, 12 * i as u64)?, 3)?;
+                let w = crate::guest::read_array::<3>(mem, at(inputs, 12 * i as u64)?)?;
                 new.push(StreamSource {
                     buffer: w[0],
                     stride: w[1],
@@ -3206,9 +3211,8 @@ impl<B: Backend> Device<B> {
         let desc = TextureDesc::from_header(pc.format, pc.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("texture {header:#010x}: {e}")))?;
         let total = desc
-            .layout()
-            .map_err(|e| D3dError::unimplemented(entry, e.to_string()))?
-            .total_size;
+            .total_size()
+            .map_err(|e| D3dError::unimplemented(entry, e.to_string()))?;
         if total as u64 > MAX_SPAN {
             return Err(D3dError::invalid(
                 entry,
@@ -3544,8 +3548,8 @@ impl<B: Backend> Device<B> {
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;
-        let outcome = self.backend.draw(color, depth, &draw, textures);
-        *streams = draw.streams;
+        let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
+        *streams = spare;
         match outcome.map_err(D3dError::Backend)? {
             DrawOutcome::Drawn => self.mark_written(writes_depth),
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
