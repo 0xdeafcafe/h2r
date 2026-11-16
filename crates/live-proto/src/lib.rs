@@ -12,6 +12,9 @@ pub mod jcs;
 pub mod mailbox;
 pub mod maps;
 pub mod motd;
+pub mod pack;
+#[doc(hidden)]
+pub mod samples;
 pub mod session;
 pub mod sign;
 pub mod team;
