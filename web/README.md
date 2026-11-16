@@ -274,8 +274,10 @@ and pan and zoom; without them it is the fitted grid as before. The "3D view"
 button opens the level in a window (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
 off by itself on a machine that can't keep up), orbit, top-down,
-follow-a-player and free-fly cameras (F; WASD, drag to look, wheel for
-speed, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
+follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
+either button to look or click to lock the mouse, wheel or trackpad for
+speed, Shift to go faster, one finger to look and two to fly on a touch
+screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
 window can be dragged, resized, maximised, or popped out to
 `/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
 replay session (`src/viewer/session.ts`), and a popped-out window keeps in

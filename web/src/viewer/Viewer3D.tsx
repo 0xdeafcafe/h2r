@@ -65,7 +65,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   const toggleFly = () => {
     if (!scene) return;
     scene.setFly(!scene.flying);
-    if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag to look, wheel for speed, Shift for faster, F to leave", 5000);
+    if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag (either button) to look, click to lock the mouse, wheel for speed, Shift for faster, F to leave. Touch: one finger looks, two fly", 6000);
     else setFlyHint("");
     root.focus();
   };
@@ -222,7 +222,7 @@ export default function Viewer3D(props: Viewer3DProps) {
         <div class="v3-tools" role="group" aria-label="Camera">
           <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
           <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
-          <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag to look, wheel changes speed, Shift is faster. A gamepad works too. Key: f">Fly</button>
+          <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag with either mouse button to look (a click locks the mouse), wheel changes speed, Shift is faster. One finger looks and two fly on a touch screen; a gamepad works too. Key: f">Fly</button>
           <select
             classList={{ on: mode() === "follow" }}
             aria-label="Follow a player"

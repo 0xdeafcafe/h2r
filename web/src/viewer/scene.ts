@@ -47,7 +47,7 @@ import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing,
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
-import { BOOST, FLY_KEYS, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, padInput, speedLabel, speedStep } from "./flycam";
+import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
@@ -843,46 +843,95 @@ export class ViewerScene {
     this.dirty = true;
   }
 
-  /** Mouse drag (or pointer lock) to look, the wheel for speed. */
+  /** Mouse drag (left or right button) or pointer lock to look, the wheel
+   *  for speed; on a touch screen one finger looks and two fly (spread to
+   *  go forward, drag to slide). */
   private listenFly(el: HTMLElement): () => void {
+    // Pointers down on the view, by id: where each was last.
+    const pointers = new Map<number, { x: number; y: number; touch: boolean }>();
     const down = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || e.button !== 0) return;
+      const touch = e.pointerType === "touch";
+      if (!f || (!touch && !looksWith(e.button))) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, touch });
       f.drag = true; f.moved = 0;
       el.setPointerCapture(e.pointerId);
     };
     const move = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || !(f.drag || document.pointerLockElement === el)) return;
-      f.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
-      this.flyLook(e.movementX * 0.0022, e.movementY * 0.0022);
+      if (!f) return;
+      if (document.pointerLockElement === el) {
+        const l = pointerLook(e.movementX, e.movementY);
+        this.flyLook(l.dx, l.dy);
+        return;
+      }
+      const p = pointers.get(e.pointerId);
+      if (!p || !f.drag) return;
+      const dx = e.clientX - p.x, dy = e.clientY - p.y;
+      f.moved += Math.abs(dx) + Math.abs(dy);
+      const touches = [...pointers.entries()].filter(([, q]) => q.touch);
+      if (p.touch && touches.length >= 2) {
+        // Two fingers: this one moved, the other stayed where it was.
+        const other = touches.find(([id]) => id !== e.pointerId)![1];
+        const m = twoFingerMove([p.x, p.y], [other.x, other.y], [e.clientX, e.clientY], [other.x, other.y]);
+        this.flyNudge(m, this.flyUnitsPerSecond(false) / 300);
+      } else {
+        const l = pointerLook(dx, dy, p.touch ? TOUCH_LOOK : MOUSE_LOOK);
+        this.flyLook(l.dx, l.dy);
+      }
+      p.x = e.clientX; p.y = e.clientY;
     };
     const up = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || !f.drag) return;
-      f.drag = false;
+      const p = pointers.get(e.pointerId);
+      pointers.delete(e.pointerId);
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-      // A click rather than a drag takes the mouse (Esc gives it back).
-      if (f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
+      if (!f || !p) return;
+      f.drag = pointers.size > 0;
+      // A left click rather than a drag takes the mouse (Esc gives it back).
+      if (!p.touch && e.button === 0 && f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
     };
+    // The right button looks, so it must not open the page's menu.
+    const menu = (e: MouseEvent) => { if (this.fly) e.preventDefault(); };
     const wheel = (e: WheelEvent) => {
       if (!this.fly) return;
       e.preventDefault();
-      this.flySpeed = speedStep(this.flySpeed, e.deltaY);
+      const next = speedStep(this.flySpeed, e.deltaY, e.deltaMode);
+      if (next === this.flySpeed) return;
+      this.flySpeed = next;
       this.onFlySpeed?.(speedLabel(this.flySpeed));
     };
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+    el.addEventListener("contextmenu", menu);
     el.addEventListener("wheel", wheel, { passive: false });
     return () => {
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      el.removeEventListener("contextmenu", menu);
       el.removeEventListener("wheel", wheel);
     };
+  }
+
+  /** How fast the flycam flies, world units a second. */
+  private flyUnitsPerSecond(boost: boolean) {
+    return this.scale * 6 * this.flySpeed * (boost ? BOOST : 1);
+  }
+
+  /** Moves the flycam at once by `m` (camera frame) times `k` world units. */
+  private flyNudge(m: FlyMove, k: number) {
+    const f = this.fly;
+    if (!f || moveIsIdle(m)) return;
+    this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
+    const fwd = this.camera.getWorldDirection(this.v1);
+    const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
+    this.camera.position.addScaledVector(fwd, m.forward * k).addScaledVector(right, m.right * k);
+    this.camera.position.y += m.up * k;
+    this.dirty = true;
   }
 
   /** One frame of flying: keys and the gamepad to a velocity (eased unless
@@ -891,9 +940,9 @@ export class ViewerScene {
     const f = this.fly!;
     const sec = dt / 1000;
     const pad = padInput(Array.from(navigator.getGamepads?.() ?? []).find((g) => g?.connected));
-    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * 2.2 * sec, pad.lookY * 2.2 * sec);
+    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * PAD_LOOK * sec, pad.lookY * PAD_LOOK * sec);
     const m = addMoves(keyMove(f.keys), pad.move);
-    const speed = this.scale * 6 * this.flySpeed * (keyBoost(f.keys) || pad.boost ? BOOST : 1);
+    const speed = this.flyUnitsPerSecond(keyBoost(f.keys) || pad.boost);
     this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
     const fwd = this.camera.getWorldDirection(this.v1);
     const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));

@@ -73,8 +73,8 @@ export function deadzone(v: number, zone = PAD_DEADZONE): number {
 }
 
 /** A gamepad's ask: left stick moves (up is forward), right stick looks,
- *  the right trigger or bumper goes up, the left goes down, a (button 0) or a
- *  stick click boosts. Layout is the standard mapping. */
+ *  (squared, see `stickCurve`), the right trigger or bumper goes up, the
+ *  left goes down, a (button 0) or a stick click boosts. Layout is the standard mapping. */
 export function padInput(pad: PadState | null | undefined): PadInput {
   if (!pad) return { move: NO_MOVE, lookX: 0, lookY: 0, boost: false };
   const b = (i: number) => pad.buttons[i]?.pressed || (pad.buttons[i]?.value ?? 0) > 0.5;
@@ -82,8 +82,8 @@ export function padInput(pad: PadState | null | undefined): PadInput {
   const up = Math.max(trig(7), b(5) ? 1 : 0), down = Math.max(trig(6), b(4) ? 1 : 0);
   return {
     move: limit({ right: deadzone(pad.axes[0] ?? 0), forward: -deadzone(pad.axes[1] ?? 0), up: up - down }),
-    lookX: deadzone(pad.axes[2] ?? 0),
-    lookY: deadzone(pad.axes[3] ?? 0),
+    lookX: stickCurve(deadzone(pad.axes[2] ?? 0)),
+    lookY: stickCurve(deadzone(pad.axes[3] ?? 0)),
     boost: b(0) || b(10),
   };
 }
@@ -110,13 +110,72 @@ export function anglesOf(x: number, y: number, z: number): { yaw: number; pitch:
   return { yaw: Math.atan2(-x, -z), pitch: Math.max(-MAX_PITCH, Math.min(MAX_PITCH, Math.asin(y / l))) };
 }
 
+/** Pixels of wheel movement that make one notch (a mouse wheel's click). */
+export const WHEEL_NOTCH = 100;
+
+/** A wheel event's movement in pixels, whatever unit it came in
+ *  (`WheelEvent.deltaMode`: 0 pixels, 1 lines, 2 pages). Firefox scrolls
+ *  three lines a notch; a page is taken as three notches. */
+export function wheelPixels(deltaY: number, deltaMode = 0): number {
+  if (!Number.isFinite(deltaY)) return 0;
+  return deltaY * (deltaMode === 1 ? WHEEL_NOTCH / 3 : deltaMode === 2 ? WHEEL_NOTCH * 3 : 1);
+}
+
 /** The speed multiplier after wheel movement (positive deltaY, scrolling
- *  down, is slower), by whole notches in either direction, clamped. */
-export function speedStep(speed: number, deltaY: number): number {
-  if (!deltaY || !Number.isFinite(deltaY)) return speed;
-  const notches = Math.max(1, Math.min(3, Math.round(Math.abs(deltaY) / 100)));
-  const next = speed * SPEED_STEP ** (-Math.sign(deltaY) * notches);
+ *  down, is slower). Proportional to the movement, so a trackpad's stream
+ *  of small deltas changes the speed smoothly and adds up to what a
+ *  mouse's notches would; one event moves at most three notches, so a
+ *  flick is not a jump. Clamped. */
+export function speedStep(speed: number, deltaY: number, deltaMode = 0): number {
+  const px = wheelPixels(deltaY, deltaMode);
+  if (!px) return speed;
+  const notches = Math.max(-3, Math.min(3, px / WHEEL_NOTCH));
+  const next = speed * SPEED_STEP ** -notches;
   return Math.max(SPEED_MIN, Math.min(SPEED_MAX, next));
+}
+
+/** Radians of look per pixel of mouse movement. */
+export const MOUSE_LOOK = 0.0022;
+/** Radians of look per pixel of a finger's drag (a finger moves further). */
+export const TOUCH_LOOK = 0.004;
+/** Radians a second at full stick. */
+export const PAD_LOOK = 2.4;
+/** One pointer event moving further than this (pixels) is a browser's
+ *  pointer-lock glitch (Chrome reports a jump when the cursor is warped),
+ *  not a hand: it is dropped. */
+export const LOOK_SPIKE = 250;
+
+/** A pointer movement to a look in radians (x right, y down), nothing for
+ *  a spike. */
+export function pointerLook(dx: number, dy: number, perPixel = MOUSE_LOOK): { dx: number; dy: number } {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) > LOOK_SPIKE || Math.abs(dy) > LOOK_SPIKE) return { dx: 0, dy: 0 };
+  return { dx: dx * perPixel, dy: dy * perPixel };
+}
+
+/** A stick's look response: squared (sign kept), so small tilts aim finely
+ *  and full tilt still turns at full rate. */
+export function stickCurve(v: number): number {
+  return Math.sign(v) * v * v;
+}
+
+/** Which mouse buttons drag to look: the left (a click without a drag
+ *  takes the pointer) and the right (held while flying, as in an editor). */
+export function looksWith(button: number): boolean {
+  return button === 0 || button === 2;
+}
+
+/** Two fingers from `a0`, `b0` to `a1`, `b1` (client pixels) as a move in
+ *  the camera's frame, in pixels: spreading them flies forward, pinching
+ *  back; dragging both moves the view with them as if the world were
+ *  pushed (right drags the camera left, up drags it down). */
+export function twoFingerMove(
+  a0: readonly [number, number], b0: readonly [number, number],
+  a1: readonly [number, number], b1: readonly [number, number],
+): FlyMove {
+  const spread = Math.hypot(a1[0] - b1[0], a1[1] - b1[1]) - Math.hypot(a0[0] - b0[0], a0[1] - b0[1]);
+  const mx = (a1[0] + b1[0] - a0[0] - b0[0]) / 2, my = (a1[1] + b1[1] - a0[1] - b0[1]) / 2;
+  const ok = [spread, mx, my].every(Number.isFinite);
+  return ok ? { right: -mx, up: my, forward: spread } : NO_MOVE;
 }
 
 /** How the speed is told to the viewer. */
