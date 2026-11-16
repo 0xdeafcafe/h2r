@@ -410,6 +410,65 @@ pub struct Material {
     pub blend: Blend,
     /// The shader template's file stem (`tex_bump_env_four_change_color`).
     pub template: String,
+    /// An environment-mapped shader's reflection tint ([`env_tint`]):
+    /// facing the eye, then at a grazing angle.
+    pub env: Option<EnvTint>,
+}
+
+/// The colours an environment-mapped shader tints its reflection with:
+/// `perpendicular` where the surface faces the eye, `parallel` at a
+/// grazing angle (RGB, 0..1). The Covenant's sheen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvTint {
+    pub perpendicular: [f32; 3],
+    pub parallel: [f32; 3],
+}
+
+/// The reflection tint of an opaque environment-mapped shader (`tex_bump_env*`
+/// and `tex_bump_shiny` templates) from its colour parameters (shad
+/// postprocess `+0x0c`, packed ARGB): the last two with any colour are its
+/// perpendicular and parallel colours (the ones after them only carry
+/// alpha, scalars). On the disc: the Ghost's orange to purple, the
+/// Spectre's pale yellow to blue, the Wraith's light to deep blue, the
+/// Banshee's blue to dark violet; the Warthog's tan to dark blue; human
+/// guns near white. `None` for other templates or fewer than two colours.
+pub fn env_tint(template_stem: &str, colours: &[u32]) -> Option<EnvTint> {
+    if !(template_stem.starts_with("tex_bump_env") || template_stem == "tex_bump_shiny") {
+        return None;
+    }
+    let rgb = |c: u32| [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff].map(|v| v as f32 / 255.0);
+    let mut lit = colours.iter().filter(|&&c| c & 0x00ff_ffff != 0);
+    let parallel = lit.next_back()?;
+    let perpendicular = lit.next_back()?;
+    Some(EnvTint {
+        perpendicular: rgb(*perpendicular),
+        parallel: rgb(*parallel),
+    })
+}
+
+/// Paints the parts a change-colour map marks with the object's own colours
+/// (`colours[0]` primary, `[1]` secondary), as the game draws a vehicle
+/// nobody repaints: the base map times one where the map is empty, the
+/// colour where it is full (per channel, red primary, green secondary).
+pub fn paint_change_colours(base: &mut Image, cc: &Image, colours: &[[f32; 3]]) {
+    let (w, h) = (base.width.max(1) as f32, base.height.max(1) as f32);
+    let colour = |i: usize| colours.get(i).copied().unwrap_or([1.0; 3]);
+    let (primary, secondary) = (colour(0), colour(1));
+    let width = base.width as usize;
+    for (i, px) in base.rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = ((i % width.max(1)) as f32, (i / width.max(1)) as f32);
+        let wgt = cc.sample([(x + 0.5) / w, (y + 0.5) / h]);
+        let (mut p, mut s) = (wgt[0].clamp(0.0, 1.0), wgt[1].clamp(0.0, 1.0));
+        if p + s > 1.0 {
+            let n = p + s;
+            p /= n;
+            s /= n;
+        }
+        for c in 0..3 {
+            let k = 1.0 - p - s + primary[c] * p + secondary[c] * s;
+            px[c] = (f32::from(px[c]) * k).round().clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 /// How a surface is composited.
@@ -525,6 +584,7 @@ pub fn material_look_roles(
         specular,
         blend,
         template: stem,
+        env: None,
     };
     (material, cc)
 }
@@ -562,7 +622,8 @@ pub fn specular_map(base: &Image, metal: f32) -> Image {
     for px in rgba.as_chunks_mut::<4>().0 {
         let a = f32::from(px[3]) / 255.0;
         let rough = 0.85 - 0.55 * a;
-        px[0] = 255;
+        // Red (unused by glTF's metallic-roughness) keeps the mask itself.
+        px[0] = (a * 255.0).round() as u8;
         px[1] = (rough * 255.0).round() as u8;
         px[2] = (a * metal * 255.0).round() as u8;
         px[3] = 255;
@@ -856,6 +917,12 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         }
         if m.blend == Blend::Additive {
             h2.insert("blend".into(), json!("add"));
+        }
+        if let Some(e) = &m.env {
+            h2.insert(
+                "env".into(),
+                json!({"perpendicular": e.perpendicular, "parallel": e.parallel}),
+            );
         }
         if !h2.is_empty() {
             mat["extras"] = json!({ "h2": h2 });
@@ -1527,6 +1594,24 @@ pub fn seat_node(marker: &str) -> Option<String> {
     (id.len() <= 40).then_some(id)
 }
 
+/// A vehicle in the colours it is drawn with: Halo 2 paints a vehicle with
+/// its object's own change colours ([`object_change_colours`]; the
+/// Banshee's violet plates), not its driver's team, so they are painted
+/// into the base maps and the vehicle keeps no change-colour map or
+/// weights. A vehicle without colours of its own is left as it is.
+pub fn paint_vehicle(src: &mut Source, colours: &[[f32; 3]]) {
+    if colours.is_empty() {
+        return;
+    }
+    for (m, cc) in src.materials.iter_mut().zip(src.change_colour.iter_mut()) {
+        if let (Some(base), Some(map)) = (m.texture.as_mut(), cc.as_ref()) {
+            paint_change_colours(base, map, colours);
+        }
+        m.change_colour = None;
+        *cc = None;
+    }
+}
+
 /// A vehicle in its own model space (its object origin), posed by `pose`
 /// (empty: the rest pose; see [`pick_vehicle_pose`]), with a `seat_<name>`
 /// node per seat marker (first marker of a name).
@@ -1768,24 +1853,84 @@ fn markers(map: &mut MapReader, mode: TagId, nodes: usize) -> Result<Vec<Marker>
 /// element), whose `+4` block lists the bitmap parameters (0xc bytes, datum
 /// first; docs/formats/shader-instances.md).
 pub(crate) fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
-    let tag = map.tag(shader)?.clone();
-    let address = tag.location.context("no payload")?.address;
     let bytes = map.read_tag_bytes(shader)?;
-    let view = TagView::new(&bytes, address);
     let template = TagId(u32_at(&bytes, 4).context("shader too short")?);
     let template = map
         .tag(template)
         .ok()
         .and_then(|t| t.name.clone())
         .unwrap_or_default();
-    let post = view.block(&bytes[..0x54.min(bytes.len())], 0x20, 0x7c)?;
+    // The compiler shares identical compiled data between shaders: a shader
+    // whose postprocess is the same as another's (the Scorpion's right and
+    // spare treads, its left's) points into that one's payload, so the
+    // blocks are read wherever in the metadata they are.
+    let post = meta_block(map, &bytes, 0x20, 0x7c)?;
     let post = post.first().context("no compiled postprocess")?;
-    let ids = view
-        .block(post, 4, 0xc)?
+    let ids = meta_block(map, post, 4, 0xc)?
         .iter()
         .filter_map(|b| u32_at(b, 0).map(TagId))
         .collect();
     Ok((template, ids))
+}
+
+/// A shader's colour parameters (compiled postprocess `+0x0c`, packed ARGB).
+pub(crate) fn shader_colours(map: &mut MapReader, shader: TagId) -> Result<Vec<u32>> {
+    let bytes = map.read_tag_bytes(shader)?;
+    let post = meta_block(map, &bytes, 0x20, 0x7c)?;
+    let post = post.first().context("no compiled postprocess")?;
+    Ok(meta_block(map, post, 0xc, 4)?
+        .iter()
+        .filter_map(|b| u32_at(b, 0))
+        .collect())
+}
+
+/// An object's own change colours (`obje +0xac`, 0x10 bytes each: a block
+/// of initial permutations, then one of functions), for its default
+/// variant (`obje +0x30`): per colour the permutation of that variant
+/// (else the first; 0x20 bytes: weight, lower and upper bound RGB, variant
+/// string ID), the middle of its bounds. Empty when it has none.
+pub(crate) fn object_change_colours(map: &mut MapReader, object: TagId) -> Result<Vec<[f32; 3]>> {
+    let bytes = map.read_tag_bytes(object)?;
+    let variant = u32_at(&bytes, 0x30).unwrap_or(0);
+    let mut out = Vec::new();
+    for cc in meta_block(map, &bytes, 0xac, 0x10)? {
+        let perms = meta_block(map, &cc, 0, 0x20)?;
+        let Some(p) = perms
+            .iter()
+            .find(|p| u32_at(p, 0x1c) == Some(variant))
+            .or(perms.first())
+        else {
+            out.push([1.0; 3]);
+            continue;
+        };
+        let lo: [f32; 3] = f32s(p, 4).context("change colour")?;
+        let hi: [f32; 3] = f32s(p, 0x10).context("change colour")?;
+        out.push(std::array::from_fn(|c| {
+            ((lo[c] + hi[c]) / 2.0).clamp(0.0, 1.0)
+        }));
+    }
+    Ok(out)
+}
+
+/// The elements of the tag block whose (count, pointer) pair is at `field`
+/// of `record`, read from the map's metadata wherever they are.
+pub(crate) fn meta_block(
+    map: &mut MapReader,
+    record: &[u8],
+    field: usize,
+    stride: usize,
+) -> Result<Vec<Vec<u8>>> {
+    let count = u32_at(record, field).context("tag block outside its record")?;
+    let address = u32_at(record, field + 4).context("tag block outside its record")?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    anyhow::ensure!(count <= 4096, "tag block of {count} elements");
+    let len = count as usize * stride;
+    let space = map.metadata_space().context("no metadata region")?;
+    let offset = space.translate(address, u32::try_from(len)?)?;
+    let bytes = map.read_file_range(offset, len as u64)?;
+    Ok(bytes.chunks_exact(stride).map(<[u8]>::to_vec).collect())
 }
 
 fn last_component(name: &str) -> &str {
@@ -2055,7 +2200,11 @@ pub(crate) fn read_source(
             };
             found.push((role, image));
         }
-        let (material, cc) = material_look_roles(&name, &template, found);
+        let (mut material, cc) = material_look_roles(&name, &template, found);
+        if material.blend == Blend::Opaque {
+            let colours = shader_colours(map, shader).unwrap_or_default();
+            material.env = env_tint(&material.template, &colours);
+        }
         materials.push(material);
         change_colour.push(cc);
     }
@@ -2693,7 +2842,9 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
             let (mut map, mut files) = disc.open(maps[*i])?;
             let id = map.tag(map::TagQuery::NameInGroup(tag, VEHI))?.id;
             let (mode, jmad) = object_model(&mut map, id)?;
-            let src = read_source(&mut map, &mut files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let mut src = read_source(&mut map, &mut files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let colours = object_change_colours(&mut map, id).unwrap_or_default();
+            paint_vehicle(&mut src, &colours);
             let (names, pose, animation) = match jmad {
                 Some(jmad) => graph_pose(&mut map, &mut files, jmad, pick_vehicle_pose)?,
                 None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),

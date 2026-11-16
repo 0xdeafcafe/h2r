@@ -46,11 +46,12 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 13, so a disc extracted by an older build is extracted again
+key) is 15, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
-copy and the map pack maps).
+copy and the map pack maps; 15 vehicles in their own colours, the
+reflection tints and shaders whose compiled data another shader shares).
 
 ### `map.glb`
 
@@ -690,21 +691,42 @@ Keys (what telemetry sends):
   at a node named with `hand` (right first), else the root; `head` at the
   top centre of the mesh.
 - One primitive per material: `POSITION`, `NORMAL`, `TEXCOORD_0` (float),
-  u32 indices. Biped and vehicle primitives also have `COLOR_0` (float
+  u32 indices. Biped primitives also have `COLOR_0` (float
   `VEC4`) when any of the model's materials has a change-colour map: red is
   the primary change-colour weight, green the secondary (0..1), sampled
   bilinearly from the material's change-colour map at the vertex. A
   material without a change-colour map has zero weights; weapons have no
   `COLOR_0`. These are weights, not colours: a reader must not multiply
   the base colour by them (the viewer turns vertex colours off).
+- **Vehicle colours.** Halo 2 paints a vehicle with its object's own
+  change colours, not its driver's team (a red player's Banshee is as
+  violet as anyone's). The `obje` change colours (`+0xac`, 0x10 bytes
+  each: a block of initial permutations, then one of functions; a
+  permutation is 0x20 bytes: weight, lower and upper bound RGB, variant
+  string ID) give, per colour, the permutation of the object's default
+  variant (`obje +0x30`), else the first, at the middle of its bounds. On
+  the disc only the Banshee (violet and dark violet; the heretic variant's
+  gold) and the Scorpion (grey, on no marked surface) have any. They are
+  painted into the base maps as the game tints (per channel: one where
+  the change-colour map is empty, the colour where it is full; red
+  primary, green secondary), so a vehicle has no change-colour map and no
+  `COLOR_0`.
 - Materials (`material_look`): `baseColorTexture` (an embedded PNG, at most
   512 pixels a side) when the diffuse map decoded, else a grey
   `baseColorFactor`; metallic 0, roughness 0.8 unless:
   - the shader is a bump-env or shiny one (`tex_bump_env*`,
     `tex_bump_shiny`): the base map's alpha is Halo 2's specular mask, and
     becomes a `metallicRoughnessTexture` (green roughness 0.85 to 0.3,
-    blue metalness up to 0.6 for env, 0.35 for shiny); the base map is
-    then stored opaque;
+    blue metalness up to 0.6 for env, 0.35 for shiny, red the mask
+    itself); the base map is then stored opaque. The shader's reflection
+    tint is `extras.h2.env` `{perpendicular, parallel}` (RGB 0..1): its
+    last two colour parameters with any colour (compiled postprocess
+    `+0x0c`, packed ARGB; those after carry only alpha). Facing the eye
+    the reflection takes the first, at a grazing angle the second: the
+    Covenant's sheen (Ghost orange to purple, Spectre pale yellow to blue,
+    Wraith light to deep blue, Banshee blue to dark violet). The viewer
+    adds the environment, clamped to 1 as the game's cube maps are low
+    range, times the mask and the tint (`ENV_FRAGMENT`, at 0.5);
   - it has a self-illumination map (a bitmap named `*illum*`), or is a lit
     display (`illum`, `*meter*`, `*plasma*` templates): `emissiveTexture`
     (that map, or the base map) with `emissiveFactor` 1;
@@ -856,7 +878,12 @@ whole step takes about 0.6 s on 10 cores.
     fuel rod, `support` for the brute shot, `sword`, `flag`, `ball`; vehicle
     guns say `fixed`).
 11. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
-   `+4` block, datum first; docs/formats/shader-instances.md). A bitmap's role comes
+   `+4` block, datum first; docs/formats/shader-instances.md). The compiler
+   shares identical compiled data: a shader's postprocess may lie in
+   another shader's payload (the Scorpion's right and spare treads point
+   into its left tread's; the Wraith's boost glow and damage shaders do
+   the same), so the blocks are read from the map's metadata wherever
+   they are, not only the tag's own bytes. A bitmap's role comes
    from generic words in its tag name read at run time: engine defaults
    (`default_bitmaps`, `rasterizer`) are never used; a name ending in
    `_cc` or saying `change_color` (or `color_change`) is the change-colour
@@ -921,7 +948,12 @@ Do not commit anything they write.
   coarse as the mesh; the per-pixel map in `extras.h2.change_colour` is
   exact. Only the primary and secondary colours are tinted.
 - No bump or detail maps; reflections are the reader's environment, not
-  the shader's cube map, and the shader's colour parameters (specular and
-  environment tints) are not read, so the chief's visor is the diffuse
-  map's dark colour, not gold.
+  the shader's cube map, tinted by the shader's last two colours; other
+  colour parameters are not read, so the chief's visor is the diffuse
+  map's dark colour, not gold. The Ghost's red glyph is in its base map
+  (no decal): it is drawn as the disc paints it. The Warthog's olive
+  hubs are its tyre map's colour; its rubber and dirt detail maps would
+  vary it but are not drawn.
+- A vehicle is drawn in its default variant: the Banshee's indexed base
+  map shows its first image (the heretic Banshee's is the second).
 - Elite helmets and other permutations: only `base` (or the first).

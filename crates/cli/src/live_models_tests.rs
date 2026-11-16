@@ -554,9 +554,10 @@ fn a_bump_env_change_colour_shader_gets_its_maps_and_shine() {
     assert!(t.rgba.chunks(4).all(|p| p[3] == 255));
     assert_eq!(&t.rgba[..3], &[200, 100, 50]);
     let s = m.specular.as_ref().unwrap();
-    // Masked: smooth and metallic (an env shader's 0.6). Unmasked: matte, not metal.
+    // Masked: smooth and metallic (an env shader's 0.6). Unmasked: matte,
+    // not metal. Red is the mask.
     assert_eq!(&s.rgba[0..3], &[255, 77, 153]);
-    assert_eq!(&s.rgba[4..7], &[255, 217, 0]);
+    assert_eq!(&s.rgba[4..7], &[0, 217, 0]);
 }
 
 #[test]
@@ -2304,4 +2305,100 @@ fn opaque_overlay_decals_blend_by_how_far_they_are_from_grey() {
     );
     assert_eq!(m.blend, Blend::Alpha);
     assert_eq!(m.texture.unwrap().rgba[7], 255);
+}
+
+#[test]
+fn an_env_shader_tints_its_reflection_by_its_last_two_colours() {
+    // Invented: two colours, then two that carry only alpha (scalars).
+    let colours = [
+        0x00ff_ffff,
+        0x00e0_8040,
+        0x0010_2030,
+        0x4000_0000,
+        0x8000_0000,
+    ];
+    let t = env_tint("tex_bump_env_no_detail", &colours).unwrap();
+    assert!(close(
+        &t.perpendicular,
+        &[224.0 / 255.0, 128.0 / 255.0, 64.0 / 255.0]
+    ));
+    assert!(close(
+        &t.parallel,
+        &[16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0]
+    ));
+    assert!(env_tint("tex_bump_shiny", &colours).is_some());
+    assert!(
+        env_tint("tex_bump", &colours).is_none(),
+        "not environment mapped"
+    );
+    assert!(
+        env_tint("tex_bump_env", &[0x00ff_0000, 0x4000_0000]).is_none(),
+        "one colour"
+    );
+}
+
+#[test]
+fn a_vehicle_is_painted_with_its_own_change_colours() {
+    let px = |r: u8, g: u8| [r, g, 0, 255];
+    let base = Image {
+        width: 2,
+        height: 1,
+        rgba: [[200, 200, 200, 255], [200, 200, 200, 255]].concat(),
+    };
+    // Left: all primary; right: half secondary.
+    let cc = Image {
+        width: 2,
+        height: 1,
+        rgba: [px(255, 0), px(0, 128)].concat(),
+    };
+    let mut src = Source {
+        materials: vec![Material {
+            texture: Some(base.clone()),
+            change_colour: Some(cc.clone()),
+            ..Material::default()
+        }],
+        change_colour: vec![Some(cc.clone())],
+        ..Source::default()
+    };
+    paint_vehicle(&mut src, &[[0.5, 0.25, 1.0], [0.0, 1.0, 0.0]]);
+    let out = src.materials[0].texture.as_ref().unwrap();
+    assert_eq!(&out.rgba[..3], &[100, 50, 200], "primary");
+    // Half secondary (green): red and blue halve, green stays.
+    assert_eq!(&out.rgba[4..7], &[100, 200, 100]);
+    assert!(
+        src.materials[0].change_colour.is_none() && src.change_colour[0].is_none(),
+        "nothing left to tint"
+    );
+    // No colours of its own: left for the reader.
+    let mut plain = Source {
+        materials: vec![Material {
+            texture: Some(base.clone()),
+            change_colour: Some(cc.clone()),
+            ..Material::default()
+        }],
+        change_colour: vec![Some(cc)],
+        ..Source::default()
+    };
+    paint_vehicle(&mut plain, &[]);
+    assert_eq!(plain.materials[0].texture.as_ref().unwrap(), &base);
+    assert!(plain.change_colour[0].is_some());
+}
+
+#[test]
+fn the_specular_mask_rides_in_red() {
+    let base = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![9, 9, 9, 255],
+    };
+    let s = specular_map(&base, 0.6);
+    assert_eq!(s.rgba[0], 255, "full mask");
+    let none = specular_map(
+        &Image {
+            rgba: vec![9, 9, 9, 0],
+            ..base
+        },
+        0.6,
+    );
+    assert_eq!((none.rgba[0], none.rgba[2]), (0, 0));
 }
