@@ -91,6 +91,12 @@ impl GuestMemory for GuestAdapter<'_> {
             .read_bytes(addr, out, 1)
             .map_err(|f| self.failed(f, addr, len))
     }
+    fn read_append(&self, addr: u32, len: usize, out: &mut Vec<u8>) -> Result<(), GuestError> {
+        crate::guest::check_range(addr, len)?;
+        self.guest
+            .read_append(addr, len, out, 1)
+            .map_err(|f| self.failed(f, addr, len))
+    }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError> {
         match self.guest.write_bytes(addr, data, 1) {
             Ok(()) => Ok(()),

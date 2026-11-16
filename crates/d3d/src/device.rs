@@ -641,7 +641,8 @@ pub struct Device<B: Backend> {
     pixel_shader: u32,
     streams: [StreamSource; 16],
     stream_inputs: Option<Vec<StreamSource>>,
-    /// Recycled after the synchronous backend has consumed a draw.
+    /// Stream buffers the backend is done with, for the next draws to fill,
+    /// by capacity, smallest first.
     stream_pool: Vec<Vec<u8>>,
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
@@ -3413,23 +3414,44 @@ impl<B: Backend> Device<B> {
         stride: u32,
     ) -> Result<StreamBytes, D3dError> {
         crate::guest::check_range(va, len)?;
-        let mut data = self.stream_pool.pop().unwrap_or_default();
-        self.stream_pool_bytes -= data.capacity();
-        data.resize(len, 0);
-        if let Err(e) = mem.read(va, &mut data) {
+        let mut data = self.stream_buffer(len);
+        if let Err(e) = mem.read_append(va, len, &mut data) {
             self.recycle_stream(data);
             return Err(e.into());
         }
         Ok(StreamBytes { data, stride })
     }
 
+    /// An empty pooled buffer with room for `len` bytes: the smallest that
+    /// fits, since a draw's streams differ in size and growing a buffer
+    /// copies its old bytes. Without one, a new buffer replaces the
+    /// largest, so the pool's buffers grow to the draws' sizes.
+    fn stream_buffer(&mut self, len: usize) -> Vec<u8> {
+        let i = self.stream_pool.partition_point(|b| b.capacity() < len);
+        if i < self.stream_pool.len() {
+            let mut b = self.stream_pool.remove(i);
+            self.stream_pool_bytes -= b.capacity();
+            b.clear();
+            return b;
+        }
+        if let Some(b) = self.stream_pool.pop() {
+            self.stream_pool_bytes -= b.capacity();
+        }
+        Vec::with_capacity(len)
+    }
+
     fn recycle_stream(&mut self, data: Vec<u8>) {
         // Retain ordinary draws without keeping an exceptional 64 MiB span.
         const MAX_POOL_BYTES: usize = 16 << 20;
-        if self.stream_pool.len() < 16 && data.capacity() <= MAX_POOL_BYTES - self.stream_pool_bytes
+        const MAX_POOL_BUFFERS: usize = 64;
+        let c = data.capacity();
+        if c > 0
+            && self.stream_pool.len() < MAX_POOL_BUFFERS
+            && c <= MAX_POOL_BYTES - self.stream_pool_bytes
         {
-            self.stream_pool_bytes += data.capacity();
-            self.stream_pool.push(data);
+            let i = self.stream_pool.partition_point(|b| b.capacity() < c);
+            self.stream_pool_bytes += c;
+            self.stream_pool.insert(i, data);
         }
     }
 
@@ -3872,10 +3894,10 @@ impl<B: Backend> Device<B> {
                 },
             )
         };
-        let mut streams = Vec::new();
+        let mut streams = std::mem::take(&mut self.stream_scratch);
         for s in &layout.streams {
             let stride = s.stride as usize;
-            let mut data = Vec::with_capacity(span(entry, d.vertices.len() as u32, s.stride)?);
+            let mut data = self.stream_buffer(span(entry, d.vertices.len() as u32, s.stride)?);
             for v in &d.vertices {
                 let start = data.len();
                 data.resize(start + stride, 0);

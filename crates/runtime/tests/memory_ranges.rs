@@ -760,3 +760,33 @@ fn real_disc_arena_reservation_and_physical_budget() {
         .unwrap();
     memory.set_u32(ARENA_VA, 1).unwrap();
 }
+
+#[test]
+fn read_append_copies_what_read_bytes_does_and_nothing_on_a_fault() {
+    // Two adjacent mappings backed by physical pages out of order.
+    let mut g = Guest::new();
+    g.map(0x10000, P, 0x9000, Permissions::RW).unwrap();
+    g.map(0x11000, P, 0x8000, Permissions::RW).unwrap();
+    let bytes: Vec<u8> = (0..2 * P).map(|i| (i * 7 + 3) as u8).collect();
+    g.write_bytes(0x10000, &bytes, 1).unwrap();
+    g.protect(0x11000, Permissions::READ).unwrap();
+    let mut want = vec![0; 0x40];
+    g.read_bytes(0x10fe0, &mut want, 1).unwrap();
+    let mut out = vec![9u8; 2];
+    g.read_append(0x10fe0, 0x40, &mut out, 1).unwrap();
+    assert_eq!(out[..2], [9, 9]);
+    assert_eq!(out[2..], want);
+    assert_eq!(out[2..], bytes[0xfe0..0x1020]);
+    // Past the mapped range, misaligned, and empty: `out` is untouched.
+    let before = out.clone();
+    assert_eq!(
+        reason(g.read_append(0x11ff0, 0x20, &mut out, 1)),
+        FaultReason::Unmapped
+    );
+    assert_eq!(
+        reason(g.read_append(0x10001, 4, &mut out, 4)),
+        FaultReason::Misaligned
+    );
+    g.read_append(0x10000, 0, &mut out, 1).unwrap();
+    assert_eq!(out, before);
+}

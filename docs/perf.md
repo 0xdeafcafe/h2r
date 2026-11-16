@@ -417,3 +417,16 @@ translation while the arrays are unchanged), the pixel-shader decode in
 `sampled_stages`, heap reads of fixed-size headers (`guest::read_array`, state
 arrays read straight into arrays), per-word constant-shadow writes, and the
 three passes over the index list in `draw_indexed_vertices`.
+
+`cargo bench -p d3d --bench streams` times copying draws' vertex streams:
+1,000 draws a frame over three streams of large vertex buffers, index windows
+of 500 to 4,000 vertices, and one draw in `H2_BENCH_IMMEDIATE` (default 4) an
+immediate `Begin`/`End` quad, directly and through the render thread. It also
+prints allocations of 4 KiB or more per draw (the index list accounts for 0.75
+of them at the default ratio; anything above is stream buffers the pool did not
+supply). A stream is appended to an empty pooled buffer straight from guest
+memory (`GuestMemory::read_append`, no zero fill); the pool hands out the
+smallest buffer that fits, so a small buffer is not regrown (a copy of its old
+bytes) when a large one is waiting; and immediate draws fill pooled buffers
+too, where their fresh ones used to overflow the pool, which then freed the
+large buffers the next indexed draws had to allocate and fault in again.
