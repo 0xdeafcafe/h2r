@@ -50,7 +50,7 @@ export function statsNav(me: { gamertag: string } | null, admin: boolean): NavIt
     { label: "Players", href: "/stats/players", end: true },
     { label: "Clans", href: "/stats/clans" },
     { label: "Event Log", href: "/stats/events" },
-    ...(admin ? [{ label: "Admin", href: "/stats/admin", end: true }] : []),
+    ...(admin ? [{ label: "Halo Admin", href: "/stats/admin", end: true }] : []),
     { label: "Server", href: "/dash/server" },
   ];
 }

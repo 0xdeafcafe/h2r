@@ -1,0 +1,14 @@
+[package]
+name = "pathfind"
+description = "Halo 2 AI pathfinding data: decode retail sbsp pathfinding, generate it from a structure BSP's collision geometry, compare, and emit map::build blocks"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+map.workspace = true
+tags.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true
+anyhow.workspace = true

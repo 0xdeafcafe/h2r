@@ -3,38 +3,15 @@
    screen, a little wider and denser for the admin's longer list. */
 
 .dx-server .dx-plate--main { left: calc(var(--u) * 368); width: calc(var(--u) * 552); }
-.dx-server--admin .dx-plate--main { top: calc(var(--u) * 222); padding-top: calc(var(--u) * 60); padding-bottom: calc(var(--u) * 36); }
-.dx-server--admin .dx-plate-body { font-size: calc(var(--u) * 16); }
-.dx-server--admin .dx-plate dl { line-height: calc(var(--u) * 19.5); }
 .dx-server-facts dd span { margin-left: calc(var(--u) * 2); }
 
-.dx-plate dd .dx-copy, .dx-copy { margin: 0; font-size: 1em; text-transform: none; letter-spacing: .03em; color: #fff; display: inline-flex; align-items: baseline; gap: calc(var(--u) * 8); max-width: 100%; }
-.dx-copy code { font: 500 .9em ui-monospace, Menlo, monospace; letter-spacing: 0; color: #e8ffd0; overflow: hidden; text-overflow: ellipsis; }
-.dx-copy .dx-forget { font-size: calc(var(--u) * 13); }
-
-.dx-invites .dx-days { display: inline-flex; gap: calc(var(--u) * 6); }
-.dx-invites .dx-days button {
-  font: 600 calc(var(--u) * 14) var(--f-cond); letter-spacing: .08em; text-transform: uppercase;
-  padding: calc(var(--u) * 3) calc(var(--u) * 10); border-radius: calc(var(--u) * 12);
-  color: #b9ec86; background: rgba(0, 40, 0, .45); border: calc(var(--u) * 1.5) solid rgba(160, 230, 100, .35);
-}
-.dx-invites .dx-days button.on { color: #10240a; background: var(--y-1); border-color: var(--y-1); box-shadow: 0 0 calc(var(--u) * 10) rgba(230, 255, 90, .5); }
-.dx-invites .dx-go { grid-column: 2; justify-self: start; }
-.dx-invites input[readonly] { font: 500 calc(var(--u) * 12) ui-monospace, Menlo, monospace; letter-spacing: 0; text-transform: none; }
-
-.dx-invite-list { list-style: none; margin: calc(var(--u) * 10) 0 0; padding: calc(var(--u) * 8) 0 0; border-top: calc(var(--u) * 1) solid rgba(160, 230, 100, .25); display: grid; gap: calc(var(--u) * 2); max-height: calc(var(--u) * 120); overflow: auto; }
-.dx-invite-list li { display: flex; align-items: baseline; gap: calc(var(--u) * 10); font-size: calc(var(--u) * 15); text-transform: none; letter-spacing: .03em; color: #fff; }
-.dx-invite-list li > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dx-invite-list .dx-invite-old { color: #a9dd7c; }
-.dx-invite-list .dx-forget { font-size: calc(var(--u) * 13); }
-.dx-invites .dx-invite-code { font-size: calc(var(--u) * 15); letter-spacing: .04em; }
-
-/* Invites as a column of blades (rows): the selected one lit like a list
-   row, A acts on it, X revokes. Same flat Settings plate round them. */
+/* Blades (src/dash/Blades.tsx): the one row style for things to do on a
+   plate (invites, accounts, import). The selected one lit like a list row,
+   A acts on it, X does its second action. Facts are plain rows. */
 .dx-pages.dx-invites-screen .dx-plate--main { top: calc(var(--u) * 250); padding-bottom: calc(var(--u) * 18); }
 .dx-invites-screen .dx-plate dl { margin-bottom: 0; }
 .dx-blades { list-style: none; margin: calc(var(--u) * 8) 0 0; padding: 0; display: grid; gap: calc(var(--u) * 5); max-height: calc(var(--u) * 168); overflow: auto; scrollbar-width: none; }
-.dx .dx-blades .dx-blade, .dx .dx-blades .dx-blade-old {
+.dx .dx-blades .dx-blade {
   width: 100%; display: flex; align-items: center; gap: calc(var(--u) * 12); min-height: calc(var(--u) * 36); padding: 0 calc(var(--u) * 14);
   border: 1px solid #507e35; border-top-color: #0c2809; border-left-color: #12350b; border-radius: calc(var(--u) * 2);
   background: linear-gradient(180deg, #122e0b, #204914); color: #b9e28a; text-align: left;
@@ -51,13 +28,15 @@
 }
 .dx-blades li.on .dx-blade input { color: #fff; }
 .dx-blade:disabled { filter: saturate(.4) brightness(.8); cursor: default; }
-.dx .dx-blades .dx-blade-old { cursor: default; opacity: .6; }
+.dx .dx-blades .dx-blade--fact { cursor: default; background: none; border-color: transparent; border-bottom-color: #67924844; border-radius: 0; color: #e1edc7; }
+.dx .dx-blades .dx-blade--fact > b { color: #a5ce78; font-weight: 500; }
+.dx .dx-blades .dx-blade--old { opacity: .6; }
+.dx .dx-blades .dx-blade--go:not(:disabled) > span { color: #e6fa85; }
+.dx .dx-blades li.on .dx-blade--go > span { color: inherit; }
 .dx-blade .dx-invite-code { font: 600 calc(var(--u) * 16) ui-monospace, Menlo, monospace; letter-spacing: .04em; text-transform: none; }
 .dx-flash { color: #e6fa85 !important; }
 
-/* Plain links and small actions on the flat plates: no underline, no browser blue. */
-.dx-pages .dx-plate a, .dx-plain-link { color: #e1edc7; text-decoration: none; border-bottom: 1px solid #67924866; }
-.dx-pages .dx-plate a:hover, .dx-plain-link:hover { color: var(--y-1); }
+/* Small actions on the flat plates: a blade-like button, never a link. */
 .dx .dx-pages .dx-forget {
   text-decoration: none; padding: calc(var(--u) * 3) calc(var(--u) * 10); border: 1px solid #507e35; border-radius: calc(var(--u) * 2);
   background: linear-gradient(180deg, #122e0b, #204914); color: #b9e28a;
@@ -66,5 +45,27 @@
 
 @media (max-aspect-ratio: 4/5) {
   .dx-pages.dx-invites-screen .dx-plate--main { top: calc(var(--u) * 182); }
-  .dx-blade, .dx-blade-old { font-size: calc(var(--u) * 15); }
+  /* Portrait: the server screens' pods are where you go next (invites,
+     accounts, halo admin), so they sit on top in a 2 x 2 and the plate goes
+     under them; the big pod, only a picture, gives way. */
+  .dx .dx-pages.dx-server .dx-centre { display: none; }
+  .dx .dx-pages.dx-server .dx-sat--0 { top: calc(var(--u) * 34); }
+  .dx .dx-pages.dx-server .dx-sat--3 { top: calc(var(--u) * 34); }
+  .dx .dx-pages.dx-server .dx-sat--1 { top: calc(var(--u) * 136); }
+  .dx .dx-pages.dx-server .dx-sat--2 { top: calc(var(--u) * 136); }
+  .dx .dx-pages.dx-server .dx-plate--main { top: calc(var(--u) * 246); }
+  .dx .dx-blades .dx-blade { font-size: calc(var(--u) * 15); }
 }
+
+/* The import screen: a paste box in the plate's own colours. */
+.dx-import { display: grid; gap: calc(var(--u) * 8); text-transform: none; }
+.dx .dx-paste {
+  width: 100%; box-sizing: border-box; min-height: calc(var(--u) * 84); resize: none; margin: 0;
+  padding: calc(var(--u) * 8) calc(var(--u) * 10); border: 1px solid #64983f; border-radius: 2px;
+  background: linear-gradient(#0a2307, #13300a); box-shadow: inset 0 2px 5px #0008; color: #e1edc7;
+  font: 500 max(13px, calc(var(--u) * 14)) ui-monospace, Menlo, monospace; letter-spacing: 0; outline: none;
+}
+.dx .dx-paste::placeholder { color: #8fae70; font-family: var(--f-cond); letter-spacing: .03em; font-size: max(14px, calc(var(--u) * 16)); }
+.dx .dx-paste:focus { border-color: #e6fa85; box-shadow: 0 0 0 1px #e6fa8555, inset 0 2px 5px #0008; }
+.dx-import .dx-blades { margin-top: 0; }
+.dx-blade .dx-blade-name { font-weight: 600; color: #fff; margin-left: .3em; }

@@ -1,4 +1,4 @@
-//! h2-studio: the Dear ImGui editor suite. See crates/studio/README.md.
+//! h2-editor: the Dear ImGui editor suite. See crates/studio/README.md.
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,9 +15,11 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-const USAGE: &str = "usage: h2-studio [--disc <iso> | --map <file.map> | --folder <maps dir>] \
+const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
 [--data <dir>] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
-[--variant <built-in index>] [--playlist <1..16>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
+[--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
+[--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
+[--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
 
 struct Args {
     source: Option<PathBuf>,
@@ -31,6 +33,12 @@ struct Args {
     variant: Option<usize>,
     playlist: Option<usize>,
     select: Option<String>,
+    copy_variant: Option<String>,
+    preset: Option<usize>,
+    focus: bool,
+    /// Yaw and pitch in degrees, distance in world units.
+    camera: Option<[f32; 3]>,
+    dialog: Option<String>,
 }
 
 fn args() -> Result<Args> {
@@ -46,6 +54,11 @@ fn args() -> Result<Args> {
         variant: None,
         playlist: None,
         select: None,
+        copy_variant: None,
+        preset: None,
+        focus: false,
+        camera: None,
+        dialog: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -70,6 +83,22 @@ fn args() -> Result<Args> {
             "--variant" => a.variant = Some(value()?.parse()?),
             "--playlist" => a.playlist = Some(value()?.parse::<usize>()?.clamp(1, 16) - 1),
             "--select" => a.select = Some(value()?),
+            "--copy-variant" => a.copy_variant = Some(value()?),
+            "--preset" => a.preset = Some(value()?.parse()?),
+            "--focus" => a.focus = true,
+            "--camera" => {
+                let v = value()?;
+                let n: Vec<f32> = v
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| anyhow!("--camera wants <yaw>,<pitch>,<distance>"))?;
+                let [yaw, pitch, distance] = n[..] else {
+                    bail!("--camera wants <yaw>,<pitch>,<distance>");
+                };
+                a.camera = Some([yaw, pitch, distance]);
+            }
+            "--dialog" => a.dialog = Some(value()?),
             "--scale" => a.scale = value()?.parse()?,
             "--size" => {
                 let v = value()?;
@@ -103,13 +132,31 @@ fn parse_selection(v: &str) -> Result<(scenario_edit::BlockKind, usize)> {
     Ok((kind, index.parse()?))
 }
 
+/// Moves the selected placement half a unit along x, as an edit.
+fn nudge_selection(app: &mut App) {
+    let (Some((kind, index)), Some(t)) = (app.session.selected(), app.session.selected_transform())
+    else {
+        return;
+    };
+    let [x, y, z] = t.position;
+    let edit = scenario_edit::Command::set(
+        kind,
+        index,
+        "position",
+        scenario_edit::Value::Vec3([x + 0.5, y, z]),
+    );
+    if let Err(e) = app.session.apply(edit) {
+        app.error(e.to_string());
+    }
+}
+
 /// Dear ImGui's errors as anyhow errors (they need not be `Send`).
 fn imgui_err(e: impl std::fmt::Display) -> anyhow::Error {
     anyhow!("{e}")
 }
 
 fn ini_path() -> PathBuf {
-    content::store::default_data_root().join("h2-studio.ini")
+    content::store::default_data_root().join("h2-editor.ini")
 }
 
 fn main() -> Result<()> {
@@ -140,6 +187,32 @@ fn main() -> Result<()> {
     }
     if let Some(sel) = &args.select {
         app.dispatch(Action::Select(Some(parse_selection(sel)?)));
+    }
+    if let Some(name) = &args.copy_variant {
+        app.dispatch(Action::CopyBuiltin(name.clone()));
+    }
+    if let Some(i) = args.preset {
+        app.hopper_preset = Some(i);
+    }
+    if args.focus {
+        app.dispatch(Action::FocusSelected);
+    }
+    if let Some([yaw, pitch, distance]) = args.camera {
+        let c = app.session.camera_mut();
+        c.yaw = yaw.to_radians();
+        c.pitch = pitch.to_radians();
+        c.distance = distance;
+    }
+    match args.dialog.as_deref() {
+        None => {}
+        Some("package") => app.open_package_form(),
+        // An unsaved edit (the selection nudged, or a variant copy) and
+        // Quit: the unsaved-changes prompt.
+        Some("unsaved") => {
+            nudge_selection(&mut app);
+            app.dispatch(Action::Quit);
+        }
+        Some(d) => bail!("unknown dialog {d}\n{USAGE}"),
     }
     if let Some(out) = &args.screenshot {
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;
@@ -281,7 +354,7 @@ impl Win {
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("h2-studio"),
+                label: Some("h2-editor"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -337,7 +410,7 @@ impl ApplicationHandler for Runner {
             match Win::new(event_loop, self.app.title()) {
                 Ok(w) => self.win = Some(w),
                 Err(e) => {
-                    eprintln!("h2-studio: {e:#}");
+                    eprintln!("h2-editor: {e:#}");
                     event_loop.exit();
                 }
             }
@@ -349,7 +422,7 @@ impl ApplicationHandler for Runner {
             return;
         };
         if let Err(e) = win.platform.handle_window_event(&mut win.ctx, id, &event) {
-            eprintln!("h2-studio: {e}");
+            eprintln!("h2-editor: {e}");
             event_loop.exit();
             return;
         }
@@ -363,7 +436,7 @@ impl ApplicationHandler for Runner {
             WindowEvent::DroppedFile(path) => self.app.dispatch(Action::OpenSource(path)),
             WindowEvent::RedrawRequested => {
                 if let Err(e) = win.redraw(&mut self.app) {
-                    eprintln!("h2-studio: {e:#}");
+                    eprintln!("h2-editor: {e:#}");
                 }
             }
             _ => {}

@@ -9,7 +9,7 @@ const RFC = {
 const TOKEN = "q3Jm2oZ0kX8vYb1sT4uW6g" + "Hn9cR5eLp2dF7aQ0zK1mXw";
 const SERVER = { base: "http://127.0.0.1:50123", api: "http://127.0.0.1:50123/v1", serverId: "localhost" };
 
-// What `h2 play --live` offers (live_admin::export_entry).
+// What `h2 play --live-local` offers (live_admin::export_entry).
 const ENTRY = {
   xuid: "0009000000000042",
   gamertag: "afr",
@@ -94,12 +94,12 @@ describe("redeeming the link", () => {
     expect(post.init?.cache).toBe("no-store");
   });
 
-  test("a second use, or a wrong token, says to run h2 play --live again", async () => {
+  test("a second use, or a wrong token, says to run h2 play --live-local again", async () => {
     const s = liveServer();
     expect((await redeem(TOKEN, SERVER, s.fetchFn)).ok).toBe(true);
     const again = await redeem(TOKEN, SERVER, s.fetchFn);
     expect(again).toEqual({ ok: false, kind: "gone", error: GONE });
-    expect(GONE).toContain("h2 play --live again");
+    expect(GONE).toContain("h2 play --live-local again");
     expect((await redeem("x".repeat(44), SERVER, liveServer().fetchFn)).ok).toBe(false);
   });
 

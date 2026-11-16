@@ -147,13 +147,21 @@ keyboard still cancels. Not yet tried on the Apple TV.
   `shared`, `single_player_shared`, `00a_introduction` and `zanzibar`, the
   fonts, `media/` and the intro movie. Choosing another level or map makes the
   game fail to open it (it may stop or hang on the loading screen). The map
-  pack is not bundled.
+  pack is not bundled. `just tvos maps=all` bundles the whole disc and the
+  map pack instead (7 GB or more; [building.md](building.md)).
 - Speed: expect 3 to 4 fps in a level. Nothing is tuned for the A15 yet.
 - No BC textures on the Apple TV's GPU: DXT textures are decoded on the CPU
   (`gfx::dxt`), which costs load time and memory.
 - Saves and settings live in Caches and can be purged by tvOS.
 - Audio uses the default output through cpal; if it fails to open, the game
   runs silent (the log says so).
-- No Xbox Live (`--live`), no controller speaker, no `--level`.
+- Xbox Live is on by default, against `https://live.forbes.red`;
+  `live.toml` in the data root (`enabled = false`, or `server = "URL"`)
+  or `H2_LIVE_SERVER` in the scheme changes that ([live.md](../live/live.md)
+  "Playing on Live"). Signing in needs an account in the data root's
+  `live/accounts.json` until the in-game account setup has a screen; with
+  one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
+  The data root is in Caches here, so tvOS may purge the account key too.
+- No controller speaker, no `--level`.
 - The app must be rebuilt (with `build.sh`) for every generator change; the
   module is about 345 MB and the bundle 1.2 GB, so installs are slow.

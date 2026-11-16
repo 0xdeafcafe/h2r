@@ -202,10 +202,9 @@ export function AccountPlate(props: { state: RecoveryState }) {
                   <ul class="dx-devices">
                     <For each={list()}>
                       {(d) => (
-                        <li classList={{ "dx-device--old": !d.current }}>
-                          <code>{shortKid(d.kid)}</code>
-                          <span>{d.since ? ` since ${day(d.since)}` : d.from ? ` since event ${d.from}` : ""}</span>
-                          <span>{d.kid === me()?.kid ? " · this browser" : d.current ? "" : " · retired"}</span>
+                        <li classList={{ "dx-device--old": !d.current }} title={`key ${shortKid(d.kid)}`}>
+                          {d.kid === me()?.kid ? "this browser" : d.current ? "another device" : "retired device"}
+                          <span>{d.since ? ` since ${day(d.since)}` : ""}</span>
                         </li>
                       )}
                     </For>

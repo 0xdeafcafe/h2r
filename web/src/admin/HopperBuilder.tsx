@@ -8,7 +8,7 @@
 // catalog of the owner's maps and variants (./catalog.ts, ./presets.ts).
 // 404 until a base image is imported.
 
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 import { Panel } from "../stats/Layout";
 import { live } from "../state/live";
 import { getHopper, putHopper } from "./api";
@@ -94,7 +94,7 @@ export default function HopperBuilder() {
       const reply = await getHopper();
       if (!reply) {
         setError("no multiplayer_hopper.dat published for this server yet");
-        setStatus("import the game's own file once: h2 live hopper import <path>, on the server's machine");
+        setStatus("the server takes the game's own playlist file once, on its own machine; then it can be edited here");
         setHoppers([]);
         setOriginal([]);
         return;
@@ -281,7 +281,7 @@ export default function HopperBuilder() {
                     </Show>
                     <Show when={!catalog()}>
                       <p class="adm-preset-note">
-                        No catalog from this server (run h2 live assets extract on its machine): maps show as numbers and presets cannot resolve.
+                        No map catalog from this server yet (its game art has not been extracted): maps show as numbers and presets cannot resolve.
                       </p>
                     </Show>
                   </div>
@@ -314,28 +314,28 @@ export default function HopperBuilder() {
                       </tr>
                     </thead>
                     <tbody>
-                      <For each={h().records}>
+                      <Index each={h().records}>
                         {(r, i) => (
                           <tr>
-                            <td class="adm-rec-idx">{i() + 1}</td>
+                            <td class="adm-rec-idx">{i + 1}</td>
                             <td>
                               <Show
                                 when={catalog()}
-                                fallback={<span class="adm-mono">map id {r.id}</span>}
+                                fallback={<span class="adm-mono">map id {r().id}</span>}
                               >
                                 {(c) => (
                                   <select
-                                    value={String(r.id)}
-                                    onChange={(e) => editRecord(i(), { id: Number(e.currentTarget.value) })}
+                                    value={String(r().id)}
+                                    onChange={(e) => editRecord(i, { id: Number(e.currentTarget.value) })}
                                   >
-                                    <Show when={!mapById(c(), r.id)}>
-                                      <option value={r.id} selected>
-                                        id {r.id} (not a map in this game)
+                                    <Show when={!mapById(c(), r().id)}>
+                                      <option value={r().id} selected>
+                                        id {r().id} (not a map in this game)
                                       </option>
                                     </Show>
                                     <For each={c().maps}>
                                       {(m) => (
-                                        <option value={m.id} selected={m.id === r.id}>
+                                        <option value={m.id} selected={m.id === r().id}>
                                           {m.name}
                                         </option>
                                       )}
@@ -344,45 +344,45 @@ export default function HopperBuilder() {
                                 )}
                               </Show>
                             </td>
-                            <td class="adm-variant">{variantLabel(r)}</td>
+                            <td class="adm-variant">{variantLabel(r())}</td>
                             <td>
                               <input
                                 class="adm-num"
                                 type="number"
                                 min={1}
                                 max={MAX_WEIGHT}
-                                value={r.dwords[0]}
+                                value={r().dwords[0]}
                                 onInput={(e) => {
                                   const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i(), { dwords: [n, r.dwords[1]] });
+                                  if (n !== null) editRecord(i, { dwords: [n, r().dwords[1]] });
                                 }}
                               />
                             </td>
                             <td class="adm-rec-btns">
-                              <button aria-label="Move up" disabled={i() === 0} onClick={() => moveRecord(i(), -1)}>
+                              <button aria-label="Move up" disabled={i === 0} onClick={() => moveRecord(i, -1)}>
                                 ↑
                               </button>
                               <button
                                 aria-label="Move down"
-                                disabled={i() === h().records.length - 1}
-                                onClick={() => moveRecord(i(), 1)}
+                                disabled={i === h().records.length - 1}
+                                onClick={() => moveRecord(i, 1)}
                               >
                                 ↓
                               </button>
-                              <button aria-label="Duplicate" onClick={() => copyRecord(i())}>
+                              <button aria-label="Duplicate" onClick={() => copyRecord(i)}>
                                 ⧉
                               </button>
                               <button
                                 aria-label="Remove"
                                 disabled={h().records.length <= 1}
-                                onClick={() => removeRecord(i())}
+                                onClick={() => removeRecord(i)}
                               >
                                 ×
                               </button>
                             </td>
                           </tr>
                         )}
-                      </For>
+                      </Index>
                     </tbody>
                   </table>
                   <details class="adm-hint adm-advanced">
@@ -428,24 +428,24 @@ export default function HopperBuilder() {
                   </div>
                   <div class="adm-row">
                     <span class="adm-field-label">Range fields</span>
-                    <For each={h().ranges}>
+                    <Index each={h().ranges}>
                       {(r, i) => (
                         <input
                           class="adm-num"
                           type="number"
                           min={0}
-                          value={r}
+                          value={r()}
                           onInput={(e) => {
                             const n = num(e.currentTarget.value);
                             if (n !== null) {
                               const ranges = [...h().ranges] as [number, number, number];
-                              ranges[i()] = n;
+                              ranges[i] = n;
                               edit({ ranges });
                             }
                           }}
                         />
                       )}
-                    </For>
+                    </Index>
                   </div>
                   <table class="adm-records">
                     <thead>
@@ -460,27 +460,27 @@ export default function HopperBuilder() {
                       </tr>
                     </thead>
                     <tbody>
-                      <For each={h().records}>
+                      <Index each={h().records}>
                         {(r, i) => (
                           <tr>
-                            <td class="adm-rec-idx">{i() + 1}</td>
+                            <td class="adm-rec-idx">{i + 1}</td>
                             <td>
                               <input
                                 class="adm-num"
                                 type="number"
                                 min={0}
-                                value={r.id}
+                                value={r().id}
                                 onInput={(e) => {
                                   const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i(), { id: n });
+                                  if (n !== null) editRecord(i, { id: n });
                                 }}
                               />
                             </td>
                             <td>
                               <input
-                                value={r.string}
+                                value={r().string}
                                 maxLength={MAX_STRING}
-                                onInput={(e) => editRecord(i(), { string: e.currentTarget.value })}
+                                onInput={(e) => editRecord(i, { string: e.currentTarget.value })}
                               />
                             </td>
                             <td>
@@ -488,58 +488,58 @@ export default function HopperBuilder() {
                                 class="adm-num"
                                 type="number"
                                 min={0}
-                                value={r.flags}
+                                value={r().flags}
                                 onInput={(e) => {
                                   const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i(), { flags: n });
+                                  if (n !== null) editRecord(i, { flags: n });
                                 }}
                               />
                             </td>
-                            <For each={r.dwords}>
+                            <Index each={r().dwords}>
                               {(d, j) => (
                                 <td>
                                   <input
                                     class="adm-num"
                                     type="number"
                                     min={0}
-                                    value={d}
+                                    value={d()}
                                     onInput={(e) => {
                                       const n = num(e.currentTarget.value);
                                       if (n !== null) {
-                                        const dwords = [...r.dwords] as [number, number];
-                                        dwords[j()] = n;
-                                        editRecord(i(), { dwords });
+                                        const dwords = [...r().dwords] as [number, number];
+                                        dwords[j] = n;
+                                        editRecord(i, { dwords });
                                       }
                                     }}
                                   />
                                 </td>
                               )}
-                            </For>
+                            </Index>
                             <td class="adm-rec-btns">
-                              <button aria-label="Move up" disabled={i() === 0} onClick={() => moveRecord(i(), -1)}>
+                              <button aria-label="Move up" disabled={i === 0} onClick={() => moveRecord(i, -1)}>
                                 ↑
                               </button>
                               <button
                                 aria-label="Move down"
-                                disabled={i() === h().records.length - 1}
-                                onClick={() => moveRecord(i(), 1)}
+                                disabled={i === h().records.length - 1}
+                                onClick={() => moveRecord(i, 1)}
                               >
                                 ↓
                               </button>
-                              <button aria-label="Duplicate" onClick={() => copyRecord(i())}>
+                              <button aria-label="Duplicate" onClick={() => copyRecord(i)}>
                                 ⧉
                               </button>
                               <button
                                 aria-label="Remove"
                                 disabled={h().records.length <= 1}
-                                onClick={() => removeRecord(i())}
+                                onClick={() => removeRecord(i)}
                               >
                                 ×
                               </button>
                             </td>
                           </tr>
                         )}
-                      </For>
+                      </Index>
                     </tbody>
                   </table>
                   </details>

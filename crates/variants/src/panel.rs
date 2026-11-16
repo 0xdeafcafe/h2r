@@ -1,4 +1,4 @@
-//! The game variant editor panel.
+//! The game variant editor's state and commands.
 //!
 //! A list of saved and built-in variants on the left, the open variant's
 //! settings on the right, grouped into the game's pages, with each
@@ -6,9 +6,8 @@
 //! anything the game would reject. Built-ins are read-only: as in the game,
 //! editing one starts from a named copy. Every edit can be undone.
 //!
-//! The editing operations are plain methods so the shell (menus, keyboard
-//! shortcuts) and tests can drive them without a frame; [`VariantEditor::ui`]
-//! only draws and calls them.
+//! The editing operations are plain methods so `h2-editor` (menus, keyboard
+//! shortcuts, its variant tool) and tests drive them without a frame.
 
 use std::path::PathBuf;
 
@@ -64,24 +63,13 @@ struct Doc {
 
 const MAX_UNDO: usize = 256;
 
-#[cfg(feature = "egui")]
-mod egui_ui;
-
 pub struct VariantEditor {
     schema: Schema,
     store: Option<SaveStore>,
     builtins: Vec<GameVariant>,
     saved: Vec<SavedVariant>,
     doc: Option<Doc>,
-    /// A list entry the user picked while the open variant had changes
-    /// (the egui panel's prompt).
-    #[cfg_attr(not(feature = "egui"), allow(dead_code))]
-    pending: Option<Origin>,
     copy_name: String,
-    #[cfg_attr(not(feature = "egui"), allow(dead_code))]
-    new_type: GameType,
-    #[cfg_attr(not(feature = "egui"), allow(dead_code))]
-    import_text: String,
     status: Option<(bool, String)>,
 }
 
@@ -106,10 +94,7 @@ impl VariantEditor {
             builtins,
             saved: Vec::new(),
             doc: None,
-            pending: None,
             copy_name: String::new(),
-            new_type: GameType::Slayer,
-            import_text: String::new(),
             status: None,
         };
         e.refresh();
@@ -184,7 +169,6 @@ impl VariantEditor {
     /// Closes the open variant, dropping its changes.
     pub fn close(&mut self) {
         self.doc = None;
-        self.pending = None;
     }
 
     fn open(&mut self, origin: Origin, v: GameVariant) {
@@ -196,7 +180,6 @@ impl VariantEditor {
             redo: Vec::new(),
             last: None,
         });
-        self.pending = None;
     }
 
     pub fn open_builtin(&mut self, i: usize) {
@@ -595,41 +578,6 @@ mod tests {
                 value: 5
             }]
         );
-    }
-
-    #[cfg(feature = "egui")]
-    /// Draw frames headlessly (no window): every state of the panel lays out
-    /// without panicking, with the disc schema's shape and the fallback.
-    #[test]
-    fn draws_headless() {
-        for s in [schema(), Schema::fallback()] {
-            let mut e = VariantEditor::new(s, Some(store("draw")));
-            let ctx = egui::Context::default();
-            let frame = |e: &mut VariantEditor| {
-                let input = egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1280.0, 800.0),
-                    )),
-                    ..Default::default()
-                };
-                let mut out = ctx.run_ui(input, |ui| e.ui(ui));
-                // No renderer here to take the font atlas.
-                out.textures_delta.clear();
-                assert!(!out.shapes.is_empty());
-            };
-            frame(&mut e);
-            if !e.builtins().is_empty() {
-                e.open_builtin(0);
-                frame(&mut e);
-            }
-            for t in GameType::ALL {
-                e.new_variant(t);
-                frame(&mut e);
-            }
-            e.pending = Some(Origin::New);
-            frame(&mut e);
-        }
     }
 
     #[test]

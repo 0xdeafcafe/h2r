@@ -85,9 +85,14 @@ Per account, private and versioned ([live-api.md](live-api.md) "Cloud saves"):
 - **Content addressed.** The writer sends the SHA-256 of the body
   (`X-H2-SHA256`) and the server refuses a body that hashes otherwise. Bytes
   are kept by hash as the content store keeps blobs, but under
-  `<data>/storage/<xuid>/blobs/`, never the public content directory: knowing
-  a hash must not fetch someone's save. An item's index is
-  `<data>/storage/<xuid>/index.json`.
+  `storage/<xuid>/blobs/` in the server's private blob store (the data
+  directory, or a private R2 bucket: never a public one), never the public
+  content: knowing a hash must not fetch someone's save. An account's index
+  is `storage/<xuid>/index.json` beside them. It cannot be rebuilt from the
+  blobs (versions, names, tombstones), so it moves with them; in a bucket
+  each write is conditional on the copy the server last read (`If-Match`),
+  so a second server on the same bucket makes the other's next write fail
+  (503, then a clean retry) instead of undoing it.
 - **Limits.** The caps above, plus the per-author write rate every write
   has (10 a second, a burst of 30; 429).
 
@@ -98,8 +103,10 @@ and owner-only access are what keep them the player's.
 
 ### At sign-in
 
-`h2 play` signs in before the window opens and the game starts. Then
-`play_cloud::start` lists the account's items, scans U: and the profile
+`h2 play` (with a Live flag) signs in before the window opens and the
+game starts; the tvOS and iOS apps, on Live by default, do the same with
+the account in their data root's `live/accounts.json`. Then
+`cloud_saves::session::start` (shared by both) lists the account's items, scans U: and the profile
 settings, and merges them with the last agreed state (below). Everything
 the merge pulls is written before the game reads U:. Settings values go
 through the settings store, the one writer of `settings.toml`.
@@ -178,7 +185,7 @@ Every line starts `cloud saves:`. At sign-in, one line per change, then a
 summary:
 
 ```text
-live: signing in to https://live.forbes.red (the default; --offline plays without Live)
+live: signing in to https://live.forbes.red (the default service; --live-server URL names another)
 live: playing as Chief (0009…) on https://live.forbes.red
 cloud saves: save/0123456789AB/SaveMeta.xbx: downloaded (changed on another machine)
 cloud saves: save/0123456789AB/profile: CONFLICT: changed on both, the other machine's is newer; this machine's copy kept in …/conflicts/20261116T120005Z-this-machine/save/0123456789AB/profile

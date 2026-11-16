@@ -1,6 +1,6 @@
 //! Real frames of the studio UI rendered offscreen with wgpu and written
 //! as PNGs: the same [`Studio`] and [`App`] as the window, no window. The
-//! guide's screenshots come from here (`h2-studio --screenshot`), and a
+//! guide's screenshots come from here (`h2-editor --screenshot`), and a
 //! test renders one frame of the invented test map.
 use std::path::Path;
 
@@ -143,7 +143,14 @@ impl Headless {
         for _ in 0..frames.max(1) {
             self.frame(app, 1.0 / 60.0)?;
         }
-        let [w, h] = Self::pixels(self.size, self.scale);
+        let size = Self::pixels(self.size, self.scale);
+        Ok((self.read(&self.target)?, size))
+    }
+
+    /// A 2D RGBA8 texture's texels as tightly packed rows (the texture
+    /// needs `COPY_SRC`).
+    pub fn read(&self, texture: &wgpu::Texture) -> Result<Vec<u8>> {
+        let (w, h) = (texture.width(), texture.height());
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -153,7 +160,7 @@ impl Headless {
         });
         let mut enc = self.device.create_command_encoder(&Default::default());
         enc.copy_texture_to_buffer(
-            self.target.as_image_copy(),
+            texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buf,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -182,7 +189,37 @@ impl Headless {
             let start = y * row as usize;
             out.extend_from_slice(&data[start..start + (w * 4) as usize]);
         }
-        Ok((out, [w, h]))
+        Ok(out)
+    }
+
+    /// Render `frames` frames; the last frame's viewport as the window
+    /// shows it (cropped from the frame) and as the viewport rendered it
+    /// (its own target), both tightly packed RGBA8 of the same size.
+    pub fn viewport(&mut self, app: &mut App, frames: usize) -> Result<ViewportShot> {
+        let (frame, [fw, fh]) = self.capture(app, frames)?;
+        let (rect, target) = self
+            .studio
+            .viewport
+            .shown()
+            .ok_or_else(|| anyhow!("no viewport was drawn"))?;
+        let rendered = self.read(target)?;
+        let (w, h) = (target.width(), target.height());
+        let x0 = (rect[0] * self.scale).round() as u32;
+        let y0 = (rect[1] * self.scale).round() as u32;
+        let (w, h) = (w.min(fw.saturating_sub(x0)), h.min(fh.saturating_sub(y0)));
+        let crop = |src: &[u8], stride: u32, x: u32, y: u32| -> Vec<u8> {
+            (0..h)
+                .flat_map(|r| {
+                    let start = (((y + r) * stride + x) * 4) as usize;
+                    src[start..start + (w * 4) as usize].to_vec()
+                })
+                .collect()
+        };
+        Ok(ViewportShot {
+            shown: crop(&frame, fw, x0, y0),
+            rendered: crop(&rendered, target.width(), 0, 0),
+            size: [w, h],
+        })
     }
 
     /// Render `frames` frames and write the last to `path` as a PNG.
@@ -196,6 +233,38 @@ impl Drop for Headless {
     fn drop(&mut self) {
         let _ = self.ctx.end_frame();
         let _ = self.renderer.shutdown(&mut self.ctx);
+    }
+}
+
+/// [`Headless::viewport`]: the viewport as shown and as rendered.
+pub struct ViewportShot {
+    pub shown: Vec<u8>,
+    pub rendered: Vec<u8>,
+    pub size: [u32; 2],
+}
+
+impl ViewportShot {
+    /// Mean of each RGB channel of `rgba`, as stored (sRGB-encoded).
+    pub fn mean(rgba: &[u8]) -> [f32; 3] {
+        let px = rgba.as_chunks::<4>().0;
+        let mut sum = [0.0f64; 3];
+        for p in px {
+            for c in 0..3 {
+                sum[c] += f64::from(p[c]);
+            }
+        }
+        sum.map(|s| (s / px.len().max(1) as f64) as f32)
+    }
+
+    /// The share of `rgba`'s pixels whose brightest channel is below
+    /// `level` (sRGB-encoded): how much of a picture reads as black.
+    pub fn black(rgba: &[u8], level: u8) -> f32 {
+        let px = rgba.as_chunks::<4>().0;
+        let n = px
+            .iter()
+            .filter(|p| p[..3].iter().all(|&c| c < level))
+            .count();
+        n as f32 / px.len().max(1) as f32
     }
 }
 
@@ -224,14 +293,10 @@ mod tests {
     /// writes. Skipped when the machine has no wgpu adapter.
     #[test]
     fn renders_the_studio_offscreen() {
-        let mut h = match Headless::new([1280.0, 800.0], 1.0) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("skipping: {e}");
-                return;
-            }
+        let Some((_turn, mut h)) = headless() else {
+            return;
         };
-        let dir = std::env::temp_dir().join(format!("h2-studio-shot-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("h2-editor-shot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let map = dir.join("example.map");
         std::fs::write(&map, fixture::fixture()).unwrap();
@@ -253,5 +318,105 @@ mod tests {
         write_png(&out, &rgba, w, hgt).unwrap();
         assert!(std::fs::metadata(&out).unwrap().len() > 1000);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Dear ImGui allows one context at a time: the tests take turns.
+    static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
+        let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        match Headless::new([1280.0, 800.0], 1.0) {
+            Ok(h) => Some((turn, h)),
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                None
+            }
+        }
+    }
+
+    /// The window shows the viewport's pixels as the viewport rendered
+    /// them. Dear ImGui treats a texel as sRGB-encoded and an sRGB view
+    /// would hand it linear values, darkening every mid-tone (a linear 0.05
+    /// shows as 13 instead of 63): Coagulation's bases and Midship's hull
+    /// came out black that way. Skipped when the machine has no wgpu
+    /// adapter.
+    #[test]
+    fn the_viewport_shows_what_it_rendered() {
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-vp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        let shot = h.viewport(&mut app, 4).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (shown, rendered) = (
+            ViewportShot::mean(&shot.shown),
+            ViewportShot::mean(&shot.rendered),
+        );
+        assert!(rendered.iter().any(|&c| c > 20.0), "rendered {rendered:?}");
+        for c in 0..3 {
+            assert!(
+                (shown[c] - rendered[c]).abs() < 4.0,
+                "shown {shown:?}, rendered {rendered:?}"
+            );
+        }
+    }
+
+    /// Coagulation's base exteriors and Midship's hull, framed as the map
+    /// opens (Coagulation with its first flag base selected, as in the
+    /// guide's shots), are lit: little of either viewport is black, and the
+    /// window shows what was rendered. Before the fix a quarter of
+    /// Coagulation's viewport read as black. Needs the owner's
+    /// disc (`H2_DISC`, else `disc/halo2.iso`).
+    #[test]
+    #[ignore = "needs the owner's disc image"]
+    fn disc_coagulation_bases_and_midship_hull_are_lit() {
+        let iso = std::env::var_os("H2_DISC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../disc/halo2.iso"
+                ))
+            });
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-lit-{}", std::process::id()));
+        for (map, select, most) in [
+            ("coagulation", Some((BlockKind::Scenery, 0)), 0.02),
+            ("midship", None, 0.02),
+        ] {
+            let mut app = App::new();
+            app.set_data_root(dir.join("data"));
+            app.dispatch(Action::OpenSource(iso.clone()));
+            app.dispatch(Action::SelectMap(map.into()));
+            if let Some(s) = select {
+                app.dispatch(Action::Select(Some(s)));
+            }
+            let shot = h.viewport(&mut app, 4).unwrap();
+            let black = ViewportShot::black(&shot.shown, 24);
+            let (shown, rendered) = (
+                ViewportShot::mean(&shot.shown),
+                ViewportShot::mean(&shot.rendered),
+            );
+            eprintln!(
+                "{map}: {:.1}% black, shown {shown:?}, rendered {rendered:?}",
+                black * 100.0
+            );
+            assert!(black < most, "{map}: {:.1}% black", black * 100.0);
+            for c in 0..3 {
+                assert!(
+                    (shown[c] - rendered[c]).abs() < 4.0,
+                    "{map}: shown {shown:?}, rendered {rendered:?}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

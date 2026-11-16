@@ -1,14 +1,9 @@
 [package]
 name = "scenario-edit"
-description = "Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and wgpu viewport, and an egui panel"
+description = "Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-
-[features]
-# The egui panel (`panel`, used by h2-editor). h2-studio builds without it.
-default = ["egui"]
-egui = ["dep:egui", "dep:egui-wgpu"]
 
 [dependencies]
 map.workspace = true
@@ -16,8 +11,6 @@ assets.workspace = true
 content.workspace = true
 tags.workspace = true
 thiserror.workspace = true
-egui = { workspace = true, optional = true }
-egui-wgpu = { workspace = true, optional = true }
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 xiso.workspace = true

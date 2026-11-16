@@ -103,7 +103,7 @@ process therefore has one CRT. UWP needs the app-container flavour
 | data root | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` (`vfs::default_data_root`) |
 | pipeline cache | `~/Library/Caches/h2recomp` | `%LOCALAPPDATA%\h2recomp\cache` |
 | utility-drive format | handle-anchored walk (openat, unlinkat) | by path, never following links or junctions (`vfs` `empty_by_path`) |
-| Live sockets (`--live`) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
+| Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
 | perf sampler, fastmem-proto, HID | Mach and IOKit | compiled out (they were already gated) |

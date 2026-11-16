@@ -11,11 +11,13 @@
 //! - [`remote`]: the server's storage endpoints ([`remote::HttpRemote`]).
 //! - [`watch`]: VFS change reports to item names, debounced.
 //! - [`engine`]: sync at sign-in, then pushes while the game runs.
+//! - [`session`]: both for one signed-in account, as every host starts them.
 
 pub mod engine;
 pub mod local;
 pub mod merge;
 pub mod remote;
+pub mod session;
 pub mod state;
 pub mod watch;
 

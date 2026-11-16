@@ -1,5 +1,5 @@
-//! The UI-free core of the editor suite, shared by `h2-editor` (egui,
-//! `crates/editor`) and `h2-studio` (Dear ImGui, `crates/studio`):
+//! The UI-free core of `h2-editor` (`crates/studio`), shared by its
+//! tools:
 //!
 //! - [`source`]: where maps come from (a disc image or loose `.map`s).
 //! - [`undo`]: a snapshot undo stack any tool can use.

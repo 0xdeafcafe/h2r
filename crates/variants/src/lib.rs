@@ -2,8 +2,7 @@
 //! record ([`record`]), the settings schema read from the disc
 //! ([`schema`]), saved-variant files and the save store ([`save`]), a
 //! portable sharing format ([`portable`]) and the editor
-//! ([`VariantEditor`]: UI-free state and commands, with an egui panel
-//! behind the default `egui` feature). docs/editor/variants.md has the format and the evidence.
+//! ([`VariantEditor`]: UI-free state and commands, drawn by `h2-editor`). docs/editor/variants.md has the format and the evidence.
 
 pub mod panel;
 pub mod portable;

@@ -176,3 +176,63 @@ fn the_halo_2_sandbox_plan_of_each_map() {
         }
     }
 }
+
+/// The Halo 2 sandbox plan written into a retail Halo 2 base map's scenario
+/// (`$H2_DISC`, base `$H2_BASE`, default `beavercreek`): every role must
+/// resolve to one of the base's collections, and the result reads back.
+#[test]
+#[ignore = "reads $H1_MAP_DIR and the Halo 2 disc ($H2_DISC)"]
+fn the_plan_applies_to_a_retail_base() {
+    use scenario_edit::{BlockKind, Scenario};
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let base_name = std::env::var("H2_BASE").unwrap_or("beavercreek".into());
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(&disc).unwrap())).unwrap();
+    let entry = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.ends_with(&format!("{base_name}.map")))
+        .unwrap();
+    let base_bytes = iso.read(&entry).unwrap();
+    let dir = std::env::var("H1_MAP_DIR").expect("set H1_MAP_DIR");
+    let path = std::path::Path::new(&dir).join("beavercreek.map");
+    let h1 = H1Map::from_reader(Cursor::new(std::fs::read(path).unwrap())).unwrap();
+    let plan = h1convert::placements::plan_map(&h1).unwrap();
+    let mut base = map::Map::from_reader(Cursor::new(base_bytes)).unwrap();
+    let tags: Vec<_> = base
+        .tags()
+        .iter()
+        .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let mut s = Scenario::read(&mut base).unwrap();
+    let done = h1convert::apply::apply(&mut s, &plan, &tags).unwrap();
+    eprintln!("{done:?}");
+    for (g, _, n) in tags
+        .iter()
+        .filter(|(g, _, _)| g.0 == *b"itmc" || g.0 == *b"vehc")
+    {
+        eprintln!("  base {} {n}", String::from_utf8_lossy(&g.0));
+    }
+    // Every weapon resolves; a powerup the base lacks (camouflage on some
+    // bases) is reported, not placed.
+    assert!(
+        done.unresolved.iter().all(|u| u.starts_with("Equipment")),
+        "{:?}",
+        done.unresolved
+    );
+    let mut out = Cursor::new(Vec::new());
+    scenario_edit::save::write_patched(&mut base, &s, &mut out).unwrap();
+    let mut m = map::Map::from_reader(Cursor::new(out.into_inner())).unwrap();
+    let back = Scenario::read(&mut m).unwrap();
+    assert_eq!(
+        back.block(BlockKind::StartingLocations).len(),
+        plan.spawns.len()
+    );
+    assert_eq!(back.block(BlockKind::NetgameFlags).len(), plan.flags.len());
+    assert_eq!(
+        back.block(BlockKind::NetgameEquipment).len(),
+        done.counts[2]
+    );
+    assert_eq!(done.counts[2] + done.unresolved.len(), plan.items.len());
+}

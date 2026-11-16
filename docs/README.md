@@ -27,6 +27,7 @@ goals, the two-stage plan, the crate table and milestones.
 ## Runtime: booting and running the game (`runtime/`)
 
 - [BOOT.md](runtime/BOOT.md) (**start here**): `h2 build` and `h2 run`, the boot runner's flags and environment, stopgaps, current state
+- [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`): flags, pacing, frame stats
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
 - [level-preflight.md](runtime/level-preflight.md): static audit of what the first campaign levels need, ranked by risk
@@ -92,6 +93,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
 - [objects.md](formats/objects.md): object tags (`obje` family, `hlmt`, `itmc`, `vehc`; `h2 object`)
+- [pathfinding.md](formats/pathfinding.md): AI pathfinding data in structure BSPs, and generating it from collision (`crates/pathfind`)
 - [shader-instances.md](formats/shader-instances.md): shader instance, template and pass tags (`shad`, `stem`, `spas`)
 - [sound.md](formats/sound.md): sound tags (`snd!`, `ugh!`) and `h2 sound`
 - [structure-bsp.md](formats/structure-bsp.md): render model and structure BSP geometry, lightmaps, and the viewer
@@ -140,7 +142,6 @@ goals, the two-stage plan, the crate table and milestones.
 ## Editor (`editor/`)
 
 - [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map objects, game variants and playlists, with screenshots
-- [editor.md](editor/editor.md): the editor for developers: the shell, the `Tool` trait, the hopper tool, screenshots
-- [studio.md](editor/studio.md): `h2-studio`, the Dear ImGui successor to `h2-editor`: phases, window, code, headless screenshots, viewport gaps
+- [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the three tools, the playlist format rules, code layout, headless screenshots, viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)

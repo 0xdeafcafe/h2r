@@ -56,6 +56,28 @@ console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of hist
 // Friends and teams (mock/social.ts): seeded before the world goes live.
 const social = new Social(world);
 social.seed();
+// H2_MOCK_HOPPER=1: a stand-in playlist file (GET/PUT /v1/titles/4D530064/hopper)
+// so the Halo admin's playlist builder has something to edit. Invented
+// playlists and plain numbers: no game data. Without it the endpoint is a
+// 404, like a server where nobody has imported the game's file yet.
+const MOCK_PLAYLISTS: Array<[string, string, Array<[number, string, number, boolean]>]> = [
+  ["Rumble Pit", "Every player for themselves.", [[1, "Slayer", 2, false], [2, "Oddball", 3, false]]],
+  ["Team Rumble", "Small teams, quick games.", [[3, "Team Slayer", 2, true], [1, "Team CTF", 1, true], [4, "Team King", 4, true]]],
+  ["Big Team Picnic", "Large teams on large maps.", [[5, "Team Assault", 9, true], [6, "Territories", 8, true]]],
+  ["Doubles", "Two on two.", [[2, "Doubles Slayer", 2, true]]],
+];
+let hoppers = Array.from({ length: 16 }, (_, index) => {
+  const p = MOCK_PLAYLISTS[index];
+  const recs = (p?.[2] ?? [[1, "Slayer", 2, false]]).map(([id, name, engine, team]) => ({
+    id, string: "", flags: 0, dwords: [100, 0] as [number, number], variant: { name, engine, team },
+  }));
+  return {
+    index, type: p ? 2 : 1, status: 1, record_count: recs.length, name: p ? `playlist_${index}` : "",
+    title: p?.[0] ?? `Hidden ${index + 1}`, description: p?.[1] ?? "", ranges: [0, 0, 0] as [number, number, number],
+    dwords: Array.from({ length: 18 }, () => 0), records: recs,
+  };
+});
+
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
 // Open sessions for the dashboard's "find a game" (mock/sessions.ts).
 // The stats summary (mock/stats.ts): a made-up month before the simulated
@@ -309,6 +331,22 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
       return json({ published: { name: "message_of_the_day.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length }, motd });
     }
     return m[1]!.toUpperCase() === "4D530064" ? json(motd) : err(404, "not_found", "no message of the day");
+  }
+  if ((m = path.match(/^\/v1\/titles\/([^/]+)\/hopper$/)) && process.env.H2_MOCK_HOPPER === "1") {
+    // Mock only: no token check; a PUT replaces the hoppers it names (variants kept by position).
+    if (req.method === "PUT") {
+      type Put = Omit<(typeof hoppers)[number], "records"> & { records: Array<{ id: number; string: string; flags: number; dwords: [number, number]; from?: number }> };
+      const b = (await req.json().catch(() => null)) as { hoppers?: Put[] } | null;
+      if (!b || !Array.isArray(b.hoppers)) return err(400, "invalid", "{hoppers} expected");
+      for (const h of b.hoppers) {
+        const old = hoppers[h.index];
+        if (!old) continue;
+        hoppers[h.index] = { ...h, record_count: h.records.length, records: h.records.map(({ from: _from, ...r }, i) => ({ ...r, variant: old.records[_from ?? i]?.variant ?? old.records[0]!.variant })) };
+      }
+      const bytes = JSON.stringify(hoppers);
+      return json({ hoppers, published: { name: "multiplayer_hopper.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } });
+    }
+    return json({ hoppers });
   }
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/files\/([^/]+)$/))) {
     const key = `${m[1]!.toLowerCase()}/${m[2]}`;

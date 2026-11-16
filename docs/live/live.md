@@ -11,7 +11,8 @@ the original design and investigation.
 The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
 gamertag, show the message of the day and playlists, keep a friends list
 with presence, and later matchmake and play. Accounts are made from the CLI
-or the web app. The service behind it is ours, event sourced on Postgres.
+or the web app. The service behind it is ours, event sourced on SQLite
+(Postgres if you prefer).
 
 ## 1. What the title links
 
@@ -110,8 +111,9 @@ all and proves the socket layer.
 
 ### 4.1 Client (recomp side)
 
-- **Link up.** `ConsoleConfig::phy_link` already exists; `--live` (or
-  `H2_LIVE=<url>`) sets it so XNet starts.
+- **Link up.** `ConsoleConfig::phy_link` already exists; Live on (`h2 play
+  --live`, `--live-server` or `--live-local`, or an app build) sets it so
+  XNet starts.
 - **XNet HLE.** Socket calls on host UDP and TCP; addresses packed as above.
 - **XOnline HLE.** A `live` module in the runtime holding the task table,
   the signed-in users, and a client for the service. Tasks run on a host
@@ -149,14 +151,16 @@ h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [-
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --offline] [--live-listen ADDR] [--gamertag NAME]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
 `/`, with `index.html` for any path that is not a file or under `/v1/`; it
 prints a hint to run `cd web && bun run build` when there is none.
 
-Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
+Defaults: `--db` is `$H2_LIVE_DB` or `sqlite://<--data>/live.db` (a
+server with no `live.db` but a log in `postgres://localhost/h2live` keeps
+that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#free-hosting-sqlite-and-cloudflare-r2)),
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
 `http://127.0.0.1:8074`, `--data` the server directory below.
 
@@ -185,7 +189,7 @@ the movies directory and the VFS data root ([storage.md](../runtime/storage.md))
   is already there or a gamertag already held for that server. The
   game-side HLE answers `XOnlineGetUsers` from `xuid` and `gamertag`, so no
   HDD config-sector work is needed.
-- `play-accounts.json` (0600): the one account `h2 play --live` hands the
+- `play-accounts.json` (0600): the one account `h2 play` hands the
   game, since the HLE takes every entry of the file it is given.
 - `server/` (mode 0700): `h2 live serve`'s identity, `server.key` (0600)
   and `server.json` (`{"id"}`). The server id is set on first start
@@ -202,7 +206,31 @@ token). Clients find everything else from the base URL's
 `/.well-known/h2live.json`, and refuse to send a token over plain HTTP to
 anything but loopback.
 
-**`h2 play --live`** starts a service inside the process on a background
+#### Playing on Live
+
+`h2 play` is offline unless a flag asks for Live, and contacts nothing to
+decide (`choose` in `crates/cli/src/play_live.rs`). The app builds are the
+other way round: on by default (below).
+
+| `h2 play` flags | Plays | `$H2_LIVE_SERVER` |
+|---|---|---|
+| none, `--offline`, `--no-live` | offline | ignored |
+| `--live` | signed in to `https://live.forbes.red` | a URL replaces it; `off` (`none`, `0`) plays offline with a line |
+| `--live-server URL` | signed in to `URL` | ignored (the flag wins) |
+| `--live-local` | an embedded server in the process | ignored |
+| `--live-listen ADDR`, `--live-tunnel`, `--live-tunnel-name NAME` | as `--live-local` (they imply it) | ignored |
+| `--live-local` with `--live-server` | an error: pick one | |
+
+The default service is `live_proto::DEFAULT_SERVER`, the one place it is
+written; the CLI (`DEFAULT_LIVE_SERVER`) and the app builds share it. It
+prints `live: signing in to https://live.forbes.red (the default service;
+--live-server URL names another)`. A Live flag that cannot sign in stops
+`h2 play` with the reason; there is no fallback to offline. `--offline`
+says the default out loud and does not go with any Live flag. `--gamertag
+NAME` picks the account on whichever service is played on, so it needs a
+Live flag.
+
+**`h2 play --live-local`** starts a service inside the process on a background
 runtime: Postgres from `$H2_LIVE_DB` or `postgres://localhost/h2live`
 (creating the database if it is missing), else a file-backed log in the
 data directory (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`),
@@ -211,7 +239,8 @@ in-memory store only if another server holds that directory, with a
 warning. When no MOTD was ever published, the embedded server publishes a
 default (`default_motd.rs`). It binds 127.0.0.1 on a free port (`--live-listen ADDR`
 for a fixed one) with the identity in `live/server`, so its accounts are
-`h2 live serve`'s. `--live-server URL` uses a running service instead. The
+`h2 live serve`'s. With `--live` or `--live-server URL` it uses a running
+service instead. The
 account is the first local one for that server whose key the server still
 lists, else a new one named `--gamertag NAME` or after the OS user
 (letters and digits, a single space for anything else, numbered when
@@ -220,27 +249,24 @@ URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
 
-#### Playing on Live
+**The app builds** (tvOS and iOS, `crates/apple-host`; the Xbox app when
+there is one, docs/runtime/windows.md) are on by default against the same
+service (`live_hle::platform`). `live.toml` in the app's data root is the
+switch:
 
-With no Live flag, `h2 play` tries the default service,
-`https://live.forbes.red` (`DEFAULT_LIVE_SERVER` in
-`crates/cli/src/play_live.rs`, the one place it is written): it fetches the
-discovery document with a 3 s timeout and, if one comes back, plays as
-`--live-server https://live.forbes.red` would, printing `live: signing in to
-https://live.forbes.red (the default; --offline plays without Live)`. If
-nothing answers, it plays offline exactly as it did before, with one line:
-`live: https://live.forbes.red did not answer (…); playing offline. --live
-runs a service on this machine, --offline skips this check`. A sign-in that
-fails there (an invite-only service, say) is a line too, `live: could not
-sign in to … (…); playing offline`, not an error.
+```toml
+enabled = false                    # play offline
+server = "https://live.example"    # or sign in to another service
+```
 
-- `--offline` (or `--no-live`) skips the check: no Live, no line.
-- `$H2_LIVE_SERVER` replaces the default (tried and fallen back from the
-  same way); `H2_LIVE_SERVER=off` (or `none`, `0`) plays offline.
-- `--live`, `--live-server URL` and `--live-tunnel` are unchanged, and
-  their failures still stop `h2 play`.
-- `--gamertag NAME` picks the account on whichever service is played on;
-  it does not go with `--offline`.
+A file that does not parse is ignored with a line, so the default holds.
+`$H2_LIVE_SERVER` (from the Xcode scheme, say) wins over the file for a
+run: a URL replaces the server, `off` turns Live off. The accounts file is
+`live/accounts.json` under the data root, which the in-game account setup
+(below) writes; until it holds an account for the server, Live is on but
+nothing is signed in and the game's Live notice says how to make one.
+With one, the app's saves are synced as `h2 play`'s are
+(`cloud_saves::session`, shared by both).
 
 Signed in anywhere, the account's saves follow it
 ([live-cloud-saves.md](live-cloud-saves.md)).
@@ -294,7 +320,7 @@ under a second. Keys and emblem colouring are in
   default it goes only to clients on the same machine, since it is your copy
   of the game's files. `--share-game-art` serves it to everyone and says at
   startup that this redistributes them.
-- **`h2 play --live`** extracts the art once per disc (on first run, or when
+- **`h2 play --live-local`** extracts the art once per disc (on first run, or when
   the cache key changes) and serves it from the embedded server. Without
   art, `/art/game/manifest.json` is a 404 and the web app uses its own art.
 - **Map geometry.** The same run writes every multiplayer map's level
@@ -464,9 +490,11 @@ replaying from the store, so nothing falls between the two; a reader that
 lags re-reads from the store. Every read reply carries that applied
 position.
 
-Postgres rather than Mongo: an event store needs ordered append with a
-uniqueness check per stream, which is one table and one constraint in
-Postgres.
+SQL rather than Mongo: an event store needs ordered append with a
+uniqueness check per stream, which is one table and one constraint. SQLite
+is the default since 2026-11-16 (one file beside the key, no database
+server, backed up to R2 by Litestream); Postgres stays supported, and
+`h2 live store copy` moves a log between the two with positions kept.
 
 Everything else is an event too, presence and matchmaking sessions
 included (decided 2026-11-15), so the log is the full history of who was
@@ -1039,7 +1067,7 @@ boundary and telemetry. `H2_NO_LIVE_NOTICE=1` leaves it out.
 
 How the dialog is reached (static reading of the retail image, not a run):
 
-- **Without `--live`.** Nothing is registered, so the real XNet library runs.
+- **With Live off** (`h2 play` without a Live flag). Nothing is registered, so the real XNet library runs.
   The default console reports no cable (`ConsoleConfig::phy_link = 0`), so
   `0x0008d690` never starts transport and `0x004d8b19` stays clear. Picking
   Xbox Live on the main menu runs the row handler `0x002308e0`: not signed
@@ -1047,7 +1075,7 @@ How the dialog is reached (static reading of the retail image, not a run):
   it calls `0x0019b5af` with error `0x23` and the network-settings action
   `0x00236917` at `0x002309e1`. The dialog appears at once; there is no
   sign-in attempt to hang on, so no extra "not configured" mode is needed.
-- **With `--live` and a server.** If logon ends with CANNOT_ACCESS_SERVICE
+- **With Live on and a server.** If logon ends with CANNOT_ACCESS_SERVICE
   (`0x80151001`, the HLE's result for transport or protocol failures), the
   classifier gives game result 4 and `0x001486b8` shows the same error
   `0x23` (`0x001486fa`).
@@ -1071,7 +1099,7 @@ The text depends on the boot's `LiveConfig`:
 
 | Live | Server | Message |
 |---|---|---|
-| off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` |
+| off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` or `--live-local` |
 | on | URL, no account | "No Live account on this machine yet.", `h2 live account create <tag>`, or recover at `<URL>/dash/signup/recover` |
 | on | URL | "Can't reach the h2 live server at" and the URL, then the same advice |
 | on | none | stock text (local sign-in cannot fail to connect) |
@@ -1079,8 +1107,8 @@ The text depends on the boot's `LiveConfig`:
 ```text
 Xbox Live isn't set up in h2recomp.
 Quit and start again with one of:
-h2 play --live  (built-in server)
-h2 play --live --live-server <URL>
+h2 play --live  (live.forbes.red)
+h2 play --live-local  (this machine)
 Accounts: h2 live account create <tag>
 ```
 
@@ -1169,7 +1197,7 @@ Either of these would do:
    the game has already opened.
 
 The game also has to choose which file to save into. It only knows
-`LiveConfig.accounts_path`, which under `h2 play --live` is the session's
+`LiveConfig.accounts_path`, which under `h2 play` with Live on is the session's
 `play-accounts.json`, rewritten on every start. So the glue should save to
 both that file and `shared_accounts_path(..)`, or `LiveConfig` should carry
 the shared path.

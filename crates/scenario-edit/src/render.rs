@@ -1,18 +1,20 @@
 //! The 3D viewport: the structure BSP and the placement markers, drawn with
 //! wgpu into the viewport's own colour and depth textures, which the UI
-//! (egui or Dear ImGui) then shows as an image.
+//! (Dear ImGui) then shows as an image.
 //!
 //! Rendering offscreen (instead of inside the UI's render pass) keeps the
 //! viewport independent of the shell's surface: the UI pass may have no
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
-//! toolkit is used here; the egui panel registers [`Viewport::color_view`]
-//! with `egui_wgpu`, `h2-studio` with `dear-imgui-wgpu`.
+//! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
+//! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
 use crate::scene::{Blend, Scene, SceneVertex};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// [`COLOR_FORMAT`] without the sRGB decode: [`Viewport::ui_view`].
+pub const UI_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Background colour (linear).
 pub const CLEAR: [f64; 3] = [0.02, 0.025, 0.035];
@@ -173,8 +175,8 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
     if (p.lit > 0.5) {
         // The baked lightmap, as the game draws it: albedo × light × 2
         // in gamma space (LIGHTMAP_SCALE).
-        // A fill light keeps surfaces whose lightmap is black (the
-        // outsides of Coagulation's bases and Midship's hull) readable.
+        // A faint fill light keeps the few truly unlit texels from
+        // going pure black.
         light = textureSample(lm, samp, v.luv).rgb * LIGHTMAP_SCALE + vec3<f32>(LIGHTMAP_FILL);
     } else {
         // One sun and the sky; dark base maps are lifted (`p.lift`)
@@ -206,9 +208,11 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
 /// game modulates the base map by the lightmap doubled, in gamma space
 /// (D3D8, no sRGB); in linear light that is a factor of 2^2.2.
 pub const LIGHTMAP_SCALE: f32 = 4.595;
-/// Light added to every lightmapped surface, so none is black in the
-/// editor.
-pub const LIGHTMAP_FILL: f32 = 0.22;
+/// Light added to every lightmapped surface, so none is pure black in the
+/// editor. Small: lightmaps are not dark once the viewport reaches the
+/// window intact ([`Viewport::ui_view`]); 0.22 had been compensating for
+/// a window that showed linear values as encoded ones.
+pub const LIGHTMAP_FILL: f32 = 0.05;
 
 /// BSP triangles as vertices, shaded by slope: floors light, walls darker.
 pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
@@ -306,6 +310,8 @@ struct Target {
     size: [u32; 2],
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
+    /// The same pixels viewed as plain `Rgba8Unorm`: [`Viewport::ui_view`].
+    ui_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
 }
 
@@ -837,7 +843,7 @@ impl Viewport {
             height: size[1],
             depth_or_array_layers: 1,
         };
-        let make = |format, usage| {
+        let make = |format, usage, view_formats: &[wgpu::TextureFormat]| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("scenario viewport"),
                 size: extent,
@@ -846,7 +852,7 @@ impl Viewport {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
-                view_formats: &[],
+                view_formats,
             })
         };
         let color = make(
@@ -854,11 +860,16 @@ impl Viewport {
             wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
+            &[UI_FORMAT],
         );
-        let depth = make(DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = make(DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, &[]);
         self.target = Some(Target {
             size,
             color_view: color.create_view(&Default::default()),
+            ui_view: color.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(UI_FORMAT),
+                ..Default::default()
+            }),
             depth_view: depth.create_view(&Default::default()),
             color,
         });
@@ -984,9 +995,19 @@ impl Viewport {
         self.target.as_ref().map(|t| &t.color)
     }
 
-    /// The colour target's view, to register with a UI renderer.
+    /// The colour target's view (sRGB: sampling it decodes to linear).
     pub fn color_view(&self) -> Option<&wgpu::TextureView> {
         self.target.as_ref().map(|t| &t.color_view)
+    }
+
+    /// The colour target viewed as [`UI_FORMAT`], to register with a UI
+    /// renderer that treats sampled texels as sRGB-encoded (dear imgui: its
+    /// shader raises them to the power 2.2 before an sRGB framebuffer
+    /// encodes them again). Through [`Self::color_view`] it would get the
+    /// linear values instead, and draw every surface as if its linear value
+    /// were its encoded one: a linear 0.05 (a dim wall, sRGB 63) shows as 13.
+    pub fn ui_view(&self) -> Option<&wgpu::TextureView> {
+        self.target.as_ref().map(|t| &t.ui_view)
     }
 
     /// The current target size in pixels.
