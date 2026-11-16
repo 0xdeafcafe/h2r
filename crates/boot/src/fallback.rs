@@ -447,10 +447,12 @@ fn table_of(code: &[u8]) -> Option<u32> {
 /// Jump-table targets the analyzer emitted no case for: every switch it
 /// found unguarded (`SwitchKind::Unbounded`) has its table read from the
 /// image until an entry is neither zero nor code in the site's section,
-/// skipping zeros. The analyzer stops at the first zero, which some tables
-/// use for impossible cases (`0x336f0`, indexed by a caller-checked value).
-/// Up to 256 entries. (The CRT copy routine's masked and negative-index
-/// tables, once read here too, are read by analyze on master, bceed11.)
+/// skipping zeros. Up to 256 entries. Analyze now reads every table this
+/// finds on the retail image (the CRT copy's masked and negative-index
+/// tables since bceed11; the long null runs of `0x336f0`, `0x33980` and
+/// `0x22dcd9` since it skips up to 16 nulls in a table after its own
+/// code), pinned by `analyze`'s `xbe_pins`, so this is a net for a table
+/// read short, not a fix in use.
 ///
 /// Owner: analyze (`jump_table`).
 pub fn unread_targets(xbe_bytes: &[u8], analysis: &analyze::Analysis) -> Unread {

@@ -118,8 +118,12 @@ fed on the guest's clock, the callback count, a monotonic clock and
     with `c/boot_bridge.c` into `libh2game.dylib`.
   - The bridge forwards the `h2abi_v1_*` imports to `runtime::ffi`. Rust
     implements the `h2shim_*` imports in `shim.rs`.
-  - `run` reads the module's `h2gen_module` tables. Every generated entry
-    and resume is registered with one trampoline (`fallback.rs`).
+  - `run` reads the module's `h2gen_module` tables and registers every
+    generated entry and resume as itself, so the module's direct calls
+    (`H2_DIRECT_CALLS`) match. Until 2026-11 every entry went through one
+    trampoline in `fallback.rs`, which no direct call matched, so every
+    call between generated functions went through the runner;
+    `H2_BOOT_TRAMPOLINE=1` still registers that way, for A/B runs.
 - **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
   does all of its arithmetic, conversions and transcendentals in
   crates/x87 (exact ext80).
@@ -343,8 +347,8 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
-| Interpreting past instructions the lifter doesn't lower | fallback.rs `trampoline`, `set_recovery` | lift |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1): remove |
+| Interpreting past instructions the lifter doesn't lower | fallback.rs `recover` (the runtime's stop-recovery hook), `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired

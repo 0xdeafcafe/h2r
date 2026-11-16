@@ -50,6 +50,13 @@ const MAX_SWITCH: u32 = 4096;
 const MAX_UNBOUNDED_SWITCH: u32 = 512;
 /// Consecutive null entries an unguarded table may skip over.
 const MAX_SWITCH_HOLES: usize = 4;
+/// As [`MAX_SWITCH_HOLES`], for a table placed right after its function's
+/// own code with every case read so far in that code. Every entry past a
+/// run of nulls must then be a case of the function's own
+/// ([`Analyzer::own_case`]), a much stronger test than a code address, so
+/// a longer run is safe: an enum switch whose values skip a range (seven
+/// in a row at 0x33980) fills the gap with nulls.
+const MAX_PLACED_SWITCH_HOLES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
@@ -1104,7 +1111,12 @@ impl<'a> Analyzer<'a> {
             if null && i > 0 && self.in_other_table(at, slot) {
                 break;
             }
-            if null && ok_slot && pending.len() < MAX_SWITCH_HOLES {
+            let max_holes = if !targets.is_empty() && targets.iter().all(|t| fstart < *t && *t < table) {
+                MAX_PLACED_SWITCH_HOLES
+            } else {
+                MAX_SWITCH_HOLES
+            };
+            if null && ok_slot && pending.len() < max_holes {
                 pending.push(i);
                 continue;
             }
