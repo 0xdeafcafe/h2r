@@ -598,6 +598,14 @@ To catch the frames that do have shadows, the draw diagnostics list them
 bound) and `H2_BOOT_GFX_SHADOWS=N` writes the first N of them, the same
 frames in a retail and an E3 run.
 
+The first such run (to present 4000) listed 23 frames, `1745-1747,
+3981-4000`, and all 21 pairs were byte for byte the same in retail and E3.
+They were also entirely black, at 2x and at 1x, in both runs: the first
+frames after the level loads, still faded out, and a cut to black in the
+opening cinematic, under which the game still draws its lights' shadow
+passes (21 of them sampled the 2x copy). So `H2_BOOT_GFX_SHADOWS` now skips
+all-black frames and keeps looking.
+
 Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
 maps stay 1x (their texture comes through guest memory); per-axis scale.
 

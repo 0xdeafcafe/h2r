@@ -61,7 +61,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
             // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
-            // in every run of the same input), whatever `every` says.
+            // in every run of the same input) and show something, whatever
+            // `every` says. A cinematic draws its lights' shadow passes
+            // under a fade to black too; those frames are not written.
             let shadow_shots: u64 = std::env::var("H2_BOOT_GFX_SHADOWS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -72,15 +74,17 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 let mut shadows = 0u64;
                 move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
-                    let shadow =
-                        shadows < shadow_shots && crate::d3d_diag::samples_shadow_map(swaps);
-                    shadows += u64::from(shadow);
-                    if !shadow && (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every)
-                    {
+                    let regular = (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every);
+                    let shadow = !regular
+                        && shadows < shadow_shots
+                        && crate::d3d_diag::samples_shadow_map(swaps);
+                    if !regular && !shadow {
                         return;
                     }
-                    if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}{suffix}.png"))) {
-                        eprintln!("boot: gfx screenshot {swaps}: {e}");
+                    let path = dir.join(format!("frame-{swaps:05}{suffix}.png"));
+                    match save_png(ctx, store, id, &path, shadow) {
+                        Ok(written) => shadows += u64::from(shadow && written),
+                        Err(e) => eprintln!("boot: gfx screenshot {swaps}: {e}"),
                     }
                 }
             };
@@ -178,7 +182,8 @@ fn save_png(
     store: &gfx::surface::SurfaceStore,
     id: gfx::surface::SurfaceId,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
+    skip_black: bool,
+) -> anyhow::Result<bool> {
     let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
     if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
@@ -189,12 +194,20 @@ fn save_png(
     for p in px.as_chunks_mut::<4>().0 {
         p[3] = 0xff; // X8R8G8B8 back buffer: alpha is undefined
     }
+    if skip_black && all_black(&px) {
+        return Ok(false);
+    }
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut enc = png::Encoder::new(f, d.width, d.height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(&px)?;
-    Ok(())
+    Ok(true)
+}
+
+/// Whether RGBA pixels `px` are all black (alpha aside).
+fn all_black(px: &[u8]) -> bool {
+    px.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0])
 }
 
 /// The headless default: a `RecordingBackend` that forgets every call once
@@ -643,6 +656,18 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    /// A frame under a fade to black is all black whatever its alpha; one
+    /// lit pixel is not.
+    #[test]
+    fn a_faded_frame_is_all_black() {
+        let mut px = [0u8, 0, 0, 0xff].repeat(16);
+        assert!(all_black(&px));
+        px[3] = 0x40;
+        assert!(all_black(&px));
+        px[4 * 9 + 1] = 1;
+        assert!(!all_black(&px));
+    }
 
     #[test]
     fn the_render_thread_is_on_unless_zero() {
