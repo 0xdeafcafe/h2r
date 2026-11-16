@@ -172,4 +172,40 @@ mod tests {
             "0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original\n"
         ));
     }
+
+    /// The speaker row and the layouts' value text share the Controls row
+    /// text: ours first (it answers for our rows), the layouts around the
+    /// original.
+    #[test]
+    fn the_controls_row_text_is_one_ordered_chain() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        r.add(&crate::layout_glue::LayoutValueText).unwrap();
+        r.add(&Extension {
+            id: "controls-rows",
+            title: "Our rows on the Controls list",
+            list: List::Controls,
+            text: &engine::points::CONTROLS_ROW_TEXT,
+            chosen: &engine::points::CONTROLS_ROW_CHOSEN,
+            label_only: false,
+            model: model(),
+        })
+        .unwrap();
+        let plan = r.build(&feature::Base).unwrap();
+        let text = plan.text();
+        assert!(
+            text.contains(
+                "0x002c8548 CONTROLS_ROW_TEXT: before [controls-rows:our rows' text, \
+                 layouts-value:layout value pending] -> original -> after \
+                 [layouts-value:layout value done]\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains(
+            "0x002c8719 CONTROLS_ROW_CHOSEN: before [controls-rows:our rows' press] -> original\n"
+        ));
+        // The speaker row is ours, the retail six are not.
+        let m = model();
+        assert!(texts(&m, List::Controls, 6, false).is_some());
+        assert!(texts(&m, List::Controls, 5, false).is_none());
+    }
 }

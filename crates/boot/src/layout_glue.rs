@@ -42,7 +42,7 @@ use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::skulls;
 use crate::skulls_menu;
 use crate::speaker_row;
-use crate::ui::{Chosen, List, Model, RowKind};
+use crate::ui::{List, Model, RowKind};
 use crate::video_screen;
 
 use input::layouts::{Action, Button, Layout};
@@ -62,7 +62,6 @@ const PANE_SET: u32 = 0x0023_0427;
 const SCREEN_TAG: u32 = 0x0022_f871;
 const TEXT_SET: u32 = 0x0025_3b1a;
 const PROFILE_ROWS: u32 = 0x0024_a886;
-const CONTROLS_ROW_TEXT: u32 = 0x002c_8548;
 const TEXT_WIDGET_GET: u32 = 0x0022_edb8;
 const LIST_SELECT: u32 = 0x0024_c591;
 const SCREEN_REFRESH: u32 = 0x0022_f672;
@@ -530,11 +529,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         shadow - 4
     };
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
-    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
+    let shared_hooks = [LIST_DATA_NEW, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
     let video_hooks = [PANE_SET];
     let speaker_hooks = [
-        speaker_row::ROW_CHOSEN,
         speaker_row::SMALL_CTOR,
         speaker_row::SMALL_ROW_TEXT,
         speaker_row::SMALL_ROW_CHOSEN,
@@ -853,72 +851,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row text: every row of a Skulls list; on Controls our
-        // speaker row, else the layout value (layouts on), else the
-        // original.
-        if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
-            let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            let drawn = AtomicBool::new(false);
-            d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
-                announce(&seen, "layouts: controls row text");
-                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
-                // The model reads the settings store: never with guest
-                // memory held.
-                let texts = row.and_then(|r| model.row(List::Controls, r)).map(|r| model.texts(r));
-                if let Some(texts) = texts {
-                    announce(&drawn, "speaker row: row text");
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let item = mem.u32(cpu.esp + 4)?;
-                    return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
-                }
-                if !layouts {
-                    return Ok(o.invoke(cpu, ctx, CONTROLS_ROW_TEXT));
-                }
-                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
-                call_then(cpu, ctx, sh, |_, _| {
-                    PENDING_VALUE.store(0, Ordering::Relaxed);
-                    Ok(())
-                })
-            });
-        }
-        // The Controls row chosen: the speaker row toggles in place (an open
-        // row there would open the Video screen). The original would open the vibration
-        // dialog for any of them.
-        if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
-                announce(&seen, "speaker row: row chosen");
-                let row = chosen_row(&*ctx.runtime().memory(), cpu.esp);
-                let mask = video_screen::player_mask(&*ctx.runtime().memory(), cpu.esp);
-                // Guest memory is not held while a setting changes: the
-                // speaker toggle takes DirectSound's lock, which the audio
-                // output takes with guest memory.
-                let chosen = row.and_then(|r| model.row(List::Controls, r)).map_or(Chosen::Nothing, |r| model.press(r));
-                match chosen {
-                    Chosen::Stepped(msg) => {
-                        eprintln!("{msg}");
-                        return ctx.runtime().memory().ret(cpu, 8);
-                    }
-                    Chosen::Open(_) => {
-                        let Some(mask) = mask else {
-                            eprintln!("video screen: no local player for the press; not opened");
-                            return ctx.runtime().memory().ret(cpu, 8);
-                        };
-                        let Some(loader) = crate::list_class::loader_of(video_screen::SCREEN) else {
-                            eprintln!("video screen: its list class is off; not opened");
-                            return ctx.runtime().memory().ret(cpu, 8);
-                        };
-                        return open_screen(cpu, ctx, mask, loader, "video screen: opening");
-                    }
-                    Chosen::Nothing => {}
-                }
-                Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
-            });
-        }
         // The Controls list's added item widgets, one per added row, and the
         // Xbox Live menu's fifth item widget.
         if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0 || with_custom_games) {
@@ -1135,10 +1067,53 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             .add(&crate::skulls_screen::DifficultyRow(store))
             .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
     }
+    // The Controls list's row text and row chosen, on the plan: our rows
+    // there (the speaker row) as data, and the layouts' value text around
+    // the original.
+    if with_speaker {
+        let rows = crate::retail_rows::Extension {
+            id: "controls-rows",
+            title: "Our rows on the Controls list",
+            list: List::Controls,
+            text: &feature::points::CONTROLS_ROW_TEXT,
+            chosen: &feature::points::CONTROLS_ROW_CHOSEN,
+            label_only: false,
+            model: Arc::clone(&model),
+        };
+        registry.add(&rows).map_err(|e| anyhow::anyhow!("controls rows: {e}"))?;
+    }
+    if layouts {
+        registry.add(&LayoutValueText).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
+    }
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
     registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     Ok(())
+}
+
+/// The Controls row text's layout value: while the original draws a row,
+/// an empty value text stands for the edited profile's layout byte (the
+/// text hook names an added layout). Inside our rows' hook at that point.
+pub struct LayoutValueText;
+
+impl feature::Feature for LayoutValueText {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("layouts-value", "Added layouts' names on the Controls list")
+            .doc("docs/controller-layouts.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.raw()
+            .before(&feature::points::CONTROLS_ROW_TEXT, "layout value pending", |_| {
+                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
+                Ok(feature::Flow::Continue)
+            })
+            .after_feature("controls-rows");
+        b.raw().after(&feature::points::CONTROLS_ROW_TEXT, "layout value done", |_| {
+            PENDING_VALUE.store(0, Ordering::Relaxed);
+            Ok(())
+        });
+        Ok(())
+    }
 }
 
 /// The strings our rows and layouts show (`ui-strings`), served from guest
@@ -1281,6 +1256,7 @@ fn add_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Chosen;
     use std::collections::BTreeMap;
 
     /// A sparse byte map standing in for guest memory.
