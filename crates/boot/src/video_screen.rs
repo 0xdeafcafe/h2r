@@ -16,34 +16,18 @@
 //! screen opens Controls. The tag has a pane per retail row only, so the
 //! pane hook keeps the shown pane for row 2 (as the Skulls row does).
 //!
-//! **Opening it.** The player profile screen opens Controls by building a
-//! 0x20-byte screen request and calling the Controls loader through
-//! `0x149f1e(player mask, loader)` (request `+2` the player mask, `+4` 5,
-//! `+8` 4, `+0x1c` the loader, which it then calls with the request). The
-//! loader `0x2b7714` allocates 0x9b4 bytes, runs the screen constructor
-//! `0x2b7752` (base screen `0x230451` with screen id 39, then the Controls
-//! list handler `0x2c84b8` at `screen + 0x614`) and pushes the screen
-//! (`0x147f6d`). Our row makes the very same call with the pressing
-//! player's mask, so the new screen sits on top of Settings like Player
-//! Profiles does and B returns to it.
+//! **The screen** is our own list class (`crate::list_class`, docs/ui.md
+//! "Screen and list classes"): the row calls `0x149f1e(player mask,
+//! loader)` with the class's loader, an entry of ours. It builds the screen
+//! with the Controls constructor (so the Controls tag's layout), then points
+//! the screen and its list handler at our vtable copies, whose row text,
+//! row chosen, pane set-up (our title on the header) and loader slots are
+//! Rust. No retail function is patched for it; the Controls hooks never see
+//! it. The new screen sits on top of Settings like Player Profiles does,
+//! and B returns to it.
 //!
-//! **Telling it apart.** The list handler's constructor makes its datum
-//! array through `0x1a480d`, which copies the name it is given into the
-//! array (`0x16b650`, 0x20 bytes at `+0`). While our row's open call runs,
-//! the list hook hands that constructor our own name and our row count, so
-//! the Video list is the one whose array is named [`LIST_NAME_TEXT`]: no
-//! table of live screens to keep.
-//!
-//! **Its rows** go through the same Controls row text (`0x2c8548`) and row
-//! chosen (`0x2c8719`) functions, which `layout_glue` already wraps: for a
-//! Video list every row is ours and the originals never run.
-//!
-//! **Its title.** The header is built once by `0x22fda6(screen)`, which sets
-//! the tag's header string (`0x06000233` for Controls) through `0x253b1a`.
-//! While that runs for a Video screen, the text hook swaps the id for ours.
-//!
-//! The hooks are registered by `layout_glue::install`; the logic is here,
-//! over [`Gm`].
+//! The Settings row's hooks are registered by `layout_glue::install`; the
+//! logic is here, over [`Gm`].
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -66,9 +50,6 @@ pub const HEADER_BUILD: u32 = 0x0022_fda6;
 pub const CONTROLS_HEADER: u32 = 0x0600_0233;
 /// Where a Controls screen keeps its list handler.
 pub const SCREEN_LIST: u32 = 0x614;
-/// The name our list's datum array is made with (it fits the array's 0x20
-/// bytes, NUL included).
-pub const LIST_NAME_TEXT: &str = "h2r video settings";
 
 /// Our screen's id, and its list in the model.
 pub const SCREEN: &str = "video";
@@ -167,30 +148,6 @@ pub fn settings_text(m: &Model, row: Option<i16>) -> Option<(u32, u32)> {
     Some(m.texts(r)[0])
 }
 
-/// The datum array constructor with name `name` and count `retail` while
-/// our open call runs: the count for the Video list (our rows), or `None`
-/// for any other list (the hook leaves it alone).
-pub fn video_count(name: u32, retail: u32, opening: bool, rows: usize) -> Option<u32> {
-    (opening && name == speaker_row::LIST_NAME && retail == speaker_row::VANILLA_ROWS && rows > 0)
-        .then_some(rows as u32)
-}
-
-/// Whether the list `handler` is a Video list: its datum array
-/// (`[handler+0x70]`) is named [`LIST_NAME_TEXT`].
-pub fn is_video_list<M: Gm>(m: &M, handler: u32) -> bool {
-    let Some(array) = m.u32(handler.wrapping_add(0x70)) else {
-        return false;
-    };
-    let want = LIST_NAME_TEXT.as_bytes();
-    let mut got = vec![0; want.len() + 1];
-    m.rd(array, &mut got) && got[..want.len()] == *want && got[want.len()] == 0
-}
-
-/// Whether `screen` is a Video screen (its list handler at `+0x614`).
-pub fn is_video_screen<M: Gm>(m: &M, screen: u32) -> bool {
-    is_video_list(m, screen.wrapping_add(SCREEN_LIST))
-}
-
 /// The player mask a Controls row-chosen call (`[esp+4]` points at a
 /// pointer to the player record, whose `+4` is the local player index)
 /// opens screens for, as `0x2c8719` computes it: `1 << index`. `None` for an
@@ -239,20 +196,9 @@ mod tests {
 
     const ESP: u32 = 0x1000;
     const ITEM: u32 = 0x2000;
-    const HANDLER: u32 = 0x3000;
-    const ARRAY: u32 = 0x4000;
 
     fn all() -> Model {
         model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap()
-    }
-
-    fn list(name: &[u8]) -> Fake {
-        let mut f = Fake::default();
-        f.set_u32(HANDLER + 0x70, ARRAY);
-        let mut n = name.to_vec();
-        n.resize(0x20, 0);
-        f.wr(ARRAY, &n);
-        f
     }
 
     fn text_call(row: i16) -> Fake {
@@ -409,36 +355,6 @@ mod tests {
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
-    }
-
-    #[test]
-    fn only_the_list_built_by_our_open_call_becomes_the_video_list() {
-        assert_eq!(video_count(speaker_row::LIST_NAME, 6, true, 3), Some(3));
-        assert_eq!(
-            video_count(speaker_row::LIST_NAME, 6, false, 3),
-            None,
-            "a plain Controls screen"
-        );
-        assert_eq!(
-            video_count(crate::layout_glue::LIST_NAME, 4, true, 3),
-            None,
-            "another list"
-        );
-        assert_eq!(video_count(speaker_row::SMALL_LIST_NAME, 6, true, 3), None);
-        assert_eq!(video_count(speaker_row::LIST_NAME, 6, true, 0), None);
-    }
-
-    #[test]
-    fn a_video_list_is_known_by_its_arrays_name() {
-        let mut name = LIST_NAME_TEXT.as_bytes().to_vec();
-        assert!(name.len() < 0x20);
-        assert!(is_video_list(&list(&name), HANDLER));
-        assert!(is_video_screen(&list(&name), HANDLER - SCREEN_LIST));
-        assert!(!is_video_list(&list(b"controls list"), HANDLER));
-        // A longer name that starts the same is not ours.
-        name.extend_from_slice(b"2");
-        assert!(!is_video_list(&list(&name), HANDLER));
-        assert!(!is_video_list(&Fake::default(), HANDLER));
     }
 
     #[test]
