@@ -525,9 +525,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
-        // Capturing and logging read the draw after the inner backend has
-        // drawn it.
-        if self.capturing().is_some() || self.logging() {
+        // Capturing, logging and the sweep diagnostic read the draw after
+        // the inner backend has drawn it.
+        if self.capturing().is_some() || self.logging() || self.sweep.is_some() {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
         }
