@@ -119,6 +119,42 @@ can stop. A short source read is rejected instead of rewriting a truncated
 file. It is read-only and never writes the inner backend. The runner uses
 it for the font files ([button-icons.md](button-icons.md)).
 
+### Map overrides
+
+`MapOverrideBackend::new(inner, dir)` serves `maps\<name>.map` from
+`<dir>/<name>.map` when the inner backend (the disc) has that map and the
+directory holds a file of that name. The boot mounts the disc through it
+when `H2_MAP_DIR` names a directory (`crates/boot/src/map_override.rs`);
+unset or empty, the disc is mounted with `with_disc`/`with_disc_rewrite`
+exactly as before. The font rewrite wraps it, so both apply.
+
+- Only names exactly one level under `maps` ending in `.map` are
+  overridden, and only ones the disc has: a new name stays missing,
+  everything else falls through. Names match ASCII case-insensitively on
+  both sides, like the disc.
+- An override's size is reported by `stat` and in listings of `maps`
+  (sector-rounded allocation, the disc's READONLY attributes, zero times).
+  `read_at` streams from the host file (seek and read, no buffering, no
+  size cap below the 4 GiB XDVDFS limit). `host_file` gives the override
+  file, so telemetry and the speaker index read the edited map.
+- The choice is made once per map, on first use, and logged once
+  (`map override: maps\<name> from <path> (<n> bytes; disc <n> bytes)`).
+  The open file is kept for the session, so a later replacement is seen
+  only after a restart; a file truncated under it reads as `FileCorrupt`.
+- Refused with a warning, falling back to the disc's map: a symlink whose
+  target leaves the directory (a symlink inside it is followed), anything
+  but a regular file, two host names that differ only in case, a file
+  over 4 GiB, a file that cannot be opened. A missing or unusable
+  directory is one warning and the disc throughout.
+- Read-only: writes, creation, resizing and removal fail with
+  `MediaWriteProtected`, and the directory is never written.
+
+`Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
+backend built by the caller. Tests: `crates/vfs/src/map_override.rs` and
+`crates/vfs/tests/map_override.rs` (sparse 300 MiB streaming, listings,
+case, fall-through, symlinks, a no-match mount identical to `with_disc`,
+and a model of the cache copy with its checksum).
+
 `HostBackend::new(root, metadata_root)` presents a host directory as FATX.
 The metadata tree must be separate, with neither root inside the other.
 Each parent directory has a cached index of ASCII-insensitive names,

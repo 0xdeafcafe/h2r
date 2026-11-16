@@ -203,28 +203,40 @@ editor draw object render models too.
 
 ## 5. How a patched map reaches the game
 
-Today nothing loads it: the runtime mounts the disc image as
-`\Device\CdRom0` through `vfs::DiscBackend` (`crates/boot/src/lib.rs`,
-`Vfs::with_disc`), and the guest opens `\maps\<name>.map` from it. There
-is no map override. Two ways to add one:
+Through a map override directory. Save the edited map under the disc's
+file name in a directory of your choosing, and start the game with
+`H2_MAP_DIR` naming that directory:
 
-1. **An override backend (recommended).** Wrap the disc backend so that
-   `\maps\<name>.map` is served from a host file when one exists in an
-   override directory (for example `<data>/maps/` or `H2_MAP_DIR`),
-   answering `stat`, directory listings and `read_at` from that file and
-   passing everything else through. This is the shape of
-   `vfs::RewriteBackend`, but streaming from a file instead of holding the
-   bytes in memory: `RewriteBackend` caps rewrites at 64 MiB
-   (`MAX_REWRITE_BYTES`), and multiplayer maps may be up to 80 MiB,
-   campaign maps 280 MiB.
-2. **Rebuild the ISO** with the patched map. Heavy, and no tool for it
-   exists here.
+```sh
+mkdir -p ~/h2-maps
+# In the editor: Save as ~/h2-maps/ascension.map (the disc's name; `h2 maps` lists them)
+H2_MAP_DIR=~/h2-maps h2 play
+```
+
+The game then reads `D:\maps\ascension.map` from that file instead of the
+disc: its bytes, its size, and its size in listings of `D:\maps`. Every
+other file, and every map without an edited copy, still comes from the
+disc. Names match in any case. Stderr says once per map which file was
+used (`map override: maps\ascension.map from ...`), or why one was
+refused. A refused or missing file is a warning, never a failure: the
+disc's map is used. Remove the file (or unset `H2_MAP_DIR`) to go back to
+the retail map. The disc image is never touched.
+[storage.md](storage.md) "Map overrides" has the backend's rules.
 
 The header checksum is checked by the cache copy path (`0x2141f0`,
-[map-format.md](map-format.md)); the writer repairs it, so a patched map
-passes that check. The cache dependency identities and the build string
-are passed through unchanged. Multiplayer peers must all load the same
-bytes; that is the variant-hash problem of forge.md §2.4.
+[map-format.md](map-format.md), [cache-slots.md](cache-slots.md)); the
+writer repairs it, so a patched map passes that check, and the copy reads
+the override like any disc file. Multiplayer and campaign maps (and the
+main menu) are copied into cache slots 2-5 on N:, which is emptied on
+every boot, so an edit is always copied afresh. `shared.map` and
+`single_player_shared.map` go to slots 0 and 1 on Z:, which persists; the
+cache reuses a slot whose header names the same `d:\maps\...` path
+without comparing contents, so an override of those two takes effect only
+after Z:'s cache files are removed. The scenario editor never edits them.
+
+The cache dependency identities and the build string are passed through
+unchanged. Multiplayer peers must all load the same bytes; that is the
+variant-hash problem of forge.md §2.4.
 
 ## 6. Adding and removing entries
 
