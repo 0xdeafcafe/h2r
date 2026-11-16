@@ -305,7 +305,12 @@ impl AccountScreen {
                         self.invite_only = Some(true);
                         Field::Invite
                     }
-                    (SetupError::WrongCode | SetupError::LockedOut { .. }, Flow::Recover) => {
+                    (
+                        SetupError::WrongCode
+                        | SetupError::WrongCodeLeft { .. }
+                        | SetupError::LockedOut { .. },
+                        Flow::Recover,
+                    ) => {
                         Field::Code
                     }
                     _ => Field::Gamertag,
@@ -557,7 +562,7 @@ mod tests {
                 code: "123-456".into()
             })
         );
-        s.finished(Err(SetupError::LockedOut { minutes: 4 }));
+        s.finished(Err(SetupError::LockedOut { seconds: 240 }));
         assert!(
             s.text(0)
                 .replace("\r\n", " ")
@@ -646,7 +651,7 @@ mod tests {
             SetupError::NeedsInvite,
             SetupError::InviteInvalid,
             SetupError::WrongCode,
-            SetupError::LockedOut { minutes: 1440 },
+            SetupError::LockedOut { seconds: 86_400 },
             SetupError::Unreachable,
             SetupError::Insecure,
             SetupError::Server(500),

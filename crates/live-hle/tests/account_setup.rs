@@ -94,7 +94,8 @@ fn create_then_recover_on_another_machine_with_the_code() {
     );
     assert_eq!(
         account_setup::recover(server.url(), "Pete", &wrong).unwrap_err(),
-        SetupError::WrongCode
+        SetupError::WrongCodeLeft { left: 4 }
+
     );
     let typed = format!("{}-{}", &right[..3], &right[3..]);
     let recovered = account_setup::recover(server.url(), "pete", &typed).unwrap();
@@ -133,11 +134,12 @@ fn repeated_wrong_codes_lock_the_gamertag_out() {
     for _ in 0..8 {
         errors.push(account_setup::recover(server.url(), "Locked", &wrong).unwrap_err());
     }
-    assert_eq!(errors[0], SetupError::WrongCode);
+    assert_eq!(errors[0], SetupError::WrongCodeLeft { left: 4 });
     assert!(
         errors
             .iter()
-            .any(|e| matches!(e, SetupError::LockedOut { minutes } if *minutes >= 1)),
+            .any(|e| matches!(e, SetupError::LockedOut { seconds } if *seconds >= 1)),
+
         "{errors:?}"
     );
 }

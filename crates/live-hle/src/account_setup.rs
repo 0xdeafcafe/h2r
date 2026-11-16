@@ -44,8 +44,12 @@ pub enum SetupError {
     NoRecovery,
     #[error("Wrong code. Wait for the next one and try again.")]
     WrongCode,
-    #[error("Too many wrong codes. Try again in {minutes} min.")]
-    LockedOut { minutes: u64 },
+    /// A wrong code, with how many more the server allows before it locks
+    /// the gamertag out.
+    #[error("Wrong code. {left} {} left.", if *.left == 1 { "try" } else { "tries" })]
+    WrongCodeLeft { left: u32 },
+    #[error("Too many wrong codes. Try again in {}.", wait(*.seconds))]
+    LockedOut { seconds: u64 },
     #[error("The server is busy. Try again shortly.")]
     Busy,
     #[error("Can't reach the server.")]
@@ -74,7 +78,7 @@ impl SetupError {
         let m = message.to_ascii_lowercase();
         match (action, status) {
             (_, 429) if m.contains("wrong code") => SetupError::LockedOut {
-                minutes: lockout_minutes(&m),
+                seconds: lockout_seconds(&m),
             },
             (_, 429 | 503) => SetupError::Busy,
             (Action::Create, 409) => SetupError::GamertagTaken,
@@ -84,6 +88,10 @@ impl SetupError {
                 SetupError::BadGamertag
             }
             (Action::Recover, 400) if m.contains("code") => SetupError::WrongCode,
+            (Action::Recover, 403) if m.contains("tries left") => match tries_left(&m) {
+                Some(left) => SetupError::WrongCodeLeft { left },
+                None => SetupError::WrongCode,
+            },
             (Action::Recover, 404) => SetupError::NoSuchGamertag,
             (_, 403 | 404) if m.contains("no recovery") => SetupError::NoRecovery,
             (Action::Recover, 403) => SetupError::WrongCode,
@@ -92,15 +100,36 @@ impl SetupError {
     }
 }
 
-/// `try again in N s` as whole minutes, rounded up, at least one.
-fn lockout_minutes(message: &str) -> u64 {
-    let secs = message
+/// `try again in N s`, at least a second (a minute when it won't say).
+fn lockout_seconds(message: &str) -> u64 {
+    message
         .split("try again in ")
         .nth(1)
         .and_then(|r| r.split_whitespace().next())
         .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(60);
-    secs.div_ceil(60).max(1)
+        .unwrap_or(60)
+        .max(1)
+}
+
+/// `wrong code; N tries left`.
+fn tries_left(message: &str) -> Option<u32> {
+    message
+        .split("; ")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A wait as the player reads it: seconds under two minutes, else whole
+/// minutes rounded up.
+pub fn wait(seconds: u64) -> String {
+    if seconds < 120 {
+        format!("{seconds} s")
+    } else {
+        format!("{} min", seconds.div_ceil(60))
+    }
 }
 
 /// One account this machine holds a key for: an accounts-file entry.
@@ -564,7 +593,7 @@ mod tests {
                 429,
                 "too many wrong codes for this gamertag; try again in 61 s"
             ),
-            SetupError::LockedOut { minutes: 2 }
+            SetupError::LockedOut { seconds: 61 }
         );
         assert_eq!(
             r(
@@ -572,12 +601,25 @@ mod tests {
                 429,
                 "too many wrong codes for this gamertag; try again in 1 s"
             ),
-            SetupError::LockedOut { minutes: 1 }
+            SetupError::LockedOut { seconds: 1 }
+        );
+        assert_eq!(
+            r(Recover, 403, "wrong code; 3 tries left"),
+            SetupError::WrongCodeLeft { left: 3 }
+        );
+        assert_eq!(
+            SetupError::WrongCodeLeft { left: 1 }.to_string(),
+            "Wrong code. 1 try left."
+        );
+        assert_eq!(
+            SetupError::LockedOut { seconds: 45 }.to_string(),
+            "Too many wrong codes. Try again in 45 s."
         );
         assert_eq!(r(Create, 429, "too many new accounts"), SetupError::Busy);
         assert_eq!(r(Create, 500, ""), SetupError::Server(500));
         assert_eq!(
-            SetupError::LockedOut { minutes: 3 }.to_string(),
+            SetupError::LockedOut { seconds: 150 }.to_string(),
+
             "Too many wrong codes. Try again in 3 min."
         );
     }

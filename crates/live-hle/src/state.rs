@@ -149,10 +149,22 @@ pub(crate) struct State {
     user_flags: [u32; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
+    /// Where accounts come from and which server they are for: a sign-in
+    /// that needs a code saves there and reads the accounts again.
+    config: crate::config::LiveConfig,
+    /// The sign-in waiting for a code, if any ([`crate::signin`]).
+    signin: Option<crate::signin::Signin>,
 }
 impl State {
-    pub fn new(accounts: Vec<Account>, address: SocketAddrV4, service: Option<Service>) -> Self {
+    pub fn new(
+        accounts: Vec<Account>,
+        address: SocketAddrV4,
+        service: Option<Service>,
+        config: crate::config::LiveConfig,
+    ) -> Self {
         Self {
+            config,
+            signin: None,
             accounts,
             address,
             net_refs: 0,
@@ -179,6 +191,36 @@ impl State {
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
         self.accounts = accounts;
+    }
+    /// The sign-in prompt now, if a sign-in is waiting for one.
+    pub fn signin(&mut self) -> Option<crate::signin::Prompt> {
+        self.signin.as_mut().map(|s| s.prompt())
+    }
+    /// The controller whose prompt should open now (once per sign-in).
+    pub fn take_signin_open(&mut self) -> Option<u32> {
+        self.signin.as_mut()?.take_open()
+    }
+    pub fn signin_submit(&mut self, code: &str) -> bool {
+        self.signin.as_mut().is_some_and(|s| s.submit(code))
+    }
+    pub fn signin_create(&mut self) -> bool {
+        self.signin.as_mut().is_some_and(|s| s.create())
+    }
+    pub fn signin_cancel(&mut self) {
+        if let Some(s) = self.signin.as_mut() {
+            s.cancel();
+        }
+    }
+    /// The prompt closed: forget a sign-in that has nothing more to ask
+    /// and that the logon has taken in (or that was cancelled).
+    pub fn signin_dismiss(&mut self) {
+        let done = self.signin.as_mut().is_some_and(|s| {
+            let p = s.prompt();
+            p.phase.finished() && (!s.has_verified() || !self.tasks.contains_key(&s.handle))
+        });
+        if done {
+            self.signin = None;
+        }
     }
     fn task(&mut self, m: &mut Guest, out: u32, task: Task) -> Result<u32> {
         writable(m, out, 4)?;
@@ -235,8 +277,10 @@ impl State {
         }
         self.logon = None;
         self.services.clear();
+        self.signin = None;
         Ok(())
     }
+
     fn accounts_for(&self, users: &[u8; USERS_SIZE]) -> Vec<Account> {
         let ids: BTreeSet<_> = users
             .as_chunks::<USER_SIZE>()
@@ -296,6 +340,10 @@ impl State {
         else {
             return Ok(INVALID_ARGUMENT);
         };
+        if let Some(waited) = self.signin_step(handle, &mut users, &mut pending, &session) {
+            status = waited;
+        }
+
         if let Some(request) = &pending
             && let Some(reply) = request.take()
         {
@@ -333,7 +381,66 @@ impl State {
         );
         Ok(status)
     }
+    /// A logon waiting on an in-game code ([`crate::signin`]): `Some`
+    /// status while it waits (`0`) or when it ends here; `None` once the
+    /// verified account is in and the service logon runs as usual.
+    fn signin_step(
+        &mut self,
+        handle: u32,
+        users: &mut [u8; USERS_SIZE],
+        pending: &mut Option<Pending>,
+        session: &Option<Session>,
+    ) -> Option<u32> {
+        let s = self.signin.as_mut().filter(|s| s.handle == handle)?;
+        let slot = s.slot;
+        let fail = |users: &mut [u8; USERS_SIZE]| {
+            users[slot * USER_SIZE + 108..(slot + 1) * USER_SIZE]
+                .copy_from_slice(&INVALID_USER.to_le_bytes());
+            Some(INVALID_USER)
+        };
+        if s.cancelled() {
+            return fail(users);
+        }
+        let Some(entry) = s.take_verified() else {
+            return Some(0);
+        };
+        // The logon has it now; the prompt may still show it.
+        s.handle = 0;
+
+        match self.config.accounts() {
+            Ok(accounts) => self.accounts = accounts,
+            Err(e) => {
+                eprintln!("live: reading the accounts after sign-in: {e}");
+                return fail(users);
+            }
+        }
+        let Some(fresh) = self
+            .accounts
+            .iter()
+            .find(|a| a.xuid == entry.xuid.0 && a.key.is_some() && !a.needs_code)
+            .map(record)
+        else {
+            eprintln!("live: {} was saved but is not in the accounts file", entry.gamertag);
+            return fail(users);
+        };
+        let user = &mut users[slot * USER_SIZE..(slot + 1) * USER_SIZE];
+        let flags: [u8; 4] = user[8..12].try_into().unwrap();
+        user.copy_from_slice(&fresh);
+        user[8..12].copy_from_slice(&flags);
+        let accounts = self.accounts_for(users);
+        match (&self.service, session) {
+            (Some(service), Some(session)) => match service.logon(session, accounts) {
+                Ok(p) => {
+                    *pending = Some(p);
+                    None
+                }
+                Err(e) => Some(e),
+            },
+            _ => fail(users),
+        }
+    }
     fn desired_presence(&self, controller: u32) -> client::Presence {
+
         if self.state_flags[controller as usize] & 1 == 0 {
             client::Presence {
                 state: "away",
@@ -833,6 +940,27 @@ impl State {
                 if users.iter().all(|v| *v == 0) {
                     return Ok(NO_USER);
                 }
+                // An identity waiting for a code: the logon waits for the
+                // prompt (crate::signin). One per logon, and only with a server.
+                let waiting: Vec<(usize, String)> = users
+                    .as_chunks::<USER_SIZE>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, u)| {
+                        let id = u64::from_le_bytes(u[..8].try_into().unwrap());
+                        self.accounts
+                            .iter()
+                            .find(|a| id != 0 && a.xuid == id && a.needs_code)
+                            .map(|a| (slot, a.gamertag.clone()))
+                    })
+                    .collect();
+                let server_url = self.config.server_url.clone();
+                let waiting = match (waiting.as_slice(), &server_url) {
+                    ([], _) => None,
+                    ([one], Some(url)) if self.service.is_some() => Some((one.clone(), url.clone())),
+                    _ => return Ok(INVALID_USER),
+                };
                 m.check(a[1], a[2] as usize * 4, Access::Read, 1)?;
                 let services = (0..a[2])
                     .map(|i| m.u32(a[1] + i * 4))
@@ -841,6 +969,25 @@ impl State {
                     return Ok(OUT_OF_MEMORY);
                 };
                 let session = self.service.as_ref().map(|_| Session::new(handle));
+                if let Some(((slot, tag), url)) = waiting {
+                    eprintln!("live: {tag} needs a code to sign in on {url}; asking in game");
+                    let files = crate::signin::files(self.config.accounts_path.as_deref());
+                    self.signin = Some(crate::signin::Signin::new(handle, slot, &tag, &url, files));
+                    m.set_u32(handle, 0)?;
+                    m.set_u32(a[4], handle)?;
+                    self.tasks.insert(
+                        handle,
+                        Task::Logon {
+                            users,
+                            pending: None,
+                            session,
+                            status: 0,
+                        },
+                    );
+                    self.logon = Some(handle);
+                    self.services = services;
+                    return Ok(OK);
+                }
                 let pending = if let (Some(service), Some(session)) = (&self.service, &session) {
                     match service.logon(session, self.accounts_for(&users)) {
                         Ok(p) => Some(p),
