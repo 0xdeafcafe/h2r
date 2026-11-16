@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn with_no_open_profile_every_skull_is_locked() {
         let r = screen();
-        assert_eq!(r.count(), skulls::COUNT);
+        assert_eq!(r.count(), skulls::TOTAL);
         assert_eq!(r.texts(0)[1].1, skulls_menu::LOCKED_ID);
         assert!(matches!(r.press(0), crate::ui::Chosen::Stepped(m) if m.contains("no profile")));
         assert_eq!(r.title(), TITLE_ID);

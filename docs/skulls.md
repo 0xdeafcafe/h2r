@@ -168,7 +168,8 @@ lines say each hook ran the first time.
 
 A "Skulls" row on the difficulty list, the screen both new campaign and
 co-op campaign reach before the level loads, opens the Skulls screen: all
-fifteen skulls, gold first ("Gold and silver" below), each with its name and the pressing
+fifteen skulls, gold first ("Gold and silver" below), then our six ("Our
+skulls" below), each with its name and the pressing
 player's profile's state (the game's own On or Off for a collected skull,
 our "Locked" for one not collected), and a description text with the
 focused skull's effect, its level and whether it needs Legendary. A on a
@@ -184,17 +185,17 @@ The parts:
   values the pickup writes and the campaign start reads (`selection`), so
   what the screen leaves is what the next start turns on.
 - **The screen** (`boot::skulls_menu::SkullsScreen`, its class in
-  `boot::skulls_screen`): `list_class::Rows` of fifteen rows for the profile the row's press set
+  `boot::skulls_screen`): `list_class::Rows` of 21 rows (retail's fifteen, our six) for the profile the row's press set
   (`open`). It is our own list class, feature `skulls-screen`
   (`boot::list_class`, docs/feature-engine.md "UI step b"), as the Video
   screen is: built by the Controls constructor (so the Controls tag's
   layout: label on the left, value on the right), our vtable copies, our
   row text, row chosen, pane set-up (title "Skulls") and loader. No retail
   function is patched for it.
-- **Fifteen rows on six item widgets.** While the class's loader runs the
+- **Twenty-one rows on six item widgets.** While the class's loader runs the
   Controls constructor, the Controls list hook (`layout_glue`, the
   `0x1a480d` hook) builds the array with `list_class::array_count`'s count
-  (15) instead of six; the list scrolls, as the difficulty list does over
+  (21) instead of six; the list scrolls, as the difficulty list does over
   our fifth row.
 - **The description** is a text widget of ours: at pane set-up the class
   hands a text block of its own (font 1, the difficulty description's,
@@ -353,7 +354,10 @@ Not offered: Sputnik and Black Eye act in the middle of `0xd9640` and
 Envy reads inside a function that is campaign-only as a whole; the rest
 need AI or are co-op campaign logic.
 
-`live_proto::skulls::MULTIPLAYER` (`[4, 6]`) is the list, and the server
+- **Low Gravity** (simulation), one of ours: the physics constants'
+  gravity, halved on every machine ("Our skulls" below).
+
+`live_proto::skulls::MULTIPLAYER` (`[4, 6, 16]`) is the list, and the server
 refuses a multiplayer game or session that names any other.
 
 ### Choosing them
@@ -440,6 +444,219 @@ Limits:
 - As with every plan hook, a clash at one of the points refuses the plan
   at boot rather than replacing a hook.
 
+## Our skulls
+
+Status: built, tests only; not seen running. Every effect and the hidden
+skulls want the in-game check at the end of this page.
+
+Six skulls of our own, indices 15 to 20 after the game's fifteen. Retail's
+array at `0x4f55dc` is fifteen bytes and `0x1df3e0` takes only `n < 15`,
+so ours have no byte there and the game never runs them: each is our code
+on the feature plan (`boot::skulls_custom`, feature `skulls-custom`). The
+rest is shared with retail's skulls: the same per-profile `skulls.*`
+values (`skulls.acrophobia`, `skulls.low_gravity`, `skulls.fall_damage`,
+`skulls.unlimited_ammo`, `skulls.unlimited_grenades`,
+`skulls.invincible`), Locked on the Skulls screen until collected (listed
+after retail's fifteen, gold first again), turned on at a campaign start
+with the profile's others (`skulls::custom_selection`, the same
+`OPTIONS_QUEUE` hook), and carried in telemetry `NewGame.skulls` with the
+retail ones (`live_proto::skulls::OURS`). The web's name table has them.
+
+| n | Skull | Tier | Level | What it does |
+|---|---|---|---|---|
+| 15 | Acrophobia | silver | Uprising | flight: in the air, look up to climb, level out to hover, crouch to drop |
+| 16 | Low Gravity | silver | Delta Halo | gravity halved for everything; offered in multiplayer |
+| 17 | Fall Damage | gold | Metropolis | a landing faster than a jump's drains shield, then health |
+| 18 | Unlimited Ammo | silver | Outskirts | spare ammo never runs out; reloads still happen |
+| 19 | Unlimited Grenades | silver | Sacred Icon | both grenade types kept at four |
+| 20 | Invincible | silver | The Great Journey | the player takes no damage |
+
+Each is found on any difficulty (the description says so).
+
+### How each works
+
+All but Low Gravity act on the **local players' units** (players with a
+local user, `+0x28 >= 0`, on a live unit), after every `game_tick`, in
+campaign only (options mode `[[0x4e6948]+8] == 1`).
+
+- **Acrophobia** (likely). Simplest sound way: no new input, no physics
+  change, one float. While the biped is airborne (biped `+0x3dc` physics
+  mode 2, likely: 1 on the ground, 2 in the air) and attached to nothing
+  (`+0x14` is none) and not crouching (`+0x2c4` below 0.5), its vertical
+  speed (`+0x88` velocity, z at `+0x90`) is raised to `aim_z * 4.0` world
+  units a second, `aim_z` being the unit's aim vector's z (`+0x168`,
+  likely). Looking up climbs, looking level hovers, looking down sinks
+  slowly; crouching drops out; a jump's own speed is never lowered. Get
+  airborne with a jump. The jump button held was not traced (the control
+  latch at `[0x4ed284]+4` is the action test, not the held state), which
+  is why it is the view and not the button. If the physics rewrites the
+  velocity before it is used, the effect is weaker than meant: the in-game
+  check says.
+- **Low Gravity** (confirmed address, likely effect). The physics
+  constants' gravity is the float at `[0x51e9c4] + 0`: the constants'
+  set-up (`0x1eb584..0x1eb5b9`) writes the standard gravity
+  (`[0x4455d8]`) there and publishes the pointer; builtin 127
+  `physics_set_gravity` (`0x2a2b30`) writes `arg * [0x4455d8]`, and the
+  reset builtin `0x2a2ad0` writes `[0x4455d8]`; 31 readers in physics and
+  AI (e.g. the AI fall check at `0xe32af`) multiply by it. After each tick
+  we write half of what the game last put there; when the game writes a
+  new value (a map, a script) we halve that; when the skull is off we put
+  the game's value back. Retail never reads `[0x4455d8]` again for gravity,
+  so nothing undoes ours.
+- **Fall Damage** (ours, likely offsets). Landing is the biped going from
+  airborne to not between two ticks; the impact speed is the vertical speed
+  of the tick before. Past 3.0 wu/s (a jump lands at about 2.5), each
+  wu/s more takes 0.3 vitality: shield (`+0xf0`) first, then health
+  (`+0xec`), the fractions `object_get_shield` (`0x2a1a90`) and
+  `object_get_health` (`0x2a1a20`) read. A drained body is killed as
+  builtin `unit_kill` (`0x2a3320`) does: `+0x10a |= 0x20`, then a call to
+  `0xb7360` with EAX the unit. Retail's own falling damage was not found
+  (the globals' damage block at `[0x4e034c] + 0x144` has the kill and
+  fall-below-the-map damage, not landings), so this is ours, not a
+  scaled retail value. Off while Invincible is on.
+- **Unlimited Ammo** (likely). For each weapon the unit holds (`+0x218`,
+  four datums), each magazine's reserve (`W+0x22a`, magazines at `W+0x228`,
+  `0x10` each, at most two) is set to its definition's maximum (the `weap`
+  magazine block, count `+0x2c0`, pointer `+0x2c4`, `0x5c` each; the
+  maximum at `+0x0c`, the field `0x101a10` caps the reserve with). The
+  loaded rounds (`W+0x22c`) are not touched, so the magazine empties and
+  the weapon reloads. A weapon with no magazines (plasma) has its charge
+  kept full (`W+0x184`, the used fraction `0x101a10` writes, set to 0).
+  **Not Bandana**: retail's Bandana (14) is gated in actor code
+  (`0x25cc4d`) and, by the community's account, makes the magazine itself
+  bottomless (no reloads) and grenades too; ours keeps reloads, does
+  nothing for grenades, and acts on the local players only.
+- **Unlimited Grenades** (confirmed offsets). The unit's two grenade counts
+  (`+0x23e`, signed bytes, fragmentation and plasma; `+0x23c` the selected
+  type) are kept at four or more. Four is the most the campaign carries
+  (community).
+- **Invincible** (confirmed). The bit builtin 90 `object_cannot_take_damage`
+  (`0x2a20c0`, through `0xd87e0`) sets: body `+0x10a |= 0x80`, kept set on
+  the local players' units every tick (builtin 91 clears it; a script
+  that does is overridden the next tick). Turning the skull off leaves the
+  bit until the next unit (a death, a level): we do not know whether a
+  script set it too.
+
+### Hidden collectables
+
+One per level, from each level's real geometry (`map.glb`, the BSPs and
+the scenario, read off the disc with this repo's tools; renders kept
+outside the repo). On a campaign level with a spot, once its BSP is the
+active one (`[[0x4e6948]+2]`), and while any signed-in profile has not
+collected that skull, we create the retail skull weapon there:
+`objects\weapons\multiplayer\ball\head_sp` (`head` on High Charity), its
+tag datum read from the loaded map's own file on the host (so map packages
+and patches work) and checked against the guest's scenario datum.
+Creation is the game's own: `placement_data_new` (`0xb7930`, ESI a
+`0xc4`-byte placement, stdcall definition, owner -1, 0) then position at
+placement `+0x1c` (as the netgame equipment spawn at `0x15ab9d` copies it)
+and `object_new` (`0xb7b40`, stdcall placement, the datum in EAX). It has
+the retail skull's colour: the placement's colour fields were not traced,
+so there is no tint.
+
+Pickup is a local player's unit holding it: the skull's datum in one of
+the unit's weapon slots or the unit as its parent (`held_by`, the pure
+function the tests run). Then: recorded and on for every signed-in
+profile (`skulls::record_pickup`, as for retail's), on for the rest of
+this level, our HUD message "Skull found: <name>" through the game's own
+(`0x24cbbf`, EDI our string id, stdcall local user; what `0x1df3e0`
+calls), a loud stderr line, and the object removed as `object_destroy`
+(builtin, `0x2a14d0`) does: `0xbeb30` (refuses with AL non-zero), then
+`object_delete` (`0xb8540`). A checkpoint revert or a BSP change that
+takes the object away places it again.
+
+Calls into the game run at one point: a `before` on `game_tick`, first in
+its chain, that, when calls are queued, answers with an async body that
+makes them and then runs the tick (whose chain runs again and continues),
+as `coop_probe`'s lobby setup does.
+
+Where, in words:
+
+- **Outskirts** (Unlimited Ammo): in the shade beneath the far end of the
+  pier.
+- **Metropolis** (Fall Damage): at the very end of the gantry, where the
+  bridge stops short.
+- **Delta Halo** (Low Gravity): behind the falling water above the gorge
+  bridge.
+- **Sacred Icon** (Unlimited Grenades): up in the corner bay of the great
+  octagonal chamber.
+- **Uprising** (Acrophobia): among the supply crates on the raised platform
+  past the first cliff descent.
+- **The Great Journey** (Invincible): at the end of the gully under the
+  overhang, just north of where you begin.
+
+<details>
+<summary>Exact coordinates (spoilers)</summary>
+
+Game units, z up, the floor plus 0.15 (`boot::skulls_custom::SPOTS`).
+
+| Map | Skull | BSP | x | y | z | Where |
+|---|---|---|---|---|---|---|
+| `03a_oldmombasa` | Unlimited Ammo | 1 | -452.00 | -468.00 | -7.12 | on the beach, under the deck at the seaward end of the long pier (y -460), among the pilings |
+| `03b_newmombasa` | Fall Damage | 1 | 452.50 | 71.80 | -5.45 | the east end of the northern covered bridge-tube off the walkway at x 432, 12 above the ground |
+| `05a_deltaapproach` | Low Gravity | 0 | -168.00 | -302.50 | 25.42 | a ledge behind the tall waterfall south of the Forerunner bridge, reached from the ruins path |
+| `06a_sentinelwalls` | Unlimited Grenades | 0 | -390.80 | 134.20 | 4.35 | the south-west bay of the raised ring in the first octagonal room (centre -387, 145) |
+| `08a_deltacliffs` | Acrophobia | 1 | 134.40 | 117.60 | 68.65 | a roofed platform between Covenant supply crates, stepped up to from the east |
+| `08b_deltacontrol` | Invincible | 0 | 167.00 | 22.80 | 12.55 | the tip of the dead-end gully north-west of the start (175.6, 10.0) |
+
+How they were picked: each floor is a flat render triangle (normal z
+above 0.95) with headroom, reachable on foot in a flood fill over the
+level's floors from its placements and start, clear of placed weapons, and
+far from the retail skull. The render geometry is not collision: crates,
+scenery, kill volumes and water are not all in it, so the in-game check
+confirms each. Known soft spots: Outskirts' sand is a little below the
+river's water plane (the river does not cover it); Sacred Icon's bay is on
+the main path; Uprising's crates are physics objects; The Great Journey's
+gully tip slopes, so the skull may roll a little.
+
+</details>
+
+`H2_SKULLS_REVEAL=1` logs every spot at boot and, on a level with one,
+its coordinates, state and each local player's distance every 150 ticks
+(five seconds), on stderr only.
+
+### In multiplayer
+
+Only Low Gravity is offered (`skulls_mp::MP`,
+`live_proto::skulls::MULTIPLAYER` = `[4, 6, 16]`): gravity is one constant
+every machine simulates with, so the host's set, applied on every machine
+at game start the way Famine and Blind are, keeps them agreeing. The rest
+act on the local players only; in a game the host simulates, a guest's
+invincibility or ammo would be undone or disagree, so they are campaign
+only.
+
+### Switching it off
+
+`H2_NO_SKULLS=1` (with the rest) or `H2_FEATURES=skulls-custom=off`. When
+the plan cannot place its tick hooks (another feature holding an address
+it needs), boot says `skulls-custom: NOT installed: <why>` and nothing of
+ours is placed or applied; retail's skulls are untouched either way.
+
+### What it logs
+
+- boot: `skulls-custom: hooks installed via feature plan at 0x... (tick:
+  calls, effects, hidden skulls); hidden: Acrophobia on Uprising, ...`,
+  or `skulls-custom: NOT installed: <why>`, or `skulls-custom: off: <why>`
+- campaign start: `skulls: campaign start for <profiles>: <all on, ours
+  included>` and `skulls: ours on this campaign: <ours>`
+- level load: `skulls: <map> hides <skull> (bsp n): not yet collected by
+  everyone here; it will be placed` (or `... already collected by every
+  profile here; not placed`, or `... cannot be placed: <why>`)
+- `skulls: placed <skull> at (x, y, z) as object 0x...` (or `skulls:
+  object_new refused <skull>; not placed this level`)
+- pickup: `skulls: ==== FOUND <skull> on <map> by player 0 (object 0x...);
+  on for the rest of this level ====`, the `skulls: <skull> kept for
+  <profile>, saved to <path>` lines, `skulls: removed the found skull
+  (object 0x...)`
+- effects, once a game each: `skulls: Low Gravity: gravity <g> -> <g/2>
+  (physics constants 0x...)`, `skulls: <skull> is acting on the local
+  players this game`; each hard landing: `skulls: Fall Damage: player 0
+  landed at 8.00 wu/s: 1.50 vitality (shield 1.00 -> 0.00, health 1.00 ->
+  0.50)`
+- with `H2_SKULLS_REVEAL=1`: `skulls reveal: <skull> on <map> (bsp n) at
+  (x, y, z) [hint]: <placed|collected|waiting for bsp n ...>; player 0
+  12.3 wu away`
+
 ## To check in game
 
 1. `h2 play`, sign in a named profile, start Cairo Station on Legendary and
@@ -467,22 +684,23 @@ The menu:
 7. Campaign, a new campaign: the difficulty list is Easy, Normal, Heroic,
    Legendary, Skulls (scrolled by one), with or without skulls collected.
    stderr: `skulls menu: difficulty list: Skulls row shown; <profile> <n>
-   of 15 collected`, and `skulls menu: difficulty row text`. Moving
+   of 21 collected`, and `skulls menu: difficulty row text`. Moving
    onto Skulls keeps the Legendary pane up.
 8. A on Skulls: a screen titled "Skulls". stderr, in order:
    `skulls menu: difficulty row chosen`,
    `skulls menu: opening the Skulls screen for <profile> (player 0)`,
-   `layouts: list 0x45d298 grows from 6 to 15 rows` (the Controls list;
+   `layouts: list 0x45d298 grows from 6 to 21 rows` (the Controls list;
    only when no Controls list grew earlier in the run, since that line is
    said once),
-   `skulls-screen: opened with 15 rows (our list class)`,
-   `skulls-screen: row text`. If it says fewer than 15 rows, the list
+   `skulls-screen: opened with 21 rows (our list class)`,
+   `skulls-screen: row text`. If it says fewer than 21 rows, the list
    hook did not see the build: report it. If it says `no description
    text`, the widget could not be made.
 9. The rows, gold first: Assassins, Thunderstorm, Famine, Blind, Black
    Eye, Catch, Iron, Mythic, Angry, then Envy, Grunt Birthday Party,
-   IWHBYD, Ghost, Sputnik, Bandana; each value On, Off or Locked. Scroll
-   to the end and back: all fifteen are reachable.
+   IWHBYD, Ghost, Sputnik, Bandana, then ours: Fall Damage, Acrophobia,
+   Low Gravity, Unlimited Ammo, Unlimited Grenades, Invincible; each value
+   On, Off or Locked. Scroll to the end and back: all 21 are reachable.
 10. The description: under the list, "Gold skull:" or "Silver skull:",
     the focused skull's effect and "Found on <level>, Legendary only" (Blind: "any difficulty"); it
     changes as the cursor moves. If it is missing, clipped or over the
@@ -507,11 +725,11 @@ Multiplayer (a Live server running; two machines for 20 to 22):
 16. At boot: `skulls-mp: hooks installed via feature plan at 0x18f000
     (multiplayer start), 0x13939b (Blind: HUD), 0x165f16 (Blind:
     first-person weapon), 0xfda00 (Famine: placed weapons); offered:
-    Famine, Blind; collecting required: yes`.
+    Famine, Blind, Low Gravity; collecting required: yes`.
 17. Host a custom game, open Game Setup: a "Skulls" row after the others;
     stderr `skulls menu: Game Setup list: Skulls row added (N rows)`. Its
     help pane is blank (known).
-18. A on it: "Multiplayer Skulls", rows Famine and Blind. stderr `skulls
+18. A on it: "Multiplayer Skulls", rows Famine, Blind and Low Gravity. stderr `skulls
     menu: opening the multiplayer Skulls screen for <profile> (player 0)`.
     A on Blind (collected): `skulls: Blind on in multiplayer for
     <profile>`; on one not collected: Locked, and nothing changes. With
@@ -531,3 +749,52 @@ Multiplayer (a Live server running; two machines for 20 to 22):
     (...); none here ...`.
 22. After the game, the stats site shows the skull badges on that game and
     in the games list, and `?skulls=6` on `/v1/games` finds it.
+
+Our skulls (no Live server needed; `H2_SKULLS_REVEAL=1` helps find them):
+
+23. At boot: `skulls-custom: hooks installed via feature plan at 0x...
+    (tick: calls, effects, hidden skulls); hidden: Acrophobia on Uprising,
+    Low Gravity on Delta Halo, Fall Damage on Metropolis, Unlimited Ammo
+    on Outskirts, Unlimited Grenades on Sacred Icon, Invincible on The
+    Great Journey`; with `H2_SKULLS_REVEAL=1`, six `skulls reveal: ... at
+    boot; no local player` lines.
+24. Start Outskirts (any difficulty). stderr at load: `skulls:
+    03a_oldmombasa hides Unlimited Ammo (bsp 1): not yet collected by
+    everyone here; it will be placed`. On the beach (BSP 1): `skulls:
+    placed Unlimited Ammo at (-452.00, -468.00, -7.12) as object 0x...`.
+    If instead `... cannot be placed: <why>` or `object_new refused`,
+    report the line. With the reveal on, the distance in `skulls reveal:`
+    falls as you walk there.
+25. The skull sits on the floor under the pier, retail skull model. Walk
+    over it (or press the pick-up button, as for a retail skull): `skulls:
+    ==== FOUND Unlimited Ammo on 03a_oldmombasa by player 0 (object 0x...);
+    on for the rest of this level ====`, `skulls: Unlimited Ammo kept for
+    <profile>, saved to <path>`, `skulls: removed the found skull (object
+    0x...)`; the HUD says "Skull found: Unlimited Ammo"; the skull is gone
+    from the hands and the world. If it stays in the hands or the game
+    stops, report the last `skulls:` lines.
+26. Then `skulls: Unlimited Ammo is acting on the local players this
+    game`: fire a battle rifle dry: the magazine empties and reloads, the
+    reserve stays full. A plasma rifle never drains its charge.
+27. Restart the level: `... already collected by every profile here; not
+    placed`. The Skulls screen lists Unlimited Ammo as On; starting any
+    campaign level says `skulls: ours on this campaign: Unlimited Ammo`.
+28. Each effect, turned on in the Skulls screen (or found):
+    - Invincible: no damage from anything; a grenade at your feet leaves the
+      shield full.
+    - Unlimited Grenades: throw both kinds: each count stays at 4.
+    - Low Gravity: `skulls: Low Gravity: gravity 4.17.. -> 2.08..
+      (physics constants 0x...)`; jumps go higher and fall slower, and so
+      do grenades and bodies.
+    - Fall Damage: drop from a ledge: `skulls: Fall Damage: player 0
+      landed at <speed> wu/s: ...`; a jump on flat ground says nothing. A
+      long enough drop kills (`... ; killed`). If a plain jump hurts, give
+      the speed it reports.
+    - Acrophobia: jump and look up: you keep climbing; look level: you
+      hover; look down: you sink slowly; crouch: you fall. If you only
+      fall, the physics overrides the velocity write: report it.
+29. Multiplayer: Low Gravity on in the multiplayer Skulls screen (once
+    collected): `skulls-mp: multiplayer start (local): Low Gravity` and the
+    Low Gravity line from step 28, on every machine.
+30. `H2_FEATURES=skulls-custom=off`: `skulls-custom: off: switched off
+    (H2_FEATURES)`; no skull is placed and none of ours acts.

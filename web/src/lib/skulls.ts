@@ -1,6 +1,8 @@
-// Halo 2's fifteen skulls (gameplay modifiers). Games report which were on
-// as `skulls`, sorted unique indices 0..14, absent when none were. This is
-// the name and effect table, and the helpers for the `?skulls=` query.
+// Halo 2's fifteen skulls (gameplay modifiers), then six of our own (15..20,
+// hidden in campaign levels by the runtime; docs/skulls.md "Our skulls").
+// Games report which were on as `skulls`, sorted unique indices, absent when
+// none were. This is the name and effect table, and the helpers for the
+// `?skulls=` query.
 
 export type SkullTier = "gold" | "silver";
 
@@ -31,11 +33,23 @@ export const SKULLS: readonly SkullDef[] = [
   { index: 12, tier: "gold", name: "Mythic", effect: "enemies have twice the health" },
   { index: 13, tier: "gold", name: "Angry", effect: "enemies fire faster" },
   { index: 14, tier: "silver", name: "Bandana", effect: "unlimited ammo and grenades" },
+  // Ours, not the game's.
+  { index: 15, tier: "silver", name: "Acrophobia", effect: "you can fly: look up to climb, level out to hover, crouch to drop" },
+  { index: 16, tier: "silver", name: "Low Gravity", effect: "gravity is halved for everything; in multiplayer too", multiplayer: true },
+  { index: 17, tier: "gold", name: "Fall Damage", effect: "a hard landing drains your shields, then your health" },
+  { index: 18, tier: "silver", name: "Unlimited Ammo", effect: "spare ammo never runs out, but you still reload" },
+  { index: 19, tier: "silver", name: "Unlimited Grenades", effect: "your grenades are topped up as you throw them" },
+  { index: 20, tier: "silver", name: "Invincible", effect: "you take no damage" },
 ];
+
+/** How many skulls the engine has; from here on they are ours. */
+export const RETAIL_SKULLS = 15;
+/** Whether a skull is one of ours rather than the game's. */
+export const isOurSkull = (i: number): boolean => i >= RETAIL_SKULLS && i < SKULLS.length;
 
 export const SKULL_COUNT = SKULLS.length;
 /** Highest index the query and the reducer accept; indices past the table
- *  (custom skulls a later lane adds) are kept and shown generically. */
+ *  (skulls a later build adds) are kept and shown generically. */
 export const MAX_SKULL = 63;
 
 export const skullName = (i: number): string => SKULLS[i]?.name ?? `Skull ${i}`;

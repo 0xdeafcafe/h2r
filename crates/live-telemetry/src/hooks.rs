@@ -79,6 +79,16 @@ impl Telemetry {
         self.session.lock().unwrap().set_multiplayer_skulls(skulls);
     }
 
+    /// Our own skulls (indices 15 and up) the next campaign games run with,
+    /// as the boot applied them at the campaign start: they have no byte in
+    /// the skull array, so the array alone would miss them.
+    pub fn set_campaign_custom_skulls(&self, skulls: Option<Vec<u8>>) {
+        self.session
+            .lock()
+            .unwrap()
+            .set_campaign_custom_skulls(skulls);
+    }
+
     /// The loaded map's names, if the host has its file and the file's
     /// scenario datum is the guest's.
     fn tag_names(&self, guest: &runtime::Guest, map: &str) -> Option<TagNames> {

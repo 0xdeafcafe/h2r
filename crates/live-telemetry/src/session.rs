@@ -73,6 +73,9 @@ pub struct Session {
     /// The skulls the next multiplayer games run with (the host's set, as
     /// the boot applied it); campaign games read theirs from the array.
     multiplayer_skulls: Option<Vec<u8>>,
+    /// Our own skulls (15 and up) the next campaign games run with; the
+    /// array holds only the engine's fifteen.
+    campaign_custom_skulls: Option<Vec<u8>>,
     output: Vec<Output>,
 }
 
@@ -86,6 +89,7 @@ impl Session {
             playlist: None,
             map_id: None,
             multiplayer_skulls: None,
+            campaign_custom_skulls: None,
             output: Vec::new(),
         }
     }
@@ -123,6 +127,18 @@ impl Session {
         self.multiplayer_skulls = skulls
             .and_then(live_proto::skulls::normalize)
             .filter(|s| live_proto::skulls::multiplayer_ok(s));
+    }
+
+    /// Our skulls campaign games run with from now on (`NewGame.skulls`,
+    /// beside the array's): only indices past the engine's are kept.
+    pub fn set_campaign_custom_skulls(&mut self, skulls: Option<Vec<u8>>) {
+        self.campaign_custom_skulls = skulls
+            .map(|s| {
+                s.into_iter()
+                    .filter(|i| *i >= live_proto::skulls::COUNT)
+                    .collect::<Vec<_>>()
+            })
+            .and_then(live_proto::skulls::normalize);
     }
 
     pub fn take_output(&mut self) -> Vec<Output> {
@@ -203,7 +219,13 @@ impl Session {
             online: None,
             map_id: self.map_id,
             skulls: if campaign {
-                info.skulls.clone()
+                live_proto::skulls::normalize(
+                    info.skulls
+                        .iter()
+                        .chain(&self.campaign_custom_skulls)
+                        .flatten()
+                        .copied(),
+                )
             } else {
                 self.multiplayer_skulls.clone()
             },
@@ -1279,6 +1301,27 @@ mod tests {
         let game = started(&mut session);
         assert_eq!(game.skulls, Some(vec![0, 12]));
         assert_eq!(live_proto::game::validate_new(&game), Ok(()));
+        // Our own skulls join the array's in a campaign, never a
+        // multiplayer game; engine indices handed in that way are ignored.
+        session.set_campaign_custom_skulls(Some(vec![20, 3, 15]));
+        // (The next mission: the same one again continues its game.)
+        let next = GameInfo {
+            map: "03b_newmombasa".into(),
+            ..campaign.clone()
+        };
+        session.start(&next, vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.skulls, Some(vec![0, 12, 15, 20]));
+        assert_eq!(live_proto::game::validate_new(&game), Ok(()));
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(started(&mut session).skulls, Some(vec![6]));
+        session.set_campaign_custom_skulls(Some(vec![17]));
+        let bare = GameInfo {
+            skulls: None,
+            ..campaign
+        };
+        session.start(&bare, vec![player(0, 0)]);
+        assert_eq!(started(&mut session).skulls, Some(vec![17]));
     }
 
     #[test]
