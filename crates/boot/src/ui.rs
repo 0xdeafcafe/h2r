@@ -25,6 +25,8 @@ pub const VALUE_SLOT: u32 = 1;
 pub enum List {
     /// The retail Settings, Controls list.
     Controls,
+    /// The retail Settings list (Player Profiles, Game Variants).
+    Settings,
     /// One of our screens, by id.
     Screen(&'static str),
 }
@@ -304,7 +306,7 @@ impl Model {
     pub fn rows(&self, list: List) -> &[Row] {
         match list {
             List::Screen(id) => self.screen(id).map_or(&[], |s| &s.rows),
-            List::Controls => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -318,10 +320,12 @@ impl Model {
     pub fn count(&self, list: List, retail: u32) -> u32 {
         match list {
             List::Screen(_) => self.rows(list).len() as u32,
-            List::Controls => match self.extensions.iter().find(|e| e.list == list) {
-                Some(e) if e.retail == retail => retail + e.rows.len() as u32,
-                _ => retail,
-            },
+            List::Controls | List::Settings => {
+                match self.extensions.iter().find(|e| e.list == list) {
+                    Some(e) if e.retail == retail => retail + e.rows.len() as u32,
+                    _ => retail,
+                }
+            }
         }
     }
 
@@ -329,7 +333,7 @@ impl Model {
     pub fn row(&self, list: List, index: i16) -> Option<&Row> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -343,7 +347,7 @@ impl Model {
     pub fn index_of(&self, list: List, kind: &RowKind) -> Option<i16> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls => self
+            List::Controls | List::Settings => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)

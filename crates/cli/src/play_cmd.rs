@@ -47,7 +47,7 @@ game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
 always runs at 30; docs/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
-screen (Settings, Controls, Video), saved as [graphics] fps and render_scale
+screen (Settings, Video), saved as [graphics] fps and render_scale
 in <data>/settings.toml and applied from the next launch.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row

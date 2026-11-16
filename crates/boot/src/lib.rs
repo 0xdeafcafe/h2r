@@ -586,7 +586,8 @@ pub fn run_hosted_with_live(
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/controller-layouts.md, docs/playstation-audio.md).
-    // The Video row opens our Video screen (docs/settings-menu.md).
+    // The Video row on the Settings list opens our Video screen
+    // (docs/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
             video_screen::model(store, video_screen::Switches::from_env()).map_err(anyhow::Error::msg)?,

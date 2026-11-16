@@ -22,12 +22,13 @@
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
-//! It also registers the "Video" row after it and the Video screen that row
-//! opens (`crate::video_screen`, `H2_NO_VIDEO_SCREEN=1` skips both): a
-//! second Controls screen whose rows are Field of View (with the
-//! first-person camera hook that applies it, `crate::fov_row`;
-//! `H2_NO_FOV_ROW=1` skips both), Frame Rate and Resolution, through the
-//! same entries plus the screen header builder.
+//! It also registers the "Video" row on the top-level Settings list (after
+//! Player Profiles and Game Variants) and the Video screen that row opens
+//! (`crate::video_screen`, `H2_NO_VIDEO_SCREEN=1` skips both): a Controls
+//! screen whose rows are Field of View (with the first-person camera hook
+//! that applies it, `crate::fov_row`; `H2_NO_FOV_ROW=1` skips both), Frame
+//! Rate, Resolution and Mute Button, through the same entries plus the
+//! screen header builder and the Settings list's row text and row chosen.
 //!
 //! Each hook says once on stderr when it first runs ("layouts: <name>
 //! active"), so one run shows which hooks the game reaches.
@@ -515,7 +516,7 @@ fn announce(seen: &AtomicBool, name: &str) {
 
 /// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
 /// and the rows of `model` (`crate::video_screen::model`): the Controller
-/// Speaker row and the Video row on Controls, the Video screen they open,
+/// Speaker row on Controls, the Video row on Settings and the screen it opens,
 /// and the camera hook when the Video screen has the Field of View row.
 /// Every row's count, text and press come from the model. A missing
 /// original (an image with other entries) skips that hook and says so.
@@ -524,9 +525,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let has = |list, kind| model.as_ref().is_some_and(|m| m.index_of(list, &kind).is_some());
     let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
-    let video_index = model.as_ref().and_then(|m| m.index_of(List::Controls, &RowKind::Open(video_screen::SCREEN)));
-    let with_video = video_index.is_some();
-    let video_index = video_index.unwrap_or(-1);
+    let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model.as_ref().is_some_and(|m| skulls_menu::enabled(m.store()));
     if !layouts && !with_speaker && !with_video && !with_custom_games && !with_skulls {
@@ -578,7 +577,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
     let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
-    let video_hooks = [speaker_row::ROW_CHOSEN, video_screen::HEADER_BUILD];
+    let video_hooks = [
+        speaker_row::ROW_CHOSEN,
+        video_screen::HEADER_BUILD,
+        video_screen::SETTINGS_ROW_TEXT,
+        video_screen::SETTINGS_ROW_CHOSEN,
+        PANE_SET,
+    ];
     let speaker_hooks = [
         speaker_row::ROW_CHOSEN,
         speaker_row::SMALL_CTOR,
@@ -666,6 +671,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     }
                 }
                 let n = video_screen::list_count(&model, name, n);
+                if with_video && video_screen::settings_third_item(name, n) {
+                    // Slot 19 reports a third item widget for our row.
+                    ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
+                }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
                 // The difficulty list gets the Skulls row when a signed-in
                 // profile has a skull. The store is read with guest memory
@@ -761,6 +770,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 // The Skulls row on the difficulty screen has no pane: keep
                 // the one shown (thiscall, `ret 4`).
                 if with_skulls && skulls_menu::skip_pane(id, row) {
+                    return mem.ret(cpu, 4);
+                }
+                // Our Video row on the Settings list has none either.
+                if with_video && video_screen::skip_settings_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
                 let added = layouts && id == SCREEN_ID && layout_of_row(row).is_some();
@@ -892,7 +905,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             });
         }
         // The Controls row text: every row of a Video list; on Controls our
-        // speaker row and the Video row, else the layout value (layouts on),
+        // speaker row, else the layout value (layouts on),
         // else the original.
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
@@ -934,9 +947,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
                 }
                 if let Some(texts) = texts {
-                    if row != Some(video_index) {
-                        announce(&drawn, "speaker row: row text");
-                    }
+                    announce(&drawn, "speaker row: row text");
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
                     let item = mem.u32(cpu.esp + 4)?;
@@ -954,8 +965,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         }
         // The Controls row chosen: on a Video list every row is ours and
         // steps its setting; on Controls the speaker row toggles in place
-        // and the Video row opens the Video screen. The original would open
-        // the vibration dialog for any of them.
+        // (an open row there would open the Video screen). The original
+        // would open the vibration dialog for any of them.
         if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
             let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
@@ -1006,6 +1017,44 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     Chosen::Nothing => {}
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
+            });
+        }
+        // The Settings list's row text: our Video row's label, else the
+        // original (Player Profiles, Game Variants).
+        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_TEXT) {
+            let model = Arc::clone(&model);
+            let seen = AtomicBool::new(false);
+            d.register_override(video_screen::SETTINGS_ROW_TEXT, "video:settings-row", move |cpu, ctx, _| {
+                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
+                // The model reads the store: never with guest memory held.
+                let Some(text) = video_screen::settings_text(&model, row) else {
+                    return Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_TEXT));
+                };
+                announce(&seen, "video screen: settings row text");
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let item = mem.u32(cpu.esp + 4)?;
+                row_texts(cpu, ctx, &mut mem, item, vec![text])
+            });
+        }
+        // The Settings list's row chosen: our Video row opens the Video
+        // screen; the retail rows go to the original.
+        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_CHOSEN) {
+            let model = Arc::clone(&model);
+            d.register_override(video_screen::SETTINGS_ROW_CHOSEN, "video:settings-chosen", move |cpu, ctx, _| {
+                let (row, mask) = {
+                    let mem = ctx.runtime().memory();
+                    (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
+                };
+                let ours = row.and_then(|r| model.row(List::Settings, r)).map(|r| model.press(r));
+                match (ours, mask) {
+                    (Some(Chosen::Open(_)), Some(mask)) => open_video(cpu, ctx, mask),
+                    (Some(_), _) => {
+                        eprintln!("video screen: no local player for the press; not opened");
+                        ctx.runtime().memory().ret(cpu, 8)
+                    }
+                    (None, _) => Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_CHOSEN)),
+                }
             });
         }
         // The Video screen's header: while it is built, the text hook gives

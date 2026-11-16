@@ -3,9 +3,9 @@
 Status: design, with these exceptions built: the controller speaker's
 on/off is a row on the game's own Controls screen (approach B below; see
 [playstation-audio.md](playstation-audio.md) "In-game setting"); a
-"Video" row under it opens our Video screen with the field of view, the
-frame rate and the resolution scale ("Video screen" and "Field of view
-(built)" below); and the button layouts are rows on its Button Layout
+"Video" row on the top-level Settings list opens our Video screen with the
+field of view, the frame rate, the resolution and the mute button ("Video
+screen" and "Field of view (built)" below); and the button layouts are rows on its Button Layout
 screen ([controller-layouts.md](controller-layouts.md)). The rest says how
 an in-game menu for our opt-in enhancements should work, what we know
 about Halo 2's own settings screens, and in which order to build it.
@@ -372,9 +372,8 @@ Notes on specific settings:
 
 ## Video screen (built)
 
-Settings, a profile, Controls has a **Video** row after Controller Speaker
-(row 7; row 6 when `H2_NO_SPEAKER_ROW=1` removes the speaker row). A on it
-opens a screen titled "Video" with up to four rows:
+The top-level Settings list (Player Profiles, Game Variants) has a third
+row, **Video**. A on it opens a screen titled "Video" with up to four rows:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -398,7 +397,8 @@ row once there is a lighting option to toggle.
 
 Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
 the screen; `boot::video_screen::model` builds the screen as
-`ui::Screen::new("video").rows_from_settings(..)` and the Controls rows as
+`ui::Screen::new("video").rows_from_settings(..)`, the Video row as
+`ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema-built));
 the hooks registered by `layout_glue::install` ask that model for counts,
 texts and presses. `h2 play` reads the saved frame rate, scale and mute
@@ -411,6 +411,11 @@ its list. Nothing new is allocated by us and no tag is added.
 
 | Address | Role | Evidence and what we do |
 |---|---|---|
+| `0x2b1cca` | the top-level Settings list's handler constructor (screen 19, `ui\screens\game_shell\settings_screen\settings`, loader `0x230691`; vtable `0x45b060`, at `screen + 0x614`) | clears byte `+0x220`, makes the datum array "settings list" (`0x45b128`) with 2 rows, and leaves room for 3 item widgets of 0x80 at `+0x88`. The list hook makes it 3 rows and sets `+0x220` |
+| `0x2b1d60` | its slot 19, the item widget count | `2 + (byte [this+0x220] != 0)`: 3 once the hook has set the byte |
+| `0x2b1d6e` | its row text (thiscall, item at `[esp+4]`, `ret 8`; one text, index 0) | row 0 `0x17000196` Player Profiles, row 1 `0x10000197` Game Variants; row 2 is ours: the "Video" label |
+| `0x2b1da9` | its row chosen (thiscall, `ret 8`) | row 0 opens `0x2b19dc` (Player Profiles), row 1 `0x2b1b01` (Game Variants), through `0x149f1e`; any other row does nothing. Row 2 is ours: `0x149f1e(1 << player, 0x2b7714)` |
+| `0x230427` | the pane for a row (thiscall, the row, `ret 4`; no bounds check) | the tag has one pane per retail row; for row 2 the hook returns at once, so the shown pane stays (as for the Skulls row) |
 | `0x2b79f9` | the per-profile Settings list's row chosen (thiscall, `ret 8`) | row 0 calls `0x149f1e(1 << player, 0x2b7714)`: this is how Controls opens |
 | `0x149f1e` | open a screen: build a 0x20-byte request (`0x149f49`) and call its loader with it (stdcall, `ret 8`) | request `+0` 0, `+2` the player mask, `+4` 5, `+8` 4, `+0xc` 0, `+0x10..+0x1b` -1, `+0x1c` the loader. Controls' own dialogs (`0x2c8719`) build the same request. Our Video row calls it with the Controls loader |
 | `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`) |
@@ -420,34 +425,39 @@ its list. Nothing new is allocated by us and no tag is added.
 | `0x24bb60` | "add items" | a Video list keeps the six retail item widgets (no extras) |
 | `0x22fda6` | build a screen's header (stdcall, the screen) | sets the tag's header string (`+0x2c`, `0x06000233` for Controls) through `0x253b1a`; for a Video screen the text hook swaps that id for our "Video" while it runs |
 
-**B returns to Controls.** The Video screen is opened by the same call,
-with the same request, that the Settings screen uses for Controls and that
-Controls uses for its own dialogs, so it is pushed on the same screen stack
+**B returns to Settings.** The Video screen is opened by the same call,
+with the same request, that the Settings list uses for Player Profiles
+and a profile uses for Controls, so it is pushed on the same screen stack
 and closes the same way. The Controls class itself never touches the
-Controls edit buffer on close: only the Settings screen's back handler
+Controls edit buffer on close: only the profile screen's back handler
 (`0x2b7abe` → `0x148bff`) and the generic `0x230b32` commit and clear it,
-so closing Video leaves Controls' pending edits alone.
+and no profile is being edited from the Settings list.
 
-**Settings root vs Controls as the entry.** The Settings list (handler
-`0x2b79f9`, rows opening Controls `0x2b7714`, `0x2b77a8`, `0x2b2917`,
-`0x2b288c`, `0x2b2801`, `0x2b7887`) would make Video a sibling of
-Controls, which reads better. It is a different list class with its own
-row text and count, none of it hooked or traced yet, so Video sits on
-Controls for now; moving the row there is a later step that keeps the rest.
+**Settings root vs Controls as the entry.** Video used to be the last row
+of a profile's Controls. It is now a row of the top-level Settings list,
+next to Player Profiles and Game Variants, because none of its settings
+belongs to a profile. It is added the way the Controls rows are: a
+`ui::extend(List::Settings, 2)` row in the model, the list hook growing
+the count (plus the one handler byte that gives the list a third item
+widget), and wrappers on the list's own row text and row chosen that
+answer for row 2 and leave rows 0 and 1 to the originals. No tag is
+changed: the list already shows up to six items, and the missing pane is
+skipped.
 
 ### To check in game
 
-1. Settings, a profile, Controls: the last row is "Video". A opens a screen
-   titled "Video" with Field of View, Frame Rate, Resolution, and no
-   retail row. stderr: `video screen: opening`, `video screen: list built
-   with 3 rows`, `video screen: header active`, `video screen: row text
-   active`. If the title still says Controls, the header id differs from
-   `0x06000233` on this screen.
-2. The screen shows three rows; the three empty item widgets below them
-   must not draw anything (the list has six item widgets and three
-   datums; not seen yet).
-3. B returns to Controls, whose rows (and a pending vibration change) are
-   intact.
+1. Settings (main menu): the rows are Player Profiles, Game Variants,
+   Video. Moving onto Video keeps the Game Variants pane (description)
+   up. stderr: `video screen: settings row text active`. If only two rows
+   show, the third item widget did not appear (`+0x220`).
+2. A on Video opens a screen titled "Video" with Field of View, Frame
+   Rate, Resolution, Mute Button, and no retail row. stderr: `video
+   screen: opening`, `video screen: list built with 4 rows`, `video
+   screen: header active`, `video screen: row text active`. If the title
+   still says Controls, the header id differs from `0x06000233` on this
+   screen. The empty item widgets below the rows must not draw anything.
+3. B returns to Settings. Player Profiles and Game Variants still open
+   their screens. A profile's Controls has no Video row any more.
 4. Frame Rate: A steps 30, 60 (restart), 120 (restart), Uncapped (restart),
    30. Quit and start `h2 play` again: the window runs at the saved rate.
    With `H2_FPS=60` the row shows 60 and does not move.
@@ -547,7 +557,7 @@ first-person camera changes.
 
 ### What to check in game
 
-1. Settings, a profile, Controls, Video: the first row reads "Field of
+1. Settings, Video: the first row reads "Field of
    View" with "70". A steps it 75, 80, ... 120, then 70.
 2. In a level, at 90 or more: the view is wider at once (no restart);
    nothing pops in or out at the screen edges while turning (culling uses

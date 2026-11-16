@@ -292,7 +292,7 @@ Hook points (retail XBE, all function entries in our analysis):
 | Address | Role | What we do |
 |---|---|---|
 | `0x2c84b8` | Controls list handler constructor: datum array `0x45d298`, element size 4, count 6 in EAX, six embedded item widgets | nothing; it shows the convention |
-| `0x1a480d` | datum array constructor | for the name `0x45d298` and EAX 6, EAX becomes 7 (8 with the Video row, docs/settings-menu.md) |
+| `0x1a480d` | datum array constructor | for the name `0x45d298` and EAX 6, EAX becomes 7 |
 | `0x2c8548` | row text (`ret 8`, item at `[esp+4]`, row at `[item+0x70]`): label text 0 and value text 1 of the row | row 6: label is our "Controller Speaker" (our string id, English only), value is the retail on/off ids `0x02000181` / `0x03000182`, the ones the vibration row uses, so the value is localized. Rows 0 to 5 run the original |
 | `0x2c8719` | row chosen (thiscall, `ret 8`, row pointer at `[esp+8]`); rows past 4 open the vibration dialog | row 6: toggle and return; rows 0 to 5 run the original |
 | `0x1a02d0` | string lookup | our id returns our text |
@@ -301,8 +301,7 @@ Hook points (retail XBE, all function entries in our analysis):
 | `0x22f871` | screen tag (EAX = screen, returns its definition) | for screen 39, the list block's visible count (`i16` at `+6`) goes from 6 to 6 plus the rows we add, in every pane, once |
 | `0x2b48c2`, `0x2b49e6`, `0x2b4a4d` | the smaller Controls screen the pause menu opens (screen 200, `controller_settings`: datum array `0x45b8b0`, one text per row, a value word per datum mapped to a string table) | its array also grows from 6 to 7; after its constructor we give the new datum value 6 (`0x16b840`, new datum), draw it as "Controller Speaker: On" or "Off" (our ids, `ID_BASE+0x30`, `+0x31`) and toggle on it |
 
-So the main Controls list shows every row at once (seven, or eight with the
-Video row) instead of scrolling: the list lays out one row per child
+So the main Controls list shows every row at once (seven) instead of scrolling: the list lays out one row per child
 item widget up to the tag's visible count (`0x24bc12`), so adding the item
 widgets and raising the count together is what it takes.
 
