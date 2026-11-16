@@ -75,6 +75,9 @@ pub struct Vertex {
 pub struct Mesh {
     /// The Halo 1 shader's tag name.
     pub shader: String,
+    /// The lightmap page (image of the lightmap bitmap) its lightmap
+    /// coordinates address; `None` when unlit.
+    pub page: Option<u16>,
     /// Vertices.
     pub vertices: Vec<Vertex>,
     /// Triangles, as indices into `vertices`.
@@ -116,6 +119,7 @@ pub fn meshes(
                 .collect();
             out.push(Mesh {
                 shader: shader_name(m.shader),
+                page: u16::try_from(l.bitmap).ok(),
                 vertices,
                 triangles: tris.iter().map(|t| t.map(u32::from)).collect(),
             });
@@ -181,6 +185,9 @@ pub struct Part {
 /// One cluster's render geometry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Section {
+    /// The lightmap page every vertex's lightmap coordinates address (a
+    /// cluster has one, its render info's); `None` when unlit.
+    pub page: Option<u16>,
     /// Vertices.
     pub vertices: Vec<Vertex>,
     /// Triangle-list indices.
@@ -213,18 +220,35 @@ pub fn bounds(points: impl Iterator<Item = [f32; 3]>) -> [f32; 6] {
 }
 
 /// Packs meshes into sections of at most [`SECTION_MAX`] vertices and
-/// indices. `material[i]` is mesh `i`'s structure material. A mesh can
-/// span sections; a part never does.
+/// indices, one lightmap page each (meshes are taken in page order,
+/// unlit last, and otherwise in their order). `material[i]` is mesh `i`'s
+/// structure material. A mesh can span sections; a part never does.
 pub fn pack(meshes: &[Mesh], material: &[u16]) -> Vec<Section> {
     const MAX_INDICES: usize = SECTION_MAX / 3 * 3;
+    let mut order: Vec<usize> = (0..meshes.len()).collect();
+    order.sort_by_key(|&i| meshes[i].page.map_or(u32::MAX, u32::from));
     let mut out = vec![Section::default()];
-    for (m, &mat) in meshes.iter().zip(material) {
+    for (m, &mat) in order.iter().map(|&i| (&meshes[i], &material[i])) {
         let mut remap: Vec<Option<u16>> = vec![None; m.vertices.len()];
+        {
+            let s = out.last_mut().expect("never empty");
+            if s.indices.is_empty() {
+                s.page = m.page;
+            } else if s.page != m.page {
+                out.push(Section {
+                    page: m.page,
+                    ..Section::default()
+                });
+            }
+        }
         for t in &m.triangles {
             let s = out.last_mut().expect("never empty");
             let new = t.iter().filter(|&&i| remap[i as usize].is_none()).count();
             if s.vertices.len() + new > SECTION_MAX || s.indices.len() + 3 > MAX_INDICES {
-                out.push(Section::default());
+                out.push(Section {
+                    page: m.page,
+                    ..Section::default()
+                });
                 remap.iter_mut().for_each(|r| *r = None);
             }
             let s = out.last_mut().expect("never empty");
@@ -366,6 +390,12 @@ pub struct Templates {
 }
 
 impl Templates {
+    /// The shader datum of the collision material template (`+0x10`).
+    pub fn collision_shader(&self) -> map::TagId {
+        let m = &self.collision_material;
+        map::TagId(u32::from_le_bytes(m[0x10..0x14].try_into().expect("4")))
+    }
+
     /// The shader datum of base material `i`.
     pub fn shader(&self, i: usize) -> map::TagId {
         let h = &self.material_heads[i];
@@ -432,6 +462,9 @@ pub struct Structure<'a> {
     pub checksum: u32,
     /// Base element templates.
     pub templates: &'a Templates,
+    /// The lightmap bitmap (`bitm`) whose images the sections' pages
+    /// index, or [`TagId::NULL`]: every cluster unlit.
+    pub lightmap_bitmap: TagId,
 }
 
 /// The eight block fields of a collision BSP as a [`Block`] whose blocks
@@ -592,13 +625,22 @@ impl Structure<'_> {
         root.block(0x21c, 1, Block::zeroed(ELEMENT_21C));
         root.block(0x234, 1, Block::zeroed(ELEMENT_234));
 
+        // Render info per cluster: i16 page, i8 palette -1 (the pages are
+        // colour, not palette indices), a zero byte.
         let mut info = Vec::with_capacity(4 * clusters);
-        for _ in 0..clusters {
-            info.extend([0xff, 0xff, 0xff, 0x00]);
+        for c in 0..clusters {
+            let page = self
+                .sections
+                .get(c)
+                .and_then(|s| s.page)
+                .filter(|_| self.lightmap_bitmap != TagId::NULL);
+            let page = page.unwrap_or(u16::MAX);
+            info.extend(page.to_le_bytes());
+            info.extend([0xff, 0x00]);
         }
         let mut group = Block::zeroed(LIGHTMAP_GROUP);
         group.put_u32(4, self.checksum);
-        group.tag_ref(0x18, TagId::NULL);
+        group.tag_ref(0x18, self.lightmap_bitmap);
         group.block(0x28, clusters as u32, Block::new(info));
         let mut light = Block::zeroed(LTMP_ROOT);
         light.put_f32(0x34, 0.0);

@@ -8,6 +8,9 @@ license.workspace = true
 # The package manifest of a converted map.
 content.workspace = true
 h1map = { path = "../h1map" }
+# The structure's lightmap pages, converted to a Halo 2 bitmap.
+h1bitmaps = { path = "../h1bitmaps" }
+h1models = { path = "../h1models" }
 map.workspace = true
 # The structure's Havok MOPP code.
 mopp = { path = "../mopp" }

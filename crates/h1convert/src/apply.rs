@@ -11,6 +11,24 @@ use map::{FourCC, TagId};
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
 use crate::placements::{Plan, resolve};
+use crate::sandbox::{H2Item, netgame_type, vehicle_class};
+
+/// A vehicle collection (`vehc`) the base lacks, to be added when the map
+/// is built: one entry naming the base's vehicle tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCollection {
+    /// Tag name: `multiplayer\single_vehicles\<role>`.
+    pub name: String,
+    /// The index slot it takes (a tag the converted map no longer uses,
+    /// [`crate::slots::spare`]), by that tag's datum, which it keeps.
+    pub id: TagId,
+    /// The vehicle (`vehi`) it spawns.
+    pub vehicle: TagId,
+    /// Model variant name, or the model's default.
+    pub variant: Option<&'static str>,
+    /// The name of the base tag whose slot it takes.
+    pub replaces: String,
+}
 
 /// What [`apply`] did.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -21,8 +39,12 @@ pub struct Applied {
     /// multiplayer vehicles from netgame equipment naming a vehicle
     /// collection, `vehc`).
     pub vehicles: usize,
-    /// Item spawns whose role has no collection in the base map.
+    /// Item spawns whose role has no collection in the base map (and, for
+    /// a vehicle, no vehicle tag to build one from).
     pub unresolved: Vec<String>,
+    /// Vehicle collections the base lacks, to add (their spawns already
+    /// name them).
+    pub collections: Vec<NewCollection>,
     /// Base object placements removed (they belong to the base's level).
     pub removed: usize,
     /// Blocks the editor refused to empty, with its reason.
@@ -53,6 +75,47 @@ pub enum ApplyError {
     NoTemplate(BlockKind),
 }
 
+/// Netgame equipment `item` reference (E `0x0015ac83`).
+pub const NETGAME_ITEM: usize = 0x58;
+
+/// The datum of the collection for vehicle `role`, adding it to `new` the
+/// first time; `None` when the role or its vehicle tag is unknown.
+fn new_collection(
+    role: &str,
+    tags: &[(FourCC, TagId, String)],
+    spare: &mut Vec<TagId>,
+    new: &mut Vec<NewCollection>,
+) -> Option<TagId> {
+    let name = format!("multiplayer\\single_vehicles\\{role}");
+    if let Some(c) = new.iter().find(|c| c.name == name) {
+        return Some(c.id);
+    }
+    let class = vehicle_class(role)?;
+    let (_, vehicle, _) = tags.iter().find(|(g, _, n)| {
+        g.0 == *b"vehi"
+            && n.rsplit(['\\', '/'])
+                .next()
+                .is_some_and(|l| l.eq_ignore_ascii_case(class.vehicle))
+    })?;
+    if spare.is_empty() {
+        return None;
+    }
+    let id = spare.remove(0);
+    let replaces = tags
+        .iter()
+        .find(|(_, t, _)| *t == id)
+        .map(|(_, _, n)| n.clone())
+        .unwrap_or_default();
+    new.push(NewCollection {
+        name,
+        id,
+        vehicle: *vehicle,
+        variant: class.variant,
+        replaces,
+    });
+    Some(id)
+}
+
 fn template(s: &Scenario, kind: BlockKind) -> Result<Vec<u8>, ApplyError> {
     s.new_entry(kind, (!s.block(kind).is_empty()).then_some(0), None)
         .map_err(Into::into)
@@ -76,11 +139,15 @@ fn clear(s: &mut Scenario, kind: BlockKind) -> Result<(), ApplyError> {
 /// Removes the base level's object placements ([`BASE_OBJECTS`]) and
 /// replaces its spawns, flags and equipment with `plan`'s.
 /// `tags` is the base map's tags as (group, ID, name), used to find each
-/// item role's collection.
+/// item role's collection. A vehicle role with no collection in the base
+/// gets a [`NewCollection`] in the first of the `spare` slots (taken from
+/// the front), when the base has its vehicle tag (every retail multiplayer
+/// map has them all) and a slot is left.
 pub fn apply(
     s: &mut Scenario,
     plan: &Plan,
     tags: &[(FourCC, TagId, String)],
+    spare: &mut Vec<TagId>,
 ) -> Result<Applied, ApplyError> {
     use BlockKind::*;
     let templates = [
@@ -120,12 +187,24 @@ pub fn apply(
         .map(|(g, _, n)| (String::from_utf8_lossy(&g.0).into_owned(), n.clone()))
         .collect();
     for item in &plan.items {
-        let Some(name) = resolve(item.item, &names) else {
-            out.unresolved
-                .push(format!("{:?} at {:?}", item.item, item.position));
+        let target = match resolve(item.item, &names) {
+            Some(name) => {
+                let (group, id, _) = tags.iter().find(|(_, _, n)| n == name).expect("resolved");
+                Some((*group, *id))
+            }
+            None => match item.item {
+                H2Item::Vehicle(role) => new_collection(role, tags, spare, &mut out.collections)
+                    .map(|id| (FourCC(*b"vehc"), id)),
+                _ => None,
+            },
+        };
+        let Some((group, id)) = target else {
+            out.unresolved.push(format!(
+                "{:?} at {:?}: the base has no collection for it",
+                item.item, item.position
+            ));
             continue;
         };
-        let (group, id, _) = tags.iter().find(|(_, _, n)| n == name).expect("resolved");
         let i = s.add(NetgameEquipment, templates[2].clone())?;
         s.set(NetgameEquipment, i, "position", Value::Vec3(item.position))?;
         s.set(
@@ -143,14 +222,24 @@ pub fn apply(
         s.set(
             NetgameEquipment,
             i,
-            "item",
-            Value::Tag(TagRef {
-                group: *group,
-                id: *id,
-            }),
+            "type",
+            Value::Int(netgame_type(item.item).into()),
         )?;
+        let r = TagRef { group, id };
+        if !out.collections.iter().any(|c| c.id == id) {
+            s.set(NetgameEquipment, i, "item", Value::Tag(r))?;
+        } else {
+            // A collection still to be built in another tag's slot: the
+            // editor checks references against the base's tags, so the
+            // bytes are written directly.
+            let mut e = s.block(NetgameEquipment).entry(i).expect("added").to_vec();
+            s.unadd(NetgameEquipment, &e)?;
+            e[NETGAME_ITEM..NETGAME_ITEM + 4].copy_from_slice(&r.group.as_u32().to_le_bytes());
+            e[NETGAME_ITEM + 4..NETGAME_ITEM + 8].copy_from_slice(&r.id.0.to_le_bytes());
+            s.add(NetgameEquipment, e)?;
+        }
         out.counts[2] += 1;
-        if matches!(item.item, crate::sandbox::H2Item::Vehicle(_)) {
+        if matches!(item.item, H2Item::Vehicle(_)) {
             out.vehicles += 1;
         }
     }

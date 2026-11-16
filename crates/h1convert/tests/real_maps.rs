@@ -206,7 +206,7 @@ fn the_plan_applies_to_a_retail_base() {
         .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
         .collect();
     let mut s = Scenario::read(&mut base).unwrap();
-    let done = h1convert::apply::apply(&mut s, &plan, &tags).unwrap();
+    let done = h1convert::apply::apply(&mut s, &plan, &tags, &mut vec![]).unwrap();
     eprintln!("{done:?}");
     for (g, _, n) in tags
         .iter()

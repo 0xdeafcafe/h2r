@@ -94,6 +94,249 @@ fn bitmaps<R: std::io::Read + std::io::Seek>(
     out
 }
 
+struct Mem(Vec<u8>);
+impl tags::geometry::RawSource for Mem {
+    fn read_raw(&mut self, p: map::RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        let s = p.offset as usize;
+        self.0
+            .get(s..s + size as usize)
+            .map(<[u8]>::to_vec)
+            .ok_or(tags::Error::Invalid("raw range"))
+    }
+}
+
+/// What the editor needs to texture the converted structure, checked
+/// without rendering: every drawn part's material names the shader
+/// [`h1convert::shaders::pick`] chose for its Halo 1 shader; the chosen
+/// shaders' bitmaps aren't laid out for one mesh (`unwrapped`); and each
+/// cluster's texture coordinates are the converter's diffuse UVs (stream
+/// `18`), its lightmap ones stream `1f`, both read back exactly.
+fn check_structure_texturing(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    base: &mut Map<Cursor<Vec<u8>>>,
+    bytes: &[u8],
+    p: &h1convert::convert::Prepared,
+) {
+    use tags::structure::StructureRender;
+    let sbsp = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"sbsp"))
+        .unwrap()
+        .id;
+    let render = StructureRender::read(m, sbsp).unwrap();
+    assert_eq!(render.material_count as usize, p.material_shaders.len());
+    // The materials block: each material's shader datum at +0xc.
+    let sb = m.read_tag_bytes(sbsp).unwrap();
+    let at = m.tag(sbsp).unwrap().location.unwrap().address;
+    let w = |o: usize| u32::from_le_bytes(sb[o..o + 4].try_into().unwrap());
+    let mats = (w(0xa8) - at) as usize;
+    let shader_of: Vec<String> = (0..p.material_shaders.len())
+        .map(|k| {
+            let id = map::TagId(w(mats + 0x20 * k + 0xc));
+            m.tag(id).unwrap().name.clone().unwrap()
+        })
+        .collect();
+    let chosen: Vec<&String> = p.material_shaders.iter().map(|(_, n)| n).collect();
+    assert_eq!(shader_of.iter().collect::<Vec<_>>(), chosen, "{name}");
+    for n in &shader_of {
+        let id = m
+            .tags()
+            .iter()
+            .find(|t| t.name.as_deref() == Some(n.as_str()))
+            .unwrap()
+            .id;
+        // The shader reads as it does in the base (the reader doesn't
+        // follow every shader; one it can't read in the base is skipped).
+        let got = scenario_edit::scene::shader_bitmaps(m, id).map_err(|e| e.to_string());
+        let want = scenario_edit::scene::shader_bitmaps(base, id).map_err(|e| e.to_string());
+        assert_eq!(got.is_ok(), want.is_ok(), "{name}: shader {n}");
+        let Ok((_, bitmaps)) = got else {
+            eprintln!("    (shader {n} unread: {})", want.unwrap_err());
+            continue;
+        };
+        assert_eq!(Ok(bitmaps.clone()), want.map(|w| w.1), "{name}: shader {n}");
+        for b in bitmaps {
+            let bn = m.tag(b).unwrap().name.clone().unwrap_or_default();
+            assert!(!bn.contains("unwrap"), "{name}: {n} uses {bn}");
+        }
+    }
+    let mut raw = Mem(bytes.to_vec());
+    for (c, s) in render.clusters.iter().zip(&p.sections) {
+        let got = c
+            .geometry
+            .load(&mut raw, Some(render.material_count as usize))
+            .unwrap()
+            .unwrap();
+        let v = got.vertices(None).unwrap();
+        let uv: Vec<[f32; 2]> = s.vertices.iter().map(|v| v.texcoord).collect();
+        assert_eq!(v.texcoords, uv, "{name}: diffuse UVs");
+        for (a, b) in v.lightmap_texcoords.iter().zip(&s.vertices) {
+            for (x, y) in a.iter().zip(b.lightmap) {
+                assert!((x - y).abs() < 1e-4, "{name}: lightmap UVs");
+            }
+        }
+        let parts: Vec<u16> = got.parts.iter().map(|p| p.material).collect();
+        let want: Vec<u16> = s.parts.iter().map(|p| p.material).collect();
+        assert_eq!(parts, want, "{name}: part materials");
+    }
+    // Diffuse UVs tile (some leave [0, 1]); lightmap UVs never do.
+    let all = p.sections.iter().flat_map(|s| &s.vertices);
+    assert!(
+        all.clone()
+            .any(|v| v.texcoord.iter().any(|c| !(0.0..=1.0).contains(c)))
+    );
+    assert!(
+        all.clone()
+            .all(|v| v.lightmap.iter().all(|c| (0.0..=1.0).contains(c)))
+    );
+}
+
+/// The converted lightmap: the lightmap names the converted bitmap, every
+/// lit cluster's page is one of its images, every cluster's lightmap
+/// coordinates lie in its page, and each page decodes (through Halo 2's
+/// decoder, from the converted map's own raw data) to the pixels of the
+/// Halo 1 page. Returns the number of pages.
+fn check_lightmap(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    files: &mut ResourceFiles,
+    h1: &H1Map,
+    p: &h1convert::convert::Prepared,
+) -> usize {
+    use tags::structure::{Lightmap, StructureRender};
+    let l = p
+        .lightmap
+        .as_ref()
+        .unwrap_or_else(|| panic!("{name}: no lightmap"));
+    let ltmp = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"ltmp"))
+        .unwrap()
+        .id;
+    let sbsp = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"sbsp"))
+        .unwrap()
+        .id;
+    let light = Lightmap::read(m, ltmp).unwrap();
+    let g = &light.groups[0];
+    assert_eq!(g.bitmap, Some(l.slot), "{name}: lightmap bitmap");
+    let render = StructureRender::read(m, sbsp).unwrap();
+    assert_eq!(g.cluster_render_info.len(), render.clusters.len());
+    let d = DecodedTag::read(m, l.slot).unwrap();
+    let TagData::Bitmap(b) = d.data else {
+        panic!("{name}: the lightmap bitmap isn't a bitmap")
+    };
+    assert_eq!(b.images.len(), l.pages, "{name}: pages");
+    let mut lit = 0;
+    for (info, s) in g.cluster_render_info.iter().zip(&p.sections) {
+        assert_eq!(info.palette_index, -1);
+        match s.page {
+            Some(page) => {
+                lit += 1;
+                assert_eq!(info.bitmap_index, page as i16, "{name}");
+                assert!(usize::from(page) < b.images.len(), "{name}: page {page}");
+            }
+            None => assert_eq!(info.bitmap_index, -1, "{name}"),
+        }
+        for v in &s.vertices {
+            assert!(v.lightmap.iter().all(|c| (0.0..=1.0).contains(c)));
+        }
+    }
+    assert!(lit > 0, "{name}: no lit cluster");
+    // Halo 1 names a level's lightmap bitmap after its scenario.
+    let tag = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == l.source && t.group.to_string() == "bitm")
+        .unwrap()
+        .clone();
+    let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
+    for (i, im) in b.images.iter().enumerate() {
+        let got = assets::decode_image(im, files).unwrap();
+        let want =
+            h1bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap()).unwrap();
+        assert_eq!(
+            got.levels[0].rgba, want[0].rgba,
+            "{name}: lightmap page {i}"
+        );
+    }
+    b.images.len()
+}
+
+/// Every vehicle spawn of a converted map: the collection's role (last
+/// name component), the vehicle its single entry spawns (last name
+/// component), its variant name, and the netgame type. Asserts each
+/// collection has one entry naming a `vehi`.
+fn vehicle_spawns<R: std::io::Read + std::io::Seek>(
+    m: &mut Map<R>,
+) -> Vec<(String, String, String, i64)> {
+    use scenario_edit::{BlockKind, Scenario, Value};
+    let s = Scenario::read(m).unwrap();
+    let e = BlockKind::NetgameEquipment;
+    let last = |n: &str| n.rsplit('\\').next().unwrap().to_owned();
+    let mut out = Vec::new();
+    for i in 0..s.block(e).len() {
+        let Value::Tag(r) = s.get(e, i, "item").unwrap() else {
+            panic!()
+        };
+        if r.group != FourCC(*b"vehc") {
+            continue;
+        }
+        let Value::Int(kind) = s.get(e, i, "type").unwrap() else {
+            panic!()
+        };
+        let t = m.tag(r.id).unwrap().clone();
+        let at = t.location.unwrap().address;
+        let b = m.read_tag_bytes(r.id).unwrap();
+        let w = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        assert_eq!(w(0), 1, "{:?}: one entry", t.name);
+        let entry = (w(4) - at) as usize;
+        let ew = |o: usize| u32::from_le_bytes(b[entry + o..entry + o + 4].try_into().unwrap());
+        assert_eq!(FourCC::from_u32(ew(4)), FourCC(*b"vehi"));
+        let vehicle = m.tag(map::TagId(ew(8))).unwrap().name.clone().unwrap();
+        let sid = ew(0xc);
+        let variant = if sid == 0 {
+            String::new()
+        } else {
+            m.strings()[(sid & 0xffffff) as usize]
+                .clone()
+                .unwrap_or_default()
+        };
+        out.push((
+            last(t.name.as_deref().unwrap()),
+            last(&vehicle),
+            variant,
+            kind,
+        ));
+    }
+    out
+}
+
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn coagulation_has_a_scorpion_but_no_collection_for_it() {
+    let mut h2 = H2Disc::open(&std::env::var("H2_DISC").expect("set H2_DISC"));
+    let m = Map::from_reader(Cursor::new(h2.read("coagulation"))).unwrap();
+    let named = |g: &[u8; 4], n: &str| {
+        m.tags()
+            .iter()
+            .any(|t| t.group.0 == *g && t.name.as_deref().is_some_and(|x| x.ends_with(n)))
+    };
+    assert!(named(b"vehi", "\\scorpion"));
+    assert!(named(b"vehi", "\\warthog"));
+    assert!(!named(b"vehc", "\\scorpion"));
+    assert!(!named(b"vehc", "\\warthog_gauss"));
+    // The variant names retail collections use, as string IDs: `gauss`
+    // (index 0x694) and `multiplayer` (0x78b).
+    assert_eq!(m.strings()[0x694].as_deref(), Some("gauss"));
+    assert_eq!(m.strings()[0x78b].as_deref(), Some("multiplayer"));
+}
+
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
@@ -152,6 +395,10 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         for (h1s, (_, b)) in p.materials.iter().zip(&p.material_shaders) {
             eprintln!("    shader {h1s} -> {b}");
         }
+        for c in &p.applied.collections {
+            let was = base.tag(c.id).ok().and_then(|t| t.name.clone());
+            eprintln!("    built {} in the slot of {was:?}", c.name);
+        }
         for d in p.applied.unresolved.iter().chain(&p.dropped) {
             eprintln!("    not placed: {d}");
         }
@@ -165,6 +412,30 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         };
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
+        check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
+        // Every vehicle spawn names a collection whose entry is the right
+        // vehicle and variant, with its class's netgame type.
+        let vehicles = vehicle_spawns(&mut m);
+        for (role, vehicle, variant, kind) in &vehicles {
+            let class = h1convert::sandbox::vehicle_class(role).unwrap();
+            assert_eq!(vehicle, class.vehicle, "{name}: {role}");
+            if let Some(v) = class.variant {
+                assert_eq!(variant, v, "{name}: {role}");
+            }
+            assert_eq!(*kind, i64::from(class.netgame_type), "{name}: {role}");
+        }
+        assert_eq!(vehicles.len(), p.applied.vehicles, "{name}");
+        let mut roles: Vec<&str> = vehicles.iter().map(|v| v.0.as_str()).collect();
+        roles.sort();
+        eprintln!("    vehicles placed: {roles:?}");
+        if name == "bloodgulch" {
+            assert_eq!(p.applied.vehicles, p.source.vehicles, "every vehicle");
+            // Xbox Blood Gulch has warthogs, ghosts and scorpions; no
+            // rocket warthog (that came with the PC version).
+            for r in ["scorpion", "warthog", "ghost"] {
+                assert!(roles.contains(&r), "bloodgulch places a {r}");
+            }
+        }
         // The structure's shaders and their bitmaps, by name.
         let sbsp = m
             .tags()
@@ -209,9 +480,25 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let base_region = h2.region(base_name);
         let mut base_files = h2.files(base_region);
         let mut base_map = Map::from_reader(Cursor::new(h2.read(base_name))).unwrap();
+        let pages = check_lightmap(name, &mut m, &mut converted_files, &h1, &p);
+        eprintln!(
+            "    lightmap: {pages} pages from {}, in the slot of {}",
+            p.lightmap.as_ref().unwrap().source,
+            p.lightmap.as_ref().unwrap().replaces
+        );
         let want = bitmaps(&mut base_map, &mut base_files);
         let got = bitmaps(&mut m, &mut converted_files);
         std::fs::remove_file(&path).unwrap();
+        // The converted lightmap took the base's lightmap bitmap's slot:
+        // every other image is the base's.
+        let slot_name = p.lightmap.as_ref().map(|l| l.replaces.clone());
+        let lightmap_name = slot_name.clone().unwrap_or_default();
+        let want: Vec<_> = want.into_iter().filter(|w| w.0 != lightmap_name).collect();
+        let converted_lightmap = format!("{}_lightmap", h1convert::convert::scenario_path(name));
+        let got: Vec<_> = got
+            .into_iter()
+            .filter(|g| g.0 != converted_lightmap)
+            .collect();
         assert_eq!(got.len(), want.len(), "{name}: image count");
         let differ: Vec<_> = got
             .iter()
