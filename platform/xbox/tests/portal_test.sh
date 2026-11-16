@@ -30,13 +30,16 @@ eq "$(stat -f %Lp "$work/netrc" 2>/dev/null || stat -c %a "$work/netrc")" "600" 
 # Package lookup in the portal's list.
 cat >"$work/pkgs.json" <<'JSON'
 {"InstalledPackages":[
- {"Name":"Other","PackageFamilyName":"Other_x","PackageFullName":"Other_1_x64__x","PackageRelativeId":"Other_x!App"},
- {"Name":"Halo 2 (h2recomp)","PackageFamilyName":"h2recomp.Halo2_q8bw2r7hka0ma","PackageFullName":"h2recomp.Halo2_1.0.0.0_x64__q8bw2r7hka0ma","PackageRelativeId":"h2recomp.Halo2_q8bw2r7hka0ma!App"}
+ {"Name":"Other","PackageFullName":"Other_1_x64__x","PackageRelativeId":"Other_x!App"},
+ {"Name":"Halo 2 (h2recomp)","PackageFullName":"h2recomp.Halo2_1.0.0.0_x64__q8bw2r7hka0ma","PackageRelativeId":"h2recomp.Halo2_q8bw2r7hka0ma!App"}
 ]}
 JSON
 eq "$(portal_find_package "$work/pkgs.json" h2recomp.Halo2)" \
   "h2recomp.Halo2_1.0.0.0_x64__q8bw2r7hka0ma h2recomp.Halo2_q8bw2r7hka0ma!App" "find package"
 eq "$(portal_find_package "$work/pkgs.json" Missing)" "" "missing package"
+# Older portals give PackageFamilyName too.
+printf '{"InstalledPackages":[{"Name":"X","PackageFamilyName":"h2recomp.Halo2_f","PackageFullName":"F","PackageRelativeId":"R"}]}' >"$work/fam.json"
+eq "$(portal_find_package "$work/fam.json" h2recomp.Halo2)" "F R" "find by family name"
 
 # deploy.sh end to end against stand-ins.
 mkdir -p "$work/bin"
@@ -49,7 +52,7 @@ cat >"$work/bin/curl" <<'SH'
 #!/bin/sh
 # Records each call; answers like the portal.
 log=$STUB_DIR/calls
-jar= out= wfmt= netrc= method=GET url= csrf= forms=
+jar= out= wfmt= netrc= method=GET url= csrf= forms= cl= data=
 while [ $# -gt 0 ]; do
   case "$1" in
     -c) jar=$2; shift ;;
@@ -58,7 +61,8 @@ while [ $# -gt 0 ]; do
     -w) wfmt=$2; shift ;;
     -X) method=$2; shift ;;
     --netrc-file) netrc=$2; shift ;;
-    -H) case "$2" in X-CSRF-Token:*) csrf=${2#X-CSRF-Token: } ;; esac; shift ;;
+    -H) case "$2" in X-CSRF-Token:*) csrf=${2#X-CSRF-Token: } ;; Content-Length:*) cl=${2#Content-Length: } ;; esac; shift ;;
+    -d) data=1; shift ;;
     -F) forms="$forms ${2%%=*}"; shift ;;
     -sk) ;;
     *) url=$1 ;;
@@ -76,7 +80,8 @@ case "$method ${url#https://10.0.0.9:11443}" in
     n=$(cat "$STUB_DIR/n" 2>/dev/null || echo 0); echo $((n + 1)) >"$STUB_DIR/n"
     if [ "$n" -lt 2 ]; then status=204 body=; else body='{"Success":true}'; fi ;;
   "GET /api/app/packagemanager/packages") body=$(cat "$STUB_DIR/pkgs.json") ;;
-  "POST /api/taskmanager/app"*) [ "$csrf" = tok123 ] || status=403 ;;
+  # The real portal answers 411 to a POST with no body length.
+  "POST /api/taskmanager/app"*) if [ "$csrf" != tok123 ]; then status=403; elif [ "$cl" != 0 ] || [ -z "$data" ]; then status=411; fi ;;
   *) status=404 ;;
 esac
 [ -n "$out" ] && printf '%s' "$body" >"$out"
@@ -98,6 +103,14 @@ GET /api/app/packagemanager/state csrf= forms=
 GET /api/app/packagemanager/packages csrf= forms=
 POST /api/taskmanager/app?appid=aDJyZWNvbXAuSGFsbzJfcThidzJyN2hrYTBtYSFBcHA=&package=aDJyZWNvbXAuSGFsbzJfMS4wLjAuMF94NjRfX3E4Yncycjdoa2EwbWE= csrf=tok123 forms=" "deploy requests"
 grep -q "secret" "$work/out" && fail "the password reached the output"
+
+# --launch-only skips the upload and the install poll.
+: >"$work/stub/calls"
+PATH="$work/bin:$PATH" STUB_DIR="$work/stub" H2_XBOX=10.0.0.9 TMPDIR="$work" \
+  sh "$here/deploy.sh" --launch-only "$work/h2recomp.msix" >"$work/out" 2>&1 || { cat "$work/out"; fail "deploy.sh --launch-only failed"; }
+eq "$(cut -d' ' -f1-2 "$work/stub/calls")" "GET /api/os/info
+GET /api/app/packagemanager/packages
+POST /api/taskmanager/app?appid=aDJyZWNvbXAuSGFsbzJfcThidzJyN2hrYTBtYSFBcHA=&package=aDJyZWNvbXAuSGFsbzJfMS4wLjAuMF94NjRfX3E4Yncycjdoa2EwbWE=" "launch-only requests"
 # The netrc file is gone with deploy.sh's work directory.
 [ -z "$(find "$work" -name netrc -path '*h2xbox.*')" ] || fail "netrc left behind"
 

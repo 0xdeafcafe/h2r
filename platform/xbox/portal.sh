@@ -94,5 +94,5 @@ portal_install() {
 # The installed package whose Name is $2, from the package list JSON in
 # file $1: prints "<PackageFullName> <PackageRelativeId>".
 portal_find_package() {
-  jq -r --arg n "$2" '.InstalledPackages[] | select(.Name == $n or (.PackageFamilyName | startswith($n + "_"))) | "\(.PackageFullName) \(.PackageRelativeId)"' "$1" | head -n 1
+  jq -r --arg n "$2" '.InstalledPackages[] | select(.Name == $n or ((.PackageFamilyName // "") | startswith($n + "_")) or ((.PackageFullName // "") | startswith($n + "_"))) | "\(.PackageFullName) \(.PackageRelativeId)"' "$1" | head -n 1
 }

@@ -15,9 +15,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 pkg=$here/build/h2recomp.msix
 launch=1
+install=1
 for a in "$@"; do
   case "$a" in
     --no-launch) launch=0 ;;
+    --launch-only) install=0 ;;
     -*) echo "deploy.sh: unknown option $a" >&2; exit 2 ;;
     *) pkg=$a ;;
   esac
@@ -48,6 +50,7 @@ case $(portal_status) in
   *) echo "deploy.sh: the portal answered $(portal_status): $(cat "$PORTAL_BODY")" >&2; exit 1 ;;
 esac
 
+if [ "$install" = 1 ]; then
 echo "deploy.sh: uploading $(basename "$pkg") ($(du -h "$pkg" | cut -f1))${cer:+ with $(basename "$cer")}"
 portal_install "$pkg" "$cer" >/dev/null
 case $(portal_status) in
@@ -67,15 +70,17 @@ if [ "$s" != 200 ] || jq -e '.Success == false' "$PORTAL_BODY" >/dev/null 2>&1; 
   exit 1
 fi
 echo "deploy.sh: installed"
+fi
 
 [ "$launch" = 1 ] || exit 0
-portal_curl GET /api/app/packagemanager/packages >"$work/packages.json"
+portal_curl GET /api/app/packagemanager/packages >/dev/null
+cp "$PORTAL_BODY" "$work/packages.json"
 found=$(portal_find_package "$work/packages.json" "$name")
 [ -n "$found" ] || { echo "deploy.sh: $name is not in the console's package list" >&2; exit 1; }
 full=${found% *}
 aumid=${found#* }
 echo "deploy.sh: launching $aumid"
-portal_curl POST "/api/taskmanager/app?appid=$(portal_b64 "$aumid")&package=$(portal_b64 "$full")" >/dev/null
+portal_curl POST "/api/taskmanager/app?appid=$(portal_b64 "$aumid")&package=$(portal_b64 "$full")" -H "Content-Length: 0" -d "" >/dev/null
 case $(portal_status) in
   200|204) echo "deploy.sh: started; the log is LocalState/h2uwp.log in the portal's file explorer" ;;
   *) echo "deploy.sh: launch refused ($(portal_status)): $(cat "$PORTAL_BODY")" >&2; exit 1 ;;
