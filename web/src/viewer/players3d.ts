@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { AIM_SHARES, MAX_PITCH, MAX_TWIST } from "./anim";
 import { EMPTY_VEHICLE_SHADE, bodyTint, findNode, secondaryOf, tintColours, vehicleTint, type Rgb } from "./models";
 
 export interface BipedTemplate {
@@ -60,9 +61,64 @@ export class BipedAnimator {
   /** How strongly each looping clip shows: the current one rises to 1, the rest fall away. */
   private weights = new Map<string, number>();
 
+  /** The bones the aim turns, their shares, and their pose before it was added. */
+  private aimBones: Array<{ bone: THREE.Object3D; pitch: number; twist: number; base: THREE.Quaternion }> = [];
+  private pitch = 0;
+  private twist = 0;
+
   constructor(root: THREE.Object3D, private clips: ReadonlyMap<string, THREE.AnimationClip>) {
     this.mixer = new THREE.AnimationMixer(root);
     this.names = new Set(clips.keys());
+    // Parents before children: the order the shares are listed in.
+    for (const [re, pitch, twist] of AIM_SHARES) {
+      let bone: THREE.Object3D | null = null;
+      root.traverse((o) => { if (!bone && re.test(o.name) && !(o as THREE.Mesh).isMesh) bone = o; });
+      if (bone) this.aimBones.push({ bone, pitch, twist, base: (bone as THREE.Object3D).quaternion.clone() });
+    }
+    // Whatever bones there are carry the whole aim between them.
+    const sp = this.aimBones.reduce((a, b) => a + b.pitch, 0), st = this.aimBones.reduce((a, b) => a + b.twist, 0);
+    for (const a of this.aimBones) { a.pitch /= sp || 1; a.twist /= st || 1; }
+  }
+
+  /** Points the upper body: `pitch` up (radians) and `twist` (radians, the
+   *  turn back from the legs to the aim, about the model's up), shared out
+   *  over the spine, neck and head on top of whatever clip is playing. */
+  aim(pitch: number, twist: number): void {
+    this.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch));
+    this.twist = Math.max(-MAX_TWIST, Math.min(MAX_TWIST, twist));
+  }
+
+  private static q0 = new THREE.Quaternion();
+  private static q1 = new THREE.Quaternion();
+  private static q2 = new THREE.Quaternion();
+  private static AXIS_Y = new THREE.Vector3(0, 1, 0);
+  private static AXIS_Z = new THREE.Vector3(0, 0, 1);
+
+  /** Adds the aim to the bones the mixer just posed. The model faces +x
+   *  with +y up, so pitching up turns about +z and twisting about +y; each
+   *  turn is taken in the model's frame and brought into the bone's parent's. */
+  private applyAim(): void {
+    for (const a of this.aimBones) a.base.copy(a.bone.quaternion);
+    if (!this.pitch && !this.twist) return;
+    const root = this.mixer.getRoot() as THREE.Object3D;
+    root.updateWorldMatrix(true, true);
+    const rootInv = root.getWorldQuaternion(BipedAnimator.q0).invert();
+    const turn = BipedAnimator.q1, rel = BipedAnimator.q2;
+    for (const a of this.aimBones) {
+      if (!a.bone.parent) continue;
+      turn.setFromAxisAngle(BipedAnimator.AXIS_Y, this.twist * a.twist)
+        .multiply(new THREE.Quaternion().setFromAxisAngle(BipedAnimator.AXIS_Z, this.pitch * a.pitch));
+      // The parent's turn within the model: the aim, brought into its frame.
+      a.bone.parent.getWorldQuaternion(rel).premultiply(rootInv);
+      const delta = rel.clone().invert().multiply(turn).multiply(rel);
+      a.bone.quaternion.premultiply(delta);
+      a.bone.updateMatrixWorld(true);
+    }
+  }
+
+  /** Takes the aim back off, so the mixer (or a still model) starts from the clip's own pose. */
+  private clearAim(): void {
+    for (const a of this.aimBones) a.bone.quaternion.copy(a.base);
   }
 
   private action(name: string): THREE.AnimationAction | null {
@@ -155,7 +211,9 @@ export class BipedAnimator {
       this.weights.set(name, next);
       a.setEffectiveWeight(next);
     }
+    this.clearAim();
     this.mixer.update(dt);
+    this.applyAim();
   }
 
   dispose(): void {
@@ -187,7 +245,13 @@ export interface WeaponInstance {
   muzzle: THREE.Object3D | null;
 }
 
-interface Loaded { scene: THREE.Object3D; asset?: { extras?: unknown }; animations?: THREE.AnimationClip[] }
+interface Loaded {
+  scene: THREE.Object3D;
+  asset?: { extras?: unknown };
+  animations?: THREE.AnimationClip[];
+  /** The loader's parser, for textures a material names only in its extras. */
+  parser?: { getDependency(type: "texture", index: number): Promise<THREE.Texture> };
+}
 export type LoadGlb = (url: string) => Promise<Loaded>;
 
 const meshes = (root: THREE.Object3D): THREE.Mesh[] => {
@@ -195,6 +259,91 @@ const meshes = (root: THREE.Object3D): THREE.Mesh[] => {
   root.traverse((o) => { if ((o as THREE.Mesh).isMesh) out.push(o as THREE.Mesh); });
   return out;
 };
+
+// ---- surfaces ----
+
+/** What the extractor says about a material (glTF `extras.h2`). */
+interface H2Look { template?: string; change_colour?: number; blend?: string }
+const lookOf = (m: THREE.Material): H2Look => ((m.userData as { h2?: H2Look }).h2 ?? {});
+
+/** How strongly the environment shows on a model: its own, brighter than the map's. */
+export const MODEL_ENV_INTENSITY = 0.9;
+
+/** Fetches the textures materials name only in their extras (the
+ *  change-colour map), onto `userData.ccMap`. One that can't be read is
+ *  left out: the vertex weights still colour the model. */
+export async function resolveLooks(g: Loaded): Promise<Loaded> {
+  const jobs: Promise<void>[] = [];
+  g.scene.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    for (const mat of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const idx = lookOf(mat).change_colour;
+      if (typeof idx !== "number" || !g.parser || mat.userData.ccMap) continue;
+      jobs.push(g.parser.getDependency("texture", idx).then((t) => {
+        // Weights, not colour; the glb's own orientation.
+        t.colorSpace = THREE.NoColorSpace;
+        t.flipY = false;
+        mat.userData.ccMap = t;
+      }, () => {}));
+    }
+  });
+  await Promise.all(jobs);
+  return g;
+}
+
+/** Sets a material up as its shader's look says: additive glows add, see-
+ *  through surfaces don't hide what's behind them, and everything takes the
+ *  environment's reflections. */
+export function applyLook(mat: THREE.Material, env: THREE.Texture | null): void {
+  const look = lookOf(mat);
+  const std = mat as THREE.MeshStandardMaterial;
+  if (look.blend === "add") {
+    mat.blending = THREE.AdditiveBlending;
+    mat.transparent = true;
+    mat.depthWrite = false;
+  } else if (mat.transparent) {
+    mat.depthWrite = false;
+  }
+  if (std.isMeshStandardMaterial && env) {
+    std.envMap = env;
+    std.envMapIntensity = MODEL_ENV_INTENSITY;
+  }
+  mat.needsUpdate = true;
+}
+
+/** A copy of `src` whose base colour is tinted per pixel by its change-colour
+ *  map: red weighs the primary colour, green the secondary (linear light,
+ *  the same sharing out as `tintAt`). */
+export function changeColourMaterial(src: THREE.Material, cc: THREE.Texture, primary: Rgb, secondary: Rgb = secondaryOf(primary)): THREE.Material {
+  const out = src.clone();
+  out.userData = { ...src.userData, cc: { primary, secondary } };
+  (out as THREE.MeshStandardMaterial).vertexColors = false;
+  out.onBeforeCompile = (shader) => {
+    shader.uniforms.ccMap = { value: cc };
+    shader.uniforms.ccPrimary = { value: new THREE.Color(...primary) };
+    shader.uniforms.ccSecondary = { value: new THREE.Color(...secondary) };
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\n" + CC_UNIFORMS)
+      .replace("#include <map_fragment>", "#include <map_fragment>\n" + CC_FRAGMENT);
+  };
+  out.customProgramCacheKey = () => "h2-change-colour";
+  return out;
+}
+
+export const CC_UNIFORMS = "uniform sampler2D ccMap; uniform vec3 ccPrimary; uniform vec3 ccSecondary;";
+/** Needs the base map's uv (`vMapUv`): only materials with a base map get a per-pixel tint. */
+export const CC_FRAGMENT = `{
+  vec4 ccw = texture2D(ccMap, vMapUv);
+  float ccp = clamp(ccw.r, 0.0, 1.0), ccs = clamp(ccw.g, 0.0, 1.0);
+  float ccn = ccp + ccs;
+  if (ccn > 1.0) { ccp /= ccn; ccs /= ccn; }
+  diffuseColor.rgb *= vec3(1.0 - ccp - ccs) + ccPrimary * ccp + ccSecondary * ccs;
+}`;
+
+/** The change-colour map of a material that can be tinted per pixel. */
+const ccMapOf = (m: THREE.Material): THREE.Texture | null =>
+  ((m as THREE.MeshStandardMaterial).map && (m.userData.ccMap as THREE.Texture | undefined)) || null;
 
 /** Makes a loaded biped ready to clone: finds (or, for a glb that lacks
  *  them, places) the `head` and `weapon` nodes and measures its height. */
@@ -266,15 +415,37 @@ export class ModelLibrary {
   /** Coloured geometry and materials, by colour then by what they were made from. */
   private tinted = new Map<string, { geo: Map<THREE.BufferGeometry, THREE.BufferGeometry>; mat: Map<THREE.Material, THREE.Material> }>();
   private disposed = false;
+  /** The reflections models take (the scene's environment), once given. */
+  private env: THREE.Texture | null = null;
 
   constructor(private onReady: () => void = () => {}, private load: LoadGlb = (url) => new GLTFLoader().loadAsync(url)) {}
 
-  private get<T>(map: Map<string, Entry<T>>, url: string, prepare: (g: Loaded) => T | null): T | null {
+  /** Gives every model, loaded and to come, the scene's environment to reflect. */
+  setEnvironment(env: THREE.Texture | null): void {
+    this.env = env;
+    for (const map of [this.bipeds, this.weapons, this.vehicles] as Map<string, Entry<{ root: THREE.Object3D }>>[]) {
+      for (const e of map.values()) if (e.state === "ready") this.dressSurfaces(e.template.root);
+    }
+    for (const set of this.tinted.values()) for (const m of set.mat.values()) applyLook(m, env);
+  }
+
+  private dressSurfaces(root: THREE.Object3D): void {
+    for (const m of meshes(root)) {
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+        applyLook(mat, this.env);
+        // Glows and glass cast no shadow.
+        if (mat.transparent) m.castShadow = false;
+      }
+    }
+  }
+
+  private get<T extends { root: THREE.Object3D }>(map: Map<string, Entry<T>>, url: string, prepare: (g: Loaded) => T | null): T | null {
     const e = map.get(url);
     if (e) return e.state === "ready" ? e.template : null;
     map.set(url, { state: "loading" });
-    this.load(url).then(prepare, () => null).then((template) => {
+    this.load(url).then(resolveLooks).then(prepare, () => null).then((template) => {
       if (this.disposed) return;
+      if (template) this.dressSurfaces(template.root);
       map.set(url, template ? { state: "ready", template } : { state: "failed" });
       if (template) this.onReady();
     });
@@ -306,9 +477,15 @@ export class ModelLibrary {
       m.material = mapMaterials(m.material, (mat) => {
         let out = mats.get(mat);
         if (!out) {
-          out = mat.clone();
-          const col = (out as THREE.MeshStandardMaterial).color;
-          if (col) col.setRGB(col.r * tint[0], col.g * tint[1], col.b * tint[2]);
+          // A part the shader marks takes the player's colour as the game
+          // paints it (a banshee's plates); the rest a light wash, or the shade.
+          const cc = !empty && colour ? ccMapOf(mat) : null;
+          if (cc) out = changeColourMaterial(mat, cc, [c.r, c.g, c.b]);
+          else {
+            out = mat.clone();
+            const col = (out as THREE.MeshStandardMaterial).color;
+            if (col) col.setRGB(col.r * tint[0], col.g * tint[1], col.b * tint[2]);
+          }
           mats.set(mat, out);
         }
         return out;
@@ -345,7 +522,14 @@ export class ModelLibrary {
     const primary: Rgb = [c.r, c.g, c.b];
     for (const m of meshes(object)) {
       const weights = m.geometry.getAttribute("color");
-      if (weights) {
+      const single = Array.isArray(m.material) ? null : m.material;
+      const cc = single ? ccMapOf(single) : null;
+      if (single && cc) {
+        // Per pixel, from the shader's own change-colour map.
+        let out = set.mat.get(single);
+        if (!out) { out = changeColourMaterial(single, cc, primary); set.mat.set(single, out); }
+        m.material = out;
+      } else if (weights) {
         let geo = set.geo.get(m.geometry);
         if (!geo) { geo = tintGeometry(m.geometry, primary); set.geo.set(m.geometry, geo); }
         m.geometry = geo;

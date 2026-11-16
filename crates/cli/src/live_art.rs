@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 9;
+pub const EXTRACTOR_VERSION: u32 = 10;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -575,6 +575,48 @@ pub fn cached(dir: &Path, key: &str) -> Option<Manifest> {
     (m.source == key).then_some(m)
 }
 
+/// How the art in a directory compares with what this build extracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtAge {
+    /// No readable manifest.
+    Missing,
+    /// Written by an older extractor (the version it recorded; 0 from
+    /// before versions were recorded): it lacks what this build adds, e.g.
+    /// skinned, animated player models.
+    Stale(u32),
+    Current,
+}
+
+/// The age of the art in `dir`, from its manifest's `extractor`.
+pub fn art_age(dir: &Path) -> ArtAge {
+    let Some(m) = fs::read(dir.join("manifest.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Manifest>(&b).ok())
+    else {
+        return ArtAge::Missing;
+    };
+    if m.extractor < EXTRACTOR_VERSION {
+        ArtAge::Stale(m.extractor)
+    } else {
+        ArtAge::Current
+    }
+}
+
+/// What to tell someone serving the art in `dir` when it is stale.
+pub fn stale_warning(dir: &Path) -> Option<String> {
+    match art_age(dir) {
+        ArtAge::Stale(found) => Some(format!(
+            "the game art in {} is from extractor v{found} and this h2 extracts \
+             v{EXTRACTOR_VERSION}: the 3D viewer's player models won't animate or get \
+             the newer materials until it is extracted again: \
+             h2 live assets extract --disc <your halo2.iso> --out {}",
+            dir.display(),
+            dir.display()
+        )),
+        _ => None,
+    }
+}
+
 /// A decoded picture waiting to be written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Piece {
@@ -1090,6 +1132,37 @@ mod tests {
             linear: false,
         };
         assert_eq!(pick(category("gametype"), &[mixed]), None);
+    }
+
+    #[test]
+    fn art_from_an_older_extractor_is_stale() {
+        let dir = std::env::temp_dir().join(format!("h2-art-age-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(art_age(&dir), ArtAge::Missing);
+        assert_eq!(stale_warning(&dir), None);
+        let write = |extractor: Option<u32>| {
+            let m = build_manifest("k".into(), BTreeMap::new(), Vec::new(), BTreeMap::new());
+            let mut v = serde_json::to_value(&m).unwrap();
+            match extractor {
+                Some(e) => v["extractor"] = e.into(),
+                None => drop(v.as_object_mut().unwrap().remove("extractor")),
+            }
+            fs::write(dir.join("manifest.json"), serde_json::to_vec(&v).unwrap()).unwrap();
+        };
+        write(Some(EXTRACTOR_VERSION));
+        assert_eq!(art_age(&dir), ArtAge::Current);
+        write(Some(EXTRACTOR_VERSION - 1));
+        assert_eq!(art_age(&dir), ArtAge::Stale(EXTRACTOR_VERSION - 1));
+        let warning = stale_warning(&dir).unwrap();
+        assert!(warning.contains("h2 live assets extract"), "{warning}");
+        assert!(warning.contains(&dir.display().to_string()), "{warning}");
+        // From before the version was recorded.
+        write(None);
+        assert_eq!(art_age(&dir), ArtAge::Stale(0));
+        fs::write(dir.join("manifest.json"), b"not json").unwrap();
+        assert_eq!(art_age(&dir), ArtAge::Missing);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

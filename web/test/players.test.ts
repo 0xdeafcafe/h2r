@@ -5,7 +5,7 @@ import type { Frame, FramePlayer } from "../src/api/types";
 import { aimOf, cleanAim, cleanId, cleanShots, interpolateFrames, nlerpAim, sampleFrames, yawAim, type SampledPlayer } from "../src/state/frames";
 import { parseManifest } from "../src/lib/gameart";
 import { FIRING_HOLD_MS, FLASH_MS, MAX_LIVE_SHOTS, MAX_SHOTS_PER_BURST, SHOT_FADE_MS, SHOT_GAP_MS, ShotQueue, flashAlpha, shotAlpha } from "../src/map/shots";
-import { BODY_TINT, SECONDARY_SHADE, bipedFile, bodyTint, findNode, modelScale, modelUrl, parseModels, secondaryOf, tintAt, tintColours, tintWeights, weaponFile, weaponLabel } from "../src/viewer/models";
+import { BODY_TINT, MODEL_SCALE, SECONDARY_SHADE, bipedFile, bodyTint, findNode, modelUrl, modelsAnimate, parseModels, secondaryOf, tintAt, tintColours, tintWeights, weaponFile, weaponLabel } from "../src/viewer/models";
 import { ModelLibrary, prepareBiped, tintGeometry } from "../src/viewer/players3d";
 import { smoothPlayers, type SmoothPlayer } from "../src/viewer/sync";
 import { MOCK_BIPEDS, MOCK_WEAPONS, encodeModelGlb, mockModels } from "../mock/models";
@@ -193,7 +193,7 @@ describe("the manifest's models", () => {
     expect(parseModels(raw)).toEqual({
       bipeds: { spartan: "models/biped/spartan.glb", elite: "models/biped/elite.glb" },
       weapons: { battle_rifle: "models/weapon/battle_rifle.glb" },
-      vehicles: {}, objects: {}, classes: {},
+      vehicles: {}, objects: {}, classes: {}, version: 1, animated: false,
     });
     expect(parseManifest({ version: 1, images: {}, models: raw })!.models).toEqual(parseModels(raw));
     expect(parseManifest({ version: 1, images: {} })!.models).toBeNull();
@@ -216,8 +216,8 @@ describe("the manifest's models", () => {
     expect(bipedFile(m, null)).toBe("models/biped/spartan.glb");
     // No models, or no spartan to fall back on: the capsule.
     expect(bipedFile(null, "elite")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {} }, "brute")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {} }, "elite")).toBe("e.glb");
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {}, version: 1, animated: false }, "brute")).toBeNull();
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {}, version: 1, animated: false }, "elite")).toBe("e.glb");
     expect(weaponFile(m, "battle_rifle")).toBe("models/weapon/battle_rifle.glb");
     expect(weaponFile(m, "smg")).toBeNull();
     expect(weaponFile(m, null)).toBeNull();
@@ -229,13 +229,25 @@ describe("the manifest's models", () => {
 });
 
 describe("model size", () => {
-  test("life size up close, growing with distance, never past the map's marker scale", () => {
-    expect(modelScale(5, 0.72, 4)).toBe(1);
-    expect(modelScale(48, 0.72, 4)).toBeCloseTo(2, 6);
-    expect(modelScale(500, 0.72, 4)).toBe(4);
-    // A small map keeps everyone life size from anywhere.
-    expect(modelScale(500, 0.72, 1)).toBe(1);
-    expect(modelScale(10, 0, 3)).toBe(3);
+  test("models are drawn at the game's own size, never rescaled", () => {
+    expect(MODEL_SCALE).toBe(1);
+  });
+});
+
+describe("stale art", () => {
+  const v2 = { version: 2, bipeds: { spartan: { glb: "models/biped/spartan.glb", clips: ["rifle:idle", "rifle:run"] } }, weapons: {} };
+  test("version 2 with clips animates; version 1, or a biped without clips, doesn't", () => {
+    expect(modelsAnimate(parseModels(v2))).toBe(true);
+    expect(modelsAnimate(parseModels({ ...v2, version: 1 }))).toBe(false);
+    expect(modelsAnimate(parseModels({ ...v2, bipeds: { spartan: { glb: "models/biped/spartan.glb" } } }))).toBe(false);
+    expect(modelsAnimate(null)).toBe(false);
+  });
+
+  test("model addresses carry the extraction's stamp, so an old cached glb is never reused", () => {
+    const m = parseManifest({ version: 1, source: "0123456789abcdef0123", images: {}, models: v2 })!.models!;
+    expect(m.stamp).toBe("0123456789abcdef0123");
+    expect(modelUrl("http://s/art/game/", "models/biped/spartan.glb", m.stamp)).toBe("http://s/art/game/models/biped/spartan.glb?v=0123456789abcdef");
+    expect(modelUrl("http://s/art/game/", "models/biped/spartan.glb", null)).toBe("http://s/art/game/models/biped/spartan.glb");
   });
 });
 

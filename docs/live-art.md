@@ -376,15 +376,34 @@ extracted):
                                       "clips": ["rifle:idle", "rifle:run", ...] },
                          "elite":   { "glb": "models/biped/elite.glb", "clips": [...] } },
             "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb",
-                                           "class": "rifle" } },
+                                           "class": "rifle",
+                                           "ballistics": { "kind": "bullet", "speed": 400,
+                                                           "final_speed": 400, "rate": 6.5 } } },
             "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } } }
 ```
 
 `vehicles` is absent when there are none. `clips` (a biped's animations,
 in the glb's order) is absent when it has none; `class` (the weapon class a
 weapon is held with, picking the clip set) is absent when the tag names
-none. Version 1 had neither and unskinned bipeds; a version 1 reader that
-skips the version check still draws the version 2 files (below).
+none. `ballistics` (what the weapon fires: `kind` one of `bullet`,
+`plasma`, `needle`, `rocket`, `grenade`, `beam`, `melee`; `speed` and
+`final_speed` in world units a second; `rate` sustained rounds a second;
+each absent when unknown) comes from the weapon's barrel and its projectile
+tag (`crates/cli/src/live_weapons.rs` has the offsets and how they were
+established) and drives the viewer's tracers, bolts and rockets. Version 1
+had none of these and unskinned bipeds; a version 1 reader that skips the
+version check still draws the version 2 files (below).
+
+Art from an older extractor (the manifest's `extractor` below the running
+`h2`'s) is stale: before version 2 its bipeds had no clips, so the viewer's
+players couldn't animate. `h2 live serve` prints a warning naming the
+command to extract again, `h2 live assets check [--out DIR]` exits 1 for
+missing or stale art (deploy/live/setup.sh extracts again then), `h2 play
+--live` extracts again by itself (the extractor version is part of the
+cache key), and the viewer says so when the models it is given can't
+animate. The server sends the art with `Cache-Control: no-cache` and the
+viewer asks for each model with the manifest's `source` as a query, so a
+browser never keeps showing models from before an extraction.
 
 A model that could not be built is listed under `skipped` as
 `models/biped/<species>`, `models/weapon/<stem>` or
@@ -434,9 +453,30 @@ Keys (what telemetry sends):
   bilinearly from the material's change-colour map at the vertex. A
   material without a change-colour map has zero weights; weapons have no
   `COLOR_0`.
-- Materials: `baseColorTexture` (an embedded PNG, at most 512 pixels a side,
-  shared by materials with the same map) when the diffuse map decoded, else
-  a grey `baseColorFactor`. Metallic 0, roughness 0.8.
+- Materials (`material_look`): `baseColorTexture` (an embedded PNG, at most
+  512 pixels a side) when the diffuse map decoded, else a grey
+  `baseColorFactor`; metallic 0, roughness 0.8 unless:
+  - the shader is a bump-env or shiny one (`tex_bump_env*`,
+    `tex_bump_shiny`): the base map's alpha is Halo 2's specular mask, and
+    becomes a `metallicRoughnessTexture` (green roughness 0.85 to 0.3,
+    blue metalness up to 0.6 for env, 0.35 for shiny); the base map is
+    then stored opaque;
+  - it has a self-illumination map (a bitmap named `*illum*`), or is a lit
+    display (`illum`, `*meter*`, `*plasma*` templates): `emissiveTexture`
+    (that map, or the base map) with `emissiveFactor` 1;
+  - it is transparent (`shader_templates\transparent\...`): `*_add_*`
+    templates are glows, `alphaMode` `BLEND`, black base, the base map as
+    the emission and `extras.h2.blend` `"add"` (the viewer adds them);
+    the others are glass, `BLEND` with a see-through blue-grey factor and
+    no texture; `overlay` templates (decals) blend by their alpha;
+  - it is alpha-tested (`*alpha_test*`): `alphaMode` `MASK` at 0.5, its
+    alpha kept.
+  The change-colour map (at most 256 pixels a side) is also stored, its
+  texture index in `extras.h2.change_colour`, for readers that tint per
+  pixel (the viewer does); `extras.h2.template` names the shader template.
+  Each distinct picture is stored once. Bump maps (8-bit palettized
+  normals; the palette is the engine's, not the tag's) and detail maps are
+  not used.
 - `asset.extras`: `generator`, `models_version` (2) and, for bipeds,
   `height` (game units, feet to the top of the head).
 - A biped stands with its feet on the origin plane (lowest vertex at
@@ -548,8 +588,8 @@ whole step takes about 0.6 s on 10 cores.
    default pose's value. An overlay (`fire_1`) adds its change since its
    first frame to the default pose: rotation `default × first⁻¹ × frame`,
    translation `default + frame − first`. Scale channels are dropped. A
-   biped glb over 3 MB loses whole classes, `ball`, then `flag`, then
-   `unarmed`, until it fits.
+   biped glb over 3.25 MiB loses whole classes, `ball`, then `flag`, then
+   `unarmed`, until it fits (the elite keeps its sword clips).
 10. **Weapon class.** The string ID at `weap +0x288` (D: every multiplayer
     weapon names a class of the player graphs there: `rifle` for the
     battle rifle, carbine, shotgun, SMG and the snipers, `pistol` for the
@@ -558,11 +598,14 @@ whole step takes about 0.6 s on 10 cores.
     guns say `fixed`).
 11. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
    `+4` block, datum first; docs/shader-instances.md). A bitmap's role comes
-   from generic words in its tag name read at run time: a name ending in
-   `_cc` or saying `change_color` is the change-colour map; the first name
+   from generic words in its tag name read at run time: engine defaults
+   (`default_bitmaps`, `rasterizer`) are never used; a name ending in
+   `_cc` or saying `change_color` (or `color_change`) is the change-colour
+   map; one saying `illum` the self-illumination map; the first name
    that is not a bump, detail, reflection, cube, mask or engine map is the
    diffuse map. Decoded with `assets::decode_image` (DXT and the other
-   formats the art already decodes).
+   formats the art already decodes; the largest stored level). The look
+   follows from the template's name (above).
 
 ## Checking against your disc
 
@@ -584,8 +627,16 @@ vehicles have the spartan standing at `seat_driver`. It also checks the
 spartan's file: the `gltf` crate reads its skin and clips, playing
 `rifle:idle` frame 0 moves no vertex (the default pose is that frame), and
 every `rifle:run` key at frames 0, 7, 13 and the last, back in game axes,
-is the rotation `tags::anim_sample` gives the node (to 6e-8). Do not commit
-anything it writes.
+is the rotation `tags::anim_sample` gives the node (to 6e-8). It checks
+true scale (the spartan 0.6 to 0.8 units tall, the elite taller, the
+Warthog 1.5 to 3 long), the looks (change-colour maps on the spartan, elite
+and banshee, the elite's glow, the Warthog's glass, the spartan's shine),
+that the elite keeps its sword clips, and the battle rifle's, plasma rifle's
+and rocket launcher's ballistics. `shaders_from_the_disc` (same flags)
+writes `shaders.txt`: every player biped's and vehicle's materials with
+their template, bitmaps (name, format, size, role) and instance colours and
+vectors; `live_weapons::tests::weapons_from_the_disc` writes `weapons.txt`.
+Do not commit anything they write.
 
 ## Limits
 
@@ -607,8 +658,11 @@ anything it writes.
   wraith, `chaingun`/`gauss` on the warthog), not part of the vehicle. A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.
-- Change-colour weights are per vertex, so their edges are as coarse as the
-  mesh. The diffuse texture already carries the fine detail.
-- No bump, specular, reflection or self-illumination: base colour only. The
-  visor is the diffuse map's colour.
+- `COLOR_0` change-colour weights are per vertex, so their edges are as
+  coarse as the mesh; the per-pixel map in `extras.h2.change_colour` is
+  exact. Only the primary and secondary colours are tinted.
+- No bump or detail maps; reflections are the reader's environment, not
+  the shader's cube map, and the shader's colour parameters (specular and
+  environment tints) are not read, so the chief's visor is the diffuse
+  map's dark colour, not gold.
 - Elite helmets and other permutations: only `base` (or the first).

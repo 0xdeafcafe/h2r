@@ -7,6 +7,7 @@ import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
 import { gameArt } from "../state/gameart";
 import { clampCut, stepCut } from "./cutaway";
+import { modelsAnimate } from "./models";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
 import "./viewer.css";
 
@@ -72,6 +73,11 @@ export default function Viewer3D(props: Viewer3DProps) {
   const [late, setLate] = createSignal(false);
   const lateTimer = setTimeout(() => setLate(true), 2500);
   onCleanup(() => clearTimeout(lateTimer));
+  // Models from before version 2 have no clips: say why nobody moves.
+  const staleModels = createMemo(() => {
+    const models = gameArt()?.manifest.models;
+    return !!models && Object.keys(models.bipeds).length > 0 && !modelsAnimate(models);
+  });
   const people = createMemo(() => [...props.roster()].map(([index, r]) => ({ index, ...r })).sort((a, b) => a.name.localeCompare(b.name)));
 
   const pick = (m: ViewMode, index: number | null = follow()) => {
@@ -179,6 +185,9 @@ export default function Viewer3D(props: Viewer3DProps) {
         </div>
         <Show when={mapState() === "loading"}><div class="v3-note">Loading the map…</div></Show>
         <Show when={mapState() === "grid" && late()}><div class="v3-note">No 3D geometry for this map; the floor grid is fitted to where players have been.</div></Show>
+        <Show when={mapState() !== "loading" && staleModels()}>
+          <div class="v3-note">This server's player models are from an older art extraction, so they can't animate. Extract the art again: <code>h2 live assets extract</code>.</div>
+        </Show>
       </Show>
     </div>
   );

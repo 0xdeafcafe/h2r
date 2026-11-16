@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # One-time setup for the Live server behind a named Cloudflare tunnel
 # (docs/live-hosting.md, "Docker with a named tunnel"). Asks for what it
-# needs, writes deploy/live/.env, extracts the game art if it is missing,
+# needs, writes deploy/live/.env, extracts the game art if it is missing or stale,
 # starts the containers, waits for the public URL and makes a first invite.
 #
 #   deploy/live/setup.sh
 #
 # Safe to run again: it keeps an existing .env unless you say otherwise and
-# skips the art when deploy/live/art/manifest.json is already there.
+# skips the art when deploy/live/art holds art from this h2's extractor
+# (`h2 live assets check`), extracting it again when it is older.
 set -euo pipefail
 
 start="$PWD"
@@ -93,17 +94,26 @@ fi
 url="$(sed -n 's/^H2_LIVE_PUBLIC_URL=//p' .env)"; url="${url:-https://live.forbes.red}"
 mkdir -p data art
 
-if [[ ! -f art/manifest.json ]]; then
+# An h2 installed before `assets check` existed is older than this checkout,
+# and art it extracts would be stale too.
+if type -P h2 >/dev/null && [[ "$(h2 live --help 2>&1 || true)" != *"assets check"* ]]; then
+  die "the h2 on your PATH is older than this checkout; update it: cargo install --locked --force --path $root/crates/cli --bin h2"
+fi
+
+if ! h2 live assets check --out "$here/art"; then
   say "Game art"
-  echo "The server needs art extracted from your disc once (it is never committed)."
+  if [[ -f art/manifest.json ]]; then
+    echo "The art in $here/art is from an older extractor: extracting it again"
+    echo "(the 3D viewer's animated, textured models need the current one)."
+  else
+    echo "The server needs art extracted from your disc once (it is never committed)."
+  fi
   ask iso "Path to your Halo 2 disc image (.iso)"
   iso="${iso/#\~/$HOME}"
   [[ $iso == /* ]] || iso="$start/$iso"   # relative to where you ran this
   [[ -f $iso ]] || die "no file at $iso"
   h2 live assets extract --disc "$iso" --out "$here/art"
   [[ -f art/manifest.json ]] || die "extraction finished without art/manifest.json"
-else
-  echo "art: already extracted"
 fi
 
 say "Building and starting (the first build takes a while)"
