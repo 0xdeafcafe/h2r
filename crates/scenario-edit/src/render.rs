@@ -376,6 +376,11 @@ impl Viewport {
         });
         let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
         let instance_attrs = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+        // Solid surfaces are one-sided as in the game (front faces wind
+        // counter-clockwise: their normals agree with the vertex normals),
+        // so the camera sees into a level through the backs of the walls
+        // and cliffs around it. Cut-outs and see-through surfaces are
+        // drawn from both sides.
         let scene_pipeline = |entry: &str, blend: Option<wgpu::BlendState>, write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("scenario viewport scene"),
@@ -397,7 +402,10 @@ impl Viewport {
                         }),
                     ],
                 },
-                primitive: wgpu::PrimitiveState::default(),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: (entry == "fs_opaque").then_some(wgpu::Face::Back),
+                    ..Default::default()
+                },
                 depth_stencil: depth(write),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {

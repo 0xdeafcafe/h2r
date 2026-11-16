@@ -185,7 +185,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   docs/live/live-art.md). Bitmaps are decoded once by
   `assets::decode_image`, shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
-  lightmaps). One sun and the sky light the scene.
+  lightmaps). One sun and the sky light the scene. Solid surfaces are
+  one-sided, as in the game, so the camera sees into a level through the
+  backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
   `overlay` decals and part kind 4 are drawn see-through after everything
   else and are neither framed nor picked; `alpha_test` templates are cut
