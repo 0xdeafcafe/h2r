@@ -353,6 +353,34 @@ Campaign re-activation: `0x0018e700` copies the active options (`G+8`,
 activation hook also fires on checkpoint reverts and restarts of the same
 map.
 
+### Unit stance, actions, damage and machines
+
+Added 2026-11-16 for frame `stance`, `actions`, `hits` and `machines`
+(static reading, no game run). Some names come from Project Cartographer
+(H2 Vista), whose unit layout matches this one at `+0x12c` actor, `+0x138`
+team and `+0x13c` player, and whose unit flag 12 is the `0x1000` that
+`unit_new` sets at `0x000c4317`; those are marked likely.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|
+| unit flags | unit `+0x134` | `u32` | confirmed | Bit 23 asks to crouch: the crouch update at `0x000dd83f` tests it |
+| crouch amount | unit `+0x2c4` | `f32` 0..1 | confirmed | `0x000dd83f` moves it toward 1 (bit 23 set) or 0 by a rate times the tick length; `biped_new` initialises it |
+| selected grenade type | unit `+0x23c` | `i8` | confirmed index; likely names | `0x000cdff0` and the HUD (`0x002759cf`) index `+0x23e` with it; 0 frag, 1 plasma per Cartographer |
+| grenade counts | unit `+0x23e` | `i8[2]` | confirmed | As above; `0x000cbef3` tests each |
+| biped physics mode | biped `+0x3dc` | `u8` | likely | `biped_new` (`0x000de5f6`) clears it; code compares it with 1, 2, 3, 5 and 6 (`0x000dd897` in the crouch update: 6). Names per Cartographer: 1 ground, 2 flying, 3 dead, 4 posture, 5 climbing, 6 melee |
+| translational velocity | `+0x88` | `f32[3]` | confirmed | Above; telemetry uses only the sign of z |
+| held weapon magazine | `W+0x22a` / `W+0x22c` | `i16` | confirmed | Reserve and loaded rounds, above |
+| scenario placement index | `+0x1a` | `i16` | likely | `object_new` copies it from the placement data's `+0x10` (`0x000b7c87`) with the object identifier (`+0xa4`, `+0xa8`); -1 for objects the scenario did not place |
+| machine object type | header `+3` = 7 | `u8` | likely | The engine's type order (biped 0, vehicle 1, weapon 2 confirmed); the scarab of `03a`/`03b` is a `mach` tag, in `08a` a `scen` |
+| device position | device `+0x140` | `f32` 0..1 | likely | The machine network-state builder `0x000a3df0` copies it under flag `0x400`, next to the desired value of the device group at `+0x13c` (flag `0x800`); `0x00106e24` compares it with 0.9 |
+| damage reporting type | report `+0x00` low 6 bits | enum | likely names | 0 guardians, 1 falling, 2 collision, 3 melee, 4 explosion, 5..20 the hand weapons (magnum to energy sword), 21/22 frag/plasma grenade, 23..26 flag/bomb/ball, 27/28 turrets, 29..38 vehicles, 39/40 sentinel, 41 teleporter (Cartographer's `e_damage_reporting_type`) |
+
+`0x000d9640` applies a report to its victim: it adds `+0x44` (clamped to 1
+when report flag bit 0 is set) and `+0x48` to the victim's recent-damage
+accumulators (`+0x100`, `+0xf8`), which is why the amounts read as
+fractions of vitality. It has four callers (`0x0009c76e`, `0x000d8292`,
+`0x000d87a2`, `0x000dc211`).
+
 ## 7. Kill/death and damage hooks
 
 ### Best player-facing event: `0x0015ce70`
