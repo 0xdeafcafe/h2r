@@ -162,10 +162,8 @@ pub static STEAM_SPEAKER: Def = Def {
     apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
-    menu: Some(Menu {
-        screen: "video",
-        order: 50,
-    }),
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
 };
 
 pub static STEAM_SENSITIVITY: Def = Def {
@@ -186,10 +184,8 @@ pub static STEAM_SENSITIVITY: Def = Def {
     apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
-    menu: Some(Menu {
-        screen: "video",
-        order: 60,
-    }),
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
 };
 
 /// The values of [`STEAM_LEFT_PAD`].
@@ -221,10 +217,8 @@ pub static STEAM_LEFT_PAD: Def = Def {
     apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
-    menu: Some(Menu {
-        screen: "video",
-        order: 70,
-    }),
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
 };
 
 /// The Steam Controller tuning the settings in `store` give, kept current

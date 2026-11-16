@@ -174,14 +174,17 @@ Speaker is on; otherwise the routed sounds play on the main output only.
 
 ## Settings and variables
 
-| Setting (`settings.toml`) | Row (Settings > Video) | Variable | Values |
+| Setting (`settings.toml`) | Row (Settings > Controls) | Variable | Values |
 |---|---|---|---|
 | `steam_pad.speaker` | Steam Pad Speaker | `H2_STEAM_SPEAKER` | on (default), off |
 | `steam_pad.sensitivity` | Trackpad Aim | `H2_STEAM_SENSITIVITY` | 1 to 10, default 5 |
 | `steam_pad.left_pad` | Left Trackpad | `H2_STEAM_LEFT_PAD` | `dpad` (default), `stick` |
 
+The rows sit on the profile's Controls screen, after Controller Speaker.
 All three apply at once. Other switches:
 
+- `H2_NO_STEAM_ROWS=1`: leave the three rows off the Controls screen (the
+  settings and variables still work).
 - `H2_STEAM_PAD=0`: don't open Steam Controllers at all (lizard mode stays
   as the controller has it).
 - `--no-gamepads`, or a scripted input timeline: no Steam Controllers
@@ -201,7 +204,7 @@ All three apply at once. Other switches:
    triggers: analog, and full on the click.
 3. Swipe the right pad. You should turn by the distance swiped, with no
    drift when you lift your thumb. Faster swipes should turn a little
-   further. Step Settings > Video > Trackpad Aim and feel the change.
+   further. Step Settings > Controls > Trackpad Aim and feel the change.
 4. Click the left pad's edges for the d-pad. Switch Left Trackpad to Stick
    and walk with it.
 5. Take damage or fire for rumble: the left pad should buzz low, the right
@@ -235,3 +238,8 @@ All three apply at once. Other switches:
   also offers a 2026 controller as a pad. If it does, the controller shows
   up twice.
 - **Speaker quality.** How recognisable the speaker rendition is.
+- **Ten Controls rows.** With the Steam rows, the Controls list shows ten
+  rows: the six retail ones, Controller Speaker and the three Steam rows.
+  The list is grown the way the speaker row grows it, one item height per
+  row with no scrolling. Whether ten rows fit on screen hasn't been seen
+  in game.
