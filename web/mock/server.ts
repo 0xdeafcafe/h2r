@@ -12,6 +12,8 @@
 // block figures) to the manifest; without it players are capsules.
 // H2_MOCK_ACTORS=1 puts the campaign's AI and vehicles (mock/campaign.ts)
 // into every game's frames, not only games whose mode is "campaign".
+// H2_MOCK_ADMIN=1 makes every account signed up in the browser an admin, for
+// the dashboard's server screen and the stats site's admin area (mock/admin.ts).
 // H2_MOCK_INDOOR=1 shuts each arena's glb inside a busy building (walls, a
 // ceiling, an upper floor, pillars, machines), for the 3D view's cutaways.
 
@@ -26,6 +28,7 @@ import { Sessions } from "./sessions";
 import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
 import { campaignHook } from "./campaign";
+import { Admin } from "./admin";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -47,6 +50,8 @@ const actorsEverywhere = !!process.env.H2_MOCK_ACTORS && process.env.H2_MOCK_ACT
 world.frameHooks.push(campaignHook(actorsEverywhere ? () => true : undefined));
 world.run();
 
+const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
+if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
 const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
@@ -138,10 +143,12 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (soc) return json(soc.body, soc.status);
   const ses = sessions.handle(req, u);
   if (ses) return json(ses.body, ses.status);
+  const adm = await admin.handle(req, u);
+  if (adm) return json(adm.body, adm.status);
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
-    return list([...world.accounts.values()].map((a) => world.publicAccount(a)).slice(0, limitOf(u)));
+    return list([...world.accounts.values()].map((a) => ({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}) })).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
     // A JWS signed by the new key over {gamertag, jwk, invite?, aud, iat}
@@ -166,7 +173,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const a = world.accountByTag(decodeURIComponent(m[1]!));
     if (!a) return err(404, "not_found", "no such account");
     const recent = [...world.games.values()].filter((g) => g.players.some((p) => p.p.xuid === a.xuid)).slice(-20).reverse();
-    return json({ ...world.publicAccount(a), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
+    return json({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
   }
   if (path === "/v1/presence") {
     return list([...world.accounts.values()].filter((a) => a.online).map((a) => ({

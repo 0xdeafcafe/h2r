@@ -47,6 +47,15 @@ impl PublicUrl {
         self.inner.read().unwrap().as_ref().map(|p| p.url.clone())
     }
 
+    /// The URL and whether it is a Cloudflare tunnel's.
+    pub fn get_with_kind(&self) -> Option<(String, bool)> {
+        self.inner
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|p| (p.url.clone(), p.cloudflare))
+    }
+
     /// The client's address: `CF-Connecting-IP` when the server is behind a
     /// Cloudflare tunnel and the request came through it (from loopback),
     /// else the peer. Without a tunnel the header is anyone's to forge, so

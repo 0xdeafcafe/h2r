@@ -100,10 +100,40 @@ JWT themselves, the way AT Protocol service auth works.
 
 Server-issued tokens (signed by the server key) are used between servers
 (§5) and by the operator: publishing title files and creating invites need a
-token signed by the server key, so they run on the server's machine.
+token signed by the server key, so they run on the server's machine, or a
+token from an admin account ([live-admin.md](live-admin.md)).
+
+**Invites from an admin account.** An invite code is always a JWS signed
+by the server key (`{aud, jti, exp}`, typ `h2live-invite`), so account
+creation checks it the same way whoever asked for it. An admin account
+(the browser's dashboard) asks with an `invites.write` token *and* an
+`InviteCreated` event `{jti, exp}` on the `invites` stream signed by its
+own key. The server checks that the author is an admin now, rate-limits
+it (per author: a burst of 10, then one a minute), checks the event like
+any signed write (its key, `at` within 5 minutes, a fresh nonce), that
+`exp` is at most 30 days away and the `jti` new, appends the admin's JWS
+as it is, and only then signs the code. So:
+
+- the log holds, for every admin invite, who asked for it, signed by them;
+  the code itself is not in the log (it is a server signature over the
+  `jti` and `exp`, which are);
+- the server key never leaves the server, and an account key cannot mint
+  a code on its own: the server signs only after the audit event is
+  appended;
+- `InviteRevoked` `{jti}` (also admin-signed) ends an open one, and an
+  invite from an account that is no longer an admin is refused at sign-up,
+  so revoking an admin also kills the invites it made. The operator's own
+  invites (`h2 live invite create`) are not logged and work as before.
+
+What it adds to an admin's power: inviting people, which on an
+`--invite-only` server is who may sign up. It does not let an admin make
+admins (grant and revoke stay operator-only), and a stolen admin key
+could mint at most ten invites, then one a minute, each visible in the
+log and revocable.
 
 `lxm` values: `events.write`, `games.write` (game events and ingest),
-`titles.write` (operator), `invites.write` (operator), and `read` (every
+`titles.write` (operator or admin), `invites.write` (operator or admin),
+`admin.read` (an admin's status and invite reads), and `read` (every
 read, including the stream, on a `--private` server).
 
 The server id is fixed on first start and stored with the server key,

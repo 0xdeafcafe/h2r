@@ -1,0 +1,29 @@
+/* The server screens (src/dash/Server.tsx): the facts plate, the admin's
+   "your server" plate and the invites plate. Same plate as every pod
+   screen, a little wider and denser for the admin's longer list. */
+
+.dx-server .dx-plate--main { left: calc(var(--u) * 368); width: calc(var(--u) * 552); }
+.dx-server--admin .dx-plate--main { top: calc(var(--u) * 222); padding-top: calc(var(--u) * 60); padding-bottom: calc(var(--u) * 36); }
+.dx-server--admin .dx-plate-body { font-size: calc(var(--u) * 16); }
+.dx-server--admin .dx-plate dl { line-height: calc(var(--u) * 19.5); }
+.dx-server-facts dd span { margin-left: calc(var(--u) * 2); }
+
+.dx-plate dd .dx-copy, .dx-copy { margin: 0; font-size: 1em; text-transform: none; letter-spacing: .03em; color: #fff; display: inline-flex; align-items: baseline; gap: calc(var(--u) * 8); max-width: 100%; }
+.dx-copy code { font: 500 .9em ui-monospace, Menlo, monospace; letter-spacing: 0; color: #e8ffd0; overflow: hidden; text-overflow: ellipsis; }
+.dx-copy .dx-forget { font-size: calc(var(--u) * 13); }
+
+.dx-invites .dx-days { display: inline-flex; gap: calc(var(--u) * 6); }
+.dx-invites .dx-days button {
+  font: 600 calc(var(--u) * 14) var(--f-cond); letter-spacing: .08em; text-transform: uppercase;
+  padding: calc(var(--u) * 3) calc(var(--u) * 10); border-radius: calc(var(--u) * 12);
+  color: #b9ec86; background: rgba(0, 40, 0, .45); border: calc(var(--u) * 1.5) solid rgba(160, 230, 100, .35);
+}
+.dx-invites .dx-days button.on { color: #10240a; background: var(--y-1); border-color: var(--y-1); box-shadow: 0 0 calc(var(--u) * 10) rgba(230, 255, 90, .5); }
+.dx-invites .dx-go { grid-column: 2; justify-self: start; }
+.dx-invites input[readonly] { font: 500 calc(var(--u) * 12) ui-monospace, Menlo, monospace; letter-spacing: 0; text-transform: none; }
+
+.dx-invite-list { list-style: none; margin: calc(var(--u) * 10) 0 0; padding: calc(var(--u) * 8) 0 0; border-top: calc(var(--u) * 1) solid rgba(160, 230, 100, .25); display: grid; gap: calc(var(--u) * 2); max-height: calc(var(--u) * 120); overflow: auto; }
+.dx-invite-list li { display: flex; align-items: baseline; gap: calc(var(--u) * 10); font-size: calc(var(--u) * 15); text-transform: none; letter-spacing: .03em; color: #fff; }
+.dx-invite-list li > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dx-invite-list .dx-invite-old { color: #a9dd7c; }
+.dx-invite-list .dx-forget { font-size: calc(var(--u) * 13); }
