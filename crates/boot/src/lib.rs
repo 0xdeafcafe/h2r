@@ -72,7 +72,7 @@ pub const BRIDGE_X87: &str = concat!("#include \"h2gen.h\"\n", include_str!("../
 /// The runtime ABI header, copied next to the generated sources.
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/include/h2abi.h");
 /// File name of the linked module inside the build directory.
-pub const DYLIB: &str = "libh2game.dylib";
+pub const DYLIB: &str = if cfg!(windows) { "h2game.dll" } else { "libh2game.dylib" };
 
 /// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
 /// disc's files (the tvOS bundle, docs/tvos.md).
@@ -121,13 +121,14 @@ fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -
 }
 
 /// The stamp for a module compiled for `target`. A macOS stamp is the same
-/// as before targets existed; a tvOS one names its triple, so a module
-/// cross-built on a Mac with `H2_EMIT_TARGET=tvos` matches what the app
-/// computes on the Apple TV (where the host is tvOS) and nothing else.
+/// as before targets existed; a tvOS or Windows one names its triple, so a
+/// module cross-built on a Mac with `H2_EMIT_TARGET=tvos` (or `windows`)
+/// matches what the app computes on the Apple TV (or Windows, where that is
+/// the host) and nothing else.
 fn stamp_for(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String], target: emit::compile::Arch) -> String {
     let target = match target {
-        emit::compile::Arch::Arm64Tvos => format!(" target {}", target.triple()),
-        _ => String::new(),
+        emit::compile::Arch::Arm64Tvos | emit::compile::Arch::X86_64Windows => format!(" target {}", target.triple()),
+        emit::compile::Arch::Arm64 | emit::compile::Arch::X86_64 => String::new(),
     };
     format!(
         "xbe {:016x} generator {} passes {passes} codegen {codegen} abi {} flags {flags:?}{target}\n",
@@ -194,8 +195,12 @@ pub(crate) fn analyze_cached(x: &xbe::Xbe, cache: Option<&Path>) -> Result<(anal
 pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     let total = Instant::now();
     let x = xbe::Xbe::parse(xbe_bytes)?;
+    // The host, tvOS with H2_EMIT_TARGET=tvos (docs/tvos.md), or Windows
+    // with H2_EMIT_TARGET=windows (docs/windows.md).
+    let arch = emit::compile::Arch::target().map_err(anyhow::Error::msg)?;
+    let lib = out.join(arch.module_file_name());
     // A failed build must not leave an old stamp vouching for a new dylib.
-    let _ = std::fs::remove_file(stamp_path(&out.join(DYLIB)));
+    let _ = std::fs::remove_file(stamp_path(&lib));
     let t = Instant::now();
     let (a, cached) = analyze_cached(&x, analysis_cache(xbe_bytes).as_deref())?;
     eprintln!(
@@ -245,8 +250,6 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     drop(owners);
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
-    // The host, or tvOS with H2_EMIT_TARGET=tvos (docs/tvos.md).
-    let arch = emit::compile::Arch::target().map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
         "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
@@ -258,7 +261,6 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
         b.archive_secs,
         b.object_bytes as f64 / 1e6
     );
-    let lib = out.join(DYLIB);
     let t = Instant::now();
     emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE), ("h2boot_bridge_x87.c", BRIDGE_X87)], &lib).map_err(anyhow::Error::msg)?;
     eprintln!("link: {:.1}s -> {}", t.elapsed().as_secs_f64(), lib.display());
@@ -1256,6 +1258,21 @@ mod tests {
         let tv = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos);
         assert_ne!(mac, tv);
         assert!(tv.trim_end().ends_with(" target arm64-apple-tvos17.0"), "{tv}");
+    }
+
+    #[test]
+    fn a_windows_stamp_names_its_target_and_its_module_is_a_dll() {
+        use emit::compile::Arch;
+        let flags = vec!["-O1".to_owned()];
+        let mac = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64);
+        let win = stamp_for(b"synthetic", "all", "c", &flags, Arch::X86_64Windows);
+        assert_ne!(mac, win);
+        assert_ne!(win, stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos));
+        assert!(win.trim_end().ends_with(" target x86_64-pc-windows-msvc"), "{win}");
+        assert_eq!(win.strip_suffix(" target x86_64-pc-windows-msvc\n"), mac.strip_suffix('\n'), "only the target differs");
+        // What `h2 run`/`h2 play` look for is what `build` writes on this host.
+        assert_eq!(DYLIB, Arch::host().module_file_name());
+        assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
     }
 
     #[test]

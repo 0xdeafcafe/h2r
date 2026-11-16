@@ -8,7 +8,7 @@
 
 static void *h2x87_bridge[35];
 
-void h2x87bridge_install(void *const *fns, uint32_t n) {
+H2_EXPORT void h2x87bridge_install(void *const *fns, uint32_t n) {
     for (uint32_t i = 0; i < n && i < 35; i++) h2x87_bridge[i] = fns[i];
 }
 
