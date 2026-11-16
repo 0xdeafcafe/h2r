@@ -48,14 +48,14 @@ import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
 import "../styles/social.css";
 
-type SectionId = "live" | "sessions" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server";
+type SectionId = "live" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server";
 type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   sessions: () => "find a game",
   friends: () => "friends",
-  teams: () => "teams",
+  clans: () => "clans",
   players: () => "players",
   history: () => "game history",
   settings: () => "settings",
@@ -64,14 +64,14 @@ const LABELS: Record<SectionId, () => string> = {
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
 
-/** The main menu: four items, five once signed in (friends, with teams inside).
+/** The main menu: four items, five once signed in (friends, with clans inside).
  *  Sign up / profile and the server live under settings. */
 const menuItems = (): SectionId[] => (identity.me() ? ["live", "sessions", "friends", "players", "history", "settings"] : ["live", "sessions", "players", "history", "settings"]);
-/** The menu item a section belongs under. Teams live inside friends (inside
+/** The menu item a section belongs under. Clans live inside friends (inside
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
-  if (s === "teams") return identity.me() ? "friends" : "players";
+  if (s === "clans") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
 
@@ -130,7 +130,7 @@ export default function Dashboard() {
     const s = section();
     if (!s) return "menu";
     if (s === "server") return "server";
-    if (s === "friends" || s === "teams") return "social";
+    if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
     if (s === "settings") return "settings";
     if (s === "signup") return identity.me() ? "player" : "signup";
@@ -253,7 +253,7 @@ export default function Dashboard() {
     }
   });
 
-  // The friends and teams screens (Social.tsx) and the session screens
+  // The friends and clans screens (Social.tsx) and the session screens
   // (Sessions.tsx) take their own input.
   let socialAct: ((a: Action) => boolean) | null = null;
   const ownInput = () => screen() === "social" || screen() === "sessions";
@@ -282,7 +282,7 @@ export default function Dashboard() {
     if (screen() === "menu") return;
     if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
-    else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
+    else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
     else go("/", "back");
   }
 
@@ -538,7 +538,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "social"}>
-            <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
           </Match>
 
           <Match when={screen() === "sessions"}>

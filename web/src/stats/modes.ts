@@ -27,3 +27,7 @@ export function recordHref(gamertag: string, mode: GameMode): string {
   const base = `/stats/players/${encodeURIComponent(gamertag)}`;
   return mode === "campaign" ? `${base}/campaign` : base;
 }
+
+/** A clan's page. Clans are the protocol's teams (Xbox Live Teams); the
+ *  site says clan, and /stats/teams/:id redirects here. */
+export const clanHref = (id: string) => `/stats/clans/${encodeURIComponent(id)}`;

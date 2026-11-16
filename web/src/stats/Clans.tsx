@@ -1,5 +1,5 @@
-// Teams on the stats site: the team directory (/stats/teams) and a team's
-// page (/stats/teams/:id) with its roster, combined numbers from games its
+// Clans on the stats site: the clan directory (/stats/clans) and a clan's
+// page (/stats/clans/:id) with its roster, combined numbers from games its
 // members played together, and the signed-in member's actions.
 
 import { mapTitle } from "../state/gameart";
@@ -9,7 +9,8 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social, type WriteResult } from "../state/social";
 import { teamRecord } from "../state/social-model";
-import { OUTCOME_WORDS, campaignOutcome } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, rankIndex, serviceRecord } from "../state/derive";
+import RankIcon from "../components/RankIcon";
 import { gameTypeLine } from "../state/gametype";
 import {
   MEMBER, OFFICER, PRIV, ROLE_LABEL, TEAM_NAME_MAX, TEAM_TEXT_MAX, can, leaderOf, randomTeamId, roleOf, sortedMembers,
@@ -20,11 +21,12 @@ import Emblem from "../components/Emblem";
 import { PresenceBadge } from "../components/bits";
 import { Crumbs, Derived, Panel, Strip, Title, playerHref } from "./Layout";
 import { PeopleFinder, Pills, fireteam, gameTitle } from "./Side";
-import { TeamEmblem } from "./teamBits";
+import { ClanEmblem } from "./clanBits";
 import { num, ratio, usDate } from "./fmt";
 import "../styles/social.css";
 
-export const teamHref = (id: string) => `/stats/teams/${id}`;
+export { clanHref } from "./modes";
+import { clanHref } from "./modes";
 
 /** A small status line under a form or button. */
 function Note(props: { r: WriteResult | null; ok?: string }) {
@@ -37,7 +39,7 @@ function Note(props: { r: WriteResult | null; ok?: string }) {
 
 // ---------- the directory ----------
 
-export default function Teams() {
+export default function Clans() {
   const [q, setQ] = createSignal("");
   const me = () => identity.me();
   const all = createMemo(() => social.teams().slice().sort((a, b) => a.properties.name.localeCompare(b.properties.name)));
@@ -48,14 +50,14 @@ export default function Teams() {
   const mine = () => (me() ? social.teamsOf(me()!.xuid) : []);
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Teams"]]} />
+      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
-          <Title>Teams</Title>
-          <Pills label="Teams" items={[
-            { label: `Team Directory (${all().length})`, href: "#directory" },
-            ...(me() ? [{ label: `My Teams (${mine().length})`, href: "#mine" }, { label: "Start a Team", href: "#start" }] : [{ label: "Sign Up for h2 live", href: "/dash/signup" }]),
+          <Title>Clans</Title>
+          <Pills label="Clans" items={[
+            { label: `Clan Directory (${all().length})`, href: "#directory" },
+            ...(me() ? [{ label: `My Clans (${mine().length})`, href: "#mine" }, { label: "Start a Clan", href: "#start" }] : [{ label: "Sign Up for h2 live", href: "/dash/signup" }]),
             { label: "Players & Leaderboards", href: "/stats/players" },
           ]} />
           <Show when={me()}>
@@ -65,16 +67,16 @@ export default function Teams() {
           <PeopleFinder />
         </aside>
         <div class="s-right">
-          <Title class="s-title--cap" help="Teams are kept by this server; anyone can read them. Team members are signed events on each team's stream.">Team Directory</Title>
+          <Title class="s-title--cap" help="Clans are kept by this server; anyone can read them. Membership is signed events on each clan's stream (the protocol calls them teams).">Clan Directory</Title>
           <div id="directory" class="s-matte" style={{ padding: "8px" }}>
             <form class="s-toolbar" onSubmit={(e) => e.preventDefault()}>
-              <label for="s-team-q">find a team</label>
+              <label for="s-team-q">find a clan</label>
               <input id="s-team-q" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />
               <span class="s-dim" style={{ "margin-left": "auto", color: "#9d9d9d" }}>{shown().length} of {all().length}</span>
             </form>
             <div class="s-grid-wrap">
               <table class="s-grid s-grid--roomy">
-                <thead><tr><th>Team</th><th class="hide-s">Motto</th><th>Leader</th><th class="num">Members</th><th class="num">Online</th><th class="num hide-s">Founded</th></tr></thead>
+                <thead><tr><th>Clan</th><th class="hide-s">Motto</th><th>Leader</th><th class="num">Members</th><th class="num">Online</th><th class="num hide-s">Founded</th></tr></thead>
                 <tbody>
                   <For each={shown()} fallback={<tr><td colspan="6" class="s-dim">{social.teamsError() ? `Couldn't read teams: ${social.teamsError()}` : !social.teamsLoaded() ? "Loading teams…" : all().length ? "No team matches that." : "No teams on this server yet."}</td></tr>}>
                     {(t) => {
@@ -82,7 +84,7 @@ export default function Teams() {
                       const online = () => Object.keys(t.members).filter((x) => live.state.accounts[x]?.online).length;
                       return (
                         <tr>
-                          <td><span class="s-who"><TeamEmblem team={t} size={16} /><A href={teamHref(t.id)}>{t.properties.name}</A></span></td>
+                          <td><span class="s-who"><ClanEmblem team={t} size={16} /><A href={clanHref(t.id)}>{t.properties.name}</A></span></td>
                           <td class="hide-s s-soc-motto">{t.properties.motto}</td>
                           <td><Show when={lead()} fallback={<span class="s-dim">none</span>}>{(l) => <A href={playerHref(l().identity.gamertag)}>{l().identity.gamertag}</A>}</Show></td>
                           <td class="num">{Object.keys(t.members).length}</td>
@@ -107,15 +109,15 @@ function MyTeams() {
   const list = () => social.teamsOf(me().xuid);
   const [r, setR] = createSignal<WriteResult | null>(null);
   return (
-    <Panel title="My Teams" sub="teams you're on or invited to" id="mine">
-      <Show when={list().length} fallback={<p class="s-recent-empty">You're not on a team yet.</p>}>
+    <Panel title="My Clans" sub="clans you're in or invited to" id="mine">
+      <Show when={list().length} fallback={<p class="s-recent-empty">You're not in a clan yet.</p>}>
         <ul class="s-mini-list">
           <For each={list()}>
             {(t) => {
               const role = () => roleOf(t, me().xuid);
               return (
                 <li>
-                  <TeamEmblem team={t} size={14} /><A href={teamHref(t.id)}>{t.properties.name}</A>
+                  <ClanEmblem team={t} size={14} /><A href={clanHref(t.id)}>{t.properties.name}</A>
                   <Show when={role() === "recruit"} fallback={<span class="s-dim">{ROLE_LABEL[role() ?? "member"]}</span>}>
                     <span class="s-soc-btns">
                       <button class="s-btn s-btn--go" disabled={social.busy()} onClick={async () => setR(await social.write(teamWrites.answer(t.id, true)))}>Join</button>
@@ -146,36 +148,36 @@ function StartTeam() {
     const id = randomTeamId();
     const res = await social.write(teamWrites.create(id, p));
     setR(res);
-    if (res.ok) navigate(teamHref(id));
+    if (res.ok) navigate(clanHref(id));
   }
   return (
-    <Panel title="Start a Team" sub="you lead it; recruit by gamertag" id="start">
+    <Panel title="Start a Clan" sub="you lead it; recruit by gamertag" id="start">
       <form class="s-soc-form" onSubmit={submit}>
-        <label for="s-team-name">Team name</label>
+        <label for="s-team-name">Clan name</label>
         <input id="s-team-name" maxLength={TEAM_NAME_MAX} value={name()} onInput={(e) => setName(e.currentTarget.value)} />
         <label for="s-team-motto">Motto</label>
         <input id="s-team-motto" maxLength={TEAM_TEXT_MAX} value={motto()} onInput={(e) => setMotto(e.currentTarget.value)} placeholder="optional" />
-        <button type="submit" class="s-btn" disabled={social.busy() || !name().trim()}>create team</button>
+        <button type="submit" class="s-btn" disabled={social.busy() || !name().trim()}>create clan</button>
       </form>
       <Note r={r()} />
     </Panel>
   );
 }
 
-// ---------- one team ----------
+// ---------- one clan ----------
 
-export function TeamPage() {
+export function ClanPage() {
   const params = useParams<{ id: string }>();
   const id = () => params.id.toLowerCase();
   const team = () => social.team(id());
   return (
     <Show when={team()} fallback={
       <>
-        <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Teams", "/stats/teams"], [id()]]} />
+        <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans", "/stats/clans"], [id()]]} />
         <Show when={social.teamsLoaded()} fallback={<div class="s-loading">Loading team…</div>}>
           <div class="s-full">
-            <Title class="s-title--bar">Team Not Found</Title>
-            <p class="s-pad">There's no team {id()} on this server. It may have been disbanded. <A href="/stats/teams">Browse teams</A></p>
+            <Title class="s-title--bar">Clan Not Found</Title>
+            <p class="s-pad">There's no clan {id()} on this server. It may have been disbanded. <A href="/stats/clans">Browse clans</A></p>
           </div>
         </Show>
       </>
@@ -196,9 +198,9 @@ function TeamBody(props: { team: Team }) {
   const lead = () => leaderOf(t());
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Teams", "/stats/teams"], [t().properties.name]]} />
+      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans", "/stats/clans"], [t().properties.name]]} />
       <div class="s-id s-team-id">
-        <span class="s-id-emblem s-team-emblem"><TeamEmblem team={t()} size={68} /></span>
+        <span class="s-id-emblem s-team-emblem"><ClanEmblem team={t()} size={68} /></span>
         <div class="s-id-name s-team-name">
           <h2>{t().properties.name}</h2>
           <div class="s-soc-motto">{t().properties.motto || "No motto yet."}</div>
@@ -207,6 +209,7 @@ function TeamBody(props: { team: Team }) {
         <div class="s-id-nums">
           <dl>
             <dt>Members:</dt><dd>{members().length} of {t().max_members}</dd>
+            <dt>Officers:</dt><dd>{members().filter((m) => roleOf(t(), m.identity.xuid) === "officer").length}</dd>
             <dt>Online Now:</dt><dd>{online().length}</dd>
             <dt>Games Together:</dt><dd><Derived note="Games two or more members played on the same side, from the games this page has loaded; derived in your browser.">{num(rec().together)}</Derived></dd>
           </dl>
@@ -218,12 +221,12 @@ function TeamBody(props: { team: Team }) {
       <Show when={myRole() === "recruit"}><Invitation team={t()} /></Show>
       <div class="s-cols">
         <aside class="s-left">
-          <Title>Team Record</Title>
-          <Pills label="Team" items={[
+          <Title>Clan Record</Title>
+          <Pills label="Clan" items={[
             { label: `Roster (${members().length})`, href: "#roster" },
             { label: "Combined Stats", href: "#combined" },
             { label: `Games Together (${rec().together})`, href: "#games" },
-            { label: "Team Directory", href: "/stats/teams" },
+            { label: "Clan Directory", href: "/stats/clans" },
           ]} />
           <Show when={can(t(), me()?.xuid, PRIV.recruit)}><Recruit team={t()} /></Show>
           <Show when={can(t(), me()?.xuid, PRIV.modifyTeam)}><EditTeam team={t()} /></Show>
@@ -238,7 +241,7 @@ function TeamBody(props: { team: Team }) {
           <PeopleFinder />
         </aside>
         <div class="s-right">
-          <Title class="s-title--rule">About the Team</Title>
+          <Title class="s-title--rule">About the Clan</Title>
           <div class="s-matte s-soc-about">
             <p>{t().properties.description || "The leader hasn't written a description yet."}</p>
             <Show when={safeUrl(t().properties.url)}>{(u) => <p><a href={u()} target="_blank" rel="noopener noreferrer nofollow">{t().properties.url}</a></p>}</Show>
@@ -247,7 +250,7 @@ function TeamBody(props: { team: Team }) {
           <div id="roster" class="s-matte" style={{ padding: "8px" }}>
             <div class="s-grid-wrap">
               <table class="s-grid s-grid--roomy">
-                <thead><tr><th>Player</th><th>Role</th><th>Status</th><th class="num hide-s">Joined</th><th class="num" /></tr></thead>
+                <thead><tr><th>Player</th><th>Role</th><th class="hide-s">Rank <Derived>{""}</Derived></th><th class="num">K/D</th><th>Status</th><th class="num hide-s">Joined</th><th class="num" /></tr></thead>
                 <tbody>
                   <For each={members()}>{(m) => <RosterRow team={t()} m={m} />}</For>
                 </tbody>
@@ -257,7 +260,7 @@ function TeamBody(props: { team: Team }) {
               <h4 class="s-soc-sub">Invited</h4>
               <div class="s-grid-wrap">
                 <table class="s-grid s-grid--roomy">
-                  <thead><tr><th>Player</th><th>Rank offered</th><th>Status</th><th class="num hide-s">Invited</th><th class="num" /></tr></thead>
+                  <thead><tr><th>Player</th><th>Role offered</th><th class="hide-s">Rank <Derived>{""}</Derived></th><th class="num">K/D</th><th>Status</th><th class="num hide-s">Invited</th><th class="num" /></tr></thead>
                   <tbody><For each={recruits()}>{(m) => <RosterRow team={t()} m={m} recruit />}</For></tbody>
                 </table>
               </div>
@@ -276,7 +279,7 @@ function TeamBody(props: { team: Team }) {
               <div><dt>Deaths</dt><dd>{num(rec().deaths)}</dd></div>
               <div><dt>K/D Ratio</dt><dd>{ratio(rec().kills, rec().deaths)}</dd></div>
             </dl>
-            <p class="s-soc-foot"><Derived note="Counted from multiplayer games two or more members played together on one side, out of the games this page has loaded; campaign games count apart. The server keeps no team stats.">Derived from shared games</Derived></p>
+            <p class="s-soc-foot"><Derived note="Counted from multiplayer games two or more members played together on one side, out of the games this page has loaded; campaign games count apart. The server keeps no clan stats.">Derived from shared games</Derived></p>
           </div>
           <Title class="s-title--tabs">Recent Games Together</Title>
           <div id="games" class="s-matte" style={{ padding: "8px" }}>
@@ -344,11 +347,15 @@ function RosterRow(props: { team: Team; m: TeamMember; recruit?: boolean }) {
   const [r, setR] = createSignal<WriteResult | null>(null);
   const canRemove = () => !!me() && me() !== x() && x() !== props.team.creator && can(props.team, me(), PRIV.removeMember);
   const canPromote = () => !props.recruit && !!me() && me() !== x() && x() !== props.team.creator && can(props.team, me(), OFFICER);
+  // The member's multiplayer rank and K/D, as on their service record.
+  const rec = createMemo(() => serviceRecord(live.state, x()));
   const offered = () => (props.m.properties.privileges & (PRIV.removeMember | PRIV.modifyMember) ? "Officer" : "Member");
   return (
     <tr>
       <td><span class="s-who"><Emblem seed={x()} size={16} /><A href={playerHref(props.m.identity.gamertag)}>{props.m.identity.gamertag}</A></span></td>
       <td>{props.recruit ? offered() : <span class={`s-soc-role s-soc-role--${role()}`}>{ROLE_LABEL[role() ?? "member"]}</span>}</td>
+      <td class="hide-s"><span class="s-who"><RankIcon rank={rankIndex(rec().exp)} exp={rec().exp} size={16} />{rec().rank}</span></td>
+      <td class="num">{rec().games ? ratio(rec().kills, rec().deaths) : "–"}</td>
       <td><PresenceBadge account={live.state.accounts[x()]} /></td>
       <td class="num hide-s">{usDate(props.m.joined_at)}</td>
       <td class="num s-soc-cell">
@@ -370,9 +377,9 @@ function RosterRow(props: { team: Team; m: TeamMember; recruit?: boolean }) {
 function Invitation(props: { team: Team }) {
   const [r, setR] = createSignal<WriteResult | null>(null);
   return (
-    <div class="s-soc-banner" role="region" aria-label="Team invitation">
+    <div class="s-soc-banner" role="region" aria-label="Clan invitation">
       <span>You've been invited to join <b>{props.team.properties.name}</b>.</span>
-      <button class="s-btn s-btn--go" disabled={social.busy()} onClick={async () => setR(await social.write(teamWrites.answer(props.team.id, true)))}>Join Team</button>
+      <button class="s-btn s-btn--go" disabled={social.busy()} onClick={async () => setR(await social.write(teamWrites.answer(props.team.id, true)))}>Join Clan</button>
       <button class="s-btn" disabled={social.busy()} onClick={async () => setR(await social.write(teamWrites.answer(props.team.id, false)))}>Decline</button>
       <Note r={r()} />
     </div>
@@ -428,9 +435,9 @@ function EditTeam(props: { team: Team }) {
   }
   const leader = () => can(props.team, identity.me()?.xuid, PRIV.delete);
   return (
-    <Panel title="Team Settings" sub="name, motto and description">
+    <Panel title="Clan Settings" sub="name, motto and description">
       <form class="s-soc-form" onSubmit={submit}>
-        <label for="s-edit-name">Team name</label>
+        <label for="s-edit-name">Clan name</label>
         <input id="s-edit-name" maxLength={TEAM_NAME_MAX} value={name()} onInput={(e) => setName(e.currentTarget.value)} />
         <label for="s-edit-motto">Motto</label>
         <input id="s-edit-motto" maxLength={TEAM_TEXT_MAX} value={motto()} onInput={(e) => setMotto(e.currentTarget.value)} />
@@ -443,7 +450,7 @@ function EditTeam(props: { team: Team }) {
       <Note r={r()} ok="Saved." />
       <Show when={leader()}>
         <div class="s-soc-danger">
-          <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Disband team…</button>}>
+          <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Disband clan…</button>}>
             <span>Disband {p().name} for everyone?</span>
             <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => { const res = await social.write(teamWrites.delete(props.team.id)); if (res.ok) navigate("/stats/teams"); else setR(res); }}>Disband</button>
             <button class="s-btn" onClick={() => setSure(false)}>Keep</button>
@@ -461,14 +468,14 @@ function Membership(props: { team: Team }) {
   return (
     <Panel title="Your Membership" sub={`you are ${role() === "leader" ? "the leader" : `a${role() === "officer" ? "n officer" : " member"}`}`}>
       <div class="s-soc-pad">
-        <Show when={role() !== "leader"} fallback={<p class="s-dim">The leader can't leave a team; disband it instead.</p>}>
-          <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Leave team…</button>}>
+        <Show when={role() !== "leader"} fallback={<p class="s-dim">The leader can't leave a clan; disband it instead.</p>}>
+          <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Leave clan…</button>}>
             <span>Leave {props.team.properties.name}?</span>{" "}
             <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => setR(await social.write(teamWrites.remove(props.team.id, identity.me()!.xuid)))}>Leave</button>{" "}
             <button class="s-btn" onClick={() => setSure(false)}>Stay</button>
           </Show>
         </Show>
-        <Note r={r()} ok="You left the team." />
+        <Note r={r()} ok="You left the clan." />
       </div>
     </Panel>
   );

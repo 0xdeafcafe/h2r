@@ -7,7 +7,7 @@ import { applyEvents, endedGames, gamesFor, initialState, isCampaign, liveGames,
 import { campaignHistory, campaignOutcome, campaignRecord, gameHistory, playedWith, serviceRecord } from "../src/state/derive";
 import { teamRecord } from "../src/state/social-model";
 import { campaignLabel, difficultyName, gameKind, gameTypeLabel, gameTypeLine } from "../src/state/gametype";
-import { historyMode, historyTab, recordHref, spotlightTab } from "../src/stats/modes";
+import { clanHref, historyMode, historyTab, recordHref, spotlightTab } from "../src/stats/modes";
 import { World } from "../mock/world";
 import { ev, resetPos } from "./helpers";
 
@@ -208,6 +208,10 @@ describe("routing", () => {
     expect(historyTab("bogus")).toBe("all");
     expect(historyMode("campaign")).toBe("campaign");
     expect(historyMode("team")).toBe("multiplayer");
+  });
+
+  test("clans live under /stats/clans", () => {
+    expect(clanHref("abc123")).toBe("/stats/clans/abc123");
   });
 
   test("service record halves", () => {

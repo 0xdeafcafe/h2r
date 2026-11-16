@@ -14,7 +14,7 @@ import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import CampaignRecordPage from "./stats/CampaignRecord";
 import Events from "./stats/Events";
-import Teams, { TeamPage } from "./stats/Teams";
+import Clans, { ClanPage } from "./stats/Clans";
 import Admin from "./admin/Admin";
 import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
@@ -31,11 +31,15 @@ function NotFound() {
 }
 
 const OldGame = () => <Navigate href={`/stats/games/${useParams().id}`} />;
+// Clans were called teams here first (the protocol still says team).
+const OldTeam = () => <Navigate href={`/stats/clans/${useParams().id}`} />;
 const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 
 render(
   () => (
     <Router root={Veil}>
+      <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
+      <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Games} />
@@ -45,8 +49,10 @@ render(
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
         <Route path="/players/:tag/campaign" component={CampaignRecordPage} />
-        <Route path="/teams" component={Teams} />
-        <Route path="/teams/:id" component={TeamPage} />
+        <Route path="/clans" component={Clans} />
+        <Route path="/clans/:id" component={ClanPage} />
+        <Route path="/teams" component={() => <Navigate href="/stats/clans" />} />
+        <Route path="/teams/:id" component={OldTeam} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
