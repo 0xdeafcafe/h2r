@@ -178,19 +178,26 @@ any more: the list is retail's four rows.
 The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
 `skulls-screen` for the screen's class):
 
-- **Buttons**: A on a collected skull flips it On or Off (the store is
-  written at once); A on a locked one does nothing and says why on
-  stderr. **X or Start** starts the level on the difficulty chosen, with
-  the skulls marked On. B goes back to the difficulty list (the generic
-  back handler, as on every screen of ours); choosing a difficulty there
-  opens the page again. There is no Start row: the list is the skulls
-  only. Every description ends with the prompt "Ⓐ Toggle Ⓧ Start Level
-  Ⓑ Back" in the font's button glyphs (U+E100, U+E102, U+E101; the
-  screen's own button bar is still the Controls screen's).
+- **Buttons**: **left or right** (d-pad or left stick) on a collected
+  skull flips it On or Off (the store is written at once; either
+  direction flips, as a two-value row with arrows on both sides wraps);
+  on a locked one it does nothing and says why on stderr. **A, X or
+  Start** starts the level on the difficulty chosen, with the skulls
+  marked On, so A pressed over and over goes from the level list through
+  the difficulty and the page into the game. B goes back to the
+  difficulty list (the generic back handler, as on every screen of ours);
+  choosing a difficulty there opens the page again. There is no Start
+  row: the list is the skulls only. Every description ends with the
+  prompt "◀▶ Toggle Ⓐ Start Level Ⓑ Back" in the font's button glyphs
+  (U+E10A and U+E10B the d-pad's left and right, U+E100, U+E101; each
+  icon set draws its own; the screen's own button bar is still the
+  Controls screen's).
 - **Rows**: every skull, gold first ("Gold and silver"
-  below), then our six ("Our skulls"), each one label with its state:
-  "Mythic: On", "Mythic: Off", "Mythic: Locked". The list skin the page
-  uses has one text per row, so the state is in the label.
+  below), then our six ("Our skulls"), each one label with its state as
+  a value to step: "Mythic: < On >", "Mythic: < Off >", and
+  "Mythic: Locked". The list skin the page uses has one text per row, so
+  the state is in the label. (The multiplayer screen keeps "Mythic: On"
+  and A as its toggle.)
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
   description: tier, what it does, where it is found and whether only on
@@ -216,18 +223,39 @@ How the flow is made (static reading, not seen running):
   `0x149f1e(1 << player, loader)`, never running the original.
   Otherwise the original runs. The kept press is only replaced by the
   next difficulty press and only dropped once it has run.
-- X or Start (`skulls_screen::action`): our class's screen vtable has its
-  own slot 10 (`list_class::event`): event kind 5 with button 2 (X) or 12
-  (Start) runs the class's action; everything else goes to `0x2300ea`.
-  Buttons 2 and 12 are by the order the generic handler's 1 (B) and 13
-  (Back) imply, and the squad settings screen's X (`0x2bbed1`, button 2);
-  not seen running. The action only closes the page with `0x14800c` on
-  its own window and slot, as B does.
+- A, X or Start (`skulls_screen::action`): A on any row is the row's
+  press, which for this page is the class's action (`Chosen::Act`). Our
+  class's screen vtable has its own slot 10 (`list_class::event`): event
+  kind 5 with button 2 (X) or 12 (Start) runs the same action; kinds 2
+  and 4 (left and right) step the focused row (`0x24c447` on the list,
+  then `Rows::sideways`); everything else goes to `0x2300ea`. The action
+  only closes the page with `0x14800c` on its own window and slot, as B
+  does.
+- The events (static reading): the controller update `0x1907d6` raises,
+  per local player, one button event a frame (kind 5, `+4` the player,
+  `+8` the button: 0 A, 1 B, 2 X, 3 Y, 4 black, 5 white, 12 Start,
+  13 Back, 6 and 7 the triggers, 14 and 15 the stick clicks) only on the
+  frame the button goes down (its held count is 1), so holding A raises
+  nothing more. Directions come through `0x190a3d`: the left stick past
+  `0x7332` either way, else the d-pad (button word 8 up, 9 down, 10 left,
+  11 right; the stick's is 16), as kind 1 up, 2 left, 3 down, 4 right,
+  when pushed and then every 250 ms while held. They reach the top
+  screen of the player's window through `0x147dbe` and `0x23515d` (screen
+  slot 10). The Controls list's handler (`0x24c024`) moves the focus on
+  1 and 3, takes button 0 or 12 as its row's press, and hands 2 and 4 on
+  to its children, where nothing takes them.
+- The press that opened the page (A on the difficulty list) is handled
+  by that list, and the dispatch stops there; it is not seen again. As
+  a guard all the same, a continue within 50 ms of the page opening
+  (`skulls_screen::GUARD`, `H2_SKULLS_GUARD_MS=n` to change it) is
+  dropped: `skulls page: A/X/Start <n> ms after the page opened: the
+  press that opened it; ignored`. Two presses of a thumb are further
+  apart than that, so A spammed goes straight through.
 - The page freed (`skulls_screen::freed`): our class's slot 0
   (`list_class::destructor`) runs the Controls destructor, then tells the
   flow. The stack calls slot 0 when the closed screen's out transition
   has ended (`0x235233`), so the difficulty screen is the top one again.
-  For the page X or Start closed, `skulls_screen::continue_level` checks
+  For the page A, X or Start closed, `skulls_screen::continue_level` checks
   the kept list is still a difficulty list (vtable `0x45d688`), writes a
   player chain and the row to a page of ours, and calls `0x2c9d38` on the
   kept list; the hook lets that one call through. So the start is
@@ -802,16 +830,17 @@ The page (step numbers kept for the multiplayer steps below):
      row Assassins, then Thunderstorm, Famine, Blind, Black Eye, Catch, Iron,
      Mythic, Angry, Envy, Grunt Birthday Party, IWHBYD, Ghost, Sputnik,
      Bandana, Fall Damage, Acrophobia, Low Gravity, Unlimited Ammo,
-     Unlimited Grenades, Invincible; each "Name: On", "Name: Off" or
-     "Name: Locked". Scroll to the end and back: all 21 reachable.
+     Unlimited Grenades, Invincible; each "Name: < On >",
+     "Name: < Off >" or "Name: Locked". Scroll to the end and back: all 21 reachable.
    - on the **right**, a large skull in Select Level's picture box,
      **gold** on a gold skull, **silver** on a silver one, dimmer while
      locked, changing as the cursor moves.
    - **under the skull**, inside the right column, the description,
      wrapped to the picture's width: "Gold skull:" or "Silver skull:",
      the effect, "Found on <level>, Legendary only" (Blind: "any
-     difficulty"), then a blank line and "Ⓐ Toggle Ⓧ Start Level Ⓑ
-     Back" with the controller's button pictures (if they show as boxes
+     difficulty"), then a blank line and "◀▶ Toggle Ⓐ Start Level Ⓑ
+     Back" with the controller's button pictures (the d-pad's left and
+     right, A, B) (if they show as boxes
      or blanks, report it). Nothing over the frame art; no frame art
      bottom right.
    If something sits wrong, try without a rebuild and say which values
@@ -819,18 +848,20 @@ The page (step numbers kept for the multiplayer steps below):
    `H2_SKULLS_LIST_SKIN=n` (default 0), `H2_SKULLS_PICTURE_AT=x,y`
    (default `36,180`), `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
    (default `-30,39,-133,260`); screen centre origin, Y up, 640x480.
-   Also note: whether long labels ("Unlimited Grenades: Locked") fit
-   their row; the button prompts (the Controls screen's own: B may still
+   Also note: whether long labels ("Unlimited Grenades: Locked",
+   "Grunt Birthday Party: < Off >") fit their row; the button prompts (the Controls screen's own: B may still
    say "Done", though it goes back).
-10. A on a collected skull flips On and Off at once (stderr `skulls:
-    Mythic off for <profile>`), and `settings.toml` follows. A on a
-    locked skull changes nothing: `skulls menu: Iron is locked for
-    <profile>: not collected yet (found on High Charity, Legendary
-    only)`.
+10. Left or right (d-pad or left stick) on a collected skull flips On
+    and Off at once, the row reading "< On >" or "< Off >" (stderr
+    `skulls page: right on row <n>: skulls: Mythic off for <profile>`),
+    and `settings.toml` follows. Holding the stick or d-pad flips it
+    every 250 ms. On a locked skull it changes nothing: `skulls page:
+    left on row <n>: skulls menu: Iron is locked for <profile>: not
+    collected yet (found on High Charity, Legendary only)`.
 11. B: back on the difficulty list. Pick a difficulty again: the page
     opens again.
-12. X on the page: the page animates out like B, and the level starts on
-    the difficulty picked. stderr, in order: `skulls page: X/Start:
+12. A on the page: the page animates out like B, and the level starts on
+    the difficulty picked. stderr, in order: `skulls page: A/X/Start:
     starting difficulty <n> (<name>) once the page is freed`, `skulls
     page: close requested for the page 0x... (window 5, slot 4)`,
     `skulls page: the page 0x... is freed; back on the difficulty list`,
@@ -838,9 +869,13 @@ The page (step numbers kept for the multiplayer steps below):
     list 0x...) with <skulls on>`, `skulls page: the difficulty press
     returned (0x...); the level should be loading`, then the campaign
     start's `skulls: campaign start for <profile>: ...` with exactly the
-    On skulls. Then again with the Start button instead of X: the same.
-    Pressing X twice quickly: `X/Start again; already closing`, nothing
-    more. If it sticks, report every `skulls page:` line. Which line is
+    On skulls. Then again with X, and with Start: the same. Pressing A
+    twice quickly on the page: `A/X/Start again; already closing`, nothing
+    more. Spam A from the level list: level, difficulty, page, game, with
+    no stop on the page; holding A on the difficulty does not skip the
+    page. A `skulls page: A/X/Start <n> ms after the page opened: the
+    press that opened it; ignored` line means a press was dropped as the
+    opening one (report it with `<n>`). If it sticks, report every `skulls page:` line. Which line is
     last says where: no "freed" line (the stack did not call our
     destructor: the page is back on the difficulty list and nothing
     starts), or "returned" with no level (the press ran but did
@@ -848,7 +883,7 @@ The page (step numbers kept for the multiplayer steps below):
     `H2_SKULLS_CONTINUE=stay` and say which starts the level. B after
     picking: `the page 0x... is freed (B); nothing started`.
 13. Select Level: pick a level, then a difficulty: the same page (the
-    kept line says "chosen on Select Level"), and X loads that level (the other loader, `0x2bb432`).
+    kept line says "chosen on Select Level"), and A loads that level (the other loader, `0x2bb432`).
 14. Co-op (two named profiles): each player's difficulty press opens the
     page for their own profile. Note which difficulty screen co-op shows;
     if it has no page, it is the lobby one (screen 1).
