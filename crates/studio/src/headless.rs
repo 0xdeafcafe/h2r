@@ -1,6 +1,6 @@
 //! Real frames of the studio UI rendered offscreen with wgpu and written
 //! as PNGs: the same [`Studio`] and [`App`] as the window, no window. The
-//! guide's screenshots come from here (`h2-studio --screenshot`), and a
+//! guide's screenshots come from here (`h2-editor --screenshot`), and a
 //! test renders one frame of the invented test map.
 use std::path::Path;
 
@@ -231,7 +231,7 @@ mod tests {
                 return;
             }
         };
-        let dir = std::env::temp_dir().join(format!("h2-studio-shot-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("h2-editor-shot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let map = dir.join("example.map");
         std::fs::write(&map, fixture::fixture()).unwrap();

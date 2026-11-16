@@ -127,9 +127,11 @@ Every crate below is on master. "Done" means it does what its row says;
 | `settings` | Host settings as a schema: definitions, one store, one writer for `settings.toml` ([feature-engine.md](engine/feature-engine.md), "Settings") | done |
 | `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison ([high-framerate.md](game/high-framerate.md)) | done |
 | `content` | Map packages: manifest, `MapId`, PPF/IPS/BPS patches and the resolver ([maps.md](game/maps.md)) | foundation built |
-| `editor`  | `h2-editor`, the native editor suite (egui + wgpu) and its `Tool` trait ([editor.md](editor/editor.md)) | in progress |
+| `studio`  | `h2-editor`, the native editor suite (Dear ImGui + wgpu): scenario, game variant and playlist tools ([editor.md](editor/editor.md)) | in progress |
+| `editor-core` | The editor's UI-free core: map sources, the undo stack, where variants come from ([editor.md](editor/editor.md)) | in progress |
+| `hopper-edit` | The playlist (`multiplayer_hopper.dat`) editor's logic and session ([editor.md](editor/editor.md)) | in progress |
 | `scenario-edit` | Sapien-style scenario placement editor writing patched `.map` files ([scenario-editor.md](editor/scenario-editor.md)) | in progress |
-| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor panel ([variants.md](editor/variants.md)) | in progress |
+| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor state ([variants.md](editor/variants.md)) | in progress |
 | `live-proto` | Wire types, signing and verification shared by the Live clients and server ([live-api.md](live/live-api.md)) | in progress |
 | `live-server` | The Xbox Live replacement service: signed events on Postgres behind axum ([live.md](live/live.md)) | in progress |
 | `live-hle` | Xbox Live public-entry overrides in the game ([live-boundary.md](live/live-boundary.md)) | in progress, opt-in |

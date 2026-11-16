@@ -139,7 +139,6 @@ goals, the two-stage plan, the crate table and milestones.
 ## Editor (`editor/`)
 
 - [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map objects, game variants and playlists, with screenshots
-- [editor.md](editor/editor.md): the editor for developers: the shell, the `Tool` trait, the hopper tool, screenshots
-- [studio.md](editor/studio.md): `h2-studio`, the Dear ImGui successor to `h2-editor`: phases, window, code, headless screenshots, viewport gaps
+- [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the three tools, the playlist format rules, code layout, headless screenshots, viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
