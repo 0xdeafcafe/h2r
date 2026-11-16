@@ -118,6 +118,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels converted to run in the Halo 2 engine
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter, and the switch for Halo 1 maps
+- [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)

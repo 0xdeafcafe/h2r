@@ -169,8 +169,23 @@ pub enum Chosen {
     /// Run the screen's own action (`list_class::ListClass::action`): the
     /// Skulls page's Start row.
     Act,
+    /// Make these guest calls, in order, then open a retail screen by its
+    /// loader; log the line first.
+    Retail {
+        line: String,
+        calls: Vec<(u32, Vec<GuestArg>)>,
+        loader: u32,
+    },
     /// Not a row of ours.
     Nothing,
+}
+
+/// A guest call's argument for [`Chosen::Retail`]: a value, or the word at
+/// a guest address when the call is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestArg {
+    Value(u32),
+    Load(u32),
 }
 
 /// The screens and extensions of a run, over its store.

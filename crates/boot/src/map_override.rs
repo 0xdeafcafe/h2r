@@ -61,11 +61,14 @@ pub fn mount<R: vfs::Rewrite + 'static>(
         maps,
         packages,
         content::DiscHashes::default(),
+        &[],
     )
 }
 
 /// [`mount`], with the package resolver recording each disc base it hashes
-/// in `hashes` (shared with [`crate::map_bases::DiscBases`]).
+/// in `hashes` (shared with [`crate::map_bases::DiscBases`]), and
+/// `campaign_maps` (map name, host file) served as `maps\<map>.map` where
+/// the disc has no such map (docs/game/multiple-campaigns.md §3).
 ///
 /// Given a packages directory, the packages layer is always mounted, even
 /// with no package there yet: a package installed while the game runs (a
@@ -79,15 +82,22 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     maps: Option<&Path>,
     packages: Option<&Path>,
     hashes: content::DiscHashes,
+    campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
     let library = packages.map(|p| content::Library::open(p).with_disc_hashes(hashes));
-    if library.is_none() && maps.is_none() {
+    if library.is_none() && maps.is_none() && campaign_maps.is_empty() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
         };
     }
-    let disc = vfs::open_disc(disc)?;
+    let disc = vfs::CampaignMapsBackend::new(vfs::open_disc(disc)?, campaign_maps.iter().cloned());
+    if !campaign_maps.is_empty() {
+        eprintln!(
+            "campaigns: {} map(s) served from <data>/campaigns",
+            campaign_maps.len()
+        );
+    }
     if let Some(l) = &library {
         eprintln!(
             "map packages: {} package(s) in {}",
@@ -109,7 +119,7 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
         ),
         (Some(l), None) => finish(cfg, vfs::PackageBackend::new(disc, l), fonts),
         (None, Some(m)) => finish(cfg, vfs::MapOverrideBackend::new(disc, m), fonts),
-        (None, None) => unreachable!("handled above"),
+        (None, None) => finish(cfg, disc, fonts),
     }
 }
 

@@ -487,7 +487,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model.as_ref().is_some_and(|m| skulls_menu::enabled(m.store()));
-    if !layouts && !with_speaker && !with_controls && !with_video && !with_custom_games && !with_skulls {
+    // The campaign picker (docs/game/multiple-campaigns.md), when a second
+    // campaign is installed.
+    let with_campaigns = crate::campaign_menu::class().is_some();
+    if !layouts && !with_speaker && !with_controls && !with_video && !with_custom_games && !with_skulls && !with_campaigns {
         return Ok(());
     }
     let model = model.unwrap_or_else(|| {
@@ -515,6 +518,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
+        served.extend(crate::campaign_menu::strings());
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
@@ -1165,6 +1169,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         registry
             .add(&crate::skulls_mp_row::VariantRow(mp))
             .map_err(|e| anyhow::anyhow!("skulls variant row: {e}"))?;
+    }
+    if let Some(class) = crate::campaign_menu::class() {
+        match registry.add(&class) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; the level select opens as retail"),
+            Err(e) => eprintln!("campaigns: {e}"),
+        }
     }
     // The Controls list's row text and row chosen, on the plan: our rows
     // there (the speaker row, the Steam Controller's) as data, and the
