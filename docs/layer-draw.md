@@ -239,3 +239,62 @@ simulation calls `fmod` too): `parameter` (`0x0001b230`), `function`
 (`0x0013b390`), `fmod` (`0x00373b6a`), `texture_source` (`0x00019530`)
 and `bitmap_frame` (`0x000143c0`). The shader sites then hold only the
 loops' own code.
+
+### Hooked calls leave the direct path: what the per-draw numbers measure
+
+The third run (helpers carved out) moved large amounts of time into code
+that had been cheap. `texture_source` showed about 22 µs per call and the
+shader site `0x0001ae70` went from 0.45 to 21 ms. The code does not
+support either:
+
+- `0x00019530` is a jump table over 27 binding source types. Every case is
+  a few loads from fixed globals (render target records at
+  `0x004b4b58 + 0x98·n`, the `0x00485a80` globals), the render target
+  lookups `0x0001dd60`, `0x0001dcc0` and `0x00014f60` (themselves table
+  lookups, plus one CRT 64-bit remainder), or one call to `BITMAP_FRAME`.
+  There is no loop, search or `fyl2x`.
+- `0x0001ae70` walks the dirty bits of the shader's external inputs
+  (`ctx+0x30..0x40` masked by `+0x44..0x54`), evaluates each dirty one
+  through a jump table (`0x000336f0`, `0x00033980`, `0x00034060`) into
+  `ctx+0x5c+4·n`, and clears the bit, so later draws skip it. A scan of
+  every `call rel32` in `.text` finds no call from it, or from its jump
+  tables, to any hooked helper.
+
+The cause is the hooks. A generated handler calls another directly only
+when the runtime has resolved the target to a native handler
+(`crates/runtime/src/direct.rs`; `h2_direct_enter` in `h2gen.h`). A
+hooked address resolves to the feature chain's override instead, so a
+call to it hands the transfer up to the runner and unwinds every
+generated frame above it. Each of those callers then resumes, and
+returns, through the runner. With observers after the body, the chain
+also calls the body through a shadow and a continuation. All of that
+lands in whatever stage or site is open: mostly the hooked call's
+callers, and their callers. In the deep run every one of
+`0x00016b90`'s 21 calls is hooked, so it is re-entered through the
+runner after each of them. Exactly which row picks up which re-entry
+depends on where the clock reads fall, which is why rows such as
+`0x0001ae70` can jump between runs. `texture_source` holds the re-entry
+after each `BITMAP_FRAME`.
+
+So the per-draw rows rank the hooks as much as the work. The frame
+stages and the scene passes' sites are called about 100 times a frame
+and stay usable. The per-draw stages (layer draw and below, the shader
+draw's sites, the helpers) are now hooked only with
+`H2_FEATURES=render-timing,render-timing.deep`.
+
+The same applies to any fix built as a hook. A Rust port on a per-draw
+function pays the unwind on every call it makes back into guest code
+(`call_guest`). It only wins when it is a leaf, or when it takes over a
+whole subtree.
+
+For per-draw cost, use the sampling profiler instead. It does not move
+code off the direct path and maps samples to guest functions, both
+inclusive and own code (docs/perf.md, "Boot hook"):
+
+```
+H2_PERF_FROM=level H2_PROFILE=$R/prof H2_PROFILE_HZ=1000 \
+  h2 play disc/halo2.iso --level 03a_oldmombasa   # h2 built with --features perf, render-timing off
+```
+
+In `profile.txt`, read the inclusive and own-code rows for `0x0001bbf0`,
+`0x00016b90` and the sites above, and the hottest instructions.

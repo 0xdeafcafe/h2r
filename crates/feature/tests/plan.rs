@@ -402,7 +402,28 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
     let text = r.build(&feature::Base).unwrap().text();
     assert_eq!(text, "feature render-timing: off (switched off)\n");
 
+    // Without the deep switch: the frame stages and the scene passes'
+    // calls only, nothing per draw.
     let mut r = Registry::new(Switches::parse("render-timing").unwrap());
+    assert!(r.add(&RenderTiming::new()).unwrap());
+    let text = r.build(&feature::Base).unwrap().text();
+    assert!(
+        text.contains(
+            "0x00044550 LAYER_DRAW: observe_before [render-timing:scene call] -> original\n"
+        ),
+        "{text}"
+    );
+    for absent in [
+        "SHADER_DRAW_BEGIN",
+        "GEOMETRY_SUBMIT",
+        "CRT_FMOD",
+        "shader call",
+        "layer_entries",
+    ] {
+        assert!(!text.contains(absent), "{absent}\n{text}");
+    }
+
+    let mut r = Registry::new(Switches::parse("render-timing,render-timing.deep").unwrap());
     assert!(r.add(&RenderTiming::new()).unwrap());
     let plan = r.build(&feature::Base).unwrap();
     let text = plan.text();

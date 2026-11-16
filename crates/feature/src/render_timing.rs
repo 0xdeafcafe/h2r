@@ -29,6 +29,20 @@
 //! and site also counts the D3D entries it made
 //! ([`timeline::phase::scope_entries`]).
 //!
+//! **Hook cost.** A call to a hooked function is never a direct call
+//! between generated handlers (`runtime::direct`: only native handlers are
+//! direct targets). It hands the transfer up to the runner, unwinding every
+//! generated frame above it, and each of those callers then resumes and
+//! returns through the runner too. That cost lands in whichever stage or
+//! site is open, mostly the hooked call's callers. For the frame stages and
+//! the scene passes' ~100 calls a frame it is small. The per-draw stages
+//! (layer draw and below, the shader draw's sites, the helpers: hundreds to
+//! thousands of calls a frame) are hooked only with [`DEEP`]
+//! (`H2_FEATURES=render-timing,render-timing.deep`), and there their
+//! numbers rank hook overhead as much as work. For per-draw cost use the
+//! sampling profiler (docs/perf.md, `H2_PERF_FROM=level H2_PROFILE=...`),
+//! which does not move the code off the direct path.
+//!
 //! Off by default (`H2_FEATURES=render-timing`): each hooked function
 //! leaves the direct-call path. The 37 callees are observed from every
 //! caller, not only the scene passes; the line reports how many calls a
@@ -44,6 +58,9 @@ use timeline::phase::{self, Phase};
 use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "render-timing";
+
+/// The switch for the per-draw stages (`H2_FEATURES=render-timing,render-timing.deep`).
+pub const DEEP: &str = "render-timing.deep";
 
 /// A timed stage, outermost first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +150,12 @@ impl Stage {
 
     /// Helpers the rest of the game calls too: timed only when they run
     /// inside the render front-end (another stage is open).
+    /// Per-draw stages, hooked only with [`DEEP`]: called hundreds of
+    /// times a frame, where the hooks' own cost swamps what they measure.
+    pub fn deep(self) -> bool {
+        self as usize >= Stage::LayerDraw as usize
+    }
+
     pub fn nested_only(self) -> bool {
         matches!(
             self,
@@ -717,9 +740,13 @@ impl Feature for RenderTiming {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let deep = b.switches().feature(DEEP, false);
         // Scene calls first: at `LAYER_DRAW`, one of them, the call must be
         // attributed to its site before the layer stage opens.
         for point in callee_points() {
+            if !deep && SHADER_CALLEES.contains(&point.base) {
+                continue;
+            }
             let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
             let target = point.base;
             let call = move |o: &crate::Obs| {
@@ -750,6 +777,9 @@ impl Feature for RenderTiming {
             b.raw().observe_before(point, label, call).optional();
         }
         for stage in Stage::ALL {
+            if stage.deep() && !deep {
+                continue;
+            }
             let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
             // The frame's clock reads sit outside the scope, where the scope
             // clocks stand still, so the stages add up to the phases.
