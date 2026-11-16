@@ -27,6 +27,14 @@ pub fn dir() -> Option<PathBuf> {
     dir_from(std::env::var_os(ENV))
 }
 
+/// Which map exactly the game gets for `maps\<name>.map`: a package's
+/// `MapId`, or a whole-file override's (`H2_MAP_DIR`). `None` means the
+/// retail disc map. For sessions and telemetry: pass the loaded map's
+/// short name (the cache header's, `0x00547898`, docs/live-gamestate.md).
+pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
+    vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
+}
+
 /// Where map packages live: `<data>/maps`.
 pub fn packages_dir(data_root: &Path) -> PathBuf {
     data_root.join("maps")
@@ -299,6 +307,33 @@ mod tests {
             let font: &[u8] = if fonts { b"GLYPHS" } else { b"glyphs" };
             assert_eq!(read(&mut v, "D:\\fonts\\font"), font);
         }
+    }
+
+    #[test]
+    fn map_ids_name_packages_and_overrides_and_retail_is_none() {
+        let t = Temp::new();
+        // Retail: nothing to say.
+        let mut v = mounted(&t, false, None);
+        assert_eq!(map_id(&mut v, "level"), None);
+        // A package: its manifest's id, through the font rewrite too.
+        let root = level_package(&t);
+        let mut ids = Vec::new();
+        for fonts in [true, false] {
+            let mut v = mounted_with(&t, fonts, None, Some(&root));
+            ids.push(map_id(&mut v, "LEVEL").expect("a package names its map"));
+            assert_eq!(map_id(&mut v, "other"), None);
+        }
+        assert_eq!(ids[0], ids[1]);
+        // An override wins and has an id of its own, stable per contents.
+        let dir = t.0.join("maps");
+        std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        let o = map_id(&mut v, "level").unwrap();
+        assert_ne!(o, ids[0]);
+        assert_eq!(map_id(&mut v, "level"), Some(o));
+        std::fs::write(dir.join("level.map"), b"edited again").unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        assert_ne!(map_id(&mut v, "level"), Some(o));
     }
 
     #[test]
