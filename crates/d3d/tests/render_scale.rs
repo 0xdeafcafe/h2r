@@ -2009,3 +2009,46 @@ fn the_lighting_ab_draws_retail_and_e3_from_one_run() {
         );
     }
 }
+
+/// What Old Mombasa's lit cinematic frames (4012 to 4051 of the A/B run)
+/// do: after the shadow pass the frame is covered, opaque, by a pass
+/// upsampling a small render-to-texture level (a blur of the frame through
+/// the pool). Such a level stays at its guest size in both views, so the
+/// frame shown is the 1x level's pixels in each, and the two views agree
+/// byte for byte although the E3 view drew and sampled its 2x map every
+/// frame: nothing for E3 to show, not a fault.
+#[test]
+fn a_frame_covered_by_a_small_level_shows_no_lighting_difference() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    const FRAMES: u32 = 3;
+    let (mut d, mut m) = pool_scene(lighting_ab(&ctx, 2), FRAMES);
+    pool_pass(&mut d, &mut m);
+    let back = device_field(&m, d3d::layout::device_field::RENDER_TARGET);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    set_states(&mut d, &mut m);
+    linear_clamp(&mut m);
+    d.set_texture(&mut m, 0, POOL_TEX).unwrap();
+    uv_quad(&mut d, &mut m, FULL, (POOL as f32, POOL as f32));
+    d.set_texture(&mut m, 0, 0).unwrap();
+    let bb = d.back_buffer().unwrap();
+    let v = d.backend.view_surface(&bb).expect("the E3 view");
+    let (e3_px, _) = pixels(d.backend.view_mut(), v);
+    let s = d.backend.stats();
+    assert_eq!(
+        (s.shadow_draws, s.shadow_textures, s.view_errors),
+        (FRAMES as u64, FRAMES as u64, 0),
+        "the E3 view drew and sampled its 2x map every frame: {s:?}"
+    );
+    let inner = d.backend.reference_mut();
+    let rv = inner.view_surface(&bb.reference).expect("the retail view");
+    let (retail_px, _) = pixels(inner.view_mut(), rv);
+    assert!(retail_px == e3_px, "the frame is the small level's in both views");
+    // And it is the pool's colour, not the shadows.
+    let i = ((48 * 2 * W + 40) * 4) as usize;
+    assert_eq!(&e3_px[i..i + 3], &retail_px[i..i + 3]);
+    assert!(e3_px.chunks(4).all(|p| p == &e3_px[i..i + 4]), "one colour over the frame");
+}
