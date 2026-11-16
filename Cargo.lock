@@ -2128,6 +2128,7 @@ dependencies = [
  "content",
  "h1map",
  "map",
+ "mopp",
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
@@ -3219,6 +3220,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mopp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "tags",
+ "xiso",
 ]
 
 [[package]]

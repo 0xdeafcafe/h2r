@@ -32,8 +32,7 @@ as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
 (manifest.toml and h1_<map>.map). --base picks the base (default per map,
 mostly beavercreek). --dry-run does everything but write and prints what it
-would write. Until the MOPP writer is merged no map is written. See
-docs/game/h1-multiplayer.md.";
+would write. See docs/game/h1-multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--force] [--dry-run]
 

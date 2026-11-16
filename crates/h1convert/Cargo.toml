@@ -9,6 +9,8 @@ license.workspace = true
 content.workspace = true
 h1map = { path = "../h1map" }
 map.workspace = true
+# The structure's Havok MOPP code.
+mopp = { path = "../mopp" }
 tags.workspace = true
 thiserror.workspace = true
 # Writing placements into the base scenario. Without its egui panel.

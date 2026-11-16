@@ -269,9 +269,10 @@ fn beavercreek_converts_onto_its_halo_2_base_and_reads_back() {
     let h1 = H1Map::from_reader(Cursor::new(file)).unwrap();
     let mut base = map::Map::from_reader(Cursor::new(base_bytes)).unwrap();
 
-    // The real entry point refuses: no MOPP writer yet.
-    let e = convert(&h1, sha, &mut base, Sandbox::Halo2).unwrap_err();
-    assert!(matches!(e, h1convert::Error::MoppNotMerged), "{e}");
+    // The real entry point writes a whole map, which reads back.
+    let done = convert(&h1, sha, &mut base, Sandbox::Halo2).unwrap();
+    let back = map::Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+    assert!(!back.tags().is_empty());
     assert!(matches!(
         prepare(&h1, sha, &mut base, Sandbox::Halo1).unwrap_err(),
         h1convert::Error::Halo1Sandbox
