@@ -167,12 +167,12 @@ manifest, keeping the other sandbox's `[[variant]]` from a manifest
 already there (no manifest text is made here). Each frame `poll_convert`
 picks up the result: the Maps list is re-read and the new variant opened
 (`OpenPackageEntry`, guarded as usual), or the error is logged and shown
-under the button in plain words (`explain`: `MoppNotMerged` is "Conversion
-isn't available yet: the collision builder ... hasn't landed"). The
-converter is a function pointer (`App::set_converter`) so the tests run
-the whole flow with a stub; `disc_bloodgulch_converts_or_waits_for_the_mopp_writer`
-(ignored) runs the real one on the owner's discs and accepts a map or
-`MoppNotMerged`.
+under the button in plain words (`explain`: `TooManySurfaces(n)` is
+"This level has n surfaces; Halo 2 holds at most 65,536", any other error
+its own text). The converter is a function pointer
+(`App::set_converter`) so the tests run the whole flow with a stub;
+`disc_maps_convert_open_and_find_their_source` (ignored) runs the real
+one on the owner's discs, end to end.
 
 **The Halo 1 overlay.** Opening a converted variant looks for its
 `[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks

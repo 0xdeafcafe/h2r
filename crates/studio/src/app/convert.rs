@@ -47,16 +47,28 @@ pub struct Written {
 /// Why a conversion did not write anything, in the player's words.
 pub fn explain(e: &h1convert::Error) -> String {
     match e {
-        h1convert::Error::MoppNotMerged => {
-            "Conversion isn't available yet: the collision builder (the MOPP writer) hasn't \
-             landed, so no map was written."
-                .into()
-        }
+        h1convert::Error::TooManySurfaces(n) => format!(
+            "This level has {} surfaces; Halo 2 holds at most 65,536, so it can't be converted.",
+            thousands(*n)
+        ),
         h1convert::Error::Halo1Sandbox => {
             "The Halo 1 sandbox isn't built yet: convert with the Halo 2 sandbox.".into()
         }
         other => format!("The conversion failed: {other}"),
     }
+}
+
+/// `n` with thousands separators (`70,000`).
+pub fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Write a conversion into `maps` (`<data>/maps`) the way `h2 h1 convert`
