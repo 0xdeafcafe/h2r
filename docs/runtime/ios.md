@@ -30,23 +30,72 @@ directory, which lasts. The boot cache and built pipelines go to Caches.
 the Mac. The button prompts follow the pad's type (`H2_ICONS=auto`;
 docs/input/button-icons.md).
 
-**Touch.** With no controller connected, the app shows Apple's on-screen
-controls (`GCVirtualController`): both sticks, A, B, X, Y, both triggers, and
-both shoulders as White (left) and Black (right). There is no d-pad: the
-system's touch controller refuses one alongside the left stick, and the
-game's menus move with the stick. The game sees
-them as one more gamepad, so nothing in the game's input path is
-touch-specific and the prompts show Xbox buttons. The touch controller also
-refuses Menu and Options, so Start and Back are two small buttons of the
-app's own at the top centre: `h2host_button` holds the key bound to Start or
-Back on the player-one pad (`KeyboardMouse::press_control`), which shares
-port 0 with every other device.
+**Touch.** With no controller connected, the app draws its own touch
+controls (`platform/ios/H2iOS/TouchControls.swift`), plain shapes in the
+layout below. They replaced Apple's `GCVirtualController`, which had no
+stick clicks (so no crouch or zoom), refused a d-pad beside the left stick
+and Menu and Options, and on an iPhone fire did not work. Our side of that
+path is tested (`map_snapshot` carries a pad's right trigger through;
+`touch_fire_reaches_player_one_as_a_full_right_trigger` now covers touch
+end to end), so the fault was in the system overlay on the phone: its
+trigger missing, covered, or never reporting. Which one was not
+established.
+
+```
+ [LIGHT]                 [Back] [Start]
+
+                                              [SWITCH]
+                                    [ZOOM]               [RELOAD]
+                                              ( FIRE )
+   (move stick appears                                    [MELEE]
+    where the thumb lands)       [GRENADE]
+                         [SWAP GREN]          [CROUCH]   [JUMP]
+```
+
+* **Left half: move.** A thumb landing anywhere on the left side, away from
+  a button, puts the stick there; its centre follows a thumb that runs past
+  the rim, so turning back answers at once. 56 points is full deflection,
+  with a 12% radial deadzone.
+* **Right half: look.** Dragging anywhere on the right side turns, as a
+  mouse or the Steam Controller's trackpad does: the drag's speed is the
+  turn rate, with a little acceleration and a response curve that lifts
+  slow drags (Halo's own stick response is flat near the centre). **Fire**
+  looks too: a thumb on Fire fires and aims at the same time.
+* **Buttons**, by Halo 2's Default layout: Fire (right trigger), Grenade
+  (left trigger), Jump (A), Melee (B), Reload (X), Switch (Y), Crouch
+  (left-stick click), Zoom (right-stick click), Swap Gren (Black), Light
+  (White), Back and Start. A finger holds the button it landed on until it
+  lifts. Another layout (Southpaw, Boxer, ...) moves the actions, not the
+  labels. There is no d-pad: Halo 2 does not use one in play and its menus
+  move with the stick (the C API has the bits if one is wanted).
+* **Crouch** is a toggle by default (it stays lit while crouched); the
+  Touch Crouch setting makes it hold-to-crouch.
+
+The view only tracks fingers. Each change, and once a frame, it sends an
+`H2TouchFrame` (held buttons, the move thumb's offset, the look drag since
+the last call, the gyro's rate) through `h2host_touch_update`. Rust
+(`crates/input/src/touch.rs`, unit-tested) turns it into a pad: the stick
+deadzone, the look curve (through `crates/input/src/look.rs`, so look
+motion is held until the game reads it, as mouse look is), the crouch
+toggle. The keyboard pad merges it into player one
+(`KeyboardMouse::touch_update`), so it shares port 0 with every other
+device, and the game shows pad prompts while touch is in use. The app logs
+each change of the touch pad (`h2host: touch RT look(+0.25,+0.00)`), at
+once for buttons and at most four times a second for sticks.
+
+Settings, on the Controls screen (they replace the Steam Controller's rows
+on iOS): **Touch Look Speed** 1 to 10 (5), **Touch Crouch** Toggle or Hold,
+**Gyro Aim** 0 (off, the default) to 10: turning the device aims as well
+(CoreMotion, only running while it is on). **Aim Assist** (Video screen)
+is Auto by default, which is Strong while the touch controls show
+([docs/game/aim-assist.md](../game/aim-assist.md)).
 
 The overlay goes away when a controller connects and comes back when the last
-one disconnects. A controller counts if it has an extended gamepad profile and
-is not the overlay itself; a Siri Remote paired to an iPad doesn't. It also
-hides while the system keyboard is up. The rule is `h2host_pad_counts` and
-`h2host_overlay_wanted` (`crates/apple-host/src/overlay.rs`, unit-tested).
+one disconnects. A controller counts if it has an extended gamepad profile; a
+Siri Remote paired to an iPad doesn't. It also hides while the system
+keyboard is up. Hiding lets go of everything it held. The rule is
+`h2host_pad_counts` and `h2host_overlay_wanted`
+(`crates/apple-host/src/overlay.rs`, unit-tested).
 
 ## Typing
 
@@ -120,7 +169,7 @@ Management).
 
 ## Known gaps
 
-- The touch controls have no d-pad and no stick clicks (crouch, zoom).
+- The touch layout is not adjustable yet (positions, sizes, opacity).
 - The same trimmed disc as tvOS: only the menu, The Heretic and Zanzibar.
   Choosing another level or map fails to load it.
 - Speed is unmeasured. Older devices (A12 and earlier) will be slow.
@@ -133,4 +182,5 @@ Management).
   `live/accounts.json` until the in-game account setup has a screen; with
   one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
 - No controller speaker, no `--level`.
-- No touch aiming or gyro: the right stick is the overlay's thumbstick.
+- Gyro aiming's axes assume the device held in landscape like a camera;
+  it is untested on hardware.

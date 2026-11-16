@@ -345,6 +345,138 @@ pub static LIVE_VISIBILITY: Def = Def {
     menu: None,
 };
 
+/// How strong the weapons' aim assist is (crate::aim_assist,
+/// docs/game/aim-assist.md). Read at each map load.
+pub static AIM_ASSIST: Def = Def {
+    key: "controls.aim_assist",
+    label: "Aim Assist",
+    help: "How strongly the crosshair is pulled to and held on targets. Auto is Strong \
+           while the on-screen touch controls show and the game's own otherwise; Strong and \
+           Very strong widen the weapons' autoaim and magnetism. Applies at the next map \
+           load; multiplayer games always use the game's own (docs/game/aim-assist.md).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: crate::aim_assist::SETTING_AUTO,
+            name: "auto",
+            label: "Auto",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_DEFAULT,
+            name: "default",
+            label: "Default",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_STRONG,
+            name: "strong",
+            label: "Strong",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_VERY_STRONG,
+            name: "very_strong",
+            label: "Very Strong",
+        },
+    ]),
+    default: Value::Int(crate::aim_assist::SETTING_AUTO),
+    env: Some("H2_AIM_ASSIST"),
+    flag: None,
+    aliases: &[
+        ("retail", Value::Int(crate::aim_assist::SETTING_DEFAULT)),
+        (
+            "very-strong",
+            Value::Int(crate::aim_assist::SETTING_VERY_STRONG),
+        ),
+    ],
+    parse_env: None,
+    // The handle changes at once; the hook reads it at each map load.
+    apply: Apply::Live,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 50,
+    }),
+};
+
+/// The iOS touch controls' rows (`input::touch`, docs/runtime/ios.md). On
+/// the Controls screen on iOS, in place of the Steam Controller's
+/// (`video_screen::Switches`); read live by `apple-host`.
+pub static TOUCH_LOOK: Def = Def {
+    key: "touch.look",
+    label: "Touch Look Speed",
+    help: "How fast a drag on the right side of the screen turns you, 1 to 10; 5 \
+           is the default.",
+    kind: Kind::Int {
+        valid: 1..=10,
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_TOUCH_LOOK"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// The values of [`TOUCH_CROUCH`].
+pub const TOUCH_CROUCH_TOGGLE: i64 = 0;
+pub const TOUCH_CROUCH_HOLD: i64 = 1;
+
+pub static TOUCH_CROUCH: Def = Def {
+    key: "touch.crouch",
+    label: "Touch Crouch",
+    help: "The on-screen Crouch button: a tap crouches and the next stands \
+           (Toggle), or crouched only while held (Hold).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: TOUCH_CROUCH_TOGGLE,
+            name: "toggle",
+            label: "Toggle",
+        },
+        Choice {
+            value: TOUCH_CROUCH_HOLD,
+            name: "hold",
+            label: "Hold",
+        },
+    ]),
+    default: Value::Int(TOUCH_CROUCH_TOGGLE),
+    env: Some("H2_TOUCH_CROUCH"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+pub static TOUCH_GYRO: Def = Def {
+    key: "touch.gyro",
+    label: "Gyro Aim",
+    help: "Aim by turning the device as well as by dragging: 0 is off, 1 to 10 \
+           the speed (5 is the default speed).",
+    kind: Kind::Int {
+        valid: 0..=10,
+        steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(0),
+    env: Some("H2_TOUCH_GYRO"),
+    flag: None,
+    aliases: &[("off", Value::Int(0))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -357,6 +489,10 @@ pub static ALL: &[&Def] = &[
     &STEAM_SENSITIVITY,
     &STEAM_LEFT_PAD,
     &LIVE_VISIBILITY,
+    &AIM_ASSIST,
+    &TOUCH_LOOK,
+    &TOUCH_CROUCH,
+    &TOUCH_GYRO,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -484,8 +620,15 @@ mod tests {
                 ("H2_STEAM_SENSITIVITY", "8"),
                 ("H2_STEAM_LEFT_PAD", "stick"),
                 ("H2_LIGHTING", "e3"),
+                ("H2_AIM_ASSIST", "strong"),
+                ("H2_TOUCH_LOOK", "7"),
+                ("H2_TOUCH_CROUCH", "hold"),
+                ("H2_TOUCH_GYRO", "off"),
             ],
         );
+        assert_eq!(s.get(TOUCH_LOOK.key), Some(Value::Int(7)));
+        assert_eq!(s.get(TOUCH_CROUCH.key), Some(Value::Int(TOUCH_CROUCH_HOLD)));
+        assert_eq!(s.get(TOUCH_GYRO.key), Some(Value::Int(0)));
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(s.get(STEAM_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(STEAM_SENSITIVITY.key), Some(Value::Int(8)));
@@ -546,6 +689,68 @@ mod tests {
         assert!(!t.speaker());
         assert!(s.set(STEAM_SENSITIVITY.key, Value::Int(11)).is_err());
         assert_eq!(t.sensitivity(), 9);
+    }
+
+    #[test]
+    fn aim_assist_is_auto_unless_asked() {
+        use crate::aim_assist::{
+            SETTING_AUTO, SETTING_DEFAULT, SETTING_STRONG, SETTING_VERY_STRONG,
+        };
+        let data = tmp("aim");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(AIM_ASSIST.default, Value::Int(SETTING_AUTO));
+        assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(SETTING_AUTO)));
+        assert_eq!(s.handle::<i64>(AIM_ASSIST.key).get(), SETTING_AUTO);
+        assert_eq!(AIM_ASSIST.scope, Scope::Sim);
+        assert_eq!(
+            AIM_ASSIST.apply,
+            Apply::Live,
+            "the hook reads it at each map load"
+        );
+        assert_eq!(AIM_ASSIST.menu.expect("a row").screen, "video");
+        // The file takes the names.
+        std::fs::write(
+            settings::path_in(&data),
+            "[controls]\naim_assist = \"very_strong\"\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(SETTING_VERY_STRONG)));
+        assert!(!s.state(AIM_ASSIST.key).unwrap().locked);
+        // The variable takes names, labels and aliases, and locks it.
+        for (text, want) in [
+            ("default", SETTING_DEFAULT),
+            ("retail", SETTING_DEFAULT),
+            ("Strong", SETTING_STRONG),
+            ("very-strong", SETTING_VERY_STRONG),
+            ("auto", SETTING_AUTO),
+        ] {
+            let env = move |k: &str| (k == "H2_AIM_ASSIST").then(|| text.to_string());
+            let (s, p) = Store::load(ALL, Some(&settings::path_in(&data)), &env, &[]);
+            assert!(p.is_empty(), "{text}: {p:?}");
+            assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)), "{text}");
+            assert!(s.state(AIM_ASSIST.key).unwrap().locked, "{text}");
+        }
+        let (s, p) = with_env(&data, &[("H2_AIM_ASSIST", "maximum")]);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert_eq!(
+            s.get(AIM_ASSIST.key),
+            Some(Value::Int(SETTING_VERY_STRONG)),
+            "the file's"
+        );
+        // A press steps Auto, Default, Strong, Very Strong and round.
+        let s = Store::defaults(ALL);
+        for want in [
+            SETTING_DEFAULT,
+            SETTING_STRONG,
+            SETTING_VERY_STRONG,
+            SETTING_AUTO,
+        ] {
+            s.step(AIM_ASSIST.key).unwrap();
+            assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)));
+        }
     }
 
     #[test]

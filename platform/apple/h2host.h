@@ -45,4 +45,47 @@ bool h2host_overlay_wanted(uint32_t physical_pads, bool keyboard_shown);
 // on-screen controls have neither.
 bool h2host_button(H2Host *host, int32_t button, bool down);
 
+// iOS touch controls (docs/runtime/ios.md, crates/input/src/touch.rs). The
+// buttons held, as H2_TOUCH_* bits, named for the pad control they press.
+enum {
+    H2_TOUCH_A = 1u << 0, // Jump
+    H2_TOUCH_B = 1u << 1, // Melee
+    H2_TOUCH_X = 1u << 2, // Reload / action
+    H2_TOUCH_Y = 1u << 3, // Switch weapon
+    H2_TOUCH_BLACK = 1u << 4, // right shoulder: switch grenades
+    H2_TOUCH_WHITE = 1u << 5, // left shoulder: flashlight
+    H2_TOUCH_LEFT_TRIGGER = 1u << 6, // grenade
+    H2_TOUCH_RIGHT_TRIGGER = 1u << 7, // fire
+    H2_TOUCH_START = 1u << 8,
+    H2_TOUCH_BACK = 1u << 9,
+    H2_TOUCH_LEFT_THUMB = 1u << 10, // crouch (a toggle or held, per the setting)
+    H2_TOUCH_RIGHT_THUMB = 1u << 11, // zoom
+    H2_TOUCH_DPAD_UP = 1u << 12,
+    H2_TOUCH_DPAD_DOWN = 1u << 13,
+    H2_TOUCH_DPAD_LEFT = 1u << 14,
+    H2_TOUCH_DPAD_RIGHT = 1u << 15,
+};
+
+typedef struct H2TouchFrame {
+    uint32_t buttons;  // H2_TOUCH_* held
+    bool move_active;  // a thumb is on the move stick
+    float move_x;      // its offset from where it landed, points, +y down
+    float move_y;
+    float look_dx;     // look drag since the previous call, points, +y down
+    float look_dy;
+    float gyro_x;      // rotation rate, rad/s: +x turns right, +y looks up
+    float gyro_y;
+} H2TouchFrame;
+
+// One report from the on-screen controls: on every touch change and once
+// per display frame. Rust turns it into the pad (sticks, curve, crouch
+// toggle) and merges it into player one. False with no game running.
+bool h2host_touch_update(H2Host *host, const H2TouchFrame *frame);
+// The on-screen controls showed or hid; hiding lets go of what they held.
+void h2host_touch_shown(H2Host *host, bool shown);
+// Gyro aiming's sensitivity from the settings, 0 when off.
+float h2host_touch_gyro(H2Host *host);
+// Whether crouch is held (a toggled crouch included), to light its button.
+bool h2host_touch_crouched(H2Host *host);
+
 #endif

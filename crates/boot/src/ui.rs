@@ -452,10 +452,11 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key)
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 6), 5);
+        assert_eq!(m.count(List::Screen("video"), 6), 6);
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);

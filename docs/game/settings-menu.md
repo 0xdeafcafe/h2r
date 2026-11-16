@@ -296,6 +296,8 @@ Not every flag belongs in a menu. They fall in four groups.
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | live (the window follows it at its next turn) |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](../graphics/high-resolution.md)) | live (the next frame is at the new size) |
 | lighting | **Built (phase 1):** a "Lighting" row on the Video screen (Retail, E3), saved as `[graphics] lighting` (`"retail"` or `"e3"`). E3 draws the game's shadow maps at the render scale (at least 2x) in the shown image only and compares them with one tap; the guest sees retail. `H2_LIGHTING` locks it when set ([e3-lighting.md](../graphics/e3-lighting.md), "Phase 1 as built") | live (the next frame) |
+| aim assist | **Built:** an "Aim Assist" row on the Video screen (Auto, Default, Strong, Very Strong), saved as `[controls] aim_assist`. Auto is Strong while the iOS touch controls show; multiplayer games stay retail. `H2_AIM_ASSIST` locks it when set ([aim-assist.md](aim-assist.md)) | next map load |
+| touch controls (iOS) | **Built:** three rows on Controls on iOS, in place of the Steam Controller's: "Touch Look Speed" (1 to 10, `[touch] look`, `H2_TOUCH_LOOK`), "Touch Crouch" (Toggle, Hold; `[touch] crouch`, `H2_TOUCH_CROUCH`) and "Gyro Aim" (0 off to 10; `[touch] gyro`, `H2_TOUCH_GYRO`). `H2_NO_TOUCH_ROWS=1` removes them ([ios.md](../runtime/ios.md#controls)) | live |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](../audio/playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](../live/live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](../input/input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
@@ -376,7 +378,7 @@ Notes on specific settings:
 ## Video screen (built)
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with up to five rows:
+row, **Video**. A on it opens a screen titled "Video" with up to six rows:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -385,6 +387,7 @@ row, **Video**. A on it opens a screen titled "Video" with up to five rows:
 | Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next frame | `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | Mute Button | On, Off | `[pad] mute_button` | at once | `H2_PAD_MUTE` |
+| Aim Assist | Auto, Default, Strong, Very Strong (default Auto: Strong while the touch controls show) | `[controls] aim_assist` | next map load ([aim-assist.md](aim-assist.md)) | `H2_AIM_ASSIST` |
 
 A steps the row's value and saves it to `<data>/settings.toml` at once,
 keeping every other key, and every row applies at once, so none says
@@ -567,7 +570,9 @@ and structures differ.
   player control (`[0x4ed284]+0x24/0x28`) and never writes them. The zoom
   level, the magnification and look sensitivity are not touched; only the
   angle that results from them is. Auto-aim and aim assist are weapon and
-  unit tag values; the paths above do not lead there.
+  globals tag values; the paths above do not lead there. The Aim Assist
+  row scales those tag values at map load instead
+  ([aim-assist.md](aim-assist.md)).
 - Readers of the observer array (`0x4e9c8c`, stride `0x358`; through
   `0x16f3a0` and direct) were checked for reads of the FOV fields
   (`+0x38`, `+0x4c`, `+0x50`): the render camera (`0x2f800`), the

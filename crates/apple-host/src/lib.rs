@@ -19,8 +19,11 @@
 //!   [`h2host_text_done`] and [`h2host_text_cancel`] for what is typed
 //!   ([`text`]);
 //! * on iOS, [`h2host_pad_counts`] and [`h2host_overlay_wanted`] to decide
-//!   when the on-screen controls show ([`overlay`]), and [`h2host_button`]
-//!   for the Start and Back buttons they lack.
+//!   when the on-screen controls show ([`overlay`]), [`h2host_touch_shown`]
+//!   as they show and hide, [`h2host_touch_update`] with what the fingers on
+//!   them hold ([`touch`], `input::touch`), and [`h2host_touch_gyro`] to
+//!   learn whether to aim with the gyro. [`h2host_button`] holds Start or
+//!   Back through a bound key (kept for hosts without the touch pad).
 //!
 //! `platform/apple/h2host.h` declares the same functions for Swift.
 #![allow(unsafe_code)]
@@ -29,6 +32,7 @@ pub mod layout;
 pub mod maps;
 pub mod overlay;
 pub mod text;
+pub mod touch;
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
@@ -46,6 +50,10 @@ pub struct H2Host {
     shell: Option<app::embedded::Embedded>,
     message: CString,
     text: text::Edges,
+    /// The settings the game runs with (touch tuning reads them live).
+    store: Option<Arc<settings::Store>>,
+    /// What the touch pad last logged (`input::touch::ChangeLog`).
+    touch_log: input::touch::ChangeLog,
 }
 
 /// The environment the game reads, pointed at the app's own places. Only
@@ -206,13 +214,15 @@ fn start(
     bundle: &Path,
     caches: &Path,
     documents: Option<&Path>,
-) -> Result<app::embedded::Embedded> {
+) -> Result<(app::embedded::Embedded, Arc<settings::Store>)> {
     let layout = Layout::new(bundle, caches, documents);
     let missing = layout.missing();
     if !missing.is_empty() {
         anyhow::bail!("the app bundle is incomplete: {}", missing.join("; "));
     }
-    let seeded = layout.prepare().context("preparing the app's directories")?;
+    let seeded = layout
+        .prepare()
+        .context("preparing the app's directories")?;
     eprintln!(
         "h2host: disc {}, data {}, {seeded} boot cache file(s) seeded",
         layout.disc.display(),
@@ -234,7 +244,10 @@ fn start(
     let config = app::embedded::device_config();
     // SAFETY: the host passes a live CAMetalLayer it keeps for the app's
     // lifetime, on the main thread (h2host.h).
-    unsafe { app::embedded::Embedded::start(config, layer, size, guest(layout, store)) }
+    let shell = unsafe {
+        app::embedded::Embedded::start(config, layer, size, guest(layout, Arc::clone(&store)))
+    }?;
+    Ok((shell, store))
 }
 
 /// Refuses a module built from other sources before anything slow starts.
@@ -300,10 +313,12 @@ pub unsafe extern "C" fn h2host_start(
         _ => Err(anyhow::anyhow!("bad bundle, Caches or Documents path")),
     };
     let host = match r {
-        Ok(shell) => H2Host {
+        Ok((shell, store)) => H2Host {
             shell: Some(shell),
             message: CString::default(),
             text: Default::default(),
+            store: Some(store),
+            touch_log: Default::default(),
         },
         Err(e) => {
             eprintln!("h2host: {e:#}");
@@ -311,6 +326,8 @@ pub unsafe extern "C" fn h2host_start(
                 shell: None,
                 message: message(&format!("{e:#}")),
                 text: Default::default(),
+                store: None,
+                touch_log: Default::default(),
             }
         }
     };
@@ -484,12 +501,99 @@ pub unsafe extern "C" fn h2host_button(host: *mut H2Host, button: i32, down: boo
     with_keyboard(host, |k| k.press_control(control, down))
 }
 
+/// One report from the on-screen touch controls (`H2TouchFrame`, h2host.h):
+/// held buttons, the move thumb's offset and the look drag since the last
+/// call. Call on every touch change and once per display frame. The touch
+/// tuning follows the settings. False with no shell or a null frame.
+///
+/// # Safety
+/// As [`h2host_redraw`]; `frame` is null or points at a valid
+/// `H2TouchFrame`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_touch_update(
+    host: *mut H2Host,
+    frame: *const touch::H2TouchFrame,
+) -> bool {
+    // SAFETY: the caller's contract.
+    let (Some(t), Some(f)) = (unsafe { host.as_mut() }, unsafe { frame.as_ref() }) else {
+        return false;
+    };
+    let Some(k) = t.shell.as_ref().and_then(|s| s.keyboard()) else {
+        return false;
+    };
+    if let Some(store) = &t.store {
+        let tuning = touch::tuning(store, k.touch_tuning());
+        if tuning != k.touch_tuning() {
+            k.set_touch_tuning(tuning);
+        }
+    }
+    let state = k.touch_update(&f.frame());
+    if let Some(line) = t.touch_log.line(&state, std::time::Instant::now()) {
+        eprintln!("h2host: touch {line}");
+    }
+    true
+}
+
+/// The on-screen touch controls showed (`true`) or hid. Hiding lets go of
+/// everything they held, and a toggled crouch stands up. Features that
+/// change with touch (the aim assist's Auto level) read this.
+///
+/// # Safety
+/// As [`h2host_redraw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_touch_shown(host: *mut H2Host, shown: bool) {
+    input::touch::set_controls_shown(shown);
+    eprintln!(
+        "h2host: touch controls {}",
+        if shown { "shown" } else { "hidden" }
+    );
+    // SAFETY: the caller's contract.
+    if let Some(t) = unsafe { host.as_mut() } {
+        if let Some(k) = t.shell.as_ref().and_then(|s| s.keyboard()) {
+            k.touch_release();
+        }
+        t.touch_log = Default::default();
+    }
+}
+
+/// Whether the touch controls hold crouch (a toggled crouch included), so
+/// the host can light its crouch button.
+///
+/// # Safety
+/// As [`h2host_redraw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_touch_crouched(host: *mut H2Host) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { host.as_ref() }
+        .and_then(|t| t.shell.as_ref())
+        .and_then(|s| s.keyboard())
+        .is_some_and(|k| k.touch_crouched())
+}
+
+/// Gyro aiming's sensitivity from the settings, or 0 when it is off (then
+/// the host should not run motion updates at all).
+///
+/// # Safety
+/// As [`h2host_redraw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_touch_gyro(host: *mut H2Host) -> f32 {
+    // SAFETY: the caller's contract.
+    unsafe { host.as_ref() }
+        .and_then(|t| t.store.as_ref())
+        .map_or(0.0, |s| {
+            touch::tuning(s, Default::default()).gyro_sensitivity as f32
+        })
+}
+
 /// Whether a connected controller counts as a physical pad that can play
 /// (iOS): not the on-screen controls' own controller, and with an
 /// extended gamepad profile ([`overlay::physical`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn h2host_pad_counts(is_overlay: bool, extended: bool) -> bool {
-    overlay::physical(&[overlay::Pad { is_overlay, extended }]) == 1
+    overlay::physical(&[overlay::Pad {
+        is_overlay,
+        extended,
+    }]) == 1
 }
 
 /// Whether the on-screen controls should be connected, given how many pads
@@ -606,6 +710,14 @@ mod tests {
             assert!(!h2host_text_done(std::ptr::null_mut()));
             assert!(!h2host_button(host, 0, true));
             assert!(!h2host_button(std::ptr::null_mut(), 1, true));
+            let f = touch::H2TouchFrame::default();
+            assert!(!h2host_touch_update(host, &f));
+            assert!(!h2host_touch_update(host, std::ptr::null()));
+            assert!(!h2host_touch_update(std::ptr::null_mut(), &f));
+            assert_eq!(h2host_touch_gyro(host), 0.0);
+            assert!(!h2host_touch_crouched(host));
+            assert!(!h2host_touch_crouched(std::ptr::null_mut()));
+            h2host_touch_shown(std::ptr::null_mut(), false);
             drop(Box::from_raw(host));
         }
         assert!(h2host_pad_counts(false, true));
