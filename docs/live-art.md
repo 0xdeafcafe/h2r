@@ -345,8 +345,9 @@ Keys (what telemetry sends):
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
   idle stance (or its own idle, below): the posed shape is baked into the
   vertices; nothing is skinned or animated.
-- A vehicle is in its rest pose, origin at the vehicle's object origin,
-  facing glTF +x.
+- A vehicle is in its neutral pose (below), origin at the vehicle's object
+  origin, facing glTF +x. `asset.extras.pose` names the frame used
+  (`combat:any:any:closing, last frame`, or `rest pose`).
 
 On the retail disc: spartan 3,042 triangles and 0.8 MB, elite 2,744
 triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
@@ -363,7 +364,11 @@ whole step takes about 0.6 s on 10 cores.
    Campaign characters: every `bipd` tag on the campaign maps, one per
    species key (above), built in parallel.
 2. **Vehicles.** Every `vehi` tag of the shared, multiplayer and campaign
-   maps, first one per stem. Per region the permutation named `base` (else
+   maps, first one per stem. Posed like a biped from its animation graph:
+   the last frame of `closing` (a vehicle's rest pose has its canopy or
+   hatch open: a banshee's whole cab is tilted up), else the first frame of
+   `opening`, else an `idle` (turrets, the enforcer); else the rest pose
+   (the warthog, ghost, phantom and most turrets have no actions). Per region the permutation named `base` (else
    the first), the highest detail level under 40,000 triangles. Vehicle tags
    with fewer than 8 drawn triangles are placeholders and are skipped
    (two on the retail disc).
@@ -386,7 +391,9 @@ whole step takes about 0.6 s on 10 cores.
    (the combat mode first); else any action with `idle` in its name; else
    the rest pose. An inherited action is read from its graph. Frame 0 is sampled (`tags::anim_sample`). Graph
    nodes are matched to model nodes by name; a channel the frame does not
-   supply keeps the rest value.
+   supply keeps the rest value. Sections whose vertices carry no node
+   indices are rigid pieces of their section's first mapped node (a
+   banshee's cab, a jackal's shield, a helmet), not of the root.
 7. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
    of `posed_world × inverse(rest_world)` of its nodes (weights
    renormalised), normals likewise. Then the model is lifted so its lowest
@@ -433,7 +440,9 @@ it writes.
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
-- Vehicles are in their rest pose: no turret aim, no wheel suspension. A
+- Vehicles are posed once: no turret aim, no wheel suspension. A vehicle
+  turret is its own tag and model (`cannon` on the scorpion, `mortar` on the
+  wraith, `chaingun`/`gauss` on the warthog), not part of the vehicle. A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.
 - Change-colour weights are per vertex, so their edges are as coarse as the

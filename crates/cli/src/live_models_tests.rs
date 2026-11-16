@@ -576,7 +576,7 @@ fn vehicles_keep_their_rest_pose_and_get_seat_nodes() {
         translation: [9.0, 9.0, 9.0],
         rotation: [0.0, 0.0, 0.0, 1.0],
     });
-    let v = vehicle(&src).unwrap();
+    let v = vehicle(&src, &[], &Pose { nodes: vec![] }).unwrap();
     assert_eq!(v.mesh_name, "vehicle");
     // Rest pose, not moved: the mesh is where the source put it.
     assert_eq!(v.primitives[0].positions, src.pieces[0].positions);
@@ -600,17 +600,70 @@ fn vehicles_keep_their_rest_pose_and_get_seat_nodes() {
     let mut tiny = src.clone();
     tiny.pieces[0].triangles.truncate(1);
     assert!(
-        vehicle(&tiny)
+        vehicle(&tiny, &[], &Pose { nodes: vec![] })
             .unwrap_err()
             .to_string()
             .contains("placeholder")
     );
     assert!(
-        vehicle(&Source {
-            pieces: vec![],
-            ..src
-        })
+        vehicle(
+            &Source {
+                pieces: vec![],
+                ..src
+            },
+            &[],
+            &Pose { nodes: vec![] }
+        )
         .is_err()
+    );
+}
+
+#[test]
+fn vehicles_rest_with_their_hatch_closed() {
+    let st = |a: &str, b: &str, c: &str, d: &str| -> Stance { [a, b, c, d].map(str::to_owned) };
+    // A canopy: the end of closing, else the start of opening.
+    let canopy = vec![
+        st("combat", "any", "any", "opening"),
+        st("combat", "any", "any", "closing"),
+    ];
+    assert_eq!(pick_vehicle_pose(&canopy), Some((1, Frame::Last)));
+    assert_eq!(pick_vehicle_pose(&canopy[..1]), Some((0, Frame::First)));
+    // A turret or a sentinel: its idle.
+    let turret = vec![
+        st("combat", "fixed", "any", "fire"),
+        st("combat", "fixed", "any", "idle"),
+    ];
+    assert_eq!(pick_vehicle_pose(&turret), Some((1, Frame::First)));
+    // Closing wins over idle; nothing usable keeps the rest pose.
+    let both = vec![
+        st("combat", "any", "any", "idle"),
+        st("combat", "any", "any", "closing"),
+    ];
+    assert_eq!(pick_vehicle_pose(&both), Some((1, Frame::Last)));
+    assert_eq!(
+        pick_vehicle_pose(&[st("combat", "any", "any", "fire")]),
+        None
+    );
+    assert_eq!(pick_vehicle_pose(&[]), None);
+
+    // The chosen frame is baked like a biped's: the forearm's nose turned
+    // 90 degrees moves its vertices and the seat on it.
+    let mut src = biped_source();
+    src.markers.push(Marker {
+        name: "driver".into(),
+        node: 2,
+        translation: [0.5, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    });
+    let (names, pose) = pose_of(&[("arm", Some(yaw(90.0)))]);
+    let v = vehicle(&src, &names, &pose).unwrap();
+    let seat = v.nodes.iter().find(|(n, _)| n == "seat_driver").unwrap().1;
+    assert!(close(&seat[3][..3], &[1.0, 1.5, 0.0]), "{:?}", seat[3]);
+    // Vehicles are not lifted: the object origin stays the origin.
+    assert!(
+        close(&v.primitives[0].positions[0], &[1.0, -1.0, -0.5]),
+        "{:?}",
+        v.primitives[0].positions[0]
     );
 }
 
@@ -633,7 +686,11 @@ fn write_models_skips_failures_and_lists_what_it_wrote() {
             Err(anyhow::anyhow!("broken")),
         ),
         (Kind::Weapon, "smg".to_string(), weapon(&src)),
-        (Kind::Vehicle, "warthog".to_string(), vehicle(&src)),
+        (
+            Kind::Vehicle,
+            "warthog".to_string(),
+            vehicle(&src, &[], &Pose { nodes: vec![] }),
+        ),
     ];
     let w = write_models(built, &dir);
     let entry = w.entry.unwrap();
@@ -957,7 +1014,11 @@ fn models_from_the_disc() {
             .filter_map(|n| n["name"].as_str())
             .filter(|n| n.starts_with("seat_"))
             .collect();
-        seats += &format!("{stem}: {}\n", names.join(" "));
+        let pose = doc["asset"]["extras"]["pose"]
+            .as_str()
+            .unwrap_or("-")
+            .to_owned();
+        seats += &format!("{stem}: pose {pose}; {}\n", names.join(" "));
     }
     print!("{seats}");
     fs::write(check.join("seats.txt"), &seats).unwrap();
@@ -1059,6 +1120,30 @@ fn models_from_the_disc() {
         }
         write_sheet(&check.join(format!("check-vehicle-{stem}.png")), &items);
     }
+    // Every vehicle, side and three-quarter, one small picture each (for a
+    // contact sheet).
+    let all = check.join("vehicles");
+    let _ = fs::remove_dir_all(&all);
+    fs::create_dir_all(&all).unwrap();
+    for (stem, r) in &entry.vehicles {
+        let body = read_drawn(&fs::read(out.join(&r.glb)).unwrap());
+        let items = [(&body, None)];
+        let (pw, ph) = (320usize, 240usize);
+        let panels = [
+            picture(&items, 1, Paint::Texture, pw, ph),
+            picture(&items, 2, Paint::Texture, pw, ph),
+        ];
+        let mut sheet = vec![0u8; 2 * pw * ph * 4];
+        for (k, p) in panels.iter().enumerate() {
+            for y in 0..ph {
+                let dst = (y * 2 * pw + k * pw) * 4;
+                sheet[dst..dst + pw * 4].copy_from_slice(&p[y * pw * 4..(y + 1) * pw * 4]);
+            }
+        }
+        let mut png = Vec::new();
+        assets::png::write_rgba(&mut png, 2 * pw as u32, ph as u32, &sheet).unwrap();
+        fs::write(all.join(format!("{stem}.png")), png).unwrap();
+    }
 }
 
 fn write_sheet(path: &Path, items: &[Placed<'_>]) {
@@ -1111,4 +1196,15 @@ fn the_pose_prefers_the_rifle_idle_then_any_idle() {
     let src = biped_source();
     let rest = biped(&src, &[], &Pose { nodes: vec![] }).unwrap();
     assert_eq!(rest.primitives[0].positions.len(), 4);
+}
+
+#[test]
+fn a_vertex_without_nodes_follows_its_sections_node() {
+    // Indices go through the map.
+    assert_eq!(vertex_nodes(&[4, 7], Some([1, 0, 0, 0])), [7, 4, 4, 4]);
+    // No map: the indices are model nodes.
+    assert_eq!(vertex_nodes(&[], Some([2, 1, 0, 0])), [2, 1, 0, 0]);
+    // A section with no per-vertex nodes is bound to its first mapped node.
+    assert_eq!(vertex_nodes(&[3], None), [3; 4]);
+    assert_eq!(vertex_nodes(&[], None), [0; 4]);
 }
