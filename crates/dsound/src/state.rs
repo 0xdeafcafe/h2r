@@ -22,6 +22,7 @@ use audio::{Mixer, SoundBuffer, Stream, VoiceOutput, WaveFormat};
 
 use crate::abi::*;
 use crate::host::{Host, MAX_GUEST_COPY, MemFault, StreamCallback, at};
+use crate::mixbins::VoiceBins;
 use crate::padroute::{Classified, PadRouter, next_output};
 
 /// Why the shim cannot continue. Distinct from an HRESULT failure, which the
@@ -216,7 +217,7 @@ struct BufferObj {
     frequency: Option<u32>,
     /// Filter, headroom and I3DL2 source, pushed to the voice or mix-in.
     fx: VoiceFx,
-    mix_bins: Vec<(u32, i32)>,
+    mix_bins: VoiceBins,
     input_mix_bin: u32,
     gate: Gate,
     resume: Option<Resume>,
@@ -269,7 +270,7 @@ struct StreamObj {
     /// the status word's pause bit depends on.
     started: bool,
     volume_mb: i32,
-    mix_bins: Vec<(u32, i32)>,
+    mix_bins: VoiceBins,
     /// `SetOutputBuffer`: the mix-in buffer this stream feeds instead of its
     /// mix bins (guest pointer).
     output_buffer: Option<u32>,
@@ -1084,7 +1085,7 @@ impl DirectSound {
             volume_mb: 0,
             frequency: None,
             fx: VoiceFx::default(),
-            mix_bins,
+            mix_bins: VoiceBins::from_pairs(&mix_bins),
             input_mix_bin: d.input_mix_bin,
             gate: Gate::Open,
             resume: None,
@@ -1220,6 +1221,7 @@ impl DirectSound {
         };
         let mut stream = Stream::new(format).map_err(|_| unimpl("stream format"))?;
         stream.set_mix_bins(Some(mix_bins.clone()));
+        let mix_bins = VoiceBins::from_pairs(&mix_bins);
         let audio = self.mixer.lock().unwrap().add_stream(stream);
         let obj = StreamObj {
             refs: 1,
@@ -1277,9 +1279,15 @@ impl DirectSound {
             sb.set_frequency(hz);
         }
         sb.set_source_3d(Self::source_3d(b));
-        sb.set_mix_bins(Some(b.mix_bins.clone()));
+        sb.set_mix_bins(Some(b.mix_bins.pairs()));
         sb.set_fx(b.fx.clone());
-        sb.set_output(b.output);
+        // A voice the game positions is the world's, never the player's own
+        // (padroute): it stays on the main output whatever its name.
+        sb.set_output(if b.flags & DSBCAPS_CTRL3D != 0 {
+            VoiceOutput::Main
+        } else {
+            b.output
+        });
     }
 
     /// The mixer submix of a mix-in buffer: volume, routing, 3D and whether
@@ -1287,7 +1295,7 @@ impl DirectSound {
     fn apply_mix_in(b: &BufferObj, mi: &mut MixIn) {
         mi.set_volume(b.volume_mb);
         mi.set_source_3d(Self::source_3d(b));
-        mi.set_mix_bins(Some(b.mix_bins.clone()));
+        mi.set_mix_bins(Some(b.mix_bins.pairs()));
         mi.set_fx(b.fx.clone());
         if b.mix_in_playing && b.gate == Gate::Open {
             mi.play();
@@ -1330,23 +1338,38 @@ impl DirectSound {
     /// Pushes a stream's routing to its mixer voice.
     fn sync_stream_bins(&mut self, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
-        // An output buffer that is a live mix-in takes the whole stream.
-        let target = match self.stream(ptr)?.output_buffer {
-            Some(out) => match self.objects.get(&out) {
-                Some(Object::Buffer(b)) if b.mix_in => Some(b.input_mix_bin),
-                _ => None,
-            },
-            None => None,
-        };
         let s = self.stream(ptr)?;
-        let bins = match target {
-            Some(bin) => vec![(bin, 0)],
-            None => s.mix_bins.clone(),
-        };
-        if let Some(st) = mixer.lock().unwrap().stream_mut(s.audio) {
+        let (bins, audio) = (s.mix_bins.pairs(), s.audio);
+        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
             st.set_mix_bins(Some(bins));
         }
         Ok(())
+    }
+
+    /// The input bin of the stream's output buffer, and the stream's channel
+    /// count, when that buffer is a live mix-in (the library's `0x82000`
+    /// test in `0x37bc89`).
+    fn stream_send(&self, ptr: u32) -> Option<(u32, usize)> {
+        let Some(Object::Stream(s)) = self.objects.get(&ptr) else {
+            return None;
+        };
+        match self.objects.get(&s.output_buffer?) {
+            Some(Object::Buffer(b)) if b.mix_in => {
+                Some((b.input_mix_bin, usize::from(s.info.channels).max(1)))
+            }
+            _ => None,
+        }
+    }
+
+    /// True when the stream feeds a 3D (`DSBCAPS_CTRL3D`) buffer: the game is
+    /// positioning it, so it is never routed to the controller speaker.
+    fn stream_positional(&self, ptr: u32) -> bool {
+        let Some(Object::Stream(s)) = self.objects.get(&ptr) else {
+            return false;
+        };
+        s.output_buffer.is_some_and(|out| {
+            matches!(self.objects.get(&out), Some(Object::Buffer(b)) if b.flags & DSBCAPS_CTRL3D != 0)
+        })
     }
 
     fn with_audio<T>(
@@ -1688,11 +1711,12 @@ impl DirectSound {
             None
         };
         let b = self.buf(ptr)?;
-        b.mix_bins = match given {
+        let pairs = match given {
             Some(v) => v,
             None if b.mix_in => Vec::new(),
             None => default_mix_bins(b.flags, b.format.map_or(2, |f| f.channels() as usize)),
         };
+        b.mix_bins.set_mix_bins(&pairs, None);
         self.note("SetMixBins");
         self.sync_buffer(ptr)?;
         Ok(S_OK)
@@ -1700,13 +1724,7 @@ impl DirectSound {
 
     pub fn buffer_set_mix_bin_volumes(&mut self, h: &mut dyn Host, ptr: u32, bins: u32) -> R {
         let v = read_mix_bins(h, bins)?;
-        let b = self.buf(ptr)?;
-        for (bin, vol) in v {
-            match b.mix_bins.iter_mut().find(|p| p.0 == bin) {
-                Some(p) => p.1 = vol,
-                None => b.mix_bins.push((bin, vol)),
-            }
-        }
+        self.buf(ptr)?.mix_bins.set_volumes(&v);
         self.note("SetMixBinVolumes");
         self.sync_buffer(ptr)?;
         Ok(S_OK)
@@ -1739,7 +1757,7 @@ impl DirectSound {
 
     /// `SetRolloffFactor(flRolloffFactor, dwApply)` on a buffer: multiplies
     /// the listener's rolloff for this voice. Halo 2 passes 0 (it attenuates
-    /// by distance itself through the voice volume).
+    /// by distance itself through mix-bin volumes, `docs/dsound.md`).
     pub fn buffer_set_rolloff(&mut self, ptr: u32, v: u32) -> R {
         self.buf(ptr)?.rolloff = f(v);
         self.refresh_3d(ptr)
@@ -1821,6 +1839,7 @@ impl DirectSound {
         // them ahead of earlier packets); `service_stream` releases them in
         // order.
         let class = self.classify(&bytes);
+        let positional = self.stream_positional(ptr);
         let id = if bytes.is_empty() {
             None
         } else {
@@ -1830,7 +1849,12 @@ impl DirectSound {
                 expected: "IDirectSoundStream",
             })?;
             let idle = st.pending() == 0;
-            st.set_output(next_output(st.params().output, class, idle));
+            let output = next_output(st.params().output, class, idle);
+            st.set_output(if positional {
+                VoiceOutput::Main
+            } else {
+                output
+            });
             match st.submit(&bytes) {
                 Ok(id) => Some(id),
                 Err(_) => return Ok(E_INVALIDARG),
@@ -2024,10 +2048,16 @@ impl DirectSound {
             None
         };
         let s = self.stream(ptr)?;
-        s.mix_bins = match given {
+        let (flags, channels) = (s.flags, usize::from(s.info.channels));
+        let send = self.stream_send(ptr);
+        let pairs = match given {
             Some(v) => v,
-            None => default_mix_bins(s.flags, usize::from(s.info.channels)),
+            // With a mix-in output buffer the library's NULL table is empty
+            // (`0x38577c`): only the send remains.
+            None if send.is_some() => Vec::new(),
+            None => default_mix_bins(flags, channels),
         };
+        self.stream(ptr)?.mix_bins.set_mix_bins(&pairs, send);
         self.note("SetMixBins");
         self.sync_stream_bins(ptr)?;
         Ok(S_OK)
@@ -2035,13 +2065,7 @@ impl DirectSound {
 
     pub fn stream_set_mix_bin_volumes(&mut self, h: &mut dyn Host, ptr: u32, bins: u32) -> R {
         let v = read_mix_bins(h, bins)?;
-        let s = self.stream(ptr)?;
-        for (bin, vol) in v {
-            match s.mix_bins.iter_mut().find(|p| p.0 == bin) {
-                Some(p) => p.1 = vol,
-                None => s.mix_bins.push((bin, vol)),
-            }
-        }
+        self.stream(ptr)?.mix_bins.set_volumes(&v);
         self.note("SetMixBinVolumes");
         self.sync_stream_bins(ptr)?;
         Ok(S_OK)
@@ -2115,10 +2139,12 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    /// `SetOutputBuffer(pOutputBuffer)`: a stream with an output buffer
-    /// feeds that mix-in buffer (at its input mix bin, full level) instead of
-    /// its own mix bins; null restores the mix bins. A buffer that is not a
-    /// mix-in leaves the mix bins in charge and is counted.
+    /// `SetOutputBuffer(pOutputBuffer)`: a mix-in output buffer replaces the
+    /// stream's mix bins with the mix-in's input bin at `1 / channels`; a
+    /// later `SetMixBins` adds the game's own bins back alongside it, and
+    /// `SetMixBinVolumes` on the input bin scales the send (`mixbins`). Null
+    /// takes the send out and leaves the other bins. A buffer that is not a
+    /// mix-in leaves the mix bins alone and is counted.
     pub fn stream_set_output_buffer(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
         // Validate everything before changing anything: a stale or foreign
         // pointer is a stop with the stream untouched.
@@ -2140,7 +2166,18 @@ impl DirectSound {
         if let Some(Object::Buffer(b)) = self.objects.get_mut(&out) {
             b.refs += 1;
         }
+        let old_send = self.stream_send(ptr).map(|(bin, _)| bin);
         self.stream(ptr)?.output_buffer = (out != 0).then_some(out);
+        let new_send = self.stream_send(ptr);
+        let positional = self.stream_positional(ptr);
+        let s = self.stream(ptr)?;
+        s.mix_bins.set_output(old_send, new_send);
+        if positional {
+            let audio = s.audio;
+            if let Some(st) = self.mixer.lock().unwrap().stream_mut(audio) {
+                st.set_output(VoiceOutput::Main);
+            }
+        }
         if let Some(old) = old {
             self.release(h, old)?;
         }
@@ -2207,7 +2244,7 @@ impl DirectSound {
         if !active {
             return Ok(DSERR_INVALIDCALL);
         }
-        let bins = b.mix_bins.clone();
+        let bins = b.mix_bins.pairs();
         self.write_voice_props(h, out, &bins)?;
         Ok(S_OK)
     }
@@ -2217,7 +2254,7 @@ impl DirectSound {
         if !s.voice_active {
             return Ok(DSERR_INVALIDCALL);
         }
-        let bins = s.mix_bins.clone();
+        let bins = s.mix_bins.pairs();
         self.write_voice_props(h, out, &bins)?;
         Ok(S_OK)
     }

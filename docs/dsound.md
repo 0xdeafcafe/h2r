@@ -194,9 +194,7 @@ an FX send (`0x17` and up). The mix-in's own mix bins are the default 3D set
 and cone outside volume 0. A stream (music, dialogue) is routed into the
 mix-in by `SetMixBins`/`SetMixBinVolumes` on that send bin. `SetPosition`
 at `0x220ea1` (to `IDirectSound3DBuffer_SetPosition`, `0x37c668`) moves the
-mix-in, and `SetVolume` on the mix-in (`0x21ffab`) carries Halo's own
-distance attenuation. Halo also calls `GetStatus`, `Play` and `StopEx` on
-mix-ins.
+mix-in. Halo also calls `GetStatus`, `Play` and `StopEx` on mix-ins.
 
 The shim gives every mix-in buffer an `audio::MixIn` on its input bin
 (removed on `Release`). Every buffer and stream gets its mix bins from
@@ -206,8 +204,47 @@ sending to a playing mix-in is heard panned by the mix-in's position against
 the listener (the model is in `docs/audio.md`, "Positional model"); a mix-in
 that is not playing, or a send bin no mix-in owns, is silent, as an unused
 FX send was on the MCPX. With Halo's parameters (rolloff 0, `FLT_MAX`
-distances) the shim's own distance curve is unity and only Halo's
-`SetVolume` attenuates, which is what the hardware did.
+distances) the shim's own distance curve is unity: Halo attenuates by
+distance itself, through the voice's mix-bin volumes (below), which is what
+the hardware did.
+
+### Distance attenuation
+
+Halo 2 computes every gain itself and hands DirectSound millibels; nothing
+in the 3D API attenuates (rolloff 0, `FLT_MAX` distances, no listener
+rolloff). Per sound channel the update at `0x21fa80` (called from the sound
+source update `0x128ca0`, whose spatial inputs `0x12a1b0` copies into the
+channel's parameters) takes three paths:
+
+- **Plain streams** (no submix): `SetVolume` with the channel gain, and
+  `SetMixBins` (`0x220136`) with pairs from the panner object
+  (`[sound globals+0x2ab4]`, vtable methods `0x2af7b0`, `0x2af800`,
+  `0x2af920`, `0x2afb80`). The panner sums the channel's dB terms per
+  speaker (left and right terms, an overall positional term, a submix term)
+  and converts each with `0x12aff0` (clamp to -64..0 dB) to `100·dB` mB.
+  Speaker bins are `{0, 1, 4, 5}` for a sound flagged for the speakers,
+  otherwise the crosstalk bins `{6, 7, 8, 9}`; bin 10 (I3DL2) carries the
+  reverb send.
+- **Streams in a submix** (a 3D mix-in from the table at `+0x1a18`, given by
+  `SetOutputBuffer` at `0x21f911` when the channel starts): the stream's
+  `SetVolume` is 0 and the gain goes to the send bin through
+  `SetMixBinVolumes` (`0x2215d0`), or the panner's pairs arrive through
+  `SetMixBins` alongside the send.
+- **Filters**: `0x2201f0` evaluates the sound's filter curves and calls
+  stream `SetFilter` (`0x2203e9`) and `SetLFO`; the submix update
+  `0x2211e0` sets the mix-in's `SetI3DL2Source` (obstruction and
+  occlusion) and `SetFilter`.
+
+So the attenuation lives in mix-bin volumes, and those must survive
+`SetOutputBuffer`. The library keeps a voice's bin list and a per-bin
+volume table apart (`crates/dsound/src/mixbins.rs`, from `0x37bc89`
+`SetMixBins`, `0x37a4db` `SetMixBinVolumes`, `0x37bd54` `SetOutputBuffer`
+and `0x37a500`): `SetOutputBuffer(mix-in)` replaces the list with the
+mix-in's input bin at `1 / channels`; a later `SetMixBins` routes the
+given pairs and adds the send back; `SetMixBinVolumes` changes volumes
+only, never the list; null takes the send out and keeps the rest. The shim
+used to send such a stream to the mix-in alone, at unity, so a sound in a
+submix played at full level and unpanned however far away it was.
 
 ### Notification and callback contracts
 
@@ -624,7 +661,7 @@ builder (`0x220200..0x220700`) fills `SetFilter` (`0x2203e9`) and two
 | `SetEG(pDesc)` | `dwEG`, `dwMode`, `dwDelay`, `dwAttack`, `dwHold`, `dwDecay`, `dwRelease`, `dwSustain`, `lPitchScale`, `lFilterCutOff` | generator 1 = amplitude (Halo's fade: mode 2, attack and release set, sustain `0xff`); modes 1..5 pick the start stage, 0 bypasses. Times in 1/93.75 s (Halo multiplies seconds by 93.75). Release not entered. Generator 0 (pitch/filter) counted, not applied |
 | `SetHeadroom(mB)` | scalar | the voice is attenuated by `mB` (0..6000); Halo passes 0 |
 | `SetI3DL2Source(pDesc, apply)` | `DSI3DL2BUFFER`, 9 dwords: direct, directHF, room, roomHF, roomRolloff, obstruction (HF, LF ratio), occlusion (HF, LF ratio) | direct level = `direct + Σ HF·LFratio` (broadband gain), HF level = `direct + directHF + obstruction + occlusion` as a one-pole high-frequency shelf referenced to 5 kHz; room send gain = `room + occlusion·LFratio`. `roomHF`, `roomRolloff` unused |
-| `SetOutputBuffer(pBuffer)` | guest pointer or null | the stream feeds that mix-in at its input bin at unity instead of its own mix bins; null restores them; a non-mix-in is counted |
+| `SetOutputBuffer(pBuffer)` | guest pointer or null | a mix-in replaces the stream's bins with its input bin at `1 / channels`; later `SetMixBins` pairs play alongside it and `SetMixBinVolumes` scales it; null takes the send out; a non-mix-in is counted (see "Distance attenuation") |
 | `SetDopplerFactor` (buffer, listener) | float | scales the Doppler shift (see `docs/audio.md`). No guest call sets a velocity (Halo never calls `SetVelocity`), so the shift is 1 for Halo; the machinery is tested in `audio` |
 | `XAudioSetEffectData(9, type 12)` | `DSI3DL2LISTENER`, 12 dwords | `Mixer::set_reverb` (index = the `reverbIndex` of the last `XAudioDownloadEffectsImage`) |
 

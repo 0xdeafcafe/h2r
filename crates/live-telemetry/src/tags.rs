@@ -31,8 +31,12 @@ pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 const BIPED: [u8; 4] = *b"bipd";
 const WEAPON: [u8; 4] = *b"weap";
 const VEHICLE: [u8; 4] = *b"vehi";
+const MACHINE: [u8; 4] = *b"mach";
+const DAMAGE_EFFECT: [u8; 4] = *b"jpt!";
+const KEPT: [[u8; 4]; 5] = [BIPED, WEAPON, VEHICLE, MACHINE, DAMAGE_EFFECT];
 
-/// Names of a map's biped, weapon and vehicle tags by full salted datum.
+/// Names of a map's biped, weapon, vehicle, machine and damage-effect tags
+/// by full salted datum.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagNames {
     scenario: u32,
@@ -41,14 +45,14 @@ pub struct TagNames {
 
 impl TagNames {
     /// A table for the map whose scenario tag is `scenario`, from
-    /// (datum, group, name) rows. Only biped, weapon and vehicle rows are
-    /// kept.
+    /// (datum, group, name) rows. Only biped, weapon, vehicle, machine and
+    /// damage-effect rows are kept.
     pub fn new(scenario: u32, rows: impl IntoIterator<Item = (u32, [u8; 4], String)>) -> Self {
         Self {
             scenario,
             names: rows
                 .into_iter()
-                .filter(|(_, group, _)| [BIPED, WEAPON, VEHICLE].contains(group))
+                .filter(|(_, group, _)| KEPT.contains(group))
                 .map(|(datum, group, name)| (datum, (group, name)))
                 .collect(),
         }
@@ -97,6 +101,16 @@ impl TagNames {
     /// The file stem of the vehicle whose definition is `datum`.
     pub fn vehicle(&self, datum: u32) -> Option<String> {
         stem_of(self.name(datum, VEHICLE)?)
+    }
+
+    /// The file stem of the machine whose definition is `datum`.
+    pub fn machine(&self, datum: u32) -> Option<String> {
+        stem_of(self.name(datum, MACHINE)?)
+    }
+
+    /// The file stem of the damage effect (`jpt!`) `datum`.
+    pub fn damage_effect(&self, datum: u32) -> Option<String> {
+        stem_of(self.name(datum, DAMAGE_EFFECT)?)
     }
 
     /// An AI biped's species: the directory of its biped tag

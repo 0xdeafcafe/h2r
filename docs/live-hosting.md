@@ -114,8 +114,8 @@ The server is on the internet now. What protects it:
   nothing about that.
 - **Operator and admin endpoints need keys.** Invites, admin grant and
   revoke, title files and hoppers need a token signed by the server key in
-  `--data` (or, for title files, an admin account's key). None of them
-  trusts loopback.
+  `--data` (or, for title files and invites, an admin account's key,
+  [live-admin.md](live-admin.md) §5). None of them trusts loopback.
 - **Rate limits are on by default**: writes per author and method (10/s,
   burst 30), account creation server-wide (1/s, burst 10), local sign-in
   redeems. Bodies are capped (64 KiB, title files 2 MiB, socket messages
@@ -141,7 +141,8 @@ What you should decide:
 
 - **Who may create accounts.** By default anyone with the URL can.
   `--invite-only` requires an invite code (`h2 live invite create`, run on
-  this machine). `serve` warns when a tunnel runs without it.
+  this machine, or an admin's dashboard: Settings → Server → Invites,
+  [live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs without it.
 - **Who may read.** Reads (games, accounts, presence, the log) are public
   by default; `--private` needs a token for every read and on the stream.
 - **Admin names.** `--admin`/`H2_LIVE_ADMINS` name gamertags, and a

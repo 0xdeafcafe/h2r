@@ -3,10 +3,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use runtime::dispatch::Dispatch;
-use runtime::exec::OriginalHandler;
-use runtime::guest::Permissions;
-use runtime::{CpuAbi, ExecCtx, Runtime, TransferAbi, abi};
+use engine::points;
+#[cfg(test)]
+use runtime::Runtime;
 
 use crate::config::{TelemetryConfig, TelemetrySinkConfig};
 use crate::layout;
@@ -19,18 +18,8 @@ use crate::tags::{MapLocator, TagNames};
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
 const MAX_FIRING_WEAPONS: usize = 256;
-
-const SHADOW_START: u32 = 0xa0ff_5000;
-const SHADOW_TICK: u32 = SHADOW_START + 4;
-const SHADOW_END: u32 = SHADOW_START + 8;
-const SHADOW_BYTES: u32 = 0x1000;
-
-#[derive(Clone, Copy)]
-enum PostHook {
-    Start,
-    Tick,
-    End,
-}
+/// Damage reports kept between samples (one tick).
+const MAX_PENDING_HITS: usize = 256;
 
 pub struct Telemetry {
     session: Mutex<Session>,
@@ -40,6 +29,9 @@ pub struct Telemetry {
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
     shots: Mutex<BTreeMap<u32, u32>>,
+    /// Damage reports since the last sample, from the damage hook (oldest
+    /// dropped past [`MAX_PENDING_HITS`]).
+    hits: Mutex<Vec<crate::event::HitRecord>>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -53,6 +45,7 @@ impl Telemetry {
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::new(BTreeMap::new()),
+            hits: Mutex::new(Vec::new()),
             maps: Mutex::new(None),
         }
     }
@@ -109,6 +102,18 @@ impl Telemetry {
         }
         let count = shots.entry(weapon).or_insert(0);
         *count = count.saturating_add(1);
+    }
+
+    /// The damage hook: one damage report.
+    fn damaged(&self, hit: crate::event::HitRecord) {
+        if self.disabled() {
+            return;
+        }
+        let mut hits = self.hits.lock().unwrap();
+        if hits.len() >= MAX_PENDING_HITS {
+            hits.remove(0);
+        }
+        hits.push(hit);
     }
 
     pub fn disabled(&self) -> bool {
@@ -172,6 +177,7 @@ impl Telemetry {
             }
         }
         self.shots.lock().unwrap().clear();
+        self.hits.lock().unwrap().clear();
         *self.last_tick.lock().unwrap() = Some(info.tick);
         self.publish()
     }
@@ -187,10 +193,14 @@ impl Telemetry {
             *last = Some(snapshot.tick);
         }
         snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
-        // Actors only go out in frames (every second tick); a failed scan
-        // sends none rather than stopping telemetry.
+        snapshot.hits = std::mem::take(&mut *self.hits.lock().unwrap());
+        // Actors, vehicles and machines only go out in frames (every second
+        // tick); a failed scan sends none rather than stopping telemetry.
         if snapshot.tick.is_multiple_of(2) {
-            snapshot.actors = memory::actors(guest).unwrap_or_default();
+            let world = memory::world(guest).unwrap_or_default();
+            snapshot.actors = world.actors;
+            snapshot.vehicles = world.vehicles;
+            snapshot.machines = world.machines;
         }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()
@@ -238,54 +248,83 @@ impl Telemetry {
         );
         self.publish()
     }
+}
 
-    fn post(&self, kind: PostHook, cpu: &CpuAbi, ctx: &mut ExecCtx) {
-        self.protect(|| {
-            let guest = ctx.memory();
-            match kind {
-                PostHook::Start if cpu.eax & 0xff != 0 => self.start(&guest),
-                PostHook::Start => Ok(()),
-                PostHook::Tick => self.sample(&guest),
-                PostHook::End => self.end(&guest),
-            }
-        });
+/// Telemetry's listeners, as a feature (`live-telemetry`): match start,
+/// each tick and the end on the `game` and `frame` bridges, and two raw
+/// observers (a kill, a weapon firing). All are read-only and run beside
+/// the original, so they share their points with the level boot's loaded
+/// mark and lockstep's tick hash (docs/feature-engine.md).
+pub struct TelemetryFeature(pub Arc<Telemetry>);
+
+impl feature::Feature for TelemetryFeature {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("live-telemetry", "Live telemetry").doc("docs/live-telemetry.md")
+    }
+
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        let t = Arc::clone(&self.0);
+        b.game()
+            .on_start("match start", move |o| t.protect(|| t.start(&o.guest())));
+        let t = Arc::clone(&self.0);
+        b.frame()
+            .on_tick("sample", move |o| t.protect(|| t.sample(&o.guest())));
+        let t = Arc::clone(&self.0);
+        b.game()
+            .on_end("end", move |o| t.protect(|| t.end(&o.guest())));
+        // stdcall (weapon object datum, barrel index): the first argument.
+        // The point is optional: without it frames carry no `shots`.
+        let t = Arc::clone(&self.0);
+        b.raw()
+            .observe_before(&points::WEAPON_FIRE, "shots", move |o| {
+                if let Some(weapon) = o.arg_u32("weapon") {
+                    t.fired(weapon);
+                }
+            })
+            .optional();
+        // Custom ABI: EDI = the damage report, the victim object datum on
+        // the stack; read before the original applies it. Optional: without
+        // it frames carry no `hits`.
+        let t = Arc::clone(&self.0);
+        b.raw()
+            .observe_before(&points::DAMAGE_REPORT, "hits", move |o| {
+                let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
+                else {
+                    return;
+                };
+                let hit = memory::hit(&o.guest(), report, victim);
+                if let Ok(hit) = hit {
+                    t.damaged(hit);
+                }
+            })
+            .optional();
+        let t = Arc::clone(&self.0);
+        b.raw()
+            .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
+                let esp = o.cpu.esp;
+                let observation = {
+                    let guest = o.guest();
+                    (|| {
+                        let attacker = guest.u32(esp.wrapping_add(4))?;
+                        let victim = guest.u32(esp.wrapping_add(8))?;
+                        let betrayal = guest.u32(esp.wrapping_add(0x0c))? != 0;
+                        let _packed_damage = guest.u32(esp.wrapping_add(0x10))?;
+                        Ok::<_, runtime::GuestFault>((attacker, victim, betrayal))
+                    })()
+                };
+                if let Ok((attacker, victim, betrayal)) = observation {
+                    t.protect(|| t.kill(&o.guest(), attacker, victim, betrayal));
+                }
+            });
+        Ok(())
     }
 }
 
-/// Install the configured observer. `Ok(None)` means disabled; installation
-/// errors never replace an existing override.
+/// Adds the configured observer to `registry`. `Ok(None)` means disabled.
+/// Nothing is hooked until the plan is installed.
 pub fn install(
-    runtime: &Runtime,
+    registry: &mut feature::Registry,
     config: &TelemetryConfig,
-) -> Result<Option<Arc<Telemetry>>, String> {
-    install_at(runtime, config, Hooks::RETAIL)
-}
-
-/// The guest entries telemetry wraps.
-#[derive(Clone, Copy)]
-struct Hooks {
-    start: u32,
-    tick: u32,
-    end: u32,
-    kill: u32,
-    /// Optional: without it frames carry no `shots`.
-    fire: u32,
-}
-
-impl Hooks {
-    const RETAIL: Self = Self {
-        start: layout::MATCH_START,
-        tick: layout::GAME_TICK,
-        end: layout::GAME_END,
-        kill: layout::PLAYER_KILLED,
-        fire: layout::WEAPON_FIRE,
-    };
-}
-
-fn install_at(
-    runtime: &Runtime,
-    config: &TelemetryConfig,
-    hooks: Hooks,
 ) -> Result<Option<Arc<Telemetry>>, String> {
     if !config.enabled {
         return Ok(None);
@@ -300,118 +339,11 @@ fn install_at(
         Session::new("h2recomp", Some("h2recomp".into())).with_signed_in(signed_in(config)),
         sink,
     ));
-    // Resolve every original before edit_dispatch: resolve_original takes the
-    // dispatch read lock, and calling it under the write lock deadlocks boot.
-    let original = |address: u32| {
-        runtime
-            .resolve_original(address)
-            .ok_or_else(|| format!("telemetry original {address:#x} is not registered"))
-    };
-    let start = (original(hooks.start)?, original(hooks.start)?);
-    let tick = (original(hooks.tick)?, original(hooks.tick)?);
-    let end = (original(hooks.end)?, original(hooks.end)?);
-    let kill_original = original(hooks.kill)?;
-    // The fire hook only adds `shots`: if its entry is missing the rest of
-    // telemetry still installs.
-    let fire_original = runtime.resolve_original(hooks.fire);
-    if fire_original.is_none() {
-        eprintln!(
-            "live telemetry: weapon fire {:#x} is not registered; frames carry no shots",
-            hooks.fire
-        );
+    match registry.add(&TelemetryFeature(Arc::clone(&telemetry))) {
+        Ok(true) => Ok(Some(telemetry)),
+        Ok(false) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
-    runtime
-        .memory()
-        .map_zeroed(SHADOW_START, SHADOW_BYTES, Permissions::RX)
-        .map_err(|e| format!("map telemetry shadow entries: {e:?}"))?;
-    runtime.edit_dispatch(|dispatch| {
-        for address in [
-            hooks.start,
-            hooks.tick,
-            hooks.end,
-            hooks.kill,
-            SHADOW_START,
-            SHADOW_TICK,
-            SHADOW_END,
-        ] {
-            if dispatch.override_name(address).is_some() {
-                return Err(format!(
-                    "telemetry override {address:#x} is already installed"
-                ));
-            }
-        }
-        install_post(
-            dispatch,
-            start,
-            hooks.start,
-            SHADOW_START,
-            PostHook::Start,
-            Arc::clone(&telemetry),
-        );
-        install_post(
-            dispatch,
-            tick,
-            hooks.tick,
-            SHADOW_TICK,
-            PostHook::Tick,
-            Arc::clone(&telemetry),
-        );
-        install_post(
-            dispatch,
-            end,
-            hooks.end,
-            SHADOW_END,
-            PostHook::End,
-            Arc::clone(&telemetry),
-        );
-
-        if let Some(original) = fire_original {
-            if dispatch.override_name(hooks.fire).is_some() {
-                eprintln!(
-                    "live telemetry: weapon fire {:#x} is already overridden; frames carry no shots",
-                    hooks.fire
-                );
-            } else {
-                let observer = Arc::clone(&telemetry);
-                let address = hooks.fire;
-                dispatch.register_override(
-                    address,
-                    "live telemetry weapon fire",
-                    move |cpu, ctx, _| {
-                        // stdcall (weapon object datum, barrel index): read
-                        // the first argument, then always run the original.
-                        let weapon = ctx.memory().u32(cpu.esp.wrapping_add(4));
-                        if let Ok(weapon) = weapon {
-                            observer.fired(weapon);
-                        }
-                        Ok(original.invoke(cpu, ctx, address))
-                    },
-                );
-            }
-        }
-
-        let original = kill_original;
-        let observer = Arc::clone(&telemetry);
-        dispatch.register_override(hooks.kill, "live telemetry kill", move |cpu, ctx, _| {
-            let mut observation = || {
-                let guest = ctx.memory();
-                let attacker = guest.u32(cpu.esp.wrapping_add(4))?;
-                let victim = guest.u32(cpu.esp.wrapping_add(8))?;
-                let betrayal = guest.u32(cpu.esp.wrapping_add(0x0c))? != 0;
-                let _packed_damage = guest.u32(cpu.esp.wrapping_add(0x10))?;
-                Ok::<_, runtime::GuestFault>((attacker, victim, betrayal))
-            };
-            if let Ok((attacker, victim, betrayal)) = observation() {
-                observer.protect(|| {
-                    let guest = ctx.memory();
-                    observer.kill(&guest, attacker, victim, betrayal)
-                });
-            }
-            Ok(original.invoke(cpu, ctx, hooks.kill))
-        });
-        Ok(())
-    })?;
-    Ok(Some(telemetry))
 }
 
 /// The Live account the game is signed in with: the one whose key signs the
@@ -421,46 +353,6 @@ fn signed_in(config: &TelemetryConfig) -> Option<live_proto::Xuid> {
         TelemetrySinkConfig::Server { account, .. } => live_proto::Xuid::parse(&account.xuid).ok(),
         TelemetrySinkConfig::File(_) => None,
     }
-}
-
-fn install_post(
-    dispatch: &mut Dispatch,
-    (original_shadow, original_fallback): (OriginalHandler, OriginalHandler),
-    address: u32,
-    shadow: u32,
-    kind: PostHook,
-    telemetry: Arc<Telemetry>,
-) {
-    dispatch.register_override(shadow, "live telemetry original", move |cpu, ctx, _| {
-        Ok(original_shadow.invoke(cpu, ctx, address))
-    });
-    dispatch.register_override(address, "live telemetry observer", move |cpu, ctx, _| {
-        let return_pc_result = {
-            let memory = ctx.memory();
-            memory.u32(cpu.esp)
-        };
-        let return_pc = match return_pc_result {
-            Ok(pc) => pc,
-            Err(_) => return Ok(original_fallback.invoke(cpu, ctx, address)),
-        };
-        cpu.esp = cpu.esp.wrapping_add(4);
-        let observer = Arc::clone(&telemetry);
-        let transfer = {
-            let runtime = Arc::clone(ctx.runtime());
-            let mut memory = runtime.memory();
-            ctx.call_guest(cpu, &mut memory, shadow, move |cpu, ctx| {
-                observer.post(kind, cpu, ctx);
-                Ok(TransferAbi::ret(return_pc))
-            })
-        };
-        match transfer {
-            Ok(transfer) if transfer.kind != abi::FAULT => Ok(transfer),
-            _ => {
-                cpu.esp = cpu.esp.wrapping_sub(4);
-                Ok(original_fallback.invoke(cpu, ctx, address))
-            }
-        }
-    });
 }
 
 #[cfg(test)]
@@ -675,12 +567,28 @@ mod tests {
         fixture::put_player(&mut guest, 0, "Chief", 1, true, fixture::object_datum(1));
         fixture::put_object(&mut guest, 1, u32::MAX);
         fixture::put_actor(&mut guest, 2, 3, [4.0, 0.0, 0.0]);
+        fixture::put_vehicle(&mut guest, 3);
+        fixture::put_machine(&mut guest, 4, 2, 0.5);
+        guest
+            .set_u16(fixture::GLOBALS + layout::GLOBALS_ACTIVE_BSP, 1)
+            .unwrap();
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 2).unwrap();
         telemetry.protect(|| telemetry.sample(&guest));
         // A checkpoint revert re-activates the same map.
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 4).unwrap();
+        // The AI hits the player for a fifth of their body.
+        telemetry.damaged(crate::event::HitRecord {
+            code: 7,
+            effect: 0,
+            owner_player: u32::MAX,
+            owner_object: fixture::object_datum(2),
+            victim: fixture::object_datum(1),
+            pos: Some([0.0, 0.0, 0.0]),
+            body: 0.2,
+            shield: 0.0,
+        });
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -705,6 +613,21 @@ mod tests {
         assert_eq!(actor["team"], "covenant");
         assert_eq!(actor["pos"], serde_json::json!([4.0, 0.0, 0.0]));
         assert_eq!(actor["species"], "unknown", "no map file in tests");
+        let data = &frame["data"];
+        assert_eq!(data["bsp"], 1);
+        assert_eq!(data["vehicles"][0]["occupied"], false);
+        // Machines go out in the game's first frame (and then only when they
+        // move); the sink may have folded that frame into a later one.
+        let machines = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"]["machines"];
+        assert_eq!(machines[0]["position"], 0.5);
+        assert_eq!(machines[0].get("node"), None, "no name, no node");
+        assert_eq!(
+            data["hits"][0]["from"],
+            format!("{:08x}", fixture::object_datum(2))
+        );
+        assert_eq!(data["hits"][0]["to"], "p0");
+        assert_eq!(data["hits"][0]["weapon"], "needler");
+        assert_eq!(data["players"][0]["stance"], "stand");
         let _ = std::fs::remove_file(path);
     }
 
@@ -745,10 +668,7 @@ mod tests {
         assert!(session.take_output().is_empty());
     }
 
-    /// Regression: install used to resolve originals under the dispatch write
-    /// lock and hung boot forever whenever Live was on.
-    #[test]
-    fn install_on_a_real_runtime_returns() {
+    fn fixture_runtime() -> Arc<Runtime> {
         use runtime::guest::Guest;
         use runtime::{Dispatch, RegisteredModule};
         let mut dispatch = Dispatch::default();
@@ -760,7 +680,14 @@ mod tests {
             )
         };
         assert!(matches!(registered, Ok(RegisteredModule { .. })));
-        let runtime = Runtime::new(Guest::new(), dispatch);
+        Runtime::new(Guest::new(), dispatch)
+    }
+
+    /// Installs telemetry's plan on the fixture, with `fire` standing in for
+    /// the weapon fire entry; returns the override names at the five points
+    /// and the install notes.
+    fn install_on_fixture(fire: u32) -> (Vec<Option<String>>, Vec<String>) {
+        let runtime = fixture_runtime();
         let path = std::env::temp_dir().join(format!(
             "h2-telemetry-install-{}.jsonl",
             live_proto::sign::random_id()
@@ -769,81 +696,69 @@ mod tests {
             enabled: true,
             sink: TelemetrySinkConfig::File(path.clone()),
         };
-        // The fixture module's four entries stand in for the retail hooks.
-        let hooks = Hooks {
-            start: 0x40_1000,
-            tick: 0x40_2000,
-            end: 0x40_3000,
-            kill: 0x40_4000,
-            fire: 0x40_3005,
-        };
+        // The fixture module's entries stand in for the retail hooks.
+        let at = [
+            (&points::GAME_ACTIVATE, 0x40_1000),
+            (&points::GAME_TICK, 0x40_2000),
+            (&points::GAME_END, 0x40_3000),
+            (&points::PLAYER_KILLED, 0x40_4000),
+            (&points::WEAPON_FIRE, fire),
+            // Not an entry of the fixture module: the optional damage point
+            // is dropped with a note.
+            (&points::DAMAGE_REPORT, 0x40_6000),
+        ];
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);
         std::thread::spawn(move || {
-            let result = install_at(&rt, &config, hooks).map(|t| t.is_some());
+            let mut r = feature::Registry::new(feature::Switches::defaults());
+            assert!(install(&mut r, &config).unwrap().is_some());
+            let plan = r.build(&feature::Remap::new(&at)).unwrap();
+            let installed = plan.install(&rt).unwrap();
             let names = rt.edit_dispatch(|d| {
-                [hooks.start, hooks.kill, hooks.fire, SHADOW_START]
-                    .map(|a| d.override_name(a).map(str::to_owned))
+                at.iter()
+                    .map(|(_, a)| d.override_name(*a).map(str::to_owned))
+                    .collect()
             });
-            let _ = done.send((result, names));
+            let _ = done.send((names, installed.notes));
         });
-        let (result, names) = wait
+        let out = wait
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("install deadlocked");
-        assert_eq!(result, Ok(true));
+        let _ = std::fs::remove_file(path);
+        out
+    }
+
+    /// Regression: install used to resolve originals under the dispatch write
+    /// lock and hung boot forever whenever Live was on.
+    #[test]
+    fn install_on_a_real_runtime_returns() {
+        let (names, notes) = install_on_fixture(0x40_3005);
         assert_eq!(
             names,
             [
-                Some("live telemetry observer".into()),
-                Some("live telemetry kill".into()),
-                Some("live telemetry weapon fire".into()),
-                Some("live telemetry original".into()),
+                Some("plan:GAME_ACTIVATE[live-telemetry]".into()),
+                Some("plan:GAME_TICK[live-telemetry]".into()),
+                Some("plan:GAME_END[live-telemetry]".into()),
+                Some("plan:PLAYER_KILLED[live-telemetry]".into()),
+                Some("plan:WEAPON_FIRE[live-telemetry]".into()),
+                None,
             ]
         );
-        let _ = std::fs::remove_file(path);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("hits dropped"), "{notes:?}");
     }
 
     /// The weapon fire hook is optional: an image without that entry still
     /// gets the rest of telemetry.
     #[test]
     fn install_without_the_fire_entry_still_installs() {
-        use runtime::guest::Guest;
-        use runtime::{Dispatch, RegisteredModule};
-        let mut dispatch = Dispatch::default();
-        // SAFETY: the fixture's tables, handlers and probes follow its ABI.
-        let registered = unsafe {
-            dispatch.register_generated_module(
-                &runtime_test_probe::h2gen_fixture_module,
-                runtime_test_probe::h2gen_fixture_module_abi_version,
-            )
-        };
-        assert!(matches!(registered, Ok(RegisteredModule { .. })));
-        let runtime = Runtime::new(Guest::new(), dispatch);
-        let path = std::env::temp_dir().join(format!(
-            "h2-telemetry-nofire-{}.jsonl",
-            live_proto::sign::random_id()
-        ));
-        let config = TelemetryConfig {
-            enabled: true,
-            sink: TelemetrySinkConfig::File(path.clone()),
-        };
-        let hooks = Hooks {
-            start: 0x40_1000,
-            tick: 0x40_2000,
-            end: 0x40_3000,
-            kill: 0x40_4000,
-            fire: 0x40_5000,
-        };
-        let (done, wait) = std::sync::mpsc::channel();
-        let rt = Arc::clone(&runtime);
-        std::thread::spawn(move || {
-            let result = install_at(&rt, &config, hooks).map(|t| t.is_some());
-            let _ = done.send(result);
-        });
-        let result = wait
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("install deadlocked");
-        assert_eq!(result, Ok(true));
-        let _ = std::fs::remove_file(path);
+        let (names, notes) = install_on_fixture(0x40_5000);
+        assert!(names[..4].iter().all(Option::is_some), "{names:?}");
+        assert_eq!(names[4], None);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.contains("shots dropped")),
+            "{notes:?}"
+        );
     }
 }

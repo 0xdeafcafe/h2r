@@ -46,6 +46,60 @@ pub trait GuestMemory {
     fn i32(&self, addr: u32) -> Result<i32, MemFault> {
         self.u32(addr).map(|v| v as i32)
     }
+    fn f32(&self, addr: u32) -> Result<f32, MemFault> {
+        self.u32(addr).map(f32::from_bits)
+    }
+    /// `len` bytes from `addr`.
+    fn bytes(&self, addr: u32, len: usize) -> Result<Vec<u8>, MemFault> {
+        let mut b = vec![0; len];
+        self.read(addr, &mut b)?;
+        Ok(b)
+    }
+    /// A NUL-terminated byte string of at most `max` bytes (without the
+    /// NUL). Faults if no NUL is found in `max + 1` readable bytes.
+    fn cstr(&self, addr: u32, max: usize) -> Result<Vec<u8>, MemFault> {
+        let mut out = Vec::new();
+        for i in 0..=max as u32 {
+            let b = self.u8(addr.wrapping_add(i))?;
+            if b == 0 {
+                return Ok(out);
+            }
+            out.push(b);
+        }
+        Err(MemFault {
+            addr,
+            len: max as u32 + 1,
+            write: false,
+        })
+    }
+    /// A NUL-terminated UTF-16 string of at most `max` code units, lossily
+    /// decoded. Faults as [`cstr`](GuestMemory::cstr).
+    fn utf16(&self, addr: u32, max: usize) -> Result<String, MemFault> {
+        let mut units = Vec::new();
+        for i in 0..=max as u32 {
+            let u = self.u16(addr.wrapping_add(2 * i))?;
+            if u == 0 {
+                return Ok(String::from_utf16_lossy(&units));
+            }
+            units.push(u);
+        }
+        Err(MemFault {
+            addr,
+            len: 2 * (max as u32 + 1),
+            write: false,
+        })
+    }
+    /// Three consecutive `f32`s.
+    fn vec3(&self, addr: u32) -> Result<[f32; 3], MemFault> {
+        Ok([
+            self.f32(addr)?,
+            self.f32(addr.wrapping_add(4))?,
+            self.f32(addr.wrapping_add(8))?,
+        ])
+    }
+    fn set_f32(&mut self, addr: u32, v: f32) -> Result<(), MemFault> {
+        self.set_u32(addr, v.to_bits())
+    }
     fn set_u8(&mut self, addr: u32, v: u8) -> Result<(), MemFault> {
         self.write(addr, &[v])
     }

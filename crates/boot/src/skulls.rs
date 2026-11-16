@@ -31,8 +31,8 @@
 //!   left as the game has it.
 //! - **Menu**: [`screen_for`] gives the "Skulls" screen of a profile as
 //!   rows of the `ui` model, one per collected skull; [`toggle`] is a press.
-//!   The guest list wiring that shows it from the difficulty screen is not
-//!   built yet (docs/skulls.md "Menu").
+//!   `crate::skulls_menu` shows it from the difficulty screen's "Skulls"
+//!   row (docs/skulls.md "Menu").
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 

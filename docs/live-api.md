@@ -109,7 +109,9 @@ A frame may also carry `vehicles` and `actors`, each left out when empty:
               "shots": 2, "team": "covenant", "vehicle": "90040004" } ]
 ```
 
-`vehicles` are the vehicles someone (player or AI) is in; `id` is the
+`vehicles` are every vehicle in the world, occupied ones first, at most
+64, each with `occupied` (someone, player or AI, is in it; absent reads as
+true, since older senders listed only occupied vehicles); `id` is the
 object datum in hex, the value `FramePlayer.vehicle` and `FrameActor.vehicle`
 hold. `kind` is the `vehi` tag file stem (`warthog`, `ghost`, `banshee`,
 ...), `forward` and `up` unit vectors in game coordinates. `actors` are the
@@ -123,6 +125,54 @@ when the map's tag names are not available; `aim`, `weapon`, `shots`,
 non-finite positions or vectors, zero `forward`/`up`/`aim`, ids outside
 `[a-z0-9_]{1,32}`, more than 64 vehicles or 128 actors, and stores the
 vectors normalised; actors' shots carry over dropped frames like players'.
+
+Players and actors may carry how they move and what they just did:
+
+```json
+"stance": "crouch", "speed": 4.5, "actions": ["reload"], "grenade": "frag"
+```
+
+`stance` is `stand`, `crouch`, `airborne` (jumping or falling), `vehicle`
+or `dead`; `speed` horizontal game units a second (0 to 1000); `actions`
+the one-shot actions since the previous frame, oldest first, at most 8, each
+`grenade` (a throw), `melee`, `reload`, `jump`, `switch` (weapon swap) or
+`pickup`; `grenade` the selected type, `frag` or `plasma`.
+
+A frame may also carry `hits`, `bsp` and `machines`:
+
+```json
+"hits": [ { "from": "p0", "to": "90070007", "weapon": "battle_rifle",
+            "pos": [5.0, 6.0, 7.0], "amount": 0.75, "kind": "bullet" } ],
+"bsp": 1,
+"machines": [ { "node": "scarab_0", "id": "90090009", "kind": "scarab",
+                "pos": [0.0, 0.0, 10.0], "forward": [1.0, 0.0, 0.0],
+                "up": [0.0, 0.0, 1.0], "position": 0.5 } ]
+```
+
+`hits` is the damage dealt since the previous frame, oldest first, at most
+64: `from` and `to` are `p<index>` for a player or an object datum in hex
+(an actor's or vehicle's `id`), absent for nobody (falls); `weapon` the
+weapon's tag stem when known, else the damage effect's; `pos` the victim's
+position; `amount` body plus shield damage as fractions of the victim's
+vitality (1 is a full body); `kind` `bullet`, `explosion`, `grenade`,
+`melee`, `fall`, `collision`, `vehicle`, `turret`, `sentinel`,
+`teleporter`, `guardians` or `unknown`. `bsp` is the structure BSP the game
+has loaded (campaign switches between zones). `machines` are device
+machines and other big scripted movers (doors, elevators, the scarab): those
+that moved since the previous frame, all of them in a game's first frame,
+at most 128. `node` is map.glb's `machines` child for it,
+`<tag stem>_<scenario placement index>`, absent when the scenario did not
+place it; `kind` the `mach` tag stem; `position` the device position, 0
+(closed, bottom) to 1. The server refuses unknown stances, actions and
+grenades, negative or non-finite speeds and amounts, more than 8 actions,
+64 hits or 128 machines, machine nodes outside `[a-z0-9_]{1,64}` and
+positions outside 0..1.
+
+Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
+full sink queue) go to the next delivered frame, and a recorded 1 Hz frame
+holds every one of them since the previous recorded frame (capped as
+above). A recorded frame also lists every machine the game has sent, at its
+latest state, so a replay can start at any second.
 
 Campaign plays as one game per mission (mode `campaign`, no scores): a
 checkpoint revert or restart of the same mission continues it.
@@ -144,7 +194,8 @@ games) and the others when the start had them.
 up to 15 Hz and are not stored. A live frame's `shots` count since the
 previous live frame; a recorded frame's since the previous recorded frame
 (the sum over the frames it stands for, capped at 64 per player or actor), so
-replays show the firing of the whole second.
+replays show the firing of the whole second; the same goes for `actions` and
+`hits`.
 
 ## Read endpoints
 
@@ -163,6 +214,9 @@ replays show the firing of the whole second.
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
+| `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
+| `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
+| `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
 
 ## Write endpoints
 
@@ -176,7 +230,8 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
-| `POST /v1/invites` | (operator token) | create a single-use invite |
+| `POST /v1/invites` | none with an operator token (`?days=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token | create a single-use invite; 201 `{invite}` (admin: also `jti`, `exp`, `position`) (live-admin.md §5) |
+| `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |

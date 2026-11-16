@@ -43,9 +43,17 @@ export interface FramePlayer {
   weapon?: string | null;
   /** Shots the held weapon fired since this player's previous frame. */
   shots?: number | null;
+  /** "stand" | "crouch" | "airborne" | "vehicle" | "dead". */
+  stance?: string | null;
+  /** Horizontal speed, game units a second. */
+  speed?: number | null;
+  /** One-shot actions since the previous frame, oldest first: "grenade", "melee", "reload", "jump", "switch", "pickup". */
+  actions?: string[] | null;
+  /** "frag" | "plasma". */
+  grenade?: string | null;
 }
 
-/** A vehicle with someone in it. A player's or actor's `vehicle` is its `id`. */
+/** A vehicle anywhere in the world. A player's or actor's `vehicle` is its `id`. */
 export interface FrameVehicle {
   id: string;
   /** The vehicle tag's stem: "warthog", "ghost". */
@@ -54,6 +62,32 @@ export interface FrameVehicle {
   /** Unit vectors, game coordinates (z up). */
   forward: [number, number, number];
   up: [number, number, number];
+  /** Someone is in it; absent (older senders) means occupied. */
+  occupied?: boolean;
+}
+
+/** Damage dealt: "p<index>" for players, else an object id. */
+export interface FrameHit {
+  from?: string | null;
+  to?: string | null;
+  weapon?: string | null;
+  pos: [number, number, number];
+  /** Body plus shield, as fractions of the victim's vitality. */
+  amount?: number | null;
+  /** "bullet", "explosion", "grenade", "melee", "fall", "collision", "vehicle", ... */
+  kind?: string | null;
+}
+
+/** A door, elevator, the scarab, ...: map.glb's `machines` child `node`. */
+export interface FrameMachine {
+  node?: string | null;
+  id: string;
+  kind: string;
+  pos: [number, number, number];
+  forward: [number, number, number];
+  up: [number, number, number];
+  /** Device position 0..1. */
+  position?: number | null;
 }
 
 /** An AI-controlled biped (campaign); only living ones are sent. */
@@ -69,6 +103,10 @@ export interface FrameActor {
   /** "covenant", "human", "flood", "sentinel", "prophet", "player", or a team index as text. */
   team?: string | null;
   vehicle?: string | null;
+  stance?: string | null;
+  speed?: number | null;
+  actions?: string[] | null;
+  grenade?: string | null;
 }
 
 export interface Frame {
@@ -77,6 +115,10 @@ export interface Frame {
   players: FramePlayer[];
   vehicles?: FrameVehicle[];
   actors?: FrameActor[];
+  hits?: FrameHit[];
+  /** The structure BSP the game has loaded. */
+  bsp?: number | null;
+  machines?: FrameMachine[];
 }
 
 export interface PlayerScore {

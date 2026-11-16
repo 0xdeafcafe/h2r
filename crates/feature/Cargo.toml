@@ -1,0 +1,13 @@
+[package]
+name = "feature"
+description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/feature-engine.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+engine = { path = "../engine", features = ["runtime-glue"] }
+
+[dev-dependencies]
+runtime-test-probe = { path = "../runtime/test-probe" }

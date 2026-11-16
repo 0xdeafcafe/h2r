@@ -1885,7 +1885,7 @@ fn tone_bytes(frames: usize, value: i16) -> Vec<u8> {
 fn route_tone(w: &World, value: i16, exclusive: bool) {
     use dsound::padroute::{PadRouter, PadSpeakerConfig, RouteTable, SoundIndex};
     let mut index = SoundIndex::new();
-    index.insert(r"fx\player\shield_down", &tone_bytes(256, value));
+    index.insert(r"fx\ui\shield_down", &tone_bytes(256, value));
     index.insert(r"music\theme", &tone_bytes(256, value / 2));
     let config = PadSpeakerConfig {
         enabled: true,

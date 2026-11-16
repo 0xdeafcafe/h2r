@@ -4,7 +4,8 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot, Weapon,
+    ActorState, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState, PlayerState,
+    PlayerStats, Snapshot, VehicleState, Weapon, World,
 };
 use crate::layout;
 
@@ -288,6 +289,7 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
     let weapon = held_weapon(guest, datum, body).ok().flatten();
+    let motion = motion(guest, kind, body, weapon);
     let team = guest
         .u16(body + layout::UNIT_TEAM)
         .ok()
@@ -322,14 +324,78 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         up,
         vehicle_definition,
         team,
+        motion,
     }))
 }
 
+/// A unit's movement and inventory state; each field independently `None`
+/// when its read faults or reads as nonsense.
+fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion {
+    let velocity = vector(guest, body + layout::BODY_VELOCITY)
+        .ok()
+        .filter(|v| v.iter().all(|c| c.is_finite()))
+        .unwrap_or_default();
+    let crouch = guest
+        .f32(body + layout::UNIT_CROUCH)
+        .ok()
+        .map(f64::from)
+        .filter(|c| (0.0..=1.0).contains(c));
+    let physics_mode = (kind == layout::OBJECT_TYPE_BIPED)
+        .then(|| guest.u8(body + layout::BIPED_PHYSICS_MODE).ok())
+        .flatten()
+        .filter(|m| (1..=7).contains(m));
+    let grenade = guest
+        .u8(body + layout::UNIT_GRENADE_INDEX)
+        .ok()
+        .map(|g| g as i8)
+        .filter(|g| (0..2).contains(g));
+    let grenades = (|| -> ReadResult<Option<u32>> {
+        let a = guest.u8(body + layout::UNIT_GRENADE_COUNTS)? as i8;
+        let b = guest.u8(body + layout::UNIT_GRENADE_COUNTS + 1)? as i8;
+        Ok((a >= 0 && b >= 0).then(|| a as u32 + b as u32))
+    })()
+    .ok()
+    .flatten();
+    let weapons = (|| -> ReadResult<[u32; 4]> {
+        let mut slots = [u32::MAX; 4];
+        for (i, slot) in slots.iter_mut().enumerate() {
+            *slot = guest.u32(body + layout::UNIT_WEAPONS + 4 * i as u32)?;
+        }
+        Ok(slots)
+    })()
+    .ok();
+    let magazine = weapon.and_then(|w| {
+        let (_, weapon_body) = object_body(guest, w.datum).ok().flatten()?;
+        let reserve = guest
+            .u16(weapon_body + layout::WEAPON_MAGAZINE_RESERVE)
+            .ok()? as i16;
+        let loaded = guest
+            .u16(weapon_body + layout::WEAPON_MAGAZINE_LOADED)
+            .ok()? as i16;
+        Some((reserve, loaded))
+    });
+    Motion {
+        velocity,
+        crouch,
+        physics_mode,
+        grenade,
+        grenades,
+        weapons,
+        magazine,
+    }
+}
+
 /// Every live AI-controlled biped: object type biped, an actor datum at
-/// `+0x12c`, no player at `+0x13c`, and not body-depleted. Reads the header
-/// table once (12 bytes a slot up to the high-water mark) and only the
-/// bipeds' bodies; a fault on one biped skips it.
+/// `+0x12c`, no player at `+0x13c`, and not body-depleted.
 pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
+    Ok(world(guest)?.actors)
+}
+
+/// One pass over the object header table (12 bytes a slot up to the
+/// high-water mark, at most [`layout::OBJECT_CAPACITY`]): AI bipeds, every
+/// vehicle (occupied when any biped's parent is it) and every machine. Only
+/// those objects' bodies are read; a fault on one object skips it.
+pub fn world(guest: &Guest) -> ReadResult<World> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let high_water = guest
         .u32(array + layout::DATUM_HIGH_WATER)?
@@ -337,32 +403,121 @@ pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
     let data = ptr(guest, array + layout::DATUM_DATA)?;
     let mut headers = vec![0; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
     guest.read_bytes(data, &mut headers, 1)?;
-    let mut out = Vec::new();
+    let mut out = World::default();
+    let mut ridden = BTreeSet::new();
     const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
     for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
         let salt = u16::from_le_bytes([header[0], header[1]]);
         let at = layout::OBJECT_BODY as usize;
         let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        if salt == 0
-            || header[layout::OBJECT_TYPE as usize] != layout::OBJECT_TYPE_BIPED
-            || body == 0
-        {
+        let kind = header[layout::OBJECT_TYPE as usize];
+        if salt == 0 || body == 0 {
             continue;
         }
         let datum = (u32::from(salt) << 16) | slot as u32;
-        let ai = || -> ReadResult<bool> {
-            Ok(guest.u32(body + layout::UNIT_ACTOR)? != u32::MAX
-                && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX
-                && guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED == 0)
-        };
-        if !ai().unwrap_or(false) {
-            continue;
-        }
-        if let Ok(Some(object)) = object(guest, datum) {
-            out.push(ActorState { datum, object });
+        match kind {
+            layout::OBJECT_TYPE_BIPED => {
+                if let Ok(parent) = guest.u32(body + layout::BODY_PARENT)
+                    && parent != u32::MAX
+                {
+                    ridden.insert(parent);
+                }
+                let ai = || -> ReadResult<bool> {
+                    Ok(guest.u32(body + layout::UNIT_ACTOR)? != u32::MAX
+                        && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX
+                        && guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED
+                            == 0)
+                };
+                if !ai().unwrap_or(false) {
+                    continue;
+                }
+                if let Ok(Some(object)) = object(guest, datum) {
+                    out.actors.push(ActorState { datum, object });
+                }
+            }
+            layout::OBJECT_TYPE_VEHICLE => {
+                if let Ok((definition, [pos, forward, up])) = transform(guest, body) {
+                    out.vehicles.push(VehicleState {
+                        datum,
+                        definition,
+                        pos,
+                        forward,
+                        up,
+                        occupied: false,
+                    });
+                }
+            }
+            layout::OBJECT_TYPE_MACHINE => {
+                let Ok((definition, [pos, forward, up])) = transform(guest, body) else {
+                    continue;
+                };
+                let placement = guest
+                    .u16(body + layout::BODY_PLACEMENT_INDEX)
+                    .ok()
+                    .filter(|p| (*p as i16) >= 0);
+                let position = guest
+                    .f32(body + layout::DEVICE_POSITION)
+                    .ok()
+                    .map(f64::from)
+                    .filter(|p| (0.0..=1.0).contains(p));
+                out.machines.push(MachineState {
+                    datum,
+                    definition,
+                    placement,
+                    pos,
+                    forward,
+                    up,
+                    position,
+                });
+            }
+            _ => {}
         }
     }
+    for v in &mut out.vehicles {
+        v.occupied = ridden.contains(&v.datum);
+    }
     Ok(out)
+}
+
+/// An object's definition and its own transform (parent-relative when it
+/// has a parent).
+fn transform(guest: &Guest, body: u32) -> ReadResult<(Option<u32>, [[f64; 3]; 3])> {
+    let definition = Some(guest.u32(body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
+    Ok((
+        definition,
+        [
+            vector(guest, body + layout::BODY_POSITION)?,
+            vector(guest, body + layout::BODY_FORWARD)?,
+            vector(guest, body + layout::BODY_UP)?,
+        ],
+    ))
+}
+
+/// The active structure BSP index, `None` when negative.
+pub fn active_bsp(guest: &Guest) -> ReadResult<Option<u32>> {
+    let globals = ptr(guest, layout::GAME_GLOBALS_PTR)?;
+    let bsp = guest.u16(globals + layout::GLOBALS_ACTIVE_BSP)? as i16;
+    Ok(u32::try_from(bsp).ok())
+}
+
+/// What the damage hook records: the report at `report` for `victim`, with
+/// the victim's position (its own `+0x64`) when it is a live object.
+pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
+    let pos = match object_body(guest, victim)? {
+        Some((_, body)) => Some(vector(guest, body + layout::BODY_POSITION)?)
+            .filter(|p| p.iter().all(|c| c.is_finite())),
+        None => None,
+    };
+    Ok(HitRecord {
+        code: guest.u8(report + layout::REPORT_CODE)?,
+        effect: guest.u32(report + layout::REPORT_EFFECT)?,
+        owner_player: guest.u32(report + layout::REPORT_OWNER_PLAYER)?,
+        owner_object: guest.u32(report + layout::REPORT_OWNER_OBJECT)?,
+        victim,
+        pos,
+        body: guest.f32(report + layout::REPORT_BODY)?,
+        shield: guest.f32(report + layout::REPORT_SHIELD)?,
+    })
 }
 
 pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
@@ -381,6 +536,10 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         objects,
         shots: Default::default(),
         actors: Vec::new(),
+        vehicles: Vec::new(),
+        machines: Vec::new(),
+        bsp: active_bsp(guest).ok().flatten(),
+        hits: Vec::new(),
     })
 }
 
@@ -589,6 +748,26 @@ pub(crate) mod fixture {
             .unwrap();
         guest
             .set_f32(body + super::layout::BODY_FORWARD + 4, 0.0)
+            .unwrap();
+    }
+
+    /// A machine at `slot`: placed by the scenario at `placement` (or not,
+    /// with -1), device position `position`.
+    pub fn put_machine(guest: &mut Guest, slot: u32, placement: i16, position: f32) {
+        put_object(guest, slot, u32::MAX);
+        let header = OBJECT_DATA + slot * super::layout::OBJECT_HEADER_SIZE;
+        guest
+            .set_u8(
+                header + super::layout::OBJECT_TYPE,
+                super::layout::OBJECT_TYPE_MACHINE,
+            )
+            .unwrap();
+        let body = BODY + slot * 0x1000;
+        guest
+            .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
+            .unwrap();
+        guest
+            .set_f32(body + super::layout::DEVICE_POSITION, position)
             .unwrap();
     }
 
@@ -1070,5 +1249,148 @@ mod tests {
             assert_eq!(info.mode, "campaign");
             assert_eq!(info.difficulty.as_deref(), name, "{value}");
         }
+    }
+
+    #[test]
+    fn world_scan_finds_vehicles_machines_and_who_rides_what() {
+        let mut guest = fixture::memory();
+        fixture::put_vehicle(&mut guest, 1);
+        fixture::put_vehicle(&mut guest, 2);
+        fixture::put_actor(&mut guest, 3, 3, [1.0, 2.0, 3.0]);
+        // The actor drives vehicle 2; vehicle 1 is empty.
+        guest
+            .set_u32(
+                fixture::BODY + 3 * 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(2),
+            )
+            .unwrap();
+        fixture::put_machine(&mut guest, 4, 7, 0.25);
+        fixture::put_machine(&mut guest, 5, -1, 3.0);
+        let world = world(&guest).unwrap();
+        assert_eq!(world.actors.len(), 1);
+        let occupied: Vec<_> = world
+            .vehicles
+            .iter()
+            .map(|v| (v.datum, v.occupied))
+            .collect();
+        assert_eq!(
+            occupied,
+            [
+                (fixture::object_datum(1), false),
+                (fixture::object_datum(2), true)
+            ]
+        );
+        assert_eq!(world.vehicles[0].pos, [10.0, 20.0, 30.0]);
+        assert_eq!(world.machines.len(), 2);
+        assert_eq!(world.machines[0].placement, Some(7));
+        assert_eq!(world.machines[0].position, Some(0.25));
+        assert_eq!(world.machines[1].placement, None, "not placed");
+        assert_eq!(world.machines[1].position, None, "not a 0..1 position");
+        assert_eq!(world.machines[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn unit_motion_fields() {
+        let mut guest = fixture::memory();
+        let unit = fixture::object_datum(1);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        let body = fixture::BODY + 0x1000;
+        guest.set_f32(body + layout::UNIT_CROUCH, 0.75).unwrap();
+        guest.set_u8(body + layout::BIPED_PHYSICS_MODE, 2).unwrap();
+        guest
+            .set_f32(body + layout::BODY_VELOCITY + 8, 0.5)
+            .unwrap();
+        guest.set_u8(body + layout::UNIT_GRENADE_INDEX, 1).unwrap();
+        guest.set_u8(body + layout::UNIT_GRENADE_COUNTS, 2).unwrap();
+        guest
+            .set_u8(body + layout::UNIT_GRENADE_COUNTS + 1, 1)
+            .unwrap();
+        // A held weapon with a magazine.
+        fixture::put_object(&mut guest, 2, unit);
+        guest
+            .set_u8(
+                fixture::OBJECT_DATA + 2 * layout::OBJECT_HEADER_SIZE + layout::OBJECT_TYPE,
+                layout::OBJECT_TYPE_WEAPON,
+            )
+            .unwrap();
+        let weapon = fixture::BODY + 2 * 0x1000;
+        guest
+            .set_u32(weapon + layout::BODY_DEFINITION, 0xe000_0001)
+            .unwrap();
+        guest
+            .set_u16(weapon + layout::WEAPON_MAGAZINE_RESERVE, 96)
+            .unwrap();
+        guest
+            .set_u16(weapon + layout::WEAPON_MAGAZINE_LOADED, 32)
+            .unwrap();
+        guest.set_u8(body + layout::UNIT_WEAPON_INDEX, 0).unwrap();
+        guest
+            .set_u32(body + layout::UNIT_WEAPONS, fixture::object_datum(2))
+            .unwrap();
+        for i in 1..4 {
+            guest
+                .set_u32(body + layout::UNIT_WEAPONS + 4 * i, u32::MAX)
+                .unwrap();
+        }
+        let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(m.crouch, Some(0.75));
+        assert_eq!(m.physics_mode, Some(2));
+        assert_eq!(m.velocity, [0.0, 0.0, 0.5]);
+        assert_eq!(m.grenade, Some(1));
+        assert_eq!(m.grenades, Some(3));
+        assert_eq!(m.magazine, Some((96, 32)));
+        assert_eq!(
+            m.weapons,
+            Some([fixture::object_datum(2), u32::MAX, u32::MAX, u32::MAX])
+        );
+        // Out-of-range values read as unknown.
+        guest.set_f32(body + layout::UNIT_CROUCH, 7.0).unwrap();
+        guest
+            .set_u8(body + layout::BIPED_PHYSICS_MODE, 0x40)
+            .unwrap();
+        guest
+            .set_u8(body + layout::UNIT_GRENADE_INDEX, 0xff)
+            .unwrap();
+        let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!((m.crouch, m.physics_mode, m.grenade), (None, None, None));
+    }
+
+    #[test]
+    fn active_bsp_and_damage_reports() {
+        let mut guest = fixture::memory();
+        guest
+            .set_u16(fixture::GLOBALS + layout::GLOBALS_ACTIVE_BSP, 2)
+            .unwrap();
+        assert_eq!(active_bsp(&guest).unwrap(), Some(2));
+        guest
+            .set_u16(fixture::GLOBALS + layout::GLOBALS_ACTIVE_BSP, 0xffff)
+            .unwrap();
+        assert_eq!(active_bsp(&guest).unwrap(), None);
+
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        let report = 0x1f0000;
+        guest
+            .set_u8(report + layout::REPORT_CODE, 0x80 | 10)
+            .unwrap();
+        guest
+            .set_u32(report + layout::REPORT_EFFECT, 0xe100_0005)
+            .unwrap();
+        guest
+            .set_u32(report + layout::REPORT_OWNER_PLAYER, 0x8002_0002)
+            .unwrap();
+        guest
+            .set_u32(report + layout::REPORT_OWNER_OBJECT, 0x9009_0009)
+            .unwrap();
+        guest.set_f32(report + layout::REPORT_BODY, 0.25).unwrap();
+        guest.set_f32(report + layout::REPORT_SHIELD, 0.5).unwrap();
+        let hit = hit(&guest, report, fixture::object_datum(1)).unwrap();
+        assert_eq!(hit.code & 0x3f, 10);
+        assert_eq!(hit.effect, 0xe100_0005);
+        assert_eq!(hit.owner_player, 0x8002_0002);
+        assert_eq!(hit.owner_object, 0x9009_0009);
+        assert_eq!((hit.body, hit.shield), (0.25, 0.5));
+        assert!(hit.pos.is_some());
+        let gone = super::hit(&guest, report, 0x1234_0077).unwrap();
+        assert_eq!(gone.pos, None, "a dead datum has no position");
     }
 }

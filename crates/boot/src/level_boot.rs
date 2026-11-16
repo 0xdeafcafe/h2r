@@ -30,8 +30,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
-use runtime::dispatch::Dispatch;
-use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
@@ -54,11 +52,12 @@ pub const VARIANT_DEFAULTS: u32 = 0x0019_d220;
 /// The game's options check: stdcall `(options)`, `ret 4`, AL 1 when valid.
 pub const OPTIONS_CHECK: u32 = 0x0013_8180;
 /// Game activation after the scenario's cache is loaded; options in EAX,
-/// returns AL (1 once the map and its first BSP are in).
-pub const GAME_ACTIVATE: u32 = 0x0018_f000;
+/// returns AL (1 once the map and its first BSP are in). Hooked through the
+/// `game` bridge.
+pub const GAME_ACTIVATE: u32 = feature::points::GAME_ACTIVATE.base;
 /// Pointer to the game globals: the active options at `+8`, the "map
 /// active" byte at `+0x1120` (activation sets it).
-pub const GAME_GLOBALS: u32 = 0x004e_6948;
+pub const GAME_GLOBALS: u32 = feature::points::GAME_GLOBALS.base;
 
 /// Game options (`0x1118` bytes).
 pub const OPTIONS_SIZE: u32 = 0x1118;
@@ -104,9 +103,7 @@ const MP_BLOCK: usize = 0x10;
 const MP_LEVEL_SIZE: usize = 0xc64;
 const MP_LEVEL_PATH: usize = 0xb4c;
 
-/// Our guest memory: the alias the activation wrapper calls, then the
-/// options we build.
-const SHADOW: u32 = 0xa2f4_0000;
+/// The options we build.
 const BUFFER: u32 = 0xa2f4_1000;
 
 // ---- requests ----
@@ -540,96 +537,71 @@ fn short(path: &str) -> &str {
 
 // ---- hooks ----
 
-/// Installs the main-menu replacement when `req` is given, and the
-/// activation mark when `req` is given or `watch` (`H2_PERF_FROM=level`).
-pub fn install(rt: &runtime::Runtime, req: Option<Request>, watch: bool) -> Result<()> {
+/// Installs the main-menu replacement when `req` is given, and adds the
+/// activation mark to `registry` when `req` is given or `watch`
+/// (`H2_PERF_FROM=level`).
+pub fn install(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    req: Option<Request>,
+    watch: bool,
+) -> Result<()> {
     if req.is_none() && !watch {
         return Ok(());
     }
-    let original = |a: u32| {
-        let o = rt.resolve_original(a).map(Arc::new);
-        if o.is_none() {
-            eprintln!("level boot: no generated entry at {a:#x}; hook skipped");
-        }
-        o
-    };
-    let menu = req.as_ref().and_then(|_| original(REQUEST_MAINMENU));
-    let activate = original(GAME_ACTIVATE);
-    {
-        let mut mem = rt.memory();
-        mem.map_zeroed(SHADOW, 0x1000, Permissions::RX)?;
-        mem.map_zeroed(BUFFER, 0x2000, Permissions::RW)?;
-    }
     let req = req.map(Arc::new);
+    registry
+        .add(&LoadedMark(req.clone()))
+        .map_err(|e| anyhow::anyhow!("level boot: {e}"))?;
+    let Some(req) = req else { return Ok(()) };
+    let Some(menu) = rt.resolve_original(REQUEST_MAINMENU).map(Arc::new) else {
+        eprintln!("level boot: no generated entry at {REQUEST_MAINMENU:#x}; hook skipped");
+        return Ok(());
+    };
+    rt.memory().map_zeroed(BUFFER, 0x2000, Permissions::RW)?;
     rt.edit_dispatch(|d| {
-        if let (Some(o), Some(r)) = (menu, req.clone()) {
-            let taken = AtomicBool::new(false);
-            d.register_override(REQUEST_MAINMENU, "level-boot:menu", move |cpu, ctx, _| {
-                if taken.swap(true, Ordering::SeqCst) {
-                    return Ok(o.invoke(cpu, ctx, REQUEST_MAINMENU));
-                }
-                request_level(cpu, ctx, Arc::clone(&r))
-            });
-        }
-        if let Some(o) = activate {
-            install_activate(d, GAME_ACTIVATE, SHADOW, o, req);
-        }
+        let taken = AtomicBool::new(false);
+        d.register_override(REQUEST_MAINMENU, "level-boot:menu", move |cpu, ctx, _| {
+            if taken.swap(true, Ordering::SeqCst) {
+                return Ok(menu.invoke(cpu, ctx, REQUEST_MAINMENU));
+            }
+            request_level(cpu, ctx, Arc::clone(&req))
+        });
     });
     Ok(())
 }
 
-/// The activation mark on `at` (the game-activate function): whatever ran
-/// there before, then the check for the wanted level. Live telemetry
-/// observes the same function and installs first; a plain override here
-/// would displace it, so when `at` already has an override, `shadow` runs
-/// that override (which runs the generated original) instead of the
-/// original itself. Returns the name of the override chained onto.
-pub(crate) fn install_activate(
-    d: &mut Dispatch,
-    at: u32,
-    shadow: u32,
-    original: Arc<OriginalHandler>,
-    req: Option<Arc<Request>>,
-) -> Option<String> {
-    let below_name = d.override_name(at).map(str::to_owned);
-    let below = match d.override_handler(at) {
-        Some(h) => Arc::new(h),
-        None => original,
-    };
-    if let Some(n) = &below_name {
-        eprintln!("level boot: activation mark chained after {n:?} on {at:#x}");
+/// The activation mark (`level-boot`), a listener on the `game` bridge's
+/// start: the first time a game starts, if it is the wanted level (or any
+/// level with no request), the present count is [`loaded_at`]. It shares
+/// activation with Live telemetry's match start.
+pub struct LoadedMark(pub Option<Arc<Request>>);
+
+impl feature::Feature for LoadedMark {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("level-boot", "Level boot loaded mark").doc("docs/level-boot.md")
     }
-    d.register_override(shadow, "level-boot:activate-original", move |cpu, ctx, _| {
-        Ok(below.invoke(cpu, ctx, at))
-    });
-    d.register_override(at, "level-boot:activate", move |cpu, ctx, _| {
-        let req = req.clone();
-        let rt = Arc::clone(ctx.runtime());
-        let mut mem = rt.memory();
-        let ret_pc = mem.u32(cpu.esp)?;
-        cpu.esp = cpu.esp.wrapping_add(4);
-        ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
-            if cpu.eax & 0xff != 0 && loaded_at().is_none() {
-                let mem = ctx.runtime().memory();
-                match active_game(&*mem) {
-                    Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
-                        let n = crate::d3d_diag::presents();
-                        LOADED_AT.store(n, Ordering::Relaxed);
-                        eprintln!("level boot: {} loaded at present {n}", short(&path));
-                    }
-                    Some((mode, path)) if req.is_some() => {
-                        eprintln!(
-                            "level boot: {} activated (mode {mode}), not the requested level",
-                            short(&path)
-                        )
-                    }
-                    _ => {}
-                }
+    fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
+        let req = self.0.clone();
+        b.game().on_start("loaded mark", move |o| {
+            if loaded_at().is_some() {
+                return;
             }
-            Ok(TransferAbi::ret(ret_pc))
-        })
-    });
-    below_name
+            let found = active_game(&*o.guest());
+            match found {
+                Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
+                    let n = crate::d3d_diag::presents();
+                    LOADED_AT.store(n, Ordering::Relaxed);
+                    eprintln!("level boot: {} loaded at present {n}", short(&path));
+                }
+                Some((mode, path)) if req.is_some() => {
+                    eprintln!("level boot: {} activated (mode {mode}), not the requested level", short(&path))
+                }
+                _ => {}
+            }
+        });
+        Ok(())
+    }
 }
 
 /// In place of the first `request_mainmenu(reason)`: run [`steps`] on the
@@ -1108,60 +1080,5 @@ mod tests {
         let e = from_vars(disc, Some("03a_oldmombasa"), Some("hard")).unwrap_err().to_string();
         assert!(e.contains("unknown difficulty"), "{e}");
         assert!(from_vars(disc, Some("03a_oldmombasa"), None).is_err(), "no disc");
-    }
-
-    /// Live telemetry observes game activation and installs first; the
-    /// level boot's mark on the same function must run it, not displace it.
-    /// Synthetic: the fixture module's leaf (`eax = 41; ret`) stands in for
-    /// the activation function.
-    #[test]
-    fn the_activation_mark_chains_after_an_earlier_observer() {
-        use runtime::{Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
-        use std::sync::atomic::AtomicUsize;
-        const LEAF: u32 = 0x40_2000;
-        const SHADOW_AT: u32 = 0x40_5000;
-        const FRAME: u32 = 0x60_0e00;
-
-        let mut d = Dispatch::default();
-        unsafe {
-            d.register_generated_module(
-                &runtime_test_probe::h2gen_fixture_module,
-                runtime_test_probe::h2gen_fixture_module_abi_version,
-            )
-            .unwrap();
-        }
-        let seen = Arc::new(AtomicUsize::new(0));
-        assert!(d.override_handler(LEAF).is_none(), "nothing overrides the leaf yet");
-        let mut g = Guest::new();
-        g.map_zeroed(0x60_0000, 0x1000, Permissions::RW).unwrap();
-        g.map_zeroed(0x40_0000, 0x5000, Permissions::RX).unwrap();
-        g.map_zeroed(SHADOW_AT, 0x1000, Permissions::RX).unwrap();
-        let rt = Runtime::new(g, d);
-        let original = Arc::new(rt.resolve_original(LEAF).expect("the fixture leaf"));
-        // An observer as telemetry installs it: count, then the original.
-        let observer = Arc::clone(&seen);
-        let o = Arc::clone(&original);
-        let chained = rt.edit_dispatch(|d| {
-            d.register_override(LEAF, "live telemetry observer", move |cpu, ctx, sel| {
-                observer.fetch_add(1, Ordering::SeqCst);
-                Ok(o.invoke(cpu, ctx, sel))
-            });
-            install_activate(d, LEAF, SHADOW_AT, Arc::clone(&original), None)
-        });
-        assert_eq!(chained.as_deref(), Some("live telemetry observer"));
-        rt.edit_dispatch(|d| assert_eq!(d.override_name(LEAF), Some("level-boot:activate")));
-
-        rt.memory().set_u32(FRAME, HARNESS_EXIT).unwrap();
-        let mut cpu = runtime::CpuAbi { esp: FRAME, ..Default::default() };
-        let mut ctx = runtime::ExecCtx::new(rt.clone(), 1);
-        let t = Runner::default().run(&mut cpu, &mut ctx, LEAF);
-        assert!(matches!(ctx.event(t.event_id), Some(Event::HarnessExit)), "{:?}", ctx.event(t.event_id));
-        assert_eq!(cpu.eax, 41, "the original ran and its result came back");
-        assert_eq!(cpu.esp, FRAME + 4);
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "the earlier observer still runs");
-
-        // With nothing there first, the mark runs the original directly.
-        let mut d = Dispatch::default();
-        assert_eq!(install_activate(&mut d, LEAF, SHADOW_AT, Arc::clone(&original), None), None);
     }
 }

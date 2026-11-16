@@ -2261,6 +2261,102 @@ fn set_output_buffer_routes_a_stream_into_a_mix_in() {
     assert!(rig.render(400).iter().all(|&v| v == 0.0));
 }
 
+const STREAM_SET_MIX_BIN_VOLUMES: u32 = 0x0037b81d;
+
+/// Halo 2's sound channel update (`0x21fa80`) for a stream sent to a mix-in
+/// (`SetOutputBuffer` at `0x21f911`): the distance-attenuated gain arrives as
+/// `SetMixBinVolumes` on the send bin, or, for the panned path, as the
+/// volumes of the speaker pairs it passes to `SetMixBins` (`0x220136`).
+/// `far` is the attenuation in millibels; `dull` adds the low-pass Halo's
+/// filter builder (`0x2201f0`) can set. Returns the 2 kHz tone level.
+fn sent_stream_level(far_mb: i32, dull: bool, panned: bool) -> f64 {
+    let mut rig = Rig::new();
+    let mix = mix_in(&mut rig, 0x17);
+    let s = mono_stream(&mut rig);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    if panned {
+        // The panner's speaker pairs; the send itself is turned off.
+        let pairs = mix_bins(&mut rig, &[(0, far_mb), (1, far_mb)]);
+        assert_eq!(rig.call(STREAM_SET_MIX_BINS, &[s, pairs]).eax, S_OK);
+        let off = mix_bins(&mut rig, &[(0x17, -10_000)]);
+        assert_eq!(rig.call(STREAM_SET_MIX_BIN_VOLUMES, &[s, off]).eax, S_OK);
+    } else {
+        let v = mix_bins(&mut rig, &[(0x17, far_mb)]);
+        assert_eq!(rig.call(STREAM_SET_MIX_BIN_VOLUMES, &[s, v]).eax, S_OK);
+    }
+    if dull {
+        let d = dwords(
+            &mut rig,
+            &[1, 0, audio::fx::hz_to_coeff(500.0), 46341, 0, 0],
+        );
+        assert_eq!(rig.call(STREAM_SET_FILTER, &[s, d]).eax, S_OK);
+    }
+    rig.process(s, &sine16(2000.0, RATE as usize), 0);
+    let out = rig.render(RATE as usize);
+    tone_level(&out, RATE as usize / 2)
+}
+
+#[test]
+fn a_far_stream_sent_to_a_mix_in_is_quieter_and_duller() {
+    // Up close: the send at full level comes through the mix-in unchanged.
+    let near = sent_stream_level(0, false, false);
+    assert!((near - 1.0).abs() < 0.05, "{near}");
+    // Far away: the send volume is the distance attenuation (it used to be
+    // dropped, so every sent sound played at full level).
+    let far = sent_stream_level(-2400, false, false);
+    assert!((db(far / near) + 24.0).abs() < 0.5, "{} dB", db(far / near));
+    // With the low-pass as well, the 2 kHz content falls much further.
+    let far_dull = sent_stream_level(-2400, true, false);
+    assert!(db(far_dull / far) < -15.0, "{} dB", db(far_dull / far));
+}
+
+#[test]
+fn a_stream_with_an_output_buffer_still_plays_its_panned_speaker_bins() {
+    // SetMixBins after SetOutputBuffer keeps the game's speaker pairs (with
+    // their volumes) alongside the send, as the library does (`0x37bc89`).
+    let near = sent_stream_level(0, false, true);
+    assert!((near - 1.0).abs() < 0.05, "{near}");
+    let far = sent_stream_level(-1800, false, true);
+    assert!((db(far / near) + 18.0).abs() < 0.5, "{} dB", db(far / near));
+}
+
+#[test]
+fn stream_voice_properties_show_the_send_after_set_output_buffer() {
+    let mut rig = Rig::new();
+    let mix = mix_in(&mut rig, 0x17);
+    let s = mono_stream(&mut rig);
+    rig.process(s, &pcm16(&[100; 64]), 0);
+    let out = rig.scratch(0x5c);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    rig.call(GET_VOICE_PROPS_STREAM, &[s, out]);
+    assert_eq!(&voice_props(&rig, out)[..3], &[1, 0x17, 0]);
+    let pairs = mix_bins(&mut rig, &[(6, -700), (7, -900)]);
+    rig.call(STREAM_SET_MIX_BINS, &[s, pairs]);
+    let v = mix_bins(&mut rig, &[(0x17, -300), (9, -5)]);
+    rig.call(STREAM_SET_MIX_BIN_VOLUMES, &[s, v]);
+    rig.call(GET_VOICE_PROPS_STREAM, &[s, out]);
+    // Bin 9's volume is kept but it is not routed.
+    assert_eq!(
+        &voice_props(&rig, out)[..7],
+        &[
+            3,
+            6,
+            (-700i32) as u32,
+            7,
+            (-900i32) as u32,
+            0x17,
+            (-300i32) as u32
+        ]
+    );
+    // Null takes the send out and leaves the speaker pairs.
+    rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, 0]);
+    rig.call(GET_VOICE_PROPS_STREAM, &[s, out]);
+    assert_eq!(
+        &voice_props(&rig, out)[..5],
+        &[2, 6, (-700i32) as u32, 7, (-900i32) as u32]
+    );
+}
+
 #[test]
 fn set_i3dl2_source_occlusion_on_a_mix_in() {
     let level = |occlusion_hf: i32, direct: i32| {
