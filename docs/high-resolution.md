@@ -445,8 +445,8 @@ part of the first design.
 
 ### Lazy reference (built)
 
-`ScaledBackend::set_lazy_reference`, on by default (`H2_LAZY_REFERENCE=0`
-turns it off). The reference's draws and whole clears into scaled surfaces
+`ScaledBackend::set_lazy_reference`, off by default (`H2_LAZY_REFERENCE=1`
+turns it on; see the measurements below for why it is not on yet). The reference's draws and whole clears into scaled surfaces
 (the frame buffers, the depth buffer and frame-sized targets: everything
 the view draws itself) are queued instead of run:
 

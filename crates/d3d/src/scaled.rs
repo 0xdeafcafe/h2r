@@ -43,8 +43,8 @@
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.
 //!
-//! **Lazy reference** ([`ScaledBackend::set_lazy_reference`], on by
-//! default): the reference's draws and whole clears into scaled surfaces
+//! **Lazy reference** ([`ScaledBackend::set_lazy_reference`],
+//! `H2_LAZY_REFERENCE=1`): the reference's draws and whole clears into scaled surfaces
 //! are queued until something needs those surfaces, and a whole clear
 //! drops queued work nothing read, so a frame nobody reads back is drawn
 //! once, at scale.
@@ -392,10 +392,10 @@ impl<R: Backend> Deferred<R> {
     }
 }
 
-/// `H2_LAZY_REFERENCE`: `0`, `off` or `false` turn the lazy reference off;
-/// it is on otherwise.
+/// `H2_LAZY_REFERENCE`: `1`, `on` or `true` turn the lazy reference on;
+/// it is off otherwise (see [`ScaledBackend::set_lazy_reference`] for why).
 pub fn lazy_reference_from(value: Option<&str>) -> bool {
-    !matches!(value, Some("0" | "off" | "false"))
+    matches!(value, Some("1" | "on" | "true"))
 }
 
 /// A scaled surface of the view: the handle the device holds (`original`),
@@ -459,8 +459,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         })
     }
 
-    /// The lazy reference (on by default; `H2_LAZY_REFERENCE=0` turns it
-    /// off). The reference's draws and whole clears into scaled surfaces
+    /// The lazy reference (off by default; `H2_LAZY_REFERENCE=1` turns it
+    /// on: it saves render-thread time only when frames are not read back,
+    /// and costs a little per draw when they are; `scale_bench`). The reference's draws and whole clears into scaled surfaces
     /// (the frame buffers and frame-sized targets, which the view draws
     /// itself) are queued instead of run. Every other reference call runs
     /// the queue first, in order, so whatever the guest reads, or the
