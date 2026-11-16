@@ -519,3 +519,59 @@ keeps the last-dirtied page): each break fails one of them.
 H2_ACCESS_COUNT=1 H2_PERF_KIND=wide cargo test -p emit --release --test perf generated_runtime_benchmark -- --ignored --nocapture
 cargo test -p emit --test perf -- inline_accesses_match a_new_hold
 ```
+
+## Register homes (2026-11-16)
+
+Every handler used to load all eight GPRs, EFLAGS and the defined mask into
+locals on entry and store all ten back at every exit, and a direct call
+stored all ten before invoking the callee and reloaded them after. A value
+held across the handler's out-of-line calls (the memory helpers, the direct
+callee) also occupies a callee-saved host register or a stack slot for the
+whole handler, whether the guest code touches the register or not.
+
+Now (`emit::c::homes`, on unless `H2_REG_HOMES=0`):
+
+- A handler keeps in locals only the registers it can write (a partial
+  write such as `AL` counts; EFLAGS with its mask when any flag is read or
+  written, a REP runs or an atomic runs; ESP always). It reads every other
+  register from `CpuAbi` where it is used and never loads, spills or
+  reloads it. Nothing in the handler assigns it, so `CpuAbi` is current at
+  every point, including after a direct callee or atomic changes it there.
+- A direct call or tail jump spills only the homed locals that may differ
+  from `CpuAbi` (`emit::c::dirty_at_exits`: a forward union over the local
+  CFG of what was assigned since entry, the last inline return or the last
+  atomic). The shared epilogue still stores every homed local.
+
+What the runtime sees at every exit is unchanged
+(`crates/emit/RUNTIME-CONTRACT.md` §4, "Register homes"). A handler that
+never touches EFLAGS still sets its bit 1 on the way out.
+
+Static effect, measured before the inline loads and stores below landed,
+on a sample of the retail image (every 37th shard plus the
+one holding `0x2dc220`: 27 shards, 507 handlers), compiled with the image's
+default switches and no debug info, homes off against on
+(`cargo test -p emit --release --test homes retail_sample -- --ignored --nocapture`):
+
+| | `__text` | loads (`ldr`/`ldur`/`ldp`) | stores (`str`/`stur`/`stp`) |
+|---|---:|---:|---:|
+| `-O1` | 7,994,536 → 7,943,192 B (−0.64%) | 371,986 → 363,709 (−2.2%) | 300,089 → 290,151 (−3.3%) |
+| `-O2` | 6,086,616 → 6,010,240 B (−1.25%) | 329,644 → 318,681 (−3.3%) | 190,146 → 184,841 (−2.8%) |
+
+Homes alone (before the per-call spill masks) gave −0.51% / −0.75% of
+`__text`. About 25 instructions a handler at `-O1`, most of them in the
+prologue, the epilogue and around direct calls, which run on every
+invocation; the bulk of each handler is memory-access code this does not
+touch. In the whole image 28% of handlers' register loads and 31% of their
+exit stores go away (by the GPRs and flags each handler writes; 18,691
+handlers). The synthetic `call` benchmark did not separate the two on a
+loaded machine (minimums 37-39 ns against 39 ns, medians within noise).
+
+Proof: the differential suite (`tests/differential.rs`, the interpreter on
+unoptimised IR against the C, now with `homes-*` fixtures for partial
+writes, faults after partial writes, flags across blocks, no flags at all
+and indirect jumps), the direct-call suite (`tests/direct.rs`: a callee
+writing registers its caller only reads or never touches, and a register
+changed round a loop reaching the next direct call, in all three modes),
+`tests/homes.rs` (what each statement keeps homed, the spill masks, and
+EFLAGS bit 1), and the retail entry path through generated C
+(`tests/entry.rs` with `H2_XBE`).

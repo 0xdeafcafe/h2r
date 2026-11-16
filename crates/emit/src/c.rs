@@ -4,7 +4,7 @@
 //!
 //! ```c
 //! TransferAbi h2fn_002d21c6(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {
-//!     H2_LOCALS();                  // registers and EFLAGS into locals
+//!     H2_LOCALS_HOMED(0x1f3u);      // written registers and EFLAGS into locals
 //!     switch (start) {              // validated entry/resume selector
 //!     case 0x002d21c6u: goto L_002d21c6;
 //!     case 0x002d2205u: goto L_002d2205;   // call continuation
@@ -16,10 +16,12 @@
 //! }
 //! ```
 //!
-//! Registers and flags live in locals for the whole handler. Every way out
-//! (transfer, fault, stop) sets the outgoing transfer and jumps to the one
-//! shared epilogue, which spills them to `CpuAbi`, so state is canonical
-//! whenever the runtime sees it. Memory goes through the ABI's checked
+//! Registers and flags the handler writes live in locals for the whole
+//! handler. Every way out (transfer, fault, stop) sets the outgoing
+//! transfer and jumps to the one shared epilogue, which spills them to
+//! `CpuAbi`, so state is canonical whenever the runtime sees it. A register
+//! the handler never writes has no local: it is read from `CpuAbi` where it
+//! is used, and never loaded, spilled or reloaded (see [`homes`]). Memory goes through the ABI's checked
 //! the checked helpers or the opt-in gated inline RAM path (`h2fastmem.h`). XMM and FP
 //! state are read and written in `CpuAbi` directly. The inline path's gate
 //! is held across consecutive accesses and dropped (`H2_GATE_DROP`) before
@@ -49,7 +51,7 @@
 //! into `fl`/`fd` only where something reads them and in the epilogue; see
 //! [`crate::lazy`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 
 use ir::{
@@ -74,6 +76,151 @@ pub struct OwnerShape<'a> {
     /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"). `None` emits
     /// every transfer for the runner.
     pub functions: Option<&'a BTreeSet<u32>>,
+    /// Keep only the registers the handler writes in locals ([`homes`]);
+    /// `false` keeps all eight and EFLAGS in locals, as before.
+    pub reg_homes: bool,
+}
+
+/// [`homes`] bit for EFLAGS and its defined mask (bits 0-7 are the GPRs in
+/// encoding order, [`Gpr::index`]).
+pub const HOME_FLAGS: u32 = 1 << 8;
+/// Every register and EFLAGS in locals.
+pub const HOME_ALL: u32 = 0x1ff;
+
+/// Which registers `f`'s handler keeps in C locals: those it can write,
+/// as a [`Gpr::index`] bit set plus [`HOME_FLAGS`].
+///
+/// A register outside the set is never assigned by the handler, so
+/// `CpuAbi` holds its current value at every point: on entry, across a
+/// direct call (the callee writes it there) and an atomic (the runtime
+/// writes it there). The handler reads it from `CpuAbi` where it is used
+/// and has nothing to load, spill or reload for it. A register inside the
+/// set is loaded on entry, spilled at every exit and before a direct call
+/// or atomic, and reloaded after them, exactly as before.
+///
+/// Partial writes (`AL`, `AH`, `AX`) read the rest of the register, so
+/// they count as writes of the whole register and keep it in a local.
+/// ESP is always kept: the direct-call macros read the local. EFLAGS is
+/// kept whenever any flag is read or written, any `Repeat` runs (it saves
+/// and restores EFLAGS and reads DF) and any atomic runs (the runtime
+/// writes the flags).
+pub fn homes(f: &IrFunction) -> u32 {
+    fn walk(list: &[Stmt], m: &mut u32) {
+        for s in list {
+            match s {
+                Stmt::WriteReg { reg, .. } => *m |= 1 << reg.index(),
+                Stmt::ReadFlag { .. }
+                | Stmt::WriteFlag { .. }
+                | Stmt::ReadEflags { .. }
+                | Stmt::WriteEflags { .. }
+                | Stmt::LazyFlags(_) => *m |= HOME_FLAGS,
+                Stmt::If { then, otherwise, .. } => {
+                    walk(then, m);
+                    walk(otherwise, m);
+                }
+                Stmt::Repeat { body, .. } => {
+                    // The C loop counts ECX and the bulk copy moves ESI/EDI.
+                    *m |= HOME_FLAGS | 1 << Gpr::Ecx.index() | 1 << Gpr::Esi.index() | 1 << Gpr::Edi.index();
+                    walk(body, m);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut m = 1 << Gpr::Esp.index();
+    for i in f.insns() {
+        walk(&i.stmts, &mut m);
+        if let Some(a) = &i.atomic {
+            m |= HOME_FLAGS;
+            if let Some((g, _)) = a.old {
+                m |= 1 << g.index();
+            }
+        }
+    }
+    m
+}
+
+/// Homed registers each statement list may assign (its locals change).
+fn assigned(list: &[Stmt]) -> u32 {
+    list.iter()
+        .map(|s| match s {
+            Stmt::WriteReg { reg, .. } => 1 << reg.index(),
+            Stmt::WriteFlag { .. } | Stmt::WriteEflags { .. } | Stmt::LazyFlags(_) => HOME_FLAGS,
+            Stmt::If { then, otherwise, .. } => assigned(then) | assigned(otherwise),
+            Stmt::Repeat { body, .. } => {
+                HOME_FLAGS | 1 << Gpr::Ecx.index() | 1 << Gpr::Esi.index() | 1 << Gpr::Edi.index() | assigned(body)
+            }
+            _ => 0,
+        })
+        .fold(0, |a, m| a | m)
+}
+
+/// The homed registers whose local may differ from `CpuAbi` just before
+/// each call or tail jump (by instruction PC): what a direct call has to
+/// spill before invoking its callee ([`homes`] keeps the rest in `CpuAbi`
+/// already).
+///
+/// A local and its `CpuAbi` field agree on entry (the handler loaded it),
+/// after a direct call returns inline or an atomic (both reload every
+/// homed local), and after any full spill. Only the statement that assigns
+/// a local makes them differ, so this is a forward union over the local
+/// CFG of [`assigned`] since the last of those points. Every start
+/// selector (entries, continuations, REP restarts, loop resumes) is
+/// entered with them agreeing, which adds nothing to the union.
+pub fn dirty_at_exits(f: &IrFunction, home: u32) -> BTreeMap<u32, u32> {
+    // Dirty at the end of each block, given dirty at its start; records
+    // the mask at each call or tail jump when `out` is given.
+    let walk = |b: &ir::IrBlock, mut dirty: u32, mut out: Option<&mut BTreeMap<u32, u32>>| {
+        for i in &b.insns {
+            if let Some(a) = &i.atomic {
+                // H2_ATOMIC spills and reloads every homed local; then the
+                // old value merges into its register.
+                dirty = a.old.map_or(0, |(g, _)| 1 << g.index());
+                continue;
+            }
+            dirty |= assigned(&i.stmts);
+            if matches!(i.control, Control::Call { .. } | Control::Jump { tail: true, .. })
+                && let Some(o) = out.as_deref_mut()
+            {
+                o.insert(i.pc, dirty & home);
+            }
+        }
+        dirty
+    };
+    let succ = |b: &ir::IrBlock| -> Vec<u32> {
+        let Some(last) = b.insns.last() else { return vec![] };
+        let local = |d: &Dest| (!d.tail).then_some(d.pc);
+        match &last.control {
+            Control::Next => vec![last.next_pc()],
+            Control::Jump { target: Target::Direct(t), tail: false, .. } => vec![*t],
+            Control::Branch { taken, fallthrough, .. } => local(taken).into_iter().chain(local(fallthrough)).collect(),
+            Control::Switch { cases, .. } => cases.iter().filter_map(local).collect(),
+            _ => vec![],
+        }
+    };
+    let mut dirty_in: BTreeMap<u32, u32> = f.blocks.keys().map(|&k| (k, 0)).collect();
+    loop {
+        let mut changed = false;
+        for b in f.blocks.values() {
+            let out = walk(b, dirty_in[&b.start], None);
+            for t in succ(b) {
+                if let Some(d) = dirty_in.get_mut(&t)
+                    && *d | out != *d
+                {
+                    *d |= out;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut masks = BTreeMap::new();
+    for b in f.blocks.values() {
+        walk(b, dirty_in[&b.start], Some(&mut masks));
+    }
+    masks
 }
 
 /// The C symbol of an owner's handler.
@@ -89,9 +236,13 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
     // With accounting a REP loop polls too, so it needs the poll's locals.
     let polled = !shape.loops.headers.is_empty()
         || (shape.accounting && f.insns().any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. }))));
+    let home = if shape.reg_homes { homes(f) } else { HOME_ALL };
+    let dirty = if shape.reg_homes { dirty_at_exits(f, home) } else { BTreeMap::new() };
     let mut e = Emitter {
         out: String::new(),
         shape,
+        home,
+        dirty,
         in_repeat: false,
         x87,
         polled,
@@ -141,6 +292,11 @@ fn rep_movs_width(body: &[Stmt]) -> Option<u32> {
 struct Emitter<'a> {
     out: String,
     shape: &'a OwnerShape<'a>,
+    /// Registers kept in locals ([`homes`]); the others are read from
+    /// `CpuAbi`.
+    home: u32,
+    /// [`dirty_at_exits`]: what each direct call or tail jump spills.
+    dirty: BTreeMap<u32, u32>,
     /// Emitting a `Repeat` body: exits restore the saved EFLAGS first.
     in_repeat: bool,
     /// The handler has x87 ops: it has the x87 locals and fail block.
@@ -312,7 +468,7 @@ impl Emitter<'_> {
             self.settle_fn(f.entry);
         }
         self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
-        self.line(1, "H2_LOCALS();");
+        self.line(1, format!("H2_LOCALS_HOMED({:#x}u);", self.home));
         if let Some(l) = &self.lazy {
             let slots: Vec<String> = (0..l.slots).map(|i| format!("lz{i} = 0")).collect();
             self.line(1, format!("uint32_t lzk = 0, lzm = 0; uint64_t {};", slots.join(", ")));
@@ -636,9 +792,15 @@ impl Emitter<'_> {
                     self.line(d, format!("{} t{} = {rhs};", ty(dst.width), dst.id));
                 }
                 Stmt::ReadReg { dst, reg, slice } => {
-                    let r = reg_name(*reg);
+                    // A register the handler never writes is current in
+                    // CpuAbi (`homes`).
+                    let r = if self.home & 1 << reg.index() != 0 {
+                        reg_name(*reg).to_string()
+                    } else {
+                        format!("cpu->{}", reg_name(*reg))
+                    };
                     let rhs = match slice {
-                        Slice::Full => r.to_string(),
+                        Slice::Full => r.clone(),
                         Slice::Low16 => format!("(uint16_t){r}"),
                         Slice::Low8 => format!("(uint8_t){r}"),
                         Slice::High8 => format!("(uint8_t)({r} >> 8)"),
@@ -842,6 +1004,11 @@ impl Emitter<'_> {
         }
     }
 
+    /// The homed locals a direct call or tail jump at `pc` must spill.
+    fn dirty_at(&self, pc: u32) -> u32 {
+        self.dirty.get(&pc).copied().unwrap_or(self.home)
+    }
+
     /// Whether `t` is a function entry of the module, so its handler may be
     /// invoked directly; records it for a prototype.
     fn direct_target(&mut self, t: u32) -> bool {
@@ -881,7 +1048,8 @@ impl Emitter<'_> {
             Control::Jump { target: Target::Direct(t), tail: true, .. } if self.direct_target(*t) => {
                 self.settle(lazy::ALL, d);
                 let spill = if self.x87 { "H2X87_SPILL()" } else { "(void)0" };
-                self.line(d, format!("H2_DJUMP({}, {t:#x}u, {spill});", symbol(*t)));
+                let dirty = self.dirty_at(pc);
+                self.line(d, format!("H2_DJUMP({}, {t:#x}u, {spill}, {dirty:#x}u);", symbol(*t)));
             }
             Control::Jump { target: Target::Direct(t), tail, .. } => {
                 self.line(d, Self::go(Dest { pc: *t, tail: *tail }));
@@ -914,10 +1082,11 @@ impl Emitter<'_> {
                 let (spill, reload) =
                     if self.x87 { ("H2X87_SPILL()", "H2X87_RELOAD()") } else { ("(void)0", "(void)0") };
                 let refresh = if self.polled { "H2_ACC_REFRESH()" } else { "(void)0" };
+                let dirty = self.dirty_at(pc);
                 self.line(
                     d,
                     format!(
-                        "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh});",
+                        "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
                         symbol(*t)
                     ),
                 );
