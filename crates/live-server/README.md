@@ -1,7 +1,8 @@
 # live-server
 
 The Xbox Live replacement service ([docs/live/live.md](../../docs/live/live.md) §4.3):
-signed events in an append-only Postgres log, projected into memory and
+signed events in an append-only log (SQLite by default, Postgres if asked
+for), projected into memory and
 served as HTTP + JSON and a WebSocket, so the game-side HLE never speaks
 Kerberos or XSP. The contract is [docs/live/live-api.md](../../docs/live/live-api.md);
 identity, signing and tokens are
@@ -12,7 +13,9 @@ share with the server (wire types, signing, the MOTD builder) is in
 ## Run it
 
 ```
-h2 live serve                                   # 127.0.0.1:8074, postgres://localhost/h2live
+h2 live serve                                   # 127.0.0.1:8074, sqlite://<data>/live.db
+h2 live serve --blobs s3://h2live               # content and saves in R2 (docs/live/live-hosting.md)
+h2 live store copy --from postgres://localhost/h2live --to sqlite://<data>/live.db
 h2 live serve --db postgres://localhost/other --id live.example.net \
     --listen 0.0.0.0:443 --tls-cert cert.pem --tls-key key.pem
 h2 live account create "Sneaky Pete"            # key made and kept locally
@@ -96,7 +99,18 @@ side) on `account-<xuid>`, and `SignedIn` / `PresenceChanged` /
 
 ## Design
 
-- **`store`**: `EventStore` (Postgres in `pg`, `MemoryStore` for tests).
+- **`store`**: `EventStore` (SQLite in `sqlite`, Postgres in `pg`, the
+  embedded server's `filestore`, `MemoryStore` for tests; one conformance
+  suite runs over all of them). SQLite runs in WAL mode; appends take an
+  in-process lock and `BEGIN IMMEDIATE`, so positions are handed out in
+  commit order as Postgres's advisory lock does.
+- **`blobs`**: content, cloud saves and published art through the
+  `object_store` crate: the data directory (the old layout), an
+  S3-compatible bucket (R2), or memory for tests. A private store for
+  everything, and an optional public bucket that shared game art is
+  published to and redirected to (`art.rs`).
+- **`copy`**: `store copy`, moving the log (positions, versions and hashes
+  kept, checked on the way in) and the blobs between backends, resumable.
   Appends are a list of events plus expected versions, atomic across
   streams, and compute the per-stream hash chain
   `hex(sha256(prev || jws))`. In Postgres every append holds
@@ -134,8 +148,11 @@ cargo test -p live-proto -p live-server
 runs the unit tests, the router tests (`tests/http.rs`, `tests/games.rs`,
 `tests/friends.rs`, tower `oneshot` over the in-memory store, sharing
 `tests/common`) and the
-WebSocket tests (`tests/stream.rs`, a real socket, ingest included). The Postgres tests skip with a note unless `H2_LIVE_TEST_DB`
-is set:
+WebSocket tests (`tests/stream.rs`, a real socket, ingest included). SQLite
+runs the event-store conformance and race tests on a temporary file, and
+the blob store runs its conformance over a directory, memory and an S3
+fake (`blobs.rs`, path-style requests signed for region `auto`). The
+Postgres tests skip with a note unless `H2_LIVE_TEST_DB` is set:
 
 ```
 createdb h2live_test_0
