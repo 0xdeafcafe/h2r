@@ -54,7 +54,7 @@ fn path_from(
         Some(v) => return Some(PathBuf::from(v)),
         None => {}
     }
-    let dir = if cfg!(target_os = "macos") {
+    let dir = if cfg!(target_vendor = "apple") {
         PathBuf::from(home?).join("Library/Caches")
     } else {
         xdg.map(PathBuf::from)
@@ -340,7 +340,7 @@ mod tests {
             path_from(os("/x/p.jsonl"), None, os("/h")),
             Some(PathBuf::from("/x/p.jsonl"))
         );
-        let want = if cfg!(target_os = "macos") {
+        let want = if cfg!(target_vendor = "apple") {
             PathBuf::from("/h/Library/Caches/h2recomp").join(FILE_NAME)
         } else {
             PathBuf::from("/c/h2recomp").join(FILE_NAME)

@@ -5608,6 +5608,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tvos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "audio",
+ "boot",
+ "d3d",
+ "input",
+ "kernel",
+ "settings",
+ "vfs",
+ "xiso",
+]
+
+[[package]]
 name = "twox-hash"
 version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

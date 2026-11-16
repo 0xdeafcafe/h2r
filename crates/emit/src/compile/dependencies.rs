@@ -129,10 +129,12 @@ impl Headers {
         let driver = self.driver_fingerprint(cc, flags, arch, src)?;
         let source = std::fs::canonicalize(src).map_err(err)?;
         let dir = source.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let target = arch.target_args()?;
         let scan = |src: &Path| -> Result<Vec<PathBuf>, Error> {
             let output = Command::new(cc)
                 .args(flags)
-                .args(["-target", arch.triple(), "-M", "-MT", "h2"])
+                .args(&target)
+                .args(["-M", "-MT", "h2"])
                 .arg(src)
                 .output()
                 .map_err(err)?;
@@ -241,7 +243,8 @@ impl Headers {
     fn driver_trace(&self, cc: &Path, flags: &[String], arch: Arch, src: &Path) -> Result<(Vec<u8>, bool), Error> {
         let output = Command::new(cc)
             .args(flags)
-            .args(["-target", arch.triple(), "-###", "-c"])
+            .args(arch.target_args()?)
+            .args(["-###", "-c"])
             .arg(src)
             .args(["-o", "/dev/null"])
             .output()

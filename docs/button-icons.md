@@ -7,7 +7,7 @@ Xbox 360, PlayStation or keyboard and mouse pictures in their place, following
 whichever device the player last touched.
 
 ```sh
-h2 play disc.iso --icons auto|xbox|xbox360|playstation|keyboard
+h2 play disc.iso --icons auto|xbox|xbox360|playstation|keyboard|remote
 H2_ICONS=playstation h2 run disc.iso ...
 ```
 
@@ -112,6 +112,22 @@ Style rules, taken from the retail glyphs:
 There is no Guide, PS or touchpad picture: the game has no code point that
 means them.
 
+**Apple TV remote** (`remote`, tvOS; [tvos.md](tvos.md)). It replaces only
+what the remote has, as its menu mapping (`input::backend::game_controller::remote`)
+uses it, and every other button keeps the retail Xbox glyph:
+
+| Xbox control | Remote picture |
+|---|---|
+| A | the clickpad: a faint ring with a filled centre |
+| D-pad up, down, left, right | the clickpad ring with that quarter lit and a band inside it |
+| B | a "<" back chevron in a faint ring |
+| Start | play/pause: a triangle and two bars |
+
+All four are white at the retail alpha levels, like the d-pad glyphs, so they
+take the text colour. They are plain geometry: no Apple artwork or logo.
+`auto` picks the set when the remote was the device last used (its pad name,
+`Apple TV Remote`, is `input::active::DeviceKind::Remote`).
+
 ### Which button a prompt shows
 
 The game chooses the button code point before the font lookup. The runner
@@ -136,7 +152,7 @@ Two parts, both in `crates/boot/src/icons.rs`.
 
 **1. The fonts get every set.** `vfs::RewriteBackend` wraps the disc. When
 the game opens a file under `maps\fonts` (not the `.txt` tables), the whole
-file is read once, `font::icons::replacements` draws the three sets for that
+file is read once, `font::icons::replacements` draws the four sets for that
 font, and `font::patch::apply` appends them. Each set has code points of its
 own, in the unused part of the icon range:
 
@@ -146,6 +162,7 @@ own, in the unused part of the icon range:
 | Xbox 360 | U+E200 to U+E211 |
 | PlayStation | U+E220 to U+E231 |
 | keyboard and mouse | U+E240 to U+E251 |
+| Apple TV remote | U+E260 to U+E271 |
 
 `apply` gives each new code point a new record at the end of the record
 table, moves the pixel data up by the size of those records, fixes every

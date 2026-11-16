@@ -1,8 +1,8 @@
 //! Small Unix socket adapter. Xbox constants and guest pointers never reach C.
 //! Keep platform layout/unsafe code here; the rest of the HLE uses owned values.
 #![allow(unsafe_code)]
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("Live host sockets currently support macOS and Linux");
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+compile_error!("Live host sockets currently support Apple platforms and Linux");
 
 use std::{
     ffi::{c_int, c_ulong, c_void},
@@ -14,9 +14,9 @@ use std::{
 
 #[repr(C)]
 struct Address {
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     len: u8,
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     family: u8,
     #[cfg(target_os = "linux")]
     family: u16,
@@ -27,7 +27,7 @@ struct Address {
 impl Address {
     fn new(a: SocketAddrV4) -> Self {
         Self {
-            #[cfg(target_os = "macos")]
+            #[cfg(target_vendor = "apple")]
             len: 16,
             family: 2,
             port: a.port().to_be(),
@@ -74,25 +74,25 @@ unsafe extern "C" {
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     fn poll(fds: *mut PollFd, count: PollCount, timeout: c_int) -> c_int;
 }
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 type PollCount = u32;
 #[cfg(target_os = "linux")]
 type PollCount = usize;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const SOL_SOCKET: i32 = 0xffff;
 #[cfg(target_os = "linux")]
 const SOL_SOCKET: i32 = 1;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const FIONBIO: c_ulong = 0x8004667e;
 #[cfg(target_os = "linux")]
 const FIONBIO: c_ulong = 0x5421;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const FIONREAD: c_ulong = 0x4004667f;
 #[cfg(target_os = "linux")]
 const FIONREAD: c_ulong = 0x541b;
 #[cfg(target_os = "linux")]
 const SEND_FLAGS: i32 = 0x4000; // MSG_NOSIGNAL
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const SEND_FLAGS: i32 = 0;
 
 fn cvt(v: i32) -> io::Result<()> {
@@ -127,7 +127,7 @@ impl Socket {
         };
         // SAFETY: F_SETFD (2) takes FD_CLOEXEC (1) as an integer on both OSes.
         cvt(unsafe { fcntl(s.fd.as_raw_fd(), 2, 1) })?;
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         s.set_int(SOL_SOCKET, 0x1022, 1)?; // SO_NOSIGPIPE
         Ok(s)
     }
@@ -154,7 +154,7 @@ impl Socket {
                 return Ok(0);
             }
             let mut data = vec![0; 65536];
-            let flags = 2 | if cfg!(target_os = "macos") {
+            let flags = 2 | if cfg!(target_vendor = "apple") {
                 0x80
             } else {
                 0x40
@@ -247,7 +247,7 @@ impl Socket {
     }
     pub fn linger(&self, on: u16, secs: u16) -> io::Result<()> {
         let value = [on as i32, secs as i32];
-        let name = if cfg!(target_os = "macos") { 0x80 } else { 13 };
+        let name = if cfg!(target_vendor = "apple") { 0x80 } else { 13 };
         // SAFETY: native linger is two ints on both supported platforms.
         cvt(unsafe {
             setsockopt(
@@ -279,42 +279,42 @@ impl OptionName {
         }
         let name = match self {
             Reuse => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     4
                 } else {
                     2
                 }
             }
             Broadcast => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     0x20
                 } else {
                     6
                 }
             }
             SendBuffer => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     0x1001
                 } else {
                     7
                 }
             }
             ReceiveBuffer => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     0x1002
                 } else {
                     8
                 }
             }
             Error => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     0x1007
                 } else {
                     4
                 }
             }
             KeepAlive => {
-                if cfg!(target_os = "macos") {
+                if cfg!(target_vendor = "apple") {
                     8
                 } else {
                     9
@@ -357,13 +357,13 @@ pub fn wsa(error: &io::Error) -> u32 {
         BrokenPipe => 10058,
         OutOfMemory => 10055,
         _ => match error.raw_os_error() {
-            Some(n) if n == if cfg!(target_os = "macos") { 36 } else { 115 } => 10035, // EINPROGRESS
-            Some(n) if n == if cfg!(target_os = "macos") { 37 } else { 114 } => 10037,
-            Some(n) if n == if cfg!(target_os = "macos") { 56 } else { 106 } => 10056,
-            Some(n) if n == if cfg!(target_os = "macos") { 40 } else { 90 } => 10040,
-            Some(n) if n == if cfg!(target_os = "macos") { 50 } else { 100 } => 10050,
-            Some(n) if n == if cfg!(target_os = "macos") { 51 } else { 101 } => 10051,
-            Some(n) if n == if cfg!(target_os = "macos") { 65 } else { 113 } => 10065,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 36 } else { 115 } => 10035, // EINPROGRESS
+            Some(n) if n == if cfg!(target_vendor = "apple") { 37 } else { 114 } => 10037,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 56 } else { 106 } => 10056,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 40 } else { 90 } => 10040,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 50 } else { 100 } => 10050,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 51 } else { 101 } => 10051,
+            Some(n) if n == if cfg!(target_vendor = "apple") { 65 } else { 113 } => 10065,
             _ => 10022,
         },
     }
@@ -372,7 +372,7 @@ pub fn wsa(error: &io::Error) -> u32 {
 #[repr(C)]
 struct Timeval {
     seconds: std::ffi::c_long,
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     micros: i32,
     #[cfg(target_os = "linux")]
     micros: std::ffi::c_long,
@@ -383,7 +383,7 @@ impl Socket {
             seconds: (millis / 1000) as _,
             micros: ((millis % 1000) * 1000) as _,
         };
-        let name = if cfg!(target_os = "macos") {
+        let name = if cfg!(target_vendor = "apple") {
             if receive { 0x1006 } else { 0x1005 }
         } else if receive {
             20
