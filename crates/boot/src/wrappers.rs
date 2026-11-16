@@ -3,7 +3,7 @@
 //! it unchanged or composes the call out of supported ones (guest calls
 //! through `ExecCtx::call_guest`, so blocking and faults behave as usual).
 //!
-//! Each is a blocker for crates/kernel, listed in docs/BOOT.md.
+//! Each is a blocker for crates/kernel, listed in docs/runtime/BOOT.md.
 
 use std::sync::Arc;
 

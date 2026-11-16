@@ -1,4 +1,4 @@
-//! `ScaledBackend` (docs/high-resolution.md, phase 1): a reference backend
+//! `ScaledBackend` (docs/graphics/high-resolution.md, phase 1): a reference backend
 //! at the guest's size answers the guest, a view backend renders the frame
 //! buffers at a multiple of it. One synthetic frame (render-to-texture with
 //! a write-back, scissored and rectangle-cleared draws, a textured draw over
@@ -415,7 +415,7 @@ fn rejects_scales_outside_one_to_six() {
     }
 }
 
-// Phase 2: what the view used to leave out (docs/high-resolution.md,
+// Phase 2: what the view used to leave out (docs/graphics/high-resolution.md,
 // "Phase 2 as built"). Each scene is drawn by a plain backend and by the
 // wrapper; the reference must be the plain image and the view, box-filtered
 // to the guest size, the reference. Every edge here is on a whole pixel, so
@@ -954,7 +954,7 @@ fn on_the_render_thread_the_change_is_made_there_and_shown_at_once() {
     );
 }
 
-// The frame's far edges (docs/high-resolution.md, "Half-pixel and texel
+// The frame's far edges (docs/graphics/high-resolution.md, "Half-pixel and texel
 // offsets"). A full-screen pass drawn the D3D way for a 1:1 texel mapping,
 // a quad from -0.5 to the size less 0.5 (window 0 to the size), covers
 // every pixel at 1x. Halo's menus composite their blurred, darkened level

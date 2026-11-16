@@ -1,4 +1,4 @@
-//! `H2_FPS` changes nothing the guest can see (docs/high-framerate.md).
+//! `H2_FPS` changes nothing the guest can see (docs/game/high-framerate.md).
 //!
 //! The toy guest (`lockstep::synthetic`) runs 30 Hz frames with the per-tick
 //! hash on, replaying one input recording, and publishes each frame through

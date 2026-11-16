@@ -268,7 +268,7 @@ static ALIAS: Point = Point::new(
     "TICK_AGAIN",
     0x0013_7fe0,
     Sig::Opaque,
-    "docs/feature-engine.md",
+    "docs/engine/feature-engine.md",
 );
 
 #[test]

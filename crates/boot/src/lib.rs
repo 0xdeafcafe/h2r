@@ -5,7 +5,7 @@
 //! This is a tracer bullet, not the final shape of the engine: the
 //! generated code is loaded as a dylib (with `c/boot_bridge.c` forwarding
 //! its ABI imports to the runtime) so the host binary needs no link-time
-//! knowledge of the generated symbols. See docs/BOOT.md.
+//! knowledge of the generated symbols. See docs/runtime/BOOT.md.
 //!
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
@@ -76,7 +76,7 @@ pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/inclu
 pub const DYLIB: &str = "libh2game.dylib";
 
 /// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
-/// disc's files (the tvOS bundle, docs/tvos.md).
+/// disc's files (the tvOS bundle, docs/runtime/tvos.md).
 pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     if path.is_dir() {
@@ -246,7 +246,7 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     drop(owners);
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
-    // The host, or tvOS with H2_EMIT_TARGET=tvos (docs/tvos.md).
+    // The host, or tvOS with H2_EMIT_TARGET=tvos (docs/runtime/tvos.md).
     let arch = emit::compile::Arch::target().map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
@@ -427,7 +427,7 @@ pub struct RunReport {
 /// (or `H2_BOOT_GFX`), logical-time audio into a `NullSink`, a keyboard pad
 /// only `H2_BOOT_INPUT` presses, every kernel call kept in memory, and
 /// `max_slices` as the only stop. A windowed host (`h2 play`, crates/app)
-/// fills these in; see docs/BOOT.md "Hosted runs".
+/// fills these in; see docs/runtime/BOOT.md "Hosted runs".
 #[derive(Default)]
 pub struct Host {
     /// D3D renders here (present hook attached) instead of the headless
@@ -436,18 +436,18 @@ pub struct Host {
     /// With `gfx`: a second backend on the same device that renders the
     /// frame buffers at this scale and presents, while `gfx` stays at the
     /// guest's size and answers the guest (`d3d::ScaledBackend`,
-    /// `H2_RENDER_SCALE`, docs/high-resolution.md). `gfx` then has no
+    /// `H2_RENDER_SCALE`, docs/graphics/high-resolution.md). `gfx` then has no
     /// present hook; the view has it. At 1 the view sleeps; with
     /// `settings`, the scale follows the Resolution setting during the run.
     pub gfx_view: Option<(d3d::GfxBackend, u32)>,
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
-    /// docs/render-thread.md); off in `Host::default()`. Hosts set it from
+    /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
     /// [`d3d_glue::render_thread_requested`].
     pub render_thread: bool,
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
-    /// The controller speaker (docs/playstation-audio.md): a second sink
+    /// The controller speaker (docs/audio/playstation-audio.md): a second sink
     /// for the sounds its routes pick, and the sound index built from each
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
     /// without DirectSound.
@@ -461,14 +461,14 @@ pub struct Host {
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
     pub keyboard: Option<input::backend::keyboard::KeyboardMouse>,
-    /// Button icons for the device in use (`icons`, docs/button-icons.md).
+    /// Button icons for the device in use (`icons`, docs/input/button-icons.md).
     /// `None` takes `H2_ICONS`; with that unset too, the fonts and the glyph
     /// lookups are left alone.
     pub icons: Option<icons::IconOptions>,
     /// Keep only this many kernel calls in memory (`trace::install_bounded`).
     pub trace_limit: Option<usize>,
     /// Start this campaign level in place of the main menu (`level_boot`,
-    /// docs/level-boot.md). `None` reads `H2_LEVEL` and `H2_DIFFICULTY`.
+    /// docs/runtime/level-boot.md). `None` reads `H2_LEVEL` and `H2_DIFFICULTY`.
     pub level: Option<level_boot::Request>,
     /// Called after every slice, input pump and audio advance, with the
     /// kernel (for its logical clock). Returning false ends the run
@@ -544,18 +544,18 @@ pub fn run_hosted_with_live(
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     // The disc's map hashes, shared by the package resolver and the Live
-    // map gate's bases (docs/maps.md §5): each disc map is read at most
+    // map gate's bases (docs/game/maps.md §5): each disc map is read at most
     // once a session, or not at all when the stamp under <data>/maps/cache
     // already has it.
     let disc_hashes = content::DiscHashes::default();
     let map_gate = live.enabled.then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
     let _live = live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?;
     // Features declare their hooks here; the plan is built and installed
-    // once, below, after the last of them (docs/feature-engine.md).
+    // once, below, after the last of them (docs/engine/feature-engine.md).
     let mut features = feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
     let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&mut features, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     // Our text on the cannot-connect dialog when Live is off or its server
-    // is unreachable (docs/live.md, "Client HLE: Live not set up").
+    // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
@@ -573,10 +573,10 @@ pub fn run_hosted_with_live(
         .filter(|i| i.enabled());
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
-    // (docs/maps.md §4); before the VFS lists that folder.
+    // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
-    // Map packages from <data>/maps (docs/maps.md) and edited maps from
-    // H2_MAP_DIR in place of the disc's (docs/storage.md "Map overrides");
+    // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
+    // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
@@ -594,10 +594,10 @@ pub fn run_hosted_with_live(
         }
     };
     k.set_vfs(v).context("attaching the VFS")?;
-    // A package installed while the game runs (docs/maps.md §3): a Live
+    // A package installed while the game runs (docs/game/maps.md §3): a Live
     // join tells the VFS to look again at once (it also notices by itself
     // at the map's next open), and the map-slots feature drops the game's
-    // cached copy of a map whose package changed (docs/cache-slots.md).
+    // cached copy of a map whose package changed (docs/runtime/cache-slots.md).
     if let Some(vfs) = k.vfs() {
         if let Some(gate) = &map_gate {
             let vfs = Arc::clone(&vfs);
@@ -607,7 +607,7 @@ pub fn run_hosted_with_live(
     }
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
-    // Which map exactly (docs/maps.md §5): a package's MapId, None for the
+    // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_id_locator(Box::new(move |map| {
@@ -644,7 +644,7 @@ pub fn run_hosted_with_live(
             xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
         }
         // Retired with kernel round 3, XAPI round 2 and DSound round 2
-        // (docs/BOOT.md "Retired"); H2_BOOT_OLD_GLUE=1 brings them back.
+        // (docs/runtime/BOOT.md "Retired"); H2_BOOT_OLD_GLUE=1 brings them back.
         if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
             game_glue::install(&loaded.runtime, u);
             wrappers::install_alertable(&loaded.runtime, u);
@@ -656,12 +656,12 @@ pub fn run_hosted_with_live(
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
-    // Community classics in the built-in variant list (docs/community-gametypes.md).
+    // Community classics in the built-in variant list (docs/game/community-gametypes.md).
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
     // Extra button layouts and the Controller Speaker row on the Controls
-    // screen (docs/controller-layouts.md, docs/playstation-audio.md).
+    // screen (docs/input/controller-layouts.md, docs/audio/playstation-audio.md).
     // The Video row on the Settings list opens our Video screen
-    // (docs/settings-menu.md).
+    // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
             video_screen::model(store, video_screen::Switches::from_env()).map_err(anyhow::Error::msg)?,
@@ -671,12 +671,12 @@ pub fn run_hosted_with_live(
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
-    // docs/live-custom-games.md).
+    // docs/live/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
-    // (docs/level-boot.md).
+    // (docs/runtime/level-boot.md).
     let level = match host.level.take() {
         Some(l) => Some(l),
         None => level_boot::from_env(&opts.disc).context("H2_LEVEL")?,
@@ -690,13 +690,13 @@ pub fn run_hosted_with_live(
     level_boot::install(&loaded.runtime, &mut features, level, perf_from == Some(level_boot::PerfFrom::Level))
         .context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
-    // campaign start turns on the profile's chosen skulls (docs/skulls.md).
+    // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
     let skulls_on = skulls::install(&mut features, host.settings.clone()).context("installing the skulls")?;
     // Skulls in multiplayer games: the host's set, advertised to guests on
     // our Live service and applied on every machine at game start
-    // (docs/skulls.md "In multiplayer").
+    // (docs/game/skulls.md "In multiplayer").
     let skulls_mp_on = skulls_mp::install(
         &mut features,
         host.settings.clone(),
@@ -705,7 +705,7 @@ pub fn run_hosted_with_live(
     )
     .context("installing the multiplayer skulls")?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
-    // ours on the tick (docs/skulls.md "Our skulls"). The skull weapon's
+    // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
     let custom_maps: Option<skulls_custom::MapLocator> = k.vfs().map(|vfs| -> skulls_custom::MapLocator {
         Box::new(move |map| {
@@ -726,7 +726,7 @@ pub fn run_hosted_with_live(
                 let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
                 eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
                 // The Video screen's Resolution row changes the scale at the
-                // next frame boundary (docs/high-resolution.md).
+                // next frame boundary (docs/graphics/high-resolution.md).
                 if let Some(store) = &host.settings {
                     let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
                     b.follow_scale(move || wanted.get());
@@ -743,7 +743,7 @@ pub fn run_hosted_with_live(
         }),
         (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
     };
-    // Vblanks on the 60 Hz logical clock (docs/d3d.md "Vertical blank"),
+    // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
         k.add_periodic(kernel::periodic::Source { name: "vblank", rate: kernel::periodic::Rate::HZ_60, max_catch_up: 4, handler })
@@ -788,10 +788,10 @@ pub fn run_hosted_with_live(
     // render-timing (off by default).
     features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
-    // impl.render.views=on (off by default; docs/render-loop.md).
+    // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
-    // (docs/live-coop.md section 9). Added last, so it can see every
+    // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
@@ -841,7 +841,7 @@ pub fn run_hosted_with_live(
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
-    // (docs/xapi.md "Input pump"); no guard is held here.
+    // (docs/runtime/xapi.md "Input pump"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut host_stop = false;
     let mut input_errors = 0u64;
@@ -852,7 +852,7 @@ pub fn run_hosted_with_live(
     let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
-    // H2_FRAME_STATS=1: frame times split by phase (docs/frame-budget.md).
+    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     // H2_PERF_FROM=N (cli built with `--features perf`): open

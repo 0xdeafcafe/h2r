@@ -2,7 +2,7 @@
 //! their tree (`cargo run -p xiso --example subset`), read-only.
 //!
 //! The tvOS app bundles a trimmed copy of the disc this way, since a 7 GB
-//! image does not fit (docs/tvos.md). Names match without regard to case,
+//! image does not fit (docs/runtime/tvos.md). Names match without regard to case,
 //! as on the disc; the directory is indexed once, when opened, so files
 //! added later are not seen.
 

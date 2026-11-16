@@ -1,5 +1,5 @@
 //! Async entries: Rust bodies for guest functions that call back into the
-//! guest (docs/feature-engine.md "Calling code that is still recompiled").
+//! guest (docs/engine/feature-engine.md "Calling code that is still recompiled").
 //!
 //! One host thread drives every guest thread, so a Rust body cannot make a
 //! guest call as a plain call: the call has to unwind to the scheduler and

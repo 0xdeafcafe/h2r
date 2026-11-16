@@ -5,7 +5,7 @@ The shell has a sidebar of tools and the maps of the opened disc, a top
 bar (Open, Save, Save As, Undo, Redo, Open disc or map), a status line, and
 prompts before unsaved changes are lost. The hopper (playlist) tool ships
 in this crate; the scenario and game variant editors live in their own
-crates and plug in through adapters. See [docs/editor.md](../../docs/editor.md).
+crates and plug in through adapters. See [docs/editor/editor.md](../../docs/editor/editor.md).
 
 ```
 cargo run --release -p editor -- [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>]

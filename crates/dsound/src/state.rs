@@ -5,7 +5,7 @@
 //! Every method returns `Result<u32, Stop>`: `Ok` carries the guest's `EAX`
 //! (an HRESULT, or a count for `Release`), `Err` is a stop that must reach
 //! the harness. Unimplemented behaviour is always a [`Stop::Unimplemented`],
-//! never a quiet `S_OK`. Settings the mixer cannot honour (see `docs/dsound.md`,
+//! never a quiet `S_OK`. Settings the mixer cannot honour (see `docs/audio/dsound.md`,
 //! "Voice effects") are stored and counted in [`DirectSound::ignored`] so a
 //! run can report exactly what was dropped. Filters, LFOs, envelopes,
 //! headroom, I3DL2 source and listener settings, Doppler and output buffers
@@ -43,7 +43,7 @@ pub type R = Result<u32, Stop>;
 
 /// What renders the mixer, and so drives audio time. Exactly one may hold
 /// the mixer: two would each render it and time would run twice. See
-/// `docs/dsound.md` "Audio clock".
+/// `docs/audio/dsound.md` "Audio clock".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Consumer {
     /// `set_frames_per_do_work`: the game's own `DirectSoundDoWork` calls.
@@ -814,7 +814,7 @@ impl DirectSound {
 
     /// `GetEffectData`: bytes the game stored, and zeros elsewhere. The
     /// zeros stand in for the DSP image's initial parameter RAM, which is
-    /// not reproduced (see `docs/dsound.md`, "Dry effects image").
+    /// not reproduced (see `docs/audio/dsound.md`, "Dry effects image").
     pub fn get_effect_data(
         &mut self,
         h: &mut dyn Host,
@@ -1386,7 +1386,7 @@ impl DirectSound {
 
     /// `SetBufferData(pvBufferData, dwBufferBytes)`: the buffer now plays the
     /// guest memory at `pv` (not copied permanently: it is re-read at `Play`
-    /// and `Unlock`, see `docs/dsound.md`).
+    /// and `Unlock`, see `docs/audio/dsound.md`).
     pub fn set_buffer_data(&mut self, h: &mut dyn Host, ptr: u32, pv: u32, bytes: u32) -> R {
         let mixer = Arc::clone(&self.mixer);
         let b = self.buf(ptr)?;
@@ -1757,7 +1757,7 @@ impl DirectSound {
 
     /// `SetRolloffFactor(flRolloffFactor, dwApply)` on a buffer: multiplies
     /// the listener's rolloff for this voice. Halo 2 passes 0 (it attenuates
-    /// by distance itself through mix-bin volumes, `docs/dsound.md`).
+    /// by distance itself through mix-bin volumes, `docs/audio/dsound.md`).
     pub fn buffer_set_rolloff(&mut self, ptr: u32, v: u32) -> R {
         self.buf(ptr)?.rolloff = f(v);
         self.refresh_3d(ptr)

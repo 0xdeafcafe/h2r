@@ -16,7 +16,7 @@ RUSTC_WRAPPER= H2_XBE=/path/to/default.xbe cargo run -p analyze --release --exam
 
 Append `-- --unseeded` for the baseline. Use release mode for retail analysis.
 The report enumerates each root's conservative closure, indirect sites, table
-slots and missing entries. Read [dispatch coverage](../../docs/dispatch-coverage.md)
+slots and missing entries. Read [dispatch coverage](../../docs/lifter/dispatch-coverage.md)
 for its evidence levels, limitations, reproduction and runtime diagnosis.
 
 ```sh

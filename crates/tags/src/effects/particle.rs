@@ -1,4 +1,4 @@
-//! `prt3` (particle). Layout provenance: `docs/effects.md`.
+//! `prt3` (particle). Layout provenance: `docs/formats/effects.md`.
 //!
 //! Root record (0xbc bytes) with: a shader-template reference, a block of
 //! 0x28-byte shader parameters (each may reference a bitmap), five

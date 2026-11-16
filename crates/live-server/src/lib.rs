@@ -1,5 +1,5 @@
-//! The Xbox Live replacement service (docs/live.md §4.3, docs/live-api.md,
-//! docs/live-security.md): signed events in an append-only Postgres log,
+//! The Xbox Live replacement service (docs/live/live.md §4.3, docs/live/live-api.md,
+//! docs/live/live-security.md): signed events in an append-only Postgres log,
 //! projected into memory, served over HTTP and WebSocket.
 //!
 //! - [`store`]: the log ([`pg::PostgresStore`], [`filestore::FileStore`],

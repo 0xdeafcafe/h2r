@@ -1,4 +1,4 @@
-/* Guarded binary32 arithmetic. See docs/sse-native.md for the range and
+/* Guarded binary32 arithmetic. See docs/lifter/sse-native.md for the range and
  * precision proof. The integer authority handles every rejected case.
  *
  * No FENV_ACCESS: strict-FP functions cannot be inlined into the generated
@@ -89,7 +89,7 @@ static inline __attribute__((always_inline)) int h2sn_arith(uint32_t *mx, unsign
 }
 #if defined(__aarch64__)
 /* All four lanes at once; the same guards and PE reconstruction as
- * h2sn_lane, lane for lane (docs/sse-native.md). */
+ * h2sn_lane, lane for lane (docs/lifter/sse-native.md). */
 static inline __attribute__((always_inline)) uint32x4_t h2sn_value4(uint32x4_t v) {
     uint32x4_t mag = vandq_u32(v, vdupq_n_u32(0x7fffffffu));
     uint32x4_t e = vandq_u32(vshrq_n_u32(v, 23), vdupq_n_u32(255u));

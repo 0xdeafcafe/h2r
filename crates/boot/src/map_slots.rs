@@ -1,5 +1,5 @@
 //! Drop the game's cached copy of a map whose package changed while the
-//! game runs (docs/cache-slots.md, "Changed maps").
+//! game runs (docs/runtime/cache-slots.md, "Changed maps").
 //!
 //! The game copies each map from the DVD into a cache slot and later reuses
 //! a slot whose resident header names the same `d:\maps\<name>.map` path,
@@ -27,7 +27,7 @@ use std::{
 use crate::layout_glue::Gm;
 
 /// The slot records: a file handle at `+0`, then the slot's 0x800-byte
-/// resident header copy (docs/cache-slots.md).
+/// resident header copy (docs/runtime/cache-slots.md).
 pub const RECORDS: u32 = 0x0055_7c90;
 pub const STRIDE: u32 = 0x804;
 /// The resident header's offset in a record.
@@ -106,7 +106,7 @@ pub struct MapSlots {
 impl feature::Feature for MapSlots {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Recopy maps whose package changed mid-session")
-            .doc("docs/cache-slots.md")
+            .doc("docs/runtime/cache-slots.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let vfs = Arc::clone(&self.vfs);

@@ -2,7 +2,7 @@
 //! [`AnimationClip::sample`]. Plain `[f32; N]` math, no vector library.
 //!
 //! An animation's data blob (inside a cache resource) holds up to two
-//! *streams* and two *flag sets*; see `docs/animation.md` for the layout and
+//! *streams* and two *flag sets*; see `docs/formats/animation.md` for the layout and
 //! for which engine function each codec below was read from. In short:
 //!
 //! * the **static stream** (blob offset 0) holds one value per flagged node
@@ -21,7 +21,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 /// The per-stream compression scheme (first byte of a stream). Names are the
-/// engine's own (assigned in its codec table, `docs/engine-map.md`).
+/// engine's own (assigned in its codec table, `docs/engine/engine-map.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Codec {
     UncompressedStatic = 1,

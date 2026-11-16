@@ -1,4 +1,4 @@
-//! `GetVisibilityTestResult` without waiting (docs/d3d.md, "Visibility
+//! `GetVisibilityTestResult` without waiting (docs/graphics/d3d.md, "Visibility
 //! tests"): a recent test whose count is not back answers
 //! `D3DERR_TESTINCOMPLETE`, as the hardware may, instead of waiting for the
 //! render thread and the GPU.

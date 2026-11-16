@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time setup for the Live server behind a named Cloudflare tunnel
-# (docs/live-hosting.md, "Docker with a named tunnel"). Asks for what it
+# (docs/live/live-hosting.md, "Docker with a named tunnel"). Asks for what it
 # needs, writes deploy/live/.env, extracts the game art if it is missing or stale,
 # starts the containers, waits for the public URL and makes a first invite.
 #

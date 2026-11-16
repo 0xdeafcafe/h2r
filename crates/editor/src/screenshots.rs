@@ -1,6 +1,6 @@
-//! The user guide's screenshots (docs/editor-guide.md), drawn without a
+//! The user guide's screenshots (docs/editor/editor-guide.md), drawn without a
 //! window: the real shell and tools, over made-up data, rendered offscreen
-//! with egui-wgpu and written as PNGs to `docs/images/editor/`. Ignored, so
+//! with egui-wgpu and written as PNGs to `docs/editor/images/`. Ignored, so
 //! `cargo test` never rewrites them; regenerate with
 //!
 //! ```sh
@@ -554,9 +554,9 @@ fn playlists(schema: &Schema) -> HopperFile {
 // ---------- the screenshots ----------
 
 #[test]
-#[ignore = "writes docs/images/editor/*.png; run with --ignored to regenerate"]
+#[ignore = "writes docs/editor/images/*.png; run with --ignored to regenerate"]
 fn screenshots() {
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/images/editor");
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/editor/images");
     std::fs::create_dir_all(&out_dir).unwrap();
     let out_dir = out_dir.canonicalize().unwrap();
     let Some(render) = render_state() else {

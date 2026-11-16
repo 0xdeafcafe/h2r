@@ -1,5 +1,5 @@
 //! RFC 8785 JSON Canonicalization Scheme: the exact bytes every signature
-//! covers (docs/live-security.md §2).
+//! covers (docs/live/live-security.md §2).
 //!
 //! Objects are sorted by key as UTF-16 code units, strings use the minimal
 //! ECMAScript escapes, and numbers are written the way ECMAScript's

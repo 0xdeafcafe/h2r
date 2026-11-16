@@ -1,5 +1,5 @@
 //! The message of the day the embedded server publishes when none has
-//! ever been published (docs/live-admin.md §3): a header for the Live main
+//! ever been published (docs/live/live-admin.md §3): a header for the Live main
 //! menu and tips the matchmaking screen picks from at random every 15 s,
 //! as the original service's rotating "did you know" lines did.
 //!
@@ -76,7 +76,7 @@ mod tests {
             assert!(s.encode_utf16().count() <= 200, "{s}");
         }
         let file = m.build().unwrap();
-        // It fits the game's one attachment buffer (docs/live-motd-fetch.md §5).
+        // It fits the game's 0x8000-byte MOTD buffer (docs/live/live-motd.md §2).
         assert!(file.len() <= live_proto::motd::MAX_FILE, "{}", file.len());
         assert_eq!(Motd::parse(&file).unwrap(), m);
     }

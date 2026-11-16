@@ -16,7 +16,7 @@
 //!
 //! No Bink decoding happens here. Decoded frames come from a
 //! [`MovieStream`], normally fed from the transcoded MOV (see
-//! `docs/movies.md`) by a platform decoder behind [`MovieDecoder`].
+//! `docs/audio/movies.md`) by a platform decoder behind [`MovieDecoder`].
 #![deny(unsafe_code)]
 
 #[cfg(target_os = "macos")]

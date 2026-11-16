@@ -1,4 +1,4 @@
-//! Native replacements for the XAPI save-game family (docs/xapi.md, "Opt-in
+//! Native replacements for the XAPI save-game family (docs/runtime/xapi.md, "Opt-in
 //! native save games"). Off unless `Config::save_games` is set.
 //!
 //! The retail routines are statically linked XDK code at the addresses in

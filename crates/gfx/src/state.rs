@@ -209,7 +209,7 @@ xbox_enum! {
         /// Z-buffering.
         Z = 1,
         /// W-buffering (`D3DZB_USEW`). Approximated with Z here; `d3d::nv2a`
-        /// has translated vertex programs store w (docs/shaders.md).
+        /// has translated vertex programs store w (docs/graphics/shaders.md).
         W = 2,
     }
 }

@@ -419,12 +419,12 @@ fn r5_a_header_at_the_top_of_the_address_space_is_an_error() {
 
 // Documentation ------------------------------------------------------------------
 
-/// `docs/d3d.md` once listed `0x0A20` / `0x1A20` at `0x52b89` as inline push
+/// `docs/graphics/d3d.md` once listed `0x0A20` / `0x1A20` at `0x52b89` as inline push
 /// methods; they are PSDEF stores. The method table must not regain them,
 /// and the device must not pretend to execute them.
 #[test]
 fn doc_inline_method_table_has_no_psdef_stores() {
-    let doc = include_str!("../../../docs/d3d.md");
+    let doc = include_str!("../../../docs/graphics/d3d.md");
     let table: Vec<&str> = doc
         .lines()
         .skip_while(|l| !l.starts_with("| method | NV2A meaning"))

@@ -1,4 +1,4 @@
-//! The vertex cache (`docs/d3d.md`, "Vertex cache") changes where a draw's
+//! The vertex cache (`docs/graphics/d3d.md`, "Vertex cache") changes where a draw's
 //! vertex bytes come from, never what they are: the same scripted frames
 //! run on a device with the cache and on one without it, and the backend
 //! must receive identical draws (CPU, synchronous and through the render

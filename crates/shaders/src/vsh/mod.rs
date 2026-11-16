@@ -13,7 +13,7 @@
 //! Each instruction drives the two NV2A vertex units at once: the MAC
 //! (multiply/accumulate, vector) and the ILU (inverse/log unit, mostly
 //! scalar). Both read the same three operands A, B, C; the ILU only ever reads
-//! C. Bit positions are in [`decode`] and in `docs/shaders.md`.
+//! C. Bit positions are in [`decode`] and in `docs/graphics/shaders.md`.
 
 mod disasm;
 pub mod interp;

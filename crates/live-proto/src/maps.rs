@@ -1,4 +1,4 @@
-//! Custom and modded maps over Live (docs/maps.md §5): the content store's
+//! Custom and modded maps over Live (docs/game/maps.md §5): the content store's
 //! wire types and events, and which maps a hopper allows.
 //!
 //! A map is named exactly by its [`MapId`] (a base plus layers); sessions

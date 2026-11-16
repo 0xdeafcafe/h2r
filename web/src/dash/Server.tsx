@@ -1,4 +1,4 @@
-// The dashboard's server screens (/dash/server, docs/live-admin.md §5):
+// The dashboard's server screens (/dash/server, docs/live/live-admin.md §5):
 //   - the overview: the server's public facts for everyone; for an admin,
 //     "your server": uptime, the tunnel, game art, admins, the log;
 //   - /dash/server/invites: an admin makes, copies and revokes invite codes;

@@ -3,7 +3,7 @@
 //! app's guest thread under `boot::run_hosted`, presenting through the
 //! shell's frame handoff, playing DirectSound's logical-time output on the
 //! default audio device, and reading the window's keyboard and the host's
-//! pads. See docs/app.md "Playing: h2 play".
+//! pads. See docs/runtime/app.md "Playing: h2 play".
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,33 +35,33 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
 CPU, push-buffer decode, wgpu encode, submit, GPU wait and pacing over the
 last 5 s, in the window and once a second on stderr, and the worst frames at
-exit (docs/frame-budget.md). A two-line development-build watermark (commit,
+exit (docs/perf/frame-budget.md). A two-line development-build watermark (commit,
 branch, build time, fps, frame time, draws, map, renderer) runs along the
 bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
 it off. --input-timeline plays an
-input crate timeline (docs/input.md) on guest time instead of live input.
+input crate timeline (docs/input/input.md) on guest time instead of live input.
 A mappack.iso next to the disc (or another .iso there with the map pack's
 layout) is installed into --data on the way in, once: a warning never stops
-the game. --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
+the game. --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
-always runs at 30; docs/high-framerate.md).
+always runs at 30; docs/game/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
 screen (Settings, Video), saved as [graphics] fps and render_scale
 in <data>/settings.toml; a change there applies at once.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
-(`h2 settings list` shows them; docs/settings-menu.md).
+(`h2 settings list` shows them; docs/game/settings-menu.md).
 --level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
-with the default variant. A name the disc lacks lists them (docs/level-boot.md).
+with the default variant. A name the disc lacks lists them (docs/runtime/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
---live signs the game in to Xbox Live (docs/live.md): it starts a service in
+--live signs the game in to Xbox Live (docs/live/live.md): it starts a service in
 the process (Postgres from $H2_LIVE_DB or postgres://localhost/h2live, made if
 missing; else a log in the live data directory's server/log, so accounts,
 friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
@@ -74,14 +74,14 @@ the embedded server through a cloudflared quick tunnel so friends can join with
 https://HOST (or --tunnel-name NAME --hostname HOST) it runs named tunnel NAME
 at that lasting URL instead, first logging in to Cloudflare (a browser link),
 creating the tunnel and routing HOST to it if any of that is missing;
---no-tunnel-setup skips those steps (docs/live-hosting.md).
+--no-tunnel-setup skips those steps (docs/live/live-hosting.md).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
 Cmd+F fullscreen, Cmd+P pause, F3 the watermark. With --follow, F5 restarts into a ready update
-and F6 hides the banner. --bindings reads a TOML table (docs/input.md).
+and F6 hides the banner. --bindings reads a TOML table (docs/input/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
-follows the device last used (docs/button-icons.md).";
+follows the device last used (docs/input/button-icons.md).";
 
 /// The play bindings: input's Halo defaults, plus Enter for A and Backspace
 /// for B so the menus work the way a desktop user expects.
@@ -150,7 +150,7 @@ type PadParts = (
 /// default; the speaker path), the on/off switch behind the Controls
 /// screen's Controller Speaker row (`pad_speaker.enabled` in `store`;
 /// `H2_PAD_SPEAKER`, when set, wins) and, unless `H2_PAD_SPEAKER=0` or audio
-/// is off, the controller-speaker output (docs/playstation-audio.md). A bad
+/// is off, the controller-speaker output (docs/audio/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
 fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     let env = |k: &str| std::env::var(k).ok();
@@ -253,12 +253,12 @@ fn hosted(
         // As for `h2 run`: passes are merged by default (the fast rule;
         // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
         // exact one), and H2_GFX_MERGE_PASSES=0 gives one render pass per
-        // draw (docs/BOOT.md).
+        // draw (docs/runtime/BOOT.md).
         if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
             gfx.set_merge_passes(false);
         }
         // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE;
-        // docs/graphics.md).
+        // docs/graphics/graphics.md).
         match d3d::pipeline_store::default_path() {
             Some(path) => gfx.with_pipeline_cache(path),
             None => gfx,
@@ -266,7 +266,7 @@ fn hosted(
     };
     // A view backend renders the frame at the scale times 640x480 and
     // presents; the backend the guest talks to stays at 1x
-    // (docs/high-resolution.md). The scale is H2_RENDER_SCALE, else the
+    // (docs/graphics/high-resolution.md). The scale is H2_RENDER_SCALE, else the
     // Video screen's Resolution (`[graphics] render_scale`), else 1, and
     // follows the row during the run (at 1 the view sleeps). Locked at 1
     // (H2_RENDER_SCALE=1, --set): one backend, as before the row.
@@ -299,7 +299,7 @@ fn hosted(
         gfx: Some(gfx),
         gfx_view: view,
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
-        // for `h2 run` (docs/render-thread.md).
+        // for `h2 run` (docs/graphics/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
         pad_speaker,
@@ -555,7 +555,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
     // --icons, then H2_ICONS, then auto: follow the device in use
-    // (docs/button-icons.md).
+    // (docs/input/button-icons.md).
     let icons = boot::icons::IconOptions {
         choice: match icons {
             Some(c) => c,
@@ -651,7 +651,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
-        // the run ended well or not. See docs/storage.md "Write metadata".
+        // the run ended well or not. See docs/runtime/storage.md "Write metadata".
         vfs::flush_pending_metadata();
         let r = r?;
         for l in &r.kernel_log {

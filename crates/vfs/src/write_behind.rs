@@ -1,5 +1,5 @@
 //! Host data writes taken off the calling (game) thread: `HostBackend`'s
-//! write-behind queue. docs/storage.md "Write-behind".
+//! write-behind queue. docs/runtime/storage.md "Write-behind".
 //!
 //! The backend does every piece of guest-visible bookkeeping on the calling
 //! thread and hands only the host `pwrite` to one writer thread per backend.

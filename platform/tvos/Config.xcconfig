@@ -1,4 +1,4 @@
-// Signing and identity for the tvOS app (docs/tvos.md). Put your own
+// Signing and identity for the tvOS app (docs/runtime/tvos.md). Put your own
 // values in Local.xcconfig next to this file (not committed), e.g.
 //
 //   DEVELOPMENT_TEAM = ABCDE12345

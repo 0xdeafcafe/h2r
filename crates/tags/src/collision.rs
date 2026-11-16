@@ -2,8 +2,8 @@
 //!
 //! Hand-written fixed codecs, deliberately independent of `schema.rs`, so this
 //! module merges without touching the generated records. Layouts and their
-//! provenance are recorded in `docs/collision.md`; engine addresses are in
-//! `docs/engine-map.md` ("Collision and physics model layouts").
+//! provenance are recorded in `docs/formats/collision.md`; engine addresses are in
+//! `docs/engine/engine-map.md` ("Collision and physics model layouts").
 //!
 //! Both tags are one contiguous payload: a fixed root followed by every child
 //! block. A block is `{count, address}` where the address is a virtual address
@@ -239,7 +239,7 @@ pub struct Region {
     pub name: StringId,
     pub permutations: Vec<Permutation>,
 }
-/// 0x14 bytes. Layout inferred from data only (see docs/collision.md).
+/// 0x14 bytes. Layout inferred from data only (see docs/formats/collision.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathfindingSphere {
     pub node: i16,
@@ -971,7 +971,7 @@ pub struct BoxShape {
     pub radius: f32,
     pub transform: Transform,
 }
-/// 0x100 bytes: header and a convex-vertices shape (see docs/collision.md).
+/// 0x100 bytes: header and a convex-vertices shape (see docs/formats/collision.md).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Polyhedron {
     pub header: ShapeHeader,

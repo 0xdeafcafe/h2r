@@ -1,4 +1,4 @@
-//! One-use, this-machine-only sign-in links (docs/live-admin.md §4).
+//! One-use, this-machine-only sign-in links (docs/live/live-admin.md §4).
 //!
 //! `h2 play --live` offers the browser entry of the account the game plays
 //! as ([`Live::offer_local_signin`]) and prints a link carrying the token in

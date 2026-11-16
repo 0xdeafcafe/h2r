@@ -6,7 +6,7 @@
 //! shared decoder in [`crate::geometry`].
 //!
 //! Hand-written reader; every offset's provenance (engine instruction address
-//! or disc check) is in `docs/structure-bsp.md`. Unlisted bytes are preserved
+//! or disc check) is in `docs/formats/structure-bsp.md`. Unlisted bytes are preserved
 //! in `raw` fields, not interpreted.
 
 use crate::geometry::{

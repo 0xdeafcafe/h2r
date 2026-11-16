@@ -409,7 +409,7 @@ fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
 /// pool. How much headroom the high side leaves at load time is not
 /// measured, so this bound is empirical: the largest total of any retail
 /// map of the same type on the owner's disc (V), which that pool is known
-/// to tolerate. See docs/map-format.md, "Growing the metadata".
+/// to tolerate. See docs/formats/map-format.md, "Growing the metadata".
 pub fn max_metadata_size(cache_type: crate::CacheType) -> Result<u32> {
     Ok(match cache_type {
         crate::CacheType::Campaign => 0x00c2_4000,

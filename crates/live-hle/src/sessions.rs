@@ -46,10 +46,10 @@ pub struct LocalSession {
     /// Who finds it in the server's lists (and so in the custom games
     /// browser): the host's setting when it was last advertised.
     pub visibility: Visibility,
-    /// The host's loaded map, exactly (docs/maps.md §5), when a package
+    /// The host's loaded map, exactly (docs/game/maps.md §5), when a package
     /// serves it; None for the disc's own map or when nothing says.
     pub map_id: Option<live_proto::maps::MapId>,
-    /// The skulls the host has on for its next game (docs/skulls.md "In
+    /// The skulls the host has on for its next game (docs/game/skulls.md "In
     /// multiplayer"), when any.
     pub skulls: Option<Vec<u8>>,
 }

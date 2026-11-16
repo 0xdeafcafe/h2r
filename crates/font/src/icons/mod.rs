@@ -11,7 +11,7 @@
 //!
 //! Every pixel here is computed from simple shapes and a 5x7 letter set made
 //! for this project. No retail glyph and no vendor artwork is stored or
-//! copied. `docs/button-icons.md` has the design and the style rules.
+//! copied. `docs/input/button-icons.md` has the design and the style rules.
 use std::collections::BTreeMap;
 use std::str::FromStr;
 

@@ -1,5 +1,5 @@
 //! Server-wide stats for the stats site's home page
-//! (`GET /v1/stats/summary`, docs/live-api.md "Stats summary").
+//! (`GET /v1/stats/summary`, docs/live/live-api.md "Stats summary").
 //!
 //! A [`Subscriber`] folds the game streams into time buckets as events are
 //! applied: one bucket per UTC day and one small totals bucket per UTC hour,

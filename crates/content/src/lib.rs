@@ -1,4 +1,4 @@
-//! Map packages (docs/maps.md): a map is a base plus layers.
+//! Map packages (docs/game/maps.md): a map is a base plus layers.
 //!
 //! - [`Manifest`]: a package's `manifest.toml`.
 //! - [`MapId`]: the identity of a map, the SHA-256 of its manifest's

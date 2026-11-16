@@ -1,7 +1,7 @@
 //! Halo 2 (Xbox) packed bitmap fonts: parser, glyph decoder and CPU rasteriser.
 //!
 //! The on-disc layout was derived from the retail `default.xbe` and cross-checked
-//! against every font file on the disc; see `docs/fonts.md` for the format, the
+//! against every font file on the disc; see `docs/formats/fonts.md` for the format, the
 //! engine addresses it was read from, and the evidence level of each field.
 //!
 //! ```text

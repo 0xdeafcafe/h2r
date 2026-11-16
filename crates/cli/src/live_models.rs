@@ -1,5 +1,5 @@
 //! Player and weapon models for the 3D game viewer: `models/biped/<species>.glb`
-//! and `models/weapon/<stem>.glb` (docs/live-art.md, "Player and weapon
+//! and `models/weapon/<stem>.glb` (docs/live/live-art.md, "Player and weapon
 //! models"; the players contract, section 2).
 //!
 //! Runs inside the art extraction (`live_art::extract`) from the owner's own
@@ -1670,7 +1670,7 @@ fn f32s<const N: usize>(b: &[u8], o: usize) -> Option<[f32; N]> {
 }
 
 /// An object tag's render model and animation graph: `obje +0x34` is its
-/// `hlmt` reference (docs/objects.md), whose `+0x00` is the render model and
+/// `hlmt` reference (docs/formats/objects.md), whose `+0x00` is the render model and
 /// `+0x10` the animation graph (datums at +4 of each reference).
 fn object_model(map: &mut MapReader, object: TagId) -> Result<(TagId, Option<TagId>)> {
     let b = map.read_tag_bytes(object)?;
@@ -1718,7 +1718,7 @@ fn markers(map: &mut MapReader, mode: TagId, nodes: usize) -> Result<Vec<Marker>
 
 /// A shader's bitmaps: `shad +0x20` is the compiled postprocess (one
 /// element), whose `+4` block lists the bitmap parameters (0xc bytes, datum
-/// first; docs/shader-instances.md).
+/// first; docs/formats/shader-instances.md).
 pub(crate) fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
     let tag = map.tag(shader)?.clone();
     let address = tag.location.context("no payload")?.address;

@@ -121,7 +121,7 @@ impl Session {
     }
 
     /// The loaded map's `MapId` for the games that start from now on
-    /// (`NewGame.map_id`, docs/maps.md §5).
+    /// (`NewGame.map_id`, docs/game/maps.md §5).
     pub fn set_map_id(&mut self, map_id: Option<live_proto::maps::MapId>) {
         self.map_id = map_id;
     }

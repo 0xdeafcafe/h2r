@@ -1,4 +1,4 @@
-// Custom and modded maps on Live (docs/maps.md §5): reading packages, the
+// Custom and modded maps on Live (docs/game/maps.md §5): reading packages, the
 // per-page lookup cache, and how sessions and games that name a map_id are
 // shown. Every id, name and size here is invented.
 

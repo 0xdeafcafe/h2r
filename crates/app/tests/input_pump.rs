@@ -1,5 +1,5 @@
 //! Window keys through crates/input and crates/xapi, and the lock order of
-//! one input pump (docs/xapi.md, integration step 5).
+//! one input pump (docs/runtime/xapi.md, integration step 5).
 
 use std::sync::{Mutex, MutexGuard};
 

@@ -1,4 +1,4 @@
-//! Games (docs/live-api.md): starting one, appending its signed event
+//! Games (docs/live/live-api.md): starting one, appending its signed event
 //! batches, live telemetry frames, recorded `GameFrame`s, map outlines, and
 //! the presence and game managers that write `PresenceExpired` and
 //! `GameEnded {reason: "lost"}` when clients go quiet.
@@ -40,7 +40,7 @@ pub struct IngestState {
 }
 
 /// A live frame as stream readers get it: the frame for JSON readers, and
-/// its record in the game's packed stream (docs/live-telemetry.md, Packed
+/// its record in the game's packed stream (docs/live/live-telemetry.md, Packed
 /// frames) for packed ones.
 #[derive(Debug)]
 pub struct LiveFrame {
@@ -209,7 +209,7 @@ fn random_game_id() -> String {
     sign::hex(&b)
 }
 
-/// Which map `GET /v1/games` keeps (docs/live-api.md).
+/// Which map `GET /v1/games` keeps (docs/live/live-api.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GameFilter {
     /// The map's name: games on the base map and every mod of it.

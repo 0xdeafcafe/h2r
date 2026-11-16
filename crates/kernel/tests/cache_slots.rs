@@ -1,5 +1,5 @@
 //! Campaign cache integration, retail code supplied only at test time.
-//! See docs/cache-slots.md for the boundary and deliberately unproved activation work.
+//! See docs/runtime/cache-slots.md for the boundary and deliberately unproved activation work.
 mod common;
 #[path = "common/generated.rs"]
 mod generated;

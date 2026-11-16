@@ -1,4 +1,4 @@
-//! Map packages (docs/maps.md): saving the edited scenario as a package in
+//! Map packages (docs/game/maps.md): saving the edited scenario as a package in
 //! `<data>/maps/<dir>/`, listing a map's packages, and opening one as the
 //! editor's current state.
 //!
@@ -195,7 +195,7 @@ pub fn open_package(
     Ok((source, package))
 }
 
-/// The `[result] geometry` hash of a map (docs/maps.md §1): SHA-256 over,
+/// The `[result] geometry` hash of a map (docs/game/maps.md §1): SHA-256 over,
 /// for each entry of the scenario's structure BSP block (`scnr+0x210`,
 /// stride 0x44) in order,
 ///

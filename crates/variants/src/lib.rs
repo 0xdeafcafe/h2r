@@ -2,7 +2,7 @@
 //! record ([`record`]), the settings schema read from the disc
 //! ([`schema`]), saved-variant files and the save store ([`save`]), a
 //! portable sharing format ([`portable`]) and the egui panel
-//! ([`VariantEditor`]). docs/variants.md has the format and the evidence.
+//! ([`VariantEditor`]). docs/editor/variants.md has the format and the evidence.
 
 pub mod panel;
 pub mod portable;

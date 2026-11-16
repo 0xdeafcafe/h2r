@@ -32,7 +32,7 @@ pub fn group(name: &str) -> &'static str {
 /// too, and `LOCALE_FIND` is overridden for our strings anyway, so the
 /// Rust lookup costs no extra dispatch. Datums and tags stay off until a
 /// play-test measures them: they are the hottest leaves and each override
-/// takes them off the direct-call path (docs/feature-engine.md, Phase 2).
+/// takes them off the direct-call path (docs/engine/feature-engine.md, Phase 2).
 pub fn default_on(group: &str) -> bool {
     group == "locale"
 }

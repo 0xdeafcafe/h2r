@@ -5,7 +5,7 @@
 //! Self-contained (table-driven decoder, no `schema.rs` involvement) so it
 //! merges independently of the render/collision/physics/animation decoders.
 //! Layouts and their per-field provenance are in [`layouts`]; the evidence is
-//! written up in `docs/objects.md`.
+//! written up in `docs/formats/objects.md`.
 //!
 //! Blocks in cache metadata may point into another tag's data (shared,
 //! aliased blocks), so block spans are checked against the whole ordinary

@@ -1,5 +1,5 @@
 //! Bounded ASF demuxing. All wire reads are checked; payload bytes borrow the input.
-//! Provenance and deliberately unsupported features are recorded in docs/wma.md.
+//! Provenance and deliberately unsupported features are recorded in docs/audio/wma.md.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "disc")]

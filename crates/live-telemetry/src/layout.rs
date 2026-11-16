@@ -1,4 +1,4 @@
-//! Guest addresses and offsets from `docs/live-gamestate.md`.
+//! Guest addresses and offsets from `docs/live/live-gamestate.md`.
 //!
 //! Keep validation-sensitive layout changes here rather than in readers.
 //! Players, object headers and the shared object body are `engine::view`
@@ -23,9 +23,9 @@ pub const OPTIONS_TICK_RATE: u32 = 0x6;
 /// Campaign difficulty, `i16`: 0 easy, 1 normal, 2 heroic, 3 legendary.
 /// Confirmed: `0x00138110` defaults it to 1 and the menu's campaign start
 /// (`0x0023643f`) sets it from the selection; level boot writes it the same
-/// way (docs/level-boot.md).
+/// way (docs/runtime/level-boot.md).
 pub const OPTIONS_DIFFICULTY: u32 = 0x12a;
-/// The skull array (docs/skulls.md): one byte per skull, 1 = on. Written
+/// The skull array (docs/game/skulls.md): one byte per skull, 1 = on. Written
 /// only by the pickup (`0x1df3e0`) and our campaign start; every reader
 /// gates on a campaign (confirmed).
 pub const SKULLS: u32 = 0x004f_55dc;
@@ -72,7 +72,7 @@ pub const PLAYER_NAME_CODE_UNITS: usize = engine::view::players::NAME_UNITS;
 // local player slots; a slot signed in with a profile (flags bit 4) embeds
 // the 0x1e0-byte profile raw at `PLAYER_SLOT_PROFILE`, and the profile's
 // appearance block sits `PROFILE_APPEARANCE` into it. Every offset below is
-// "likely" (same-hash community decompilation; docs/live-gamestate.md, local
+// "likely" (same-hash community decompilation; docs/live/live-gamestate.md, local
 // player slots), not runtime-validated, so the reader range-checks each
 // value and drops what fails. Remote players' profiles never pass through
 // the local slots: their appearance reads as empty until the in-record
@@ -137,7 +137,7 @@ pub const OBJECT_TYPE_WEAPON: u8 = 2;
 pub const TAG_INDEX_PTR: u32 = engine::points::TAG_INDEX.base;
 pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 
-// Unit body, players frame fields (docs/live-gamestate.md, "Unit aim and held
+// Unit body, players frame fields (docs/live/live-gamestate.md, "Unit aim and held
 // weapon"). Layout confirmed: `unit_new` (`0x000c4410`) sets the four weapon
 // datums at `+0x218` and the two current-weapon indices at `+0x212`/`+0x213`
 // to none, and initialises five vectors from the object forward vector
@@ -148,7 +148,7 @@ pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 /// (`[0x004f55f0]`, stride `0x888`) with it and copies the actor's team
 /// (`actor+0x24`) into the unit.
 pub const UNIT_ACTOR: u32 = 0x12c;
-/// The unit's player datum, or none (docs/live-gamestate.md, confirmed).
+/// The unit's player datum, or none (docs/live/live-gamestate.md, confirmed).
 pub const UNIT_PLAYER: u32 = 0x13c;
 /// The unit's team, `i16`. Confirmed: `unit_new` takes it from the placement
 /// (and in campaign, when that is 0 or -1, from the unit definition `+0xc0`);
@@ -204,7 +204,7 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
 /// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
 pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
 
-/// Translational velocity (`f32[3]`, confirmed, docs/live-gamestate.md).
+/// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md).
 /// Telemetry uses only its sign (a jump goes up); `speed` comes from
 /// positions.
 pub const BODY_VELOCITY: u32 = 0x88;
@@ -227,7 +227,7 @@ pub const BODY_PLACEMENT_INDEX: u32 = 0x1a;
 pub const BODY_NETGAME_EQUIPMENT: u32 = 0xaf;
 /// Object type 7 is a machine. Confirmed: the type table at `0x00468630`
 /// is bipd, vehi, weap, eqip, garb, proj, scen, mach, ctrl, lifi, ssce,
-/// bloc, crea (docs/objects.md); the scarab of `03a`/`03b` is a `mach` tag.
+/// bloc, crea (docs/formats/objects.md); the scarab of `03a`/`03b` is a `mach` tag.
 pub const OBJECT_TYPE_MACHINE: u8 = 7;
 
 /// The loaded scenario tag (`scnr` root), confirmed (cache loader
@@ -237,7 +237,7 @@ pub const SCENARIO_PTR: u32 = 0x004e_0350;
 /// Scenario placement blocks whose objects frames track: the object type
 /// (header `+3`), the block's `(count, address)` offset in `scnr` and the
 /// record stride, from the type table's descriptors (`+0xa`, `+0xe`;
-/// docs/objects.md, confirmed). Machines travel in `machines` and sound
+/// docs/formats/objects.md, confirmed). Machines travel in `machines` and sound
 /// scenery is not drawn, so neither is here.
 pub const PLACEMENT_BLOCKS: &[(u8, u32, u32)] = &[
     (0, 0x60, 0x54),   // bipd
@@ -290,7 +290,7 @@ pub const BIPED_MODE_GROUND: u8 = 1;
 pub const BIPED_MODE_FLYING: u8 = 2;
 pub const BIPED_MODE_MELEE: u8 = 6;
 /// The first magazine's reserve and loaded rounds (`i16`), weapon body;
-/// confirmed (docs/live-gamestate.md, `0x00101a10`).
+/// confirmed (docs/live/live-gamestate.md, `0x00101a10`).
 pub const WEAPON_MAGAZINE_RESERVE: u32 = 0x22a;
 pub const WEAPON_MAGAZINE_LOADED: u32 = 0x22c;
 

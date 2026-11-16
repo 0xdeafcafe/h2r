@@ -7,7 +7,7 @@
 //! this reads. Evidence, by field:
 //!
 //! - **`weap +0x2d0`, barrels**: block (count, pointer) with stride `0xec`
-//!   (docs/objects.md lists the block; the stride is confirmed by every
+//!   (docs/formats/objects.md lists the block; the stride is confirmed by every
 //!   barrel of every multiplayer weapon carrying a `proj` reference at the
 //!   same place). Single-barrel weapons (battle rifle, smg, magnum, needler,
 //!   sniper, beam rifle, shotgun, brute shot) have one; the plasma pistol,

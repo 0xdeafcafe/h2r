@@ -32,7 +32,7 @@ impl Drop for TempDir {
     }
 }
 
-/// The retail copy-time checksum (docs/cache-slots.md): XOR of each whole
+/// The retail copy-time checksum (docs/runtime/cache-slots.md): XOR of each whole
 /// little-endian qword after the header, folded to 32 bits with the parity
 /// seed; a final partial qword is ignored. Written out here as an
 /// independent oracle.
@@ -313,7 +313,7 @@ fn large_override_streams_through_the_guest_api() {
     assert_eq!(entry.metadata.end_of_file, len);
 }
 
-/// A model of the retail cache copy (docs/cache-slots.md): read the source's
+/// A model of the retail cache copy (docs/runtime/cache-slots.md): read the source's
 /// physical size, its 0x800 header, then stream the payload from +0x800 to
 /// EOF into a cache file on the hard disk, accumulating the copy-time
 /// checksum and comparing it with header +0x2d0. An edited map whose

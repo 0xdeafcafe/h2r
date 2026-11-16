@@ -1,11 +1,11 @@
 # live-server
 
-The Xbox Live replacement service ([docs/live.md](../../docs/live.md) §4.3):
+The Xbox Live replacement service ([docs/live/live.md](../../docs/live/live.md) §4.3):
 signed events in an append-only Postgres log, projected into memory and
 served as HTTP + JSON and a WebSocket, so the game-side HLE never speaks
-Kerberos or XSP. The contract is [docs/live-api.md](../../docs/live-api.md);
+Kerberos or XSP. The contract is [docs/live/live-api.md](../../docs/live/live-api.md);
 identity, signing and tokens are
-[docs/live-security.md](../../docs/live-security.md). Everything clients
+[docs/live/live-security.md](../../docs/live/live-security.md). Everything clients
 share with the server (wire types, signing, the MOTD builder) is in
 `crates/live-proto`.
 
@@ -20,12 +20,12 @@ h2 live motd set "Welcome back" "Double XP this weekend" --header "Halo 2"
 h2 live serve --invite-only & h2 live invite create
 h2 live q games --live                          # JSON off a terminal
 h2 play disc.iso --live                         # an embedded server, signed in
-h2 live serve --tunnel                          # public via cloudflared (docs/live-hosting.md)
+h2 live serve --tunnel                          # public via cloudflared (docs/live/live-hosting.md)
 ```
 
 `h2-live-server` (`src/bin`, flags in `standalone.rs`) is the same server
 without the rest of `h2`, for the Docker image in `deploy/live/`
-([live-hosting.md](../../docs/live-hosting.md#docker-with-a-named-tunnel)):
+([live-hosting.md](../../docs/live/live-hosting.md#docker-with-a-named-tunnel)):
 `--data` (or `H2_LIVE_DATA`), the web app from `H2_LIVE_WEB`, and no
 tunnel of its own; `--public-url https://HOST --behind-cloudflared` says a
 cloudflared beside it delivers the requests.
@@ -51,17 +51,17 @@ invite from `h2 live invite create`.
 
 ## API
 
-What is built of [live-api.md](../../docs/live-api.md):
+What is built of [live-api.md](../../docs/live/live-api.md):
 
 | request | notes |
 |---|---|
 | `GET /healthz` | `{ok, position}`, position = log head |
-| `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false, url?}`; `url` is the public base URL when tunnelled or `--public-url` ([live-hosting.md](../../docs/live-hosting.md)) |
+| `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false, url?}`; `url` is the public base URL when tunnelled or `--public-url` ([live-hosting.md](../../docs/live/live-hosting.md)) |
 | `POST /v1/accounts` | body: compact JWS by the new key over `{gamertag, jwk, invite?, aud, iat}` (`aud` = server id, `iat` within 5 min); 201 `{xuid, gamertag, id}` |
 | `GET /v1/accounts` | list of `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (the 10 latest) |
 | `GET /v1/accounts/{gamertag}/keys`, `/v1/accounts/by-xuid/{xuid}/keys` | `{keys: [{kid, jwk, valid_from, valid_to}]}` |
-| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../docs/live-api.md#friends)) |
+| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../docs/live/live-api.md#friends)) |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
 | `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
 | `POST /v1/invites?days=` | operator only, `invites.write`; 201 `{invite}` |

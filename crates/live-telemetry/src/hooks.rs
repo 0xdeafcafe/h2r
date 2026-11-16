@@ -73,7 +73,7 @@ impl Telemetry {
     }
 
     /// The skulls the next multiplayer games run with (the host's set as
-    /// the boot applied it at the game's start; docs/skulls.md "In
+    /// the boot applied it at the game's start; docs/game/skulls.md "In
     /// multiplayer"). Campaign games read the skull array instead.
     pub fn set_multiplayer_skulls(&self, skulls: Option<Vec<u8>>) {
         self.session.lock().unwrap().set_multiplayer_skulls(skulls);
@@ -300,12 +300,12 @@ impl Telemetry {
 /// each tick and the end on the `game` and `frame` bridges, and two raw
 /// observers (a kill, a weapon firing). All are read-only and run beside
 /// the original, so they share their points with the level boot's loaded
-/// mark and lockstep's tick hash (docs/feature-engine.md).
+/// mark and lockstep's tick hash (docs/engine/feature-engine.md).
 pub struct TelemetryFeature(pub Arc<Telemetry>);
 
 impl feature::Feature for TelemetryFeature {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("live-telemetry", "Live telemetry").doc("docs/live-telemetry.md")
+        feature::Manifest::new("live-telemetry", "Live telemetry").doc("docs/live/live-telemetry.md")
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {

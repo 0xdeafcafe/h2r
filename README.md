@@ -30,12 +30,14 @@ What works today:
 - **Tooling.** Deterministic logical-time scheduling, checkpoints, a sampling
   profiler and a benchmark tool.
 
-Speed is the big gap. On current master the main menu runs at about 5-6 fps
-on an unloaded M-series Mac. The target is 30 fps. Three speedups are on by
+Speed is the big gap. On current master the main menu runs at about 11-16
+fps on a quiet M-series Mac ([docs/perf/perf-budget.md](docs/perf/perf-budget.md));
+the in-level budget is in [docs/perf/frame-budget.md](docs/perf/frame-budget.md).
+The target is 30 fps. Three speedups are on by
 default for `h2 build`, `h2 run` and `h2 play`: the inline RAM path
-(`H2_FASTMEM`, [docs/performance.md](docs/performance.md)), which cuts the
+(`H2_FASTMEM`, [docs/perf/performance.md](docs/perf/performance.md)), which cuts the
 menu's CPU time per frame by about 35%; native binary64 x87
-(`H2_X87_NATIVE`, [docs/x87-native.md](docs/x87-native.md)); and
+(`H2_X87_NATIVE`, [docs/lifter/x87-native.md](docs/lifter/x87-native.md)); and
 register-local access accounting (`H2_ACCESS_COUNT`). Set any of them to `0`
 to build without it.
 
@@ -47,8 +49,9 @@ xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
 logical-time scheduling, checkpoints, and the profiler and benchmarks
 (`h2 profile`, `h2 bench`).
 
-In progress for 30 fps: the rest of fast guest memory access, merged
-render passes by default, and native x87.
+In progress for 30 fps: the rest of fast guest memory access and the
+gameplay frame ([docs/perf/architecture-review.md](docs/perf/architecture-review.md)).
+Merged render passes and native x87 are on by default.
 
 ## Proof
 
@@ -62,25 +65,25 @@ Screenshots are kept in issue threads, not in the repo:
 In priority order:
 
 1. Fidelity gaps, such as point sprites and the open items in
-   [docs/BOOT.md](docs/BOOT.md) and [docs/shaders.md](docs/shaders.md)
+   [docs/runtime/BOOT.md](docs/runtime/BOOT.md) and [docs/graphics/shaders.md](docs/graphics/shaders.md)
    ("Gaps").
 2. 30 fps. The levers, measured in
-   [docs/perf-budget.md](docs/perf-budget.md): faster guest memory access
-   (the first step is in, on by default), merged render passes, native x87
-   (on by default) and
+   [docs/perf/perf-budget.md](docs/perf/perf-budget.md): faster guest memory access
+   (the first step is in, on by default), merged render passes (on by
+   default), native x87 (on by default) and
    push-buffer decode cost. Draw batching, upload rings, IR optimisation and
    sampling render-to-texture levels in place have landed. See
-   [docs/perf.md](docs/perf.md) for the tools.
+   [docs/perf/perf.md](docs/perf/perf.md) for the tools.
 3. More campaign levels.
 4. Opt-in enhancements, off by default and later exposed in an expanded
-   in-game settings menu ([docs/settings-menu.md](docs/settings-menu.md)):
+   in-game settings menu ([docs/game/settings-menu.md](docs/game/settings-menu.md)):
    - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
    - 4K and other high-resolution rendering
-     ([docs/high-resolution.md](docs/high-resolution.md)).
+     ([docs/graphics/high-resolution.md](docs/graphics/high-resolution.md)).
    - Recovering the E3 2003 stencil-shadow lighting engine
-     ([docs/e3-lighting.md](docs/e3-lighting.md)).
+     ([docs/graphics/e3-lighting.md](docs/graphics/e3-lighting.md)).
 5. Later: a map editing kit, and TV targets (see
-   [docs/app.md](docs/app.md)).
+   [docs/runtime/app.md](docs/runtime/app.md)).
 
 ## Requirements
 
@@ -122,7 +125,7 @@ cargo h2 emit --out $TMPDIR/h2gen   # generate C and build the host library
 
 `emit` is slow and writes a lot of output (about 1 GB), so point `--out`
 at scratch space. Unchanged output is cached; see
-[docs/BUILD-CACHE.md](docs/BUILD-CACHE.md). `cargo h2` with no arguments
+[docs/lifter/BUILD-CACHE.md](docs/lifter/BUILD-CACHE.md). `cargo h2` with no arguments
 prints the full command list, including the tag decoders (`tag`, `bitmap`,
 `sound`, `strings`, `ui`, `hs` and more).
 
@@ -134,7 +137,7 @@ cargo run --release -p cli --features perf -- bench --only hot-loop
 cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
 ```
 
-See [docs/perf.md](docs/perf.md).
+See [docs/perf/perf.md](docs/perf/perf.md).
 
 ## Play
 
@@ -157,7 +160,7 @@ the terminal to quit.
 | WASD, mouse (click to capture) | Left stick, look |
 
 Cmd+F toggles fullscreen and Cmd+P pauses. `--bindings FILE` remaps keys
-([docs/input.md](docs/input.md)).
+([docs/input/input.md](docs/input/input.md)).
 
 To keep playing while master moves, add `--follow`:
 
@@ -169,7 +172,7 @@ It fetches `origin/master` every 45 s and builds each new commit in the
 background under `~/Library/Caches/h2recomp/follow`; your checkout is never
 touched. A banner in the window shows progress. Press F5 on "Update ready"
 to restart into the new build, or F6 to hide the banner. See
-[docs/app.md](docs/app.md) for every flag.
+[docs/runtime/app.md](docs/runtime/app.md) for every flag.
 
 ## Ghidra
 
@@ -191,86 +194,7 @@ up as structured Rust.
 
 ## Docs
 
-Design and pipeline:
-
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md): goals, the two-stage plan, crate table, milestones
-- [LIFTER.md](docs/LIFTER.md): the lifter's original design proposal
-- [FLOAT.md](docs/FLOAT.md): floating point in the lifter: what the game uses and the correctness-first plan
-- [FLOAT-ABI.md](docs/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`)
-- [x87-native.md](docs/x87-native.md): the native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
-- [render-thread.md](docs/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): which thread renders, what the guest can observe, measured gain
-- [simd.md](docs/simd.md): bit-exact SSE1 reference semantics (`crates/simd`)
-- [oracle.md](docs/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
-- [sse-oracle.md](docs/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
-- [golden-trace.md](docs/golden-trace.md): golden boot traces from Unicorn (design; the code is not on master)
-- [dispatch-coverage.md](docs/dispatch-coverage.md): indirect-dispatch coverage of the campaign's main tables
-- [xdk-libraries.md](docs/xdk-libraries.md): XDK library identification (`h2 symbols`)
-- [BUILD-CACHE.md](docs/BUILD-CACHE.md): generated-source and object caches, iteration builds
-- [build-perf.md](docs/build-perf.md): build-time measurements behind those caches
-
-Running the game:
-
-- [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
-- [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
-- [level-boot.md](docs/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly, skipping the menus, and `H2_PERF_FROM=level`
-- [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
-- [community-gametypes.md](docs/community-gametypes.md): community classics (Zombies, SWAT, Jousting and more) as extra built-in game variants with their own icon: how Halo 2 keeps its variants, sources, mappings and hooks
-- [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)
-- [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
-- [map-pack.md](docs/map-pack.md): the Multiplayer Map Pack disc: its content packages, the title update it carries, and `h2 import-mappack` (the maps need the update, which doesn't run yet)
-- [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
-- [editor-guide.md](docs/editor-guide.md): user guide to `h2-editor`: editing what is on a map, game variants and playlists, with screenshots ([editor.md](docs/editor.md) for developers)
-- [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
-- [xapi.md](docs/xapi.md): guest XAPI service replacements (`crates/xapi`)
-- [checkpoints.md](docs/checkpoints.md): checkpoint save and revert acceptance test
-- [cache-slots.md](docs/cache-slots.md): campaign cache-slot integration test
-- [level-preflight.md](docs/level-preflight.md): static audit of what the first campaign levels need
-- [perf.md](docs/perf.md): sampling profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`)
-- [fastmem-proto.md](docs/fastmem-proto.md): prototype write watch on Mach exception ports, and 4 KiB guest pages on 16 KiB host pages (`crates/fastmem-proto`)
-- [fastmem-4k.md](docs/fastmem-4k.md): measured 4 KiB guest translation and write-bit variants; slower than phase-1 inline access, so not adopted
-- [perf-budget.md](docs/perf-budget.md): where a main-menu frame's time goes, and the plan to 30 fps
-- [frame-budget.md](docs/frame-budget.md): an in-level frame budget, the worst frames and their causes, and what a worst frame under 33 ms needs
-- [high-framerate.md](docs/high-framerate.md): design for opt-in 60 and 120 fps that keeps the 30 Hz tick exact (super bounces included): host-side interpolated replay, prior art, determinism test (not built)
-- [theater.md](docs/theater.md): design for Halo 3-style saved films (exact replay from recorded inputs, game-state keyframes for seeking, free camera through the game's director) and spectating (not built)
-- [performance.md](docs/performance.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default) and runtime counters
-
-Graphics:
-
-- [d3d.md](docs/d3d.md): the guest-facing Direct3D 8 replacement: entries, device model, push buffer, render targets, vblank (`crates/d3d`)
-- [graphics.md](docs/graphics.md): D3D8 state and textures on wgpu (`crates/gfx`)
-- [shaders.md](docs/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
-- [high-resolution.md](docs/high-resolution.md): design for opt-in 4K and other internal resolutions: which surfaces scale, what the guest may observe, tests, prior art (not implemented)
-- [e3-lighting.md](docs/e3-lighting.md): design for opt-in E3 2003-style stencil shadows and per-pixel lighting: the evidence, what retail kept, phases and risks (not implemented)
-
-Audio and movies:
-
-- [audio.md](docs/audio.md): DirectSound replacement: voices, mixer, effects, output (`crates/audio`)
-- [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
-- [playstation-audio.md](docs/playstation-audio.md): DualSense/DS4 speaker, mute button and mic: feasibility, sound-to-controller routing (`dsound::padroute`), mute HID reports (`input::dualsense`)
-- [wma.md](docs/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
-- [bink-hle.md](docs/bink-hle.md): high-level Bink player replacement (`crates/bink-hle`)
-- [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
-
-Data formats and tags:
-
-- [map-format.md](docs/map-format.md): cache file (v8) format and the `map` reader
-- [animation.md](docs/animation.md): animation graphs (jmad) and frame decompression (`crates/tags`)
-- [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)
-- [collision.md](docs/collision.md): collision and physics model tags (`crates/tags`)
-- [effects.md](docs/effects.md): effects-family tags (effe, prt3, pmov and more) (`crates/tags`)
-- [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)
-- [haloscript.md](docs/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`)
-- [lighting.md](docs/lighting.md): level lighting, lightmaps and atmosphere (`crates/tags`)
-- [localization.md](docs/localization.md): string IDs and localized text (`crates/tags`)
-- [objects.md](docs/objects.md): object tags (obje family, hlmt, itmc, vehc) (`crates/tags`)
-- [shader-instances.md](docs/shader-instances.md): shader instance, template and pass tags (shad, stem, spas) (`crates/tags`)
-- [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
-- [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
-- [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)
-- [button-icons.md](docs/button-icons.md): the button glyphs in the fonts, and Xbox 360, PlayStation and keyboard icons that follow the device in use (`crates/font/src/icons`, `--icons`, `H2_ICONS`)
-- [keyboard-charset.md](docs/keyboard-charset.md): the on-screen keyboard's characters, what players use, and a design for extending them (not built)
-
-Engine:
-
-- [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
-- [engine/README.md](docs/engine/README.md): contracts for the engine functions rewritten in Rust (`crates/engine`), and the HaloScript VM ([engine/hs_vm.md](docs/engine/hs_vm.md))
+[docs/README.md](docs/README.md) is the index: every doc, grouped by area
+(lifter, runtime, input, graphics, audio, perf, formats, engine, game, Live,
+editor), with the entry point for each marked. Start with
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the overall design.

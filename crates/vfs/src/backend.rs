@@ -40,7 +40,7 @@ pub trait Backend: Send {
     /// (or none, or one where there was none) than when it was last
     /// opened. False for a path never opened, open now, or not a map. The
     /// game's map cache reuses a slot by its path alone
-    /// (docs/cache-slots.md, "Changed maps"), so the boot uses this to
+    /// (docs/runtime/cache-slots.md, "Changed maps"), so the boot uses this to
     /// invalidate a slot holding an outdated copy.
     fn map_changed(&mut self, _path: &str) -> bool {
         false

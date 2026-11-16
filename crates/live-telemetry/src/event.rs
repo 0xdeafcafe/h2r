@@ -53,7 +53,7 @@ impl PlayerStats {
 }
 
 /// A player's appearance read from the signed-in profile of their local
-/// player slot (docs/live-telemetry.md, "Player appearance"). The game's
+/// player slot (docs/live/live-telemetry.md, "Player appearance"). The game's
 /// rank is an Xbox Live attribute, not guest memory, and is not read.
 pub use live_proto::game::Appearance;
 

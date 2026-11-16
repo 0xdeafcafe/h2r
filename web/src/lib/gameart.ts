@@ -1,5 +1,5 @@
 // Optional game art: a server may serve pictures extracted from its owner's
-// own disc (docs/live-api.md "Optional game art"). Nothing of it is in this
+// own disc (docs/live/live-api.md "Optional game art"). Nothing of it is in this
 // repo. Everything here is pure, so it can be tested; state/gameart.ts loads
 // the manifest and components fall back to the art pack when a key is absent.
 
@@ -232,7 +232,7 @@ export function normalizeAppearance(v: unknown): Appearance | null {
     return typeof n === "number" && Number.isFinite(n) ? n : undefined;
   };
   // The game's telemetry sends it flat (`primary`..`quaternary`,
-  // `emblem_foreground`, `emblem_background`; docs/live-api.md); the nested
+  // `emblem_foreground`, `emblem_background`; docs/live/live-api.md); the nested
   // form is accepted too.
   const fg = idx(w.emblem, "fg") ?? idx(w, "emblem_foreground");
   const bg = idx(w.emblem, "bg") ?? idx(w, "emblem_background");

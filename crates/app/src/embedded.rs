@@ -1,5 +1,5 @@
 //! The shell for a native host that owns the window and the run loop
-//! (the tvOS app, platform/tvos; docs/tvos.md), in place of winit's.
+//! (the tvOS app, platform/tvos; docs/runtime/tvos.md), in place of winit's.
 //!
 //! The host hands over a `CAMetalLayer` and calls [`Embedded::redraw`] from
 //! its display link on the main thread; everything else is the windowed

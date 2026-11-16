@@ -22,7 +22,7 @@
 //! | 1 | 2n | texture for stage n (dimension per [`psh::PixelShader::textures`]) |
 //! | 1 | 2n+1 | sampler for stage n |
 //!
-//! Vertex register `vN` is shader location `N`. See `docs/shaders.md`.
+//! Vertex register `vN` is shader location `N`. See `docs/graphics/shaders.md`.
 #![forbid(unsafe_code)]
 
 pub mod psh;

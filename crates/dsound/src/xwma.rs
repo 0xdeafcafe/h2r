@@ -6,7 +6,7 @@
 //! replaces those six with [`wma::boundary::Session`] (the clean-room
 //! decoder in `crates/wma`), so the container, its file reads and its XMO
 //! packets stay the game's own while the codec runs natively. See
-//! `docs/wma.md` "Runtime boundary" for the ABI and the status contract.
+//! `docs/audio/wma.md` "Runtime boundary" for the ABI and the status contract.
 //!
 //! The codec tables are read from the retail XBE when the [`WmaHle`] is
 //! built ([`WmaHle::from_xbe`]); none are compiled in.
@@ -93,7 +93,7 @@ impl WmaHle {
     }
 
     /// Reads the codec tables out of the retail `default.xbe` bytes (the
-    /// SHA-256 is checked first, see `docs/wma.md`).
+    /// SHA-256 is checked first, see `docs/audio/wma.md`).
     pub fn from_xbe(xbe: &[u8]) -> Result<Arc<Self>, wma::Error> {
         let image = wma::VerifiedImage::load(xbe)?;
         Ok(Self::new(Arc::new(wma::Tables::load(&image)?)))

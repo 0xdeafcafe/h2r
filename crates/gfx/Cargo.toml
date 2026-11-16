@@ -15,7 +15,7 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 serde = { version = "1", features = ["derive"] }
 pollster = "1"
 thiserror.workspace = true
-# Pipeline-creation spans (docs/perf.md); no dependencies of its own.
+# Pipeline-creation spans (docs/perf/perf.md); no dependencies of its own.
 timeline = { path = "../timeline" }
 
 [dev-dependencies]

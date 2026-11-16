@@ -152,7 +152,7 @@ const PAGE: usize = 0x1000;
 impl<B: Backend> Device<B> {
     /// Overlapping render-to-texture levels move through the backend's
     /// alias mirror instead of guest memory (on by default;
-    /// `H2_D3D_ALIAS_MIRROR=0` turns it off; `docs/d3d.md`, "Overlapping
+    /// `H2_D3D_ALIAS_MIRROR=0` turns it off; `docs/graphics/d3d.md`, "Overlapping
     /// levels on the GPU"). Needs lazy render-to-texture and a backend with
     /// a mirror ([`Backend::can_mirror`]). Turning it off flushes nothing:
     /// set it before the first draw.

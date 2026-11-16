@@ -1,4 +1,4 @@
-//! The determinism harness in a boot run (docs/high-framerate.md, phase 1;
+//! The determinism harness in a boot run (docs/game/high-framerate.md, phase 1;
 //! crates/lockstep, `xapi::tap`).
 //!
 //! * `H2_LOCKSTEP=FILE`: hash guest RAM at the end of every `game_tick` and

@@ -2,7 +2,7 @@
 //! rows on Halo 2's own Settings, Controls, Button Layout screen.
 //!
 //! The design, addresses and what is still unverified are in
-//! docs/controller-layouts.md. In short: the profile's layout byte selects a
+//! docs/input/controller-layouts.md. In short: the profile's layout byte selects a
 //! 16-slot action table at `0x190c34`; the game treats a byte it does not know
 //! as Default. This module (1) rewrites the table after the original runs for
 //! bytes 4 to 6, (2) grows the screen's list from four rows to seven and
@@ -51,7 +51,7 @@ use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
-// ---- guest addresses (hook points; see docs/controller-layouts.md) ----
+// ---- guest addresses (hook points; see docs/input/controller-layouts.md) ----
 
 const ACTION_TABLE_BUILD: u32 = 0x0019_0c34;
 const LIST_DATA_NEW: u32 = 0x001a_480d;
@@ -1124,7 +1124,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             .add(&crate::skulls_screen::DifficultyRow(Arc::clone(&screen)))
             .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
         // The multiplayer screen, an instance and class of its own, opened
-        // from the game variant editor (docs/skulls.md "In multiplayer").
+        // from the game variant editor (docs/game/skulls.md "In multiplayer").
         let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(Arc::clone(
             model.store(),
         )));
@@ -1172,7 +1172,7 @@ pub struct LayoutValueText;
 impl feature::Feature for LayoutValueText {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new("layouts-value", "Added layouts' names on the Controls list")
-            .doc("docs/controller-layouts.md")
+            .doc("docs/input/controller-layouts.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         b.raw()
@@ -1195,7 +1195,7 @@ pub struct StringsFeature;
 
 impl feature::Feature for StringsFeature {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("ui-strings", "Our menu strings").doc("docs/settings-menu.md")
+        feature::Manifest::new("ui-strings", "Our menu strings").doc("docs/game/settings-menu.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         b.locale().source("our strings", |id| {

@@ -1,6 +1,6 @@
 //! Stage 7a's proof: the Rust `render_views` (`engine::render_loop`)
 //! against the original, lifted and run on the IR interpreter, from the
-//! same seeded 64 MB state (docs/render-loop.md).
+//! same seeded 64 MB state (docs/graphics/render-loop.md).
 //!
 //! Every callee is a stub on both sides: when the original reaches a
 //! callee's entry, and when the port asks for a call, the same stub logs

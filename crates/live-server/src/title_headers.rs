@@ -1,5 +1,5 @@
 //! Republishes title files built before the game's header was traced
-//! (docs/live-motd.md §2.4). Those carry 16 zero bytes where the game's
+//! (docs/live/live-motd.md §2.4). Those carry 16 zero bytes where the game's
 //! validator wants a CRC, the class version and the size, so it rejects
 //! them and shows no MOTD / keeps its built-in playlists. At startup each
 //! such file is republished with a real header and the same body, through

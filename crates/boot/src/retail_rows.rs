@@ -1,4 +1,4 @@
-//! Rows of ours on a retail list, as data (docs/feature-engine.md "UI step
+//! Rows of ours on a retail list, as data (docs/engine/feature-engine.md "UI step
 //! c"): the `ui` model's extension rows of that list, answered by `before`
 //! hooks on the plan at the list's row text and row chosen. A retail row
 //! goes on to the original; a row of ours never reaches it.
@@ -104,7 +104,7 @@ struct Ext {
 
 impl feature::Feature for Extension {
     fn manifest(&self) -> Manifest {
-        Manifest::new(self.id, self.title).doc("docs/settings-menu.md")
+        Manifest::new(self.id, self.title).doc("docs/game/settings-menu.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let e = Arc::new(Ext {

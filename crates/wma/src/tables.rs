@@ -95,7 +95,7 @@ impl Codebook {
     }
 }
 /// All values below are read from the authenticated owner-supplied image.
-/// Addresses and instruction-immediate locations are recorded in docs/wma.md.
+/// Addresses and instruction-immediate locations are recorded in docs/audio/wma.md.
 pub struct Tables {
     pub(crate) exponents: Huffman,
     pub(crate) coefficient: [Codebook; 2],

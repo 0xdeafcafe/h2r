@@ -1,4 +1,4 @@
-//! Serving through cloudflared (docs/live-hosting.md): the tunnel connects
+//! Serving through cloudflared (docs/live/live-hosting.md): the tunnel connects
 //! from loopback and adds its headers, so this-machine-only routes must
 //! refuse what it delivers; the public URL shows in discovery.
 

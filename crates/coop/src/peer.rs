@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Holding the guest is free: wall time is outside it
-//! (docs/high-framerate.md, "In our runtime").
+//! (docs/game/high-framerate.md, "In our runtime").
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

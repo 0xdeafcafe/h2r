@@ -19,7 +19,7 @@ use crate::sink::Sink;
 const MAX_INGEST_MESSAGE: usize = 16 * 1024;
 const MAX_BATCH_EVENTS: usize = 4;
 /// A packed keyframe every this many frames (ten seconds at 15 a second);
-/// the frames between are deltas (docs/live-telemetry.md, Packed frames).
+/// the frames between are deltas (docs/live/live-telemetry.md, Packed frames).
 const FRAME_KEYFRAME_EVERY: u64 = 150;
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;

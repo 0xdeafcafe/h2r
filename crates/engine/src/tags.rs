@@ -19,7 +19,7 @@ pub const TAG_INDEX_GLOBAL: u32 = crate::points::TAG_INDEX.base;
 /// checked lookup uses this, not the index header's own `+8` pointer.
 pub const TAG_ENTRIES_GLOBAL: u32 = crate::points::TAG_ENTRIES.base;
 
-/// Tag-index header fields read here (`docs/map-format.md`).
+/// Tag-index header fields read here (`docs/formats/map-format.md`).
 pub mod index_layout {
     /// Guest pointer to the 12-byte group records, sorted for bsearch.
     pub const GROUPS: u32 = 0x00;

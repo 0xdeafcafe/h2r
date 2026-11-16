@@ -1,5 +1,5 @@
 //! Halo 2 retail Xbox compiled HaloScript, decoded from the owner's cache/XBE.
-//! No extracted tables or scripts are build inputs. See docs/haloscript.md.
+//! No extracted tables or scripts are build inputs. See docs/formats/haloscript.md.
 //!
 //! Invariant-bearing storage cannot be changed through the public API:
 //! ```compile_fail

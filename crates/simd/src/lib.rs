@@ -3,7 +3,7 @@
 //! for the generated code; the two give bit-identical results, and the tests
 //! check that (`tests/differential.rs`) and check both against SSE hardware
 //! results (`tests/hardware.rs`). The semantics are written up in
-//! `docs/simd.md`.
+//! `docs/lifter/simd.md`.
 //!
 //! Everything is integer soft-float: no host floating point is involved.
 //!
@@ -474,7 +474,7 @@ fn f2i1(mx: u32, a: u32, truncate: bool) -> (u32, u32) {
 /// The input's top 11 fraction bits select an interval; the result's
 /// significand is 1/midpoint of that interval rounded to nearest at 12
 /// fraction bits, and its exponent is the input's mirrored. Measured Intel
-/// tables match this rule for every entry (docs/simd.md). Zero and denormal
+/// tables match this rule for every entry (docs/lifter/simd.md). Zero and denormal
 /// inputs give a signed infinity; results below the normal range flush to a
 /// signed zero; infinity gives a signed zero; NaNs are quieted.
 pub fn rcp_approx(x: u32) -> u32 {

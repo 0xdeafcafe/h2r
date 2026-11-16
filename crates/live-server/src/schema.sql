@@ -1,4 +1,4 @@
--- The service's whole persistent state (docs/live.md §4.3). Created at
+-- The service's whole persistent state (docs/live/live.md §4.3). Created at
 -- startup if missing. `events` is append-only; `jws` is the author's
 -- signed body, untouched, and the source of truth: the other columns are
 -- copies for querying.

@@ -1,5 +1,5 @@
 //! Both sides against the SSE oracle's JSONL corpus (crates/sse-oracle,
-//! docs/sse-oracle.md, schema 1): every fixture whose instruction is one of
+//! docs/lifter/sse-oracle.md, schema 1): every fixture whose instruction is one of
 //! ours is turned into a protocol record and checked bit for bit, MXCSR
 //! and the compare EFLAGS included.
 //!

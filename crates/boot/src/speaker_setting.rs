@@ -1,6 +1,6 @@
 //! The controller-speaker on/off setting behind the "Controller Speaker" row
-//! on the game's Controls screen (docs/playstation-audio.md "In-game
-//! setting", docs/settings-menu.md).
+//! on the game's Controls screen (docs/audio/playstation-audio.md "In-game
+//! setting", docs/game/settings-menu.md).
 //!
 //! [`SpeakerSetting`] is the one switch the row, the sound index and the
 //! controller output all go through:

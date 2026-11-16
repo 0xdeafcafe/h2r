@@ -4,7 +4,7 @@
 //! compiler (`newLibraryWithSource` and `newRenderPipelineState`): about
 //! 70 ms for a typical NV2A program on an idle machine and 220 ms under
 //! load, against about 5 ms of WGSL translation, naga validation and MSL
-//! generation (docs/graphics.md, "Pipeline compiles"). wgpu's pipeline
+//! generation (docs/graphics/graphics.md, "Pipeline compiles"). wgpu's pipeline
 //! cache is a no-op on Metal, so the way to keep that off the game thread
 //! is to start the compile early on a worker and only collect it when the
 //! draw is encoded.

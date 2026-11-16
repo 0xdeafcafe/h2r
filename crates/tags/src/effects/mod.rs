@@ -2,7 +2,7 @@
 //! `lens`, plus the shared "function" (curve) data they embed.
 //!
 //! Hand-written fixed codecs (not in `schema.rs`), self-contained like
-//! [`crate::sound`]. Layout evidence and provenance: `docs/effects.md`.
+//! [`crate::sound`]. Layout evidence and provenance: `docs/formats/effects.md`.
 //!
 //! Every top-level tag type implements [`EffectTag`]: it is decoded from the
 //! virtual address of the tag's root record (not from the tag's recorded

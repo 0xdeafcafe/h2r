@@ -304,7 +304,7 @@ pub struct Draw<'a> {
     /// guest's size keeps guest window coordinates, shifted by
     /// [`window_shift`] so an edge on a window pixel centre covers whole
     /// blocks of host pixels, as it covers whole pixels at 1x
-    /// (docs/high-resolution.md). `None` is the target's size.
+    /// (docs/graphics/high-resolution.md). `None` is the target's size.
     pub window: Option<(u32, u32)>,
     /// Where vertex formats are converted. [`FetchMode::Gpu`] needs a
     /// shader that reads each register as

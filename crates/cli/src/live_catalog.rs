@@ -1,6 +1,6 @@
 //! The playlist builder's catalog: what the owner's own game ships that a
 //! hopper can point at, written as `catalog.json` beside the art manifest by
-//! `h2 live assets extract` (docs/live-admin.md, "The catalog"). Nothing of
+//! `h2 live assets extract` (docs/live/live-admin.md, "The catalog"). Nothing of
 //! it is in the repo; tests build synthetic tag memory.
 //!
 //! Three lists, each read from the main menu map, each left out (and named
@@ -13,7 +13,7 @@
 //!   campaign levels, `kind: "campaign"`, keyed by map file stem: the
 //!   level list the game starts levels from (`matg +0x170`, element 0,
 //!   `0x108`-byte entries: campaign id, map id, scenario path;
-//!   docs/level-boot.md) joined on (campaign id, map id) with the level
+//!   docs/runtime/level-boot.md) joined on (campaign id, map id) with the level
 //!   select's entries (`matg +0x178`, element 0, block at `+0x8`,
 //!   `0xb50`-byte entries: campaign id, map id, picture, names,
 //!   descriptions).
@@ -22,7 +22,7 @@
 //!   `<key>_title` / `<key>_description`; the compiled-in defaults
 //!   (`0x00193c70`) write these texts into a hopper's title and description.
 //! - **variants**: the built-in game variants of the variant-settings tag
-//!   (`goof +0x28`, docs/community-gametypes.md): name and game type.
+//!   (`goof +0x28`, docs/game/community-gametypes.md): name and game type.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
@@ -110,7 +110,7 @@ pub struct VariantEntry {
     /// `assault`, `territories`.
     pub game_type: String,
     /// The game-engine index a variant carries at `+0x44` (what a hopper
-    /// record's variant holds; docs/live-gamestate.md).
+    /// record's variant holds; docs/live/live-gamestate.md).
     pub engine: u32,
 }
 
@@ -470,7 +470,7 @@ fn read_playlists<R: Read + Seek>(map: &mut Map<R>, l: &Localization) -> Result<
     Ok(playlist_texts(&strings))
 }
 
-/// The hopper file descriptor's tag (docs/live-motd.md §1.2), by its last
+/// The hopper file descriptor's tag (docs/live/live-motd.md §1.2), by its last
 /// path component.
 pub const HOPPER_STRINGS: &str = "matchmaking_hopper_descriptions";
 

@@ -1,4 +1,4 @@
-// Signed event writes from the browser (docs/live-security.md §2 and §3),
+// Signed event writes from the browser (docs/live/live-security.md §2 and §3),
 // the way `h2 live friend ...` and `h2 live team ...` send them: the body
 // {stream, type, data, author, kid, at, nonce} as canonical JSON in a
 // compact JWS with header {alg: "EdDSA", kid, typ: "h2live-event"}, POSTed

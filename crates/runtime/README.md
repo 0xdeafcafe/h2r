@@ -116,7 +116,7 @@ wake bit on the exact access that exhausts the budget; slow helpers and every
 handler exit settle the count into the context. No lock spans a handler,
 helper call or transfer. A view or RAM pointer must not escape its invocation,
 and accessor buffers must not alias the RAM view. See the emitter contract
-for the full foreign-code protocol and `docs/performance.md` for measurements.
+for the full foreign-code protocol and `docs/perf/performance.md` for measurements.
 
 ### Range protection, unmapping and physical reservations
 
@@ -452,5 +452,5 @@ check the resume table before entry dispatch.
 
 ## Performance instrumentation
 
-See [performance](../../docs/performance.md) for opt-in per-context counters,
+See [performance](../../docs/perf/performance.md) for opt-in per-context counters,
 coarse timers, generated `H2_PERF=1` counters, and the menu FPS acceptance test.

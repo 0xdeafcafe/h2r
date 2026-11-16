@@ -3,7 +3,7 @@
 //!
 //! Read at run time from the main menu map's `goof` tag
 //! (`multiplayer_game_settings`) and the `sily` setting definitions its
-//! pages name (docs/community-gametypes.md has the layout), with labels from
+//! pages name (docs/game/community-gametypes.md has the layout), with labels from
 //! the tag's `unic` strings. Without a disc, [`Schema::fallback`] is our
 //! symbolic model: every setting the record can store, our names, and no
 //! value lists (any value the record accepts).

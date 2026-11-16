@@ -1,4 +1,4 @@
-//! The host shell the recompiled game runs inside (see docs/app.md).
+//! The host shell the recompiled game runs inside (see docs/runtime/app.md).
 //!
 //! [`run`] owns the macOS main thread: it opens the window, creates the wgpu
 //! device on a Metal surface, opens the audio device, then starts the guest
@@ -108,7 +108,7 @@ pub struct AppConfig {
     /// banner is configured.
     pub banner: Option<Banner>,
     /// The development-build watermark along the bottom of the game image
-    /// (docs/app.md "Watermark"). F3 toggles it; F3 does not reach the
+    /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
 }
@@ -471,7 +471,7 @@ mod input_tests {
 
     #[test]
     fn timeline_replaces_live_input_and_advances_only_on_runner_clock() {
-        let script = Timeline::from_toml(include_str!("../../../docs/input-menu-example.toml"))
+        let script = Timeline::from_toml(include_str!("../../../docs/input/input-menu-example.toml"))
             .unwrap()
             .playback();
         let config = AppConfig {
@@ -502,7 +502,7 @@ mod input_tests {
     fn documented_bindings_drive_all_fallback_inputs_and_release_on_focus_loss() {
         let config = AppConfig {
             gamepads: false,
-            bindings: Bindings::from_toml(include_str!("../../../docs/input-default.toml"))
+            bindings: Bindings::from_toml(include_str!("../../../docs/input/input-default.toml"))
                 .unwrap(),
             ..Default::default()
         };

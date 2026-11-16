@@ -25,7 +25,7 @@ use std::{
 };
 
 /// Addresses in the retail Halo 2 XBE (title 4D530064, XDK 5849). See
-/// docs/xapi.md for how each one was identified.
+/// docs/runtime/xapi.md for how each one was identified.
 pub mod addr {
     pub const XLAUNCH_NEW_IMAGE_A: u32 = 0x002d_07f2;
     pub const XMOUNT_UTILITY_DRIVE: u32 = 0x002d_5b77;
@@ -262,7 +262,7 @@ impl Registration {
 /// Install every override in [`OVERRIDES`], or nothing. Fails closed with
 /// [`RegisterError::Occupied`] if any address already has an override
 /// (including this crate's own, so registering twice is reported). The
-/// power-down pair is part of the same edit, as docs/xapi.md requires.
+/// power-down pair is part of the same edit, as docs/runtime/xapi.md requires.
 pub fn register<S: Storage + Send + 'static>(
     dispatch: &mut Dispatch,
     xapi: &Arc<Mutex<Xapi<S>>>,

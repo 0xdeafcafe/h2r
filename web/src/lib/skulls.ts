@@ -1,5 +1,5 @@
 // Halo 2's fifteen skulls (gameplay modifiers), then six of our own (15..20,
-// hidden in campaign levels by the runtime; docs/skulls.md "Our skulls").
+// hidden in campaign levels by the runtime; docs/game/skulls.md "Our skulls").
 // Games report which were on as `skulls`, sorted unique indices, absent when
 // none were. This is the name and effect table, and the helpers for the
 // `?skulls=` query.

@@ -30,7 +30,7 @@
 //! faulted or stopped.
 //!
 //! A second sink, the controller speaker ([`SideOutput`],
-//! `docs/playstation-audio.md`), plays the voices the pad router labelled.
+//! `docs/audio/playstation-audio.md`), plays the voices the pad router labelled.
 //! The mixer renders both from the same frames (`Mixer::render_split`), on
 //! the same clock; the side sink only has its own queue and resampler, so it
 //! can underrun on its own. While the side sink is absent or has lost its

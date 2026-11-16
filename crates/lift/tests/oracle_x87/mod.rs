@@ -1,6 +1,6 @@
 //! What Unicorn cannot answer about x87 state, and how the oracle harness
-//! steps around it: masks by mnemonic, as docs/FLOAT.md §2.9 and
-//! docs/FLOAT-ABI.md §6.3 set out. `crates/x87` is the authority for these
+//! steps around it: masks by mnemonic, as docs/lifter/FLOAT.md §2.9 and
+//! docs/lifter/FLOAT-ABI.md §6.3 set out. `crates/x87` is the authority for these
 //! bits, and they are taken from our side:
 //!
 //! - the sticky exception flags but ZE (IE/DE/OE/UE/PE/SF), which Unicorn

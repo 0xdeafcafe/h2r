@@ -3,7 +3,7 @@
 //! fallback. Host `f32` arithmetic is IEEE round-to-nearest like the guest
 //! at its default MXCSR; FTZ is honoured on results. `rcp`/`rsqrt` return
 //! the exact quotient rather than the hardware's 12-bit estimate, and NaN
-//! propagation follows the host. See docs/FLOAT.md for the real design.
+//! propagation follows the host. See docs/lifter/FLOAT.md for the real design.
 
 use iced_x86::{Instruction, MemorySize, Mnemonic, OpKind, Register};
 use ir::interp::Cpu;

@@ -1,7 +1,7 @@
 //! Resources for translated Xbox shader programs.
 //!
 //! `crates/shaders` emits one WGSL module per vertex/pixel pair with a fixed
-//! resource contract (its `docs/shaders.md`):
+//! resource contract (its `docs/graphics/shaders.md`):
 //!
 //! | group | binding | contents |
 //! |---|---|---|

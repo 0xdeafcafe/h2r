@@ -126,7 +126,7 @@ pub fn shared_sources(source: &MapSource) -> Vec<(ResourceFile, MapSource)> {
 }
 
 /// The scenario's structure BSP tags (`scnr+0x210`, stride 0x44, tag ID at
-/// `+0x14`; docs/live-art.md).
+/// `+0x14`; docs/live/live-art.md).
 pub fn scenario_bsps<R: Read + Seek>(map: &mut Map<R>) -> crate::Result<Vec<TagId>> {
     let scenario = map
         .scenario()
@@ -214,7 +214,7 @@ fn bsp_triangles(bsp: &StructureRender, raw: &mut dyn RawSource, out: &mut Vec<T
 }
 
 /// Rotation from yaw, pitch, roll (radians): `Rz(yaw) · Ry(−pitch) · Rx(roll)`
-/// as docs/live-art.md established for placements. Columns are the forward,
+/// as docs/live/live-art.md established for placements. Columns are the forward,
 /// left and up axes.
 pub fn rotation(ypr: Vec3) -> [Vec3; 3] {
     let (sy, cy) = ypr[0].sin_cos();

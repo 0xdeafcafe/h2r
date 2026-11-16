@@ -4,7 +4,7 @@
 //!
 //! Self-contained (hand-written codecs, no schema/build.rs involvement), like
 //! [`crate::sound`]. Every interpreted field names the engine instruction that
-//! reads it; `docs/shader-instances.md` has the full provenance table and the
+//! reads it; `docs/formats/shader-instances.md` has the full provenance table and the
 //! disc results. Fields that no reached engine code reads are kept as raw
 //! bytes or undereferenced [`RawBlock`]s, never guessed.
 //!

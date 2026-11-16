@@ -7,7 +7,7 @@
 //! inner backend is never written; rewritten files live in memory only.
 //!
 //! The boot runner uses it to swap button-icon glyphs in the disc's font
-//! files (`docs/button-icons.md`).
+//! files (`docs/input/button-icons.md`).
 use std::collections::HashMap;
 
 use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};

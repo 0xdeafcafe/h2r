@@ -1,4 +1,4 @@
-/* Guarded native binary64 x87 lowering. See docs/x87-native.md for the
+/* Guarded native binary64 x87 lowering. See docs/lifter/x87-native.md for the
  * value/range proof and the PE/C1 reconstruction. All other cases call the
  * ext80 authority. Architectural registers always retain their 10 bytes. */
 #ifndef H2X87_NATIVE_H

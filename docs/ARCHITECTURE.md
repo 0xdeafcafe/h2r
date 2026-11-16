@@ -74,7 +74,7 @@ What makes stage 2 safe:
 Statically linked SDK libraries (D3D, DSOUND, XONLINE, XNET, BINK, ...) are
 not recompiled. Their functions are found by signature and replaced at the
 dispatch table with native Rust implementations: D3D on wgpu, DSound on
-cpal, Bink by a high-level player ([bink-hle.md](bink-hle.md)), and Xbox
+cpal, Bink by a high-level player ([bink-hle.md](audio/bink-hle.md)), and Xbox
 Live stubbed out.
 
 ## Crates
@@ -87,40 +87,55 @@ Every crate below is on master. "Done" means it does what its row says;
 | `xiso`    | Reads the XDVDFS game partition (plain XISO or full Redump image) | done |
 | `xbe`     | Parses the XBE: header, certificate, sections, libraries, kernel thunks | done |
 | `analyze` | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export | done |
-| `symbols` | Identifies statically linked XDK library functions by OOVPA signature ([xdk-libraries.md](xdk-libraries.md)) | done |
-| `map`     | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](map-format.md)) | done |
-| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](sound.md)), localized text ([localization.md](localization.md)) and the effects family ([effects.md](effects.md)) | done |
-| `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics.md)) | done, foundation only |
-| `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](bitmaps.md)) | done |
-| `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](fonts.md)) | done |
-| `movies`  | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](movies.md)) | done |
-| `hs`      | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) | decoding done; the VM is not wired into the game yet |
-| `shaders` | Xbox vertex microcode and register-combiner translation to WGSL ([shaders.md](shaders.md)) | done |
-| `viewer`  | Render-model and structure BSP viewer and exporters, drawing with `gfx` ([structure-bsp.md](structure-bsp.md)) | done |
-| `audio`   | DirectSound replacement: voices, mixer, effects, output ([audio.md](audio.md)) | done |
-| `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](dsound.md)) | done |
-| `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](xapi.md)) | done |
-| `asf`     | ASF demuxer for the retail sound permutations ([wma.md](wma.md)) | done |
-| `wma`     | Native WMAv2 decoder ([wma.md](wma.md)) | done |
-| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](bink-hle.md)) | done, opt-in |
-| `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
-| `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](app.md)) | done; `h2 play` runs the game in it |
-| `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
+| `symbols` | Identifies statically linked XDK library functions by OOVPA signature ([xdk-libraries.md](lifter/xdk-libraries.md)) | done |
+| `map`     | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](formats/map-format.md)) | done |
+| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](formats/sound.md)), localized text ([localization.md](formats/localization.md)) and the effects family ([effects.md](formats/effects.md)) | done |
+| `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics/graphics.md)) | done, foundation only |
+| `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](formats/bitmaps.md)) | done |
+| `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](formats/fonts.md)) | done |
+| `movies`  | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) | done |
+| `hs`      | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) | decoding done; the VM is not wired into the game yet |
+| `shaders` | Xbox vertex microcode and register-combiner translation to WGSL ([shaders.md](graphics/shaders.md)) | done |
+| `viewer`  | Render-model and structure BSP viewer and exporters, drawing with `gfx` ([structure-bsp.md](formats/structure-bsp.md)) | done |
+| `audio`   | DirectSound replacement: voices, mixer, effects, output ([audio.md](audio/audio.md)) | done |
+| `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](audio/dsound.md)) | done |
+| `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](runtime/xapi.md)) | done |
+| `asf`     | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) | done |
+| `wma`     | Native WMAv2 decoder ([wma.md](audio/wma.md)) | done |
+| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, on by default (`h2 run --no-bink` turns it off) |
+| `input`   | XInput (XAPI) controller replacement foundation ([input.md](input/input.md)) | done, foundation only |
+| `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](runtime/app.md)) | done; `h2 play` runs the game in it |
+| `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) | done |
 | `ir`      | Backend-independent semantic IR for lifted code, with a reference interpreter | done for integer, x87, SSE1 and MMX |
-| `lift`    | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](LIFTER.md)) | done for integer, x87, SSE1 and MMX |
-| `x87`     | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](FLOAT-ABI.md)) | done |
-| `simd`    | Bit-exact SSE1 reference semantics, in Rust and C ([simd.md](simd.md)) | done |
+| `lift`    | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](lifter/LIFTER.md)) | done for integer, x87, SSE1 and MMX |
+| `x87`     | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](lifter/FLOAT-ABI.md)) | done |
+| `simd`    | Bit-exact SSE1 reference semantics, in Rust and C ([simd.md](lifter/simd.md)) | done |
 | `emit`    | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) | done |
-| `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
-| `sse-oracle` | SSE1/MMX results from x86-64 hardware under Rosetta 2 ([sse-oracle.md](sse-oracle.md)) | done |
+| `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](lifter/oracle.md)) | done |
+| `sse-oracle` | SSE1/MMX results from x86-64 hardware under Rosetta 2 ([sse-oracle.md](lifter/sse-oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/README.md)) | done |
-| `kernel`  | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](kernel-imports.md), [kernel README](../crates/kernel/README.md)) | in progress: covers the boot to the menu and the first level |
-| `d3d`     | Guest-facing Direct3D 8 over `gfx`, including push-buffer execution ([d3d.md](d3d.md)) | in progress: the menu and the first level render |
-| `boot`    | Builds the whole XBE into a dylib and runs it with every HLE crate registered ([BOOT.md](BOOT.md)) | done |
-| `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; not yet registered with `runtime` |
-| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([perf.md](perf.md)) | done |
-| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([perf.md](perf.md)) | done |
+| `kernel`  | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md)) | in progress: covers the boot to the menu and the first level |
+| `d3d`     | Guest-facing Direct3D 8 over `gfx`, including push-buffer execution ([d3d.md](graphics/d3d.md)) | in progress: the menu and the first level render |
+| `boot`    | Builds the whole XBE into a dylib and runs it with every HLE crate registered ([BOOT.md](runtime/BOOT.md)) | done |
+| `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
+| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([perf.md](perf/perf.md)) | done |
+| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([perf.md](perf/perf.md)) | done |
 | `cli`     | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) | done |
+| `opt`     | IR-to-IR optimisation passes between lifting and emission | done |
+| `feature` | The feature registry: named points, hook chains, switches, the frame and game bridges ([feature-engine.md](engine/feature-engine.md)) | in progress |
+| `settings` | Host settings as a schema: definitions, one store, one writer for `settings.toml` ([feature-engine.md](engine/feature-engine.md), "Settings") | done |
+| `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison ([high-framerate.md](game/high-framerate.md)) | done |
+| `content` | Map packages: manifest, `MapId`, PPF/IPS/BPS patches and the resolver ([maps.md](game/maps.md)) | foundation built |
+| `editor`  | `h2-editor`, the native editor suite (egui + wgpu) and its `Tool` trait ([editor.md](editor/editor.md)) | in progress |
+| `scenario-edit` | Sapien-style scenario placement editor writing patched `.map` files ([scenario-editor.md](editor/scenario-editor.md)) | in progress |
+| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor panel ([variants.md](editor/variants.md)) | in progress |
+| `live-proto` | Wire types, signing and verification shared by the Live clients and server ([live-api.md](live/live-api.md)) | in progress |
+| `live-server` | The Xbox Live replacement service: signed events on Postgres behind axum ([live.md](live/live.md)) | in progress |
+| `live-hle` | Xbox Live public-entry overrides in the game ([live-boundary.md](live/live-boundary.md)) | in progress, opt-in |
+| `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
+| `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
+| `tvos`    | The tvOS app's Rust half, a static library for the UIKit host in `platform/tvos` ([tvos.md](runtime/tvos.md)) | spike |
+| `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
 
 ### Lifter checks
 
@@ -148,7 +163,7 @@ The corpus was 37,207 fixtures when last counted: the original 21,152, plus
 matches, 0 differences and 914 skips. These counts predate x87 lowering
 (e5c4251) and have not been redone since: the x87 skips below should now be
 matches, and the fixture files come from `oracle-fixtures`
-(docs/oracle.md), so the totals may differ too. The test prints the skip
+(docs/lifter/oracle.md), so the totals may differ too. The test prints the skip
 classes (`--nocapture`):
 
 | skipped | why |
@@ -170,10 +185,10 @@ operation-wide accessors (`crates/emit/RUNTIME-CONTRACT.md`).
 1. Parse the disc and XBE. *(done)*
 2. Discover functions until coverage of `.text` is close to 100%. *(enough
    for the boot; a few holed jump tables still go through the fallback
-   interpreter, see [BOOT.md](BOOT.md))*
+   interpreter, see [BOOT.md](runtime/BOOT.md))*
 3. Lift the code and run from the entry point to the first kernel call. *(done)*
 4. Replace the kernel imports and reach D3D device creation. *(done)*
 5. Draw the first frame (`mainmenu.map`) through the D3D replacement. *(done)*
 6. Reach and render the first campaign level. *(done: The Heretic renders
    past 8,000 frames)*
-7. 30 fps ([perf-budget.md](perf-budget.md)).
+7. 30 fps ([perf-budget.md](perf/perf-budget.md)).

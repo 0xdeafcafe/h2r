@@ -4,8 +4,8 @@ The web front end for h2recomp's Xbox Live replacement (`crates/live-server`).
 It shows everyone who has signed up, who is online, the games they are
 playing as they happen (live top-down map, scoreboard, kill feed), replays of
 finished games, and the raw event log with signature checks. It is built
-against the contract in [docs/live-api.md](../docs/live-api.md) and
-[docs/live-security.md](../docs/live-security.md).
+against the contract in [docs/live/live-api.md](../docs/live/live-api.md) and
+[docs/live/live-security.md](../docs/live/live-security.md).
 
 Stack: TypeScript, SolidJS, @solidjs/router, Vite, plain CSS. Bun is the
 package manager and test runner.
@@ -122,7 +122,7 @@ at `/dash/sessions/:id`. Both ask the server again every four seconds while
 the tab is showing (`src/state/sessions.ts`). It is read-only: joining
 happens in the game.
 
-**Custom maps** (docs/maps.md §5). A session's advertisement and a game
+**Custom maps** (docs/game/maps.md §5). A session's advertisement and a game
 may carry a `map_id`, the map package played; `map` is then its base map.
 The app looks each `map_id` up once per page load (`GET /v1/maps/{id}`,
 `src/state/maps.ts`; the rules are pure in `src/lib/maps.ts`). "Find a
@@ -146,7 +146,7 @@ puts about a third of its sessions and multiplayer games on them or on an
 id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
 
 **Server stats.** The home's windowed numbers come from the server's
-summary (`GET /v1/stats/summary?window=`, docs/live-api.md "Stats
+summary (`GET /v1/stats/summary?window=`, docs/live/live-api.md "Stats
 summary"), a projection the server keeps in day and hour buckets; the page
 asks again every 30 seconds (`src/state/statsSummary.ts`) and draws its
 boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
@@ -183,7 +183,7 @@ key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
 UI says so. "Download for h2" saves an `accounts.json`-style file for
 `h2 live account import <file>`.
 
-**Friends and clans** come from the server (docs/live-api.md "Friends" and
+**Friends and clans** come from the server (docs/live/live-api.md "Friends" and
 "Teams"). Halo 2's clans are built on the Xbox Live Teams API, so the
 protocol, the events and the code's types say team; everything the site
 shows says clan. The dashboard's friends and clans screens
@@ -216,7 +216,7 @@ repo or in the build.
 
 **Game art (optional, never shipped).** A server whose owner ran
 `h2 live assets extract` on their own disc serves that art at
-`/art/game/manifest.json` (docs/live-api.md "Optional game art"), by default
+`/art/game/manifest.json` (docs/live/live-api.md "Optional game art"), by default
 only to a browser on the same machine. The app asks once at startup and on a
 server change (`src/state/gameart.ts`); a 404 or anything unreadable means
 "use the art pack", and a miss is remembered for a minute. With a manifest,
@@ -385,7 +385,7 @@ optional; a frame without them draws as before.
   after the level and without depth: decals pulled just in front of their
   wall and multiplied, doubled or alpha-blended as their material's
   `extras.blend` says, glows and light shafts added, unlit and unfogged
-  (docs/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
+  (docs/live/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
   camera before everything else, moving with it but not turning, its
   additive layers left out; behind it is the sky's clear colour, else its
   fog colour. The sky's fog is linear, clear up to its start past the

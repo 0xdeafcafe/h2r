@@ -1,6 +1,6 @@
 //! Xbox Live public-entry overrides for Halo 2 retail XONLINES 5849.
 //! Each Runtime owns one Hle. Locks are guest memory, then Live state, and
-//! neither guard escapes an invocation. See docs/live-boundary.md for the ABI.
+//! neither guard escapes an invocation. See docs/live/live-boundary.md for the ABI.
 #![deny(unsafe_code)]
 
 mod client;
@@ -189,7 +189,7 @@ impl Hle {
             .set_game_id(id)
     }
     /// Who may find this console's hosted sessions in the server's lists and
-    /// the custom games browser (docs/live-custom-games.md). Boot sets it from
+    /// the custom games browser (docs/live/live-custom-games.md). Boot sets it from
     /// the `live.visibility` setting; open advertisements are updated at once.
     /// No guest memory access.
     pub fn set_session_visibility(&self, v: Visibility) {
@@ -208,14 +208,14 @@ impl Hle {
             .set_visibility_probe(probe)
     }
     /// Lets advertisements say exactly which map the host has loaded
-    /// (`NewSession.map_id`, docs/maps.md §5). Without it they name none.
+    /// (`NewSession.map_id`, docs/game/maps.md §5). Without it they name none.
     pub fn set_map_probe(&self, probe: Option<MapProbe>) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_map_probe(probe)
     }
-    /// The host's multiplayer skulls (docs/skulls.md "In multiplayer"):
+    /// The host's multiplayer skulls (docs/game/skulls.md "In multiplayer"):
     /// advertisements carry them from now, and open ones are updated at
     /// once. No guest memory access.
     pub fn set_session_skulls(&self, skulls: Option<Vec<u8>>) {
@@ -225,7 +225,7 @@ impl Hle {
             .set_session_skulls(skulls)
     }
     /// Lets each advertisement and update the game makes read the host's
-    /// skulls afresh (docs/skulls.md "In multiplayer"); called with guest
+    /// skulls afresh (docs/game/skulls.md "In multiplayer"); called with guest
     /// memory held, so it must take no lock guest memory may come after.
     pub fn set_skulls_probe(&self, probe: Option<SkullsProbe>) {
         self.state

@@ -1,4 +1,4 @@
-//! The test list of docs/FLOAT-ABI.md §6, groups 1-8 (group 8's layout half
+//! The test list of docs/lifter/FLOAT-ABI.md §6, groups 1-8 (group 8's layout half
 //! is in tests/abi.rs).
 //!
 //! Expected values are hex literals. Each comment says where the value comes

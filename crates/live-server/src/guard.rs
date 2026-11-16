@@ -1,5 +1,5 @@
 //! In-memory request guards: a replay set for token `jti`s, event nonces
-//! and invites, and per-key rate limits (docs/live-security.md §3, §6).
+//! and invites, and per-key rate limits (docs/live/live-security.md §3, §6).
 
 use std::collections::HashMap;
 use std::sync::Mutex;

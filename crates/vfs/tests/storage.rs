@@ -1702,7 +1702,7 @@ fn format_device_stays_inside_the_volume_after_root_or_ancestor_swaps() {
     }
 }
 
-/// Content installed on the host by `h2 import-mappack` (docs/map-pack.md)
+/// Content installed on the host by `h2 import-mappack` (docs/game/map-pack.md)
 /// shows up to the guest under `T:\$c\<offer id>\`, and the guest can list it.
 #[test]
 fn installed_content_appears_under_t_content_dir() {
@@ -1763,7 +1763,7 @@ fn installed_content_appears_under_t_content_dir() {
 }
 
 /// The open observer and host-file lookups the controller-speaker sound
-/// index uses (docs/playstation-audio.md): a disc entry is a region of the
+/// index uses (docs/audio/playstation-audio.md): a disc entry is a region of the
 /// image file, a hard-disk file is the whole host file.
 #[test]
 fn opens_are_observed_with_their_host_bytes() {

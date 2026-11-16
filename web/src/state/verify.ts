@@ -1,4 +1,4 @@
-// Event signature checks (docs/live-security.md §2): each wire event carries
+// Event signature checks (docs/live/live-security.md §2): each wire event carries
 // the author's compact JWS (EdDSA / Ed25519) over its canonical body. We
 // verify with WebCrypto, off the hot path and in batches, and report a
 // status per log position.

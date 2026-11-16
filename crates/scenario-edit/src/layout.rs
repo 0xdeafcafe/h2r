@@ -1,10 +1,10 @@
 //! Where each placement block lives in the scenario (`scnr`) root, its element
 //! stride, and the fields of an element this crate reads and edits.
 //!
-//! Evidence labels follow docs/forge.md: **E** read from the retail XBE,
+//! Evidence labels follow docs/game/forge.md: **E** read from the retail XBE,
 //! **V** checked over every scenario on the owner's disc, **C** a public
 //! community layout (cross-check only). Every byte of an element that is not
-//! listed here is preserved untouched; see docs/scenario-editor.md for the
+//! listed here is preserved untouched; see docs/editor/scenario-editor.md for the
 //! per-field addresses.
 
 /// The scenario blocks this editor knows.
@@ -110,7 +110,7 @@ pub struct BlockDef {
     pub palette: Option<PaletteDef>,
     pub fields: &'static [FieldDef],
     /// Why entries may not be swap-removed, or `None` when nothing in the
-    /// map refers to them by index (docs/scenario-editor.md §6).
+    /// map refers to them by index (docs/editor/scenario-editor.md §6).
     pub remove_refusal: Option<&'static str>,
     /// Why entries may not be added, or `None`.
     pub add_refusal: Option<&'static str>,

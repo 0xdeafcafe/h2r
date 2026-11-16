@@ -1,13 +1,13 @@
 [package]
 name = "live-proto"
-description = "Wire types, signing and verification shared by the Xbox Live replacement's clients and server (docs/live-api.md, docs/live-security.md)"
+description = "Wire types, signing and verification shared by the Xbox Live replacement's clients and server (docs/live/live-api.md, docs/live/live-security.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
-# MapId and the map package manifest (docs/maps.md §5).
+# MapId and the map package manifest (docs/game/maps.md §5).
 content.workspace = true
 serde.workspace = true
 # Exact float parsing: the canonical-payload check re-serialises numbers.

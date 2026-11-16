@@ -1,7 +1,7 @@
 // A level's layers in the 3D view: decals and overlays on its surfaces, and
 // effects in the air (glows, light shafts and volumes, waterfalls). The map
 // glb keeps them in `decals_<n>` and `effects_<n>` nodes under each zone;
-// each material's extras say how it blends (docs/live-art.md, "Layers").
+// each material's extras say how it blends (docs/live/live-art.md, "Layers").
 // `layerOf` and `layerLook` are pure; `dressLayer` swaps a loaded mesh's
 // material for one that blends that way.
 //

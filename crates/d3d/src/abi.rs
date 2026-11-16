@@ -3,7 +3,7 @@
 //! Halo's D3D was link-time code generated, so most entry points take
 //! arguments in whatever registers the optimiser picked. The conventions
 //! below were recovered per function from the XBE (call-site setup plus
-//! register liveness at entry, see `docs/d3d.md`). Each adapter reads its
+//! register liveness at entry, see `docs/graphics/d3d.md`). Each adapter reads its
 //! arguments from [`Regs`] and the guest stack, calls the [`Device`] method,
 //! and returns the `EAX` (and `EDX` where relevant) result plus how many
 //! stack bytes the callee pops.
@@ -79,7 +79,7 @@ pub type Adapter<B> = fn(&mut Device<B>, &mut dyn GuestMemory, &Regs) -> Result<
 pub struct Entry<B: Backend> {
     /// Guest address of the function.
     pub addr: u32,
-    /// XDK name (or the name assigned in `docs/d3d.md` for unmatched ones).
+    /// XDK name (or the name assigned in `docs/graphics/d3d.md` for unmatched ones).
     pub name: &'static str,
     /// Recovered convention, human-readable.
     pub convention: &'static str,
@@ -216,7 +216,7 @@ pub fn stops(addr: u32) -> bool {
 ///   (the commit `0x400fa0`, `MakeRequestedSpace` `0x3faae0`), and push only
 ///   methods the drain decodes, like any inline writer.
 ///
-/// See `docs/d3d.md`.
+/// See `docs/graphics/d3d.md`.
 pub const NATIVE: &[(u32, &str, &str)] = &[
     (
         0x3fb7a0,

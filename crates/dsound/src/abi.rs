@@ -2,7 +2,7 @@
 //!
 //! Layouts marked "verified" were confirmed in Halo 2's own disassembly; the
 //! rest are from the public XDK headers as remembered by Cxbx-Reloaded and are
-//! flagged in `docs/dsound.md`.
+//! flagged in `docs/audio/dsound.md`.
 
 use crate::host::{GuestMemory, MemFault, at};
 use audio::WaveFormat;

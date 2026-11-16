@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 /// The co-op channel's host UDP port, counted from the XNet base port
 /// (`live_hle::NetworkConfig::address`). The title's own channels use base
-/// +0, +1, +5 and +6 and the QoS responder +2 (docs/live.md, "Client HLE:
+/// +0, +1, +5 and +6 and the QoS responder +2 (docs/live/live.md, "Client HLE:
 /// sockets and System Link"), so a host that forwards base..base+6 for
 /// System Link already forwards this one.
 pub const COOP_PORT_OFFSET: u16 = 4;

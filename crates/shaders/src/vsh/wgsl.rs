@@ -133,7 +133,7 @@ pub struct VertexUniforms {
     /// 0 at the guest's size. A target rendered at `s` times the guest's
     /// size takes `(2 s - 1) / (4 s)` (`gfx::renderer::window_shift`), so
     /// an edge on a guest pixel centre covers whole blocks of host pixels,
-    /// as it covers whole pixels at 1x (docs/high-resolution.md,
+    /// as it covers whole pixels at 1x (docs/graphics/high-resolution.md,
     /// "Half-pixel and texel offsets").
     pub shift: f32,
 }
@@ -422,7 +422,7 @@ pub fn translate(
     }
     s.push_str("    var a0: i32 = 0;\n");
     if local_consts {
-        // Constant writes stay within this vertex; see docs/shaders.md.
+        // Constant writes stay within this vertex; see docs/graphics/shaders.md.
         s.push_str("    var cw = xvs.c;\n");
     }
     for (i, inst) in program.instructions.iter().enumerate() {

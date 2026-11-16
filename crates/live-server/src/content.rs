@@ -1,5 +1,5 @@
-//! The content store for custom and modded maps (docs/maps.md §5,
-//! docs/live-api.md "Custom maps", docs/live-admin.md "Custom content").
+//! The content store for custom and modded maps (docs/game/maps.md §5,
+//! docs/live/live-api.md "Custom maps", docs/live/live-admin.md "Custom content").
 //!
 //! - **Blobs** (patches, packs, user-made maps, preview images) are kept by
 //!   SHA-256 under `<data>/content/<aa>/<sha256>`: checked on upload,
@@ -59,7 +59,7 @@ pub const CONTENT_DIR: &str = "content";
 pub const MAX_IMAGE_BYTES: u64 = ::content::manifest::MAX_IMAGE_BYTES;
 const MIB: u64 = 1024 * 1024;
 
-/// Sizes and rates for uploads (docs/live-admin.md, "Custom content").
+/// Sizes and rates for uploads (docs/live/live-admin.md, "Custom content").
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentLimits {
     /// A patch, pack or image.
@@ -1033,7 +1033,7 @@ impl Live {
         Ok(recorded[0].position)
     }
 
-    /// Whether a session may advertise `map_id` (docs/maps.md §5): not on
+    /// Whether a session may advertise `map_id` (docs/game/maps.md §5): not on
     /// content an admin took down, and with ranked flags only a retail map
     /// (from [`RETAIL_FILE`]) or one pinned on the hopper.
     pub(crate) fn check_session_map(

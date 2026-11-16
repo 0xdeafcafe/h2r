@@ -8,7 +8,7 @@
 //! Handled by the pipeline: blend, depth/stencil, cull/front-face, fill mode,
 //! colour write mask, depth bias. Handled at draw time (not part of the
 //! pipeline): stencil reference, blend constant. Handled in shaders (future
-//! work, see `docs/graphics.md`): alpha test, fog, shade mode, texture-stage
+//! work, see `docs/graphics/graphics.md`): alpha test, fog, shade mode, texture-stage
 //! combiners.
 
 use crate::state::*;

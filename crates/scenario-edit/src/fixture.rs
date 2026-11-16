@@ -1,6 +1,6 @@
 //! An invented multiplayer cache: every byte below is made up here. No
 //! layout value, name or data comes from a game file. Used by this crate's
-//! tests and by the editor's screenshot generator (docs/editor-guide.md).
+//! tests and by the editor's screenshot generator (docs/editor/editor-guide.md).
 use map::{FourCC, TagId};
 
 pub const INDEX: usize = 0x1000;

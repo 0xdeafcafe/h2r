@@ -1,4 +1,4 @@
-# The tvOS app (docs/tvos.md). H2TV.xcodeproj is generated from this with
+# The tvOS app (docs/runtime/tvos.md). H2TV.xcodeproj is generated from this with
 # `xcodegen generate` (in platform/tvos); both are committed, so Xcode alone
 # is enough to build. build.sh fills build/ first: the Rust static library,
 # the game module framework, the trimmed disc and the boot cache.

@@ -1,8 +1,8 @@
 //! Glyph pixel compressor: the inverse of [`crate::decode_pixels`].
 //!
-//! Used to put generated glyphs (button icons, `docs/button-icons.md`) into a
+//! Used to put generated glyphs (button icons, `docs/input/button-icons.md`) into a
 //! font the game reads. The stream uses only the byte kinds the engine's
-//! decompressor (`0x122610`) understands; see `docs/fonts.md` for the table.
+//! decompressor (`0x122610`) understands; see `docs/formats/fonts.md` for the table.
 
 /// The 3-bit code for a 4-bit alpha, if a run byte can carry it. The engine
 /// expands `a` to `(a << 1) | (a & 1)`, so only 0, 3, 4, 7, 8, 11, 12 and 15

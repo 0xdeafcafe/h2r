@@ -1,10 +1,10 @@
 //! Halo 2 animation graphs (`jmad`): skeleton nodes, modes/classes/types/actions,
 //! the animation list, and the per-animation record that locates compressed
 //! frame data. Sampling lives in [`crate::anim_sample`]; the format notes and
-//! evidence are in `docs/animation.md`.
+//! evidence are in `docs/formats/animation.md`.
 //!
 //! Layout provenance. Every offset below was read from the retail engine's
-//! animation code (see `docs/engine-map.md`, "Animation") and checked against
+//! animation code (see `docs/engine/engine-map.md`, "Animation") and checked against
 //! every `jmad` tag on the disc: block bounds fit the payload, and the blocks
 //! whose stride is modelled never overlap one another. Names of fields the
 //! engine never labels are community vocabulary, marked (S) in the docs.
@@ -236,7 +236,7 @@ impl AnimationType {
 }
 
 /// Sizes of the pieces of an animation's data blob, from the 16 bytes at
-/// animation `+0x3c`. See `docs/animation.md` for the layout they describe.
+/// animation `+0x3c`. See `docs/formats/animation.md` for the layout they describe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataSizes {
     /// +0: bytes of the static per-channel flag set (engine adds it, signed

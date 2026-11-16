@@ -1452,7 +1452,7 @@ fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
 }
 
 /// The host's advertisement says exactly which map it has loaded when the
-/// boot's map probe names a package's `MapId` (docs/maps.md §5).
+/// boot's map probe names a package's `MapId` (docs/game/maps.md §5).
 #[test]
 fn advertisements_carry_the_hosts_map_id() {
     let s = Server::new();
@@ -1661,7 +1661,7 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
         vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
     );
 }
-/// A host's multiplayer skulls ride on its advertisement (docs/skulls.md
+/// A host's multiplayer skulls ride on its advertisement (docs/game/skulls.md
 /// "In multiplayer"): a guest that found and joined the session reads them
 /// at game start, asking the server again, so a change the host made after
 /// the join is what the guest applies.
@@ -1765,7 +1765,7 @@ fn guests_read_the_skulls_their_host_advertises() {
         }
     );
 }
-/// The custom games browser (docs/live-custom-games.md) is the retail
+/// The custom games browser (docs/live/live-custom-games.md) is the retail
 /// System Link browser in its Live mode: its search is `0x0008fa80`'s
 /// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly
 /// seven columns. The host's visibility setting decides who gets the row.

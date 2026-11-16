@@ -1,6 +1,6 @@
 // The playlist builder's custom maps: the server's published packages (the
 // catalog's `custom` section) and which of them one hopper allows. Pins are
-// stored on the server beside the hopper file, not in it (docs/maps.md §5:
+// stored on the server beside the hopper file, not in it (docs/game/maps.md §5:
 // ranked playlists allow only retail or admin-pinned map_ids), so each tick
 // saves at once.
 

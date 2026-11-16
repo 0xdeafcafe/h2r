@@ -1,7 +1,7 @@
 //! `patch.lvl` (version 2, what Halo 2 1.0 reads) and `patch_v3.lvl`
 //! (version 3, what the title update reads): the multiplayer map list
 //! entries a content package adds. Layouts and the reading code's addresses
-//! are in docs/map-pack.md section 8.
+//! are in docs/game/map-pack.md section 8.
 //!
 //! A v3 record is a v2 record with one dword (the map's cache header
 //! checksum) inserted at `+0x10c`. So a v2 `patch.lvl` is made from one v3
@@ -124,7 +124,7 @@ pub fn v3_records(file: &[u8]) -> Result<Vec<&[u8]>> {
     Ok(records)
 }
 
-/// The version 2 `patch.lvl` for one v3 record (docs/map-pack.md 8.2).
+/// The version 2 `patch.lvl` for one v3 record (docs/game/map-pack.md 8.2).
 pub fn v2_from_v3(v3: &[u8]) -> Result<Vec<u8>> {
     validate_v3_record(v3)?;
     let mut v2 = vec![0u8; V2_LEN];

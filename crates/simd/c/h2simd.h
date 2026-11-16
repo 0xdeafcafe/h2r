@@ -1,7 +1,7 @@
 /* h2simd.h: bit-exact, MXCSR-exact reference semantics for the Pentium III's
  * SSE1 floating point, for the generated code. The C twin of crates/simd's
  * src/lib.rs, written line for line after it; the two give bit-identical
- * results (crates/simd/tests/differential.rs). Semantics: docs/simd.md.
+ * results (crates/simd/tests/differential.rs). Semantics: docs/lifter/simd.md.
  *
  * Header-only C11, integer soft-float only: no host floating point, no
  * floating-point environment, no undefined behaviour. Compiles cleanly with
@@ -362,7 +362,7 @@ static inline h2s__res h2s__f2i1(uint32_t mx, uint32_t a, int truncate) {
 
 /* The Pentium III's rcp approximation: 1/midpoint of the interval the top 11
  * fraction bits select, rounded to nearest at 12 fraction bits. See
- * rcp_approx in src/lib.rs and docs/simd.md. */
+ * rcp_approx in src/lib.rs and docs/lifter/simd.md. */
 static inline uint32_t h2s_rcp_approx(uint32_t x) {
     uint32_t s = x & 0x80000000u, e = (x >> 23) & 0xff, f = x & 0x007fffffu, d, n;
     int32_t oe;

@@ -373,7 +373,7 @@ impl Machine {
         }
         for _ in 0..max_slices {
             // The whole iteration: what the slice and DPC spans inside it
-            // leave is scheduler work (docs/perf-budget.md).
+            // leave is scheduler work (docs/perf/perf-budget.md).
             let _schedule = timeline::span(timeline::Cat::Sched, timeline::Track::Host, "schedule");
             self.collect_threads()?;
             let live = {

@@ -12,7 +12,7 @@
 //! H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p d3d --test shader_corpus -- --ignored
 //! ```
 //!
-//! See `docs/shaders.md`.
+//! See `docs/graphics/shaders.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +34,7 @@ fn corpus() -> PathBuf {
     let dir = PathBuf::from(std::env::var("H2_SHADER_CORPUS").expect(
         "H2_SHADER_CORPUS is not set. Build the corpus from your disc with \
          `cargo run --release -p cli -- extract-shaders --out $TMPDIR/h2-shaders`, \
-         then set H2_SHADER_CORPUS to that absolute path (docs/shaders.md)",
+         then set H2_SHADER_CORPUS to that absolute path (docs/graphics/shaders.md)",
     ));
     assert!(
         dir.is_absolute(),

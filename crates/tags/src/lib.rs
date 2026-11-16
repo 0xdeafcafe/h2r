@@ -6,32 +6,32 @@
 //! bitmap image/sequence/sprite records are decoded recursively in this stage.
 //! Localized text and compiled `unic` lists have a separate decoder in
 //! [`localization`]. Unknown nested records remain opaque; see
-//! `docs/map-format.md` for evidence. Lighting and atmosphere have a separate
+//! `docs/formats/map-format.md` for evidence. Lighting and atmosphere have a separate
 //! decoder in [`lighting`], extending the shared [`structure`] lightmap reader.
 #![forbid(unsafe_code)]
 
-/// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/effects.md`.
+/// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/formats/effects.md`.
 pub mod effects;
 /// Reviewed edits using the lossless cache writer.
 pub mod edit;
 pub mod wire;
-/// Object collision and physics models (`coll`, `phmo`); see `docs/collision.md`.
+/// Object collision and physics models (`coll`, `phmo`); see `docs/formats/collision.md`.
 pub mod collision;
-/// Sound tags (`snd!`, `ugh!`); self-contained, see `docs/sound.md`.
+/// Sound tags (`snd!`, `ugh!`); self-contained, see `docs/formats/sound.md`.
 pub mod sound;
-/// User-interface tags (`wgit`, `wgtz`, `wigl`, `skin`); self-contained, see `docs/ui.md`.
+/// User-interface tags (`wgit`, `wgtz`, `wigl`, `skin`); self-contained, see `docs/formats/ui.md`.
 pub mod ui;
-/// Animation graphs (`jmad`) and their compressed frame data; see `docs/animation.md`.
+/// Animation graphs (`jmad`) and their compressed frame data; see `docs/formats/animation.md`.
 pub mod anim;
 pub mod anim_sample;
-/// Object family (`obje` subtypes, `hlmt`, `itmc`, `vehc`); see `docs/objects.md`.
+/// Object family (`obje` subtypes, `hlmt`, `itmc`, `vehc`); see `docs/formats/objects.md`.
 pub mod object;
 /// Materials resolved from `shad` tags into ordered, ready-to-draw passes.
 pub mod material;
 /// Shader instances, templates and passes (`shad`, `stem`, `spas`); see
-/// `docs/shader-instances.md`.
+/// `docs/formats/shader-instances.md`.
 pub mod shader;
-/// Lightmap, sky and atmosphere tags; see `docs/lighting.md`.
+/// Lightmap, sky and atmosphere tags; see `docs/formats/lighting.md`.
 pub mod lighting;
 #[cfg(test)]
 mod lighting_tests;
@@ -49,8 +49,8 @@ pub use decode::*;
 // `geometry` is the one section decoder (block info, raw block, fixups,
 // parts, indices, vertex streams), driven by a per-owner `SectionLayout`.
 // `model` reads `mode` tags, `structure` reads `sbsp`/`ltmp` render blocks.
-// Provenance: docs/map-format.md ("Render-model geometry") and
-// docs/structure-bsp.md.
+// Provenance: docs/formats/map-format.md ("Render-model geometry") and
+// docs/formats/structure-bsp.md.
 pub mod geometry;
 pub mod model;
 pub mod structure;

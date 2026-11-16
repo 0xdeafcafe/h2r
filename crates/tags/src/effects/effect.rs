@@ -1,5 +1,5 @@
 //! `effe` (effect): locations, events, and each event's parts, beams,
-//! accelerations and particle systems. Layout and evidence: `docs/effects.md`.
+//! accelerations and particle systems. Layout and evidence: `docs/formats/effects.md`.
 //!
 //! Evidence labels in field docs: **V** verified over every instance on the
 //! disc (stride tiling, pointers, reference classes), **E** corroborated by

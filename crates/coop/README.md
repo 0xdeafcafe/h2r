@@ -1,7 +1,7 @@
 # coop
 
 Co-op over Live, phase 0: what two machines need to run the same game in
-step. Design and status: [docs/live-coop.md](../../docs/live-coop.md)
+step. Design and status: [docs/live/live-coop.md](../../docs/live/live-coop.md)
 (section 8 says what is built and what is left).
 
 | module | what |

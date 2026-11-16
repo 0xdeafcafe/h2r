@@ -7,7 +7,7 @@
 //! cargo run -p app --release --bin h2-app-demo -- --frames 300   # closes itself after 5 s
 //! ```
 //!
-//! What to look for (see docs/app.md, "Demo"):
+//! What to look for (see docs/runtime/app.md, "Demo"):
 //! * the frame is 640x480 shown at 4:3 with black bars, whatever the window
 //!   shape; the circle stays round; corner markers are red (top left), green
 //!   (top right), blue (bottom left), yellow (bottom right) and the 1 px white

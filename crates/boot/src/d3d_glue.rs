@@ -1,5 +1,5 @@
 //! Installs crates/d3d through its own registration (`d3d::register`,
-//! docs/d3d.md "Integration") on a headless RecordingBackend that keeps no
+//! docs/graphics/d3d.md "Integration") on a headless RecordingBackend that keeps no
 //! history ([`Headless`]), so the boot
 //! tracer gets past device creation without a window (or on a headless
 //! GfxBackend with `H2_BOOT_GFX`). Uploads are `UploadPolicy::Tracked`,
@@ -38,7 +38,7 @@ impl Installed {
 /// `H2_BOOT_GFX_EVERY` swaps, default 30) is written to `<dir>` as
 /// `frame-NNNNN.png`. With `H2_RENDER_SCALE=N` (2..6) the frames come
 /// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
-/// docs/high-resolution.md), `frame-NNNNN.png` is the view's image and
+/// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
 /// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
 /// view's counts. Halo's frame wait goes through
 /// `d3d::register_frame_wait` either way.
@@ -85,7 +85,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             let backend = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
-            // (docs/render-thread.md), unless H2_RENDER_THREAD=0.
+            // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0.
             if render_thread_requested() {
                 return install_with(rt, d3d::ThreadedBackend::new(backend)?);
             }
@@ -145,7 +145,7 @@ pub type ExtraReport = Box<dyn Fn() -> String + Send + Sync>;
 
 /// The GPU backend's work runs on a render thread (`h2 run` with
 /// `H2_BOOT_GFX`, and `h2 play`) unless `H2_RENDER_THREAD=0`. On by
-/// default (docs/render-thread.md, "Measurements").
+/// default (docs/graphics/render-thread.md, "Measurements").
 pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
@@ -403,7 +403,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
-        // Halo's frame wait 0x12b2e0 ("Vertical blank" in docs/d3d.md):
+        // Halo's frame wait 0x12b2e0 ("Vertical blank" in docs/graphics/d3d.md):
         // calls the vblank callback at device+0x1db8 until the counter
         // reaches the target, unpaced. Generated code would otherwise spin
         // on the counter natively and never return to the runner.
@@ -566,7 +566,7 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 /// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
 const BARRIER_SHADOW: u32 = 0xa0ff_4000;
 
-/// The D3D write barrier (docs/d3d.md "Integration", step 3) on the
+/// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the
 /// runtime's write watch: one subscriber watches all of RAM in the folded
 /// view, and every d3d entry is wrapped so that
 ///

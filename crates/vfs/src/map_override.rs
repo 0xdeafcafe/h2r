@@ -15,8 +15,8 @@
 //! that leaves the directory, anything that is not a regular file, an
 //! ambiguous name (two host names differing only in case), a file too large
 //! for XDVDFS, or one that cannot be opened is refused with a warning, and
-//! the disc's map is served. Nothing is ever written. See docs/storage.md
-//! ("Map overrides") and docs/scenario-editor.md.
+//! the disc's map is served. Nothing is ever written. See docs/runtime/storage.md
+//! ("Map overrides") and docs/editor/scenario-editor.md.
 use std::{
     collections::HashMap,
     fs::File,

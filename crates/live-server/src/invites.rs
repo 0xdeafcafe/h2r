@@ -1,5 +1,5 @@
-//! Invites made by admin accounts from the browser (docs/live-admin.md §5,
-//! docs/live-security.md §3).
+//! Invites made by admin accounts from the browser (docs/live/live-admin.md §5,
+//! docs/live/live-security.md §3).
 //!
 //! The operator mints invites with the server key (`h2 live invite
 //! create`, [`crate::Live::create_invite`]); nothing about those is logged.

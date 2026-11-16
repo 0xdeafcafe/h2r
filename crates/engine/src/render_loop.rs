@@ -1,5 +1,5 @@
-//! Stage 7a of the rasterizer front-end (docs/feature-engine.md, "7.
-//! Rasterizer front-end"; the read is in docs/render-loop.md): the game's
+//! Stage 7a of the rasterizer front-end (docs/engine/feature-engine.md, "7.
+//! Rasterizer front-end"; the read is in docs/graphics/render-loop.md): the game's
 //! render orchestrators as Port-grade Rust that calls the recompiled bodies.
 //!
 //! Built so far: `render_views` (`0x0002b5d0`), the view loop. It is a

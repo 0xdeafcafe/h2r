@@ -1,6 +1,6 @@
 //! The server's identity: its id (the `aud` of every token, the host in
 //! every author id) and its Ed25519 key, kept in a data directory and never
-//! in Postgres (docs/live-security.md §1).
+//! in Postgres (docs/live/live-security.md §1).
 //!
 //! ```text
 //! <data>/server.key    base64url Ed25519 seed, mode 0600
@@ -78,7 +78,7 @@ impl ServerIdentity {
 
 /// The `--id` to start a server in `dir` with: as given; else, on a first
 /// start (no key in `dir` yet), `lasting` (the host of a lasting public
-/// address, docs/live-hosting.md), since an id cannot change later; else
+/// address, docs/live/live-hosting.md), since an id cannot change later; else
 /// none, which makes a new server [`DEFAULT_ID`]. An existing server keeps
 /// its id.
 pub fn first_start_id(id: Option<String>, lasting: Option<String>, dir: &Path) -> Option<String> {

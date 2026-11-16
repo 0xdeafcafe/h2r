@@ -4,8 +4,8 @@
 //! Like `sound`, this module is self-contained: hand-written fixed codecs,
 //! no schema/build.rs involvement, so it merges independently of other groups.
 //! Every interpreted offset was read off the retail engine's UI code, not off a
-//! community definition; the addresses and the evidence are in `docs/ui.md`
-//! and `docs/engine-map.md`. Bytes nobody has traced stay raw.
+//! community definition; the addresses and the evidence are in `docs/formats/ui.md`
+//! and `docs/engine/engine-map.md`. Bytes nobody has traced stay raw.
 //!
 //! Model: a `wgit` screen owns *panes*; the engine builds one pane at a time.
 //! A pane owns blocks of widget definitions: buttons, lists, text blocks,
@@ -1280,7 +1280,7 @@ pub fn read<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Result<Decoded> {
 
 /// Deepest skin nesting [`resolve_skin`] follows: a skin is depth 1, a skin
 /// named by one of its tables is depth 2, and so on. Retail data nests at
-/// most two deep (see `docs/ui.md`); the engine itself has no recorded limit,
+/// most two deep (see `docs/formats/ui.md`); the engine itself has no recorded limit,
 /// so this bound is ours and keeps a reference cycle from recursing forever.
 pub const MAX_SKIN_DEPTH: usize = 4;
 

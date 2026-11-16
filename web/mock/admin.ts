@@ -1,4 +1,4 @@
-// The server screen's endpoints for the mock (docs/live-admin.md §5):
+// The server screen's endpoints for the mock (docs/live/live-admin.md §5):
 // GET /v1/server, GET /v1/admin/status, and admin invites (GET/POST
 // /v1/invites, POST /v1/invites/{jti}/revoke).
 //

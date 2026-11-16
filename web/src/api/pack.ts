@@ -1,5 +1,5 @@
 // Packed telemetry frames: the decoder for the bit-packed format that
-// crates/live-proto/src/pack.rs writes (docs/live-telemetry.md, "Packed
+// crates/live-proto/src/pack.rs writes (docs/live/live-telemetry.md, "Packed
 // frames"). The live stream (`/v1/stream?frames=packed`) and replays
 // (`/v1/games/{id}/frames?format=packed`) send containers of these: each
 // record a LEB128 length then the frame's bits, least significant first.

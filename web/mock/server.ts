@@ -1,4 +1,4 @@
-// Mock h2 live server: the docs/live-api.md endpoints and both WebSockets,
+// Mock h2 live server: the docs/live/live-api.md endpoints and both WebSockets,
 // backed by a simulated world. `bun run mock` (port 8075, or H2_MOCK_PORT).
 // H2_MOCK_TAMPER=<n> corrupts every nth event's data to show bad signatures.
 // H2_MOCK_STATIC=<dir> also serves a built app (SPA fallback to index.html).

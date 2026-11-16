@@ -1,6 +1,6 @@
 //! The x87 for the boot fallback: one instruction at a time on the
 //! interpreter's CPU. crates/lift lowers x87 to helper calls now
-//! (docs/FLOAT.md), so generated code no longer needs this; it remains the
+//! (docs/lifter/FLOAT.md), so generated code no longer needs this; it remains the
 //! interpreter-side x87 for `crate::fallback`, which interprets whatever
 //! the generated module stops on.
 //!

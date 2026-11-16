@@ -1,5 +1,5 @@
 //! Write metadata survives exits that skip `HostBackend`'s drop
-//! (docs/storage.md "Write metadata"): a child process writes, then calls
+//! (docs/runtime/storage.md "Write metadata"): a child process writes, then calls
 //! `process::exit` with the backend still alive, and the parent reads the
 //! record back.
 use std::path::{Path, PathBuf};

@@ -1,7 +1,7 @@
 //! Lifter-side replacements for CRT floating-point helpers: a whole
 //! function whose IR is written here instead of lowered from its code.
 //!
-//! Only `_ftol2` for now (docs/FLOAT-ABI.md §4.5): 214 call sites, each of
+//! Only `_ftol2` for now (docs/lifter/FLOAT-ABI.md §4.5): 214 call sites, each of
 //! which would otherwise run `fistp m64` at round-to-nearest, reload, and
 //! correct toward zero through a dozen x87 and integer instructions. The
 //! replacement is one [`X87Op::Ftol2`] call.

@@ -1,5 +1,5 @@
 //! `h2 live admin grant|revoke`, `h2 live hopper import|defaults` and `h2
-//! live account export` (docs/live-admin.md). Dispatched from `live_cmd.rs`.
+//! live account export` (docs/live/live-admin.md). Dispatched from `live_cmd.rs`.
 //!
 //! The admin commands sign with the server key in `--data`, like `motd set`
 //! and `invite create`, so they run on the server's machine. `account

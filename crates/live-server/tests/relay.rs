@@ -1,7 +1,7 @@
 //! The co-op relay over real sockets: only a co-op session's two members
 //! get in, each one's binary messages reach the other, oversized and
 //! too-frequent messages close the socket, and two co-op peers whose direct
-//! path is dead play through it (docs/live-coop.md, docs/live-api.md).
+//! path is dead play through it (docs/live/live-coop.md, docs/live/live-api.md).
 mod common;
 
 use std::collections::BTreeMap;

@@ -9,7 +9,7 @@
 //! A preset sets the title and description, the range fields it names, and
 //! its entries (a map and a weight each, the game variant copied whole from
 //! a published entry of the same game type). It cannot set the hopper type,
-//! the matchmaking timeouts, or a variant's rules (docs/live-admin.md,
+//! the matchmaking timeouts, or a variant's rules (docs/live/live-admin.md,
 //! "Presets").
 
 use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};

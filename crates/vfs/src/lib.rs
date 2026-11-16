@@ -1,6 +1,6 @@
 //! Xbox object-manager storage, independent of guest memory and kernel ABI packing.
 //!
-//! See `docs/storage.md` for mappings, supported semantics, and the integration contract.
+//! See `docs/runtime/storage.md` for mappings, supported semantics, and the integration contract.
 #![forbid(unsafe_code)]
 
 mod backend;
@@ -74,7 +74,7 @@ impl Config {
             .join(format!("{:08X}", self.title_id))
     }
     /// Host directory of one installed content package, `T:\$c\<offer id>`.
-    /// See [`content_dir_name`] and docs/map-pack.md.
+    /// See [`content_dir_name`] and docs/game/map-pack.md.
     pub fn content_dir(&self, offer_id: u64) -> PathBuf {
         self.title_data_dir()
             .join(CONTENT_DIR)
@@ -299,7 +299,7 @@ impl Vfs {
     /// Calls `observer` after every successful open of a file (not a
     /// directory), with the guard on this `Vfs` held: it must be quick and
     /// must not call back into the VFS. The controller-speaker sound index
-    /// uses it to see which maps the game loads (docs/playstation-audio.md).
+    /// uses it to see which maps the game loads (docs/audio/playstation-audio.md).
     /// `None` removes it.
     pub fn set_open_observer(&mut self, observer: Option<OpenObserver>) {
         self.observer = observer;

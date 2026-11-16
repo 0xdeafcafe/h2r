@@ -399,7 +399,7 @@ fn main() {
             .filter(|o| !o.gone || (t as u64 / 10).is_multiple_of(2))
             .collect(),
         };
-        // Frames go packed (docs/live-telemetry.md, Packed frames).
+        // Frames go packed (docs/live/live-telemetry.md, Packed frames).
         let (record, _) = packer.encode(&frame).expect("packs");
         let mut message = Vec::new();
         live_proto::pack::push_record(&mut message, &record);

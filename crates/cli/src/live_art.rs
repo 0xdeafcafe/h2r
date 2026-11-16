@@ -1,14 +1,14 @@
 //! `h2 live assets extract`: the stats site's art from the owner's own disc
-//! (docs/live.md, "Game art"; docs/live-api.md, "Optional game art").
+//! (docs/live/live.md, "Game art"; docs/live/live-api.md, "Optional game art").
 //!
-//! No game asset is named here (CONTRIBUTING.md; docs/bitmaps.md: "No pixels
+//! No game asset is named here (CONTRIBUTING.md; docs/formats/bitmaps.md: "No pixels
 //! or names of game assets are stored in the repo"). Each category is found
 //! by structure at run time: which kind of map holds it (the map header's
 //! cache type), how many images the bitmap tag has, and their shape.
 //! Multiplayer map previews are the one picture-sized UI image a
 //! multiplayer map carries that the shared map does not. Medals and the
 //! colour palette are icon glyphs in the fonts' private-use range
-//! (docs/fonts.md). Everything found is decoded to PNG (RGBA) under semantic
+//! (docs/formats/fonts.md). Everything found is decoded to PNG (RGBA) under semantic
 //! keys and listed in `manifest.json`; output is deterministic for a disc.
 //!
 //! Only the maps that can hold art are opened, each on its own thread, and
@@ -228,7 +228,7 @@ pub fn slice(
     Some((w, h, out))
 }
 
-/// The fonts' private-use icon range (docs/fonts.md).
+/// The fonts' private-use icon range (docs/formats/fonts.md).
 const ICONS: RangeInclusive<u16> = 0xe000..=0xe3ff;
 /// Medal glyphs: 24 pixels tall, at least as wide.
 pub const MEDALS: usize = 32;
@@ -369,16 +369,16 @@ pub struct Manifest {
     /// What was looked for and not found or not decoded, by key or prefix.
     pub skipped: BTreeMap<String, String>,
     /// Per map stem (multiplayer and campaign), its level geometry and views
-    /// (docs/live-art.md); absent when none were extracted.
+    /// (docs/live/live-art.md); absent when none were extracted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub maps: BTreeMap<String, crate::live_geometry::MapEntry>,
-    /// Player and weapon models (docs/live-art.md); absent when none were
+    /// Player and weapon models (docs/live/live-art.md); absent when none were
     /// extracted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<crate::live_models::ModelsEntry>,
 }
 
-/// How emblem layers are coloured; see docs/live-api.md. Measured on the
+/// How emblem layers are coloured; see docs/live/live-api.md. Measured on the
 /// disc: each layer is two masks, one in red (= green; drawn yellow) and
 /// one in blue, and alpha copies the blue mask, so alpha is not coverage.
 pub fn emblem_rules() -> serde_json::Value {
@@ -449,7 +449,7 @@ pub fn cache_key(maps: &[(String, u32, u32, Vec<u8>)]) -> String {
     live_proto::sign::hex(&h.finalize())
 }
 
-/// A map's cache type from its header bytes (`0x140`, docs/map-format.md).
+/// A map's cache type from its header bytes (`0x140`, docs/formats/map-format.md).
 pub fn cache_type(head: &[u8]) -> Option<CacheType> {
     let word = head.get(0x140..0x144)?;
     Some(u32::from_le_bytes(word.try_into().ok()?).into())
@@ -974,16 +974,16 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
     let images = write_pieces(&pieces, &staging)?;
-    // Level geometry and views of every multiplayer map (docs/live-art.md).
+    // Level geometry and views of every multiplayer map (docs/live/live-art.md).
     let geometry = crate::live_geometry::extract(disc, &staging);
     skipped.extend(geometry.skipped);
     let mut manifest = build_manifest(disc.key.clone(), images, palette, skipped);
     manifest.maps = geometry.maps;
-    // Player and weapon models (docs/live-art.md).
+    // Player and weapon models (docs/live/live-art.md).
     let (models, bipeds) = crate::live_models::extract(disc, &staging);
     manifest.skipped.extend(models.skipped);
     manifest.models = models.entry;
-    // The playlist builder's catalog rides along (docs/live-admin.md).
+    // The playlist builder's catalog rides along (docs/live/live-admin.md).
     let catalog = crate::live_catalog::extract(disc);
     fs::write(
         staging.join(crate::live_catalog::CATALOG),

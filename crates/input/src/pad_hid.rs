@@ -1,5 +1,5 @@
 //! The DualSense over raw HID, next to the gamepad backends: the speaker
-//! path and the mute button with its LED (`docs/playstation-audio.md`).
+//! path and the mute button with its LED (`docs/audio/playstation-audio.md`).
 //!
 //! GameController.framework and gilrs read the pad's buttons; neither passes
 //! raw reports, so this opens the same device a second time, in shared mode

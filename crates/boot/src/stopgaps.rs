@@ -3,7 +3,7 @@
 //!
 //! These are NOT HLE. Each one is the smallest effect that lets startup
 //! continue, is counted, and is listed as a blocker for its owner in
-//! docs/BOOT.md. They are only installed with `--stopgaps` (the `h2 run`
+//! docs/runtime/BOOT.md. They are only installed with `--stopgaps` (the `h2 run`
 //! default) and never replace a handler the kernel already implements.
 
 use std::collections::BTreeMap;

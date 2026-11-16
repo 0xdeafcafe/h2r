@@ -2,7 +2,7 @@
 //! (after Player Profiles and Game Variants) that opens a Controls screen
 //! holding our video rows (Field of View, Frame Rate, Resolution, Mute
 //! Button: every setting whose `Def` names this screen, through the `ui`
-//! model) instead of the retail six. See docs/settings-menu.md "Video
+//! model) instead of the retail six. See docs/game/settings-menu.md "Video
 //! screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
@@ -16,7 +16,7 @@
 //! screen opens Controls. The tag has a pane per retail row only, so the
 //! pane hook keeps the shown pane for row 2 (as the Skulls row does).
 //!
-//! **The screen** is our own list class (`crate::list_class`, docs/ui.md
+//! **The screen** is our own list class (`crate::list_class`, docs/formats/ui.md
 //! "Screen and list classes"): the row calls `0x149f1e(player mask,
 //! loader)` with the class's loader, an entry of ours. It builds the screen
 //! with the Controls constructor (so the Controls tag's layout), then points

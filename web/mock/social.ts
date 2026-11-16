@@ -1,4 +1,4 @@
-// The mock's friends and teams: the docs/live-api.md "Friends" and "Teams"
+// The mock's friends and teams: the docs/live/live-api.md "Friends" and "Teams"
 // reads, `POST /v1/events` for signed friend and team events (checked
 // against the author's key and token, kept as the author's own JWS), a
 // few seeded teams and friendships, and seeded players who answer a new

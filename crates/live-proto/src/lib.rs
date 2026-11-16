@@ -1,6 +1,6 @@
 //! What the Xbox Live replacement's clients (the game-side HLE, the CLI, the
 //! web app's model) and its server (`crates/live-server`) share: wire types
-//! (docs/live-api.md), signing and verification (docs/live-security.md,
+//! (docs/live/live-api.md), signing and verification (docs/live/live-security.md,
 //! [`sign`], [`jcs`]) and the title files the game downloads ([`motd`]).
 //!
 //! No runtime and no I/O, so the recomp can link it without tokio.
@@ -28,7 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Halo 2's title ID, `4D530064`.
 pub const HALO_2_TITLE_ID: TitleId = TitleId(0x4D530064);
 
-/// The downloadable file the game reads after sign-in (docs/live.md
+/// The downloadable file the game reads after sign-in (docs/live/live.md
 /// section 2). Published with [`HALO_2_TITLE_ID`] by `h2 live motd set`.
 pub const HALO_2_MOTD_FILE: &str = "message_of_the_day.dat";
 
@@ -199,7 +199,7 @@ impl<'de> Deserialize<'de> for Gamertag {
 }
 
 /// Who wrote an event or signed a token: `acct:<xuid>@<server id>` or
-/// `server:<server id>` (docs/live-security.md §2).
+/// `server:<server id>` (docs/live/live-security.md §2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Author {
     Account { xuid: Xuid, server: String },
@@ -236,7 +236,7 @@ impl fmt::Display for Author {
     }
 }
 
-/// Stream names (docs/live-api.md, Events).
+/// Stream names (docs/live/live-api.md, Events).
 pub mod streams {
     use super::{Gamertag, TitleId, Xuid};
 
@@ -281,7 +281,7 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
-    /// Content uploads, package publishing and reports (docs/maps.md §5).
+    /// Content uploads, package publishing and reports (docs/game/maps.md §5).
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
     pub const CONTENT_MODERATE: &str = "content.moderate";
@@ -290,7 +290,7 @@ pub mod lxm {
 }
 
 /// Whether a client may send a bearer token to `base_url`: always over
-/// HTTPS, over plain HTTP only to a loopback host (docs/live-security.md §6).
+/// HTTPS, over plain HTTP only to a loopback host (docs/live/live-security.md §6).
 pub fn bearer_allowed(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     if lower.starts_with("https://") || lower.starts_with("wss://") {
@@ -360,7 +360,7 @@ pub struct Discovery {
     pub software: String,
     pub federation: bool,
     /// The server's public base URL when it knows one (a tunnel or proxy,
-    /// docs/live-hosting.md). Informational: clients keep the base URL they
+    /// docs/live/live-hosting.md). Informational: clients keep the base URL they
     /// were given, and `api` stays relative to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -382,7 +382,7 @@ pub struct AccountSummary {
     pub gamertag: Gamertag,
     pub created_at: String,
     pub online: bool,
-    /// Whether the account is an admin (docs/live-admin.md): configured at
+    /// Whether the account is an admin (docs/live/live-admin.md): configured at
     /// startup or granted. Only this server's admins, not a federation view.
     #[serde(default)]
     pub admin: bool,
@@ -415,7 +415,7 @@ pub struct AccountKeys {
     pub position: u64,
 }
 
-/// Presence states (docs/live-api.md, Clarifications 5). `playing` carries
+/// Presence states (docs/live/live-api.md, Clarifications 5). `playing` carries
 /// a `game_id`; offline is the absence of presence.
 pub const PRESENCE_STATES: [&str; 3] = ["online", "away", "playing"];
 
@@ -433,7 +433,7 @@ pub struct Presence {
 /// The data a `FriendRequested`, `FriendAccepted` or `FriendDeclined` event
 /// signs: `from` is the requester, `to` the account the request is
 /// addressed to. Requests are directional; the friendship, once accepted,
-/// is mutual (docs/live-api.md, Friends).
+/// is mutual (docs/live/live-api.md, Friends).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FriendEventData {
     pub from: Xuid,
@@ -577,7 +577,7 @@ pub enum ErrorCode {
     /// 409: taken, replayed, or a version race.
     Conflict,
     /// 410: there was such a thing, and an admin took it down (hidden,
-    /// deleted or blocked content, docs/live-admin.md).
+    /// deleted or blocked content, docs/live/live-admin.md).
     Gone,
     /// 413.
     TooLarge,

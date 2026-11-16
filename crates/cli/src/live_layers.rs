@@ -3,7 +3,7 @@
 //! letters and signs), and effect surfaces (glows, light shafts and
 //! volumes, electric arcs, waterfalls and spray). `map.glb` keeps them in
 //! their own `decals_<n>` and `effects_<n>` child nodes, textured, with
-//! how each blends (docs/live-art.md, "Layers").
+//! how each blends (docs/live/live-art.md, "Layers").
 //!
 //! What a surface is comes from generic rendering words in its shader
 //! template's tag name, read at run time ([`Layer::from_template_words`]);

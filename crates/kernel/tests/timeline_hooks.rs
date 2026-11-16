@@ -1,4 +1,4 @@
-//! The scheduler's timeline hooks (docs/perf.md, `sched`): a `schedule`
+//! The scheduler's timeline hooks (docs/perf/perf.md, `sched`): a `schedule`
 //! span per `Machine::run` iteration with the slice or DPC inside it, the
 //! logical clock as the `logical us` counter, and the ticks each idle
 //! advance skipped. Alone in its binary: the timeline is process-wide.

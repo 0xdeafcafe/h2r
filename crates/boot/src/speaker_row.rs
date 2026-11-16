@@ -1,6 +1,6 @@
 //! The "Controller Speaker" row on Halo 2's Settings, Controls screen
 //! (screen 39), under the vibration row: its label, its on/off value and
-//! what pressing it does. See docs/playstation-audio.md "In-game setting"
+//! what pressing it does. See docs/audio/playstation-audio.md "In-game setting"
 //! for the addresses and why the row lives here.
 //!
 //! The Controls list has six rows, built by its screen constructor through

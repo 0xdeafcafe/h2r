@@ -2,7 +2,7 @@
 //! embedded server on a background runtime (Postgres from `$H2_LIVE_DB`,
 //! else the file store in `server/log`) or `--live-server URL`; an account for that
 //! server is found in, or added to, the local accounts file, and the game
-//! is booted with `boot::LiveConfig` pointing at it (docs/live.md).
+//! is booted with `boot::LiveConfig` pointing at it (docs/live/live.md).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ pub struct LiveOpts {
     /// `--live-tunnel` (alias `--tunnel`), with `--live-tunnel-name NAME`
     /// (`--tunnel-name`) and `--live-tunnel-url https://HOST` (or
     /// `--hostname HOST`): publish the embedded server through cloudflared
-    /// so friends can join it (docs/live-hosting.md).
+    /// so friends can join it (docs/live/live-hosting.md).
     pub tunnel: bool,
     pub tunnel_name: Option<String>,
     pub hostname: Option<String>,
@@ -130,7 +130,7 @@ pub struct Session {
     pub account: LocalAccount,
     pub server: String,
     /// The embedded server's one-use, this-machine-only link signing a
-    /// browser in as `account` (docs/live-admin.md §4).
+    /// browser in as `account` (docs/live/live-admin.md §4).
     pub signin: Option<String>,
     /// `--tunnel`: cloudflared publishing the embedded server (stopped on
     /// drop), and the lines to print about it.

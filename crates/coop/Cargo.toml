@@ -1,6 +1,6 @@
 [package]
 name = "coop"
-description = "Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live-coop.md)"
+description = "Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live/live-coop.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

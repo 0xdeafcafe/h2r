@@ -2,7 +2,7 @@
 //!
 //! The combined player-one pad ([`crate::backend::fallback::KeyboardFallback`])
 //! records it on every poll; the runner reads it to choose which button
-//! icons the game draws (`docs/button-icons.md`).
+//! icons the game draws (`docs/input/button-icons.md`).
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 

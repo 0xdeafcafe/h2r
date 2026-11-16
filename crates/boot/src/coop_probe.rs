@@ -1,4 +1,4 @@
-//! The co-op probe (docs/live-coop.md sections 1 and 9): start a campaign
+//! The co-op probe (docs/live/live-coop.md sections 1 and 9): start a campaign
 //! from a two-machine System Link lobby on the retail synchronous path,
 //! and log what happens on each machine. Off unless `H2_COOP_PROBE=1`.
 //!
@@ -123,7 +123,7 @@ impl Want {
     }
 }
 
-// ---- the session (docs/live-coop.md 1.1, 1.4) ----
+// ---- the session (docs/live/live-coop.md 1.1, 1.4) ----
 
 /// Squad session fields. `S+0x54` is the count of the 16-entry peer array
 /// at `+0x58` (stride `0x10c`; `0x6e798` builds a peer mask from it).
@@ -417,7 +417,7 @@ pub fn setup_calls(want: &Want) -> [SetupCall; 2] {
     ]
 }
 
-// ---- the simulation (docs/live-coop.md 1.1, 1.3) ----
+// ---- the simulation (docs/live/live-coop.md 1.1, 1.3) ----
 
 const SIM_MODE: u32 = 0x8;
 const SIM_UPDATE: u32 = 0x28;
@@ -685,7 +685,7 @@ impl feature::Feature for Probe {
         // On when added: it is only added when H2_COOP_PROBE is on, and
         // H2_FEATURES=-coop-probe still turns it off.
         feature::Manifest::new(ID, "Co-op probe: the retail synchronous campaign path")
-            .doc("docs/live-coop.md")
+            .doc("docs/live/live-coop.md")
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {

@@ -176,7 +176,7 @@ impl<R: Read + Seek> Xiso<R> {
 /// ending in `/`, everything under a directory (`movie/`). A directory is
 /// picked when it is on the way to a picked file, so the subset keeps its
 /// tree. Case does not matter, as on the disc. Used to cut a trimmed copy
-/// of the disc (docs/tvos.md).
+/// of the disc (docs/runtime/tvos.md).
 pub fn subset_matches(path: &str, is_dir: bool, patterns: &[&str]) -> bool {
     let path = path.trim_start_matches('/').to_ascii_lowercase();
     patterns.iter().any(|p| {

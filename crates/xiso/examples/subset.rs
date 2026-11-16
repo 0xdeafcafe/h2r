@@ -5,7 +5,7 @@
 //!
 //! A pattern is a path from the disc root (`maps/shared.map`) or a
 //! directory ending in `/` (`fonts/`); see `xiso::subset_matches`. The tvOS
-//! app bundles such a copy as its disc (docs/tvos.md). Files already the
+//! app bundles such a copy as its disc (docs/runtime/tvos.md). Files already the
 //! right size are skipped, so a rerun is cheap.
 
 use std::fs::File;

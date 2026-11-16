@@ -5,7 +5,7 @@
 //! maybe LLVM or Cranelift later, and the reference interpreter in
 //! [`interp`]). It describes *what an instruction does to architectural
 //! state*, not how a host should do it, so it contains no C syntax and no
-//! inferred host signatures (see `docs/LIFTER.md` §1 and §3).
+//! inferred host signatures (see `docs/lifter/LIFTER.md` §1 and §3).
 //!
 //! # Shape
 //!
@@ -914,7 +914,7 @@ pub enum CallKind {
 
 /// A direct control-flow destination: a block of this function, or (when
 /// `tail`) another function's entry, reached by an entry-routed transfer
-/// so its override applies (`docs/LIFTER.md` §2).
+/// so its override applies (`docs/lifter/LIFTER.md` §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Dest {
     pub pc: u32,

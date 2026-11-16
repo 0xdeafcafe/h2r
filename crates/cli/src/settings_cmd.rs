@@ -1,7 +1,7 @@
 //! `h2 settings list|get|set`: our settings (`boot::setting_defs`) as the
 //! game would see them with this environment, and the one place besides
 //! the in-game rows that writes `<data>/settings.toml`
-//! (docs/settings-menu.md).
+//! (docs/game/settings-menu.md).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

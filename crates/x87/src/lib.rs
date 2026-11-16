@@ -1,5 +1,5 @@
 //! Exact software x87: the 80-bit extended ("ext80") arithmetic authority for
-//! the recompiler, specified in docs/FLOAT-ABI.md §6.
+//! the recompiler, specified in docs/lifter/FLOAT-ABI.md §6.
 //!
 //! Everything here is integer arithmetic. No host floating-point operation is
 //! used to compute a result and nothing calls a host math library, so the
@@ -14,7 +14,7 @@
 //!   to 64 bits under round-to-nearest. The default `fast-trans` feature
 //!   first tries guarded 128-bit evaluation for FYL2X, F2XM1, FSIN, FCOS,
 //!   FSINCOS, FPTAN and FPATAN;
-//!   ambiguous cases retain 512 bits. See docs/x87-transcendentals.md and
+//!   ambiguous cases retain 512 bits. See docs/lifter/x87-transcendentals.md and
 //!   [`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED`].
 //!
 //! Status flags are returned as [`Flags`] using status-word bit positions.

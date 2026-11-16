@@ -1,4 +1,4 @@
-//! Import metadata transcribed from docs/kernel-imports.md. Stops inspect
+//! Import metadata transcribed from docs/runtime/kernel-imports.md. Stops inspect
 //! the individual guest stack contract; they never execute host kernel APIs.
 
 use crate::{CpuAbi, Event, ExecCtx, GuestFault, TransferAbi, exec::KernelCall};

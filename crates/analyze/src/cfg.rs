@@ -19,7 +19,7 @@
 //!   call continuation or a switch case) leaves this function: the edge has
 //!   [`Edge::exits`] set and the target is not a block here. The lowering
 //!   transfers through the entry, so an override registered there is
-//!   honoured on every path (`docs/LIFTER.md` §2).
+//!   honoured on every path (`docs/lifter/LIFTER.md` §2).
 //! - **Calls end blocks.** In the runner design every guest `call` is a
 //!   transfer (push the continuation, yield `Call(target)`), so the
 //!   continuation is a resume point and starts its own block, reached by a

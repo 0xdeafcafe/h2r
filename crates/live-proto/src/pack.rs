@@ -1,4 +1,4 @@
-//! Packed telemetry frames (docs/live-telemetry.md, "Packed frames"): a
+//! Packed telemetry frames (docs/live/live-telemetry.md, "Packed frames"): a
 //! versioned bit-packed form of [`Frame`] for the ingest socket, the live
 //! stream to the web and recorded frames at rest. JSON stays for the public
 //! read API and the low-rate events.

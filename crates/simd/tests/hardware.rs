@@ -11,7 +11,7 @@
 //!
 //! Rosetta reports every exception as masked whatever MXCSR says, so the
 //! hardware records use fully masked MXCSRs; unmasked behaviour rests on
-//! the SDM and the Rust/C differential (docs/simd.md). Rosetta's rcp/rsqrt
+//! the SDM and the Rust/C differential (docs/lifter/simd.md). Rosetta's rcp/rsqrt
 //! tables are not the Pentium III's, so those ops are not recorded here;
 //! tests/approx.rs checks them against measured Intel tables.
 
@@ -37,7 +37,7 @@ fn load_fixture() -> (Vec<In>, Vec<Out>) {
 /// predicates when one operand of a lane is a NaN and the other a denormal;
 /// for the other six predicates, and for every other op, it lets the NaN
 /// suppress DE, as the SDM's exception priority says. We keep the uniform
-/// rule (docs/simd.md) and accept exactly that difference.
+/// rule (docs/lifter/simd.md) and accept exactly that difference.
 fn rosetta_cmp_de(i: &In, sse: &Out, ours: &Out) -> bool {
     let name = OPS[i.op as usize];
     if !(name == "cmpss" || name == "cmpps") || !matches!(i.pred & 7, 3 | 7) {

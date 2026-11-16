@@ -1,4 +1,4 @@
-//! Joining a session on a custom map (docs/maps.md §5, "As built"): before a
+//! Joining a session on a custom map (docs/game/maps.md §5, "As built"): before a
 //! join, the session's `map_id` is compared with what this machine has; a
 //! published package's missing layers are downloaded from the server,
 //! checked against their SHA-256 and written as a package under
@@ -363,7 +363,7 @@ impl MapGate {
     }
 
     /// Names `dir` in `active.toml` for its map, so the vfs serves it
-    /// rather than another package for the same map (docs/maps.md §7,
+    /// rather than another package for the same map (docs/game/maps.md §7,
     /// "Choice rule").
     fn activate(&self, dir: &Path, ad: &NewSession) -> Result<(), Refusal> {
         let Some(pkg) = Library::open(&self.maps_dir)

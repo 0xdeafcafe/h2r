@@ -1643,7 +1643,7 @@ fn compile(
 /// (`shaders::psh::COUNT_DEPTH_ENTRY`): counted with the rasterized z, a
 /// visibility test compares a value the depth buffer does not hold. That
 /// was every lens flare in front of level geometry counting nothing and
-/// never showing (docs/d3d.md, "Visibility tests").
+/// never showing (docs/graphics/d3d.md, "Visibility tests").
 fn registered_program(
     bindings: &mut ProgramBindings,
     device: &wgpu::Device,

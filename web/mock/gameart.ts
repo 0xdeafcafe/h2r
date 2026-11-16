@@ -1,4 +1,4 @@
-// A stand-in for a real server's optional game art (docs/live-api.md
+// A stand-in for a real server's optional game art (docs/live/live-api.md
 // "Optional game art"), so the app's game-art path can be run and tested
 // without a disc. Nothing here comes from the game: rank icons and medals
 // are the art pack's own, the palette is ours, and the emblem masks,

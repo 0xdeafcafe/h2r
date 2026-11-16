@@ -31,7 +31,7 @@ profile.json. `h2 bench list` names the scenarios.
 
 Any run can be profiled without this command: set H2_PROFILE=<dir>
 and/or H2_TIMELINE=<file.json> for a binary that opens a perf::Session
-(docs/perf.md).";
+(docs/perf/perf.md).";
 
 pub const BENCH_USAGE: &str = "usage:
   h2 bench [run] [--out DIR] [--label NAME] [--only PATTERN]... [--samples N]
@@ -73,7 +73,7 @@ pub const BUDGET_USAGE: &str = "usage: h2 profile budget <trace.json> [--json]
 Split each frame of a timeline trace (H2_TIMELINE, or --timeline) into
 the self time of the game thread's spans, with logical time, idle
 advances, slices, accesses and vblanks per frame and the contended guest
-memory lock waits (docs/perf-budget.md). Record it with the default
+memory lock waits (docs/perf/perf-budget.md). Record it with the default
 categories (all but hle) or `all` to split HLE calls out of guest slices.";
 
 /// `h2 profile budget`.

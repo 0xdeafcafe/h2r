@@ -1,7 +1,7 @@
 //! The "Field of View" row on our Video screen (`crate::video_screen`, opened
 //! from Halo 2's Settings, Controls screen), and the camera hook that
 //! applies it. See
-//! docs/settings-menu.md "Field of view" for the addresses, the evidence
+//! docs/game/settings-menu.md "Field of view" for the addresses, the evidence
 //! and why this stays out of the simulation.
 //!
 //! **The row** is one of the Video screen's rows, drawn and pressed by the

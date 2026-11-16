@@ -1,5 +1,5 @@
 //! The retail Controls list's row text (`0x2c8548`, list slot 20), ported
-//! (docs/feature-engine.md "UI step c").
+//! (docs/engine/feature-engine.md "UI step c").
 //!
 //! **What the retail function does** (static, 2026-11-16): it fetches the
 //! item's two text widgets (`ITEM_TEXT(item, 6, 0|1, 0)`), picks a label
@@ -166,7 +166,7 @@ pub struct ControlsText;
 
 impl feature::Feature for ControlsText {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The Controls list's row text, ported").doc("docs/settings-menu.md")
+        Manifest::new(ID, "The Controls list's row text, ported").doc("docs/game/settings-menu.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.raw().implement_async(

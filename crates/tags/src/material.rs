@@ -6,7 +6,7 @@
 //! from an [`EngineInputs`] snapshot; the defaults are zero except the three
 //! inputs the instance root supplies. Animated instance parameters are listed
 //! with their targets but not evaluated (the mapping-function evaluator
-//! `0x0013b390` is not reimplemented here). See `docs/shader-instances.md`.
+//! `0x0013b390` is not reimplemented here). See `docs/formats/shader-instances.md`.
 use crate::shader::*;
 use crate::{Error, Result};
 use map::{FourCC, TagId};

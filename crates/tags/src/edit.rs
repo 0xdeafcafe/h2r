@@ -5,7 +5,7 @@ use std::io::{Read, Seek};
 
 /// Set an object's bounding-sphere radius, preserving every other byte.
 /// The shared object prefix stores this f32 at +4; retail `0x000be075`
-/// multiplies it by object scale (see `object::layouts` and docs/objects.md).
+/// multiplies it by object scale (see `object::layouts` and docs/formats/objects.md).
 /// Returns the original radius. Requires a known object class, finite old/new
 /// values and a nonnegative new radius.
 pub fn set_object_bounding_radius<R: Read + Seek>(

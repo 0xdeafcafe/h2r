@@ -1,4 +1,4 @@
-// Custom content for admins (docs/maps.md §5): the playlist builder's
+// Custom content for admins (docs/game/maps.md §5): the playlist builder's
 // `custom` catalog section and hopper pins, and moderation (packages,
 // blobs, reports, the upload switch). Every id, name and size is invented.
 

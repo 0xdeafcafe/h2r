@@ -1,5 +1,5 @@
 // The `/signin#once=…` link `h2 play --live` prints: one use, this machine
-// only (docs/live-admin.md §4). The token rides in the fragment so it never
+// only (docs/live/live-admin.md §4). The token rides in the fragment so it never
 // reaches a server log or a Referer; the page takes it out of the address
 // bar first, then trades it at `POST /v1/local/signin` for the browser's
 // account entry — the same entry Admin > Import account accepts, checked

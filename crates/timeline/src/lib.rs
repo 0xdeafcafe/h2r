@@ -6,7 +6,7 @@
 //! The crate has no dependencies so the runtime, the kernel, d3d and gfx
 //! can all call it. Every hook is one relaxed atomic load and a branch
 //! while recording is off; nothing allocates, locks or reads the clock
-//! until [`start`] has switched a category on. See `docs/perf.md`.
+//! until [`start`] has switched a category on. See `docs/perf/perf.md`.
 //!
 //! ```
 //! use timeline::{Cat, Track};

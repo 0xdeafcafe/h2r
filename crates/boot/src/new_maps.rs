@@ -1,8 +1,8 @@
-//! New maps in 1.0's multiplayer map list (docs/maps.md §4).
+//! New maps in 1.0's multiplayer map list (docs/game/maps.md §4).
 //!
 //! A map package whose map name the disc doesn't have (a derived map,
 //! `[base] derived = true`) can't replace a disc map, so it is installed the
-//! way the Map Pack is on 1.0 (docs/map-pack.md §5, §8): as a content
+//! way the Map Pack is on 1.0 (docs/game/map-pack.md §5, §8): as a content
 //! package of its own under `T:\$c\<offer id>\`, holding
 //!
 //! - `<map>.map`, the map materialised through the content resolver (1.0
@@ -40,7 +40,7 @@ const META: &str = "ContentMeta.xbx";
 const LVL: &str = "patch.lvl";
 /// FATX allows 42 bytes a name, so `<map>.map` leaves 38 for the map.
 const MAX_MAP_NAME: usize = 42 - 4;
-/// The Map Pack import's offers (docs/map-pack.md §5): `…0101` to `…03ff`.
+/// The Map Pack import's offers (docs/game/map-pack.md §5): `…0101` to `…03ff`.
 const MAP_PACK_OFFERS: std::ops::RangeInclusive<u32> = 0x0101..=0x03ff;
 
 /// What the install did.
@@ -375,7 +375,7 @@ fn install_one(
 }
 
 // ---------------------------------------------------------------------------
-// ContentMeta.xbx (docs/map-pack.md §7).
+// ContentMeta.xbx (docs/game/map-pack.md §7).
 
 const META_HEADER: usize = 0x88;
 /// The INI sections the Map Pack's names use, for our languages 0..8
@@ -405,7 +405,7 @@ const META_SECTIONS: [(&str, usize); 8] = [
 ///
 /// The names are UTF-16 INI text (`[Default]`, then a section a language,
 /// `Name=`). The file table lists no files: 1.0 hashes none of a package's
-/// files (docs/map-pack.md 8.4); the table only has to match its digest.
+/// files (docs/game/map-pack.md 8.4); the table only has to match its digest.
 /// With `template` (an installed Map Pack package's) its words at `0x1c`,
 /// `0x30` and `0x6c..0x88` are kept.
 pub fn content_meta(names: &[String; 9], offer: u64, template: Option<&[u8]>) -> Vec<u8> {

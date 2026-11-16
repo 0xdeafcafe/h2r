@@ -53,19 +53,19 @@ mod web_build;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
-  build <disc>            lift, emit and compile the whole XBE (docs/BOOT.md)
+  build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
-  play <disc>             build if needed, then play it in a window (docs/app.md)
+  play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
-                          background; F5 restarts into it (docs/app.md)
+                          background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
-                          <data>/settings.toml (docs/settings-menu.md)
+                          <data>/settings.toml (docs/game/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
-                          (docs/high-framerate.md)
+                          (docs/game/high-framerate.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
-                          that differ (docs/live-coop.md section 9)
+                          that differ (docs/live/live-coop.md section 9)
   play <disc> --live      play signed in to Xbox Live, on a service started in
-                          the process (or --live-server URL; docs/live.md)
+                          the process (or --live-server URL; docs/live/live.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
@@ -87,7 +87,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (options --color RRGGBB[AA], --force, --disc <iso>)
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
-                          emulated hard disk (docs/map-pack.md)
+                          emulated hard disk (docs/game/map-pack.md)
   movies <iso> --out DIR [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
@@ -141,7 +141,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
 
   live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST] [--private]
              [--invite-only] [--tls-cert PEM --tls-key PEM | --insecure-http]
-                          run the Xbox Live service (docs/live.md)
+                          run the Xbox Live service (docs/live/live.md)
   live account create <gamertag> [--server URL] [--invite CODE]
   live account import <file> [--server URL]
   live account list [--server URL]
@@ -156,7 +156,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
 
   profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)
                           sample a benchmark scenario: guest-aware folded stacks,
-                          top-N table, optional Chrome/Perfetto timeline (docs/perf.md)
+                          top-N table, optional Chrome/Perfetto timeline (docs/perf/perf.md)
   bench [run|list|compare] [--out DIR] [--only PATTERN] ...   (--features perf)
                           repeatable benchmarks as JSON; compare flags regressions
 

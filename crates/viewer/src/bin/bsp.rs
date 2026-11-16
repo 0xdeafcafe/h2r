@@ -92,7 +92,7 @@ struct Stats {
 }
 
 /// Thresholds for counters that are nonzero on the retail disc (observed
-/// values in docs/structure-bsp.md). Every other counter must be zero.
+/// values in docs/formats/structure-bsp.md). Every other counter must be zero.
 const MAX_ZERO_NORMAL_FRACTION: f64 = 0.002; // observed 12,104 of ~22M
 const MAX_WINDING_DISAGREE_FRACTION: f64 = 0.001; // observed 494 of 2.36M
 const MAX_CHECKSUM_MISMATCHES: usize = 2; // observed 2 groups

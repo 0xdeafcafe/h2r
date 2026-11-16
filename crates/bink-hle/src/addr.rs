@@ -1,5 +1,5 @@
 //! Virtual addresses in the retail Halo 2 XBE (title 4D530064, XDK 5849).
-//! See `docs/bink-hle.md` for how each one was identified.
+//! See `docs/audio/bink-hle.md` for how each one was identified.
 
 // Bink 1.x API entry points in the BINK section. All are `__stdcall`: the
 // callee pops its arguments.

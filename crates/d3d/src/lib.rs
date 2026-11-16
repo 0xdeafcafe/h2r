@@ -8,7 +8,7 @@
 //! render/texture-state arrays and NV2A push-buffer words itself. The device
 //! keeps the guest arrays authoritative (read at every draw) and gives the
 //! game a real guest push buffer that it decodes at every entry
-//! ([`Device::sync_push_buffer`]). See `docs/d3d.md` for the inventory.
+//! ([`Device::sync_push_buffer`]). See `docs/graphics/d3d.md` for the inventory.
 //!
 //! Layout:
 //! * [`guest`]: guest-memory trait and a sparse test implementation;
@@ -24,7 +24,7 @@
 //! * [`backend`], [`gfx_backend`], [`shader`]: the host side;
 //! * [`nv2a`]: the [`ShaderProvider`] over `crates/shaders`;
 //! * [`threaded`]: a render thread that runs a backend's work off the
-//!   guest's thread (opt-in, docs/render-thread.md).
+//!   guest's thread (opt-in, docs/graphics/render-thread.md).
 
 pub mod abi;
 pub mod backend;

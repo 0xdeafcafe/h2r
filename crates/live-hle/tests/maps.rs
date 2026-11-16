@@ -1,6 +1,6 @@
 //! Joining a custom map end to end: a package published on a real server
 //! (its HTTP API, in memory) is downloaded, checked and written by the
-//! client's `MapGate` (docs/maps.md §5). Every byte is invented.
+//! client's `MapGate` (docs/game/maps.md §5). Every byte is invented.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 

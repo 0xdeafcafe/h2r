@@ -1,5 +1,5 @@
 //! Run the image from its entry point on the IR interpreter until the
-//! first kernel call (`docs/LIFTER.md` §9).
+//! first kernel call (`docs/lifter/LIFTER.md` §9).
 //!
 //! This is a semantic check of the lowering, not the runtime: it loads the
 //! image into one flat 64 MB memory, gives the entry thread a stack, and

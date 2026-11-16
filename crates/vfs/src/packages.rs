@@ -1,5 +1,5 @@
 //! A read-only backend that serves `maps\*.map` from map packages
-//! (docs/maps.md, `crates/content`).
+//! (docs/game/maps.md, `crates/content`).
 //!
 //! [`PackageBackend`] wraps the disc. When the game names a map the disc has
 //! (`maps\<name>.map`, exactly one level down) and a package in the
@@ -15,7 +15,7 @@
 //! does not match, a damaged patch) is refused with a warning and the
 //! disc's map is served. Nothing is ever written through the VFS.
 //!
-//! **Changes while the game runs** (docs/maps.md §3, "Realtime: Now"):
+//! **Changes while the game runs** (docs/game/maps.md §3, "Realtime: Now"):
 //! before a map path is looked up (`stat`, so every open) and before a
 //! listing of `maps`, the backend compares a cheap stamp of the maps
 //! directory (its own modification time, `active.toml`'s, and each package

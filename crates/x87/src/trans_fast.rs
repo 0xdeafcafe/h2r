@@ -1,4 +1,4 @@
-//! Guarded, integer-only evaluation. See docs/x87-transcendentals.md for
+//! Guarded, integer-only evaluation. See docs/lifter/x87-transcendentals.md for
 //! domains, error budgets and the rounding/flag acceptance test.
 #![forbid(unsafe_code)]
 

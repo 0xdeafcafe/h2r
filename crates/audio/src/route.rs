@@ -6,7 +6,7 @@
 //! reverb send and twenty FX sends that mix-in buffers and DSP effects read.
 //! The bin numbers are the XDK's `DSMIXBIN_*` values; Halo 2's own tables
 //! agree (default 3D routing `{6, 8, 7, 9, 10}`, mix-in input bins `0x17..`,
-//! see `docs/dsound.md`).
+//! see `docs/audio/dsound.md`).
 //!
 //! This model keeps the routing and folds the result to stereo:
 //!

@@ -4,7 +4,7 @@
 //! changes: the setting schema comes from the disc's `mainmenu` map (our
 //! own fallback model without one), and save names from the XBE
 //! (`H2_XBE`, else `default.xbe` beside the disc image). Saves go to the
-//! runtime's save storage (docs/variants.md); there is no file path.
+//! runtime's save storage (docs/editor/variants.md); there is no file path.
 
 use std::path::{Path, PathBuf};
 

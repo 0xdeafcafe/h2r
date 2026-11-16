@@ -1,5 +1,5 @@
 //! Bounded menu measurement, including process user+system CPU for all threads.
-//! Run serially through the bench gate; see docs/BOOT.md.
+//! Run serially through the bench gate; see docs/runtime/BOOT.md.
 #[cfg(unix)]
 fn main() -> anyhow::Result<()> {
     use std::{path::PathBuf, time::Instant};

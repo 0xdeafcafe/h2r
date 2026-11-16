@@ -1,5 +1,5 @@
 //! x87 floating point: every instruction as [`ir::x87::X87Op`]s, one per
-//! `h2x87_v1_*` helper call (docs/FLOAT-ABI.md §3).
+//! `h2x87_v1_*` helper call (docs/lifter/FLOAT-ABI.md §3).
 //!
 //! The shapes (see the `ir::x87` docs for the outcome rules):
 //!

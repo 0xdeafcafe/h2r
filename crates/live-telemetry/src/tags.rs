@@ -29,7 +29,7 @@ pub struct MapFile {
 pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 
 /// The `MapId` serving a map by its short name, when a package serves it
-/// (docs/maps.md §5); None for the disc's own map. The boot answers it
+/// (docs/game/maps.md §5); None for the disc's own map. The boot answers it
 /// with `boot::map_override::map_id`.
 pub type MapIdLocator = Box<dyn Fn(&str) -> Option<live_proto::maps::MapId> + Send + Sync>;
 

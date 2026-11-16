@@ -1,4 +1,4 @@
-//! Skulls on the wire (docs/skulls.md): a game's or a session's skulls are
+//! Skulls on the wire (docs/game/skulls.md): a game's or a session's skulls are
 //! indices, sorted and once each: `0..15` are the engine's (byte `n` of the
 //! array at `0x4f55dc`, `ice_cream_flavor_stock n`); from 15 are skulls of
 //! our own ([`OURS`] now, room up to [`LIMIT`] for more). An empty set is left
@@ -11,12 +11,12 @@ pub const COUNT: u8 = 15;
 /// for our own.
 pub const LIMIT: u8 = 64;
 
-/// The skulls our runtime makes work in a multiplayer game (docs/skulls.md
+/// The skulls our runtime makes work in a multiplayer game (docs/game/skulls.md
 /// "In multiplayer"): Famine (4), Blind (6) and our Low Gravity (16). Every
 /// other retail skull's code is campaign-only or needs AI, and our others
 /// act on the local players only, so a multiplayer game never names one.
 pub const MULTIPLAYER: [u8; 3] = [4, 6, 16];
-/// Our own skulls (docs/skulls.md "Our skulls"), from [`COUNT`]: Acrophobia,
+/// Our own skulls (docs/game/skulls.md "Our skulls"), from [`COUNT`]: Acrophobia,
 /// Low Gravity, Fall Damage, Unlimited Ammo, Unlimited Grenades and
 /// Invincible, in that order.
 pub const OURS: std::ops::Range<u8> = COUNT..COUNT + 6;

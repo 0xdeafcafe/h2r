@@ -5,7 +5,7 @@
 //! node maps and the material/node/permutation cross-checks.
 //!
 //! Wire records are in `schema.rs` (render_model section). Evidence is in
-//! docs/map-format.md, "Render-model geometry". Unknown vertex types are kept
+//! docs/formats/map-format.md, "Render-model geometry". Unknown vertex types are kept
 //! as bytes, never guessed.
 use crate::decode::Payload;
 use crate::geometry::{

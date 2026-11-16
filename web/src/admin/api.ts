@@ -1,4 +1,4 @@
-// The admin API (docs/live-admin.md): the MOTD and the hopper file as
+// The admin API (docs/live/live-admin.md): the MOTD and the hopper file as
 // structured JSON. Reads are public like every read; writes carry a
 // self-issued token signed with the signed-in account's key (./token.ts),
 // and the server accepts it only for admins.

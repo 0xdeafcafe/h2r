@@ -1,5 +1,5 @@
 // The admin editors' rules and the PUT bodies they send — pure functions,
-// tested in test/admin.test.ts. The limits are the game's (docs/live-motd.md
+// tested in test/admin.test.ts. The limits are the game's (docs/live/live-motd.md
 // §3.1 and §5.2, mirrored by live-proto's `motd` and `hopper`); the server
 // checks them all again, so this is for immediate, friendly errors.
 

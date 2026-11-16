@@ -1,6 +1,6 @@
 //! Controller-speaker routing through the guest-facing calls: a stream or
 //! buffer whose data starts like an indexed sound is mixed to the side
-//! output. Synthetic bytes only; see `docs/playstation-audio.md`.
+//! output. Synthetic bytes only; see `docs/audio/playstation-audio.md`.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,7 @@ use dsound::testing::TestHost;
 use dsound::{DirectSound, GuestMemory, Layout};
 
 const RATE: u32 = 8000;
-// Halo 2 5849 addresses, from docs/dsound.md.
+// Halo 2 5849 addresses, from docs/audio/dsound.md.
 const CREATE: u32 = 0x0037d797;
 const CREATE_BUFFER: u32 = 0x0037d4be;
 const CREATE_STREAM: u32 = 0x0037d4e2;

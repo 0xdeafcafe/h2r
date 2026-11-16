@@ -2,7 +2,7 @@
 //!
 //! Halo 2 turns the physical pad into player actions through a small table of
 //! sixteen action slots, each naming the physical button that drives it
-//! (`docs/controller-layouts.md` has the addresses and how it was read). The
+//! (`docs/input/controller-layouts.md` has the addresses and how it was read). The
 //! player profile holds a layout number and the game selects the table from
 //! it. This module is that table in our own words: [`Layout`] says which
 //! [`Button`] drives each [`Action`], and [`Layout::action_map`] encodes it as

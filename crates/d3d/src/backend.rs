@@ -58,7 +58,7 @@ pub struct StreamBytes {
 }
 
 /// A stream's bytes: a copy made for this draw, or a shared snapshot from
-/// the device's vertex cache (`docs/d3d.md`, "Vertex cache"). Both read as
+/// the device's vertex cache (`docs/graphics/d3d.md`, "Vertex cache"). Both read as
 /// `[u8]`, and compare by their bytes.
 #[derive(Clone)]
 pub enum StreamData {
@@ -615,7 +615,7 @@ pub trait Backend: Send {
     /// Whether [`surface_texture`](Self::surface_texture) works. A device
     /// on a backend that can sample its render-to-texture surfaces keeps
     /// their pixels on the host and writes them back to guest memory only
-    /// when the guest is about to read them (`docs/d3d.md`).
+    /// when the guest is about to read them (`docs/graphics/d3d.md`).
     fn can_sample_surfaces(&self) -> bool {
         false
     }
@@ -631,7 +631,7 @@ pub trait Backend: Send {
     }
     /// Whether [`depth_level_texture`](Self::depth_level_texture) answers
     /// for `D24S8` depth surfaces. With it, lazy render-to-texture keeps
-    /// depth levels on the host too (`docs/d3d.md`).
+    /// depth levels on the host too (`docs/graphics/d3d.md`).
     fn can_sample_depth_surfaces(&self) -> bool {
         false
     }
@@ -682,7 +682,7 @@ pub trait Backend: Send {
     /// Whether the backend keeps the alias mirror: a buffer on its side
     /// standing for a range of guest memory, which render-to-texture levels
     /// over the same memory move their pixels through without a read-back
-    /// (`mirror_*`, docs/d3d.md "Overlapping levels on the GPU"). Default
+    /// (`mirror_*`, docs/graphics/d3d.md "Overlapping levels on the GPU"). Default
     /// false; the device then writes overlapping levels back to guest
     /// memory.
     fn can_mirror(&self) -> bool {

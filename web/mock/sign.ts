@@ -1,4 +1,4 @@
-// Ed25519 signing for the mock, following docs/live-security.md §1-2:
+// Ed25519 signing for the mock, following docs/live/live-security.md §1-2:
 // JWK keys named by RFC 7638 thumbprint, compact JWS (alg EdDSA) over the
 // canonical JSON of the event body, and a per-stream hash chain.
 

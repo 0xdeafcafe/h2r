@@ -1,5 +1,5 @@
 //! Builds and reads Halo 2's `multiplayer_hopper.dat`, the playlist file
-//! (docs/live-motd.md §5, docs/live-matchmaking.md §6). The download
+//! (docs/live/live-motd.md §5, docs/live/live-matchmaking.md §6). The download
 //! envelope is the MOTD's:
 //!
 //! ```text
@@ -42,7 +42,7 @@
 //! Game data never goes in the repo: tests build synthetic images, the
 //! default set is built from numbers in [`defaults`], and real images come
 //! from the owner's own console cache through `h2 live hopper import`
-//! (docs/live-admin.md).
+//! (docs/live/live-admin.md).
 
 pub mod defaults;
 pub mod layout;
@@ -61,7 +61,7 @@ pub const HALO_2_HOPPER_FILE: &str = "multiplayer_hopper.dat";
 
 /// The size the game requires the payload to inflate to (0x162cc0).
 pub const INFLATED_SIZE: usize = 0x162cc0;
-/// The hopper channel's title-storage download buffer (docs/live-motd.md
+/// The hopper channel's title-storage download buffer (docs/live/live-motd.md
 /// §2.2): a larger file fails the download and the game keeps its
 /// compiled-in playlists.
 pub const MAX_FILE: usize = 0x20000;
@@ -119,7 +119,7 @@ const R_DWORDS: [usize; 2] = [0x248, 0x2a4];
 /// slot, which session setup (`0x00192eb0`) copies out whole for the record
 /// it picks. Inside it: the name (32 UTF-16 units at +0x04), the game-engine
 /// index (+0x44) and the engine flags (+0x48, bit 0 team play;
-/// docs/live-gamestate.md).
+/// docs/live/live-gamestate.md).
 const R_VARIANT: usize = 0x24c;
 /// Where a record slot's game variant starts, and its size: the variant is
 /// the whole tail of the slot.

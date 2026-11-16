@@ -1,6 +1,6 @@
 //! The event store: one append-only log of signed events, ordered by a
 //! global `position`, with per-stream versions, optimistic concurrency and
-//! a per-stream hash chain (docs/live-security.md §2). Postgres in
+//! a per-stream hash chain (docs/live/live-security.md §2). Postgres in
 //! production ([`crate::pg`]), a directory for the embedded server without
 //! one ([`crate::filestore`]), [`MemoryStore`] for tests.
 //!

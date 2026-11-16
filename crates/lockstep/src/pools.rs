@@ -1,5 +1,5 @@
 //! The simulation hash per pool, the co-op probe's hash log, and the diff
-//! of two such logs (docs/live-coop.md section 9).
+//! of two such logs (docs/live/live-coop.md section 9).
 //!
 //! [`hash_sim`](crate::hash_sim) gives one word over the whole game-state
 //! block. Two peers that part need more than "they differ": they need the

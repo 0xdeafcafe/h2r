@@ -24,7 +24,7 @@ toml = "0.9"
 gilrs = { version = "0.11", optional = true }
 
 # IOKit HID (pad_hid) is macOS only; GameController is every Apple
-# platform, tvOS included (docs/tvos.md).
+# platform, tvOS included (docs/runtime/tvos.md).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-io-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "libc", "hid"] }
 objc2-core-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString", "CFRunLoop", "CFDate"] }

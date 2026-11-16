@@ -3,7 +3,7 @@
 # The Live server (API, web dashboard, stats site) as a small image:
 # `h2-live-server` (crates/live-server, the server without the rest of `h2`)
 # and the built web app. No disc and no game art inside: the art is extracted
-# on a machine with the disc and mounted at /art (docs/live-hosting.md,
+# on a machine with the disc and mounted at /art (docs/live/live-hosting.md,
 # "Docker with a named tunnel").
 #
 # Build from the repository root:

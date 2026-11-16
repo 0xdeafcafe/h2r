@@ -1,6 +1,6 @@
 //! 1.0's multiplayer map list entry for a new map: a version 2 `patch.lvl`
-//! built from a package's manifest (docs/maps.md §4, layout in
-//! docs/map-pack.md 8.1).
+//! built from a package's manifest (docs/game/maps.md §4, layout in
+//! docs/game/map-pack.md 8.1).
 //!
 //! Field sources:
 //!
@@ -72,7 +72,7 @@ pub const LIST_ID_LAST: u32 = 0x7fff_fffe;
 
 /// The low half of the offer ID of the package holding the map with list id
 /// `id`: its top bit set, so it never meets the Map Pack's `0x0101..0x03ff`
-/// (docs/map-pack.md §5) or a disc package number.
+/// (docs/game/map-pack.md §5) or a disc package number.
 pub fn offer_content(id: u32) -> u32 {
     0x8000_0000 | id
 }

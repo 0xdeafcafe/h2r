@@ -98,7 +98,7 @@ pub enum Apply {
     Restart,
 }
 
-/// What a setting can change (docs/feature-engine.md "Determinism").
+/// What a setting can change (docs/engine/feature-engine.md "Determinism").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// Never on the guest thread, never writes guest memory.

@@ -1,7 +1,7 @@
 //! Halo 2's own content signature check, run on the fallback interpreter
 //! with the kernel HLE behind it, accepts a ContentMeta.xbx signed by
 //! `kernel::content::sign` (what `h2 import-mappack` writes) and rejects the
-//! unsigned header a disc ships. docs/map-pack.md has the addresses.
+//! unsigned header a disc ships. docs/game/map-pack.md has the addresses.
 //!
 //! `H2_XBE=/path/default.xbe cargo test -p boot --test content_sign -- --ignored`
 

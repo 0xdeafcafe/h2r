@@ -1,4 +1,4 @@
-/* h2x87.h: x87 runtime helpers, ABI v1 (docs/FLOAT-ABI.md §1-§4).
+/* h2x87.h: x87 runtime helpers, ABI v1 (docs/lifter/FLOAT-ABI.md §1-§4).
  *
  * Implemented by crates/x87 (src/abi.rs, `ffi`). Every helper takes the
  * guest thread's X87Abi (CpuAbi.x87, h2abi.h v1): eight physical 10-byte

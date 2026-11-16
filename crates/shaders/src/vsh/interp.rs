@@ -253,7 +253,7 @@ pub fn run(
 }
 
 /// The viewport fixup the generated vertex stage applies to `oPos`, giving
-/// wgpu clip coordinates. See `docs/shaders.md`.
+/// wgpu clip coordinates. See `docs/graphics/shaders.md`.
 pub fn fixup(pos: Vec4, surface: [f32; 2], z_max: f32) -> Vec4 {
     let x = (pos[0] * 16.0).trunc() / 16.0;
     let y = (pos[1] * 16.0).trunc() / 16.0;

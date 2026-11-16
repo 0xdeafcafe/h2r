@@ -1,5 +1,5 @@
 //! `h2 live maps publish|list`: share a map package over Live
-//! (docs/maps.md §5, docs/live-api.md "Custom maps").
+//! (docs/game/maps.md §5, docs/live/live-api.md "Custom maps").
 //!
 //! `publish DIR` reads the package's `manifest.toml` (checked as the
 //! runtime checks it), uploads every layer and the preview image to the

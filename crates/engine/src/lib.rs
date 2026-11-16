@@ -11,7 +11,7 @@
 //! - [`datum`]: datum arrays (allocation, salts, lookup, iteration).
 //! - [`locale`]: localized-string lookup by packed StringID.
 //! - [`render`]: read-only views of the live lights and scene layers
-//!   (`docs/e3-lighting.md`, phase 0).
+//!   (`docs/graphics/e3-lighting.md`, phase 0).
 //! - [`points`]: the one table of named guest functions and globals.
 //! - [`view`]: typed views (`record!`, datum arrays, tags, players,
 //!   objects).

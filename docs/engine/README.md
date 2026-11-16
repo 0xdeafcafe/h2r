@@ -62,10 +62,9 @@ ending at the end of RAM so that only the first k arguments are mapped,
 for every k. The test pins the image by
 SHA-256 (`03215919…935d`) and fails if any adapter goes unexercised.
 
-`ir` and `lift` are on master now, but the `differential` feature does not
-list them as dependencies yet (the TODO in `crates/engine/Cargo.toml`), so
-it does not build as is. The run below used a copy of the lift crates from
-before they landed. Recorded on
+The `differential` feature lists `ir` and `lift` as dependencies
+(`crates/engine/Cargo.toml`). The run below used a copy of the lift crates
+from before they landed, so it predates that wiring. Recorded on
 2026-11-15, seeds 1, 7, 99, 2026, 31337 at scale 1: 7.66 M original
 instructions interpreted, 93,291 calls, 5 matching fault outcomes,
 zero disagreements across all 22 adapters. After the argument-order
@@ -82,7 +81,7 @@ caught by the seeded runs.
 
 Agreement here tests the Rust against the lifted original. It shares the
 lifter's instruction semantics, so it is not independent evidence about the
-CPU (`docs/LIFTER.md` §8).
+CPU (`docs/lifter/LIFTER.md` §8).
 
 ## Registering the overrides
 
@@ -92,4 +91,6 @@ register and clobber set. With the `runtime-glue` feature,
 through `Dispatch::register_override`; each handler takes one
 `ctx.memory()` guard for the whole call and returns `TransferAbi::ret`.
 The feature builds against master's `runtime`; nothing calls
-`register_all` yet.
+`register_all`. The game installs the same adapters through the `feature`
+crate's `engine-leaves` feature (`crates/feature/src/leaves.rs`, added in
+`crates/boot/src/lib.rs`): only the locale group is on by default.

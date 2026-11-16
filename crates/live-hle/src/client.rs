@@ -27,7 +27,7 @@ pub(crate) const FILES: [(u32, &str); 2] =
 pub struct ServerOptions {
     pub request_timeout: Duration,
     pub heartbeat_interval: Duration,
-    /// Custom maps (docs/maps.md §5): sessions on a map that cannot be had
+    /// Custom maps (docs/game/maps.md §5): sessions on a map that cannot be had
     /// are left out of searches, and finding one by id (a join) downloads
     /// its missing layers first. None: sessions are taken as they come.
     pub maps: Option<Arc<crate::maps::MapGate>>,
@@ -168,7 +168,7 @@ pub(crate) struct Service {
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
     /// Every session the worker has read, by id: the skulls its host
-    /// advertised (docs/skulls.md "In multiplayer").
+    /// advertised (docs/game/skulls.md "In multiplayer").
     pub seen: Seen,
 }
 /// Sessions' advertised skulls by session id, as last read from the server.
@@ -688,7 +688,7 @@ impl Worker {
             seen.insert(s.session_id.clone(), s.advertisement.skulls.clone());
         }
     }
-    /// Whether a session's map can be had (docs/maps.md §5): checked for a
+    /// Whether a session's map can be had (docs/game/maps.md §5): checked for a
     /// search result, made ready (downloaded) for a join. A refusal is
     /// printed with its reason and the session is dropped.
     fn map_ready(&self, s: &live_proto::session::Session, join: bool) -> bool {

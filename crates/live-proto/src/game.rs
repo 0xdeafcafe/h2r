@@ -1,5 +1,5 @@
 //! Game streams (`game-<id>`): event data, frames and the read shapes of
-//! `/v1/games` (docs/live-api.md, Events and Clarifications 6-10). The
+//! `/v1/games` (docs/live/live-api.md, Events and Clarifications 6-10). The
 //! server validates every game event against these types; clients build
 //! them.
 
@@ -57,7 +57,7 @@ pub struct Player {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local: Option<bool>,
     /// What the player looks like, as far as the game's memory says
-    /// (docs/live-telemetry.md, Player appearance).
+    /// (docs/live/live-telemetry.md, Player appearance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
 }
@@ -127,7 +127,7 @@ pub struct NewGame {
     /// Local split-screen co-op is more than one player without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub online: Option<bool>,
-    /// Exactly which map (docs/maps.md §5): `map` stays the base map's name
+    /// Exactly which map (docs/game/maps.md §5): `map` stays the base map's name
     /// (what the game loads as `maps\<map>.map`), so a modded Lockout is
     /// `map: "lockout"` with this set, and stats keep the two apart by it.
     /// None for retail maps from senders that do not know it, and for every
@@ -347,9 +347,9 @@ pub struct Frame {
 }
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
-/// packed format's kind code (docs/live-telemetry.md, Packed frames). Its
+/// packed format's kind code (docs/live/live-telemetry.md, Packed frames). Its
 /// JSON name is the placement's `kind` in map.glb's `scenario` node
-/// (docs/live-art.md): the tag group, and `netgame` for multiplayer spawns.
+/// (docs/live/live-art.md): the tag group, and `netgame` for multiplayer spawns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ObjectKind {
     /// `scnr+0x60`.

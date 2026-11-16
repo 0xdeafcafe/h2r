@@ -1,7 +1,7 @@
 //! The shared "function" (curve) data embedded in effects, particles and
 //! particle movement, and a port of the engine's evaluator.
 //!
-//! Evidence labels (see `docs/effects.md`): **E** the engine's evaluator
+//! Evidence labels (see `docs/formats/effects.md`): **E** the engine's evaluator
 //! (`0x0013b390`, with the helpers `0x0013bec0`, `0x0017c900`, `0x0017ca10` and
 //! the property wrapper `0x00246cd0`) reads this; **V** checked on every
 //! instance of the retail disc; **S** a name taken from public vocabulary only.

@@ -1,10 +1,10 @@
-//! Our own list screen class (docs/feature-engine.md "UI step b"): a screen
+//! Our own list screen class (docs/engine/feature-engine.md "UI step b"): a screen
 //! of the `ui` model with no retail function patched for it.
 //!
 //! **What it is.** A Controls-shaped screen (the Controls tag's layout,
 //! built by the Controls constructor) whose screen and list handler point
 //! at our copies of the Controls vtables, with these entries of ours (async
-//! entries at arena addresses, docs/ui.md "Screen and list classes"):
+//! entries at arena addresses, docs/formats/ui.md "Screen and list classes"):
 //!
 //! - **loader**: what `0x149f1e` is handed. It does what the Controls loader
 //!   does (allocate, construct, push), and between construct and push it
@@ -83,7 +83,7 @@ pub trait Rows: Send + Sync {
 }
 
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
-/// (docs/ui.md "Bitmap block") and placed with its top-left at `at`. The
+/// (docs/formats/ui.md "Bitmap block") and placed with its top-left at `at`. The
 /// block is found at run time through the interface's screen list, so the
 /// bitmap reference is the loaded map's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,7 +188,7 @@ pub fn set_tint(m: &mut dyn GuestMemory, widget: u32, tint: [f32; 3]) -> Result<
 }
 
 /// A description text of ours on the screen: a text block definition
-/// (docs/ui.md "Text block") the pane builder's text step makes a widget
+/// (docs/formats/ui.md "Text block") the pane builder's text step makes a widget
 /// from. Its string starts empty; row text sets the focused row's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextBlock {
@@ -766,7 +766,7 @@ async fn add_picture(
 impl feature::Feature for ListClass {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(self.id, "A screen of ours as our own list class")
-            .doc("docs/feature-engine.md")
+            .doc("docs/engine/feature-engine.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let rows = Arc::clone(&self.rows);

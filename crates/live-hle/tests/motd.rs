@@ -301,7 +301,7 @@ impl World {
 }
 
 /// What the game's completion handler `0x0008c790` checks and writes to
-/// `n:\message_of_the_day.dat` (docs/live-motd.md §3): BE size 0x25224 at
+/// `n:\message_of_the_day.dat` (docs/live/live-motd.md §3): BE size 0x25224 at
 /// +0x10, a zlib stream from +0x14 inflating to exactly that, then the
 /// console language's header and its message block.
 fn as_the_game_reads(file: &[u8]) -> (String, Vec<String>) {

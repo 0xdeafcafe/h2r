@@ -1,7 +1,7 @@
 //! The pictures on a level's surfaces in `map.glb`: each solid shader's
 //! base map (the BSP's and the placed objects'), decoded from the disc at
 //! run time, one image per bitmap however many shaders and surfaces use it,
-//! and the level's pictures kept within a byte budget (docs/live-art.md,
+//! and the level's pictures kept within a byte budget (docs/live/live-art.md,
 //! "Textures").
 
 use std::collections::HashMap;

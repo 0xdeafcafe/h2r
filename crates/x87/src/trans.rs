@@ -5,7 +5,7 @@
 //! evaluated in [`Wf<W>`](crate::wide::Wf) (512-bit significand) and rounded
 //! once to 64 bits under round-to-nearest; the x87 transcendentals are not
 //! affected by PC, and these entry points take no rounding mode (see the
-//! report on docs/FLOAT-ABI.md §6).
+//! report on docs/lifter/FLOAT-ABI.md §6).
 //!
 //! # Accuracy
 //!

@@ -2,7 +2,7 @@
 //!
 //! **The guest arrays are authoritative.** Halo writes `D3D__RenderState`
 //! and `D3D__TextureState` directly from game code (386 and 432 `.text`
-//! accesses; see `docs/d3d.md`), then either calls a D3D helper that pushes
+//! accesses; see `docs/graphics/d3d.md`), then either calls a D3D helper that pushes
 //! the matching NV2A method or only sets a bit in `D3D__DirtyFlags` for the
 //! lazy commit. Rather than intercept every one of those sites, the device
 //! snapshots both arrays at each draw and translates the snapshot. Overridden
