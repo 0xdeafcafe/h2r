@@ -25,11 +25,15 @@ pub struct Override {
     pub enabled: bool,
 }
 
+/// See [`Dispatch::set_stop_recovery`].
+pub type StopRecovery = dyn Fn(&mut CpuAbi, &mut ExecCtx, TransferAbi) -> TransferAbi + Send + Sync;
+
 #[derive(Default)]
 pub struct Dispatch {
     generated: HashMap<u32, Handler>,
     overrides: HashMap<u32, Override>,
     resumes: HashMap<u32, (u32, u32)>,
+    stop_recovery: Option<Arc<StopRecovery>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -194,6 +198,27 @@ impl Dispatch {
             .filter(|o| o.enabled)
             .map(|o| o.handler.clone())
             .or_else(|| self.resolve_original(addr))
+    }
+    /// Install what the runner does when a
+    /// generated handler hands it a STOP: it calls `f` with the CPU as the
+    /// handler left it and the STOP, and carries on with the transfer `f`
+    /// returns (the same STOP to stop after all). A STOP from a handler
+    /// invoked directly by another (direct calls) reaches the runner too,
+    /// handed up unchanged, so one hook sees every generated STOP while
+    /// each generated handler stays registered as itself. Rust overrides'
+    /// STOPs are not passed to it. Without one, a STOP stops.
+    pub fn set_stop_recovery<F>(&mut self, f: F)
+    where
+        F: Fn(&mut CpuAbi, &mut ExecCtx, TransferAbi) -> TransferAbi + Send + Sync + 'static,
+    {
+        self.stop_recovery = Some(Arc::new(f));
+    }
+    /// Remove the [`set_stop_recovery`](Self::set_stop_recovery) hook.
+    pub fn clear_stop_recovery(&mut self) {
+        self.stop_recovery = None;
+    }
+    pub(crate) fn stop_recovery(&self) -> Option<Arc<StopRecovery>> {
+        self.stop_recovery.clone()
     }
     pub fn has_generated(&self, addr: u32) -> bool {
         self.generated.contains_key(&addr)

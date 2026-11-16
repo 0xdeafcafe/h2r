@@ -120,6 +120,14 @@ impl Runtime {
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
         r
     }
+    /// The hook for a generated handler's STOP
+    /// ([`Dispatch::set_stop_recovery`]); read only when one happens.
+    pub(crate) fn stop_recovery(&self) -> Option<std::sync::Arc<crate::dispatch::StopRecovery>> {
+        self.dispatch
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .stop_recovery()
+    }
     /// The generation counter itself, for generated code's direct calls
     /// (`direct.rs`); it lives as long as the runtime.
     pub(crate) fn dispatch_generation_ptr(&self) -> *const AtomicU64 {

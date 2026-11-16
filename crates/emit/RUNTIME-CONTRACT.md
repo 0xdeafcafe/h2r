@@ -47,9 +47,25 @@ The emitted ordinary-access helpers try the shared atomic gate with acquire
 ordering. While holding it they validate the one-page span, access permission
 and physical RAM bounds, then copy bytes. Stores mark physical dirty bits.
 
-A handler keeps the gate across consecutive accesses (`H2Gate`,
-`h2_held_read`/`h2_held_write`) with the page table, RAM pointer and watch
-flag it read when it took it; none of them can change while it is held. It
+A handler keeps the gate across consecutive accesses (`H2Gate`) with the
+view (`H2MemoryData`: page table, RAM pointer, watch flag) it took it with;
+none of it can change while the gate is held. An emitted load or store is
+inline (`H2_HELD_TRY` in `h2fastmem.h`): with the gate held, a span inside
+one page, the page's permission bit and a physical page inside RAM, it is
+one load or store of the constant width at the host address, with no call.
+Anything else (gate not held, a crossing span, no permission, MMIO or
+unmapped) is one call to the cold `h2_access_cold`, which takes the gate
+and retries the inline check, or drops the gate and runs the ordinary
+helper exactly as before; a failure leaves through the fault exit. So the
+fast and helper paths decide nothing differently: fault order, whole-span
+failure, MMIO diagnostics and the access count are the helper's, and the
+count is one per attempted access either way (`H2_ACC_ONE`, or the inline
+charge without accounting). An inline store marks its physical page dirty
+when a watch is active, under the gate, before storing; a hold remembers
+the page it marked last (`H2Gate.dirtied`) and skips re-marking it, which
+is sound because Rust drains dirty bits only under the gate, and every
+new hold forgets it. These are generated-code internals: the runtime ABI
+and the `h2fastmem.h` layouts asserted in Rust are unchanged. It
 drops the gate (`H2_GATE_DROP`) before every call that takes the context
 (the slow accessors, atomics, `h2shim_v1_*`, `h2abi_v1_charge`), on every
 way out, after `H2_GATE_TRIPS` (32) loop headers or REP trips, and at the
@@ -511,6 +527,11 @@ Its semantics:
     pending, the budget spent) is returned unchanged as this handler's own
     transfer, without running the epilogue: `CpuAbi` is as the callee left
     it. The runner then handles it at its safe point as it would have.
+    A host that recovers from STOPs therefore does it in the runner, not by
+    wrapping handlers: a wrapper is not the callee's handler, so no direct
+    call would match it. `Dispatch::set_stop_recovery` installs a hook the
+    runner calls with every STOP a generated handler returns, handed up or
+    not, and the CPU as it is; the runner carries on with what it returns.
   - After every invocation the runner takes back the budget left (direct
     transfers count in `transfers` and `direct_transfers`) and replays the
     frames still recorded into the shadow stack as it would have recorded

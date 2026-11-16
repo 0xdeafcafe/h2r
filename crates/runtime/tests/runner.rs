@@ -769,3 +769,65 @@ fn editing_dispatch_reaches_a_context_that_already_resolved_the_target() {
     Runner::default().run(&mut cpu, &mut ctx, ENTRY);
     assert_eq!(cpu.eax, 2);
 }
+
+/// Stops at `WRAPPER + 3` as a generated handler does on an instruction it
+/// cannot run.
+unsafe extern "C" fn stops_midway(
+    cpu: *mut CpuAbi,
+    ctx: *mut ExecCtxOpaque,
+    _: u32,
+) -> TransferAbi {
+    // SAFETY: the runner provides this exclusive invocation-scoped pair.
+    unsafe {
+        common::with_context(cpu, ctx, |cpu, ctx| {
+            cpu.eip = WRAPPER + 3;
+            cpu.ebx = 0x5150;
+            TransferAbi::stop(ctx.emit(Event::UnrecordedFault { pc: WRAPPER + 3 }))
+        })
+    }
+}
+
+#[test]
+fn stop_recovery_sees_generated_stops_only_and_its_transfer_runs() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+    let image = load_xbe(&synthetic_xbe()).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicU32::new(0));
+    let (s, c) = (Arc::clone(&seen), Arc::clone(&calls));
+    image.runtime.edit_dispatch(|d| {
+        register(d, ENTRY, stops_midway);
+        let _ = d.register_override(WRAPPER, "rust stop", |cpu, _, _| {
+            cpu.eax = 7;
+            Ok(TransferAbi::stop(0))
+        });
+        d.set_stop_recovery(
+            move |cpu: &mut CpuAbi, _: &mut runtime::ExecCtx, t: TransferAbi| {
+                c.fetch_add(1, Ordering::SeqCst);
+                s.lock().unwrap().push((cpu.eip, cpu.ebx, t.kind));
+                // Recover the way the boot's interpreter would: carry on.
+                TransferAbi::jump(WRAPPER)
+            },
+        );
+    });
+    let mut ctx = image.context();
+    let mut cpu = image.cpu;
+    let t = Runner::default().run(&mut cpu, &mut ctx, ENTRY);
+    // The handler's STOP was recovered with the CPU it left; the override's
+    // own STOP was not offered and ends the run.
+    assert_eq!(*seen.lock().unwrap(), [(WRAPPER + 3, 0x5150, abi::STOP)]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!((t.kind, t.event_id, cpu.eax), (abi::STOP, 0, 7));
+
+    // Without the hook the generated STOP ends the run where it happened.
+    image.runtime.edit_dispatch(|d| d.clear_stop_recovery());
+    let mut cpu = image.cpu;
+    let t = Runner::default().run(&mut cpu, &mut ctx, ENTRY);
+    assert_eq!(t.kind, abi::STOP);
+    assert_eq!(
+        ctx.event(t.event_id),
+        Some(&Event::UnrecordedFault { pc: WRAPPER + 3 })
+    );
+    assert_eq!(cpu.eip, WRAPPER + 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

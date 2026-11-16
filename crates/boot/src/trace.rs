@@ -47,7 +47,11 @@ pub struct Trace {
     /// bounded; their results, if they ever come, are not recorded.
     pub abandoned: u64,
     limit: usize,
-    out: Option<std::fs::File>,
+    /// The TSV, buffered: an unbuffered `write` per kernel call was 2.8%
+    /// of a gameplay frame. [`flush`] writes the open calls and flushes it
+    /// at the end of a run; a crash loses at most the buffer, and the
+    /// in-memory `calls` still hold the last ones for the report.
+    out: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 impl Trace {
@@ -91,22 +95,26 @@ impl Trace {
 
     fn write(&mut self, c: &Call) {
         if let Some(f) = &mut self.out {
-            let args: Vec<String> = c.args.iter().map(|a| format!("{a:#x}")).collect();
-            let result = c.result.map_or("-".into(), |r| format!("{r:#x}"));
-            let _ = writeln!(
-                f,
-                "{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{}",
-                c.seq,
-                c.thread,
-                c.ordinal,
-                c.name,
-                c.ret_pc,
-                args.join(","),
-                result,
-                c.detail
-            );
+            let _ = write_line(f, c);
         }
     }
+}
+
+/// One TSV row: seq, thread, ordinal, name, return pc, args, EAX (`-` if
+/// the call never returned), detail.
+fn write_line(w: &mut impl Write, c: &Call) -> std::io::Result<()> {
+    write!(w, "{}\t{}\t{}\t{}\t{:#x}\t", c.seq, c.thread, c.ordinal, c.name, c.ret_pc)?;
+    for (i, a) in c.args.iter().enumerate() {
+        if i > 0 {
+            w.write_all(b",")?;
+        }
+        write!(w, "{a:#x}")?;
+    }
+    match c.result {
+        Some(r) => write!(w, "\t{r:#x}")?,
+        None => w.write_all(b"\t-")?,
+    }
+    writeln!(w, "\t{}", c.detail)
 }
 
 pub type Shared = Arc<Mutex<Trace>>;
@@ -130,7 +138,7 @@ pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, li
         evicted_open: Default::default(),
         abandoned: 0,
         limit,
-        out: path.map(std::fs::File::create).transpose()?,
+        out: path.map(std::fs::File::create).transpose()?.map(|f| std::io::BufWriter::with_capacity(1 << 16, f)),
     }));
     rt.edit_dispatch(|d| {
         for imp in runtime::kernel::FUNCTION_IMPORTS {
@@ -182,13 +190,19 @@ pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, li
     Ok(trace)
 }
 
-/// Write the calls that never returned (the stop, thread exits).
+/// Write the calls that never returned (the stop, thread exits), then
+/// flush the TSV to disk.
 pub fn flush(t: &Shared) {
     let mut tr = t.lock().unwrap();
     let mut open: Vec<Call> = tr.evicted_open.values().cloned().collect();
     open.extend(tr.calls.iter().filter(|c| c.result.is_none()).cloned());
     for c in &open {
         tr.write(c);
+    }
+    if let Some(f) = &mut tr.out
+        && let Err(e) = f.flush()
+    {
+        eprintln!("trace: writing the kernel-call TSV: {e}");
     }
 }
 
@@ -268,6 +282,35 @@ mod tests {
         // An abandoned call's late return is ignored.
         t.finish(0, 1);
         assert_eq!(t.evicted_open.len(), 3);
+    }
+
+    #[test]
+    fn the_tsv_is_buffered_and_complete_after_flush() {
+        let path = std::env::temp_dir().join(format!("h2-trace-test-{}.tsv", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut t = bounded(2);
+        t.out = Some(std::io::BufWriter::with_capacity(1 << 16, file));
+        let open = t.push(Call { args: vec![0x10, 0x2a], detail: "d:\\x".into(), ..call(7) });
+        for i in 0..5 {
+            let s = t.push(call(i));
+            t.finish(s, i + 0x100);
+        }
+        // Nothing reached the file yet: one write per call is what this saves.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        let shared: Shared = Arc::new(Mutex::new(t));
+        flush(&shared);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 6, "{text}");
+        assert_eq!(lines[0], "1\t0\t0\tx\t0x0\t\t0x100\t");
+        assert_eq!(lines[4], "5\t0\t4\tx\t0x0\t\t0x104\t");
+        // The call that never returned comes last, with no EAX.
+        assert_eq!(lines[5], format!("{open}\t0\t7\tx\t0x0\t0x10,0x2a\t-\td:\\x"));
+        // The report's in-memory tail is untouched by the file.
+        let t = shared.lock().unwrap();
+        assert_eq!(t.calls.iter().map(|c| c.seq).collect::<Vec<_>>(), [4, 5]);
+        assert_eq!(t.total, 6);
     }
 
     #[test]
