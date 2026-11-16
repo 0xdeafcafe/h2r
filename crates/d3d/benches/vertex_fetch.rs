@@ -172,7 +172,7 @@ fn make_draw(rng: &mut Rng, shape: &[Stream]) -> ResolvedDraw {
                 }
             }
             StreamBytes {
-                data,
+                data: data.into(),
                 stride: s.stride,
             }
         })
@@ -193,7 +193,7 @@ fn make_draw(rng: &mut Rng, shape: &[Stream]) -> ResolvedDraw {
         vertex_count: count,
         streams,
         layout,
-        indices: Some(indices),
+        indices: Some(indices.into()),
         state: words.translate(&RenderStateTable::default()),
         extras: words.stage_extras(),
         target: TargetInfo {

@@ -28,6 +28,7 @@ pub mod encode;
 pub mod format;
 pub mod guest_words;
 pub mod occlusion;
+pub mod persistent;
 pub mod pipeline;
 pub mod presenter;
 pub mod program;

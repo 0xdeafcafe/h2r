@@ -100,10 +100,15 @@ pub enum Counter {
     Readbacks = 5,
     /// Bytes the guest read from files (`NtReadFile`).
     ReadBytes = 6,
+    /// Vertex-stream bytes the device copied out of guest memory for draws.
+    VertexCopied = 7,
+    /// Vertex-stream bytes draws took from the device's vertex cache
+    /// without a copy.
+    VertexReused = 8,
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 7;
+pub const COUNTERS: usize = 9;
 
 impl Counter {
     pub const ALL: [Counter; COUNTERS] = [
@@ -114,6 +119,8 @@ impl Counter {
         Counter::Uploads,
         Counter::Readbacks,
         Counter::ReadBytes,
+        Counter::VertexCopied,
+        Counter::VertexReused,
     ];
 
     pub fn label(self) -> &'static str {
@@ -125,6 +132,8 @@ impl Counter {
             Counter::Uploads => "uploads",
             Counter::Readbacks => "readbacks",
             Counter::ReadBytes => "read_bytes",
+            Counter::VertexCopied => "vtx_copied",
+            Counter::VertexReused => "vtx_reused",
         }
     }
 }
