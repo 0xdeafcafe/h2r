@@ -396,15 +396,9 @@ pub fn extend_panes<M: Gm>(m: &mut M, wgit: u32, alloc: &mut u32) -> Option<bool
 static PENDING_VALUE: AtomicU32 = AtomicU32::new(0);
 static ALLOC: AtomicU32 = AtomicU32::new(0);
 static STRING_ADDRS: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock::new();
-/// Set while our Video row's open call runs: the next Controls list built
-/// is the Video list.
-static OPENING_VIDEO: AtomicBool = AtomicBool::new(false);
-/// Set while a Video screen's header is built.
-static VIDEO_HEADER: AtomicBool = AtomicBool::new(false);
-/// The guest address of the Video list's array name (0: none).
-static VIDEO_LIST_NAME: AtomicU32 = AtomicU32::new(0);
-/// The id we serve the array name under (only its address is used).
-const VIDEO_LIST_NAME_ID: u32 = ID_BASE + 0xff;
+/// The Video screen's loader: our list class's (`crate::list_class`), 0
+/// until the class is built.
+static VIDEO_LOADER: AtomicU32 = AtomicU32::new(0);
 /// Set while our Skulls row's open call runs: the next Controls list built
 /// is the Skulls list, with this many rows.
 static OPENING_SKULLS: AtomicU32 = AtomicU32::new(0);
@@ -440,26 +434,17 @@ pub fn video_header_id<M: Gm>(m: &M, esp: u32, title: u32) -> Option<u32> {
     (m.u32(esp.wrapping_add(4))? == video_screen::CONTROLS_HEADER).then_some(title)
 }
 
-/// In place of the Controls row-chosen call (`ret 8`) for the Video row:
-/// open a Controls screen the way the Settings screen opens Controls
-/// (`0x149f1e(mask, 0x2b7714)`), with the list hook told that the list it
-/// builds is the Video list, then return to the caller.
+/// In place of the Settings row-chosen call (`ret 8`) for the Video row:
+/// open the Video screen with our list class's loader, the way the Settings
+/// screen opens Controls (`0x149f1e(mask, loader)`), then return to the
+/// caller.
 fn open_video(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32) -> Result<TransferAbi, GuestFault> {
-    let rt = Arc::clone(ctx.runtime());
-    let mut mem = rt.memory();
-    let ret_pc = mem.u32(cpu.esp)?;
-    cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
-    // Stdcall: the loader last, so the mask is the first argument.
-    push(&mut mem, cpu, video_screen::CONTROLS_LOADER)?;
-    push(&mut mem, cpu, mask)?;
-    OPENING_VIDEO.store(true, Ordering::SeqCst);
-    eprintln!("video screen: opening");
-    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| {
-        if OPENING_VIDEO.swap(false, Ordering::SeqCst) {
-            eprintln!("video screen: the open call built no Controls list");
-        }
-        Ok(TransferAbi::ret(ret_pc))
-    })
+    let loader = VIDEO_LOADER.load(Ordering::SeqCst);
+    if loader == 0 {
+        eprintln!("video screen: its list class is off; not opened");
+        return ctx.runtime().memory().ret(cpu, 8);
+    }
+    open_screen(cpu, ctx, mask, loader, "video screen: opening")
 }
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
@@ -548,9 +533,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         }
         let mut served = served_strings(layouts, with_speaker);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
-        if with_video {
-            served.push((VIDEO_LIST_NAME_ID, video_screen::LIST_NAME_TEXT));
-        }
         if with_custom_games {
             served.push((custom_games::TEXT_ID, custom_games::TEXT));
         }
@@ -561,9 +543,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
-        if let Some((_, a)) = addrs.iter().find(|(i, _)| *i == VIDEO_LIST_NAME_ID) {
-            VIDEO_LIST_NAME.store(*a, Ordering::SeqCst);
-        }
         if let Some((_, a)) = addrs.iter().find(|(i, _)| *i == skulls_menu::LIST_NAME_ID) {
             SKULLS_LIST_NAME.store(*a, Ordering::SeqCst);
         }
@@ -578,8 +557,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
     let video_hooks = [
-        speaker_row::ROW_CHOSEN,
-        video_screen::HEADER_BUILD,
         video_screen::SETTINGS_ROW_TEXT,
         video_screen::SETTINGS_ROW_CHOSEN,
         PANE_SET,
@@ -610,7 +587,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
         .chain(video_hooks.into_iter().filter(|_| with_video))
-        .chain(text_hooks.into_iter().filter(|_| layouts || with_video))
+        .chain(text_hooks.into_iter().filter(|_| layouts))
         .chain(controls_hooks.into_iter().filter(|_| extra_rows > 0))
         .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
@@ -637,7 +614,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             let seen = AtomicBool::new(false);
             let grew_layouts = AtomicBool::new(false);
             let grew_controls = AtomicBool::new(false);
-            let rows = model.rows(video_screen::LIST).len();
             let model = Arc::clone(&model);
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 announce(&seen, "layouts: list constructor");
@@ -645,18 +621,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     let mem = ctx.runtime().memory();
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
-                // The list our Video row's open call builds: our name, our rows.
-                let opening = OPENING_VIDEO.load(Ordering::SeqCst);
-                if let Some(count) = video_screen::video_count(name, cpu.eax, opening, rows) {
-                    OPENING_VIDEO.store(false, Ordering::SeqCst);
-                    let ours = VIDEO_LIST_NAME.load(Ordering::SeqCst);
-                    if ours != 0 {
-                        ctx.runtime().memory().set_u32(cpu.esp + 4, ours)?;
-                        eprintln!("video screen: list built with {count} rows");
-                        cpu.eax = count;
-                        return Ok(o.invoke(cpu, ctx, LIST_DATA_NEW));
-                    }
-                }
                 // The list our Skulls row's open call builds: our name, the
                 // profile's rows.
                 let skull_rows = OPENING_SKULLS.load(Ordering::SeqCst);
@@ -865,16 +829,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         // game gives a layout byte it does not know the empty id 0.
         if let Some(o) = originals.remove(&TEXT_SET) {
             let seen = AtomicBool::new(false);
-            let title = model.title_id(video_screen::SCREEN).unwrap_or(0);
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
                 announce(&seen, "layouts: text set");
-                // The Video screen's header: the Controls tag's title, ours.
-                if VIDEO_HEADER.load(Ordering::Relaxed) {
-                    let mut mem = ctx.runtime().memory();
-                    if let Some(id) = video_header_id(&*mem, cpu.esp, title) {
-                        mem.set_u32(cpu.esp + 4, id)?;
-                    }
-                }
                 if SKULLS_HEADER.load(Ordering::Relaxed) {
                     let mut mem = ctx.runtime().memory();
                     if let Some(id) = video_header_id(&*mem, cpu.esp, skulls_menu::TITLE_ID) {
@@ -906,15 +862,14 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row text: every row of a Video list; on Controls our
-        // speaker row, else the layout value (layouts on),
-        // else the original.
+        // The Controls row text: every row of a Skulls list; on Controls our
+        // speaker row, else the layout value (layouts on), else the
+        // original.
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
             let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
-            let video_drawn = AtomicBool::new(false);
             let skulls_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
@@ -933,21 +888,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     announce(&skulls_drawn, "skulls menu: row text");
                     return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
                 }
-                let (is_video, row) = {
-                    let mem = ctx.runtime().memory();
-                    (with_video && video_screen::is_video_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp))
-                };
                 // The model reads the settings store: never with guest
                 // memory held.
-                let list = if is_video { video_screen::LIST } else { List::Controls };
-                let texts = row.and_then(|r| model.row(list, r)).map(|r| model.texts(r));
-                if is_video {
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let item = mem.u32(cpu.esp + 4)?;
-                    announce(&video_drawn, "video screen: row text");
-                    return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
-                }
+                let texts = row.and_then(|r| model.row(List::Controls, r)).map(|r| model.texts(r));
                 if let Some(texts) = texts {
                     announce(&drawn, "speaker row: row text");
                     let rt = Arc::clone(ctx.runtime());
@@ -965,10 +908,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row chosen: on a Video list every row is ours and
-        // steps its setting; on Controls the speaker row toggles in place
-        // (an open row there would open the Video screen). The original
-        // would open the vibration dialog for any of them.
+        // The Controls row chosen: on a Skulls list every row is ours; on
+        // Controls the speaker row toggles in place (an open row there would
+        // open the Video screen). The original would open the vibration
+        // dialog for any of them.
         if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
             let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
@@ -989,19 +932,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     }
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
-                let (row, is_video, mask) = {
-                    let mem = ctx.runtime().memory();
-                    (
-                        chosen_row(&*mem, cpu.esp),
-                        with_video && video_screen::is_video_list(&*mem, cpu.ecx),
-                        video_screen::player_mask(&*mem, cpu.esp),
-                    )
-                };
+                let mask = video_screen::player_mask(&*ctx.runtime().memory(), cpu.esp);
                 // Guest memory is not held while a setting changes: the
                 // speaker toggle takes DirectSound's lock, which the audio
                 // output takes with guest memory.
-                let list = if is_video { video_screen::LIST } else { List::Controls };
-                let chosen = row.and_then(|r| model.row(list, r)).map_or(Chosen::Nothing, |r| model.press(r));
+                let chosen = row.and_then(|r| model.row(List::Controls, r)).map_or(Chosen::Nothing, |r| model.press(r));
                 match chosen {
                     Chosen::Stepped(msg) => {
                         eprintln!("{msg}");
@@ -1014,8 +949,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                         };
                         return open_video(cpu, ctx, mask);
                     }
-                    // Every row of a Video list is ours.
-                    Chosen::Nothing if is_video => return ctx.runtime().memory().ret(cpu, 8),
                     Chosen::Nothing => {}
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
@@ -1059,28 +992,25 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 }
             });
         }
-        // The Video screen's header: while it is built, the text hook gives
-        // the Controls tag's title our id.
+        // The Skulls screen's header: while it is built, the text hook gives
+        // the Controls tag's title our id. (The Video screen's class sets
+        // its own title.)
         if let Some(o) = originals.remove(&video_screen::HEADER_BUILD) {
             let sh = alias(d, &mut next_shadow, &o, video_screen::HEADER_BUILD);
             let seen = AtomicBool::new(false);
-            d.register_override(video_screen::HEADER_BUILD, "video:header", move |cpu, ctx, _| {
-                let (video, skulls) = {
+            d.register_override(video_screen::HEADER_BUILD, "skulls:header", move |cpu, ctx, _| {
+                let skulls = {
                     let mem = ctx.runtime().memory();
                     let screen = mem.u32(cpu.esp + 4).ok();
-                    (
-                        screen.is_some_and(|s| with_video && video_screen::is_video_screen(&*mem, s)),
-                        screen.is_some_and(|s| with_skulls && skulls_menu::is_skulls_screen(&*mem, s)),
-                    )
+                    screen.is_some_and(|s| with_skulls && skulls_menu::is_skulls_screen(&*mem, s))
                 };
-                if !video && !skulls {
+                if !skulls {
                     return Ok(o.invoke(cpu, ctx, video_screen::HEADER_BUILD));
                 }
-                let flag = if skulls { &SKULLS_HEADER } else { &VIDEO_HEADER };
-                announce(&seen, if skulls { "skulls menu: header" } else { "video screen: header" });
-                flag.store(true, Ordering::Relaxed);
+                announce(&seen, "skulls menu: header");
+                SKULLS_HEADER.store(true, Ordering::Relaxed);
                 call_then(cpu, ctx, sh, move |_, _| {
-                    flag.store(false, Ordering::Relaxed);
+                    SKULLS_HEADER.store(false, Ordering::Relaxed);
                     Ok(())
                 })
             });
@@ -1101,9 +1031,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    // The Video list keeps the six retail item widgets.
+                    // The Skulls list keeps the six retail item widgets; a
+                    // Video list is our class (another vtable).
                     if mem.u32(handler)? != speaker_row::HANDLER_VTABLE
-                        || video_screen::is_video_list(&*mem, handler)
                         || skulls_menu::is_skulls_list(&*mem, handler)
                     {
                         return Ok(TransferAbi::ret(ret_pc));
@@ -1283,6 +1213,15 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             });
         }
     });
+    // The Video screen: our own list class, opened by the Settings row.
+    if with_video {
+        let class = crate::list_class::ListClass::new("video-screen", video_screen::SCREEN, Arc::clone(&model));
+        match registry.add(&class) {
+            Ok(true) => VIDEO_LOADER.store(class.loader(), Ordering::SeqCst),
+            Ok(false) => eprintln!("video screen: features.video-screen is off"),
+            Err(e) => eprintln!("video screen: {e}"),
+        }
+    }
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
     registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;

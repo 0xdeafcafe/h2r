@@ -27,6 +27,12 @@ The emitter already caches environment pointers in handler locals.
 
 The native path uses inline C functions in `emit/c/h2x87_native.h` for
 loads, register copies, store conversion/commit and guarded arithmetic.
+FILD m16/m32 is native too: every such integer is exact in binary64, so
+the load builds that double's bits directly (no host FP) and pushes it
+like FLD m64; stack overflow and a pending #MF use the helper. Old
+Mombasa's hot SSE routine (0x002dc220) alone has 18 `fild m32` sites.
+`integer_loads_match_the_authority` checks every bit position, the
+extremes and 1,000,000 random values over random TOP/tags/status.
 Eligible ADD/SUB/SUBR/MUL/DIV/DIVR and SQRT use transient C `double`
 locals; every rejected operation calls the original helper. The helper
 ABI, dispatch, interpreter and authoritative soft-float implementation
@@ -93,10 +99,24 @@ the signed error relative to the rounded result:
 PE is set for nonzero error and remains sticky. C1 is set exactly when
 rounding increased the magnitude, and cleared otherwise. Explicit FMA
 is used only to recover error; the guest multiply/add operations are
-never contracted. The native functions use strict `FENV_ACCESS` so the
-compiler cannot speculate FP operations ahead of the host-mode guard.
-Generated code retains `-fno-fast-math` and
-`-ffp-contract=off`. Existing sticky flags and other condition codes are
+never contracted. Generated code retains `-fno-fast-math` and
+`-ffp-contract=off`.
+
+The header does not use `FENV_ACCESS`: LLVM never inlines a strict-FP
+function into the non-strict generated handlers, so every guarded
+operation was a real call (`h2x87n_arith`, `h2x87n_get`,
+`h2x87n_host_mode` and others; about 1.3% of the game thread in the
+Old Mombasa profile). Instead the operands pass through an empty
+volatile asm (`H2X87N_BARRIER`) after every guard, so no FP operation
+can be evaluated before the checks pass; the zero and sign guards
+compare bits rather than doubles. Past the guards the host rounds to
+nearest with traps masked, the environment the non-strict compiler
+assumes. The guarded operations are `always_inline`.
+`x87_fast_paths_inline_into_generated_handlers` checks the IR, and
+`randomized_native_sweep_matches_the_authority` compares 2,000,000 random
+operations (all five source kinds, sqrt, binary32/binary64 stores) at
+PC=53 and other control words with the authority's full state; about
+1.28M have a native-eligible ST(0). `H2X87_SWEEP` raises the count. Existing sticky flags and other condition codes are
 preserved. Host sticky FP flags may change; guest FP state never reads
 those flags.
 
@@ -155,6 +175,26 @@ cargo clippy -p emit -p perf --all-targets --features emit/oracle-tests -- -D wa
 ```
 
 ## Benchmark and profile
+
+`tests/c/x87_bench.c` times fld m32 / op / fstp m32 sequences with the
+authority stubbed out (reaching it aborts). arm64, `-O1`, ns per
+sequence; "strict FP" is the previous header built from the same file:
+
+| Sequence | Strict FP | Inlined |
+| --- | ---: | ---: |
+| fld + fadd m32 + fstp | 41.5 | 34.2 |
+| fld + fmul m32 + fstp | 39.4 | 32.4 |
+| fld + fdiv m32 + fstp | 42.2 | 35.6 |
+| fld + fsqrt + fstp | 44.3 | 36.6 |
+| fld + fstp | 21.3 | 18.7 |
+
+Most of what remains is the loop-carried read-modify-write of status,
+tag and register bytes in `X87Abi`, which only static stack allocation
+would remove. `mrs fpcr` itself costs about one cycle.
+
+```sh
+clang -std=c11 -O1 -fno-fast-math -ffp-contract=off -DH2_X87_NATIVE=1 -Icrates/emit/c -Icrates/x87/include -Icrates/runtime/include crates/emit/tests/c/x87_bench.c -o "$TMPDIR/x87-bench" && "$TMPDIR/x87-bench"
+```
 
 `hot-loop/x87` is a synthetic workload assembled at runtime, never copied
 from the game. Each trip loads a binary32, multiplies, adds, square-roots,

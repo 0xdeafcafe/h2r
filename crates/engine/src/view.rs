@@ -398,6 +398,135 @@ pub mod objects {
     }
 }
 
+/// Screens, list handlers and their item widgets (docs/ui.md "Screen and
+/// list classes"). The offsets are the Controls class's; a class of ours
+/// built from the Controls constructor has the same.
+pub mod ui {
+    use super::*;
+
+    crate::record! {
+        /// A screen widget (type 0). Its header text widget is embedded at
+        /// [`HEADER`], a Controls-shaped screen's list handler at [`LIST`].
+        pub struct Screen: 0x80 {
+            vtable @ 0x00: u32,
+            /// Set to 1 by the loader before the push.
+            loaded @ 0x6c: u8,
+            id @ 0x70: i16,
+        }
+    }
+
+    crate::record! {
+        /// A list handler (a list widget, type 1, with per-class code).
+        pub struct ListHandler: 0x88 {
+            vtable @ 0x00: u32,
+            /// The rows' datum array: one datum per row.
+            rows @ 0x70: u32,
+        }
+    }
+
+    crate::record! {
+        /// One item widget of a list (type 3).
+        pub struct Item: 0x80 {
+            vtable @ 0x00: u32,
+            /// The list handler it belongs to.
+            parent @ 0x10: u32,
+            /// The row it shows (a handle in the list's datum array).
+            row @ 0x70: Option<DatumHandle>,
+        }
+    }
+
+    crate::record! {
+        /// A press record: its vtable's slot 0 calls `function` as a
+        /// thiscall on `target`.
+        pub struct PressRecord: 0x18 {
+            vtable @ 0x00: u32,
+            target @ 0x10: u32,
+            function @ 0x14: u32,
+        }
+    }
+
+    /// The header text widget, inside the screen.
+    pub const HEADER: u32 = 0x80;
+    /// A Controls-shaped screen's list handler, inside the screen.
+    pub const LIST: u32 = 0x614;
+    /// The bytes the Controls loader allocates for its screen.
+    pub const CONTROLS_SCREEN_SIZE: u32 = 0x9b4;
+    /// The Controls list handler's press record, inside the handler.
+    pub const CONTROLS_PRESS: u32 = 0x388;
+    /// The first item widget, inside the handler.
+    pub const ITEMS: u32 = 0x88;
+    /// The Controls list's item widgets.
+    pub const CONTROLS_ITEMS: u32 = 6;
+
+    /// Screen vtable slots.
+    pub mod screen_slot {
+        /// Set up the current pane (header, then widgets); thiscall, `ret 4`.
+        pub const SETUP_PANE: u32 = 18;
+        /// Return the screen's loader.
+        pub const LOADER: u32 = 26;
+        /// The Controls screen vtable's length.
+        pub const COUNT: u32 = 28;
+    }
+
+    /// List handler vtable slots.
+    pub mod list_slot {
+        pub const ADD_ITEMS: u32 = 17;
+        pub const ITEMS: u32 = 18;
+        pub const ITEM_COUNT: u32 = 19;
+        /// Row text: thiscall, the item and a word of the list's
+        /// definition, `ret 8`.
+        pub const ROW_TEXT: u32 = 20;
+        /// The Controls list vtable's length.
+        pub const COUNT: u32 = 22;
+    }
+
+    impl Screen {
+        /// Its Controls-shaped list handler.
+        pub fn list(&self) -> ListHandler {
+            ListHandler::at(self.addr.wrapping_add(LIST))
+        }
+        /// Its header text widget.
+        pub fn header(&self) -> u32 {
+            self.addr.wrapping_add(HEADER)
+        }
+    }
+
+    impl ListHandler {
+        /// The rows as a datum array of 4-byte elements.
+        pub fn row_array(&self, m: &dyn GuestMemory) -> R<Datums<Row>> {
+            Ok(Datums::at(self.rows(m)?))
+        }
+        /// The press record at `offset` inside the handler.
+        pub fn press(&self, offset: u32) -> PressRecord {
+            PressRecord::at(self.addr.wrapping_add(offset))
+        }
+        /// The `i`-th item widget.
+        pub fn item(&self, i: u32) -> Item {
+            Item::at(self.addr.wrapping_add(ITEMS + i * Item::SIZE))
+        }
+    }
+
+    impl Item {
+        /// The row index it shows, or `None` (no row).
+        pub fn row_index(&self, m: &dyn GuestMemory) -> R<Option<u16>> {
+            Ok(self.row(m)?.map(|h| h.index()))
+        }
+    }
+
+    crate::record! {
+        /// A row's datum (the Controls list's are 4 bytes: the salt and a
+        /// word the class may use).
+        pub struct Row: 0x4 {
+            salt @ 0x0: u16,
+        }
+    }
+
+    /// The `slot`-th entry of the vtable at `vtable`.
+    pub fn slot(m: &dyn GuestMemory, vtable: u32, slot: u32) -> R<u32> {
+        m.u32(vtable.wrapping_add(4 * slot))
+    }
+}
+
 /// Test builders for whole structures (datum arrays, the tag index) on a
 /// [`FakeGuest`], laid out by the ported functions themselves.
 pub mod fake {

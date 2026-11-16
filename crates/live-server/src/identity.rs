@@ -76,6 +76,18 @@ impl ServerIdentity {
     }
 }
 
+/// The `--id` to start a server in `dir` with: as given; else, on a first
+/// start (no key in `dir` yet), `lasting` (the host of a lasting public
+/// address, docs/live-hosting.md), since an id cannot change later; else
+/// none, which makes a new server [`DEFAULT_ID`]. An existing server keeps
+/// its id.
+pub fn first_start_id(id: Option<String>, lasting: Option<String>, dir: &Path) -> Option<String> {
+    if id.is_some() || dir.join("server.key").exists() {
+        return id;
+    }
+    lasting
+}
+
 /// A server id is a host name, optionally with a port.
 fn valid_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
@@ -164,6 +176,32 @@ mod tests {
         // A key file others can read is refused.
         fs::set_permissions(dir.join("server.key"), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(ServerIdentity::load(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_lasting_host_names_a_new_server_only() {
+        let dir = temp_dir("first-id");
+        let host = || Some("live.example.net".to_string());
+        assert_eq!(
+            first_start_id(None, host(), &dir).as_deref(),
+            Some("live.example.net")
+        );
+        assert_eq!(first_start_id(None, None, &dir), None);
+        assert_eq!(
+            first_start_id(Some("mine".into()), host(), &dir).as_deref(),
+            Some("mine")
+        );
+        ServerIdentity::open(&dir, None).unwrap();
+        assert_eq!(
+            first_start_id(None, host(), &dir),
+            None,
+            "an existing server keeps its id"
+        );
+        assert_eq!(
+            first_start_id(Some("x".into()), host(), &dir).as_deref(),
+            Some("x")
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

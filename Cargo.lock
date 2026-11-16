@@ -738,6 +738,7 @@ dependencies = [
  "d3d",
  "dsound",
  "emit",
+ "engine",
  "feature",
  "font",
  "gfx",

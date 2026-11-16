@@ -1,8 +1,9 @@
-# Feature engine (design; Phases 0, 1 and 2 built)
+# Feature engine (design; Phases 0 to 3 built)
 
 Status: design, except Phase 0, the [first slice](#the-first-slice),
-Phase 1, the registry, and Phase 2 (the differential harness, the leaves,
-`locale` sources, `record!` and the views), which are built ([below](#what-was-built)). No other
+Phase 1, the registry, Phase 2 (the differential harness, the leaves,
+`locale` sources, `record!` and the views) and Phase 3 (async entries, the
+UI views, our own list class; the Video screen on it), which are built ([below](#what-was-built)). No other
 crate, type or macro named here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
@@ -1493,9 +1494,62 @@ Tests only, except that the differential harness ran on the owner's XBE
   `ListHandler`, which phase 3 needs). `record!` is the base for all of
   them.
 
-Then, as the first thing that needs a play-test (phase 3, after the
-registry): our own list class, so the model drives Rust row functions
-instead of answering wrappers on the Controls class.
+#### Phase 3
+
+Tests only; nothing here was run in the game. The first part of it that
+the game exercises is the Video screen, so it is the one to play-test.
+
+- **Reading first** ([ui.md](ui.md) "Screen and list classes", static).
+  Open question 1 is answered: row text is list vtable slot 20, reached
+  through the vtable on every draw (`0x24abe0`); row chosen is not a slot
+  but the function pointer in the list's press record (`+0x14`; Controls
+  keeps the record at `handler + 0x388`). Both are read at each call, so a
+  handler's vtable pointer and its press function can be replaced after
+  the constructor ran. Two more facts a class needs: screen slot 18 builds
+  the header (a text widget at `screen + 0x80`), so the title is set after
+  it rather than swapped during it; and screen slot 26 returns the loader,
+  which the screen manager calls (`0x2352e8`, `0x2354d0`), so a screen of
+  ours must answer with our loader.
+- **Async entries** (`engine::entry`, `feature::entry`). A body is an
+  `async` block over a `Cx`: `cx.read`/`cx.write` take guest memory per
+  closure, `cx.call(GuestCall)` awaits a guest call and gives back the
+  registers. `engine::entry::testing::run` drives one against fake
+  callees on a `FakeGuest` and records the calls; the installer drives it
+  with `ExecCtx::call_guest`, parking the future in the continuation. The
+  stack is put back after every call and the caller's EBX, ESI, EDI, EBP
+  and ESP on return, so callee- and caller-cleanup need no care. Two ways
+  in: `Builder::entry(label, f)` places a body at a fresh address on the
+  feature's executable arena page (16 bytes apart; the plan text has one
+  `entry` line each), and `raw().implement_async(point, ..)` makes one a
+  chain's body. Tests: the core on `FakeGuest` (order, faults, arguments,
+  a stall is an error), and on the fixture runtime an entry that awaits two
+  real guest calls and returns as stdcall with the caller's registers.
+- **Views** (`engine::view::ui`): `Screen`, `ListHandler`, `Item`,
+  `PressRecord`, the slot numbers, and the UI calls as named points
+  (`OPEN_SCREEN`, `UI_ALLOC`, `CONTROLS_SCREEN_CTOR`, `SCREEN_PUSH`,
+  `SCREEN_SETUP_PANE`, `TEXT_SET`, `ITEM_TEXT`; the Controls vtables as
+  globals).
+- **Our own list class** (`boot::list_class`, a feature): five entries
+  (loader, row text, row chosen, pane set-up, loader slot) and one page
+  for its vtable copies, written from the game's own tables at the first
+  open. The loader does what the Controls loader does and adopts the
+  screen between construct and push: our vtables, our row chosen in the
+  press record, the rows trimmed to the model's (the Controls list hook
+  may have grown them), the loaded byte. A screen that is not what the
+  Controls constructor builds is left as Controls and says so.
+- **The Video screen is on it.** The Settings row opens it with the
+  class's loader. Gone: the open-in-progress flag, the array-name test,
+  the Video branches in the Controls row text and row chosen hooks, the
+  header id swap, and the "h2r video settings" string. The Settings row
+  itself is still a hook on the retail Settings list (step c territory).
+  The Skulls screen keeps the old way; it is the next to move.
+- **Limits.** Six rows (the Controls item widgets); more are cut, with a
+  line. Opening a screen from one of ours is not wired (an `Open` row
+  logs). Nothing has measured the entries' cost; they run only on menu
+  draws and presses.
+
+Then (phase 4): the retail Controls and Button Layout handlers in Rust,
+with the Skulls screen moved to the class first.
 
 Why this first:
 
@@ -1557,9 +1611,10 @@ Why this first:
 
 ## Open questions
 
-1. Which list-handler vtable slots carry row text and row chosen, and can
-   a handler's vtable pointer be swapped after its constructor ran? (UI
-   step b.)
+1. ~~Which list-handler vtable slots carry row text and row chosen, and
+   can a handler's vtable pointer be swapped after its constructor ran?~~
+   Answered (phase 3, [ui.md](ui.md) "Screen and list classes"): slot 20,
+   and the press record's function; yes, both are read at every call.
 2. Does anything in `0x0018eaa0` read the scenario blocks before it
    returns ([forge.md](forge.md) 2.2)? It decides where the bridge
    loader's patch runs.

@@ -347,7 +347,7 @@ The view redraws it from the same texels:
 - Nothing is uploaded twice or stored: the upscale is computed per
   fragment from the texture the game already uploads, so a glyph the game
   adds to the cache is sharp on the next draw.
-- `H2_SMOOTH_TEXT=0` (or `off`, `false`) turns it off;
+- off by default (letters looked bloated in play); `H2_SMOOTH_TEXT=1` (or `on`, `true`) turns it on;
   `Device::set_glyph_smoothing` does the same in tests.
 
 Measured on a synthetic glyph cache (`crates/d3d/tests/glyph_text.rs`: a

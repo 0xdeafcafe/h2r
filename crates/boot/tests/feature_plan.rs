@@ -1,5 +1,5 @@
 //! The plan boot builds with every migrated feature on (Live telemetry, the
-//! level boot's loaded mark, our strings, lockstep's tick hash, the Rust
+//! Video screen's list class, the level boot's loaded mark, our strings, lockstep's tick hash, the Rust
 //! locale lookup on by default): it builds
 //! with no conflict, and this is its text (the `feature plan:` lines boot
 //! logs). Before the registry, telemetry and lockstep could not both hook
@@ -16,6 +16,15 @@ fn the_full_plan_builds_and_reads_as_expected() {
         sink: TelemetrySinkConfig::File(path.clone()),
     };
     assert!(boot::telemetry::install(&mut r, &config).unwrap().is_some());
+    // The Video screen's list class, as `layout_glue::install` adds it.
+    let store = std::sync::Arc::new(settings::Store::defaults(boot::setting_defs::ALL));
+    let model = boot::video_screen::model(store, boot::video_screen::Switches::ALL).unwrap();
+    let video = boot::list_class::ListClass::new(
+        "video-screen",
+        boot::video_screen::SCREEN,
+        std::sync::Arc::new(model),
+    );
+    r.add(&video).unwrap();
     r.add(&boot::layout_glue::StringsFeature).unwrap();
     r.add(&boot::level_boot::LoadedMark(None)).unwrap();
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
@@ -27,6 +36,7 @@ fn the_full_plan_builds_and_reads_as_expected() {
         plan.text(),
         "\
 feature live-telemetry: on
+feature video-screen: on
 feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
@@ -39,6 +49,11 @@ feature engine-leaves: on
 0x0018f000 GAME_ACTIVATE: original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
+0xa0f01000 entry video-screen:loader
+0xa0f01010 entry video-screen:row text
+0xa0f01020 entry video-screen:row chosen
+0xa0f01030 entry video-screen:set up pane
+0xa0f01040 entry video-screen:loader slot
 locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "

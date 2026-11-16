@@ -52,6 +52,33 @@ F2XM1 cases at zero and +/-1 also retain the reference. No game-wide
 claim is made about the frequency of future ext80-only operands;
 falling outside a guard always preserves correctness.
 
+## Wide arithmetic speed
+
+`Wf::div` uses Knuth's algorithm D on 32-bit digits (native 64/64
+divisions) instead of restoring long division, one quotient bit at a time.
+It computes the same truncated quotient, the top `64N` bits of
+`floor(a * 2^(64N) / d)`, so every result, fast or reference, is
+unchanged. `div_u64` divides each limb in two native 32-bit halves when
+the divisor fits in 32 bits (every series divisor) instead of calling the
+software 128-bit division. Scratch arrays are sized by `N`, not `MAXN`.
+`wide::tests::rewritten_division_matches_the_original_bit_for_bit`
+compares both against the original algorithms (kept in the tests) on
+random, sparse, saturated and near-equal significands at N = 1, 2, 3, 8
+and 12; it reaches Knuth's rare add-back correction tens of thousands of
+times. Set `H2_X87_WIDE_CASES` to raise the count (2,000,000 per width
+passed). `benchmark_wide_ops` times each op against the original:
+
+| Op (release, arm64, ns) | Original | Now | Speedup |
+| --- | ---: | ---: | ---: |
+| `Wf<2>::div` | 418 | 49 | 8.6x |
+| `Wf<2>::div_u64` | 14.2 | 12.1 | 1.2x |
+| `Wf<8>::div` | 3810 | 360 | 10.6x |
+| `Wf<8>::div_u64` | 118 | 89 | 1.3x |
+
+```sh
+cargo test --release -p x87 --lib benchmark_wide_ops -- --ignored --nocapture
+```
+
 ## Error bound against the exact helper
 
 Both passes use the existing `Wf<N>` implementation and constant tables.

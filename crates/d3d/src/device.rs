@@ -774,7 +774,7 @@ pub struct Device<B: Backend> {
     /// it off).
     visibility_poll: bool,
     /// Draws note which stages sample the game's glyph cache
-    /// ([`Device::set_glyph_smoothing`]; `H2_SMOOTH_TEXT=0` turns it off).
+    /// ([`Device::set_glyph_smoothing`]; `H2_SMOOTH_TEXT=1` turns it on; off by default).
     glyph_smoothing: bool,
     /// Destroyed resources the original `D3D_DestroyResource` has yet to
     /// free ([`Device::take_pending_destroys`]).
@@ -3753,7 +3753,7 @@ impl<B: Backend> Device<B> {
     /// Whether draws mark the stages that sample the game's glyph cache
     /// ([`ResolvedDraw::glyph_cache`], `crate::glyph`), so a backend that
     /// renders above the guest's size redraws text sharp. On by default;
-    /// `H2_SMOOTH_TEXT=0` turns it off. Nothing changes at 1x either way.
+    /// `H2_SMOOTH_TEXT=1` turns it on; off by default. Nothing changes at 1x either way.
     pub fn set_glyph_smoothing(&mut self, on: bool) {
         self.glyph_smoothing = on;
     }
