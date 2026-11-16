@@ -482,6 +482,63 @@ pub enum Blend {
     Alpha,
     /// Added to what is behind it (lights, vents, glows).
     Additive,
+    /// Twice the picture times what is behind it: mid-grey leaves the
+    /// surface as it is (a decal whose pass blends `DESTCOLOR`, `SRCCOLOR`).
+    Double,
+    /// The picture times what is behind it (`DESTCOLOR`, `ZERO` or `ZERO`,
+    /// `SRCCOLOR`).
+    Multiply,
+}
+
+/// How a resolved material's last blended pass of its first level of
+/// detail writes to the frame ([`blend_of_pass`]): every opaque overlay
+/// decal on the disc's vehicles is `DESTCOLOR`, `SRCCOLOR` (double). `None`
+/// when no pass blends in one of the ways [`blend_of_pass`] knows.
+pub fn frame_blend(material: &tags::material::Material) -> Option<Blend> {
+    let mut out = None;
+    for layer in material.layers.iter().filter(|l| l.lod == 0) {
+        for pass in &layer.passes {
+            let Some(imp) = pass.implementations.first() else {
+                continue;
+            };
+            let state = |name: &str| {
+                imp.render_states
+                    .iter()
+                    .find(|r| tags::shader::render_state_name(r.state) == Some(name))
+                    .map(|r| r.value)
+            };
+            if let Some(b) = blend_of_pass(
+                state("ALPHABLENDENABLE"),
+                state("SRCBLEND"),
+                state("DESTBLEND"),
+            ) {
+                out = Some(b);
+            }
+        }
+    }
+    out
+}
+
+/// A pass's blend from its `ALPHABLENDENABLE`, `SRCBLEND` and `DESTBLEND`
+/// render states (Xbox `D3DBLEND` values: `ZERO` 0, `ONE` 1, `SRCCOLOR`
+/// 0x300, `SRCALPHA` 0x302, `INVSRCALPHA` 0x303, `DESTCOLOR` 0x306).
+pub fn blend_of_pass(enable: Option<u32>, src: Option<u32>, dst: Option<u32>) -> Option<Blend> {
+    const ZERO: u32 = 0;
+    const ONE: u32 = 1;
+    const SRCCOLOR: u32 = 0x300;
+    const SRCALPHA: u32 = 0x302;
+    const INVSRCALPHA: u32 = 0x303;
+    const DESTCOLOR: u32 = 0x306;
+    if enable != Some(1) {
+        return None;
+    }
+    match (src?, dst?) {
+        (DESTCOLOR, SRCCOLOR) => Some(Blend::Double),
+        (DESTCOLOR, ZERO) | (ZERO, SRCCOLOR) => Some(Blend::Multiply),
+        (ONE | SRCALPHA, ONE) => Some(Blend::Additive),
+        (SRCALPHA, INVSRCALPHA) => Some(Blend::Alpha),
+        _ => None,
+    }
 }
 
 /// Largest side of the change-colour, self-illumination and specular maps.
@@ -872,6 +929,7 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         stored.push((t.clone(), k));
         k
     };
+    let mut unlit = false;
     for m in &model.materials {
         let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.8});
         let mut mat = json!({"name": m.name});
@@ -898,6 +956,12 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         }
         match m.blend {
             Blend::Opaque => {}
+            // Drawn as they are: the reader blends them with what is
+            // behind by extras.h2.blend.
+            Blend::Double | Blend::Multiply => {
+                mat["extensions"] = json!({"KHR_materials_unlit": {}});
+                unlit = true;
+            }
             Blend::Mask => {
                 mat["alphaMode"] = json!("MASK");
                 mat["alphaCutoff"] = json!(0.5);
@@ -915,8 +979,17 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         if let Some(t) = &m.change_colour {
             h2.insert("change_colour".into(), json!(texture(&mut bin, t)));
         }
-        if m.blend == Blend::Additive {
-            h2.insert("blend".into(), json!("add"));
+        match m.blend {
+            Blend::Additive => {
+                h2.insert("blend".into(), json!("add"));
+            }
+            Blend::Double => {
+                h2.insert("blend".into(), json!("double"));
+            }
+            Blend::Multiply => {
+                h2.insert("blend".into(), json!("multiply"));
+            }
+            _ => {}
         }
         if let Some(e) = &m.env {
             h2.insert(
@@ -1155,6 +1228,9 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
     }
     if !materials.is_empty() {
         doc["materials"] = json!(materials);
+    }
+    if unlit {
+        doc["extensionsUsed"] = json!(["KHR_materials_unlit"]);
     }
     if !skins.is_empty() {
         doc["skins"] = json!(skins);
@@ -1610,6 +1686,164 @@ pub fn paint_vehicle(src: &mut Source, colours: &[[f32; 3]]) {
         m.change_colour = None;
         *cc = None;
     }
+}
+
+/// One object a model variant attaches (hlmt variant `+0x1c`, 0x10 bytes:
+/// parent marker and child marker string IDs, then the child object
+/// reference): the Warthog's chaingun at its `turret` marker, the
+/// Scorpion's cannon, the Wraith's mortar and side guns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantObject {
+    pub parent_marker: String,
+    /// Empty: the child's origin.
+    pub child_marker: String,
+    pub child: TagId,
+}
+
+/// Which model variant a vehicle is drawn in: `multiplayer` when the model
+/// has one (the Scorpion's and Wraith's: their multiplayer cannon and
+/// mortar, the Wraith without its side guns), else the object's default
+/// variant (`obje +0x30`), else the first.
+pub fn pick_variant(names: &[String], default: &str) -> Option<usize> {
+    names
+        .iter()
+        .position(|n| n == "multiplayer")
+        .or_else(|| {
+            (!default.is_empty())
+                .then(|| names.iter().position(|n| n == default))
+                .flatten()
+        })
+        .or((!names.is_empty()).then_some(0))
+}
+
+/// The objects an object's model variant ([`pick_variant`]) attaches.
+pub(crate) fn variant_objects(map: &mut MapReader, object: TagId) -> Result<Vec<VariantObject>> {
+    let o = map.read_tag_bytes(object)?;
+    let default = u32_at(&o, 0x30).unwrap_or(0);
+    let hlmt = TagId(u32_at(&o, 0x38).context("object too short")?);
+    let h = map.read_tag_bytes(hlmt)?;
+    let variants = meta_block(map, &h, 0x50, 0x38)?;
+    let mut objects = Vec::new();
+    for v in &variants {
+        objects.push(meta_block(map, v, 0x1c, 0x10)?);
+    }
+    let strings = map.strings();
+    let name = |id: u32| {
+        StringId(id)
+            .resolve(strings)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let names: Vec<String> = variants
+        .iter()
+        .map(|v| name(u32_at(v, 0).unwrap_or(0)))
+        .collect();
+    let Some(i) = pick_variant(&names, &name(default)) else {
+        return Ok(Vec::new());
+    };
+    Ok(objects[i]
+        .iter()
+        .map(|b| VariantObject {
+            parent_marker: name(u32_at(b, 0).unwrap_or(0)),
+            child_marker: name(u32_at(b, 4).unwrap_or(0)),
+            child: TagId(u32_at(b, 0xc).unwrap_or(u32::MAX)),
+        })
+        .filter(|a| a.child != TagId::NULL)
+        .collect())
+}
+
+/// Adds `child` (in its own model space) to `model` at `at` (the child's
+/// space in the model's): its materials after the model's, its triangles
+/// moved, and its seat nodes where the model has none of that name.
+pub fn attach_model(model: &mut Model, child: Model, at: &Mat4) {
+    let base = model.materials.len();
+    model.materials.extend(child.materials);
+    for mut p in child.primitives {
+        p.material += base;
+        for v in &mut p.positions {
+            *v = transform_point(at, *v);
+        }
+        for n in &mut p.normals {
+            *n = normalize(transform_vector(at, *n));
+        }
+        model.primitives.push(p);
+    }
+    for (name, m) in child.nodes {
+        if !model.nodes.iter().any(|(n, _)| *n == name) {
+            model.nodes.push((name, mat_mul(at, &m)));
+        }
+    }
+}
+
+/// Builds and attaches the objects `object`'s model variant attaches
+/// ([`variant_objects`]), each at rest, its marker (or origin) on the
+/// parent's marker in `world` (the parent's posed node frames), and theirs
+/// in turn (two levels deep). Returns the attached objects' tag names; one
+/// that cannot be built is left off.
+fn attach_objects(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    object: TagId,
+    src: &Source,
+    world: &[Mat4],
+    model: &mut Model,
+    depth: usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if depth >= 2 {
+        return out;
+    }
+    for a in variant_objects(map, object).unwrap_or_default() {
+        let Some(parent) = src.marker(&[&a.parent_marker]) else {
+            continue;
+        };
+        let Some(node) = world.get(parent.node) else {
+            continue;
+        };
+        let at_parent = marker_world(node, parent);
+        let built = (|| -> Result<Vec<String>> {
+            let (mode, _) = object_model(map, a.child)?;
+            let mut child_src = read_source(map, files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let colours = object_change_colours(map, a.child).unwrap_or_default();
+            paint_vehicle(&mut child_src, &colours);
+            let rest = rest_world(&child_src.bones);
+            let mut child = vehicle(&child_src, &[], &Pose { nodes: Vec::new() })?;
+            let inner = attach_objects(
+                map,
+                files,
+                a.child,
+                &child_src,
+                &rest,
+                &mut child,
+                depth + 1,
+            );
+            let at_child = if a.child_marker.is_empty() {
+                None
+            } else {
+                child_src
+                    .marker(&[&a.child_marker])
+                    .and_then(|m| rest.get(m.node).map(|n| marker_world(n, m)))
+            };
+            let at = match at_child {
+                Some(c) => mat_mul(&at_parent, &invert_rigid(&c)),
+                None => at_parent,
+            };
+            attach_model(model, child, &at);
+            Ok(inner)
+        })();
+        if let Ok(inner) = built {
+            out.push(
+                map.tag(a.child)
+                    .ok()
+                    .and_then(|t| t.name.clone())
+                    .unwrap_or_default(),
+            );
+            out.extend(inner);
+        }
+    }
+    out
 }
 
 /// A vehicle in its own model space (its object origin), posed by `pose`
@@ -2181,6 +2415,7 @@ pub(crate) fn read_source(
             None
         };
         let mut found: Vec<(BitmapRole, Option<Image>)> = Vec::new();
+        let overlay = opaque && last_component(&template).contains("overlay");
         for id in bitmaps {
             let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
                 continue;
@@ -2200,7 +2435,29 @@ pub(crate) fn read_source(
             };
             found.push((role, image));
         }
+        let picture = found
+            .iter()
+            .find(|(r, i)| *r == BitmapRole::Diffuse && i.is_some())
+            .and_then(|(_, i)| i.clone())
+            .filter(|_| overlay);
         let (mut material, cc) = material_look_roles(&name, &template, found);
+        // An overlay decal blends as its pass says: the vehicles' all double
+        // what is under them, mid-grey leaving it as it is.
+        if let Some(picture) = picture {
+            let library = library.get_or_insert_with(|| ShaderLibrary::read(map).ok());
+            let frame = library
+                .as_mut()
+                .and_then(|l| l.material(shader, None).ok())
+                .and_then(|m| frame_blend(&m));
+            if let Some(blend @ (Blend::Double | Blend::Multiply)) = frame {
+                let mut picture = picture.fit(MAX_TEXTURE);
+                for px in picture.rgba.as_chunks_mut::<4>().0 {
+                    px[3] = 255;
+                }
+                material.texture = Some(picture);
+                material.blend = blend;
+            }
+        }
         if material.blend == Blend::Opaque {
             let colours = shader_colours(map, shader).unwrap_or_default();
             material.env = env_tint(&material.template, &colours);
@@ -2850,7 +3107,12 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
                 None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),
             };
             let mut model = vehicle(&src, &names, &pose)?;
+            let world = posed_world(&src.bones, &names, &pose);
+            let attached = attach_objects(&mut map, &mut files, id, &src, &world, &mut model, 0);
             model.extras.insert("pose".into(), json!(animation));
+            if !attached.is_empty() {
+                model.extras.insert("attached".into(), json!(attached));
+            }
             Ok(model)
         })();
         (stem.clone(), result)
