@@ -178,6 +178,12 @@ pub struct Live {
     /// Unix seconds the service started.
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
+    /// Where content, cloud saves and published art are kept
+    /// ([`crate::blobs`]); the data directory unless [`Live::set_blobs`].
+    blobs: std::sync::OnceLock<crate::blobs::Blobs>,
+    /// Shared game art in the public blob store, redirected to once it is
+    /// uploaded ([`crate::art::PublishedArt`]).
+    published_art: std::sync::OnceLock<crate::art::PublishedArt>,
     dispatcher: tokio::task::AbortHandle,
 }
 
@@ -440,6 +446,8 @@ impl Live {
             cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
+            blobs: Default::default(),
+            published_art: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
         };
@@ -475,6 +483,43 @@ impl Live {
     /// status (shown only to callers on this machine). Set once.
     pub fn set_data_dir(&self, dir: &std::path::Path) {
         let _ = self.data_dir.set(dir.to_path_buf());
+        if self.blobs.get().is_none() {
+            match crate::blobs::Blobs::dir(dir) {
+                Ok(b) => {
+                    let _ = self.blobs.set(b);
+                }
+                Err(e) => eprintln!("live: blobs in {}: {e}", dir.display()),
+            }
+        }
+    }
+
+    /// Keeps blobs in `blobs` rather than the data directory. Before
+    /// [`Live::set_data_dir`]; set once.
+    pub fn set_blobs(&self, blobs: crate::blobs::Blobs) {
+        let _ = self.blobs.set(blobs);
+    }
+
+    pub fn blobs(&self) -> Option<&crate::blobs::Blobs> {
+        self.blobs.get()
+    }
+
+    /// Redirects `/art/game/*` to `art`'s public copies once it has
+    /// published them. Before the router is built; set once.
+    pub fn set_published_art(&self, art: crate::art::PublishedArt) {
+        let _ = self.published_art.set(art);
+    }
+
+    pub fn published_art(&self) -> Option<&crate::art::PublishedArt> {
+        self.published_art.get()
+    }
+
+    /// A new temporary file's path for an upload on its way into the blob
+    /// store: `<data>/tmp/<random>` (beside a directory store, so the
+    /// upload is renamed into place, not copied). The directory is not
+    /// made here.
+    pub(crate) fn upload_file(&self) -> Option<std::path::PathBuf> {
+        self.data_dir()
+            .map(|d| d.join("tmp").join(live_proto::sign::random_id()))
     }
 
     pub fn data_dir(&self) -> Option<&std::path::Path> {

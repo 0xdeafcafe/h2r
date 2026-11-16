@@ -31,14 +31,21 @@ use crate::live_query::path_part;
 
 const USAGE: &str = "usage: h2 live <command> [options]
 
-  serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
+  serve [--db URL] [--blobs LOC] [--public-blobs LOC --public-blobs-url URL]
+        [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
         [--content-layer-mib N] [--content-map-mib N] [--content-quota-mib N]
         [--tunnel | --tunnel-name NAME [--hostname HOST] [--no-tunnel-setup]
          | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
-                          postgres://localhost/h2live, --listen to
+                          sqlite://DIR/live.db in --data (a server with a log
+                          in postgres://localhost/h2live and no live.db keeps
+                          using it, with a notice); --blobs (content, cloud
+                          saves) to --data, or s3://BUCKET for R2, and
+                          --public-blobs publishes shared game art to a
+                          public bucket (docs/live/live-hosting.md, Free
+                          hosting). --listen defaults to
                           127.0.0.1:8074; a non-loopback address needs TLS or
                           --insecure-http. --id (fixed on first start) names
                           the server in tokens and author ids. Game art
@@ -112,6 +119,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           the optional menu bar app: server and tunnel
                           state, start/stop, invites, logs, login items;
                           `h2 live menubar --help` lists the rest
+  store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC] [--data DIR]
+                          move the event log (sqlite://, postgres://, file:)
+                          and the blobs (a directory, s3://BUCKET) between
+                          backends; idempotent and resumable
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
@@ -165,6 +176,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
         ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
         ("menubar", _) => menubar(rest),
+        ("store", Some("copy")) => store_copy(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
         _ => bail!("unknown h2 live command {:?}\n\n{USAGE}", args.join(" ")),
     }
@@ -228,11 +240,23 @@ pub(crate) fn data_dir(flag: Option<String>) -> Result<PathBuf> {
         .map_or_else(|| Ok(live_dir()?.join("server")), Ok)
 }
 
+/// `h2 live store copy`: [`live_server::copy::run`].
+fn store_copy(args: Args) -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio")?
+        .block_on(live_server::copy::run(args.0, &env))
+}
+
 fn serve(mut args: Args) -> Result<()> {
-    let db = args
-        .take("--db")?
-        .or_else(|| env("H2_LIVE_DB"))
-        .unwrap_or_else(|| live_server::DEFAULT_DB.into());
+    let db = args.take("--db")?.or_else(|| env("H2_LIVE_DB"));
+    let blobs = live_server::BlobFlags {
+        private: args.take("--blobs")?,
+        public: args.take("--public-blobs")?,
+        public_url: args.take("--public-blobs-url")?,
+    }
+    .or_env(&env);
     let listen = args
         .take("--listen")?
         .unwrap_or_else(|| live_server::DEFAULT_LISTEN.into());
@@ -346,6 +370,7 @@ fn serve(mut args: Args) -> Result<()> {
     };
     let config = live_server::Config {
         db,
+        blobs,
         listen,
         data_dir,
         id,

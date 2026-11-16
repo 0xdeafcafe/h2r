@@ -225,7 +225,7 @@ impl EventStore for FileStore {
         // Under the log lock: one writer of checkpoints.json at a time.
         let _log = self.log.lock().await;
         self.mem.save_checkpoint(name, position).await?;
-        let all = self.mem.checkpoints();
+        let all = self.mem.checkpoint_map();
         replace(
             &self.dir.join("checkpoints.json"),
             &serde_json::to_vec(&all).expect("serializes"),
@@ -235,6 +235,23 @@ impl EventStore for FileStore {
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
         self.mem.wake().await
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(self.dir.join("blobs")).map_err(io)? {
+            let name = entry.map_err(io)?.file_name();
+            // Skip a write's temporary file (`<sha>.tmp-<pid>`).
+            if let Some(name) = name.to_str().filter(|n| !n.contains('.')) {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
+        self.mem.checkpoints().await
     }
 }
 

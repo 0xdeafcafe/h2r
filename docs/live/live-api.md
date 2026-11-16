@@ -532,10 +532,14 @@ stored: players use their own disc for the base.
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
 
-Uploads (`PUT /v1/content`) stream to `<data>/content/tmp`, hashed as they
+Uploads (`PUT /v1/content`) stream to `<data>/tmp`, hashed as they
 arrive, and the SHA-256 of the body must be the path's (400 otherwise).
-The blob is then kept once, under `<data>/content/<first two hex
-digits>/<sha256>`, and never changed; a server-signed `ContentStored`
+The blob is then kept once, as `content/<first two hex digits>/<sha256>`
+in the server's private blob store (`<data>/content/...` by default, or
+an R2 bucket with `--blobs s3://BUCKET`, [live-hosting.md](live-hosting.md#free-hosting-sqlite-and-cloudflare-r2)),
+and never changed. It is always served through the server, never by a
+redirect (the game's client follows none, and a takedown must be
+immediate); a server-signed `ContentStored`
 event (`content-<sha256>` stream; `{sha256, size, uploader}`) records it.
 A body starting with a map's `daeh` header is a whole map, capped at
 100 MiB; anything else at 32 MiB (413 over either; `h2 live serve
@@ -601,8 +605,9 @@ size 0.
   ETag. Anything else is a 409 carrying the current item, checked both
   before and after the body is read.
 - The body's SHA-256 must be `X-H2-SHA256` (400 otherwise). Bytes are kept
-  once per account by hash under `<data>/storage/<xuid>/blobs/`, and
-  removed when no item names them.
+  once per account by hash under `storage/<xuid>/blobs/` in the private
+  blob store (`<data>/storage/...`, or the private bucket), and removed
+  when no item names them.
 - Caps (`Policy::storage`, `StorageLimits`): 8 MiB per item, 64 MiB per
   account counting live items only (a replacement counts its new size), and
   2048 items per account, tombstones included; 413 over any. Writes share the

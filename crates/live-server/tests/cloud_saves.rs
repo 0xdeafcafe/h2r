@@ -138,7 +138,10 @@ async fn the_owner_writes_lists_and_reads() {
 
     // A name with a space and parentheses survives the URL.
     let odd = "TitleMeta (2).xbx";
-    assert_eq!(put(&h, &chief, odd, "0", b"t").await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &chief, odd, "0", b"t").await.status,
+        StatusCode::CREATED
+    );
     assert_eq!(get(&h, &chief, &chief, odd).await.body, b"t");
 }
 
@@ -148,10 +151,19 @@ async fn only_the_owner_reads_or_writes_even_on_a_public_server() {
     let chief = h.create("Chief").await;
     let arbiter = h.create("Arbiter").await;
     let name = "0123456789AB/data";
-    assert_eq!(put(&h, &chief, name, "0", b"mine").await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &chief, name, "0", b"mine").await.status,
+        StatusCode::CREATED
+    );
 
-    assert_eq!(list(&h, &arbiter, &chief).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(get(&h, &arbiter, &chief, name).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        list(&h, &arbiter, &chief).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(&h, &arbiter, &chief, name).await.status,
+        StatusCode::FORBIDDEN
+    );
     let r = put_as(&h, &arbiter, &chief, name, "1", b"theirs").await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     // No token at all.
@@ -211,7 +223,10 @@ async fn versions_refuse_stale_writes() {
     let h = saves_harness(StorageLimits::default()).await;
     let chief = h.create("Chief").await;
     let name = "0123456789AB/data";
-    assert_eq!(put(&h, &chief, name, "0", b"one").await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &chief, name, "0", b"one").await.status,
+        StatusCode::CREATED
+    );
     // Another machine that never saw version 1 tries to create it.
     let r = put(&h, &chief, name, "0", b"other").await;
     assert_eq!(r.status, StatusCode::CONFLICT);
@@ -242,19 +257,31 @@ async fn deletes_leave_tombstones_that_a_write_revives() {
     let chief = h.create("Chief").await;
     let name = "0123456789AB/data";
     put(&h, &chief, name, "0", b"one").await;
-    assert_eq!(delete(&h, &chief, name, "0").await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        delete(&h, &chief, name, "0").await.status,
+        StatusCode::CONFLICT
+    );
     let r = delete(&h, &chief, name, "1").await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.error());
     let tomb = item(&r);
     assert!(tomb.deleted);
     assert_eq!((tomb.version, tomb.size, tomb.sha256), (2, 0, None));
-    assert_eq!(get(&h, &chief, &chief, name).await.status, StatusCode::NOT_FOUND);
-    assert_eq!(delete(&h, &chief, name, "2").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(&h, &chief, &chief, name).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        delete(&h, &chief, name, "2").await.status,
+        StatusCode::NOT_FOUND
+    );
     let listed: StorageList = serde_json::from_slice(&list(&h, &chief, &chief).await.body).unwrap();
     assert_eq!(listed.items, vec![tomb]);
     assert_eq!(listed.used_bytes, 0);
     // Recreating names the tombstone's version.
-    assert_eq!(put(&h, &chief, name, "0", b"again").await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        put(&h, &chief, name, "0", b"again").await.status,
+        StatusCode::CONFLICT
+    );
     let r = put(&h, &chief, name, "2", b"again").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(item(&r).version, 3);
@@ -269,7 +296,10 @@ async fn bodies_must_match_their_hash_and_headers_are_required() {
     let send = |headers: Vec<(&'static str, String)>| {
         let h = &h;
         let uri = uri.clone();
-        async move { h.call(Method::PUT, &uri, &headers, Body::from("body")).await }
+        async move {
+            h.call(Method::PUT, &uri, &headers, Body::from("body"))
+                .await
+        }
     };
     let auth = || h.bearer(&chief, lxm::STORAGE_WRITE);
     let r = send(vec![
@@ -280,7 +310,11 @@ async fn bodies_must_match_their_hash_and_headers_are_required() {
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert!(r.json()["message"].as_str().unwrap().contains("SHA-256"));
-    let r = send(vec![auth(), ("x-h2-sha256", Sha256::of(b"body").to_string())]).await;
+    let r = send(vec![
+        auth(),
+        ("x-h2-sha256", Sha256::of(b"body").to_string()),
+    ])
+    .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     let r = send(vec![auth(), ("if-match", "0".into())]).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
@@ -319,21 +353,36 @@ async fn caps_quota_and_item_count() {
     // Over the item cap.
     let r = put(&h, &chief, "A/big", "0", &[7u8; 65]).await;
     assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(put(&h, &chief, "A/one", "0", &[1u8; 60]).await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &chief, "A/one", "0", &[1u8; 60]).await.status,
+        StatusCode::CREATED
+    );
     // 60 + 50 is over the 100-byte quota...
     let r = put(&h, &chief, "A/two", "0", &[2u8; 50]).await;
     assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
     assert!(r.json()["message"].as_str().unwrap().contains("quota"));
     // ...but replacing an item counts only the new size.
-    assert_eq!(put(&h, &chief, "A/one", "1", &[1u8; 64]).await.status, StatusCode::OK);
-    assert_eq!(put(&h, &chief, "A/two", "0", &[2u8; 30]).await.status, StatusCode::CREATED);
-    assert_eq!(put(&h, &chief, "A/three", "0", b"3").await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &chief, "A/one", "1", &[1u8; 64]).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(&h, &chief, "A/two", "0", &[2u8; 30]).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        put(&h, &chief, "A/three", "0", b"3").await.status,
+        StatusCode::CREATED
+    );
     // Three items is the most.
     let r = put(&h, &chief, "A/four", "0", b"4").await;
     assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
     // Another account has its own quota.
     let arbiter = h.create("Arbiter").await;
-    assert_eq!(put(&h, &arbiter, "A/one", "0", &[1u8; 60]).await.status, StatusCode::CREATED);
+    assert_eq!(
+        put(&h, &arbiter, "A/one", "0", &[1u8; 60]).await.status,
+        StatusCode::CREATED
+    );
 }
 
 #[tokio::test]
@@ -342,4 +391,91 @@ async fn a_server_without_a_data_directory_keeps_none() {
     let chief = h.create("Chief").await;
     let r = list(&h, &chief, &chief).await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Saves in a bucket (here object_store's in-memory one) rather than the
+/// data directory: the same API, and the index beside the bytes.
+async fn bucket_harness() -> (Harness, live_server::blobs::BlobStore) {
+    let h = start(
+        Arc::new(MemoryStore::new()),
+        Policy {
+            write_rate: (1000.0, 1000),
+            ..Policy::default()
+        },
+    )
+    .await;
+    let bucket = live_server::blobs::BlobStore::memory();
+    h.live.set_blobs(live_server::blobs::Blobs {
+        private: bucket.clone(),
+        public: None,
+    });
+    h.live.set_data_dir(&h.dir);
+    (h, bucket)
+}
+
+#[tokio::test]
+async fn saves_live_in_a_bucket_too() {
+    let (h, bucket) = bucket_harness().await;
+    let chief = h.create("Chief").await;
+    let r = put(&h, &chief, "a", "0", b"first").await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let r = put(&h, &chief, "a", "1", b"second").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(get(&h, &chief, &chief, "a").await.body, b"second");
+    let prefix = format!("storage/{}/", chief.xuid);
+    let keys: Vec<String> = bucket
+        .list(&prefix)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.key)
+        .collect();
+    let hex = Sha256::of(b"second").to_string();
+    assert_eq!(
+        keys,
+        [
+            format!("{prefix}blobs/{}/{hex}", &hex[..2]),
+            format!("{prefix}index.json"),
+        ],
+        "the replaced bytes are gone; nothing in the data directory"
+    );
+    assert!(!h.dir.join("storage").exists());
+    let r = delete(&h, &chief, "a", "2").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(bucket.list(&format!("{prefix}blobs/")).await.unwrap(), []);
+}
+
+/// Another server writing the same bucket's index: this one's next write
+/// fails rather than undoing it, and the retry builds on what is there.
+#[tokio::test]
+async fn an_index_changed_underneath_is_not_overwritten() {
+    let (h, bucket) = bucket_harness().await;
+    let chief = h.create("Chief").await;
+    assert_eq!(
+        put(&h, &chief, "a", "0", b"aaa").await.status,
+        StatusCode::CREATED
+    );
+    let key = format!("storage/{}/index.json", chief.xuid);
+    // Someone else adds an item behind this server's back.
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&bucket.get(&key).await.unwrap().unwrap()).unwrap();
+    let mut other = index["items"][0].clone();
+    other["name"] = "theirs".into();
+    index["items"].as_array_mut().unwrap().push(other);
+    bucket
+        .put(
+            &key,
+            serde_json::to_vec(&index).unwrap().into(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+    let r = put(&h, &chief, "b", "0", b"bbb").await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{}", r.error());
+    let r = put(&h, &chief, "b", "0", b"bbb").await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let listed: StorageList = serde_json::from_slice(&list(&h, &chief, &chief).await.body).unwrap();
+    let names: Vec<_> = listed.items.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["a", "b", "theirs"], "their write survived");
 }
