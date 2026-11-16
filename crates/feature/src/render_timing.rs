@@ -53,9 +53,22 @@ pub enum Stage {
     ScenePasses = 4,
     /// `render_light_passes`: one dynamic light.
     LightPasses = 5,
+    /// `0x00044550`, a layer draw, except what follows.
+    LayerDraw = 6,
+    /// Its setup call `0x00016b10`.
+    LayerSetup = 7,
+    /// `0x0003bc30`'s own code and the entry handlers it calls, except
+    /// what follows.
+    LayerEntries = 8,
+    /// `0x0003bab0`: building (and ordering) the layer's entries.
+    LayerBuild = 9,
+    /// Shader draw begin `0x0001bbf0`, wherever it is called.
+    ShaderBegin = 10,
+    /// Geometry submission `0x00041040`, wherever it is called.
+    Geometry = 11,
 }
 
-pub const STAGES: usize = 6;
+pub const STAGES: usize = 12;
 
 impl Stage {
     pub const ALL: [Stage; STAGES] = [
@@ -65,6 +78,12 @@ impl Stage {
         Stage::GameView,
         Stage::ScenePasses,
         Stage::LightPasses,
+        Stage::LayerDraw,
+        Stage::LayerSetup,
+        Stage::LayerEntries,
+        Stage::LayerBuild,
+        Stage::ShaderBegin,
+        Stage::Geometry,
     ];
 
     pub fn label(self) -> &'static str {
@@ -75,6 +94,12 @@ impl Stage {
             Stage::GameView => "game_view",
             Stage::ScenePasses => "scene_passes",
             Stage::LightPasses => "light_passes",
+            Stage::LayerDraw => "layer_draw",
+            Stage::LayerSetup => "layer_setup",
+            Stage::LayerEntries => "layer_entries",
+            Stage::LayerBuild => "layer_build",
+            Stage::ShaderBegin => "shader_begin",
+            Stage::Geometry => "geometry",
         }
     }
 
@@ -86,6 +111,12 @@ impl Stage {
             Stage::GameView => &points::RENDER_GAME_VIEW,
             Stage::ScenePasses => &points::RENDER_SCENE_PASSES,
             Stage::LightPasses => &points::RENDER_LIGHT_PASSES,
+            Stage::LayerDraw => &points::LAYER_DRAW,
+            Stage::LayerSetup => &points::LAYER_SETUP,
+            Stage::LayerEntries => &points::LAYER_ENTRIES,
+            Stage::LayerBuild => &points::LAYER_BUILD,
+            Stage::ShaderBegin => &points::SHADER_DRAW_BEGIN,
+            Stage::Geometry => &points::GEOMETRY_SUBMIT,
         }
     }
 }
@@ -191,6 +222,19 @@ pub struct Totals {
     pub sites: BTreeMap<u32, Site>,
     /// Calls to a scene callee from anywhere else.
     pub foreign: u64,
+    /// Layer draws (`0x00044550`) by layer, inclusive.
+    pub layers: BTreeMap<u32, Layer>,
+}
+
+/// One layer's draws in a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layer {
+    /// Everything inside its `0x00044550` calls.
+    pub time: Time,
+    /// `0x00044550` calls.
+    pub draws: u64,
+    /// Entries `0x0003bab0` built for it.
+    pub entries: u64,
 }
 
 impl Totals {
@@ -230,6 +274,34 @@ impl Totals {
             s.calls += v.calls;
         }
         self.foreign += o.foreign;
+        for (k, v) in &o.layers {
+            let l = self.layers.entry(*k).or_default();
+            l.time.add(v.time);
+            l.draws += v.draws;
+            l.entries += v.entries;
+        }
+    }
+
+    /// Layers by time, one per line:
+    /// `layer 1: 6.25 ms (guest 3.34 d3d 2.90) 1.0 draws 812.0 entries`.
+    pub fn layer_lines(&self) -> Vec<String> {
+        let n = self.frames.max(1) as f64;
+        let ms = |ns: u64| ns as f64 / 1e6 / n;
+        let mut v: Vec<(&u32, &Layer)> = self.layers.iter().collect();
+        v.sort_by(|a, b| b.1.time.total().cmp(&a.1.time.total()).then(a.0.cmp(b.0)));
+        v.into_iter()
+            .map(|(k, l)| {
+                format!(
+                    "layer {}: {:.2} ms (guest {:.2} d3d {:.2}) {:.1} draws {:.1} entries",
+                    *k as i32,
+                    ms(l.time.total()),
+                    ms(l.time.guest),
+                    ms(l.time.d3d),
+                    l.draws as f64 / n,
+                    l.entries as f64 / n
+                )
+            })
+            .collect()
     }
 
     /// The log line: ms and calls per frame, scene passes with their calls.
@@ -303,6 +375,8 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct StageClock {
     stack: Vec<Entry>,
+    /// Open layer draws: the layer and the clocks at entry.
+    layers: Vec<(u32, Now)>,
     mark: Now,
     /// Since the last [`take`](Self::take).
     acc: Totals,
@@ -363,8 +437,32 @@ impl StageClock {
         }
         if stage == Stage::Frame || self.stack.is_empty() {
             self.acc.frames += 1;
+            self.layers.clear();
         }
         self.stack.is_empty()
+    }
+
+    /// A layer draw of `layer` began (after its stage was entered).
+    pub fn layer_enter(&mut self, layer: u32, now: Now) {
+        self.layers.push((layer, now));
+    }
+
+    /// The innermost layer draw ended.
+    pub fn layer_leave(&mut self, now: Now) {
+        if let Some((layer, at)) = self.layers.pop() {
+            let l = self.acc.layers.entry(layer).or_default();
+            l.time.add(Time {
+                guest: now.guest.saturating_sub(at.guest),
+                d3d: now.d3d.saturating_sub(at.d3d),
+            });
+            l.draws += 1;
+        }
+    }
+
+    /// The innermost layer draw built `n` entries.
+    pub fn entries(&mut self, n: u32) {
+        let layer = self.layers.last().map_or(u32::MAX, |l| l.0);
+        self.acc.layers.entry(layer).or_default().entries += n as u64;
     }
 
     pub fn depth(&self) -> usize {
@@ -402,6 +500,9 @@ impl Default for RenderTiming {
         Self::new()
     }
 }
+
+/// The layer being drawn (`layer::CURRENT_LAYER`, docs/e3-lighting.md).
+const CURRENT_LAYER: u32 = 0x0046_7130;
 
 /// How many call sites the log lists.
 pub const TOP_SITES: usize = 15;
@@ -474,56 +575,8 @@ impl Feature for RenderTiming {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        for stage in Stage::ALL {
-            let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
-            // The frame's clock reads sit outside the scope, where the scope
-            // clocks stand still, so the stages add up to the phases.
-            let enter = move |_: &crate::Obs| {
-                let now = clock();
-                if stage == Stage::Frame {
-                    phase::scope_begin(Phase::Render);
-                }
-                let Some(now) = now else {
-                    return;
-                };
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.stages.enter(stage, now);
-            };
-            let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
-            let log_every = self.log_every_ns;
-            let leave = move |_: &crate::Obs| {
-                if stage == Stage::Frame {
-                    phase::scope_end();
-                }
-                let now = clock();
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                match now {
-                    Some(now) => {
-                        if s.stages.leave(stage, now) {
-                            let t = s.stages.take();
-                            s.window.add(&t);
-                            s.run.add(&t);
-                            log(&mut s, log_every);
-                        }
-                    }
-                    None if stage == Stage::Frame && log_every.is_some() && !s.warned_off => {
-                        s.warned_off = true;
-                        eprintln!(
-                            "render-timing: frame stats are off, nothing is measured (set H2_FRAME_STATS=1)"
-                        );
-                    }
-                    None => {}
-                }
-            };
-            let h = b.raw().observe_before(stage.point(), stage.label(), enter);
-            if stage != Stage::Frame {
-                h.optional();
-            }
-            let h = b.raw().observe_after(stage.point(), stage.label(), leave);
-            if stage != Stage::Frame {
-                h.optional();
-            }
-        }
+        // Scene calls first: at `LAYER_DRAW`, one of them, the call must be
+        // attributed to its site before the layer stage opens.
         for point in callee_points() {
             let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
             let target = point.base;
@@ -549,6 +602,66 @@ impl Feature for RenderTiming {
             };
             b.raw().observe_before(point, "scene call", call).optional();
         }
+        for stage in Stage::ALL {
+            let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
+            // The frame's clock reads sit outside the scope, where the scope
+            // clocks stand still, so the stages add up to the phases.
+            let enter = move |o: &crate::Obs| {
+                let now = clock();
+                if stage == Stage::Frame {
+                    phase::scope_begin(Phase::Render);
+                }
+                let Some(now) = now else {
+                    return;
+                };
+                let layer = (stage == Stage::LayerDraw)
+                    .then(|| o.guest().u32(CURRENT_LAYER).unwrap_or(u32::MAX));
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.stages.enter(stage, now);
+                if let Some(layer) = layer {
+                    s.stages.layer_enter(layer, now);
+                }
+            };
+            let (clock, state) = (Arc::clone(&self.clock), Arc::clone(&self.state));
+            let log_every = self.log_every_ns;
+            let leave = move |o: &crate::Obs| {
+                if stage == Stage::Frame {
+                    phase::scope_end();
+                }
+                let now = clock();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                match now {
+                    Some(now) => {
+                        match stage {
+                            Stage::LayerBuild => s.stages.entries(o.cpu.eax),
+                            Stage::LayerDraw => s.stages.layer_leave(now),
+                            _ => {}
+                        }
+                        if s.stages.leave(stage, now) {
+                            let t = s.stages.take();
+                            s.window.add(&t);
+                            s.run.add(&t);
+                            log(&mut s, log_every);
+                        }
+                    }
+                    None if stage == Stage::Frame && log_every.is_some() && !s.warned_off => {
+                        s.warned_off = true;
+                        eprintln!(
+                            "render-timing: frame stats are off, nothing is measured (set H2_FRAME_STATS=1)"
+                        );
+                    }
+                    None => {}
+                }
+            };
+            let h = b.raw().observe_before(stage.point(), stage.label(), enter);
+            if stage != Stage::Frame {
+                h.optional();
+            }
+            let h = b.raw().observe_after(stage.point(), stage.label(), leave);
+            if stage != Stage::Frame {
+                h.optional();
+            }
+        }
         Ok(())
     }
 }
@@ -569,6 +682,9 @@ fn log(s: &mut State, every: Option<u64>) {
     let w = std::mem::take(&mut s.window);
     eprintln!("render-timing: {}", w.line());
     for l in w.top_sites(TOP_SITES) {
+        eprintln!("render-timing:   {l}");
+    }
+    for l in w.layer_lines() {
         eprintln!("render-timing:   {l}");
     }
 }
@@ -606,9 +722,9 @@ mod tests {
         assert!(c.leave(Stage::Frame, g(310))); // frame + 9
         let t = c.take();
         assert_eq!(t.frames, 1);
-        assert_eq!(guest(&t), [10, 3, 17, 50, 70, 60]);
+        assert_eq!(guest(&t)[..6], [10, 3, 17, 50, 70, 60]);
         assert_eq!(t.render_ns(), 210, "the stages are the whole render time");
-        assert_eq!(t.calls, [1, 1, 1, 2, 2, 6]);
+        assert_eq!(t.calls[..6], [1, 1, 1, 2, 2, 6]);
         assert_eq!(c.take(), Totals::default());
     }
 
@@ -691,6 +807,49 @@ mod tests {
     }
 
     #[test]
+    fn layers_are_timed_inclusively_with_their_entries() {
+        let base = points::RENDER_SCENE_PASSES.base;
+        let mut c = StageClock::default();
+        c.enter(Stage::Frame, Now::new(0, 0));
+        c.enter(Stage::ScenePasses, Now::new(0, 0));
+        c.call(0x0004_4550, base + 0x205, Now::new(1, 0));
+        c.enter(Stage::LayerDraw, Now::new(2, 0)); // site 1
+        c.layer_enter(1, Now::new(2, 0));
+        c.enter(Stage::LayerSetup, Now::new(3, 0)); // layer_draw 1
+        c.leave(Stage::LayerSetup, Now::new(4, 1)); // setup 1 + 1
+        c.enter(Stage::LayerEntries, Now::new(5, 1)); // layer_draw 1
+        c.enter(Stage::LayerBuild, Now::new(6, 1)); // entries 1
+        c.entries(40);
+        c.leave(Stage::LayerBuild, Now::new(9, 1)); // build 3
+        c.enter(Stage::ShaderBegin, Now::new(10, 1)); // entries 1
+        c.leave(Stage::ShaderBegin, Now::new(11, 3)); // shader 1 + 2
+        c.enter(Stage::Geometry, Now::new(12, 3)); // entries 1
+        c.leave(Stage::Geometry, Now::new(14, 8)); // geometry 2 + 5
+        c.leave(Stage::LayerEntries, Now::new(15, 8)); // entries 1
+        c.layer_leave(Now::new(16, 8));
+        c.leave(Stage::LayerDraw, Now::new(16, 8)); // layer_draw 1
+        c.leave(Stage::ScenePasses, Now::new(16, 8));
+        assert!(c.leave(Stage::Frame, Now::new(16, 8)));
+        let t = c.take();
+        let l = t.layers[&1];
+        assert_eq!(l.time, Time { guest: 14, d3d: 8 });
+        assert_eq!((l.draws, l.entries), (1, 40));
+        let time = |s: Stage| t.time[s as usize];
+        assert_eq!(time(Stage::LayerDraw), Time { guest: 3, d3d: 0 });
+        assert_eq!(time(Stage::LayerSetup), Time { guest: 1, d3d: 1 });
+        assert_eq!(time(Stage::LayerEntries), Time { guest: 4, d3d: 0 });
+        assert_eq!(time(Stage::LayerBuild), Time { guest: 3, d3d: 0 });
+        assert_eq!(time(Stage::ShaderBegin), Time { guest: 1, d3d: 2 });
+        assert_eq!(time(Stage::Geometry), Time { guest: 2, d3d: 5 });
+        assert_eq!(t.sites[&(base + 0x205)].time, Time { guest: 1, d3d: 0 });
+        assert_eq!(t.render_ns(), 16);
+        assert_eq!(
+            t.layer_lines(),
+            ["layer 1: 0.00 ms (guest 0.00 d3d 0.00) 1.0 draws 40.0 entries"]
+        );
+    }
+
+    #[test]
     fn the_line_names_every_stage() {
         let ms = |guest: u64, d3d: u64| Time {
             guest: guest * 500_000,
@@ -698,14 +857,28 @@ mod tests {
         };
         let t = Totals {
             frames: 2,
-            time: [ms(2, 0), ms(0, 0), ms(0, 0), ms(4, 0), ms(56, 4), ms(12, 2)],
-            calls: [2, 2, 2, 2, 2, 24],
+            time: [
+                ms(2, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(4, 0),
+                ms(56, 4),
+                ms(12, 2),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+            ],
+            calls: [2, 2, 2, 2, 2, 24, 0, 0, 0, 0, 0, 0],
             sites: BTreeMap::new(),
             foreign: 300,
+            layers: BTreeMap::new(),
         };
         assert_eq!(
             t.line(),
-            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0; foreign 150"
+            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50 + layer_draw 0.00 + layer_setup 0.00 + layer_entries 0.00 + layer_build 0.00 + shader_begin 0.00 + geometry 0.00; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0 layer_draw 0.0 layer_setup 0.0 layer_entries 0.0 layer_build 0.0 shader_begin 0.0 geometry 0.0; foreign 150"
         );
     }
 }
