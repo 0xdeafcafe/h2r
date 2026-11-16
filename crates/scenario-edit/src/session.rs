@@ -274,20 +274,22 @@ impl Session {
         let mut raw = geometry::RawFiles::new(files);
         let mut map = source.open()?;
         let started = std::time::Instant::now();
-        let (parts, world_failed) = geometry::world_parts(&mut map, &mut raw).unwrap_or_default();
+        let (parts, lightmaps, world_failed) =
+            geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
         let world = geometry::opaque_triangles(&parts);
         let markers = geometry::markers(&scenario);
         let scene = self.build_scenes.then(|| {
             self.scene_for(
-                &source, name, &scenario, &markers, &parts, &mut map, &mut raw,
+                &source, name, &scenario, &markers, &parts, &lightmaps, &mut map, &mut raw,
             )
         });
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
         let art = match &scene {
             Some(s) => format!(
-                ", {} of {} shaders textured, {} of {} objects modelled ({} ms)",
+                ", {} of {} shaders textured, {} lightmap pages, {} of {} objects modelled ({} ms)",
                 s.stats.textured,
                 s.stats.shaders,
+                s.stats.lightmap_pages,
                 s.stats.modelled,
                 s.stats.objects,
                 started.elapsed().as_millis()
@@ -368,6 +370,7 @@ impl Session {
         scenario: &Scenario,
         markers: &[Marker],
         parts: &[geometry::WorldPart],
+        lightmaps: &[geometry::LightmapPages],
         map: &mut map::Map<R>,
         raw: &mut dyn tags::geometry::RawSource,
     ) -> Arc<Scene> {
@@ -379,7 +382,7 @@ impl Session {
             return scene;
         }
         let mut b = SceneBuilder::new(map, raw, crate::scene::resource_files(source));
-        b.world(parts);
+        b.world(parts, lightmaps);
         // Every palette entry, so a placement switched to another entry
         // has its model too, and each placement's own reference.
         let objects: Vec<TagId> = scenario
@@ -812,16 +815,18 @@ fn close3(a: Vec3, b: Vec3) -> bool {
 
 /// What "frame the map" frames: the placements when there are a few (the
 /// playable space; distant scenery such as Ascension's canyon rocks, 300
-/// units out, would shrink the level to a speck), padded a little, else
-/// the opaque world.
+/// units out, would shrink the level to a speck), trimmed of outliers
+/// ([`trimmed_bounds`]: Lockout keeps a few placements far outside the
+/// level) and padded a little; else the opaque world.
 fn frame_bounds(world: &[Tri], markers: &[Marker]) -> Bounds {
-    let mut bounds = Bounds::EMPTY;
     if markers.len() >= 4 {
-        markers.iter().for_each(|m| bounds.add(m.position));
+        let points: Vec<Vec3> = markers.iter().map(|m| m.position).collect();
+        let mut bounds = trimmed_bounds(&points, FRAME_TRIM);
         bounds.add(geometry::sub(bounds.min, [FRAME_PAD; 3]));
         bounds.add(geometry::add(bounds.max, [FRAME_PAD; 3]));
         return bounds;
     }
+    let mut bounds = Bounds::EMPTY;
     for t in world {
         t.p.iter().for_each(|&p| bounds.add(p));
     }
@@ -830,6 +835,27 @@ fn frame_bounds(world: &[Tri], markers: &[Marker]) -> Bounds {
     }
     bounds
 }
+
+/// Bounds of `points` without the `trim` fraction at each end of each
+/// axis (at least one point is kept).
+pub fn trimmed_bounds(points: &[Vec3], trim: f32) -> Bounds {
+    let mut b = Bounds::EMPTY;
+    if points.is_empty() {
+        return b;
+    }
+    let n = points.len();
+    let cut = ((n as f32 * trim).floor() as usize).min((n - 1) / 2);
+    for k in 0..3 {
+        let mut v: Vec<f32> = points.iter().map(|p| p[k]).collect();
+        v.sort_by(f32::total_cmp);
+        b.min[k] = v[cut];
+        b.max[k] = v[n - 1 - cut];
+    }
+    b
+}
+
+/// The fraction of placements at each end of each axis that framing drops.
+const FRAME_TRIM: f32 = 0.04;
 
 /// Units around the placements that framing keeps in view.
 const FRAME_PAD: f32 = 4.0;

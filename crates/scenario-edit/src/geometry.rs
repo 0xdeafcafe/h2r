@@ -11,7 +11,7 @@ use crate::scenario::{Scenario, Value};
 use map::{Map, RawPointer, ResourceFile, TagId};
 use std::io::{Read, Seek};
 use tags::geometry::{RawSource, Section, TagView};
-use tags::structure::StructureRender;
+use tags::structure::{Lightmap, LightmapRenderInfo, StructureRender};
 
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [[f32; 4]; 4];
@@ -157,6 +157,10 @@ pub struct WorldPart {
     pub normals: Vec<Vec3>,
     pub uvs: Vec<[f32; 2]>,
     pub tris: Vec<[u32; 3]>,
+    /// The lightmap page and each vertex's coordinates in it (stream type
+    /// `1f`), when the part has both.
+    pub lightmap: Option<LightmapRef>,
+    pub lightmap_uvs: Vec<[f32; 2]>,
 }
 
 impl Default for WorldPart {
@@ -168,6 +172,8 @@ impl Default for WorldPart {
             normals: Vec::new(),
             uvs: Vec::new(),
             tris: Vec::new(),
+            lightmap: None,
+            lightmap_uvs: Vec::new(),
         }
     }
 }
@@ -177,22 +183,123 @@ impl Default for WorldPart {
 /// "transparent", and on the disc only transparent-template shaders use it.
 pub const PART_TRANSPARENT: u16 = 4;
 
+/// The scenario's (structure BSP, lightmap) pairs: BSP ID at `+0x14`,
+/// lightmap ID at `+0x1c` of each `scnr+0x210` element (as
+/// `viewer::level::scenario_bsps`).
+pub fn scenario_bsp_lightmaps<R: Read + Seek>(
+    map: &mut Map<R>,
+) -> crate::Result<Vec<(TagId, Option<TagId>)>> {
+    let scenario = map
+        .scenario()
+        .ok_or(crate::Error::Invalid("no scenario"))?
+        .clone();
+    let location = scenario
+        .location
+        .ok_or(crate::Error::Invalid("no scenario payload"))?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    Ok(view
+        .block(view.at(0, 0x218)?, 0x210, 0x44)?
+        .into_iter()
+        .map(|b| {
+            let word = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            let lightmap = word(0x1c);
+            (
+                TagId(word(0x14)),
+                (lightmap != u32::MAX).then_some(TagId(lightmap)),
+            )
+        })
+        .collect())
+}
+
+/// A lightmap's pages: its bitmap (one P8 image per page) and the palettes
+/// the pages' indices go through (`ltmp` group, docs/formats/structure-bsp.md).
+#[derive(Clone, Debug)]
+pub struct LightmapPages {
+    pub bitmap: TagId,
+    /// 256 `A8R8G8B8` entries each.
+    pub palettes: Vec<[u32; 256]>,
+}
+
+/// Which lightmap page lights a part: an index into the list of
+/// [`LightmapPages`] [`world_parts_lit`] returns, the image index in its
+/// bitmap and the palette index (the cluster's or instance's render info).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LightmapRef {
+    pub pages: usize,
+    pub page: u16,
+    pub palette: u8,
+}
+
+impl LightmapRef {
+    fn of(pages: Option<usize>, info: Option<&LightmapRenderInfo>) -> Option<Self> {
+        let info = info?;
+        Some(Self {
+            pages: pages?,
+            page: u16::try_from(info.bitmap_index).ok()?,
+            palette: u8::try_from(info.palette_index).ok()?,
+        })
+    }
+}
+
 /// Every drawn part of the scenario's BSPs (clusters and placed instanced
 /// geometry), and how many sections failed.
 pub fn world_parts<R: Read + Seek>(
     map: &mut Map<R>,
     raw: &mut dyn RawSource,
 ) -> crate::Result<(Vec<WorldPart>, usize)> {
+    let (parts, _, failed) = world_parts_lit(map, raw)?;
+    Ok((parts, failed))
+}
+
+/// [`world_parts`] with each part's lightmap page, and the lightmaps'
+/// pages. A lightmap that does not decode leaves its parts unlit.
+pub fn world_parts_lit<R: Read + Seek>(
+    map: &mut Map<R>,
+    raw: &mut dyn RawSource,
+) -> crate::Result<(Vec<WorldPart>, Vec<LightmapPages>, usize)> {
     let mut out = Vec::new();
+    let mut lightmaps = Vec::new();
     let mut failed = 0;
-    for id in scenario_bsps(map)? {
+    for (id, lightmap) in scenario_bsp_lightmaps(map)? {
         let shaders = bsp_shaders(map, id).unwrap_or_default();
-        match StructureRender::read(map, id) {
-            Ok(bsp) => failed += bsp_parts(&bsp, &shaders, raw, &mut out),
-            Err(_) => failed += 1,
-        }
+        let bsp = match StructureRender::read(map, id) {
+            Ok(bsp) => bsp,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        // The group lighting this BSP: the one with its checksum.
+        let group = lightmap
+            .and_then(|l| Lightmap::read(map, l).ok())
+            .and_then(|l| {
+                l.groups
+                    .into_iter()
+                    .find(|g| g.structure_checksum == bsp.checksum && g.bitmap.is_some())
+            });
+        let pages = group.as_ref().map(|g| {
+            lightmaps.push(LightmapPages {
+                bitmap: g.bitmap.unwrap_or(TagId::NULL),
+                palettes: g.palettes.clone(),
+            });
+            lightmaps.len() - 1
+        });
+        let lit = Lit {
+            pages,
+            clusters: group.as_ref().map_or(&[], |g| &g.cluster_render_info),
+            instances: group.as_ref().map_or(&[], |g| &g.instance_render_info),
+        };
+        failed += bsp_parts(&bsp, &shaders, &lit, raw, &mut out);
     }
-    Ok((out, failed))
+    Ok((out, lightmaps, failed))
+}
+
+/// A BSP's lightmap selections.
+struct Lit<'a> {
+    pages: Option<usize>,
+    clusters: &'a [LightmapRenderInfo],
+    instances: &'a [LightmapRenderInfo],
 }
 
 /// Every opaque triangle of the scenario's BSPs (what the camera frames and
@@ -242,6 +349,7 @@ pub fn bsp_shaders<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> crate::Resul
 pub fn section_parts(
     s: &Section,
     shaders: &[TagId],
+    lightmap: Option<LightmapRef>,
     place: &dyn Fn(Vec3) -> Vec3,
     turn: &dyn Fn(Vec3) -> Vec3,
 ) -> Option<Vec<WorldPart>> {
@@ -249,6 +357,7 @@ pub fn section_parts(
     if v.positions.len() != s.vertex_count() {
         return None;
     }
+    let lightmap = lightmap.filter(|_| v.lightmap_texcoords.len() == v.positions.len());
     Some(
         s.parts
             .iter()
@@ -260,6 +369,7 @@ pub fn section_parts(
                         .copied()
                         .unwrap_or(TagId::NULL),
                     transparent: part.kind == PART_TRANSPARENT,
+                    lightmap,
                     ..WorldPart::default()
                 };
                 let mut remap = std::collections::HashMap::new();
@@ -279,6 +389,9 @@ pub fn section_parts(
                                 .push(v.normals.get(i).map_or([0.0; 3], |&n| normalize(turn(n))));
                             out.uvs
                                 .push(v.texcoords.get(i).copied().unwrap_or([0.0; 2]));
+                            if lightmap.is_some() {
+                                out.lightmap_uvs.push(v.lightmap_texcoords[i]);
+                            }
                             (out.positions.len() - 1) as u32
                         })
                     });
@@ -310,19 +423,24 @@ pub fn vertex_normals(positions: &[Vec3], tris: &[[u32; 3]]) -> Vec<Vec3> {
 fn bsp_parts(
     bsp: &StructureRender,
     shaders: &[TagId],
+    lit: &Lit<'_>,
     raw: &mut dyn RawSource,
     out: &mut Vec<WorldPart>,
 ) -> usize {
     let materials = Some(bsp.material_count as usize);
     let mut failed = 0;
-    let mut push = |s: &Section, place: &dyn Fn(Vec3) -> Vec3, turn: &dyn Fn(Vec3) -> Vec3| {
-        section_parts(s, shaders, place, turn)
+    let mut push = |s: &Section,
+                    lm: Option<LightmapRef>,
+                    place: &dyn Fn(Vec3) -> Vec3,
+                    turn: &dyn Fn(Vec3) -> Vec3| {
+        section_parts(s, shaders, lm, place, turn)
             .map(|p| out.extend(p))
             .is_none()
     };
-    for c in &bsp.clusters {
+    for (ci, c) in bsp.clusters.iter().enumerate() {
+        let lm = LightmapRef::of(lit.pages, lit.clusters.get(ci));
         match c.geometry.load(raw, materials) {
-            Ok(Some(s)) => failed += usize::from(push(&s, &|p| p, &|n| n)),
+            Ok(Some(s)) => failed += usize::from(push(&s, lm, &|p| p, &|n| n)),
             Ok(None) => {}
             Err(_) => failed += 1,
         }
@@ -337,7 +455,8 @@ fn bsp_parts(
             })
         })
         .collect();
-    for inst in &bsp.instances {
+    for (ii, inst) in bsp.instances.iter().enumerate() {
+        let lm = LightmapRef::of(lit.pages, lit.instances.get(ii));
         let Some(Some(s)) = usize::try_from(inst.definition)
             .ok()
             .and_then(|i| defs.get(i))
@@ -348,7 +467,7 @@ fn bsp_parts(
             failed += 1;
             continue;
         }
-        failed += usize::from(push(s, &|p| inst.transform(p), &|n| inst.rotate(n)));
+        failed += usize::from(push(s, lm, &|p| inst.transform(p), &|n| inst.rotate(n)));
     }
     failed
 }
@@ -627,6 +746,11 @@ pub fn surface(tris: &[Tri], ray: &Ray) -> Option<Vec3> {
         .map(|t| add(ray.origin, scale(ray.dir, t)))
 }
 
+/// How far frame-all stands back, in bounding radii: at 60° the bounds'
+/// sphere just fills the view's height at 2; the steep pitch and the
+/// level's flatness let it come closer.
+pub const FRAME_DISTANCE: f32 = 1.4;
+
 /// An orbit camera with a fly mode: it looks at `target` from `distance`
 /// along yaw and pitch; flying moves the target with the eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -658,7 +782,7 @@ impl Camera {
         };
         if !bounds.is_empty() {
             c.target = bounds.center();
-            c.distance = (bounds.radius() * 1.8).max(5.0);
+            c.distance = (bounds.radius() * FRAME_DISTANCE).max(5.0);
         }
         c
     }
