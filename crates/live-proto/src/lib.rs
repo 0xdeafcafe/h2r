@@ -18,6 +18,7 @@ pub mod samples;
 pub mod session;
 pub mod sign;
 pub mod skulls;
+pub mod storage;
 pub mod team;
 pub mod title_file;
 
@@ -285,6 +286,10 @@ pub mod lxm {
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
     pub const CONTENT_MODERATE: &str = "content.moderate";
+    /// Reading one's own cloud saves (docs/live/live-cloud-saves.md).
+    pub const STORAGE_READ: &str = "storage.read";
+    /// Writing and deleting one's own cloud saves.
+    pub const STORAGE_WRITE: &str = "storage.write";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
 }
