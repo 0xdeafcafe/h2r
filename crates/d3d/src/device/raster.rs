@@ -107,6 +107,25 @@ pub(crate) struct DepthAlias<T> {
     pub(crate) texture: T,
 }
 
+/// A colour surface whose memory is the device's depth buffer: not a
+/// texture level, its `Data` the depth buffer's. Halo's rasterizer target 3
+/// (`0x14bc0` -> `0x14c21`) is one: `0x14600` builds its header at
+/// `0x509370` as a copy of the back buffer's with the depth buffer's `Data`,
+/// and target 3 as a texture (`0x14f60`, table `0x15114` -> `0x15020`) is `0x509368`, the
+/// `LIN_A8R8G8B8` texture over the same memory. The level loading screen
+/// copies its image into target 3 and box-filters it back from `0x509368`
+/// every frame (`0x29370`); on the console the filter reads the colour just
+/// written, not depth bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DepthColor {
+    /// The surface header (its host surface is in `other_surfaces`).
+    pub(crate) header: u32,
+    /// Its format and size.
+    format: D3DFormat,
+    width: u32,
+    height: u32,
+}
+
 /// What a bound texture header is, as far as the frame buffers go.
 pub(super) enum FrameTexture<T> {
     /// Ordinary guest texture memory.
@@ -210,6 +229,36 @@ pub fn scissor_region(base: Edges, rects: &[Rect], exclusive: bool) -> Vec<Pixel
 }
 
 impl<B: Backend> Device<B> {
+    /// Colour surface `header` (`h`, `desc`; not a texture level) got its
+    /// host surface: notes whether its memory is the depth buffer's
+    /// ([`DepthColor`]).
+    pub(super) fn note_depth_color(
+        &mut self,
+        header: u32,
+        h: &SurfaceHeader,
+        desc: &TextureDesc,
+        depth: bool,
+    ) {
+        let map = self.cfg.address_map;
+        let over_depth = !depth
+            && self.depth.is_some()
+            && map.to_virtual(h.pixels.resource.data) == map.to_virtual(DEPTH_BUFFER_DATA);
+        if over_depth {
+            if self.depth_color.is_some_and(|c| c.header != header) {
+                self.depth_color_newer = false;
+            }
+            self.depth_color = Some(DepthColor {
+                header,
+                format: desc.format,
+                width: desc.width,
+                height: desc.height,
+            });
+        } else if self.depth_color.is_some_and(|c| c.header == header) {
+            self.depth_color = None;
+            self.depth_color_newer = false;
+        }
+    }
+
     /// Whether texture `header` reads one of the device's own frame
     /// buffers (a frame buffer's `Data`, or [`DEPTH_BUFFER_DATA`]),
     /// and if so how a draw samples it. The frame buffer is found by its
@@ -361,6 +410,12 @@ impl<B: Backend> Device<B> {
         let (Some(depth), Some(p)) = (self.depth, self.params) else {
             return Ok(FrameTexture::No);
         };
+        if self.depth_color_newer
+            && let Some(c) = self.depth_color
+            && let Some(&(_, surface)) = self.other_surfaces.get(&c.header)
+        {
+            return self.depth_color_texture(header, pc, offset, color_sign, c, surface);
+        }
         let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
             .map(linear_twin)
             .unwrap_or(D3DFormat::LinD24S8);
@@ -455,6 +510,131 @@ impl<B: Backend> Device<B> {
             self.depth_copy = Some((generation, bytes));
         }
         let bytes = &self.depth_copy.as_ref().expect("read above").1;
+        let decoded = match decode_texture(&desc, &bytes[offset as usize..], None, options) {
+            Ok(d) => d,
+            Err(e) => return skip(e.to_string()),
+        };
+        let texture = self
+            .backend
+            .upload_texture(&decoded)
+            .map_err(D3dError::Backend)?;
+        self.stats.depth_alias_uploads += 1;
+        self.depth_alias.insert(
+            key,
+            DepthAlias {
+                generation,
+                identity,
+                info,
+                texture,
+            },
+        );
+        Ok(FrameTexture::DepthAlias(info, key))
+    }
+
+    /// Texture `header` (`pc`) over the depth buffer's memory from byte
+    /// `offset`, when a colour surface over that memory ([`DepthColor`])
+    /// was drawn into after the depth buffer: the memory holds the colour
+    /// surface's pixels, so the texture reads them. The whole surface as a
+    /// linear 32-bit texture of its size with no `COLORSIGN` (Halo's
+    /// `0x509368` over target 3) is a copy of the surface
+    /// ([`Backend::snapshot_surface`]); anything else decodes the surface's
+    /// bytes read back as guest memory would hold them, once per change.
+    fn depth_color_texture(
+        &mut self,
+        header: u32,
+        pc: &PixelContainer,
+        offset: u32,
+        color_sign: u32,
+        c: DepthColor,
+        surface: B::Surface,
+    ) -> Result<FrameTexture<B::Texture>, D3dError> {
+        let skip = |why: String| {
+            Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} over the colour surface {:#010x} in the depth buffer's memory: {why}",
+                c.header
+            )))
+        };
+        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+            Ok(d) => d,
+            Err(e) => return skip(e.to_string()),
+        };
+        let info = TextureInfo {
+            header,
+            palette: 0,
+            format: desc.format,
+            kind: desc.kind,
+            width: desc.width,
+            height: desc.height,
+            depth: desc.depth,
+            levels: desc.levels,
+        };
+        let sign = texture_color_sign(desc.format, color_sign);
+        let word = |f: D3DFormat| matches!(f, D3DFormat::LinA8R8G8B8 | D3DFormat::LinX8R8G8B8);
+        if offset == 0
+            && sign == 0
+            && word(desc.format)
+            && word(c.format)
+            && desc.kind == gfx::texture::TextureKind::D2
+            && desc.levels == 1
+            && (desc.width, desc.height) == (c.width, c.height)
+            && desc.pitch.max(desc.width * 4) == c.width * 4
+        {
+            let opaque = desc.format == D3DFormat::LinX8R8G8B8;
+            let Some(t) = self
+                .backend
+                .snapshot_surface(surface, opaque)
+                .map_err(D3dError::Backend)?
+            else {
+                return skip("the backend cannot copy surfaces into textures".into());
+            };
+            self.stats.frame_snapshots += 1;
+            return Ok(FrameTexture::Snapshot(info, t));
+        }
+        let generation = self.depth_generation;
+        let identity = pc.identity();
+        let key = (header, sign);
+        if let Some(a) = self.depth_alias.get(&key)
+            && a.generation == generation
+            && a.identity == identity
+        {
+            return Ok(FrameTexture::DepthAlias(a.info, key));
+        }
+        let Some(bpp) = c.format.bytes_per_texel() else {
+            return skip(format!("{:?} has no texel size", c.format));
+        };
+        let pitch = c.width * bpp;
+        let len = pitch as u64 * c.height as u64;
+        let total = match desc.total_size() {
+            Ok(l) => l as u64,
+            Err(e) => return skip(e.to_string()),
+        };
+        if offset as u64 + total > len {
+            return skip(format!(
+                "{:?} {}x{} at +{offset:#x} ({total} bytes) runs past the {len}-byte {:?} surface",
+                desc.format, desc.width, desc.height, c.format
+            ));
+        }
+        let bytes = self
+            .backend
+            .read_surface(
+                surface,
+                c.format,
+                c.width,
+                c.height,
+                GuestLayoutKind::Linear { pitch },
+            )
+            .map_err(D3dError::Backend)?;
+        if (bytes.len() as u64) < len {
+            return Err(D3dError::Backend(format!(
+                "read_surface returned {} bytes for a {len}-byte surface",
+                bytes.len()
+            )));
+        }
+        let options = DecodeOptions {
+            bc_supported: self.backend.bc_supported(),
+            ..DecodeOptions::default()
+        }
+        .with_color_sign(sign);
         let decoded = match decode_texture(&desc, &bytes[offset as usize..], None, options) {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
@@ -922,6 +1102,15 @@ impl<B: Backend> Device<B> {
             t.dirty = true;
             self.mirror_supersede(self.render_target);
         }
+        // The colour surface over the depth buffer's memory: that memory
+        // now holds its pixels (textures over it made before are stale).
+        if self
+            .depth_color
+            .is_some_and(|c| c.header == self.render_target)
+        {
+            self.depth_color_newer = true;
+            self.depth_generation += 1;
+        }
         if writes_depth && self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
                 t.dirty = true;
@@ -930,6 +1119,7 @@ impl<B: Backend> Device<B> {
             }
             if self.depth_stencil == self.depth_header {
                 self.depth_generation += 1;
+                self.depth_color_newer = false;
             }
         }
     }

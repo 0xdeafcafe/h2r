@@ -340,6 +340,123 @@ fn colour_textures_over_the_depth_buffer_decode_a_readback() {
     assert_eq!(d.backend.draws().last().unwrap().textures[3], None);
 }
 
+/// A colour surface over the depth buffer's memory, as `0x14600` builds
+/// Halo's rasterizer target 3 (`0x509370`): the back buffer's header with
+/// the depth buffer's `Data`.
+const DCOLOR: u32 = MISC + 0x7880;
+
+fn reads_of(d: &Device<RecordingBackend>, surface: u32) -> usize {
+    d.backend
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Recorded::ReadSurface { surface: s, .. } if *s == surface))
+        .count()
+}
+
+fn snapshots_of(d: &Device<RecordingBackend>, surface: u32) -> Vec<u32> {
+    d.backend
+        .calls
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Snapshot { surface: s, id, .. } if *s == surface => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The level loading screen's trail (`0x29370`): its image is drawn into
+/// target 3, the colour surface over the depth buffer's memory, then
+/// sampled back through `0x509368`, the `LIN_A8R8G8B8` texture over the
+/// same memory. On the console that texture reads the colour just written;
+/// it read the depth buffer's bits (stencil as blue: a yellow screen).
+/// What the memory holds is whichever of the two was drawn into last.
+#[test]
+fn textures_over_the_depth_buffer_read_the_colour_surface_drawn_into_last() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, W as f32, H as f32, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    let back = m.read_u32(L.device + 0x1A14).unwrap();
+    let zbuf = m.read_u32(L.device + 0x1A08).unwrap();
+    SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, W, H, W * 4, DEPTH_BUFFER_DATA)
+        .write(&mut m, DCOLOR)
+        .unwrap();
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+
+    // Nothing drawn into the colour surface yet: the depth bits.
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(depth_reads(&d).len(), 1);
+
+    // Target 3, drawn into with nothing sampled.
+    d.set_texture(&mut m, 0, 0).unwrap();
+    d.set_render_target(&mut m, DCOLOR, 0).unwrap();
+    let dcolor = d
+        .backend
+        .calls
+        .iter()
+        .rev()
+        .find_map(|c| match c {
+            Recorded::Surface {
+                id,
+                format: D3DFormat::LinA8R8G8B8,
+                size: (W, H),
+                depth: false,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("a host surface for the colour surface");
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert!(snapshots_of(&d, dcolor).is_empty());
+
+    // Back on the back buffer, the texture over that memory is a copy of
+    // the colour surface: no depth read, no upload.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    let uploads = d.backend.uploads();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.take_events(), []);
+    let snap = snapshots_of(&d, dcolor);
+    assert_eq!(snap.len(), 1);
+    match d.backend.calls.last() {
+        Some(Recorded::Draw { textures, draw, .. }) => {
+            assert_eq!(textures[0], Some(snap[0]));
+            assert_eq!(draw.texture_info[0].unwrap().header, ALIAS);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(depth_reads(&d).len(), 1);
+    assert_eq!(d.backend.uploads(), uploads);
+
+    // Any other view of those bytes (LIN_A8B8G8R8, `0x50936C`) decodes
+    // the colour surface's bytes, read back once per change.
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x3F, W, H, W * 4);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.take_events(), []);
+    assert_eq!(reads_of(&d, dcolor), 1);
+    assert_eq!(d.backend.uploads(), uploads + 1);
+    assert_eq!(depth_reads(&d).len(), 1);
+    // A second draw into the colour surface makes that copy stale.
+    d.set_texture(&mut m, 0, 0).unwrap();
+    d.set_render_target(&mut m, DCOLOR, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(reads_of(&d, dcolor), 2);
+    assert_eq!(depth_reads(&d).len(), 1);
+
+    // A depth clear: the memory holds depth again.
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    d.set_render_target(&mut m, back, zbuf).unwrap();
+    d.clear(&mut m, 0, 0, 0x01, 0, 0.5, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(depth_reads(&d).len(), 2);
+    assert_eq!(snapshots_of(&d, dcolor).len(), 1);
+    assert_eq!(d.take_events(), []);
+}
+
 /// A backend without depth readback skips the draw instead of stopping.
 #[test]
 fn without_depth_readback_the_draw_is_skipped() {
@@ -478,6 +595,41 @@ fn gpu_depth_buffer_sampled_as_colour_shows_its_bits() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(back_pixel(&mut d, 5, 60), [0x5A, 0x56, 0x34, 0x12]);
     assert_eq!(d.stats().depth_reads, 1);
+    finish(scope);
+}
+
+/// Target 3's case on a GPU: a colour cleared into the colour surface over
+/// the depth buffer's memory is what the `LIN_A8R8G8B8` texture over that
+/// memory shows, not the depth bits; after a depth clear the bits again.
+#[test]
+fn gpu_colour_drawn_over_the_depth_buffer_is_what_its_texture_shows() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let back = m.read_u32(L.device + 0x1A14).unwrap();
+    let zbuf = m.read_u32(L.device + 0x1A08).unwrap();
+    let z24 = 0x12_3456u32;
+    d.clear(&mut m, 0, 0, 0x03, 0, z24 as f32 / 16_777_215.0, 0x5A)
+        .unwrap();
+    SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, W, H, W * 4, DEPTH_BUFFER_DATA)
+        .write(&mut m, DCOLOR)
+        .unwrap();
+    d.set_render_target(&mut m, DCOLOR, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0x80A0_C0E0, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, zbuf).unwrap();
+    textured_quad(&mut d, &mut m);
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let ev = d.take_events();
+    assert!(ev.is_empty(), "{ev:?}");
+    assert_eq!(back_pixel(&mut d, 20, 30), [0xA0, 0xC0, 0xE0, 0x80]);
+    assert_eq!(d.stats().depth_reads, 0);
+    d.clear(&mut m, 0, 0, 0x03, 0, z24 as f32 / 16_777_215.0, 0x5A)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(back_pixel(&mut d, 20, 30), [0x34, 0x56, 0x5A, 0x12]);
     finish(scope);
 }
 
@@ -998,6 +1150,40 @@ fn the_render_thread_makes_the_same_depth_alias_textures() {
     let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
     assert_eq!(a.backend.calls, calls);
     assert_eq!(b.backend.misses(), 0);
+}
+
+/// The render thread reads target 3's colour through textures over the
+/// depth buffer exactly as the device does on the caller's thread.
+#[test]
+fn the_render_thread_reads_the_colour_surface_over_the_depth_buffer_the_same() {
+    fn run<B: d3d::Backend>(backend: B) -> Device<B> {
+        let (mut d, mut m) = create(backend, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        quad_vb(&mut m, 0.0, 0.0, W as f32, H as f32, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        let back = m.read_u32(L.device + 0x1A14).unwrap();
+        SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, W, H, W * 4, DEPTH_BUFFER_DATA)
+            .write(&mut m, DCOLOR)
+            .unwrap();
+        d.set_render_target(&mut m, DCOLOR, 0).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.set_render_target(&mut m, back, 0).unwrap();
+        alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+        d.set_texture(&mut m, 0, ALIAS).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        alias(&mut m, DEPTH_BUFFER_DATA, 0x3F, W, H, W * 4);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d
+    }
+    let mut a = run(RecordingBackend::new());
+    let mut b = run(d3d::ThreadedBackend::new(RecordingBackend::new()).unwrap());
+    assert_eq!(a.take_events(), []);
+    assert_eq!(b.take_events(), []);
+    assert_eq!(a.stats(), b.stats());
+    assert_eq!(a.stats().depth_reads, 0);
+    let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
+    assert_eq!(a.backend.calls, calls);
 }
 
 /// One run of the lazy-depth comparison: the level filled from a guest

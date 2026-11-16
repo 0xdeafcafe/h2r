@@ -917,6 +917,31 @@ and allocations are bounded before anything is read:
       the back-buffer copy, a draw sees the buffer as it was before the draw.
       Counted in `Stats::depth_reads` and
       `Stats::depth_alias_uploads`.
+    - The colour surface over the same memory (`0x509370`, rasterizer
+      target 3: `0x14bc0` -> `0x14c21`; as a texture, the texture switch ->
+      `0x15020`, it is `0x509368`) gets a host colour surface of its own
+      (`raster::DepthColor`, noted in `surface_for`). The memory holds
+      whichever was drawn into last: a drawn draw or clear into that
+      surface makes it newer (and bumps the depth generation), one that
+      writes the device's depth buffer's depth or stencil makes the depth
+      newer again. While the colour surface is newer, a texture over the
+      depth buffer reads its pixels instead of the depth bits
+      (`Device::depth_color_texture`): the whole surface as a linear
+      32-bit texture of its size with no `COLORSIGN` (`0x509368`) is a copy
+      (`snapshot_surface`, counted in `Stats::frame_snapshots`), any other
+      view (`0x50936C`, an offset, a sign) decodes the surface read back as
+      guest bytes (`read_surface`), once per generation. The level loading
+      screen needs it: every frame `0x296c0` copies target 1 into target 3
+      and `0x29370` box-filters `0x509368` back into target 1 with
+      `DESTBLEND = CONSTANTCOLOR`, a trail. Reading the depth bits there
+      (stencil zero as blue, depth bytes as red and green) fed a constant
+      yellow into the trail. Not modelled: target 3 does not start from the
+      depth bits when it is bound after depth was drawn (a draw that blends
+      with or only partly covers it sees its own older pixels), and depth
+      tests after target 3 was drawn into use the depth as it was. Tests:
+      `textures_over_the_depth_buffer_read_the_colour_surface_drawn_into_last`
+      and the GPU and render-thread ones after it in
+      `tests/depth_textures.rs`.
     - A texture that runs past the end of the buffer, or whose header
       does not decode, skips with a reason. So does any texture over it
       when the backend has no `read_depth` (`GfxBackend` needs
