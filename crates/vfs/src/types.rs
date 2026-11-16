@@ -86,6 +86,29 @@ pub struct OpenedFile {
     pub host: Option<HostFile>,
 }
 
+/// What happened to a file or directory, as [`crate::Vfs::set_change_observer`]
+/// reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChangeKind {
+    /// A file object that created, overwrote, wrote or truncated the file
+    /// was closed for the last time: its bytes are on the host.
+    Written,
+    /// The file or (empty) directory was deleted.
+    Removed,
+}
+
+/// A change the VFS just finished, as [`crate::Vfs::set_change_observer`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Changed {
+    /// The mounted device (`\Device\Harddisk0\Partition1`).
+    pub device: String,
+    /// The path within the device, as the backend sees it
+    /// (`UDATA\4D530064\0123456789AB\SaveMeta.xbx`).
+    pub path: String,
+    pub kind: ChangeKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
     pub basic: BasicInfo,

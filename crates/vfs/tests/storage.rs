@@ -1873,3 +1873,86 @@ fn titlemeta_open_if_on_a_fresh_disk() {
     );
     assert!(r.is_ok(), "{r:?}");
 }
+
+/// The change observer cloud saves watch U: with (docs/live/live-cloud-saves.md):
+/// one report per finished change, at the last close, never for reads.
+#[test]
+fn changes_are_observed_at_close_and_removal() {
+    let temp = TempDir::new();
+    let mut vfs = temp.storage();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    vfs.set_change_observer(Some(Box::new(move |c: &Changed| {
+        log.lock().unwrap().push((c.path.clone(), c.kind))
+    })));
+    let take = |seen: &Arc<std::sync::Mutex<Vec<(String, ChangeKind)>>>| {
+        std::mem::take(&mut *seen.lock().unwrap())
+    };
+    let dir = directory(&mut vfs, "U:\\0123456789AB");
+    vfs.close(dir).unwrap();
+    assert_eq!(take(&seen), [], "a new directory is not a write");
+    // Written twice through two handles of one object: one report, at the
+    // last close, when the bytes are on the host.
+    let h = create(&mut vfs, "U:\\0123456789AB\\SaveMeta.xbx");
+    let dup = vfs.duplicate(h).unwrap();
+    vfs.write(h, Offset::Absolute(0), b"Name=").unwrap();
+    vfs.write(dup, Offset::Current, b"Chief").unwrap();
+    vfs.close(h).unwrap();
+    assert_eq!(take(&seen), []);
+    vfs.close(dup).unwrap();
+    let meta = "UDATA\\4D530064\\0123456789AB\\SaveMeta.xbx".to_string();
+    assert_eq!(take(&seen), [(meta.clone(), ChangeKind::Written)]);
+    let host = temp
+        .0
+        .join("disk/Partition1/UDATA/4D530064/0123456789AB/SaveMeta.xbx");
+    assert_eq!(fs::read(&host).unwrap(), b"Name=Chief");
+    // Reading is not a change; neither is opening for write and not writing.
+    let r = vfs
+        .open(
+            "U:\\0123456789AB\\SaveMeta.xbx",
+            OpenOptions {
+                access: Access::READ | Access::WRITE,
+                ..options(CreateDisposition::Open)
+            },
+        )
+        .unwrap()
+        .handle;
+    let mut buf = [0u8; 4];
+    vfs.read(r, Offset::Absolute(0), &mut buf).unwrap();
+    vfs.close(r).unwrap();
+    assert_eq!(take(&seen), []);
+    // Overwriting with nothing, and truncating, are changes.
+    let o = vfs
+        .open(
+            "U:\\0123456789AB\\SaveMeta.xbx",
+            options(CreateDisposition::OverwriteIf),
+        )
+        .unwrap()
+        .handle;
+    vfs.close(o).unwrap();
+    assert_eq!(take(&seen), [(meta.clone(), ChangeKind::Written)]);
+    // Deleting reports the removal once it is carried out.
+    let d = vfs
+        .open(
+            "U:\\0123456789AB\\SaveMeta.xbx",
+            OpenOptions {
+                access: Access::DELETE,
+                ..options(CreateDisposition::Open)
+            },
+        )
+        .unwrap()
+        .handle;
+    vfs.set_delete_pending(d, true).unwrap();
+    assert_eq!(take(&seen), []);
+    vfs.close(d).unwrap();
+    assert_eq!(take(&seen), [(meta, ChangeKind::Removed)]);
+    // Other partitions are reported too; filtering is the watcher's job.
+    let z = create(&mut vfs, "Z:\\cache.bin");
+    vfs.write(z, Offset::Absolute(0), b"x").unwrap();
+    vfs.close(z).unwrap();
+    assert_eq!(take(&seen), [("cache.bin".to_string(), ChangeKind::Written)]);
+    vfs.set_change_observer(None);
+    let z = create(&mut vfs, "Z:\\cache2.bin");
+    vfs.close(z).unwrap();
+    assert_eq!(take(&seen), []);
+}
