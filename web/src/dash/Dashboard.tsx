@@ -30,7 +30,8 @@ import { accountsFile, gamertagError, signUp, SignUpError } from "../state/accou
 import { AccountPlate, RecoverPlate, RecoveryCode, createRecovery, keepFreshRecovery } from "./Recovery";
 import "../styles/dash-recovery.css";
 import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
-import { ConnectPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
+import { AccountsPlate, ConnectPlate, ImportPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
+import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
@@ -206,6 +207,7 @@ export default function Dashboard() {
           ...identity.accounts().map((a) => ({ key: a.xuid, label: a.gamertag, meta: me?.xuid === a.xuid ? "signed in" : "kept here" })),
           { key: "#recover", label: "recover account", meta: "gamertag and code" },
           { key: "#create", label: "create account", meta: "new gamertag" },
+          { key: "#import", label: "import account", meta: "account file" },
         ];
       }
       default:
@@ -226,6 +228,7 @@ export default function Dashboard() {
     if (s === "signin" || s === "account") {
       if (r.key === "#recover") go("/dash/recover", "deeper");
       else if (r.key === "#create") go("/dash/signup", "deeper");
+      else if (r.key === "#import") go("/dash/server/import", "deeper");
       else {
         const a = identity.accounts().find((x) => x.xuid === r.key);
         if (a) { identity.signIn(a); go("/", "back"); }
@@ -236,10 +239,15 @@ export default function Dashboard() {
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
-  // The server screens (Server.tsx): /dash/server, /dash/server/invites, /dash/server/connect.
+  // The server screens (Server.tsx): /dash/server, and under it invites,
+  // accounts, import and connect.
   const serverSub = () => (section() === "server" ? params.tag ?? null : null);
   const serverInfo = createServerInfo(() => section() === "server");
-  const [inviteCtl, setInviteCtl] = createSignal<InviteControls | null>(null);
+  // The plate's blades on the server screen in view (each binds its own; the
+  // screen it was bound on is kept so a stale one never takes input).
+  const [plateCtl, setPlateCtl] = createSignal<{ sub: string; ctl: BladeControls & Partial<Pick<InviteControls, "create" | "copy">> } | null>(null);
+  const bindPlate = (sub: string) => (ctl: BladeControls) => setPlateCtl({ sub, ctl });
+  const blades = () => { const p = plateCtl(); return p && p.sub === serverSub() ? p.ctl : null; };
   const recovery = createRecovery(() => screen() === "recovery");
 
   // The four small pods of a pod screen.
@@ -298,9 +306,10 @@ export default function Dashboard() {
       case "server": {
         const sub = serverSub();
         if (sub !== "connect") {
-          return serverPods(sub === "invites" ? "invites" : "overview", serverInfo.admin()).map((p): Sat => ({
+          const view = sub === "invites" || sub === "accounts" || sub === "import" ? sub : "overview";
+          return serverPods(view, serverInfo.admin()).map((p): Sat => ({
             label: p.label, glyph: p.glyph,
-            act: p.run ? () => (p.run === "create" ? inviteCtl()?.create() : inviteCtl()?.copy()) : () => go(p.to!, p.back ? "back" : "deeper"),
+            act: p.run ? () => (p.run === "create" ? blades()?.create?.() : blades()?.copy?.()) : () => go(p.to!, p.back ? "back" : "deeper"),
           }));
         }
         const here = live.server().base;
@@ -347,6 +356,7 @@ export default function Dashboard() {
     if (screen() === "recovery" && recovery.confirming()) recovery.cancelReset();
     else if (screen() === "recovery" || screen() === "recover") go(s === "signup" ? "/dash/signup" : "/", "back");
     else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
+    else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
@@ -398,8 +408,8 @@ export default function Dashboard() {
         else return false;
         return true;
       default: {
-        // The invites screen's rows take the input first.
-        if (screen() === "server" && serverSub() === "invites" && inviteCtl()?.act(a)) return true;
+        // A server plate's blades (invites, accounts, import) take the input first.
+        if (screen() === "server" && blades()?.act(a)) return true;
         // Pods sit 0 top left, 1 bottom left, 2 bottom right, 3 top right.
         const i = sat();
         if (a === "back") back();
@@ -680,13 +690,31 @@ export default function Dashboard() {
             <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <InvitesPlate info={serverInfo} bind={setInviteCtl} />
-              <Prompts onA={() => act("select")} onB={back} onX={inviteCtl()?.revokable() ? () => act("alt") : undefined} xLabel="revoke" />
+              <InvitesPlate info={serverInfo} bind={bindPlate("invites")} />
+              <Prompts onA={() => act("select")} onB={back} onX={blades()?.alt() ? () => act("alt") : undefined} xLabel={blades()?.alt() ?? undefined} />
+            </div>
+          </Match>
+
+          <Match when={screen() === "server" && serverSub() === "accounts"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen">
+              <div class="dx-centre"><BigPod wire><Glyph name="career" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <AccountsPlate info={serverInfo} go={(href) => go(href, "deeper")} bind={bindPlate("accounts")} />
+              <Prompts onA={() => act("select")} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={screen() === "server" && serverSub() === "import"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen dx-import-screen">
+              <div class="dx-centre"><BigPod wire><Glyph name="download" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <ImportPlate onDone={() => go("/dash/account", "deeper")} bind={bindPlate("import")} />
+              <Prompts onA={() => act("select")} onB={back} />
             </div>
           </Match>
 
           <Match when={screen() === "server"}>
-            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server" classList={{ "dx-server--admin": !!serverInfo.status() }}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server">
               <div class="dx-centre"><BigPod wire><Glyph name="globe" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
               <ServerPlate info={serverInfo} />

@@ -217,8 +217,15 @@ the game caches, to edit offline or import elsewhere.
 
 ## 3. The web admin area
 
-`/stats/admin`, linked from the stats site's nav only when the signed-in
-browser account is an admin (the `admin` field above). Three sections:
+The admin tools are split between the app's two sides. The stats site's
+**Halo Admin** (`/stats/admin`, "Halo Admin" in its nav, shown only when the
+signed-in browser account is an admin: the `admin` field above) keeps only
+the game's own things: what it shows and plays. Running the service
+(invites, accounts and admins, importing an account, the server's status)
+is the dashboard's server screens (§5), styled like the rest of the
+dashboard. Each side links to the other: the dashboard's "halo admin" pod
+opens `/stats/admin`, and the Halo Admin title bar's "Server admin" goes back
+to `/dash/server`. The Halo Admin's three sections:
 
 - **Message of the Day** — the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
@@ -234,7 +241,7 @@ browser account is an admin (the `admin` field above). Three sections:
   fields** keeps the type, status, ranges, raw name and every record word
   editable as numbers. **Start from preset** fills the playlist from a
   historical lineup (below).
-- **Import account** — below.
+- **Custom content** — §7.
 
 The same playlist editing is available offline in the native editor's
 hopper tool (`h2-editor`, [editor.md](../editor/editor.md)): it opens and saves a
@@ -395,8 +402,8 @@ account's current key — the same check `account import` makes in the other
 direction — and writes the browser's account entry (`{xuid, gamertag, id,
 server, server_id, kid, key, x}`, the key the base64url seed) to a 0600
 file, since it is a private key. With the web app open, go to
-`/stats/admin` → **Import account**, paste the JSON or choose the file:
-the page checks the key against the server again and keeps it in this
+the dashboard's **import account** (`/dash/server/import`, also a row of the
+sign-in list), paste the JSON or choose the file: the page checks the key against the server again and keeps it in this
 browser's IndexedDB (the same warning as sign-up applies). The file is as
 sensitive as `accounts.json`. There is no remote link or QR for this: a
 link that works from another machine would have to carry the key itself
@@ -444,10 +451,23 @@ the art extractor version `h2 live assets extract` now records in the
 manifest (null for older art). Nothing secret is in it: no keys, no file
 contents, no database URL; `data_dir` only when the caller is on this
 machine (a loopback peer with no proxy header, as for game art), so not
-through a tunnel. Its pods: **Invites**, the MOTD editor and the
-playlist builder (`/stats/admin?tab=motd|hopper`), and another server.
-Granting admin stays operator-only, so the plate shows the
-`h2 live admin grant` command to copy instead of a button.
+through a tunnel. The plate shows uptime, how the server is reached,
+sign-up, reads, players, game art and the log's length (not the data
+directory or the admin list, which are long). Its pods: **invites**,
+**accounts**, **halo admin** (`/stats/admin`) and another server.
+
+**Accounts** (`/dash/server/accounts`, admins): the counts, then blades
+for every player and importing an account, then each admin with how it
+became one (set at startup, granted). Granting admin stays operator-only
+(§1), so it lists and leads on rather than offering a button; it shows no
+command lines either.
+
+**Import account** (`/dash/server/import`, anyone, since it is a way in):
+paste the account file or choose it, then "import and sign in" (§4).
+
+Actions on these plates are blades (`web/src/dash/Blades.tsx`): focusable
+rows moved through with up and down, A acts, X does a row's second action
+(revoke, on invites), the same on keyboard, gamepad, mouse and touch.
 
 **Invites** (`/dash/server/invites`, `crates/live-server/src/invites.rs`):
 pick how long it lasts (1, 7 or 30 days; at most 30), make one, and the
@@ -573,7 +593,7 @@ the server. It is read on each upload, so edits apply at once. Whatever
 the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
 
-The web admin area's **Custom content** tab (`/stats/admin`, linked from the
-dashboard's server screen) lists packages and blobs with their state and
+The Halo Admin's **Custom content** tab (`/stats/admin?tab=content`, linked
+from the dashboard's "halo admin" pod) lists packages and blobs with their state and
 report counts, the actions valid for each, the reports and the upload
 switch; the playlist builder pins published packages per hopper.
