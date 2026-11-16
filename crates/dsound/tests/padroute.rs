@@ -20,6 +20,9 @@ const SET_BUFFER_DATA: u32 = 0x0037cc4a;
 const PLAY: u32 = 0x0037b6df;
 const PROCESS: u32 = 0x0037ad25;
 const FLUSH: u32 = 0x0037ac89;
+const SET_MIX_BINS_BUF: u32 = 0x0037c5e4;
+const STREAM_SET_OUTPUT_BUFFER: u32 = 0x0037c705;
+const SET_POSITION: u32 = 0x0037c668;
 
 struct Rig {
     h: TestHost,
@@ -85,15 +88,43 @@ impl Rig {
         self.h.read_u32(out).unwrap()
     }
     fn buffer(&mut self) -> u32 {
+        self.buffer_with_flags(0)
+    }
+    fn buffer_with_flags(&mut self, flags: u32) -> u32 {
         let wfx = self.wfx();
         let mut b = Vec::new();
-        for v in [BufferDesc::SIZE, 0, 0, wfx, 0, 0] {
+        for v in [BufferDesc::SIZE, flags, 0, wfx, 0, 0] {
             b.extend(v.to_le_bytes());
         }
         let desc = self.put(&b);
         let out = self.scratch(4);
         assert_eq!(self.call(CREATE_BUFFER, &[self.ds_ptr, desc, out, 0]), S_OK);
         self.h.read_u32(out).unwrap()
+    }
+    /// A playing 3D mix-in on FX send `bin` (Halo's `0x220b90` shape),
+    /// heard on the stereo speaker bins.
+    fn mix_in_3d(&mut self, bin: u32) -> u32 {
+        let mut b = Vec::new();
+        for v in [BufferDesc::SIZE, 0x80010, 0, 0, 0, bin] {
+            b.extend(v.to_le_bytes());
+        }
+        let desc = self.put(&b);
+        let out = self.scratch(4);
+        assert_eq!(self.call(CREATE_BUFFER, &[self.ds_ptr, desc, out, 0]), S_OK);
+        let mix = self.h.read_u32(out).unwrap();
+        let mut pairs = Vec::new();
+        for v in [0u32, 0, 1, 0] {
+            pairs.extend(v.to_le_bytes());
+        }
+        let pairs = self.put(&pairs);
+        let mut bins = Vec::new();
+        for v in [2u32, pairs] {
+            bins.extend(v.to_le_bytes());
+        }
+        let bins = self.put(&bins);
+        assert_eq!(self.call(SET_MIX_BINS_BUF, &[mix, bins]), S_OK);
+        assert_eq!(self.call(PLAY, &[mix, 0, 0, 0]), S_OK);
+        mix
     }
     fn process(&mut self, stream: u32, data: &[u8]) {
         let buf = self.put(data);
@@ -126,8 +157,9 @@ fn sound(seed: i16, n: usize) -> Vec<u8> {
 
 fn index() -> SoundIndex {
     let mut idx = SoundIndex::new();
-    idx.insert(r"fx\player\shield_down", &sound(1, 400));
+    idx.insert(r"fx\ui\shield_down", &sound(1, 400));
     idx.insert(r"music\theme", &sound(2, 400));
+    idx.insert(r"fx\characters\jackal\shield_hit", &sound(3, 400));
     idx
 }
 
@@ -201,6 +233,62 @@ fn buffers_are_labelled_at_set_buffer_data() {
     rig.call(0x0037b703, &[b]); // Stop
     assert_eq!(rig.call(SET_BUFFER_DATA, &[b, other, 800]), S_OK);
     assert_eq!(rig.call(PLAY, &[b, 0, 0, 0]), S_OK);
+    let (main, side) = rig.render(100);
+    assert!(main > 0.0);
+    assert_eq!(side, 0.0);
+}
+
+fn exclusive() -> PadSpeakerConfig {
+    PadSpeakerConfig {
+        enabled: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_enemys_shield_stays_on_the_main_mix() {
+    let mut rig = Rig::new(exclusive(), &index());
+    let s = rig.stream();
+    rig.process(s, &sound(3, 400));
+    let (main, side) = rig.render(100);
+    assert!(main > 0.0);
+    assert_eq!(side, 0.0);
+}
+
+#[test]
+fn a_3d_buffer_is_never_routed() {
+    // The player's own shield sound, but in a buffer the game positions.
+    let mut rig = Rig::new(exclusive(), &index());
+    let b = rig.buffer_with_flags(DSBCAPS_CTRL3D);
+    let data = rig.put(&sound(1, 400));
+    assert_eq!(rig.call(SET_BUFFER_DATA, &[b, data, 800]), S_OK);
+    let f = |x: f32| x.to_bits();
+    assert_eq!(
+        rig.call(SET_POSITION, &[b, f(0.0), f(0.0), f(1.0), 0]),
+        S_OK
+    );
+    assert_eq!(rig.call(PLAY, &[b, 0, 0, 0]), S_OK);
+    let (main, side) = rig.render(100);
+    assert!(main > 0.0);
+    assert_eq!(side, 0.0);
+}
+
+#[test]
+fn a_stream_feeding_a_3d_mix_in_is_never_routed() {
+    let mut rig = Rig::new(exclusive(), &index());
+    let mix = rig.mix_in_3d(0x17);
+    let s = rig.stream();
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]), S_OK);
+    rig.process(s, &sound(1, 400));
+    let (main, side) = rig.render(100);
+    assert!(main > 0.0, "heard through the mix-in");
+    assert_eq!(side, 0.0);
+    // Given the 3D mix-in while already routed, it comes back at once.
+    let mut rig = Rig::new(exclusive(), &index());
+    let mix = rig.mix_in_3d(0x17);
+    let s = rig.stream();
+    rig.process(s, &sound(1, 400));
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]), S_OK);
     let (main, side) = rig.render(100);
     assert!(main > 0.0);
     assert_eq!(side, 0.0);
