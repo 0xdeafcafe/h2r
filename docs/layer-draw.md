@@ -17,7 +17,7 @@ Evidence labels as in feature-engine.md; no game data.
   layer setup).
 - Draws only if bit `layer` of the mask `0x00bffdee` is set: layers 1, 2,
   3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 23. Layer 16
-  (planar fog) draws only when `[0x0048574c] != 3` or byte `0x00485a75` or
+  (planar fog) draws only when `[0x0048574c] == 3` or byte `0x00485a75` or
   `0x00485a76` is set.
 - Then `0x0003bc30` with EDI = `[0x00467138]` (the list), EBX = the layer,
   and `[0x00467134]` pushed.
@@ -41,13 +41,57 @@ entries (`0x0003bab0`), the handlers (one indirect call per entry, a
 different function per entry type), and what they call: shader draw begin
 `0x0001bbf0` and geometry submission `0x00041040` per draw.
 
-**Waste to look at (S, from the shape only).** The loop re-derives the
-handler record and calls the handler once per entry, and each handler then
-begins its shader draw and submits geometry; nothing in this loop groups
-entries by shader or skips a state set that equals the previous one. Whether
-`0x0003bab0` already sorts entries by shader is the next thing to read: if
-it does, consecutive entries share a shader and a Rust loop can skip the
-repeated begin; if it does not, sorting there is the batch opportunity.
+`0x0003bab0` (stdcall `(list, arg, layer, buffer)`, `ret 0x10`; Code):
+
+- The list holds items `[list+0xc] .. [list+4]` in the 0x18-byte records
+  at `[list+0x14]`: the same records as the handler table above, so an
+  entry's type is its item's index, and every item has two functions,
+  `[item+0]` (build) and `[item+4]` (draw).
+- For each item whose mask `[item+0x10]` has bit `layer`, it calls the
+  item's build function (stdcall, seven arguments: `[item+8]`, the
+  argument, byte `[item+0x15]`, the layer, byte `[item+0x14]`,
+  `[item+0xc]`, the entry slot), with the slot's word 0 the item index and
+  word 1 `[item+8]`. AL zero takes the entry back.
+- Then it sorts the entries: `0x0013da70` (a qsort; ECX the count, EAX
+  the buffer, 0x18-byte elements) with comparator `0x0003bb80`, or
+  `0x0003bbd0` for layer 5.
+
+**Waste to look at (S, from the read; not measured yet).**
+
+- Every layer draw walks the whole item list again, calls every item's
+  build function again, and sorts again. A view draws about 15 layers
+  (`0x00044550` is called from 15 places in the scene passes), so the
+  same items are filtered and sorted about 15 times a view. Building each
+  item's entries once per view for all its layers (one pass, bucketed by
+  layer) and sorting once is the first batch opportunity, if the build
+  functions have no side effects that depend on the layer order (to
+  read: the build functions of the common item types).
+- The draw loop then makes one indirect call per entry and each handler
+  begins its own shader draw and submits its own geometry; the loop has
+  no notion of "same shader as the previous entry". The sort's
+  comparator (`0x0003bb80`) says what order the entries come in; if it
+  groups by shader, a Rust loop can skip repeated shader begins between
+  neighbours. `layer_build`, `shader_begin` and `geometry` in
+  `render-timing` size each part.
+
+## The port (Code, Test)
+
+`engine::render_loop::layer` ports both functions as state machines like
+`render_views` (docs/render-loop.md): `Draw` for `0x00044550` and
+`Entries` for `0x0003bc30`, which does `_chkstk`'s probes and stack
+writes itself. The `render-loop` feature places them with
+`H2_FEATURES=impl.render.layer_draw=on` and
+`impl.render.layer_entries=on` (or `impl.render=on`); both are off by
+default. The entry loop in Rust is where batching goes: it reads each
+entry, its item record and the handler before calling it.
+
+Evidence: `crates/engine/tests/layer_differential.rs` runs each against
+the lifted original from seeded states (any layer 0 to 31, the fog
+cases, 0 to 40 entries or a negative count, six item types with stub
+handlers, skipped targets); call logs, registers and all 64 MB must be
+equal. `crates/feature/tests/render_loop.rs` runs the entry loop on the
+runtime with stub build and handlers and checks the calls equal the
+port's.
 
 ## `render-timing` breakdown
 
