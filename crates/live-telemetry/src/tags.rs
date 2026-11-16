@@ -156,9 +156,33 @@ mod tests {
             Some("battle_rifle")
         );
         assert_eq!(
-            stem_of("objects\\weapons\\melee\\Energy_Sword\\Energy_Sword").as_deref(),
-            Some("energy_sword")
+            stem_of("objects\\weapons\\melee\\Energy_Blade\\Energy_Blade").as_deref(),
+            Some("energy_blade")
         );
+        // Every multiplayer stem the models lane extracts passes through as is.
+        for stem in [
+            "magnum",
+            "needler",
+            "plasma_pistol",
+            "battle_rifle",
+            "covenant_carbine",
+            "plasma_rifle",
+            "shotgun",
+            "smg",
+            "sniper_rifle",
+            "flak_cannon",
+            "rocket_launcher",
+            "brute_shot",
+            "beam_rifle",
+            "brute_plasma_rifle",
+            "energy_blade",
+            "ball",
+            "flag",
+            "assault_bomb",
+        ] {
+            let name = format!("objects\\weapons\\any\\{stem}\\{stem}");
+            assert_eq!(stem_of(&name).as_deref(), Some(stem));
+        }
         assert_eq!(stem_of("objects\\weapons\\x\\has space"), None);
         assert_eq!(stem_of(&format!("w\\{}", "a".repeat(33))), None);
         assert_eq!(stem_of(""), None);
