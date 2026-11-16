@@ -20,7 +20,7 @@ pub mod interp;
 pub mod wgsl;
 
 pub use disasm::disassemble;
-pub use wgsl::{TranslateError, VertexOptions, VertexShader, VertexUniforms, translate};
+pub use wgsl::{InputFetch, TranslateError, VertexOptions, VertexShader, VertexUniforms, translate};
 
 use std::fmt;
 
