@@ -50,7 +50,7 @@ tests, not yet confirmed in the game. **Design**: written up, not built.
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
 | | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
 | | Aim assist strength setting | Tests | [aim assist](docs/game/aim-assist.md) |
-| | Multiplayer Map Pack installed from your own disc | Tests | [map pack](docs/game/map-pack.md) |
+| | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
 | | New, edited and patched maps as packages | Tests | [maps](docs/game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Tests | [campaigns](docs/game/multiple-campaigns.md) |
 | | Halo 1 health model and meter | Tests | [health](docs/game/health.md) |
@@ -59,9 +59,11 @@ tests, not yet confirmed in the game. **Design**: written up, not built.
 | | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](docs/formats/h1-map-format.md), [models](docs/formats/h1-models.md) |
 | Input | Remappable bindings, input timelines, typing into the game's keyboard | Built | [input](docs/input/input.md) |
 | | Button icons that follow the pad (Xbox, PlayStation, keyboard); extra button layouts | Built | [icons](docs/input/button-icons.md), [layouts](docs/input/controller-layouts.md) |
-| | Steam Controller; DualSense speaker and mute | Tests | [Steam](docs/input/steam-controller.md), [PlayStation](docs/audio/playstation-audio.md) |
+| | DualSense: speaker and mute button | Built | [PlayStation](docs/audio/playstation-audio.md) |
+| | Steam Controller | Tests | [Steam](docs/input/steam-controller.md) |
 | Live | Service: accounts, friends, teams, invites, stats, title files, cloud saves, custom maps, a relay | Built | [live](docs/live/live.md), [API](docs/live/live-api.md) |
-| | In the game: sign-in, matchmaking, custom games browser, co-op campaign | Tests | [matchmaking](docs/live/live-matchmaking.md), [co-op](docs/live/live-coop.md) |
+| | In the game: sign-in, matchmaking, custom games browser | Built | [matchmaking](docs/live/live-matchmaking.md), [custom games](docs/live/live-custom-games.md) |
+| | Co-op campaign over Live | Tests | [co-op](docs/live/live-coop.md) |
 | | Web app: dashboard, stats, live top-down map, replays, admin | Built | [web](web/README.md), [art](docs/live/live-art.md) |
 | | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2, a menu bar app | Built | [hosting](docs/live/live-hosting.md) |
 | Editor | `h2-editor`: 3D viewport, placements, game variants, playlists, Halo 1 maps | Built | [guide](docs/editor/editor-guide.md) |

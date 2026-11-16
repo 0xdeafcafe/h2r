@@ -1,8 +1,8 @@
 # Custom games browser over Live
 
 Status: the server, HLE and boot pieces are in and synthetically tested.
-Nothing was built or run in the game. The in-game list (§7) is what still
-needs checking.
+The owner has Live working in the game (2026-11-17); §7 is the in-game
+checklist.
 
 What it adds:
 

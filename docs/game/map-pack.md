@@ -10,8 +10,8 @@ packages, one map each, with a version 2 `patch.lvl` made from the map's
 console as the disc's installer would
 ([section 7](#7-why-the-game-said-the-content-was-damaged)), and the title
 update is kept aside. Tests pass on synthetic discs and on the user's map
-pack ISO. **Not yet seen in game**: the check is in
-[section 8.6](#86-what-to-change-and-the-check).
+pack ISO, and the owner has played the maps in the game (2026-11-17; the
+check is [section 8.6](#86-what-to-change-and-the-check)).
 
 The official Halo 2 Multiplayer Map Pack disc (2005) holds the nine
 downloadable multiplayer maps, a Halo 2 title update, an installer and some

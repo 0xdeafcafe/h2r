@@ -2,8 +2,8 @@
 
 Status: phase 1 server sessions and HLE invitations are implemented. Tests use
 router memory stores and two synthetic guests against `start_embedded`, through
-HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. No game was
-built or run; the retail UI handoff and a complete custom match remain untested.
+HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. The owner
+has Live working in the game (2026-11-17).
 Search also returns real sessions, with the anonymous procedure-1 filters still
 unmapped. The server matcher, ranked arbitration and NAT traversal remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
