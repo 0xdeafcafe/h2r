@@ -16,6 +16,8 @@ pub enum DeviceKind {
     PlayStation,
     /// The Apple TV remote (tvOS; `backend::game_controller::remote`).
     Remote,
+    /// A Valve Steam Controller over raw HID (`crate::steam_pad`).
+    Steam,
 }
 
 /// A shared cell holding the last-used device. Clones see the same value.
@@ -29,6 +31,7 @@ impl ActiveDevice {
             DeviceKind::Xbox => 2,
             DeviceKind::PlayStation => 3,
             DeviceKind::Remote => 4,
+            DeviceKind::Steam => 5,
         };
         self.0.store(v, Ordering::Relaxed);
     }
@@ -40,6 +43,7 @@ impl ActiveDevice {
             2 => Some(DeviceKind::Xbox),
             3 => Some(DeviceKind::PlayStation),
             4 => Some(DeviceKind::Remote),
+            5 => Some(DeviceKind::Steam),
             _ => None,
         }
     }
@@ -50,6 +54,9 @@ pub fn pad_kind(name: &str) -> DeviceKind {
     let n = name.to_ascii_lowercase();
     if n == "apple tv remote" || n.contains("siri remote") {
         return DeviceKind::Remote;
+    }
+    if n.contains("steam controller") {
+        return DeviceKind::Steam;
     }
     let sony = [
         "dualshock",
@@ -129,6 +136,7 @@ mod tests {
             DeviceKind::Xbox,
             DeviceKind::PlayStation,
             DeviceKind::Remote,
+            DeviceKind::Steam,
         ] {
             b.set(kind);
             assert_eq!(a.get(), Some(kind));
@@ -149,6 +157,9 @@ mod tests {
         }
         for name in ["Apple TV Remote", "Siri Remote"] {
             assert_eq!(pad_kind(name), DeviceKind::Remote, "{name}");
+        }
+        for name in ["Steam Controller", "Steam Controller (2026)"] {
+            assert_eq!(pad_kind(name), DeviceKind::Steam, "{name}");
         }
     }
 

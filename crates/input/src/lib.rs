@@ -27,6 +27,7 @@ pub mod gamepad;
 pub mod host;
 pub mod layouts;
 pub mod pad_hid;
+pub mod steam;
 
 pub use backend::HostBackend;
 pub use device::{InputManager, PortIndex};
