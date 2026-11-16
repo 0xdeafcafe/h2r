@@ -293,9 +293,11 @@ fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Resul
 struct AbCompare {
     /// The retail view's image of a frame, waiting for the E3 view's.
     pending: Option<(u64, Vec<u8>)>,
-    /// Shadow-map frames compared, and those whose images differ.
+    /// Shadow-map frames compared, those whose images differ, and those
+    /// that differ only by rounding (no channel by more than `AB_NOISE`).
     compared: u64,
     differ: u64,
+    noise: u64,
     /// The first differing frames, for the report.
     first: Vec<u64>,
 }
@@ -312,6 +314,10 @@ impl AbCompare {
         if retail == e3 {
             return None;
         }
+        if !differs_beyond_noise(&retail, e3) {
+            self.noise += 1;
+            return None;
+        }
         self.differ += 1;
         if self.first.len() < 20 {
             self.first.push(frame);
@@ -322,12 +328,28 @@ impl AbCompare {
     fn report(&self) -> String {
         let first: Vec<String> = self.first.iter().map(u64::to_string).collect();
         format!(
-            "lighting A/B: {} of {} shadow-map frames differ between the views{}",
+            "lighting A/B: {} of {} shadow-map frames differ between the views \
+             ({} more by rounding only){}",
             self.differ,
             self.compared,
+            self.noise,
             if first.is_empty() { String::new() } else { format!(" (first: {})", first.join(", ")) }
         )
     }
+}
+
+/// The largest per-channel change the A/B treats as rounding: the two
+/// views take different shader variants, which can round a channel by one.
+const AB_NOISE: u8 = 2;
+
+/// Whether RGBA images `a` and `b` differ in some colour channel by more
+/// than `AB_NOISE` (alpha aside).
+fn differs_beyond_noise(a: &[u8], b: &[u8]) -> bool {
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .any(|(p, q)| (0..3).any(|i| p[i].abs_diff(q[i]) > AB_NOISE))
 }
 
 /// Whether RGBA pixels `px` are all black (alpha aside).
@@ -784,19 +806,28 @@ mod tests {
 
     /// The A/B compares the E3 view's image with the retail view's of the
     /// same frame only, counts what it compared, and hands back the
-    /// retail image when they differ.
+    /// retail image when they differ by more than rounding.
     #[test]
     fn the_lighting_ab_compares_each_frames_two_views() {
         let mut ab = AbCompare::default();
-        assert_eq!(ab.compare(5, &[1, 2]), None, "nothing held");
-        ab.pending = Some((5, vec![1, 2]));
-        assert_eq!(ab.compare(5, &[1, 2]), None, "the same");
-        ab.pending = Some((6, vec![1, 2]));
-        assert_eq!(ab.compare(7, &[1, 3]), None, "another frame's");
-        ab.pending = Some((8, vec![1, 2]));
-        assert_eq!(ab.compare(8, &[1, 3]), Some(vec![1, 2]));
+        let px = |r: u8, a: u8| vec![r, 10, 10, a];
+        assert_eq!(ab.compare(5, &px(1, 9)), None, "nothing held");
+        ab.pending = Some((5, px(1, 9)));
+        assert_eq!(ab.compare(5, &px(1, 9)), None, "the same");
+        ab.pending = Some((6, px(1, 9)));
+        assert_eq!(ab.compare(7, &px(9, 9)), None, "another frame's");
+        ab.pending = Some((8, px(1, 9)));
+        assert_eq!(ab.compare(8, &px(9, 9)), Some(px(1, 9)));
+        ab.pending = Some((9, px(1, 9)));
+        assert_eq!(ab.compare(9, &px(3, 9)), None, "rounding only");
+        ab.pending = Some((10, px(1, 9)));
+        assert_eq!(ab.compare(10, &px(1, 200)), None, "alpha only");
         assert_eq!(ab.pending, None);
-        assert_eq!(ab.report(), "lighting A/B: 1 of 2 shadow-map frames differ between the views (first: 8)");
+        assert_eq!(
+            ab.report(),
+            "lighting A/B: 1 of 4 shadow-map frames differ between the views \
+             (2 more by rounding only) (first: 8)"
+        );
     }
 
     /// A frame under a fade to black is all black whatever its alpha; one
