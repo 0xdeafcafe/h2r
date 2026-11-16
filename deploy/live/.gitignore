@@ -1,0 +1,5 @@
+.env
+data/
+art/
+*.sql
+*.tar.gz

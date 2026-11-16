@@ -101,7 +101,99 @@ pub struct PixelOptions {
     /// stores it. The vertex stage must clip w (`VertexUniforms::w_clip`).
     #[serde(default)]
     pub w_buffer: bool,
+    /// Stages (bit `n` for stage `n`) whose texture is a coverage-
+    /// antialiased glyph atlas being magnified (a font cache drawn at a
+    /// render scale above 1). A 2D projective fetch on such a stage
+    /// rebuilds the edges at the host's resolution ([`GLYPH_WGSL`]); the
+    /// guest's filter is ignored there. Needs derivatives, so it is
+    /// ignored with [`explicit_lod`](Self::explicit_lod). Zero (the
+    /// default) leaves the program as it was, byte for byte.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub glyph: u8,
 }
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
+/// The glyph filter for [`PixelOptions::glyph`].
+///
+/// A glyph cache holds text rasterised once at the guest's size, with the
+/// edges antialiased into a few alpha levels. Magnified with the guest's
+/// own filter it is soft (bilinear) or stair-stepped (point). Here the
+/// alpha is read as coverage, which across an edge rises about linearly
+/// with the distance to it, crossing one half on the edge:
+///
+/// - `a`, a cubic B-spline through the 4x4 texels around the sample: a
+///   smooth surface that reproduces such ramps exactly, so straight edges
+///   stay where they were, and that smooths the 3-bit steps of the
+///   coverage instead of following them (an interpolating cubic wobbles);
+/// - `m`, the same spline through each texel's brightest neighbour (3x3):
+///   the full alpha of the stroke the sample is near, 1 for solid text,
+///   lower for a thin stroke that never covered a whole texel;
+/// - the edge is put back where `a` crosses `m / 2`, with a ramp `k` times
+///   steeper than the texel grid (`k` = host pixels per texel, from the
+///   derivatives), so it is about one host pixel wide, and drawn at alpha
+///   `m`. Faint strokes keep their weight instead of vanishing under a
+///   fixed threshold, and the faint texels along a solid edge are not
+///   mistaken for strokes of their own.
+///
+/// Colour is the alpha-weighted bilinear colour of the four nearest texels
+/// (button icons carry per-texel colour; the transparent texels around a
+/// glyph hold white). Where a texel covers at most a host pixel and a
+/// quarter (`k <= 1.25`, text drawn at or below its size) the guest's own
+/// sample is returned unchanged. 36 texel loads per fragment, on text only.
+pub const GLYPH_WGSL: &str = r#"
+fn xps_glyph_bspline(t: f32) -> vec4f {
+    let u = 1.0 - t;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return vec4f(u * u * u, 3.0 * t3 - 6.0 * t2 + 4.0, -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0, t3) / 6.0;
+}
+fn xps_glyph(tex: texture_2d<f32>, guest: vec4f, uv: vec2f, k: f32) -> vec4f {
+    let size = vec2i(textureDimensions(tex, 0));
+    let p = uv * vec2f(size) - 0.5;
+    let base = vec2i(floor(p));
+    let f = p - floor(p);
+    let wx = xps_glyph_bspline(f.x);
+    let wy = xps_glyph_bspline(f.y);
+    // Alpha of the 6x6 texels around the 4x4 the spline reads.
+    var t: array<f32, 36>;
+    var rgb = vec3f(0.0);
+    var wa = 0.0;
+    for (var y = 0; y < 6; y++) {
+        for (var x = 0; x < 6; x++) {
+            let c = clamp(base + vec2i(x - 2, y - 2), vec2i(0), size - 1);
+            let s = textureLoad(tex, c, 0);
+            t[y * 6 + x] = s.a;
+            if (x == 2 || x == 3) && (y == 2 || y == 3) {
+                let wb = select(1.0 - f.x, f.x, x == 3) * select(1.0 - f.y, f.y, y == 3) * s.a;
+                rgb += wb * s.rgb;
+                wa += wb;
+            }
+        }
+    }
+    // a: the coverage, smoothed. m: the same spline through each texel's
+    // brightest neighbour (3x3), the local stroke's full alpha.
+    var a = 0.0;
+    var m = 0.0;
+    for (var y = 0; y < 4; y++) {
+        for (var x = 0; x < 4; x++) {
+            let w = wx[x] * wy[y];
+            let i = (y + 1) * 6 + x + 1;
+            a += w * t[i];
+            let top = max(max(t[i - 7], t[i - 6]), t[i - 5]);
+            let mid = max(max(t[i - 1], t[i]), t[i + 1]);
+            let bottom = max(max(t[i + 5], t[i + 6]), t[i + 7]);
+            m += w * max(max(top, mid), bottom);
+        }
+    }
+    let n = clamp(a / max(m, 1e-4), 0.0, 1.0);
+    let alpha = m * clamp((n - 0.5) * k + 0.5, 0.0, 1.0);
+    let color = select(guest.rgb, rgb / wa, wa > 1e-4);
+    return select(guest, vec4f(color, alpha), k > 1.25);
+}
+"#;
 
 /// A translated pixel pipeline.
 #[derive(Clone, Debug)]
@@ -374,6 +466,10 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     if options.shadow.iter().any(Option::is_some) {
         s.push_str(super::shadow::WGSL_HELPERS);
     }
+    let glyph = if options.explicit_lod { 0 } else { options.glyph & 0xF };
+    if glyph != 0 {
+        s.push_str(GLYPH_WGSL);
+    }
 
     // Texture bindings.
     let mut textures = [None; 4];
@@ -535,7 +631,12 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
                         textures[i].unwrap()
                     ));
                 }
+                let glyph_stage = glyph & (1 << i) != 0 && sign == 0 && axes == 0;
                 match textures[i].unwrap() {
+                    TextureDim::D2 if glyph_stage && mode == TexMode::Project2d => format!(
+                        "{{\n        let guest = {};\n        let uv = ({tc}.xy / {tc}.w) * xps.tex_scale[{i}].xy;\n        let px = uv * vec2f(textureDimensions(xps_tex{i}, 0));\n        let k = 1.0 / max(max(length(dpdx(px)), length(dpdy(px))), 1e-6);\n        t{i} = xps_glyph(xps_tex{i}, guest, uv, k);\n    }}",
+                        sample2(&format!("{tc}.xy / {tc}.w"))
+                    ),
                     TextureDim::D2 => format!("t{i} = {};", sample2(&format!("{tc}.xy / {tc}.w"))),
                     TextureDim::D3 => format!("t{i} = {};", sample(&format!("{tc}.xyz / {tc}.w"))),
                     TextureDim::Cube => format!("t{i} = {};", sample(&format!("{tc}.xyz"))),

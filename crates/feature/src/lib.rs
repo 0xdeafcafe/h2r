@@ -16,6 +16,7 @@
 
 pub mod arena;
 pub mod bridge;
+pub mod entry;
 pub mod install;
 pub mod leaves;
 pub mod locale;
@@ -33,6 +34,8 @@ use runtime::{CpuAbi, ExecCtx, GuestFault, Runtime, TransferAbi};
 
 pub use arena::Arena;
 pub use bridge::{Frame, Game};
+pub use engine::entry::{Cx, EntryFuture, GuestCall, Ret};
+pub use entry::Entry;
 pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use switches::Switches;
@@ -281,6 +284,7 @@ pub struct Registry {
     hooks: Vec<Hook>,
     arena: Arena,
     allocs: Vec<Alloc>,
+    entries: Vec<Entry>,
     sources: Vec<locale::Source>,
     locale: locale::Sources,
     /// The feature whose `LOCALE_FIND` implementation serves the sources.
@@ -295,6 +299,7 @@ impl Registry {
             hooks: Vec::new(),
             arena: Arena::default(),
             allocs: Vec::new(),
+            entries: Vec::new(),
             sources: Vec::new(),
             locale: locale::Sources::default(),
             locale_server: None,
@@ -318,6 +323,8 @@ impl Registry {
             hooks: Vec::new(),
             arena: self.arena.clone(),
             allocs: Vec::new(),
+            entries: Vec::new(),
+            entry_page: None,
             switches: &self.switches,
             sources: Vec::new(),
             locale: self.locale.clone(),
@@ -329,10 +336,12 @@ impl Registry {
                     hooks,
                     arena,
                     allocs,
+                    entries,
                     sources,
                     serves_locale,
                     ..
                 } = b;
+                self.entries.extend(entries);
                 self.sources.extend(sources);
                 if serves_locale {
                     self.locale_server = Some(m.id);
@@ -366,6 +375,7 @@ impl Registry {
             self.features,
             self.hooks,
             self.allocs,
+            self.entries,
             self.arena,
             locale,
             addrs,
@@ -379,6 +389,10 @@ pub struct Builder<'r> {
     hooks: Vec<Hook>,
     arena: Arena,
     allocs: Vec<Alloc>,
+    entries: Vec<Entry>,
+    /// The page this feature's entries are packed in, and its next free
+    /// offset.
+    entry_page: Option<(u32, u32)>,
     switches: &'r Switches,
     sources: Vec<locale::Source>,
     locale: locale::Sources,
@@ -425,6 +439,30 @@ impl<'r> Builder<'r> {
         Ok(addr)
     }
 
+    /// A function of ours at a fresh guest address: `f` runs (as an async
+    /// entry, see [`entry`]) whenever the guest calls that address. For
+    /// loaders, vtable slots and callbacks the guest is handed. Entries are
+    /// [`ENTRY_STRIDE`] bytes apart on one executable arena page per feature.
+    pub fn entry(
+        &mut self,
+        label: &'static str,
+        f: impl Fn(Cx) -> EntryFuture + Send + Sync + 'static,
+    ) -> Result<u32, BuildError> {
+        let (page, next) = match self.entry_page {
+            Some((page, next)) if next < 0x1000 => (page, next),
+            _ => (self.guest_alloc(0x1000, Permissions::RX)?, 0),
+        };
+        self.entry_page = Some((page, next + ENTRY_STRIDE));
+        let addr = page + next;
+        self.entries.push(Entry {
+            feature: self.feature,
+            label,
+            addr,
+            run: Arc::new(f),
+        });
+        Ok(addr)
+    }
+
     fn push(&mut self, point: &'static Point, run: Run, label: &'static str) -> HookRef<'_> {
         self.hooks.push(Hook {
             feature: self.feature,
@@ -438,6 +476,9 @@ impl<'r> Builder<'r> {
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }
 }
+
+/// Bytes between two entries on a feature's entry page.
+pub const ENTRY_STRIDE: u32 = 0x10;
 
 /// Raw hooks. See [`Builder::raw`].
 pub struct Raw<'b, 'r>(&'b mut Builder<'r>);
@@ -485,6 +526,23 @@ impl<'b> Raw<'b, '_> {
         + 'static,
     ) -> HookRef<'b> {
         self.0.push(point, Run::Implement(Arc::new(f)), label)
+    }
+    /// An implementation as an async entry ([`entry`]): the body may await
+    /// guest calls.
+    pub fn implement_async(
+        self,
+        point: &'static Point,
+        label: &'static str,
+        f: impl Fn(Cx) -> EntryFuture + Send + Sync + 'static,
+    ) -> HookRef<'b> {
+        let f: Arc<engine::entry::EntryFn> = Arc::new(f);
+        self.0.push(
+            point,
+            Run::Implement(Arc::new(move |cpu, ctx, at| {
+                entry::start(&*f, cpu, ctx, at)
+            })),
+            label,
+        )
     }
 }
 

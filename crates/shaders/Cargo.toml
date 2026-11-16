@@ -18,3 +18,5 @@ wgpu = { version = "30", default-features = false, features = ["std", "parking_l
 pollster = "1"
 # Corpus manifest check (tests/corpus.rs); `h2 extract-shaders` writes the corpus.
 sha2 = "0.10"
+# The glyph option is left out of persisted keys when unset (tests/psh.rs).
+serde_json.workspace = true

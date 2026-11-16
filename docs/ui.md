@@ -365,6 +365,74 @@ never followed, never bounds-checked, and documented as such on the fields.
 `+8` model scenes (`0x4c`) and `+0x10` bitmaps (`0x38`) (E `0x0022facd`);
 `+0` raw. Retail `wigl` tags have none.
 
+## Screen and list classes (code, not tags)
+
+How per-screen code is reached, read from the retail XBE for the Controls
+screen (screen 39) and checked against the Settings and Button Layout
+lists (2026-11-16, static; labels as above, all **E**). This is what a
+screen class of ours has to provide; `engine::view::ui` names the offsets
+and docs/feature-engine.md "UI step b" uses them.
+
+**Loader.** A screen is opened by `0x149f1e(player mask, loader)`, which
+builds a 0x20-byte request and calls the loader (stdcall, the request,
+`ret 4`). The Controls loader `0x2b7714`:
+
+1. allocates 0x9b4 bytes with `0x1a47fd` (stdcall, the size, `ret 4`);
+2. calls the screen constructor `0x2b7752` with EDI = the screen and the
+   request's `+4`, `+8` and `+2` (word) as three stack arguments
+   (`ret 0xc`; it returns the screen in EAX). The constructor runs the
+   base screen constructor `0x230451` with screen id 39, stores the screen
+   vtable `0x45be30`, then the list handler constructor `0x2c84b8` with
+   ESI = `screen + 0x614`;
+3. sets byte `screen + 0x6c` to 1 and pushes the screen with `0x147f6d`
+   (EDI = the screen, EBX = the request), which calls screen slot 21.
+
+**Screen vtable** (`0x45be30`, 28 slots, the next table starts at
+`0x45bea0`). Two slots matter to a class of ours:
+
+| Slot | Offset | Controls | Role |
+|---:|---:|---|---|
+| 18 | `+0x48` | `0x23047e` | set up the current pane (thiscall, one stack argument, `ret 4`): calls `0x22f8df`, which builds the header (`0x22fda6`) and the pane's widgets |
+| 26 | `+0x68` | `0x2b7784` | returns the screen's loader (`mov eax, loader; ret`). The screen manager calls it (`0x2352e8`, `0x2354d0`) |
+
+The header is a text widget embedded at `screen + 0x80`. `0x22fda6` sets its
+string with `0x253b1a` (EDI = the text widget, the string id on the stack,
+`ret 4`) from the tag's header id (`wgit +0x2c`). So a screen's title can
+be set after slot 18 has run, by calling `0x253b1a` on `screen + 0x80`;
+nothing has to be swapped while the header is built.
+
+**List handler** (at `screen + 0x614`; the Controls constructor `0x2c84b8`):
+
+| Offset | Field |
+|---:|---|
+| `+0x00` | vtable (`0x45d240` for Controls) |
+| `+0x70` | the rows' datum array (made by `0x1a480d` with a name, element size and count; one datum per row, created at once) |
+| `+0x84` | the list of press records (`0x22f4cd` links one) |
+| `+0x88` | the item widgets, 0x80 bytes each (six for Controls, built by `0x24abae`) |
+| `+0x388` | the press record (Controls; `+0x28c` for Button Layout): vtable `0x45bdb0` at `+0`, the handler at `+0x10`, the row-chosen function at `+0x14` |
+
+**List handler vtable** (`0x45d240`, 22 slots; the base list widget's
+`0x45a030` has the same first 18 and a pure-call stub `0x32131e` in 18 to 20,
+so those three are what a list class supplies):
+
+| Slot | Offset | Controls | Role |
+|---:|---:|---|---|
+| 0 | `+0x00` | `0x2b7563` | destructor |
+| 17 | `+0x44` | `0x24bb60` | add items: links the item widgets as children |
+| 18 | `+0x48` | `0x19b516` | the item widgets (`lea eax, [ecx+0x88]`) |
+| 19 | `+0x4c` | `0x2b198a` | the item widget count (6) |
+| 20 | `+0x50` | `0x2c8548` | row text (thiscall, the item and a word of the list's definition, `ret 8`; the row is the datum handle at `item + 0x70`) |
+
+**Row text** is reached through the vtable on every draw: an item's update
+(`0x24abe0`) reads its list at `item + 0x10` and calls slot 20 with the
+item and `0x24c0b3`'s value (the `i16` at `+4` of the list's definition). **Row chosen** is not a vtable slot: the press
+record's vtable slot 0 (`0x2b27f9`) does `ecx = [record+0x10]; jmp
+[record+0x14]`, so the function is the pointer stored in the record
+(thiscall, the player chain and a pointer to the row, `ret 8`). Both are
+read at each call, never cached: a handler's vtable pointer and its press
+record's function can be replaced after the constructor has run, and
+before the screen is pushed nothing has drawn or pressed it.
+
 ## Aliased blocks, budget and nesting
 
 Block addresses can point into another tag's payload. Two retail screens use

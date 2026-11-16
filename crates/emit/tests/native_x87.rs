@@ -19,6 +19,8 @@ uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
 uint32_t n_load(X87Abi *s, uint64_t bits) { return h2x87n_ld_f64(s, bits); }
 uint32_t n_copy(X87Abi *s, uint32_t i) { return h2x87n_ld_st(s, i); }
 uint32_t n_load32(X87Abi *s, uint32_t b) { return h2x87n_ld_f32(s, b); }
+uint32_t n_ld_i32(X87Abi *s, int32_t v) { return h2x87n_ld_i32(s, v); }
+uint32_t n_ld_i16(X87Abi *s, int16_t v) { return h2x87n_ld_i16(s, v); }
 uint32_t n_const(X87Abi *s, uint32_t i) { return h2x87n_ld_const(s, i); }
 uint32_t n_st_st(X87Abi *s, uint32_t i, uint32_t pop) { return h2x87n_st_st(s, i, pop); }
 uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return h2x87n_store_commit(s, sw, pop); }
@@ -387,5 +389,249 @@ fn stack_transport_keeps_tags_pop_bytes_and_store_commit_protocol() {
                 "all physical bytes survive pop, including empty registers"
             );
         }
+    }
+}
+
+/// One ST(i) operand: mostly the native window, plus its exponent edges,
+/// ext80 values with low significand bits (never native), and specials.
+fn sweep_value(r: &mut u64) -> F80 {
+    let bits = next(r);
+    let sign = (bits >> 48) as u16 & 0x8000;
+    match next(r) % 12 {
+        0 => [F80::ZERO, F80::ZERO.neg(), F80::INFINITY, F80::INDEFINITE][(bits % 4) as usize],
+        1 => F80::new(
+            sign | (16383 - 402 + (bits >> 60) % 3) as u16,
+            bits | 1 << 63,
+        ),
+        2 => F80::new(
+            sign | (16383 + 399 + (bits >> 60) % 3) as u16,
+            (bits | 1 << 63) & !0x7ff,
+        ),
+        3 => F80::new((bits >> 48) as u16, next(r)),
+        4 => F80::new(sign | (16383 + bits % 64) as u16, next(r) | 1 << 63),
+        _ => F80::from_f64_bits((bits & 0x800fffffffffffff) | (1023 - 400 + next(r) % 801) << 52),
+    }
+}
+
+/// A memory source of `kind` (1 m32fp, 2 m64fp, 3 m16int, 4 m32int).
+fn sweep_source(r: &mut u64, kind: u32) -> u64 {
+    let bits = next(r);
+    match (kind, next(r) % 8) {
+        (1, 0) => bits & 0x807f_ffff | [0, 0xff, 1, 0xfe][(bits >> 40) as usize % 4] << 23,
+        (1, _) => bits & 0x807f_ffff | (1 + next(r) % 254) << 23,
+        (2, 0) => {
+            bits & 0x800f_ffff_ffff_ffff | [0, 0x7ff, 622, 1424][(bits >> 40) as usize % 4] << 52
+        }
+        (2, _) => bits & 0x800f_ffff_ffff_ffff | (1023 - 401 + next(r) % 803) << 52,
+        _ => bits,
+    }
+}
+
+/// Every native entry point at the game's mode (PC=53, nearest, masked;
+/// sometimes another control word) against the ext80 authority, with the
+/// full state compared. `H2X87_SWEEP` raises the count (default 2,000,000).
+#[test]
+fn randomized_native_sweep_matches_the_authority() {
+    type Store32 = unsafe extern "C" fn(&X87Abi, u32, &mut u32, &mut u16) -> u32;
+    type Store64 = unsafe extern "C" fn(&X87Abi, u32, &mut u64, &mut u16) -> u32;
+    type Probe = unsafe extern "C" fn(&mut X87Abi) -> u32;
+    // SAFETY: each type matches its wrapper's declaration.
+    let (arith, unary, store, store64, eligible) = unsafe {
+        (
+            native().get::<Arith>(b"n_arith").unwrap(),
+            native().get::<Unary>(b"n_unary").unwrap(),
+            native().get::<Store32>(b"n_store").unwrap(),
+            native().get::<Store64>(b"n_store64").unwrap(),
+            native().get::<Probe>(b"n_eligible").unwrap(),
+        )
+    };
+    let count: u64 = std::env::var("H2X87_SWEEP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000_000);
+    let mut r = 0x51ed_270b_9a3c_44e1;
+    let mut hits = 0u64;
+    for i in 0..count {
+        let (a, b) = (sweep_value(&mut r), sweep_value(&mut r));
+        let cw = match next(&mut r) % 16 {
+            0 => [0x007f, 0x037f, 0x067f, 0x0a7f, 0x025f][(i % 5) as usize],
+            _ => 0x027f,
+        };
+        let mut want = state(a, b, cw, (next(&mut r) % 8) as u16);
+        want.status |= (next(&mut r) & 0x3f) as u16; // sticky flags
+        if next(&mut r).is_multiple_of(64) {
+            want.tag |= 3 << (2 * want.phys(1));
+        }
+        let mut got = want;
+        // SAFETY: the probe only reads a valid state.
+        hits += u64::from(unsafe { eligible(&mut got.clone()) });
+        let which = next(&mut r) % 8;
+        let (expected, actual) = match which {
+            0..=4 => {
+                let kind = which as u32;
+                let op = (next(&mut r) % 6) as u32
+                    | if next(&mut r).is_multiple_of(2) {
+                        0x100
+                    } else {
+                        0
+                    };
+                let dst = if kind == 0 {
+                    (next(&mut r) % 2) as u32
+                } else {
+                    0
+                };
+                let src = if kind == 0 {
+                    1 - dst as u64
+                } else {
+                    sweep_source(&mut r, kind)
+                };
+                let e = abi::arith(&mut want, op, dst, kind, src);
+                // SAFETY: matching signature and valid state.
+                (e, unsafe { arith(&mut got, op, dst, kind, src) })
+            }
+            5 => {
+                let e = abi::unary(&mut want, 0);
+                // SAFETY: matching signature and valid state.
+                (e, unsafe { unary(&mut got, 0) })
+            }
+            6 => {
+                let (e, value) = abi::st_f32(&want, 0);
+                let (mut v, mut sw) = (value.value, value.status);
+                // SAFETY: matching signature, valid state and out pointers.
+                let g = unsafe { store(&got, 0, &mut v, &mut sw) };
+                if e == abi::status::OK {
+                    assert_eq!(
+                        (v, sw),
+                        (value.value, value.status),
+                        "st_f32 {a:?} cw={cw:x}"
+                    );
+                }
+                (e, g)
+            }
+            _ => {
+                let (e, value) = abi::st_f64(&want, 0);
+                let (mut v, mut sw) = (value.value, value.status);
+                // SAFETY: matching signature, valid state and out pointers.
+                let g = unsafe { store64(&got, 0, &mut v, &mut sw) };
+                if e == abi::status::OK {
+                    assert_eq!(
+                        (v, sw),
+                        (value.value, value.status),
+                        "st_f64 {a:?} cw={cw:x}"
+                    );
+                }
+                (e, g)
+            }
+        };
+        assert_eq!(
+            (got, actual),
+            (want, expected),
+            "i={i} which={which} a={a:?} b={b:?} cw={cw:x}"
+        );
+    }
+    assert!(
+        hits * 3 > count,
+        "only {hits} of {count} states were native-eligible"
+    );
+    eprintln!("{count} random x87 operations; {hits} with a native-eligible ST(0)");
+}
+
+/// The guarded native operations must inline into a non-strict caller
+/// (strict-FP helpers cannot), leaving only the authority calls.
+#[test]
+fn x87_fast_paths_inline_into_generated_handlers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("native-x87-inline");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("caller.c");
+    std::fs::write(
+        &src,
+        "#include \"h2gen.h\"\nuint32_t h2_caller(X87Abi *s, uint64_t m) {\n\
+         uint32_t r = h2x87n_arith(s, 3u, 0u, 1u, m); r |= h2x87n_arith(s, 0u, 0u, 2u, m);\n\
+         return r | h2x87n_unary(s, 0); }\n",
+    )
+    .unwrap();
+    let ir = dir.join("caller.ll");
+    let out = std::process::Command::new("clang")
+        .args([
+            "-std=c11",
+            "-O1",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+            "-S",
+            "-emit-llvm",
+        ])
+        .args(["-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1"])
+        .args(
+            ["c", "../simd/c", "../x87/include", "../runtime/include"]
+                .map(|d| format!("-I{}", root.join(d).display())),
+        )
+        .arg(&src)
+        .arg("-o")
+        .arg(&ir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = std::fs::read_to_string(&ir).unwrap();
+    let body = ir
+        .split("@h2_caller(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("h2_caller in the IR");
+    for line in body.lines().filter(|l| l.contains(" call ")) {
+        assert!(
+            line.contains("@h2x87_v1_") || line.contains("asm") || line.contains("@llvm."),
+            "unexpected call in the fast path: {line}"
+        );
+    }
+    assert!(body.contains("fmul") && body.contains("fadd"), "{body}");
+    assert!(!body.contains("constrained"), "{body}");
+}
+
+/// FILD m16/m32 against the authority: every bit position, both signs, the
+/// extremes and random values, over random TOP, tags (including a full
+/// stack) and pending exceptions.
+#[test]
+fn integer_loads_match_the_authority() {
+    type Ld32 = unsafe extern "C" fn(&mut X87Abi, i32) -> u32;
+    type Ld16 = unsafe extern "C" fn(&mut X87Abi, i16) -> u32;
+    // SAFETY: each type matches its wrapper's declaration.
+    let (ld32, ld16) = unsafe {
+        (
+            native().get::<Ld32>(b"n_ld_i32").unwrap(),
+            native().get::<Ld16>(b"n_ld_i16").unwrap(),
+        )
+    };
+    let mut values: Vec<i32> = vec![0, 1, -1, i32::MIN, i32::MAX, i32::MIN + 1];
+    for bit in 0..31 {
+        values.extend([1 << bit, -(1 << bit), (1 << bit) - 1, -(1 << bit) + 1]);
+    }
+    let mut r = 0x0f1e_2d3c_4b5a_6978;
+    values.extend((0..1_000_000).map(|_| next(&mut r) as i32 >> (next(&mut r) % 32)));
+    for (i, &v) in values.iter().enumerate() {
+        let mut want = state(F80::ONE, F80::PI, 0x027f, (next(&mut r) % 8) as u16);
+        want.tag = next(&mut r) as u16;
+        if next(&mut r).is_multiple_of(4) {
+            want.tag = 0xffff; // empty: the push always succeeds
+        }
+        if next(&mut r).is_multiple_of(32) {
+            want.status |= 0x80;
+        }
+        want.status |= (next(&mut r) & 0x23f) as u16;
+        let (mut got, mut want16) = (want, want);
+        let mut got16 = want;
+        let expected = abi::ld_int(&mut want, v.into());
+        // SAFETY: matching signature and valid state.
+        let actual = unsafe { ld32(&mut got, v) };
+        assert_eq!((got, actual), (want, expected), "fild m32 {v} case {i}");
+        let h = v as i16;
+        let expected = abi::ld_int(&mut want16, h.into());
+        // SAFETY: matching signature and valid state.
+        let actual = unsafe { ld16(&mut got16, h) };
+        assert_eq!((got16, actual), (want16, expected), "fild m16 {h} case {i}");
     }
 }

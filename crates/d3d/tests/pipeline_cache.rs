@@ -85,6 +85,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60], data: Vec<u8>) -> Res
             max_z: 1.0,
         },
         textures: [None; 4],
+        glyph_cache: 0,
         clip: None,
         clip_rects: Vec::new(),
         hw: d3d::hw::HwState::default(),

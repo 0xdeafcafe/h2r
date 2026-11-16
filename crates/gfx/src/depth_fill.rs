@@ -87,6 +87,7 @@ impl DepthFill {
             view_formats: &[],
         });
         let bytes: Vec<u8> = depth.iter().flat_map(|d| d.clamp(0.0, 1.0).to_le_bytes()).collect();
+        crate::churn::queue_write();
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: &src, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             &bytes,
@@ -141,6 +142,7 @@ impl DepthFill {
         }
         ctx.queue.submit([enc.finish()]);
         if let (Some(s), true) = (stencil, has_stencil) {
+            crate::churn::queue_write();
             ctx.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::StencilOnly },
                 s,

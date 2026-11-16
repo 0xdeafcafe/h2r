@@ -32,6 +32,7 @@ pub mod device;
 pub mod dirty;
 pub mod events;
 pub mod gfx_backend;
+pub mod glyph;
 pub mod guest;
 pub mod hw;
 pub mod layout;
@@ -56,7 +57,7 @@ pub use backend::{
 pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
-pub use gfx_backend::GfxBackend;
+pub use gfx_backend::{GfxBackend, SwapFinish};
 pub use guest::{GuestError, GuestMemory, SparseMemory};
 pub use layout::GuestLayout;
 pub use nv2a::Nv2aShaders;

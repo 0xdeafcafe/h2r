@@ -17,6 +17,7 @@
 //!    `wgpu::Surface`.
 
 pub mod blit;
+pub mod churn;
 pub mod clear;
 pub mod compile;
 pub mod context;

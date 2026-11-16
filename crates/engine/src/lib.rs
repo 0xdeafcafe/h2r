@@ -15,6 +15,7 @@
 //! - [`points`]: the one table of named guest functions and globals.
 //! - [`view`]: typed views (`record!`, datum arrays, tags, players,
 //!   objects).
+//! - [`entry`]: async entries, Rust bodies that await guest calls.
 //! - [`testing`]: [`testing::FakeGuest`], sparse guest memory for tests.
 //! - [`abi`]: per-function calling-convention adapters and the table of
 //!   overridable addresses.
@@ -24,6 +25,7 @@
 
 pub mod abi;
 pub mod datum;
+pub mod entry;
 pub mod handle;
 pub mod locale;
 pub mod memory;

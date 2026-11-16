@@ -22,6 +22,8 @@ rustc-hash = "2"
 
 [dev-dependencies]
 pollster = "1"
+# The synthetic text before and after (tests/glyph_text.rs, H2_FONT_HD_PNG).
+png = "0.18"
 # The MSL back end alone, timed in tests/pipeline_cost.rs.
 naga = { version = "30", features = ["wgsl-in", "msl-out"] }
 # The windowed example (examples/window.rs) presents through the host shell.
@@ -59,4 +61,8 @@ harness = false
 
 [[bench]]
 name = "vertex_fetch"
+harness = false
+
+[[bench]]
+name = "render_churn"
 harness = false

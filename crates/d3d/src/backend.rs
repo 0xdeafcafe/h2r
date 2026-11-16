@@ -383,6 +383,10 @@ pub struct ResolvedDraw {
     /// Header addresses of the bound textures (identity for the backend's
     /// own bookkeeping; the resolved host textures are passed separately).
     pub textures: [Option<u32>; 4],
+    /// Stages (bit `n` for stage `n`) whose texture is the game's glyph
+    /// cache ([`crate::glyph`]): text a view backend may magnify with the
+    /// glyph filter. Zero when smoothing is off.
+    pub glyph_cache: u8,
 }
 
 /// Predicts a backend's [`Backend::draw`] outcomes without running it, so

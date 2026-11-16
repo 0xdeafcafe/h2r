@@ -415,12 +415,16 @@ impl GuestWords {
     }
 
     fn uniform(ctx: &GfxContext, p: &Params) -> wgpu::Buffer {
-        let b = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gfx guest words params"),
-            size: PARAMS_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let b = crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some("gfx guest words params"),
+                size: PARAMS_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        );
+        crate::churn::queue_write();
         ctx.queue.write_buffer(&b, 0, &p.bytes());
         b
     }
@@ -714,12 +718,15 @@ impl GuestWords {
         if target.has_stencil_aspect() {
             // Rows of stencil bytes, as a buffer-to-texture copy wants them.
             let row = w.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-            let packed = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("gfx guest words stencil"),
-                size: row as u64 * h as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
+            let packed = crate::churn::create_buffer(
+                &ctx.device,
+                &wgpu::BufferDescriptor {
+                    label: Some("gfx guest words stencil"),
+                    size: row as u64 * h as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                },
+            );
             let p = Params {
                 src_width: row / 4,
                 ..Params::level(size, layout)

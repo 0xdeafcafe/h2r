@@ -276,6 +276,89 @@ fn the_locale_bridge_serves_sources() {
     assert_eq!(call(&rt, LEAF, 5).eax, 41);
 }
 
+/// An entry of ours at an arena address: the guest calls it, it awaits two
+/// guest calls (the fixture's leaf, `eax = 41`), and it returns to the
+/// caller with its result, its `ret 4`, and the caller's saved registers.
+#[test]
+fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
+    use feature::{EntryFuture, GuestCall, Ret};
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    let placed = Arc::new(AtomicU32::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (placed, seen) = (Arc::clone(&placed), Arc::clone(&seen));
+        r.add(&from_fn("ours", move |b| {
+            let seen = Arc::clone(&seen);
+            let at = b.entry("twice", move |cx| -> EntryFuture {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    let arg = cx.arg(0)?;
+                    let a = cx.call(GuestCall::new(LEAF).ebx(7).args([1, 2])).await?;
+                    let b = cx.call(GuestCall::new(LEAF).esi(9)).await?;
+                    seen.lock().unwrap().push((a.eax, b.eax, a.ebx, b.esi));
+                    Ok(Ret::new(a.eax + b.eax + arg, 4))
+                })
+            })?;
+            placed.store(at, Ordering::SeqCst);
+            Ok(())
+        }))
+        .unwrap();
+    }
+    let plan = r.build(&feature::Base).unwrap();
+    let at = placed.load(Ordering::SeqCst);
+    assert_eq!(at, feature::arena::ARENA_START);
+    assert!(
+        plan.text()
+            .contains(&format!("{at:#010x} entry ours:twice")),
+        "{}",
+        plan.text()
+    );
+    let installed = plan.install(&rt).unwrap();
+    assert!(installed.placed.contains(&at));
+
+    let mut m = rt.memory();
+    m.set_u32(STACK, HARNESS_EXIT).unwrap();
+    m.set_u32(STACK + 4, 100).unwrap();
+    drop(m);
+    let mut cpu = CpuAbi {
+        esp: STACK,
+        ebx: 0xb,
+        esi: 0x5,
+        edi: 0xd,
+        ebp: 0xe,
+        ..Default::default()
+    };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let t = Runner::default().run(&mut cpu, &mut ctx, at);
+    assert!(matches!(ctx.event(t.event_id), Some(Event::HarnessExit)));
+    assert_eq!(cpu.eax, 41 + 41 + 100);
+    assert_eq!(cpu.esp, STACK + 8, "the return address and one argument");
+    assert_eq!((cpu.ebx, cpu.esi, cpu.edi, cpu.ebp), (0xb, 0x5, 0xd, 0xe));
+    assert_eq!(*seen.lock().unwrap(), [(41, 41, 7, 9)]);
+}
+
+/// The same body as a point's implementation.
+#[test]
+fn an_async_implementation_is_a_chains_body() {
+    use feature::{EntryFuture, Ret};
+    let rt = runtime();
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("async", |b| {
+        b.raw()
+            .implement_async(&points::GAME_ACTIVATE, "edi", |cx| -> EntryFuture {
+                Box::pin(async move { Ok(Ret::new(cx.entry().edi * 2, 0)) })
+            });
+        Ok(())
+    }))
+    .unwrap();
+    r.build(&at(&points::GAME_ACTIVATE))
+        .unwrap()
+        .install(&rt)
+        .unwrap();
+    assert_eq!(call(&rt, LEAF, 21).eax, 42);
+}
+
 /// `render-timing` on the fixture: `MAIN` stands in for
 /// `render_frame_and_present` and the leaf it calls for
 /// `render_scene_passes`; the other stages are missing and dropped.

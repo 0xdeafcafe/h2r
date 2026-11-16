@@ -1,0 +1,17 @@
+# Build context for deploy/live/Dockerfile: the Rust workspace and web/
+# only. Nothing from a disc, no server data, no secrets.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!web/
+**/target
+**/node_modules
+web/dist
+**/.DS_Store
+**/*.iso
+**/*.xiso
+**/*.xbe
+**/*.map
+**/*.bik
+**/.env
