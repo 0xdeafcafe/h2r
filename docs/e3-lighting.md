@@ -81,7 +81,7 @@ What this project has read from the retail game agrees with that:
 | Render geometry always has a tangent-frame stream, so tangent-space normal maps are in retail. | R | [map-format.md](map-format.md), [structure-bsp.md](structure-bsp.md) |
 | Shadows are depth textures: the first level binds a depth level as the depth target, then samples it as `LIN_D24S8` with the NV2A's hardware comparison (`D3DRS_SHADOWFUNC`). It also draws into 512x512 and 128x128 targets. | R | [d3d.md](d3d.md), [shaders.md](shaders.md) "Shadow maps" |
 | `sky` tags carry lights with yaw and pitch, and a fallback object-lighting colour. | R | [lighting.md](lighting.md) |
-| There are 1,596 `ligh` tags across the maps. Their flags are recorded as values only, and the light render code has not been located. | R | [effects.md](effects.md) |
+| There are 1,596 `ligh` tags across the maps. The light array, record, update and per-light passes are now located, and the flag bits the render path tests are read off the code. | R | [effects.md](effects.md), "Phase 0 findings" below |
 
 ## What survives
 
@@ -95,7 +95,7 @@ What this project has read from the retail game agrees with that:
 | Most of the E3 demo's light objects remain in retail with shadow casting off. | C | Halopedia's E3 demo page, citing developer commentary; not checked against tags |
 | A pre-release build from May 2003 contains pstencil code. | C, unverified by us | Vice's report on the 2025 leak (above). The same is reported of <https://tcrf.net/Proto:Halo_2>, which could not be read. This says nothing about retail. |
 | The retail game sets stencil render states from game code: `SetRenderState_StencilEnable` has 40 call sites in 30 functions, and `StencilFail` 15 in 6. | R | [d3d.md](d3d.md), inventory |
-| What those sites are for is not traced. Stencil has many uses (masking decals, portals, the HUD), so this is not evidence of shadow volumes. | S | |
+| Those sites are traced: one seven-mode masking helper, a quad reset, state resets and the generic setters. No tag pass sets stencil, and no code uses increment, decrement or z-fail ops. There is no shadow-volume path. | R | "Phase 0 findings" below |
 | Geometry sections hold position, texture coordinate, tangent frame and lightmap coordinate streams, plus a few stream types we have not interpreted. Nothing identifies any of them as shadow-volume geometry. | R | [structure-bsp.md](structure-bsp.md) |
 | Shader instances have fields no decoded engine path reads (`shad +0x0c`, `+0x2c`, `+0x34` and others). | R | [shader-instances.md](shader-instances.md), "Open items" |
 | Whether any of those unread fields relates to the cut renderer. | S | Unknown. Unread is not the same as vestigial. |
@@ -118,7 +118,189 @@ retail; any technical write-up of the original renderer.
 
 Two static checks would firm this up at low cost, and are phase 0 below:
 trace the stencil call sites to name each use, and find the light render path
-so the `ligh` flags can be read off engine code.
+so the `ligh` flags can be read off engine code. Both are done; see "Phase 0
+findings".
+
+## Phase 0 findings
+
+Static reading of the retail XBE (`h2 disasm`, a linear disassembly of
+`.text` searched for call sites, and the Ghidra function list) and of the
+disc's tags (`h2 shader`, `h2 effect`), done 2026-11-16 without building or
+running the game. Labels are this page's: **R** is read from engine code or
+from the disc by this project, **S** is our inference. Names are ours unless
+said otherwise. Read-only views of the structures below are in
+`crates/engine/src/render.rs`, tested on invented records.
+
+The short version: **the light data is found, and it is a plain salted datum
+array the render code reads at fixed points.** The guest's dynamic lights are
+additive per-light passes over a shadow buffer, on numbered layers that the
+shader templates and the engine share, so draws can be told apart by layer.
+Retail stencil does masking only. Nothing in it is a shadow volume.
+
+### Stencil: every use, named
+
+| Site | Use | Label |
+|---|---|---|
+| `0x00015370` `stencil_mode_set`, mode in BX, stored at `0x00467010` | The only engine code that configures a stencil test. Seven modes (`stencil::for_mode`): 0 off; 1 and 2 write 0 or `0xff` wherever a pixel is drawn (ALWAYS, REPLACE on pass); 3, 4 and 6 draw only where bit 0 is clear, set, or bits 0 and 1 are both clear (EQUAL/NOTEQUAL, KEEP); 5 sets bit 1 where bit 0 is clear. Ops are only KEEP and REPLACE: no increment, decrement or z-fail counting, which shadow volumes need. | R |
+| 42 direct calls of `0x00015370` | Every caller passes 0, 1 or 2. Mode 1 is set before the base-depth (1) and lightmap (3) layers in the scene loop and the structure draw `0x0004d720`; mode 2 marks the sky (`0x0002c0b2`, before `0x0003ede0`) and structure draws with a section flag (`0x0004d6d8`, flag `0x4000`). No direct caller passes 3 to 6. | R; what reads the marks is not traced (S: modes 3 to 6 are for that, or unused) |
+| `0x0003bf20` | Colour and depth writes off, stencil ALWAYS/REPLACE with reference 0, then a four-vertex quad from world points at `0x004c1b08`: resets the stencil under a quad. Called through a pointer (no direct caller). | R; purpose S |
+| 24 other `SetRenderState_StencilEnable` sites, one per function (`0x0001e9cd`, `0x0002524b`, ..., `0x000314e3`, ..., `0x00052e6d`) | `StencilEnable(FALSE)`, mostly just after a `CullMode` set: state resets around a draw family. 23 pass a literal 0 or a zeroed register; `0x00026998` was not resolved. | R |
+| `0x00017b60`, `0x00018ee0`, `0x0001a170`, `0x000222d0` | Generic render-state-by-index setters: every state setter is called from each of them, stencil included. They apply a tag pass's render-state list and the engine's own lists. | R |
+| Tag passes | No pass of any `shad` on the disc sets a stencil state: across all 30 maps the resolved passes set only `ZFUNC`, `COLORWRITEENABLE`, `ALPHABLENDENABLE`, `ZWRITEENABLE`, blend, `ZENABLE`, `BLENDCOLOR`, alpha test, `CULLMODE`, `SAMPLEALPHA` and `FRONTFACE`. The decoder names stencil states, so their absence is real. | R |
+| `ShadowFunc` | Set to `GREATER` (`0x204`) by `0x000496f0` at the start of the shadow-apply layer (`0x00031328`), back to `NEVER` (`0x200`) by `0x00049740`, which the layer end's table reaches (`0x00044649`). | R; which layer reaches `0x00049740` S |
+
+Engine-driven render states (table `0x00467020` via `0x0001a170`) were not
+enumerated. If any of them sets stencil it would be per template; nothing
+above suggests it.
+
+### The light record
+
+| Fact | Evidence | Label |
+|---|---|---|
+| Lights live in a datum array: 350 records of `0x110` bytes, allocated from game state by `0x000bffa0`, header pointer at `0x004e030c`. | `0x000bffac`..`0x000bfffb` (array name at `0x0045323c`) | R |
+| Created by `0x000c0350` from the effect part switch (`0x0017ab2e` → `0x0017ac70`), either attached to an object and marker or free in the world; and by `0x000c0520` from a placement record. Both call the update `0x000c0c80` once. | call sites | R |
+| `+0x02` u16 flags: 1 live; 4 placed; `0x10` timed (definition `+0xb0` above zero); `0x20` copied from a placement bit. | `0x000c03b8`..`0x000c03f4`, `0x000c05cd`..`0x000c05ff` | R |
+| `+0x04` `ligh` datum; `+0x14` creation tick (from the game-time global at `0x00510c54`). | constructors; age in `0x000c0e5d` | R |
+| `+0x18` f32[3] and `+0x24` f32: a bounding sphere. The visible-light pass weights each light by radius over distance to the view. | `0x000319f3`..`0x00031a86` | R (centre/radius S from the formula) |
+| `+0x4c`/`+0x50`/`+0x54`/`+0x56`: an object whose functions drive the light's intensity (`0x000bab40` into `+0xd0`). `+0x58` parent object, `+0x5c` marker; `+0x60`/`+0x6c`/`+0x78` frame relative to the marker. | `0x000c0d15`..`0x000c0dc4`, `0x000c048c`..`0x000c04e7` | R |
+| `+0x84` position, `+0xac` forward, `+0xb8` up, `+0x90` = position + forward. Attached lights are re-posed from the marker in the render pass itself (`0x00031d4b`..`0x00031dac`), not in the tick. | constructors, `0x00031d6f` | R |
+| `+0xcc` base scale; `+0xd0` intensity (fades `1 - shape(age / duration)` with definition `+0xb0` duration and `+0xb6` shape for timed lights). | `0x000c0e53`..`0x000c0ea3` | R |
+| `+0xd4` and `+0xe0`: two RGB colours, each interpolated by intensity between a pair in the definition (`+0x58`/`+0x64` and `+0x40`/`+0x4c`, mode at `+0x34`), then clamped to `[0, 1]`. `+0xec` a scalar from definition `+0x70`/`+0x74`. `+0xf0`.. computed by `0x000c0b00` from definition `+0xc0`. | `0x000c0dc9`..`0x000c11d7` | R; what each colour is for S |
+| `+0xc8` the parent's fade: for a biped or vehicle parent, both colours are scaled by `1 - object +0x2b0`, unless definition flag bit 7. | `0x000c0f8c`..`0x000c108f` | R (S: active camouflage) |
+| `+0xf8` f32: must be above zero for the light to cast a shadow. | `0x00031e14` | R |
+
+**Stability.** Records are salted and fixed-size; a handle stays valid until
+the light is deleted. The frame of an attached light is rewritten during the
+render pass, so an observer must read it there (at the per-light pass
+`0x00031170` or after `0x00031dac`), not at tick end. `light::LightRecord::check`
+states what an observer can rely on (live, finite, colours in range, target
+equal to position plus forward) and refuses anything else.
+
+### The light render path
+
+`0x00031c80` (`render_dynamic_lights`, called by the scene-pass function
+`0x0002bcd0` at `0x0002c03e`) does, per frame:
+
+1. `0x00031910` builds the visible-light list from the frame's candidate list
+   at `[0x00547f98]` (at most 128): per light the datum, a weight from the
+   bounding sphere, and four bytes, two of them definition flag bits 5 and 20.
+   `0x0004a7c0`/`0x0004ac30` then sort and trim it (arguments 3 and 0.01; S:
+   keep the strongest few).
+2. For each light with weight above a threshold: re-pose attached lights,
+   record up to eight per frame at `0x004c6b00` (stride `0x408`), decide
+   **shadow casting** (`0x00031e02`): definition flag bit 3 clear, the global
+   at `0x004ba020` set, record `+0xf8` above zero, and a word returned by
+   `0x000c17f0` zero (S: a cluster or view test). Gather the objects it touches (`0x000c1d90`, `0x001320f0`,
+   `0x00031660`), then draw it with `0x00031170`.
+3. `0x00031170` (`render_light_passes`) computes per-light flags at
+   `0x004ba014` (bit 0 from a word in the caller's context, bit 1 when the colour
+   at `0x00485950` is above a threshold, bit 2 shadow, bit 3 and bit 5 from
+   further tests; bit 4 is cleared), then draws layers
+   on the light's list (`0x004c1a60`): shadow generate (10) when bit 2,
+   shadow apply (11), layer 14, light diffuse (12), and light specular (13)
+   when bits 0 and 1. It ends by turning stencil off and clearing the scissor
+   (`0x000314e3`, `0x000314eb`).
+
+**Shadow depth levels.** Layer 10's begin (`0x00044408`..`0x0004449f`) picks
+render target 10, cleared to colour `0xffffff`, when per-light flag bit 4 is
+set and bit 5 clear, and otherwise target 9, cleared to depth 1.0. Since
+`0x00031170` clears bit 4, the per-light path always takes target 9. `0x00048ee0` builds the light's shadow
+projection (stores `0x28` dwords at `0x004c9798`) before the layer draws.
+Shadow apply (11) samples it with `ShadowFunc` `GREATER`. The render target
+table is at `0x004b4b58`, stride `0x98`; target 9 is S as the 512x512 depth
+level and the other as the 128x128 target d3d.md reports.
+
+### Definition flags read off the code
+
+`ligh +0` is a u32. The bits the render path tests (`light::definition_flags`),
+with counts over the 1,596 `ligh` records on the disc (shared tags counted per
+map):
+
+| Bit | Engine use | Set on | Label |
+|---|---|---|---|
+| 3 | Set: no shadow (`0x00031e02`). This is the flag the MCC tools call "no stencil shadow". | 1,275 (321 can cast) | R; the tools name P (343), the match S |
+| 5 | With bit 18 clear, the frame is refreshed from the marker each frame (`0x00031d3a`); forces the shadow-apply layer (`0x000312d4`); copied to the visible list. | 98 | R; meaning S |
+| 7 | Parent fade ignored (`0x000c0fe7`). | 378 | R |
+| 18 | Suppresses the marker refresh with bit 5. | 27 | R |
+| 20 | Copied to the visible list (`0x00031ad5`); consumer not traced. | 1 | R |
+| 22 | An extra per-light call (`0x00031c20`) and a wider object gather. | 217 | R |
+
+Most lights have shadows switched off by bit 3, which agrees with the
+community claim about the E3 level's light objects (C above), but the disc
+cannot say which lights those are and we did not try.
+
+### Pass taxonomy: the layers
+
+The layer index a draw carries (`0x00016b90`'s `layer`) is one numbering for
+both sides: shader templates list passes per layer, and the engine draws
+layer by layer, holding the current one at `0x00467130` (`layer::CURRENT_LAYER`).
+`0x00044370` begins a layer (descriptor table at `0x0043fa1c`, `0x24` bytes
+per layer: target, clear, list, multisample; `layer::Descriptor`),
+`0x00044550` draws the current list's entries for it through `0x0003bc30`,
+`0x000445d0` ends it. Roles below come from the passes the disc's 30 maps put
+on each layer (their blend and depth state, and what they bind) and from the
+engine's order; the numbers of passes are resolved `(lod, layer)` lists.
+
+| Layer | Role (`layer::Role`) | Passes | List | Notes |
+|---:|---|---:|---|---|
+| 1 | Base depth: opaque base colour, depth write | 4,244 | scene | stencil mode 1 |
+| 2 | Base overlay: blended detail | 339 | scene | gated by `0x004ba023` |
+| 3 | Lightmap and per-vertex static lighting | 16,622 | scene | stencil mode 1; palette reset at end |
+| 5 | Transfer (precomputed) lighting | 126 | scene | |
+| 6 | Water edge blend | 2 | scene | |
+| 7 | Self-illumination, additive | 3,417 | scene | |
+| 8 | Environment map, additive | 977 | scene | gated by `0x004ba022` |
+| 10 | Shadow generate | 10,006 | shadow casters | per light |
+| 11 | Shadow apply | 9,989 | light | per light |
+| 12 | Dynamic light diffuse, additive, projected or spherical | 10,137 | light | per light |
+| 13 | Dynamic light specular, additive | 10,137 | light | per light |
+| 14 | Opaque, depth write, on the light's list | 538 | light | role unknown |
+| 15 | Transparents | 2,898 | scene | |
+| 16 | Planar fog | 16,668 | scene | special case in `0x00044550` |
+| 17 | Bloom | 250 | scene | gated by `0x004ba024` |
+| 18, 19 | Active camouflage, two layers | 111, 30 | scene | |
+| 21 | Hologram | 6 | scene | |
+| 0, 4, 9, 20, 22, 23 | no passes on the disc | 0 | | 9 is on the shadow list; 20 is drawn by the scene loop |
+
+So the order in a view (`0x0002bcd0`) is: base layers 1, 3, 5, 8, 20 on the
+scene list, then the dynamic lights (10 to 14 per light, `0x00031c80`), then
+sky, transparents, fog and the rest. The view can tag every draw with
+`[0x00467130]` at the shader draw and composite on that.
+
+### What is still unknown
+
+- What reads the stencil marks of modes 1 and 2, and whether modes 3 to 6 are
+  reached at all (indirect calls were not searched).
+- Layers 14 and 20, and the per-light flag bits 3 to 5 at `0x004ba014`.
+- Light kind (definition `+0x04`, `+0x14`), cone, range and gel: which
+  definition fields the light passes' vertex constants come from. These are
+  in `0x00031170`'s callees (`0x0004a1e0` takes 1024.0 and the light, S: the
+  scissor) and the engine vector inputs ([shader-instances.md](shader-instances.md)).
+- The candidate list at `0x00547f98` and the cluster test (`0x000c17f0`).
+- Engine-driven render states (`0x00467020`).
+
+### Recommendation
+
+Risk 1 is retired: the light data is located, its layout is fixed and
+salted, and the moment it is settled is known. Risk 2 is mostly retired:
+the layer number is the pass tag, and the dynamic-light layers are 10 to 13
+(plus 14).
+
+- **Next: phase 2, narrowed.** Start with two observers only: the current
+  layer (`0x00467130`) attached to each draw at `0x0001bbf0`, and the light
+  records read at `0x00031170`'s entry (handle in the caller's list). Prove
+  them uncharged and digest-neutral with the off/on test. Then camera and
+  poses. Estimate: 1 to 2 weeks for layer tagging and lights, 2 to 3 more for
+  camera and object poses, so phase 2 shrinks to 3 to 5 weeks of the same
+  size but with no research left in its first half.
+- **Before phase 5:** trace the light passes' vertex constants (cone, range,
+  falloff, gel) and layer 14. About a week, static.
+- **Phase 3 (viewer prototype) can start now.** It does not depend on any of
+  this, and the finding that retail has no shadow-volume path means the
+  volumes-against-maps question is open on its merits.
+- **Phase 1** stays the cheapest visible step: shadow buffers are layer 10
+  into target 9 or 10, sampled with `GREATER` on layer 11, which the view can
+  scale and force to one tap without guest changes.
 
 ## Goals and non-goals
 
@@ -165,7 +347,7 @@ at the moment the guest reaches them.
 | Which material and pass each draw belongs to | `0x0001bbf0` begins a shader draw and passes (shader, LOD, layer, pass) to `0x00016b90` ([shader-instances.md](shader-instances.md)) | Decoded |
 | Which geometry each draw belongs to | `0x00041040` branches between structure clusters and render models ([engine-map.md](engine-map.md)) | Located, marked "likely" |
 | The sun's direction and colour | `sky` lights ([lighting.md](lighting.md)) | Angles decoded; colour and the rest not |
-| Dynamic lights: position, direction, cone, colour, range | the guest's live light data, and `ligh` tags ([effects.md](effects.md)) | Not located. The largest gap. |
+| Dynamic lights: position, direction, cone, colour, range | the light datum array at `[0x004e030c]`, read at the per-light pass `0x00031170` ("Phase 0 findings") | Located: frame, colours, intensity, bounds, shadow decision. Cone, range and falloff not traced |
 | Object poses and skinning matrices for shadow casters | the guest's object and render-cache data ([objects.md](objects.md), `0x0003d270`) | Not decoded for this use |
 | Level and model geometry, including what the camera cannot see | tags: `tags::structure`, `tags::geometry`, `tags::model`; collision in [collision.md](collision.md) | Decoders exist |
 | Which bitmap parameter of a material is its normal map | template and pass bindings ([shader-instances.md](shader-instances.md)) | Bindings decoded; meanings not named |
@@ -236,10 +418,11 @@ lights shade surfaces:
    draws, identified by their pass tags, and substitutes its result at the
    same point in the frame. The reference draws them as always.
 
-Step 3 needs the pass taxonomy, which is not recovered: we know draws carry a
-layer index, not what each layer is ([engine-map.md](engine-map.md),
-`0x00013680`). Compositing at the wrong point lights fog, transparents and the
-HUD. This is the part most likely to take longer than planned.
+Step 3 needs the pass taxonomy. Phase 0 recovered most of it: the layer index
+is shared by templates and the engine, and the dynamic-light layers are 10 to
+13 ("Pass taxonomy: the layers"). Layer 14 and a few empty layers are
+unnamed. Compositing at the wrong point lights fog, transparents and the HUD,
+so this is still the part most likely to take longer than planned.
 
 ### The lightmap problem
 
@@ -302,7 +485,7 @@ here to show relative size.
 
 | Phase | Work | Effort | Needs |
 |---|---|---|---|
-| 0 | Static research, no runtime change: trace the stencil call sites and name each use; find the light creation and render path from the `ligh` part case (`0x0017ab2e`); read the light flags off engine code; find who draws the shadow depth levels; name the layers in the scene-pass dispatch. Deliverables are docs, decoders and invented-data tests. | 2-4 weeks | Nothing |
+| 0 | **Done 2026-11-16** ("Phase 0 findings"). Static research, no runtime change: trace the stencil call sites and name each use; find the light creation and render path from the `ligh` part case (`0x0017ab2e`); read the light flags off engine code; find who draws the shadow depth levels; name the layers in the scene-pass dispatch. Deliverables are docs, decoders and invented-data tests. | 2-4 weeks | Nothing |
 | 1 | Harder retail shadows in the view: scaled shadow buffers, one-tap comparison. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling |
 | 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. | 3-5 weeks | Phase 0 |
 | 3 | Viewer prototype: volumes against shadow maps on tag geometry, with timings. Decide. | 2-3 weeks | Nothing; can run beside phase 2 |
@@ -312,11 +495,11 @@ here to show relative size.
 
 Risks, largest first:
 
-1. **The light data is not found or not stable.** Everything from phase 2 on
-   needs live light state, and the render code for lights has not been
-   located. Phase 0 exists to retire this first.
-2. **Pass taxonomy.** Without knowing which draws are opaque base passes,
-   light passes, fog and transparents, the view cannot composite correctly.
+1. **The light data is not found or not stable.** Retired by phase 0: a
+   salted datum array, read at a known point in the render pass. What is
+   left is the cone, range and falloff inputs to the light passes.
+2. **Pass taxonomy.** Mostly retired by phase 0: the layer number is the
+   pass tag. Layer 14 and the stencil marks' readers are open.
 3. **Material coverage.** There are 165 templates and 147 passes in retail
    ([shader-instances.md](shader-instances.md)). Finding the normal map for
    each needs the engine texture sources and inputs named, which are open

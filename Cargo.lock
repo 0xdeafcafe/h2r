@@ -454,6 +454,7 @@ dependencies = [
  "png",
  "runtime",
  "runtime-test-probe",
+ "rustc-hash 2.1.3",
  "tags",
  "timeline",
  "toml",

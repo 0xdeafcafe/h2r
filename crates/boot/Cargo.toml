@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+rustc-hash = "2"
 xbe.workspace = true
 xiso.workspace = true
 analyze.workspace = true

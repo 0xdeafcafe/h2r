@@ -23,7 +23,7 @@ use runtime::{CpuAbi, Event, ExecCtx, ExecCtxOpaque, GuestFn, TransferAbi, abi};
 
 struct Tables {
     /// Selector to the real generated handler.
-    handlers: HashMap<u32, GuestFn>,
+    handlers: rustc_hash::FxHashMap<u32, GuestFn>,
     entries: HashSet<u32>,
     resumes: HashSet<u32>,
 }
@@ -76,7 +76,7 @@ pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, 
     if CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("the boot fallback serves one generated module per process; a second load was refused".into());
     }
-    let mut handlers: HashMap<u32, GuestFn> = entries.iter().copied().collect();
+    let mut handlers: rustc_hash::FxHashMap<u32, GuestFn> = entries.iter().copied().collect();
     let owners: HashMap<u32, GuestFn> = entries.iter().copied().collect();
     let mut conflicts = 0;
     for &(_, owner, start) in resumes {
