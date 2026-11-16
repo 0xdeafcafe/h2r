@@ -40,6 +40,11 @@ struct StoredAccount {
     gamertag: String,
     #[serde(default)]
     key: Option<serde_json::Value>,
+    /// The player's identity, listed for sign-in, whose key for this server
+    /// is not on this machine yet: picking it asks for a recovery code in
+    /// game (docs/live/live.md, "In-game sign-in").
+    #[serde(default)]
+    needs_code: bool,
     // The host-supplied server_url is authoritative. Ignore server/future fields.
 }
 
@@ -48,6 +53,9 @@ pub(crate) struct Account {
     pub xuid: u64,
     pub gamertag: String,
     pub key: Option<Arc<KeyPair>>,
+    /// Signing in asks for a code first ([`crate::signin`]); no key is
+    /// kept for it.
+    pub needs_code: bool,
 }
 
 impl LiveConfig {
@@ -68,7 +76,7 @@ pub(crate) fn parse_accounts(json: &[u8]) -> Result<Vec<Account>, ConfigError> {
         return Err(ConfigError::Accounts);
     }
     let mut seen = BTreeSet::new();
-    stored
+    let accounts: Vec<Account> = stored
         .into_iter()
         .map(|s| {
             let hex = s
@@ -100,12 +108,29 @@ pub(crate) fn parse_accounts(json: &[u8]) -> Result<Vec<Account>, ConfigError> {
                 // Never retain or format serde/JWK errors or input values.
                 key: s
                     .key
+                    .filter(|_| !s.needs_code)
                     .and_then(|v| serde_json::from_value::<PrivateJwk>(v).ok())
                     .and_then(|j| KeyPair::from_private_jwk(&j).ok())
                     .map(Arc::new),
+                needs_code: s.needs_code,
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // An identity waiting for a code is listed once, and not beside a
+    // signed-in-ready account of the same gamertag.
+    let ready: BTreeSet<String> = accounts
+        .iter()
+        .filter(|a| !a.needs_code && a.key.is_some())
+        .map(|a| a.gamertag.to_ascii_lowercase())
+        .collect();
+    let mut waiting = BTreeSet::new();
+    Ok(accounts
+        .into_iter()
+        .filter(|a| {
+            let tag = a.gamertag.to_ascii_lowercase();
+            !a.needs_code || (!ready.contains(&tag) && waiting.insert(tag))
+        })
+        .collect())
 }
 
 /// Ask the host routing table for its default-route IPv4 without sending a
@@ -134,6 +159,24 @@ mod tests {
         assert_eq!(accounts[0].xuid, 0x0009_1234_5678_90ab);
         assert_eq!(accounts[0].gamertag, "Player");
         assert!(accounts[0].key.is_none());
+    }
+    #[test]
+    fn identities_waiting_for_a_code_are_listed_once_without_a_key() {
+        let key = KeyPair::generate();
+        let data = serde_json::json!([
+            {"xuid":"0009000000000001", "gamertag":"Ready", "key":key.private_jwk()},
+            // The same gamertag ready to sign in: not listed twice.
+            {"xuid":"0009000000000002", "gamertag":"ready", "needs_code":true},
+            // A key from another server is never used for this one.
+            {"xuid":"0009000000000003", "gamertag":"Away", "needs_code":true, "key":key.private_jwk()},
+            {"xuid":"0009000000000004", "gamertag":"AWAY", "needs_code":true},
+        ]);
+        let accounts = parse_accounts(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let listed: Vec<_> = accounts
+            .iter()
+            .map(|a| (a.gamertag.as_str(), a.needs_code, a.key.is_some()))
+            .collect();
+        assert_eq!(listed, [("Ready", false, true), ("Away", true, false)]);
     }
     #[test]
     fn accounts_parse_private_jwks_without_exposing_secrets() {

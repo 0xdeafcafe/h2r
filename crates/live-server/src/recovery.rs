@@ -206,8 +206,10 @@ pub async fn recover(
         .secret(xuid)
         .ok_or_else(|| forbidden("this account has no recovery set up"))?;
     let Some(step) = secret.verify(code, now) else {
-        live.recovery.lockout.fail(&lock);
-        return Err(forbidden("wrong code"));
+        // The count lets a client say how many tries are left
+        // (docs/live/live-security.md §1, Recovery).
+        let left = live.recovery.lockout.fail(&lock);
+        return Err(forbidden(format!("wrong code; {left} tries left")));
     };
     if !live
         .recovery

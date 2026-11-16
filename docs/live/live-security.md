@@ -64,7 +64,8 @@ shown `123-456`), the same scheme authenticator apps use.
 - **Guessing.** Wrong codes count per gamertag: after 5, the gamertag is
   locked for a minute, doubling with every further wrong code up to a day
   (429 with the time left); a right code clears it; a gamertag quiet for a
-  day starts over. Sign-up and recovery also share the server-wide
+  day starts over. A wrong code's 403 says how many are left before the
+  lock (`wrong code; N tries left`), which the in-game prompt shows. Sign-up and recovery also share the server-wide
   creation rate limit. With three codes valid at once, the first five
   guesses succeed with odds of about 1 in 67,000; after that each guess
   costs exponentially more time.

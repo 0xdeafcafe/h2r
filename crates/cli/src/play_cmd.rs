@@ -20,6 +20,7 @@ const USAGE: &str = "usage:
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
+          [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
@@ -68,9 +69,11 @@ https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
 The account is one kept in accounts.json for that server; else --gamertag
 NAME, or the gamertag you last played as on another server (keeping its
 key), or one named after your user. A name new to the server is made
-there (--invite CODE, or asked for, if it is invite-only); one it already
-has is recovered with the code from Account on its dashboard or your
-authenticator app, asked for on the terminal. Signed in, the
+there (--invite CODE if it is invite-only); one it already has is
+recovered with the code from Account on its dashboard or your
+authenticator app, which the game asks for when you sign in to Live
+(--signin-terminal asks on the terminal before the game starts instead,
+with an invite too). Signed in, the
 account's saves (profiles, variants, campaign saves, profile settings) are
 merged into the data root before the game starts and uploaded as it writes
 them; H2_CLOUD_SAVES=0 turns that off (docs/live/live-cloud-saves.md).
@@ -878,10 +881,16 @@ fn start_live(
         .flatten();
     let site = live_server::http::Site { web, game_art };
     let session = crate::play_live::start(live, &db, &places, site, &crate::play_live::os_user())?;
+    let playing = match (&session.account, &session.waiting) {
+        (Some(a), _) => format!("playing as {} ({})", a.gamertag, a.xuid),
+        (None, Some(tag)) => format!(
+            "{tag} needs a code from Account on {}/dash; the game asks for it when you sign in to Xbox Live,",
+            session.server
+        ),
+        (None, None) => "no account yet,".to_string(),
+    };
     eprintln!(
-        "live: playing as {} ({}) on {}{}{}",
-        session.account.gamertag,
-        session.account.xuid,
+        "live: {playing} on {}{}{}",
         session.server,
         session
             .store()
@@ -893,10 +902,10 @@ fn start_live(
     match (session.store(), has_web) {
         (Some(_), true) => {
             eprintln!("live: web app at {}/", session.server);
-            if let Some(link) = &session.signin {
+            if let (Some(link), Some(a)) = (&session.signin, &session.account) {
                 eprintln!(
                     "live: sign this browser in as {} (one use, this machine only): {link}",
-                    session.account.gamertag
+                    a.gamertag
                 );
             }
         }

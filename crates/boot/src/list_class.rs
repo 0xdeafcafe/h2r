@@ -66,7 +66,9 @@ pub const ACTION_BUTTONS: [u32; 2] = [X_BUTTON, START_BUTTON];
 /// handler (`0x24c024`) moves its focus on 1 and 3 and hands 2 and 4 on.
 /// Buttons (kind 5) are raised only on the frame a button goes down
 /// (its held count is 1); holding one raises nothing more.
+pub const UP_EVENT: u32 = 1;
 pub const LEFT_EVENT: u32 = 2;
+pub const DOWN_EVENT: u32 = 3;
 pub const RIGHT_EVENT: u32 = 4;
 /// Screen vtable slot 0: the destructor (thiscall, a flags word, `ret 4`),
 /// which the stack calls when a closed screen's out transition ends, just
@@ -130,6 +132,13 @@ pub trait Rows: Send + Sync {
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
         None
     }
+    /// Text that changes while the screen is up, asked at each row text:
+    /// bytes to write to guest memory first (the strings the ids this
+    /// class shows are served from), and whether the description must be
+    /// set again though the focus did not move.
+    fn live_text(&self) -> LiveText {
+        LiveText::default()
+    }
     /// Left (`right` false) or right on row `row`, for a class with
     /// sideways steps ([`ListClass::sideways`]): what to log, `None` when
     /// the row has nothing to step.
@@ -143,6 +152,28 @@ pub trait Rows: Send + Sync {
         Ok(())
     }
 }
+
+/// See [`Rows::live_text`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LiveText {
+    pub writes: Vec<(u32, Vec<u8>)>,
+    pub redraw: bool,
+}
+
+/// What a class's own event hook did with an event ([`ListClass::buttons`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    /// Taken: the screen's children never see it.
+    Handled,
+    /// Goes on as before (B and Back close, the rest reach the list).
+    Pass,
+}
+
+/// A class's own handling of every event, given its kind word and button
+/// word ([`BUTTON_EVENT`] with a button, or a direction: [`UP_EVENT`],
+/// [`LEFT_EVENT`], [`DOWN_EVENT`], [`RIGHT_EVENT`]), asked before the
+/// action, the sideways steps and the Controls handler.
+pub type Buttons = Arc<dyn Fn(u32, u32) -> Button + Send + Sync>;
 
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
 /// (docs/formats/ui.md "Bitmap block") and placed with its top-left at `at`. The
@@ -472,6 +503,13 @@ impl Shown {
             .find(|e| e.screen == screen)
             .and_then(|e| e.picture)
     }
+    /// Screen `screen`'s description widget.
+    pub fn widget(&self, screen: u32) -> Option<u32> {
+        self.lock()
+            .iter()
+            .find(|e| e.screen == screen)
+            .map(|e| e.widget)
+    }
     /// Row `row` is focused on `screen`: its description widget when that is
     /// another row than it shows (it shows `row` from now), else `None`.
     pub fn focus(&self, screen: u32, row: Option<i16>) -> Option<u32> {
@@ -586,6 +624,7 @@ pub struct ListClass {
     picture: Option<PictureSpec>,
     layout: Option<ListLayout>,
     action: Option<Action>,
+    buttons: Option<Buttons>,
     sideways: bool,
     on_free: Option<OnFree>,
     loader: Arc<AtomicU32>,
@@ -606,6 +645,7 @@ impl ListClass {
             picture: None,
             layout: None,
             action: None,
+            buttons: None,
             sideways: false,
             on_free: None,
             loader: Arc::new(AtomicU32::new(0)),
@@ -631,6 +671,12 @@ impl ListClass {
     /// X and Start ([`ACTION_BUTTONS`]) too.
     pub fn action(mut self, action: Action) -> Self {
         self.action = Some(action);
+        self
+    }
+    /// With buttons of its own, asked first on each button event (screen
+    /// slot 10): the sign-in prompt's d-pad digits.
+    pub fn buttons(mut self, buttons: Buttons) -> Self {
+        self.buttons = Some(buttons);
         self
     }
     /// With sideways steps: left and right on the focused row go to
@@ -867,6 +913,15 @@ pub async fn row_text(
     shown: Option<Arc<Shown>>,
 ) -> Result<Ret, EntryError> {
     let item = cx.arg(0)?;
+    let live = rows.live_text();
+    if !live.writes.is_empty() {
+        cx.write(|m| -> Result<(), MemFault> {
+            for (at, bytes) in &live.writes {
+                m.write(*at, bytes)?;
+            }
+            Ok(())
+        })?;
+    }
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
@@ -880,7 +935,9 @@ pub async fn row_text(
             .await?
             .eax;
         let focused = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
-        if let Some(widget) = shown.focus(screen, focused) {
+        let moved = shown.focus(screen, focused);
+        let widget = moved.or_else(|| live.redraw.then(|| shown.widget(screen)).flatten());
+        if let Some(widget) = widget {
             if let Some(id) = focused.and_then(|r| rows.description(r)) {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
@@ -890,9 +947,11 @@ pub async fn row_text(
                 )
                 .await?;
             }
-            if let (Some(picture), Some(tint)) =
-                (shown.picture(screen), focused.and_then(|r| rows.tint(r)))
-            {
+            if let (Some(picture), Some(tint), Some(_)) = (
+                shown.picture(screen),
+                focused.and_then(|r| rows.tint(r)),
+                moved,
+            ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
         }
@@ -933,21 +992,28 @@ pub async fn row_chosen(
     Ok(Ret::new(0, 8))
 }
 
-/// Screen slot 10 of a class with an action or sideways steps: X or Start
-/// runs the action, and left or right ([`LEFT_EVENT`], [`RIGHT_EVENT`]) on
-/// the focused row its [`Rows::sideways`] (AL 1, handled); every other
-/// event goes to `original`, the Controls class's handler. Thiscall, the
-/// event, `ret 4`.
+/// Screen slot 10 of a class with an action, sideways steps or an event
+/// hook of its own: the hook first ([`Button::Handled`]: AL 1), then X or
+/// Start runs the action, and left or right ([`LEFT_EVENT`],
+/// [`RIGHT_EVENT`]) on the focused row its [`Rows::sideways`] (AL 1,
+/// handled); every other event goes to `original`, the Controls class's
+/// handler. Thiscall, the event, `ret 4`.
 pub async fn event(
     cx: Cx,
     original: u32,
     action: Option<Action>,
+    buttons: Option<Buttons>,
     sideways: Option<Arc<dyn Rows>>,
 ) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
     let (kind, button) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
+    if let Some(buttons) = &buttons
+        && buttons(kind, button) == Button::Handled
+    {
+        return Ok(Ret::new(1, 4));
+    }
     if let Some(action) = action
         && kind == BUTTON_EVENT
         && ACTION_BUTTONS.contains(&button)
@@ -1145,14 +1211,15 @@ impl feature::Feature for ListClass {
         // The Controls class's event handler, read from its vtable when
         // first needed (the class's own slot replaces it in our copy).
         let sideways = self.sideways.then(|| Arc::clone(&rows));
-        let event_at = if self.action.is_some() || sideways.is_some() {
-            let action = self.action.clone();
+        let event_at = if self.action.is_some() || sideways.is_some() || self.buttons.is_some() {
+            let (action, buttons) = (self.action.clone(), self.buttons.clone());
             b.entry("event", move |cx| -> EntryFuture {
-                let (action, sideways) = (action.clone(), sideways.clone());
+                let (action, buttons, sideways) =
+                    (action.clone(), buttons.clone(), sideways.clone());
                 Box::pin(async move {
                     let original =
                         cx.read(|m| ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_EVENT_SLOT))?;
-                    event(cx, original, action, sideways).await
+                    event(cx, original, action, buttons, sideways).await
                 })
             })?
         } else {
@@ -1170,6 +1237,7 @@ impl feature::Feature for ListClass {
             })?,
             None => 0,
         };
+
         let description = self
             .description
             .zip(shown)
@@ -1886,6 +1954,77 @@ mod tests {
         assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls.len(), 4);
     }
 
+    /// Text that changes while the screen is up: written before the row
+    /// is drawn, and the description set again with the focus unmoved.
+    #[test]
+    fn live_text_is_written_and_redraws_the_description() {
+        struct Live;
+        impl Rows for Live {
+            fn title(&self) -> u32 {
+                0x77
+            }
+            fn count(&self) -> usize {
+                1
+            }
+            fn texts(&self, _row: i16) -> Vec<(u32, u32)> {
+                vec![(0, 0x100)]
+            }
+            fn press(&self, _row: i16) -> Chosen {
+                Chosen::Nothing
+            }
+            fn description(&self, _row: i16) -> Option<u32> {
+                Some(0x200)
+            }
+            fn live_text(&self) -> LiveText {
+                LiveText {
+                    writes: vec![(0x0062_0000, b"hi\0".to_vec())],
+                    redraw: true,
+                }
+            }
+        }
+        const ITEM: u32 = 0x0060_0000;
+        let list = SCREEN + ui::LIST;
+        let shown = Arc::new(Shown::default());
+        shown.set_widget(SCREEN, 0x9000);
+        let rows: Arc<dyn Rows> = Arc::new(Live);
+        let draw = || {
+            let mut g = guest();
+            g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+            g.map(ITEM, Item::SIZE);
+            g.map(0x0062_0000, 0x10);
+            Item::at(ITEM)
+                .set_row(&mut g, Some(DatumHandle::new(0x8001, 0)))
+                .unwrap();
+            let f = {
+                let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
+                move |cx| -> EntryFuture {
+                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown))))
+                }
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: list,
+                ..Default::default()
+            };
+            testing::run(&f, g, regs, move |c, _| Regs {
+                eax: match c.target {
+                    t if t == points::ITEM_TEXT.base => 0x7000,
+                    t if t == points::LIST_FOCUSED_ROW.base => DatumHandle::new(0x8001, 0).raw(),
+                    _ => 0,
+                },
+                ..Default::default()
+            })
+        };
+        let set = Gc::new(points::TEXT_SET.base)
+            .edi(0x9000)
+            .esi(SCREEN)
+            .args([0x200]);
+        draw();
+        let run = draw();
+        assert_eq!(run.guest.bytes(0x0062_0000, 3).unwrap(), b"hi\0");
+        assert_eq!(run.calls.last(), Some(&set), "the focus did not move");
+    }
+
     #[test]
     fn a_class_with_a_description_places_the_same_entries() {
         let mut r = feature::Registry::new(feature::Switches::defaults());
@@ -2178,7 +2317,7 @@ mod tests {
                 Box::pin(async { Ok(()) })
             });
             let f = move |cx| -> EntryFuture {
-                Box::pin(event(cx, 0x2300ea, Some(Arc::clone(&action)), None))
+                Box::pin(event(cx, 0x2300ea, Some(Arc::clone(&action)), None, None))
             };
             let regs = Regs {
                 esp: STACK,
@@ -2200,6 +2339,68 @@ mod tests {
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
         assert_eq!(run.result, Ok(Ret::new(7, 4)));
         assert_eq!(ran.load(Ordering::SeqCst), 0, "B is not Start");
+    }
+
+    /// A class's own event hook comes first: a handled event stops there
+    /// (before the sideways steps and the list), a passed one goes on to
+    /// the Controls handler (B still closes).
+    #[test]
+    fn a_class_s_own_event_hook_is_asked_first() {
+        const EVENT: u32 = 0x0061_0000;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let run_with = |kind: u32, button: u32| {
+            let mut g = guest();
+            g.map(EVENT, 0x10);
+            g.put_u32(EVENT, kind).put_u32(EVENT + 8, button);
+            g.put_u32(STACK + 4, EVENT);
+            let seen = Arc::clone(&seen);
+            let buttons: Buttons = Arc::new(move |k, b| {
+                seen.lock().unwrap().push((k, b));
+                if k == LEFT_EVENT {
+                    Button::Handled
+                } else {
+                    Button::Pass
+                }
+            });
+            let sideways: Arc<dyn Rows> = Arc::new(Stepping::default());
+            let f = move |cx| -> EntryFuture {
+                Box::pin(event(
+                    cx,
+                    0x2300ea,
+                    None,
+                    Some(Arc::clone(&buttons)),
+                    Some(Arc::clone(&sideways)),
+                ))
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: SCREEN,
+                ..Default::default()
+            };
+            testing::run(&f, g, regs, |_, _| Regs {
+                eax: 7,
+                ..Default::default()
+            })
+        };
+        let run = run_with(LEFT_EVENT, 10);
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
+        assert_eq!(
+            run.calls,
+            [],
+            "handled: no focus asked, the list never sees it"
+        );
+        let run = run_with(BUTTON_EVENT, 1);
+        assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
+        let run = run_with(BUTTON_EVENT, START_BUTTON);
+        assert_eq!(run.calls.len(), 1, "no action: Start goes on too");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (LEFT_EVENT, 10),
+                (BUTTON_EVENT, 1),
+                (BUTTON_EVENT, START_BUTTON)
+            ]
+        );
     }
 
     /// Rows that step sideways: what they were asked, and a line for rows
@@ -2240,7 +2441,7 @@ mod tests {
             let rows: Arc<dyn Rows> = Arc::clone(rows) as Arc<dyn Rows>;
             let f = move |cx| -> EntryFuture {
                 let sideways = sideways.then(|| Arc::clone(&rows));
-                Box::pin(event(cx, 0x2300ea, None, sideways))
+                Box::pin(event(cx, 0x2300ea, None, None, sideways))
             };
             let regs = Regs {
                 esp: STACK,
