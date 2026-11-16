@@ -94,6 +94,9 @@ export class ViewerScene {
   private labels: CSS2DRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
+  /** The near plane when the camera is far out; it shrinks as the camera
+   *  comes in (fitNear) so close-ups are not clipped. */
+  private farNear = 0.1;
   private controls: OrbitControls;
   private sun: THREE.DirectionalLight;
   private composer: EffectComposer | null = null;
@@ -201,7 +204,7 @@ export class ViewerScene {
     this.controls.dampingFactor = 0.09;
     this.controls.zoomToCursor = true;
     this.controls.maxPolarAngle = Math.PI * 0.495;
-    this.controls.addEventListener("change", () => { this.dirty = true; });
+    this.controls.addEventListener("change", () => { this.fitNear(); this.dirty = true; });
     this.controls.addEventListener("start", () => { this.tween = null; });
 
     this.geoBody = new THREE.CapsuleGeometry(0.22, 0.42, 6, 16).translate(0, 0.43, 0);
@@ -273,6 +276,17 @@ export class ViewerScene {
   }
 
   /** Gives a level material the height cut and the see-through. */
+  /** Near plane from the camera's distance to what it orbits: small up
+   *  close, back to the map's own value further out, for depth precision. */
+  private fitNear() {
+    const d = this.camera.position.distanceTo(this.controls.target);
+    const near = Math.min(this.farNear, Math.max(0.01, d / 150));
+    if (Math.abs(near - this.camera.near) > near * 0.05) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
   private cutaway(m: THREE.Material) {
     if (this.patched.has(m)) return;
     this.patched.add(m);
@@ -381,10 +395,12 @@ export class ViewerScene {
     const drop = real ? Math.max(0.02 * r, 0.3) : 0.02 * this.scale;
     this.ground.position.set(c.x, b.min[2] - drop, c.z);
     this.ground.scale.setScalar(r * 14);
-    this.camera.near = Math.max(0.05, r / 400);
+    this.farNear = Math.max(0.05, r / 400);
     this.camera.far = r * 60;
-    this.camera.updateProjectionMatrix();
-    this.controls.minDistance = Math.max(this.scale * 2.5, r * 0.04);
+    this.fitNear();
+    // Close enough to look a player in the face, on any size of map
+    // (campaign levels are hundreds of times larger than a player).
+    this.controls.minDistance = Math.max(0.35, this.scale * 0.6);
     this.controls.maxDistance = r * 6;
     this.gtao?.updateGtaoMaterial({ radius: this.scale * 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.15, samples: 12 });
     this.dirty = true;
