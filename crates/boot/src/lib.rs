@@ -532,10 +532,12 @@ pub fn run_hosted_with_live(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
-    // Edited maps from H2_MAP_DIR in place of the disc's (docs/storage.md
-    // "Map overrides"); unset, the disc is mounted as it always was.
+    // Map packages from <data>/maps (docs/maps.md) and edited maps from
+    // H2_MAP_DIR in place of the disc's (docs/storage.md "Map overrides");
+    // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
-    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref());
+    let packages = map_override::packages_dir(&opts.data_root);
+    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages));
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }

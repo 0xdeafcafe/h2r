@@ -27,6 +27,7 @@ x87 = { path = "crates/x87" }
 kernel = { path = "crates/kernel" }
 vfs = { path = "crates/vfs" }
 boot = { path = "crates/boot" }
+content = { path = "crates/content" }
 live-proto = { path = "crates/live-proto" }
 live-server = { path = "crates/live-server" }
 thiserror = "2"

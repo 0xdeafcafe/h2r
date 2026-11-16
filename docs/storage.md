@@ -149,6 +149,29 @@ exactly as before. The font rewrite wraps it, so both apply.
 - Read-only: writes, creation, resizing and removal fail with
   `MediaWriteProtected`, and the directory is never written.
 
+### Map packages
+
+`PackageBackend::new(inner, library)` serves `maps\<name>.map` from the
+map packages in a `content::Library` (`<data>/maps/`, docs/maps.md §7)
+for maps the disc has. An offset-patched map (PPF, IPS) streams from the
+disc's map with the patched runs laid over each read, never copied; a
+materialised map (BPS) is read from `<data>/maps/cache/<MapId>.map`. The
+header checksum at +0x2d0 is repaired in both. Its size shows in `stat`
+and in listings of `maps`; `host_file` gives the cache file for a
+materialised map and none for an overlay. Each map is resolved once, on
+first use, and logged once; a package that cannot be used (base hash
+mismatch, damaged patch) is a warning and the disc's map is served.
+Read-only, like the disc.
+
+The boot stacks the layers as font rewrite, then `MapOverrideBackend`
+(`H2_MAP_DIR`), then `PackageBackend`, then the disc, adding only the
+layers in use: with no valid package and no `H2_MAP_DIR` the mount is
+exactly `with_disc` / `with_disc_rewrite`. Tests:
+`crates/content` (formats, resolver, cache), `crates/vfs/tests/packages.rs`
+(streaming at arbitrary offsets through `D:`, listings, BPS from the cache,
+a refused base, `H2_MAP_DIR` over a package, an unchanged disc without
+packages) and `crates/boot/src/map_override.rs`.
+
 `Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
 backend built by the caller. Tests: `crates/vfs/src/map_override.rs` and
 `crates/vfs/tests/map_override.rs` (sparse 300 MiB streaming, listings,

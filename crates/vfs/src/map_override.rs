@@ -48,7 +48,7 @@ pub struct MapOverrideBackend<B> {
 }
 
 /// Whether `path` names a map directly under `maps` (any case).
-fn is_map_path(path: &str) -> Option<&str> {
+pub(crate) fn is_map_path(path: &str) -> Option<&str> {
     let (dir, name) = path.split_once('\\')?;
     if !dir.eq_ignore_ascii_case("maps") || name.contains('\\') {
         return None;
@@ -132,11 +132,12 @@ impl<B: Backend> MapOverrideBackend<B> {
         }
         self.files.get_mut(&key)?.as_mut()
     }
+}
 
-    fn resize(meta: &mut Metadata, len: u64) {
-        meta.end_of_file = len;
-        meta.allocation_size = len.div_ceil(xiso::SECTOR) * xiso::SECTOR;
-    }
+/// `meta` for a file of `len` bytes: its size, sector-rounded allocation.
+pub(crate) fn resize(meta: &mut Metadata, len: u64) {
+    meta.end_of_file = len;
+    meta.allocation_size = len.div_ceil(xiso::SECTOR) * xiso::SECTOR;
 }
 
 /// The host file in `dir` named `name` (ASCII case-insensitive), checked and
@@ -216,7 +217,7 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
         let mut meta = self.inner.stat(path)?;
         if let Some(o) = self.chosen(path) {
             let len = o.len;
-            Self::resize(&mut meta, len);
+            resize(&mut meta, len);
         }
         Ok(meta)
     }
@@ -231,7 +232,7 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
             }
             if let Some(o) = self.chosen(&format!("{path}\\{}", e.name)) {
                 let len = o.len;
-                Self::resize(&mut e.metadata, len);
+                resize(&mut e.metadata, len);
             }
         }
         Ok(entries)
