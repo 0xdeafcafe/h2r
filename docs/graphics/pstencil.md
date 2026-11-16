@@ -233,3 +233,5 @@ are in e3-lighting.md.
   to Halo 2": <https://halo.bungie.org/news.html?item=42711>
 - Halo 2: Restored Lighting, a community per-pixel lighting mod on Sev's
   shaders: <https://www.nexusmods.com/halothemasterchiefcollection/mods/2603>
+
+The history, from public sources, is in [pstencil-history.md](pstencil-history.md); its §4 list of how the demo looked is the tuning reference.
