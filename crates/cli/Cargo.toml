@@ -45,7 +45,6 @@ iced-x86 = { version = "1", default-features = false, features = ["std", "decode
 asf = { path = "../asf" }
 wma = { path = "../wma" }
 live-proto.workspace = true
-content.workspace = true
 live-server.workspace = true
 serde.workspace = true
 serde_json.workspace = true
