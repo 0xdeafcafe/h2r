@@ -260,7 +260,8 @@ mod tests {
         envs.sort();
         envs.dedup();
         assert_eq!(keys.len(), ALL.len());
-        assert_eq!(envs.len(), ALL.len());
+        // Skulls are per-profile only and have no variable.
+        assert_eq!(envs.len(), ALL.iter().filter(|d| d.env.is_some()).count());
         for d in ALL {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
@@ -312,7 +313,11 @@ mod tests {
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
-        assert!(ALL.iter().all(|d| s.state(d.key).unwrap().locked));
+        assert!(
+            ALL.iter()
+                .filter(|d| d.env.is_some())
+                .all(|d| s.state(d.key).unwrap().locked)
+        );
         // Bad ones are reported and ignored.
         let (s, p) = with_env(
             &data,

@@ -39,10 +39,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use runtime::TransferAbi;
 use runtime::dispatch::Dispatch;
 use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
-use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 use settings::{Apply, Def, Kind, Menu, Scope, Store, Tier, Value};
 
 use crate::layout_glue::Gm;
@@ -143,8 +143,10 @@ pub fn slot_name<M: Gm>(m: &M, slot: u32) -> Option<String> {
         return None;
     }
     let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take(NAME_UNITS - 1)
         .take_while(|u| *u != 0)
         .collect();
@@ -614,7 +616,8 @@ mod tests {
         assert_eq!(flags(&g), Some(want));
         // Co-op: the union of both profiles' selections.
         let mut g = guest(&["Chief", "Arbiter"]);
-        apply(&mut g, &selection(&s, &signed_in(&g)).unwrap());
+        let both = selection(&s, &signed_in(&g)).unwrap();
+        apply(&mut g, &both);
         want[3] = true;
         assert_eq!(flags(&g), Some(want));
         // No named profile: the game's own state is left alone.
