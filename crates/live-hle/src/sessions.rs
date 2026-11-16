@@ -52,6 +52,9 @@ pub struct LocalSession {
     /// The skulls the host has on for its next game (docs/game/skulls.md "In
     /// multiplayer"), when any.
     pub skulls: Option<Vec<u8>>,
+    /// A co-op campaign lobby's level and difficulty (docs/live/live-coop.md,
+    /// "Co-op over Live"): advertised with `flags: "coop"`.
+    pub campaign: Option<live_proto::session::Campaign>,
 }
 struct Record {
     session: LocalSession,
@@ -124,6 +127,12 @@ pub(crate) struct Sessions {
     /// Reads them afresh (boot: the signed-in profiles' choice) each time
     /// the game advertises or updates a lobby.
     skulls_probe: Option<SkullsProbe>,
+    /// The co-op campaign the host set up on its co-op screen, for new and
+    /// updated advertisements.
+    coop: Option<live_proto::session::Campaign>,
+    /// The host's campaign skulls for that campaign; they replace the
+    /// multiplayer ones while a co-op campaign is armed.
+    coop_skulls: Option<Vec<u8>>,
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
@@ -164,6 +173,7 @@ impl Sessions {
         self.visibility = v;
         self.background.retain(|p| p.take().is_none());
         for (id, record) in &mut self.records {
+            let v = coop_visibility(v, record.session.campaign.is_some());
             if record.session.visibility == v {
                 continue;
             }
@@ -216,6 +226,65 @@ impl Sessions {
             }
             record.session.skulls = self.skulls.clone();
         }
+    }
+    /// The host armed (Some) or left (None) a co-op campaign on its co-op
+    /// screen: new advertisements are `coop` sessions with the campaign, and
+    /// open ones are updated now (a signed `SessionUpdated`), so the lobby
+    /// the guest is invited to says what it plays.
+    pub fn set_coop(
+        &mut self,
+        campaign: Option<live_proto::session::Campaign>,
+        skulls: Option<Vec<u8>>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.coop_skulls = campaign.as_ref().and(skulls);
+        self.coop = campaign;
+        self.background.retain(|p| p.take().is_none());
+        let visibility = self.visibility;
+        let coop = self.coop.clone();
+        let skulls = self.advertised_skulls();
+        for (id, record) in &mut self.records {
+            let want = coop_visibility(visibility, coop.is_some());
+            if record.session.campaign == coop
+                && record.session.visibility == want
+                && record.session.skulls == skulls
+            {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        flags: coop.is_none().then(|| "custom".to_owned()),
+                        campaign: coop.clone(),
+                        visibility: (record.session.visibility != want).then_some(want),
+                        skulls: (record.session.skulls != skulls)
+                            .then(|| skulls.clone().unwrap_or_default()),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.campaign = coop.clone();
+            record.session.visibility = want;
+            record.session.skulls = skulls.clone();
+        }
+    }
+    /// The skulls an advertisement carries: the co-op campaign's while one
+    /// is armed, else the multiplayer ones.
+    fn advertised_skulls(&self) -> Option<Vec<u8>> {
+        if self.coop.is_some() {
+            self.coop_skulls.clone()
+        } else {
+            self.skulls.clone()
+        }
+    }
+    pub fn coop(&self) -> Option<&live_proto::session::Campaign> {
+        self.coop.as_ref()
     }
     /// The ids of the sessions this console advertises.
     pub fn own_ids(&self) -> Vec<[u8; 8]> {
@@ -344,7 +413,8 @@ impl Sessions {
                             revision: 0,
                             visibility: self.visibility,
                             map_id,
-                            skulls: self.skulls.clone(),
+                            skulls: self.advertised_skulls(),
+                            campaign: self.coop.clone(),
                         },
                     )
                 } else {
@@ -355,8 +425,10 @@ impl Sessions {
                     (id, record.key, record.session.clone())
                 };
                 session.slots = slots;
-                session.visibility = self.visibility;
-                session.skulls = self.skulls.clone();
+                session.visibility = coop_visibility(self.visibility, self.coop.is_some());
+                session.skulls = self.advertised_skulls();
+                let was_coop = session.campaign.clone();
+                session.campaign = self.coop.clone();
                 // A session keeps its map id once it has one (the wire has
                 // no way back to none).
                 if map_id.is_some() {
@@ -398,8 +470,15 @@ impl Sessions {
                                 visibility: self
                                     .records
                                     .get(&id)
-                                    .is_none_or(|r| r.session.visibility != self.visibility)
-                                    .then_some(self.visibility),
+                                    .is_none_or(|r| r.session.visibility != session.visibility)
+                                    .then_some(session.visibility),
+                                // Only a change, as for visibility.
+                                flags: (was_coop.is_some() && session.campaign.is_none())
+                                    .then(|| "custom".to_owned()),
+                                campaign: session
+                                    .campaign
+                                    .clone()
+                                    .filter(|c| was_coop.as_ref() != Some(c)),
                                 map_id: session.map_id.filter(|m| {
                                     self.records
                                         .get(&id)
@@ -768,7 +847,12 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         host_address: s.host_address.to_vec(),
         slots: s.slots,
         attributes: s.attributes.clone(),
-        flags: "custom".into(),
+        flags: if s.campaign.is_some() {
+            live_proto::session::COOP
+        } else {
+            "custom"
+        }
+        .into(),
         hopper_id: None,
         map: None,
         name: None,
@@ -776,6 +860,15 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         visibility: s.visibility,
         map_id: s.map_id,
         skulls: s.skulls.clone(),
+        campaign: s.campaign.clone(),
+    }
+}
+/// A co-op lobby is friends-only unless the host made it invite-only.
+pub fn coop_visibility(v: Visibility, coop: bool) -> Visibility {
+    if coop && v == Visibility::Public {
+        Visibility::Friends
+    } else {
+        v
     }
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {

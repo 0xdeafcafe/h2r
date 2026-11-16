@@ -38,6 +38,7 @@ fn ad(addr: Option<&str>, visibility: Visibility) -> NewSession {
         visibility,
         map_id: None,
         skulls: None,
+        campaign: None,
     }
 }
 
