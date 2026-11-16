@@ -210,6 +210,92 @@ async fn games_keep_their_map_id_and_filter_by_it() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }
 
+/// A game's skulls are kept as sent, shown in the list, the detail and the
+/// account's recent games, and filter the list; old payloads have none.
+#[tokio::test]
+async fn games_keep_their_skulls_and_filter_by_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let plain = h.start_game(&host, two_player_game(&host)).await;
+    let mut game = two_player_game(&host);
+    game["skulls"] = json!([4, 6]);
+    let both = h.start_game(&host, game).await;
+    let mut game = two_player_game(&host);
+    game["skulls"] = json!([6]);
+    let blind = h.start_game(&host, game).await;
+    let mut campaign = two_player_game(&host);
+    for (k, v) in [
+        ("map", json!("03a_oldmombasa")),
+        ("mode", json!("campaign")),
+        ("kind", json!("campaign")),
+        ("team_play", json!(false)),
+        ("skulls", json!([0, 6, 12])),
+    ] {
+        campaign[k] = v;
+    }
+    campaign.as_object_mut().unwrap().remove("variant");
+    campaign.as_object_mut().unwrap().remove("score_limit");
+    let mythic = h.start_game(&host, campaign).await;
+
+    let ids = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["game_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = h.get("/v1/games").await.json();
+    assert_eq!(
+        ids(&all),
+        [mythic.clone(), blind.clone(), both.clone(), plain.clone()]
+    );
+    assert_eq!(all["items"][0]["skulls"], json!([0, 6, 12]));
+    assert_eq!(all["items"][2]["skulls"], json!([4, 6]));
+    assert!(all["items"][3].get("skulls").is_none(), "none is left out");
+    assert_eq!(
+        h.get(&format!("/v1/games/{both}")).await.json()["skulls"],
+        json!([4, 6])
+    );
+    let tag = "Host";
+    assert_eq!(
+        h.get(&format!("/v1/accounts/{tag}")).await.json()["recent_games"][0]["skulls"],
+        json!([0, 6, 12])
+    );
+    assert_eq!(
+        ids(&h.get("/v1/games?skulls=6").await.json()),
+        [mythic.clone(), blind.clone(), both.clone()]
+    );
+    assert_eq!(
+        ids(&h.get("/v1/games?skulls=6,4").await.json()),
+        std::slice::from_ref(&both)
+    );
+    assert_eq!(
+        ids(&h.get("/v1/games?skulls=12&map=03a_oldmombasa").await.json()),
+        std::slice::from_ref(&mythic)
+    );
+    assert!(ids(&h.get("/v1/games?skulls=14").await.json()).is_empty());
+    for bad in ["64", "x", "-1"] {
+        assert_eq!(
+            h.get(&format!("/v1/games?skulls={bad}")).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    // A multiplayer game naming a campaign-only skull is refused.
+    let mut bad = two_player_game(&host);
+    bad["skulls"] = json!([12]);
+    let r = h
+        .call(
+            Method::POST,
+            "/v1/games",
+            &[h.bearer(&host, lxm::GAMES_WRITE)],
+            bad.to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn game_writes_are_checked() {
     let h = harness().await;

@@ -806,6 +806,10 @@ async fn list_games(
                     .map_err(|_| invalid("map_id is 64 hex digits or none"))?,
             )),
         },
+        skulls: match p.get("skulls") {
+            None => Vec::new(),
+            Some(v) => crate::games::parse_skulls(v).map_err(invalid)?,
+        },
     };
     Ok(json(
         StatusCode::OK,
