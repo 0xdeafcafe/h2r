@@ -128,7 +128,10 @@ Campaign plays as one game per mission (mode `campaign`, no scores): a
 checkpoint revert or restart of the same mission continues it.
 
 `GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
-up to 15 Hz and are not stored.
+up to 15 Hz and are not stored. A live frame's `shots` count since the
+previous live frame; a recorded frame's since the previous recorded frame
+(the sum over the frames it stands for, capped at 64 per player or actor), so
+replays show the firing of the whole second.
 
 ## Read endpoints
 

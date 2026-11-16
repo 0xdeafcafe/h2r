@@ -429,7 +429,9 @@ async fn ingest_fans_out_and_records_frames() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    // Two when the frames straddle a second boundary; the one-a-second rule
+    // itself is the frame clock's unit test.
+    assert!(matches!(recorded.len(), 1 | 2), "{recorded:?}");
     assert_eq!(recorded[0]["tick"], 30);
     assert_eq!(recorded[0]["source"], account.id.as_str());
 }
