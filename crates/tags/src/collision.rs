@@ -155,6 +155,13 @@ pub enum Child2d {
     Surface(u16),
 }
 impl Child2d {
+    /// The stored `u16`: bit 15 marks a surface.
+    pub fn raw(self) -> u16 {
+        match self {
+            Self::Node(i) => i,
+            Self::Surface(i) => i | 0x8000,
+        }
+    }
     fn from_raw(v: u16) -> Self {
         if v & 0x8000 != 0 {
             Self::Surface(v & 0x7fff)
@@ -533,6 +540,99 @@ fn block_of<'a>(
 ) -> Result<(usize, &'a [u8])> {
     let at = element.as_ptr() as usize - p.bytes.as_ptr() as usize + offset;
     p.block(at, stride)
+}
+
+/// The eight block fields of a collision BSP, without the object-collision
+/// element's leading word: the structure BSP (`sbsp+0x14`) stores elements
+/// of exactly this size.
+pub const BSP_BLOCKS_SIZE: usize = 0x40;
+/// Element sizes of the eight blocks, in order.
+pub const BSP_STRIDES: [usize; 8] = [8, 16, 4, 4, 16, 8, 12, 16];
+
+impl Bsp {
+    /// Decodes the eight block fields at `at` in `bytes` (loaded at `base`).
+    /// The structure BSP's collision element is this; an object collision
+    /// BSP element is a word followed by it. `unknown_00` is left zero.
+    pub fn decode_blocks(bytes: &[u8], base: u32, at: usize) -> Result<Self> {
+        if at < 4 {
+            // decode_bsp reads the leading word at `at - 4`; give it room.
+            let mut padded = vec![0u8; 4];
+            padded.extend_from_slice(bytes);
+            let mut bsp = decode_bsp(&Payload::new(&padded, base.wrapping_sub(4)), at)?;
+            bsp.unknown_00 = 0;
+            return Ok(bsp);
+        }
+        let mut bsp = decode_bsp(&Payload::new(bytes, base), at - 4)?;
+        bsp.unknown_00 = 0;
+        Ok(bsp)
+    }
+
+    /// Encodes the BSP as one payload loaded at `base`: the eight block
+    /// fields ([`BSP_BLOCKS_SIZE`] bytes), then each block's elements in
+    /// order. [`Bsp::decode_blocks`] at offset 0 reads it back.
+    pub fn encode_blocks(&self, base: u32) -> Vec<u8> {
+        let mut parts: [Vec<u8>; 8] = Default::default();
+        for n in &self.nodes {
+            parts[0].extend(n.plane.to_le_bytes());
+            parts[0].extend(&n.back.raw24().to_le_bytes()[..3]);
+            parts[0].extend(&n.front.raw24().to_le_bytes()[..3]);
+        }
+        for p in &self.planes {
+            p.0.iter().for_each(|v| parts[1].extend(v.to_le_bytes()));
+        }
+        for l in &self.leaves {
+            parts[2].extend([l.flags, l.ref_count]);
+            parts[2].extend(l.first_ref.to_le_bytes());
+        }
+        for r in &self.refs {
+            parts[3].extend(r.plane.to_le_bytes());
+            parts[3].extend(r.node.to_le_bytes());
+        }
+        for n in &self.nodes_2d {
+            n.plane
+                .iter()
+                .for_each(|v| parts[4].extend(v.to_le_bytes()));
+            parts[4].extend(n.back.raw().to_le_bytes());
+            parts[4].extend(n.front.raw().to_le_bytes());
+        }
+        for s in &self.surfaces {
+            parts[5].extend(s.plane.to_le_bytes());
+            parts[5].extend(s.first_edge.to_le_bytes());
+            parts[5].extend([s.flags, s.breakable_surface]);
+            parts[5].extend(s.material.to_le_bytes());
+        }
+        for e in &self.edges {
+            for v in [
+                e.start_vertex,
+                e.end_vertex,
+                e.forward_edge,
+                e.reverse_edge,
+                e.left_surface,
+                e.right_surface,
+            ] {
+                parts[6].extend(v.to_le_bytes());
+            }
+        }
+        for v in &self.vertices {
+            v.point
+                .iter()
+                .for_each(|f| parts[7].extend(f.to_le_bytes()));
+            parts[7].extend(v.edge.to_le_bytes());
+        }
+        let mut out = vec![0u8; BSP_BLOCKS_SIZE];
+        for (i, part) in parts.iter().enumerate() {
+            let count = (part.len() / BSP_STRIDES[i]) as u32;
+            let address = if count == 0 {
+                0
+            } else {
+                base + out.len() as u32
+            };
+            out[i * 8..i * 8 + 4].copy_from_slice(&count.to_le_bytes());
+            out[i * 8 + 4..i * 8 + 8].copy_from_slice(&address.to_le_bytes());
+            out.extend(part);
+        }
+        out
+    }
 }
 
 impl Bsp {

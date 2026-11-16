@@ -159,6 +159,26 @@ fn quad_decodes_every_table() {
     assert_eq!(c.validate(), Vec::<String>::new());
 }
 #[test]
+fn a_bsp_encodes_as_bare_blocks_and_decodes_back() {
+    let bsp = decode(&quad_coll()).bsps().next().unwrap().clone();
+    let bytes = bsp.encode_blocks(BASE);
+    assert_eq!(&bytes[..4], &(bsp.nodes.len() as u32).to_le_bytes());
+    let back = Bsp::decode_blocks(&bytes, BASE, 0).unwrap();
+    assert_eq!(
+        back,
+        Bsp {
+            unknown_00: 0,
+            ..bsp.clone()
+        }
+    );
+    // At an offset inside a bigger payload, as in a structure BSP.
+    let mut outer = vec![0xaa; 0x14];
+    outer.extend(bsp.encode_blocks(BASE + 0x14));
+    assert_eq!(Bsp::decode_blocks(&outer, BASE, 0x14).unwrap(), back);
+    assert!(back.validate(1).is_empty());
+}
+
+#[test]
 fn quad_exports_obj_triangles() {
     let obj = decode(&quad_coll()).to_obj().unwrap();
     assert_eq!(obj.lines().filter(|l| l.starts_with("v ")).count(), 4);
