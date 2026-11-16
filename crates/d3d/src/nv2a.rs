@@ -173,6 +173,8 @@ pub struct Nv2aShaders {
     cache_path: Option<PathBuf>,
     persist: Option<Persist>,
     warm: Option<Warm>,
+    /// [`ShaderProvider::set_render_scale`].
+    render_scale: u32,
 }
 
 /// Recording to the pipeline cache.
@@ -214,6 +216,7 @@ impl Nv2aShaders {
             cache_path: None,
             persist: None,
             warm: None,
+            render_scale: 1,
         }
     }
 
@@ -818,6 +821,10 @@ pub fn fixed_function_def(ff: &FixedFunction<'_>) -> Result<PixelShaderDef, Stri
 }
 
 impl ShaderProvider for Nv2aShaders {
+    fn set_render_scale(&mut self, scale: u32) {
+        self.render_scale = scale.max(1);
+    }
+
     fn prepare(
         &mut self,
         ctx: &gfx::GfxContext,
@@ -875,6 +882,7 @@ impl ShaderProvider for Nv2aShaders {
             surface: [draw.target.width as f32, draw.target.height as f32],
             // Same full scale as gfx's built-in shader.
             z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
+            shift: gfx::renderer::window_shift(1, self.render_scale),
             ..VertexUniforms::default()
         };
         match key.vertex {

@@ -14,9 +14,11 @@ struct Viewport {
     alpha_func: f32,
     // D3DRS_ALPHAREF, 0..255.
     alpha_ref: f32,
-    pad0: f32,
-    pad1: f32,
-    pad2: f32,
+    // Pixels of the window taken off x and y: 0 unless the target is a
+    // multiple of the window (see `Draw::window` in renderer.rs).
+    shift_x: f32,
+    shift_y: f32,
+    pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -43,8 +45,8 @@ fn vs_main(in: VsIn) -> VsOut {
     let ndc = vec2<f32>(
         // D3D8 puts pixel centres on integer coordinates (half-pixel offset;
         // to be verified on the Xbox), wgpu on +0.5.
-        (in.position.x + 0.5) / viewport.size.x * 2.0 - 1.0,
-        1.0 - (in.position.y + 0.5) / viewport.size.y * 2.0,
+        (in.position.x + 0.5 - viewport.shift_x) / viewport.size.x * 2.0 - 1.0,
+        1.0 - (in.position.y + 0.5 - viewport.shift_y) / viewport.size.y * 2.0,
     );
     // Scaling by w keeps perspective-correct interpolation identical to the
     // original rhw-based interpolation.

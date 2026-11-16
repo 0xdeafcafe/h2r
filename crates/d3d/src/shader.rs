@@ -101,6 +101,13 @@ pub trait ShaderProvider: Send {
         textures: [Option<&wgpu::TextureView>; 4],
     ) -> Result<PreparedShader, String>;
 
+    /// The draws prepared from now on go to a target `scale` times the
+    /// guest's size (`crate::scaled`; 1, the default, is the guest's size).
+    /// Window coordinates stay the guest's; the provider shifts positions
+    /// by [`gfx::renderer::window_shift`] so edges cover what they cover
+    /// at 1x.
+    fn set_render_scale(&mut self, _scale: u32) {}
+
     /// Writes per-draw data staged by [`prepare`](Self::prepare) to the
     /// queue. The backend calls it before every submit.
     fn flush_uploads(&mut self, _ctx: &gfx::GfxContext) {}

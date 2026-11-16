@@ -74,6 +74,13 @@ pub struct VertexUniforms {
     /// (`D3DDCC_DEPTHCLAMP`). Nothing is clipped by w beyond w > 0; the
     /// fragment stage clamps the stored w to the range instead.
     pub w_clamp: bool,
+    /// Guest pixels subtracted from x and y after the subpixel truncation:
+    /// 0 at the guest's size. A target rendered at `s` times the guest's
+    /// size takes `(2 s - 1) / (4 s)` (`gfx::renderer::window_shift`), so
+    /// an edge on a guest pixel centre covers whole blocks of host pixels,
+    /// as it covers whole pixels at 1x (docs/high-resolution.md,
+    /// "Half-pixel and texel offsets").
+    pub shift: f32,
 }
 
 impl Default for VertexUniforms {
@@ -85,6 +92,7 @@ impl Default for VertexUniforms {
             z_max: 16_777_215.0,
             w_clip: None,
             w_clamp: false,
+            shift: 0.0,
         }
     }
 }
@@ -104,7 +112,7 @@ impl VertexUniforms {
     /// bytes, preserving every float's bits (including NaNs and signed zero).
     pub fn write_bytes(&self, out: &mut [u8]) {
         assert_eq!(out.len(), Self::SIZE);
-        let viewport = [self.surface[0], self.surface[1], self.z_max, 0.0];
+        let viewport = [self.surface[0], self.surface[1], self.z_max, self.shift];
         let clip = match self.w_clip {
             Some([lo, hi]) => [lo, hi, 1.0, if self.w_clamp { 1.0 } else { 0.0 }],
             None => [0.0; 4],
@@ -122,7 +130,8 @@ struct XvsUniforms {
     // Values for vertex registers the layout does not supply.
     defaults: array<vec4f, 16>,
     // x, y: guest render-target size in the units the program's viewport
-    // constants use; z: depth full scale (65535 for D16, 16777215 for D24).
+    // constants use; z: depth full scale (65535 for D16, 16777215 for D24);
+    // w: guest pixels taken off x and y (0 unless the target is scaled).
     viewport: vec4f,
     // W-buffering when z is 1: x, y the depth clip range for w; w is 1
     // when out-of-range depth is clamped (by the fragment stage), not culled.
@@ -212,7 +221,7 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // (Zmax > 0, so for non-NaN z, int order is float order above it): a float
 // compare lets fast math fold the select into a bare min(zn, 1).
 fn xvs_fixup(p: vec4f) -> vec4f {
-    let xy = trunc(p.xy * 16.0) / 16.0;
+    let xy = trunc(p.xy * 16.0) / 16.0 - xvs.viewport.w;
     let w = xvs_clamp_away(p.w);
     let zn = p.z / xvs.viewport.z;
     let over = bitcast<i32>(p.z) > bitcast<i32>(xvs.viewport.z);

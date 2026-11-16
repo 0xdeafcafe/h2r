@@ -298,6 +298,13 @@ pub struct Draw<'a> {
     /// stencil tests) to the pass's [`PixelCounter`] (see
     /// [`crate::occlusion`]).
     pub count_samples: bool,
+    /// The window the built-in shader's pre-transformed positions are in,
+    /// when it is not the target: a target rendered at a multiple of the
+    /// guest's size keeps guest window coordinates, shifted by
+    /// [`window_shift`] so an edge on a window pixel centre covers whole
+    /// blocks of host pixels, as it covers whole pixels at 1x
+    /// (docs/high-resolution.md). `None` is the target's size.
+    pub window: Option<(u32, u32)>,
 }
 
 impl<'a> Draw<'a> {
@@ -322,8 +329,28 @@ impl<'a> Draw<'a> {
             scissor: None,
             indices: None,
             count_samples: false,
+            window: None,
         }
     }
+}
+
+/// [`Draw::window`]'s shift for a window `window` pixels across on a
+/// target `target` pixels across, in window pixels: `(2 s - 1) / (4 s)`
+/// for `s = target / window`, 0 when they are equal.
+///
+/// At 1x a pixel is sampled at its centre, and D3D-convention geometry puts
+/// edges (and a 1:1 copy's texel corners) exactly there, so the tie rules
+/// decide. With the shift the `s x s` host pixels of a guest pixel sample
+/// it at offsets `(k + 1/4) / s` from its centre, `k = 0..s`: all inside
+/// `[0, 1)`, none on the tie. An edge on a guest pixel centre then covers
+/// whole blocks, as it covers whole pixels at 1x (top-left rule included),
+/// and a 1:1 point-sampled copy reads the texel 1x reads.
+pub fn window_shift(window: u32, target: u32) -> f32 {
+    if window == 0 || window >= target {
+        return 0.0;
+    }
+    let s = target as f32 / window as f32;
+    (2.0 * s - 1.0) / (4.0 * s)
 }
 
 /// Bytes of the built-in shader's uniform struct.
@@ -862,14 +889,15 @@ impl Renderer {
             (buf, off, len)
         });
         let builtin = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
+            let (ww, wh) = d.window.unwrap_or((w, h));
             let words = [
-                w as f32,
-                h as f32,
+                ww as f32,
+                wh as f32,
                 self.z_max,
                 builtin_alpha_func(&d.state),
                 d.state.alpha_ref as f32,
-                0.0,
-                0.0,
+                window_shift(ww, w),
+                window_shift(wh, h),
                 0.0,
             ];
             let (buf, off) = self.uniforms.push(

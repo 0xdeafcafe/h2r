@@ -1,7 +1,8 @@
 # High resolution: 4K and arbitrary internal resolution
 
-A design for rendering above the game's 640x480, as an opt-in setting. Nothing
-here is built. It was written from the code and docs on master
+A design for rendering above the game's 640x480, as an opt-in setting. Phase 1
+is built (`d3d::scaled`, `H2_RENDER_SCALE`; see "Phase 1 as built" below); the
+rest is design. It was written from the code and docs on master
 ([d3d.md](d3d.md), [graphics.md](graphics.md), [shaders.md](shaders.md),
 [render-thread.md](render-thread.md)) and from public prior art, without
 building or running the game. Every number under "Cost" is arithmetic or a
@@ -189,9 +190,11 @@ wrong for inclusive bounds at one point (xemu issue 1054).
 
 The game and D3D put half-pixel offsets in the viewport offset constant, and
 the pre-transformed path adds its own (`FF_HALF_PIXEL`). These are lengths in
-guest pixels. Scaled, a 0.5 guest-pixel offset is `0.5 * s` host pixels. For
-geometry this is harmless: the image is the same continuous image, sampled
-more finely.
+guest pixels. Scaled, a 0.5 guest-pixel offset is `0.5 * s` host pixels. The
+first draft called this harmless for geometry. It is not: edges then sit half
+a guest pixel off the scaled scissors and clears, and the screen's first row
+and column stay empty. Phase 1 shifts positions in the view to fix it (see
+"Phase 1 as built").
 
 It matters for screen-space copies. Take a pass that maps guest pixel centres
 onto guest texel centres with a shift of `d` guest texels. A host pixel centre
@@ -439,11 +442,96 @@ and it is an acceptance check, not a development loop.
 | Phase | Work | Depends on |
 |---|---|---|
 | 0 | Capture replayer and the diff tools. Count, in a real run, which write-backs and counts happen per frame and at which guest call sites. | Nothing |
-| 1 | `ScaledBackend` with integer scales, frame buffers and depth only. Snapshots scale. Depth aliases fall back to the reference's 1x texture. | 0 |
+| 1 (built) | `ScaledBackend` with integer scales, frame buffers and depth only. Snapshots scale. Depth aliases fall back to the reference's 1x texture. | 0 (built without it) |
 | 2 | Guest-size resolves and mixed-scale sampling. Back-buffer-sized render targets scale. GPU depth-to-colour pass; depth aliases scale. | 1 |
 | 3 | Per-axis scale for anamorphic widescreen. Presenter resample to the display. | 2 |
 | 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale, MSAA, fractional scales, lazy reference. | 3 |
 | Later | Single scaled backend with downsampled readbacks, for hosts that cannot run two. Guest-visible values differ from 1x, so it is excluded from deterministic replays and labelled as such. | Phase 0's counts |
+
+### Phase 1 as built
+
+Phase 1 is built without phase 0 (no capture replayer yet), so it is proven
+with synthetic frames, not captures.
+
+- **`d3d::scaled::ScaledBackend<R, V>`** wraps a reference and a view. `V`
+  implements `ScaleView<R>` (scaled surfaces, sharing the reference's
+  textures, a nearest fill from a reference surface, presenting the
+  reference's image). `GfxBackend` implements it for itself; the two share a
+  device.
+- **What scales**: surfaces made with `create_surface` at the frame size, the
+  size of the first colour surface (the back buffer). That is the frame
+  buffers, the depth buffer and `PersistDisplay`'s copy. Snapshots of them
+  are copies of the scaled image.
+- **What does not**: render-to-texture levels and surfaces of other sizes live
+  only in the reference, and the view samples the reference's textures of
+  them. So offscreen passes run once, not twice, and the view's second
+  backend only redoes the frame-buffer draws. Uploaded textures are shared,
+  not uploaded twice. Depth-level and depth-alias textures are the
+  reference's 1x ones, as planned.
+- **Ordering**: the view's recorded pass is submitted before the reference
+  changes a surface the view may sample (one queue, two backends).
+- **Reads and outcomes** come from the reference only: `read_surface`,
+  `read_depth`, every pixel-count call, `judge`, every `can_*`, the mirror.
+  The view never counts samples (`count_samples` off).
+- **Scissors and clears** are scaled inside `GfxBackend` for a scaled
+  surface. Geometry keeps guest window coordinates (`surface` stays the guest
+  size; the built-in pre-transformed shader takes `gfx::Draw::window`).
+- **Half-pixel shift** (new, see below): at scale `s` positions move by
+  `(2s - 1) / (4s)` guest pixels after the 1/16 truncation
+  (`gfx::renderer::window_shift`, `VertexUniforms::shift`, the built-in
+  shader's `shift_x/y`). It is 0 at 1x, so the reference's shaders compute
+  what they did.
+- **Failures**: a view error is counted (`ScaleStats`), never returned, and
+  that frame is shown from the reference (`present_reference` calls the
+  view's present hook on the reference's store).
+- **Flag**: `H2_RENDER_SCALE=2..6` in `h2 play` builds the view
+  (`boot::Host::gfx_view`); unset or 1 builds nothing extra. The presenter
+  needed no change: it already fits any frame size into the window.
+
+The half-pixel offset is not harmless for geometry, as "Half-pixel and texel
+offsets" first said. D3D-convention geometry puts edges, and the texel corners
+of a 1:1 copy, exactly on pixel centres, so at 1x the tie rules decide. Scaled
+without a shift, a full-screen quad leaves the first host column and row
+empty (the margin artefact of xemu issues 57 and 508), and a point-sampled
+1:1 copy reads the neighbouring texel. With the shift, the `s x s` host
+pixels of a guest pixel sample it at offsets `(k + 1/4) / s`, all inside the
+pixel and none on a tie. Then an edge on a pixel centre covers whole blocks,
+the top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift
+of exactly `(s - 1) / (2s)` puts the first sample on the tie and fails at 3x
+through rounding; the extra quarter is what makes it robust.
+
+Measured, by tests in `crates/d3d/tests/render_scale.rs` on a headless Metal
+device:
+
+- One synthetic frame (render-to-texture with a write-back, rectangle clears,
+  a quad through two scissor rectangles, a 1:1 textured copy of the level, a
+  triangle, a visibility test) gives the guest identical answers with a
+  plain backend and with the wrapper at 1x, 2x and 4x: the count, the
+  level's written-back bytes, the device's guest memory and the skipped
+  draws. The reference's frame is byte-identical to the plain one.
+- The view's back buffer is `64s x 64s`. Box-filtered to 64x64 it equals the
+  reference exactly in every row the triangle does not touch, at 2x, 3x and
+  4x. Over the whole frame the mean difference is 1.5-1.8 levels per
+  channel, all on the triangle's edges.
+- `640x480` surfaces from `create_surface` are `2560x1920` at 4x; other sizes
+  and render-to-texture levels have no view surface; a snapshot of an
+  unscaled surface is the reference's texture.
+
+Not measured: CPU or GPU cost in the game, since phase 1 rules out game runs
+here. The design's estimate stands, but it is now an upper bound, since
+offscreen passes are not repeated.
+
+Known gaps in phase 1, all view-only, so the guest cannot tell:
+
+- A draw into a guest-size target with the scaled depth buffer bound updates
+  only the reference's depth (`ScaleStats::depth_missed`). Clears of that
+  depth go through a scaled colour surface of its size, so they do reach the
+  view.
+- Guest bytes written into a scaled depth surface do not reach the view.
+- Stipple is indexed by host pixel, and lines are one host pixel wide.
+- Per-axis scale and the 16:9 4K size (3840x2400) wait for phase 3.
+- The view runs on the same render thread as the reference, so its CPU cost
+  is frame time, not another core.
 
 Shadow-map scale needs two things first: sampling a depth level in place
 instead of through guest memory (the view can do this without touching the
