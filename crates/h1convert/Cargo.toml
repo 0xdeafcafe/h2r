@@ -9,6 +9,8 @@ h1map = { path = "../h1map" }
 map.workspace = true
 tags.workspace = true
 thiserror.workspace = true
+# Writing placements into the base scenario. Without its egui panel.
+scenario-edit = { path = "../scenario-edit", default-features = false }
 
 [dev-dependencies]
 xiso.workspace = true

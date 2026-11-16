@@ -6,11 +6,13 @@
 //!   is how a conversion is checked against its source.
 //! - [`sandbox`]: Halo 1 multiplayer items to their nearest Halo 2 ones.
 //! - [`placements`]: spawns, flags and item spawns for the Halo 2 sandbox.
+//! - [`apply`]: a plan written into a base map's scenario.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
 //! the `#[ignore]`d ones read maps from `$H1_MAP_DIR` at run time.
 #![forbid(unsafe_code)]
 
+pub mod apply;
 pub mod collision;
 pub mod placements;
 pub mod query;
