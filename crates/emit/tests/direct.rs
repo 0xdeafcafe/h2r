@@ -42,6 +42,8 @@ const O: u32 = CODE + 0xa80;
 const ISR: u32 = CODE + 0xb00;
 const LOW: u32 = CODE + 0xc00;
 const DUP: u32 = CODE + 0xc80;
+const STOPS_CALLER: u32 = CODE + 0xd00;
+const STOPS: u32 = CODE + 0xd80;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -228,6 +230,22 @@ fn funcs() -> Vec<IrFunction> {
         }),
         function(DUP, |a| {
             a.push(dword_ptr(esp))?;
+            a.ret()
+        }),
+        // A callee that stops on an instruction the lifter does not lower
+        // (`fnstenv` with a 16-bit operand size), as the boot's fallback
+        // interpreter recovers from.
+        function(STOPS_CALLER, |a| {
+            log(a, 30)?;
+            a.call(STOPS as u64)?;
+            log(a, 31)?;
+            a.ret()
+        }),
+        function(STOPS, |a| {
+            log(a, 32)?;
+            a.mov(ebx, 0x5150)?;
+            a.mov(eax, DATA + 0x80)?;
+            a.db(&[0x66, 0xD9, 0x30])?;
             a.ret()
         }),
         // An interrupt callback.
@@ -552,6 +570,49 @@ fn an_override_registered_on_the_callee_between_runs() {
     });
     // Four calls in each mode's override run, none bypassing it.
     assert_eq!(calls.load(Ordering::Relaxed), 4 * MODES.len() as u32);
+}
+
+#[test]
+fn a_callee_that_stops_reaches_the_stop_recovery_hook() {
+    // The boot's fallback recovers a generated STOP from a runtime hook
+    // instead of wrapping every handler: a STOP in a directly invoked
+    // callee is handed up to the runner, so the hook sees it with the
+    // callee's CPU whether the call was direct or not.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    agree("stop recovery", |m| {
+        let s = seen.clone();
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.set_stop_recovery(move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, t: TransferAbi| {
+                s.lock().unwrap().push((cpu.eip, cpu.ebx, t.kind));
+                // What interpreting the rest of the callee does: return.
+                ctx.memory().ret(cpu, 0).unwrap()
+            })
+        });
+        let out = run_twice(STOPS_CALLER)(m);
+        for o in &out {
+            assert_eq!(
+                o.events.last().map(|e| e.contains("HarnessExit")),
+                Some(true),
+                "{:?}",
+                o.events
+            );
+            let log: Vec<u32> = o.memory[0x100..0x100 + 12]
+                .chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(log, [30, 32, 31]);
+        }
+        out
+    });
+    let stop_pc = STOPS + 29;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2 * MODES.len(), "{seen:x?}");
+    assert!(
+        seen.iter().all(|&s| s == (stop_pc, 0x5150, abi::STOP)),
+        "{seen:x?}"
+    );
+    // On the second run the call into the stopping callee was direct.
+    assert!(direct_count(STOPS_CALLER, None) > 0);
 }
 
 /// Every transfer limit, so the run stops at each direct call and return.

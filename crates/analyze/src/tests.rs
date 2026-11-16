@@ -368,14 +368,93 @@ fn unguarded_table(table: &[u32]) -> Analysis {
 }
 
 #[test]
-fn an_unguarded_table_skips_at_most_four_nulls() {
-    let a = unguarded_table(&[0x11008, 0, 0, 0, 0, 0x1100B]);
+fn a_table_after_its_own_code_skips_a_long_run_of_nulls() {
+    // The shape of the switch at 0x336f0: the function starts with the
+    // unguarded jump, the table follows the cases, and a run of five nulls
+    // (values the enum skips) sits between cases.
+    let a = unguarded_table(&[0x11008, 0, 0x11008, 0, 0, 0, 0, 0, 0x1100B, 0x1100E]);
     let jt = &a.jump_tables[&TEXT];
-    assert_eq!((jt.count, &jt.targets, &jt.holes), (6, &vec![0x11008, 0x1100B], &vec![1, 2, 3, 4]));
-    let a = unguarded_table(&[0x11008, 0, 0, 0, 0, 0, 0x1100B]);
+    assert_eq!(jt.count, 10);
+    assert_eq!(jt.targets, [0x11008, 0x11008, 0x1100B, 0x1100E]);
+    assert_eq!(jt.holes, [1, 3, 4, 5, 6, 7]);
+    assert!(!a.functions.contains_key(&0x1100B) && !a.functions.contains_key(&0x1100E), "{:x?}", a.functions.keys());
+}
+
+#[test]
+fn a_table_after_its_own_code_skips_at_most_sixteen_nulls() {
+    let mut words = vec![0x11008];
+    words.extend([0; 16]);
+    words.push(0x1100B);
+    let a = unguarded_table(&words);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, jt.holes.len()), (18, &vec![0x11008, 0x1100B], 16));
+
+    let mut words = vec![0x11008];
+    words.extend([0; 17]);
+    words.push(0x1100B);
+    let a = unguarded_table(&words);
     let jt = &a.jump_tables[&TEXT];
     assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11008], &vec![]));
-    assert_eq!(a.claim(0x11024).map(|c| c.0), Some('?'), "five nulls end the table");
+    assert_eq!(a.claim(0x11024).map(|c| c.0), Some('?'), "seventeen nulls end the table");
+}
+
+/// An unguarded `jmp [eax*4+0x11010]` at `TEXT` with `table` there and its
+/// cases after it, at 0x11060 and 0x11063.
+fn forward_table(table: &[u32]) -> Analysis {
+    let words: Vec<u8> = table.iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x10, 0x10, 0x01, 0x00]),
+        (0x11010, &words),
+        (0x11060, &[0x33, 0xC0, 0xC3]),
+        (0x11063, &[0x40, 0x40, 0xC3]),
+    ]);
+    cfgs_of(code).0
+}
+
+#[test]
+fn a_table_before_its_cases_skips_at_most_four_nulls() {
+    let a = forward_table(&[0x11060, 0, 0, 0, 0, 0x11063]);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (6, &vec![0x11060, 0x11063], &vec![1, 2, 3, 4]));
+    let a = forward_table(&[0x11060, 0, 0, 0, 0, 0, 0x11063]);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11060], &vec![]));
+    assert_eq!(a.claim(0x11014).map(|c| c.0), Some('?'), "five nulls end the table");
+}
+
+#[test]
+fn a_function_with_two_tables_reads_the_first_past_seven_nulls() {
+    // The shape of 0x33980: the function starts with an unguarded jump
+    // whose table, after the code, has runs of two and seven nulls; case 0
+    // is a second unguarded switch whose table follows the first.
+    let first: Vec<u8> = [0x11007u32, 0, 0, 0x1100E, 0x1100E, 0, 0, 0, 0, 0, 0, 0, 0x11011, 0x11014]
+        .iter()
+        .flat_map(|t| t.to_le_bytes())
+        .collect();
+    let second: Vec<u8> = [0x11017u32, 0x1101A].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x48, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11048]
+        (0x11007, &[0xFF, 0x24, 0x8D, 0x80, 0x10, 0x01, 0x00]), // jmp [ecx*4+0x11080]
+        (0x1100E, &[0x33, 0xC0, 0xC3]),
+        (0x11011, &[0x40, 0x40, 0xC3]),
+        (0x11014, &[0x48, 0x48, 0xC3]),
+        (0x11017, &[0x41, 0x41, 0xC3]),
+        (0x1101A, &[0x49, 0x49, 0xC3]),
+        (0x11048, &first),
+        (0x11080, &second),
+    ]);
+    let (a, _) = cfgs_of(code);
+    let jt = &a.jump_tables[&TEXT];
+    let cases: Vec<_> = jt.cases().filter(|(i, _)| *i < 14).collect();
+    assert_eq!(cases, [(0, 0x11007), (3, 0x1100E), (4, 0x1100E), (12, 0x11011), (13, 0x11014)]);
+    // Unguarded, the first table may read on into the second: those slots
+    // hold real code addresses, so an extra case does no harm.
+    assert!(jt.holes.iter().all(|h| [1, 2, 5, 6, 7, 8, 9, 10, 11].contains(h)), "{:?}", jt.holes);
+    let second = &a.jump_tables[&0x11007];
+    assert_eq!((second.count, &second.targets), (2, &vec![0x11017, 0x1101A]));
+    for case in [0x1100E, 0x11011, 0x11014, 0x11017, 0x1101A] {
+        assert!(!a.functions.contains_key(&case), "{case:#x} is a case, not a function");
+    }
 }
 
 #[test]
