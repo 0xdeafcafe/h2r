@@ -214,6 +214,7 @@ allocation order before changing ownership.
 
 | Address / assigned name | Confidence | Evidence |
 |---|---|---|
+| `0x001df3e0` skull stock / `0x004f55dc` skull array | Confirmed | `ice_cream_flavor_stock` (`0x2ac230`) passes the index in ESI; sets byte `n` of the 15-byte array once. The array is never cleared. See [skulls.md](skulls.md). |
 | `0x00146550` / `0x001465b0` `game_time_initialize` / `game_time_new_map` | Confirmed | First allocates `0x24` bytes and stores pointer at `0x00510c54`; second copies tick rate from game options and computes its reciprocal. Both need direct disassembly in this Ghidra project. |
 | `0x00146660` `game_time_budget_ticks` | Confirmed | Pause/state/speed checks, fractional accumulator, bounded whole-tick count and elapsed simulation time. |
 | `0x00137f70` / `0x00137fe0` `game_update_ticks` / `game_tick` | Confirmed | Loop over budgeted ticks; latter updates subsystems and increments `game_time +8`. Time step is `+4`, tick rate is `+2`, speed is `+0xc`. |

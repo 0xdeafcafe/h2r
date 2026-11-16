@@ -50,6 +50,13 @@ impl Telemetry {
         *self.maps.lock().unwrap() = Some(locator);
     }
 
+    /// The matchmaking playlist (name, id) the next multiplayer game comes
+    /// from, or `None` for custom games. Nothing sets it yet: live-hle has
+    /// no matchmaking (sessions are all advertised `custom`).
+    pub fn set_playlist(&self, playlist: Option<(String, String)>) {
+        self.session.lock().unwrap().set_playlist(playlist);
+    }
+
     /// The loaded map's names, if the host has its file and the file's
     /// scenario datum is the guest's.
     fn tag_names(&self, guest: &runtime::Guest, map: &str) -> Option<TagNames> {
@@ -167,6 +174,11 @@ impl Telemetry {
             *last = Some(snapshot.tick);
         }
         snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
+        // Actors only go out in frames (every second tick); a failed scan
+        // sends none rather than stopping telemetry.
+        if snapshot.tick.is_multiple_of(2) {
+            snapshot.actors = memory::actors(guest).unwrap_or_default();
+        }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()
     }
@@ -480,6 +492,76 @@ mod tests {
     }
 
     #[test]
+    fn campaign_play_makes_one_game_with_actor_frames() {
+        let path = std::env::temp_dir().join(format!(
+            "h2-telemetry-campaign-{}.jsonl",
+            live_proto::sign::random_id()
+        ));
+        let telemetry = Telemetry::new(
+            Session::new("test", None),
+            QueuedSink::new(JsonlSink::create(&path).unwrap(), 8, 8),
+        );
+        let mut guest = fixture::memory();
+        guest
+            .set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 1)
+            .unwrap();
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE,
+                30,
+            )
+            .unwrap();
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_DIFFICULTY,
+                3,
+            )
+            .unwrap();
+        // Campaign has no statborg.
+        guest
+            .set_u32(fixture::ENGINE + layout::ENGINE_STATBORG, 0)
+            .unwrap();
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 1).unwrap();
+        guest
+            .write_bytes(layout::CACHE_MAP_NAME, b"03a_oldmombasa\0", 1)
+            .unwrap();
+        fixture::put_player(&mut guest, 0, "Chief", 1, true, fixture::object_datum(1));
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        fixture::put_actor(&mut guest, 2, 3, [4.0, 0.0, 0.0]);
+        telemetry.protect(|| telemetry.start(&guest));
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 2).unwrap();
+        telemetry.protect(|| telemetry.sample(&guest));
+        // A checkpoint revert re-activates the same map.
+        telemetry.protect(|| telemetry.start(&guest));
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 4).unwrap();
+        telemetry.protect(|| telemetry.sample(&guest));
+        assert!(!telemetry.disabled());
+        drop(telemetry);
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let started: Vec<_> = rows.iter().filter(|r| r["type"] == "GameStarted").collect();
+        assert_eq!(started.len(), 1, "{rows:?}");
+        assert_eq!(started[0]["data"]["mode"], "campaign");
+        assert_eq!(started[0]["data"]["kind"], "campaign");
+        assert_eq!(started[0]["data"]["difficulty"], "legendary");
+        assert!(rows.iter().all(|r| r["type"] != "GameEnded"));
+        let frame = rows
+            .iter()
+            .rev()
+            .find(|r| r["type"] == "GameFrame")
+            .unwrap();
+        let actor = &frame["data"]["actors"][0];
+        assert_eq!(actor["id"], format!("{:08x}", fixture::object_datum(2)));
+        assert_eq!(actor["team"], "covenant");
+        assert_eq!(actor["pos"], serde_json::json!([4.0, 0.0, 0.0]));
+        assert_eq!(actor["species"], "unknown", "no map file in tests");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn fire_counts_are_bounded() {
         let path = std::env::temp_dir().join(format!(
             "h2-telemetry-bounded-{}.jsonl",
@@ -503,6 +585,7 @@ mod tests {
         let info = GameInfo {
             map: "lockout".into(),
             mode: "main_menu".into(),
+            difficulty: None,
             variant: None,
             team_play: false,
             score_limit: None,

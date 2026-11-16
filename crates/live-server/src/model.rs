@@ -89,7 +89,12 @@ impl Game {
             game_id: self.started.game_id.clone(),
             map: g.map.clone(),
             mode: g.mode.clone(),
+            kind: g.kind().into(),
             variant: g.variant.clone(),
+            playlist: g.playlist.clone(),
+            playlist_id: g.playlist_id.clone(),
+            difficulty: g.difficulty.clone(),
+            online: g.online,
             team_play: g.team_play,
             state: if self.ended.is_some() {
                 "ended"

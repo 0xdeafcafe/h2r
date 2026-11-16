@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
-use crate::event::{Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot, Weapon};
+use crate::event::{
+    ActorState, Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot, Weapon,
+};
 use crate::layout;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -70,6 +72,7 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
             return Ok(GameInfo {
                 map: text(guest, layout::CACHE_MAP_NAME, 32)?,
                 mode: format!("unknown_{other}"),
+                difficulty: None,
                 variant: None,
                 team_play: false,
                 score_limit: None,
@@ -83,9 +86,16 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
     let variant_name = layout::variant_name(engine)
         .map(str::to_owned)
         .or_else(|| (engine > 0).then(|| format!("engine_{engine}")));
+    let difficulty = if mode == "campaign" {
+        let value = guest.u16(options + layout::OPTIONS_DIFFICULTY)? as i16;
+        layout::difficulty_name(value).map(str::to_owned)
+    } else {
+        None
+    };
     Ok(GameInfo {
         map: text(guest, layout::CACHE_MAP_NAME, 32)?,
         mode: mode.into(),
+        difficulty,
         variant: variant_name,
         team_play: guest.u32(variant + layout::VARIANT_FLAGS)? & 1 != 0,
         score_limit: nonzero(i32(guest.u32(variant + layout::VARIANT_SCORE_LIMIT)?)),
@@ -278,13 +288,23 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
     let weapon = held_weapon(guest, datum, body).ok().flatten();
+    let team = guest
+        .u16(body + layout::UNIT_TEAM)
+        .ok()
+        .map(|t| t as i16)
+        .filter(|t| *t >= 0);
     let mut pos = vector(guest, body + layout::BODY_POSITION)?;
     let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
+    let mut up = vector(guest, body + layout::BODY_UP)?;
+    let mut vehicle_definition = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
     let vehicle = match object_body(guest, parent)? {
-        Some((1, parent_body)) => {
+        Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
             pos = vector(guest, parent_body + layout::BODY_POSITION)?;
             forward = vector(guest, parent_body + layout::BODY_FORWARD)?;
+            up = vector(guest, parent_body + layout::BODY_UP)?;
+            vehicle_definition =
+                Some(guest.u32(parent_body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
             Some(parent)
         }
         _ => None,
@@ -299,7 +319,50 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         definition,
         aim,
         weapon,
+        up,
+        vehicle_definition,
+        team,
     }))
+}
+
+/// Every live AI-controlled biped: object type biped, an actor datum at
+/// `+0x12c`, no player at `+0x13c`, and not body-depleted. Reads the header
+/// table once (12 bytes a slot up to the high-water mark) and only the
+/// bipeds' bodies; a fault on one biped skips it.
+pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
+    let array = ptr(guest, layout::OBJECTS_PTR)?;
+    let high_water = guest
+        .u32(array + layout::DATUM_HIGH_WATER)?
+        .min(layout::OBJECT_CAPACITY);
+    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    let mut headers = vec![0; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
+    guest.read_bytes(data, &mut headers, 1)?;
+    let mut out = Vec::new();
+    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
+        let salt = u16::from_le_bytes([header[0], header[1]]);
+        let at = layout::OBJECT_BODY as usize;
+        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        if salt == 0
+            || header[layout::OBJECT_TYPE as usize] != layout::OBJECT_TYPE_BIPED
+            || body == 0
+        {
+            continue;
+        }
+        let datum = (u32::from(salt) << 16) | slot as u32;
+        let ai = || -> ReadResult<bool> {
+            Ok(guest.u32(body + layout::UNIT_ACTOR)? != u32::MAX
+                && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX
+                && guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED == 0)
+        };
+        if !ai().unwrap_or(false) {
+            continue;
+        }
+        if let Ok(Some(object)) = object(guest, datum) {
+            out.push(ActorState { datum, object });
+        }
+    }
+    Ok(out)
 }
 
 pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
@@ -317,6 +380,7 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         teams,
         objects,
         shots: Default::default(),
+        actors: Vec::new(),
     })
 }
 
@@ -477,9 +541,35 @@ pub(crate) mod fixture {
         guest
             .set_f32(body + super::layout::BODY_FORWARD + 8, 0.0)
             .unwrap();
+        guest
+            .set_f32(body + super::layout::BODY_UP + 8, 1.0)
+            .unwrap();
+        guest
+            .set_u32(body + super::layout::UNIT_ACTOR, u32::MAX)
+            .unwrap();
+        guest
+            .set_u32(body + super::layout::UNIT_PLAYER, u32::MAX)
+            .unwrap();
         let high_water = OBJECTS + super::layout::DATUM_HIGH_WATER;
         let current = guest.u32(high_water).unwrap();
         guest.set_u32(high_water, current.max(slot + 1)).unwrap();
+    }
+
+    /// An AI biped at `slot`: an actor datum, team, and position `pos`.
+    pub fn put_actor(guest: &mut Guest, slot: u32, team: i16, pos: [f32; 3]) {
+        put_object(guest, slot, u32::MAX);
+        let body = BODY + slot * 0x1000;
+        guest
+            .set_u32(body + super::layout::UNIT_ACTOR, 0xa000_0000 | slot)
+            .unwrap();
+        guest
+            .set_u16(body + super::layout::UNIT_TEAM, team as u16)
+            .unwrap();
+        for (i, value) in pos.into_iter().enumerate() {
+            guest
+                .set_f32(body + super::layout::BODY_POSITION + 4 * i as u32, value)
+                .unwrap();
+        }
     }
 
     pub fn put_vehicle(guest: &mut Guest, slot: u32) {
@@ -604,9 +694,17 @@ mod tests {
             )
             .unwrap();
 
+        // Whatever is at the difficulty word, multiplayer has none.
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_DIFFICULTY,
+                2,
+            )
+            .unwrap();
         let info = game_info(&guest).unwrap();
         assert_eq!(info.map, "lockout");
         assert_eq!(info.mode, "multiplayer");
+        assert_eq!(info.difficulty, None);
         assert_eq!(info.variant.as_deref(), Some("Slayer"));
         assert!(info.team_play);
         assert_eq!(info.score_limit, Some(50));
@@ -853,6 +951,90 @@ mod tests {
     }
 
     #[test]
+    fn finds_live_ai_bipeds_only() {
+        let mut guest = fixture::memory();
+        // 1: a player's biped; 2: a grunt; 3: a dead marine; 4: an unrelated
+        // biped with no actor (a cinematic puppet); 5: a vehicle; 6: an
+        // elite driving it; 7: a freed slot that was an actor.
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        guest
+            .set_u32(fixture::BODY + 0x1000 + layout::UNIT_PLAYER, 0x8001_0000)
+            .unwrap();
+        guest
+            .set_u32(fixture::BODY + 0x1000 + layout::UNIT_ACTOR, 0xa000_0001)
+            .unwrap();
+        fixture::put_actor(&mut guest, 2, 3, [5.0, 6.0, 7.0]);
+        fixture::put_actor(&mut guest, 3, 2, [0.0; 3]);
+        guest
+            .set_u16(
+                fixture::BODY + 3 * 0x1000 + layout::BODY_DAMAGE_FLAGS,
+                layout::BODY_DEPLETED,
+            )
+            .unwrap();
+        fixture::put_object(&mut guest, 4, u32::MAX);
+        fixture::put_vehicle(&mut guest, 5);
+        guest
+            .set_u32(
+                fixture::BODY + 5 * 0x1000 + layout::BODY_DEFINITION,
+                0xe100_0030,
+            )
+            .unwrap();
+        fixture::put_actor(&mut guest, 6, 3, [0.0; 3]);
+        guest
+            .set_u32(
+                fixture::BODY + 6 * 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(5),
+            )
+            .unwrap();
+        fixture::put_actor(&mut guest, 7, 3, [0.0; 3]);
+        guest
+            .set_u16(fixture::OBJECT_DATA + 7 * layout::OBJECT_HEADER_SIZE, 0)
+            .unwrap();
+
+        let found = actors(&guest).unwrap();
+        assert_eq!(
+            found.iter().map(|a| a.datum).collect::<Vec<_>>(),
+            [fixture::object_datum(2), fixture::object_datum(6)]
+        );
+        let grunt = &found[0].object;
+        assert_eq!(grunt.pos, [5.0, 6.0, 7.0]);
+        assert_eq!(grunt.team, Some(3));
+        assert_eq!(grunt.vehicle, None);
+        assert_eq!(grunt.up, [0.0, 0.0, 1.0]);
+        let driver = &found[1].object;
+        assert_eq!(driver.vehicle, Some(fixture::object_datum(5)));
+        assert_eq!(driver.vehicle_definition, Some(0xe100_0030));
+        assert_eq!(driver.pos, [10.0, 20.0, 30.0], "the vehicle's transform");
+
+        // A negative team is no team.
+        guest
+            .set_u16(fixture::BODY + 2 * 0x1000 + layout::UNIT_TEAM, u16::MAX)
+            .unwrap();
+        assert_eq!(actors(&guest).unwrap()[0].object.team, None);
+    }
+
+    #[test]
+    fn actor_scan_skips_bipeds_whose_body_faults() {
+        let mut guest = fixture::memory();
+        fixture::put_actor(&mut guest, 1, 3, [0.0; 3]);
+        fixture::put_actor(&mut guest, 2, 3, [0.0; 3]);
+        guest
+            .set_u32(
+                fixture::OBJECT_DATA + layout::OBJECT_HEADER_SIZE + layout::OBJECT_BODY,
+                0xdead_0000,
+            )
+            .unwrap();
+        assert_eq!(
+            actors(&guest)
+                .unwrap()
+                .iter()
+                .map(|a| a.datum)
+                .collect::<Vec<_>>(),
+            [fixture::object_datum(2)]
+        );
+    }
+
+    #[test]
     fn winner_requires_a_unique_high_score() {
         let mut guest = fixture::memory();
         fixture::put_player(&mut guest, 0, "A", 0, true, u32::MAX);
@@ -866,5 +1048,27 @@ mod tests {
         guest.set_u16(second + layout::STAT_SCORE, 10).unwrap();
         let tied = snapshot(&guest).unwrap();
         assert_eq!(tied.winner(false), None);
+    }
+
+    #[test]
+    fn campaign_difficulty_comes_from_the_options() {
+        let mut guest = fixture::memory();
+        let options = fixture::GLOBALS + layout::OPTIONS;
+        guest.set_u32(options + layout::OPTIONS_TYPE, 1).unwrap();
+        for (value, name) in [
+            (0, Some("easy")),
+            (1, Some("normal")),
+            (2, Some("heroic")),
+            (3, Some("legendary")),
+            (4, None),
+            (0xffff, None),
+        ] {
+            guest
+                .set_u16(options + layout::OPTIONS_DIFFICULTY, value)
+                .unwrap();
+            let info = game_info(&guest).unwrap();
+            assert_eq!(info.mode, "campaign");
+            assert_eq!(info.difficulty.as_deref(), name, "{value}");
+        }
     }
 }

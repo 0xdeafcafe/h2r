@@ -296,6 +296,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | next launch: the row says "(restart)" until then |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (1x to 4x), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | next launch, as above |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) locks it when set | next launch (the HID thread reads it once); could go live through that thread |
+| Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
 **Graphics backend (runtime variables, read at launch).**
@@ -595,6 +596,12 @@ and variables, `H2_FOV=0` for retail, `"uncapped"` written as a string,
 `H2_PAD_SPEAKER` naming a routes file. Changed: a bad `H2_PAD_MUTE` is now
 ignored (the file or on) where it used to turn the button off, and the log
 line after a press names the key (`graphics.fps: 60 from the next launch`).
+
+**Per-profile values.** A setting can also hold a value per player profile
+(`Store::profile_get` / `profile_set`), written as
+`[profiles."<name>".<table>] key = value` and kept apart from the run's own
+value. The campaign skulls use it: which skulls each profile has collected
+and which it wants on ([skulls.md](skulls.md)).
 
 ## Opening the menu
 

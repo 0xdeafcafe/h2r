@@ -15,7 +15,17 @@ import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
 import { liveGames, endedGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
-import { playedWith, serviceRecord } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
+import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
+
+/** A list row's type: "Custom Game", "Matchmaking: <playlist>", or the
+ *  campaign label with its difficulty. The variant and when it ended are
+ *  on the plate beside the list. */
+function rowType(g: GameState): string {
+  return isCampaign(g) ? [campaignLabel(g), difficultyName(g.difficulty)].filter(Boolean).join(" · ") : gameTypeLabel(g);
+}
+import { isCampaign } from "../state/reducer";
+import { mapPicture } from "../components/MapPicture";
 import { accountsFile, createAccount, gamertagError, SignUpError } from "../state/account";
 import { defaultBase, fetchWellKnown, forget, normalizeBase, recentServers } from "../api/server";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
@@ -38,14 +48,14 @@ import SocialScreen from "./Social";
 import SessionsScreen from "./Sessions";
 import "../styles/social.css";
 
-type SectionId = "live" | "sessions" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server";
+type SectionId = "live" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server";
 type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   sessions: () => "find a game",
   friends: () => "friends",
-  teams: () => "teams",
+  clans: () => "clans",
   players: () => "players",
   history: () => "game history",
   settings: () => "settings",
@@ -54,14 +64,14 @@ const LABELS: Record<SectionId, () => string> = {
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
 
-/** The main menu: four items, five once signed in (friends, with teams inside).
+/** The main menu: four items, five once signed in (friends, with clans inside).
  *  Sign up / profile and the server live under settings. */
 const menuItems = (): SectionId[] => (identity.me() ? ["live", "sessions", "friends", "players", "history", "settings"] : ["live", "sessions", "players", "history", "settings"]);
-/** The menu item a section belongs under. Teams live inside friends (inside
+/** The menu item a section belongs under. Clans live inside friends (inside
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
-  if (s === "teams") return identity.me() ? "friends" : "players";
+  if (s === "clans") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
 
@@ -120,7 +130,7 @@ export default function Dashboard() {
     const s = section();
     if (!s) return "menu";
     if (s === "server") return "server";
-    if (s === "friends" || s === "teams") return "social";
+    if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
     if (s === "settings") return "settings";
     if (s === "signup") return identity.me() ? "player" : "signup";
@@ -164,7 +174,7 @@ export default function Dashboard() {
   const rows = createMemo((): Row[] => {
     switch (section()) {
       case "live":
-        return liveGames(live.state).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: `${g.variant ?? g.mode} ${clock(elapsedSeconds(g, now()))}` }));
+        return liveGames(live.state).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
         return friends().map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
       case "players":
@@ -172,7 +182,7 @@ export default function Dashboard() {
           .sort((a, b) => Number(b.online) - Number(a.online) || a.gamertag.localeCompare(b.gamertag))
           .map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
       case "history":
-        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: `${g.variant ?? g.mode} ${ago(g.ended_at, now())}` }));
+        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: rowType(g) }));
       default:
         return [];
     }
@@ -243,7 +253,7 @@ export default function Dashboard() {
     }
   });
 
-  // The friends and teams screens (Social.tsx) and the session screens
+  // The friends and clans screens (Social.tsx) and the session screens
   // (Sessions.tsx) take their own input.
   let socialAct: ((a: Action) => boolean) | null = null;
   const ownInput = () => screen() === "social" || screen() === "sessions";
@@ -272,7 +282,7 @@ export default function Dashboard() {
     if (screen() === "menu") return;
     if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
-    else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
+    else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
     else go("/", "back");
   }
 
@@ -528,7 +538,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "social"}>
-            <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
           </Match>
 
           <Match when={screen() === "sessions"}>
@@ -624,11 +634,22 @@ export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSe
 
 const NO_FRAME: MapFrame = { players: [], markers: [], seen: null };
 
+/** The orb's picture of a game: the map's picture (preview, else its top
+ *  view) under the orb's glass, with a live game's blips over it; without
+ *  one, the drawn outline as before. */
 function GameMap(props: { game: GameState }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
+  const picture = mapPicture(() => props.game.map);
   const frame = props.game.status === "live" ? liveFrameSource(props.game.game_id, roster) : () => NO_FRAME;
-  return <div class="dx-map"><MapCanvas mini frame={frame} roster={roster} outline={outline} label={`map of ${mapTitle(props.game.map)}`} /></div>;
+  return (
+    <div class="dx-map" classList={{ "dx-map--pic": !!picture() }}>
+      <Show when={picture()}>{(u) => <img class="dx-map-pic" src={u()} alt={`${mapTitle(props.game.map)}`} decoding="async" draggable={false} />}</Show>
+      <Show when={!picture() || props.game.status === "live"}>
+        <MapCanvas mini frame={frame} roster={roster} outline={() => (picture() ? null : outline())} label={`map of ${mapTitle(props.game.map)}`} />
+      </Show>
+    </div>
+  );
 }
 
 function GamePlate(props: { game: GameState }) {
@@ -636,9 +657,17 @@ function GamePlate(props: { game: GameState }) {
   return (
     <Plate small={g().status === "live" ? "live" : "final"} title={mapTitle(g().map)}>
       <dl>
-        <dt>game</dt><dd>{g().variant ?? g().mode}</dd>
-        <dt>players</dt><dd>{Object.keys(g().players).length}</dd>
-        <dt>{g().status === "live" ? "leading" : "final"}</dt><dd>{gameLine(g())}</dd>
+        <dt>game</dt><dd>{gameTypeLine(g())}</dd>
+        <Show
+          when={isCampaign(g())}
+          fallback={<>
+            <dt>players</dt><dd>{Object.keys(g().players).length}</dd>
+            <dt>{g().status === "live" ? "leading" : "final"}</dt><dd>{gameLine(g())}</dd>
+          </>}
+        >
+          <dt>players</dt><dd>{Object.values(g().players).map((p) => p.name).join(", ")}</dd>
+          <dt>result</dt><dd>{OUTCOME_WORDS[campaignOutcome(g())]}</dd>
+        </Show>
         <dt>{g().status === "live" ? "clock" : "ended"}</dt><dd>{g().status === "live" ? clock(elapsedSeconds(g(), now())) : ago(g().ended_at, now())}</dd>
       </dl>
     </Plate>
@@ -648,13 +677,16 @@ function GamePlate(props: { game: GameState }) {
 const PRESENCE_WORD = { playing: "in a game", online: "online", away: "away", offline: "offline" } as const;
 
 function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: boolean }) {
+  // Games, wins and K/D are multiplayer's; campaign is a line of its own.
   const rec = createMemo(() => serviceRecord(live.state, props.account.xuid));
+  const camp = createMemo(() => campaignRecord(live.state, props.account.xuid, now()));
   return (
     <Plate small={props.mine ? "signed in" : PRESENCE_WORD[presenceKind(props.account)]} title={props.account.gamertag} main={props.main}>
       <dl>
         <dt>status</dt><dd>{presenceText(props.account)}</dd>
         <dt>games</dt><dd>{rec().games} <span>played</span> {rec().wins} <span>won</span></dd>
         <dt>kills / deaths</dt><dd>{rec().kills} / {rec().deaths}</dd>
+        <Show when={camp().games}><dt>campaign</dt><dd>{camp().games} <span>played</span> {camp().completed} <span>complete</span></dd></Show>
         <dt>rank</dt><dd>{rec().rank}</dd>
         <Show when={props.mine}><dt>key</dt><dd>kept in this browser</dd></Show>
       </dl>

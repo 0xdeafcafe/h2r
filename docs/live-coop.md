@@ -1,9 +1,11 @@
-# Campaign co-op over Live (design, nothing built)
+# Campaign co-op over Live (design; first slice of phase 0 built)
 
 Retail Halo 2 plays campaign co-op only in split screen on one console.
 This page answers "can we add co-op over our Live service?" and lays out
-the options so the owner can pick one. **Nothing here is built, and no
-game was built or run for this page.**
+the options. The owner has since decided
+([section 6](#6-decisions-made-2026-11-16)), and the first slice of phase 0
+is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)).
+**No game was built or run for this page or that slice.**
 
 In short:
 
@@ -296,9 +298,13 @@ is chosen in the shared menu. `View` and `Sim` settings are the host's
 and are locked for the session ("locked: co-op"); `Host` settings
 (resolution, vsync, bindings, volume) stay per machine.
 
-Only the host's profile gets campaign progress, as in retail split
-screen, where progress goes to player one. Copying the checkpoint to the
-guest's own data afterwards is possible and is a decision for the owner.
+In retail split screen only player one's profile gets campaign progress.
+Here the guest keeps theirs too (decided, section 6): when a session ends,
+or at each checkpoint, the checkpoint and the campaign progress written in
+the session data directory are copied into the guest's own data as well as
+the host's. Both machines hold the same bytes, so nothing is sent for it.
+[guess] The save names the profile that made it; copying it under the
+guest's profile needs the save format read first (a research point).
 
 ### 2.4 Join and start flow
 
@@ -659,25 +665,31 @@ retail path, Start is where the session calls of 1.2 are made.
 Items 1 to 3 belong in phase 0 or 1; 4 to 6 and 10 in phase 3; 8 is the
 registry work the feature-engine plan already has.
 
-## 6. Decisions for the owner
+## 6. Decisions (made 2026-11-16)
 
-1. **Order.** Probe the retail path before building the host-level one
-   (recommended), or go straight to the host-level one.
-2. **Two players only?** Both paths stop at two: retail campaign allows
-   no more, and the session start refuses a third.
-3. **View compromises** for the host-level path: letterboxed strip
-   first, anamorphic later; shared audio; shared pause and menus.
-4. **Input delay default** (2 frames suggested) and whether the first
-   version is limited to same-architecture peers.
-5. **Relay.** May the Live server relay pad input when a direct
-   connection fails? It sees pad state only.
-6. **Saves.** Host-only progress as in retail, or copy the checkpoint to
-   the guest player's data too.
-7. **Telemetry in co-op.** Off until the tick observer chains (5.3), or
-   on for both peers as part of the fingerprint.
-8. **Build on `settings-slice`.** Section 5 assumes that branch lands
-   first. If it will not, the co-op options fall back to hand-written
-   settings and the gaps list changes.
+The owner's answers to the questions this page ended with:
+
+1. **Order.** Probe the retail synchronous path first, after phase 0.
+   Lockstep below the game is the fallback.
+2. **Relay.** Yes: the Live server may relay co-op traffic (pad input and
+   tick hashes, or the retail path's packets) when a direct connection
+   fails. Built: section 8.
+3. **Saves.** The guest keeps the checkpoint and campaign progress too,
+   not the host only (2.3).
+
+Defaults taken for the rest, until someone says otherwise:
+
+4. **Two players.** Both paths stop at two.
+5. **Input delay** of 2 frames by default, per machine.
+6. **Same-architecture peers first.** Cross-architecture play waits for
+   traces that prove it.
+7. **Telemetry off in co-op** until the tick observer chains (5.3).
+8. **View compromises** for the fallback path stay as proposed in 2.5:
+   letterboxed strip first, anamorphic later; shared audio and pause.
+
+Still open: whether `settings-slice` lands before the co-op options are
+built. Section 5 assumes it does; the slice in section 8 does not depend
+on it.
 
 ## 7. Research points
 
@@ -694,3 +706,97 @@ registry work the feature-engine plan already has.
   view, for the anamorphic view.
 - Which GPU readbacks happen during a campaign level, and which of them
   the CPU reads.
+- The campaign save and profile formats, for copying progress to the
+  guest's own profile (2.3).
+
+## 8. What is built (phase 0, first slice)
+
+All on tests; nothing here was run in the game. It is the part of phase 0
+that does not need the settings layer.
+
+**`crates/coop`** (no guest, no game data):
+
+- `wire`: the one datagram. It carries the sender's acknowledgements and
+  repeats every pad frame and tick hash the other side has not
+  acknowledged (up to 32 of each, 859 bytes at most), so delivery is in
+  order whatever the link drops, and nothing is retransmitted on a timer.
+  A datagram of another session, another version or another shape is
+  counted and dropped.
+- `link`: `Link` is an unreliable datagram path. `UdpLink` is the direct
+  one, on the XNet base port + 4 (`live_hle::NetworkConfig::coop_endpoint`;
+  base+0, +1, +5, +6 are the title's channels and +2 is QoS, so a host
+  that opens base..base+6 for System Link already opens it). `Fallback`
+  sends on the direct path always and on the relay too while nothing has
+  been heard on direct for a timeout. `sim_pair` is a simulated link on a
+  fake clock: latency, jitter, loss, reordering, a switch to take it down,
+  repeatable by seed.
+- `relay`: `RelayLink`, the relay path as a `Link`, on a thread of its own.
+- `schedule`: the two-port pad schedule of 2.2. A machine's sample taken
+  when it starts frame *f* is frame *f + delay* of its port; the first
+  `delay` frames are neutral; the delay is per machine and can change
+  during a game without notice to the other side. Packet numbers are
+  derived from the agreed stream.
+- `peer`: one machine's end. `begin_frame` starts a frame only when both
+  ports' pads are in hand (`Hold::Waiting` otherwise); `report_hash` takes
+  a tick's hash, and the first tick whose hashes differ latches
+  `Hold::Desync` on both machines.
+- `tap`: `ScheduleTap`, an `xapi::tap::InputTap`. It overwrites the live
+  packet for ports 0 and 1, answers "not connected" for anything else,
+  and counts a read that came with no frame started.
+
+**`crates/lockstep`**: `SimRegion` and `hash_sim`, the simulation hash:
+one word over the game-state block (`SimRegion::HALO2`: `0x3fe000` bytes
+behind the base word at `0x004e6080`, from the static notes, unchecked in
+a running game) instead of all of RAM.
+
+**Live server**: `GET /v1/sessions/{id}/relay` ([live-api.md](live-api.md),
+"Co-op relay"): a WebSocket for the two members of an open session
+advertised with `flags: "coop"`, authenticated with a `sessions.relay`
+token, 1200 bytes a message, rate-limited per socket
+(`Policy::relay_rate`). It forwards bytes and never reads or stores them.
+
+**What the tests prove** (`cargo test -p coop -p lockstep -p live-server`):
+
+| claim | test |
+|---|---|
+| both machines' guests read the identical per-frame pads under latency, jitter, loss and reordering, equal to a zero-latency run | `coop/tests/peers.rs`: `loss_and_reordering_change_nothing_the_guest_reads` (8 seeds), `over_the_budget_frames_wait_and_the_stream_does_not_change` |
+| inside the delay budget no frame waits | `inside_the_delay_budget_no_frame_waits` |
+| a dead link stalls both machines within their delay's worth of frames, and they resume with the same stream | `a_dead_link_stalls_both_and_they_resume` |
+| the relay carries the game while direct is dead, direct takes over when it works, and the relay then goes quiet | `the_relay_carries_the_game_while_direct_is_dead`; with the real server and real sockets, `live-server/tests/relay.rs`: `two_coop_peers_play_through_the_relay_when_direct_is_dead` |
+| a differing tick hash stops both machines at that tick | `a_differing_hash_stops_both_machines_at_that_tick` |
+| per-machine delays, and a change of delay during a game | `each_machine_has_its_own_delay_and_may_change_it` |
+| real UDP on loopback | `two_peers_over_real_udp_on_loopback` |
+| two toy guests (`lockstep::synthetic`) reading through the tap over a bad link give identical whole-RAM traces, and a word changed on one machine stops both at that tick | `coop/tests/toy.rs` |
+| a read never falls back to the local device | `coop::tap` unit test |
+| only the session's two members get into the relay; size and rate caps close the socket | `live-server/tests/relay.rs` |
+
+**Left for the rest of phase 0 and after**
+
+- Wiring into `boot` and `app`: nothing calls `Peer` yet. The runner
+  needs the hold at the scheduler point after a present, the tap needs a
+  handle-to-port map from `xapi` (the tap is given a handle only), and
+  the tick observer has to feed `report_hash`.
+- The tap covers `XInputGetState` only. Device arrival and capabilities
+  still come from the local backend (2.9).
+- The handshake of 2.3 (build, fingerprint, disc, epoch, start-state
+  pack) and the session data directory. The datagram's session number is
+  the only check today.
+- Round-trip measurement and choosing the delay from it; the "waiting
+  for <gamertag>" notice; carry-on-alone (2.7).
+- The relay client speaks `ws://` and `wss://` through tungstenite's own
+  connector. `live-telemetry` builds its TLS connector by hand for the
+  ingest socket; the two should share one. Token refresh on a long
+  session is on the server side only: the client does not send a fresh
+  token yet, so a relay socket lasts one token lifetime.
+- UDP hole punching. Direct needs a reachable port, as System Link does
+  ([live-matchmaking.md](live-matchmaking.md) 3.6); otherwise the relay.
+- The retail path's own packets through the relay (section 1): the relay
+  forwards any bytes, but the XNet HLE does not use it.
+- A `coop` session shows in `GET /v1/sessions` like any other. The HLE's
+  custom-game search and the web session list should leave it out or
+  label it.
+- The settings-layer gaps of 5.4, when `settings-slice` lands: the co-op
+  `Def`s (`coop.input_delay` and the rest), a store fingerprint by scope
+  for the handshake, releasing forced values, the scope filter on
+  in-guest rows, `Action` rows for the lobby, and the tick observer
+  chaining through `Dispatch::override_handler` instead of refusing.

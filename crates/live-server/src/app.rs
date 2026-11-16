@@ -103,6 +103,8 @@ pub struct Policy {
     pub game_idle_s: i64,
     /// Idle advertisements expire; presence pings refresh their host deadline.
     pub session_idle_s: i64,
+    /// Co-op relay, per socket: messages per second, burst.
+    pub relay_rate: (f64, u32),
     /// How often the presence and game managers look.
     pub sweep_every: Duration,
     /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live-admin.md).
@@ -122,6 +124,7 @@ impl Default for Policy {
             presence_ttl_s: 90,
             game_idle_s: 300,
             session_idle_s: 300,
+            relay_rate: (240.0, 480),
             sweep_every: Duration::from_secs(5),
             admins: Vec::new(),
             public: Default::default(),
@@ -145,6 +148,7 @@ pub struct Live {
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
+    pub(crate) relays: crate::relay::Relays,
     dispatcher: tokio::task::AbortHandle,
 }
 
@@ -383,6 +387,7 @@ impl Live {
             team_writes: Default::default(),
             session_writes: Default::default(),
             local_signin: Default::default(),
+            relays: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
         };
@@ -403,6 +408,11 @@ impl Live {
 
     pub fn id(&self) -> &str {
         &self.identity.id
+    }
+
+    /// The co-op relay rooms.
+    pub fn relays(&self) -> &crate::relay::Relays {
+        &self.relays
     }
 
     pub fn policy(&self) -> &Policy {
@@ -482,6 +492,21 @@ impl Live {
             self.authenticate(bearer, lxm::READ)?;
         }
         Ok(())
+    }
+
+    /// Who is reading: an account when a `read` bearer is presented (always
+    /// checked, even on a public server, so a bad token is an error rather
+    /// than a silently anonymous read), None for an anonymous public read.
+    /// Lists whose answer depends on the reader (friends-only sessions) use it.
+    pub fn read_caller(&self, bearer: Option<&str>) -> Result<Option<Xuid>, ApiError> {
+        if bearer.is_none() {
+            self.authorize_read(None)?;
+            return Ok(None);
+        }
+        Ok(match self.authenticate(bearer, lxm::READ)? {
+            Author::Account { xuid, .. } => Some(xuid),
+            Author::Server(_) => None,
+        })
     }
 
     /// The token's expiry, for WebSockets that must close when it passes.

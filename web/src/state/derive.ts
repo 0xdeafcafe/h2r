@@ -4,8 +4,9 @@
 // (people you've played with). Everything here is pure and marked as
 // derived in the UI.
 
-import type { GameState, Kill, LiveState, Standing } from "./reducer";
+import type { GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
 import { gamesFor, isWinner, standings, teamStandings } from "./reducer";
+import { gameSeconds } from "./length";
 import type { Xuid } from "../api/types";
 
 /** Ticks per second, and the window that chains kills into a multi-kill. */
@@ -198,9 +199,10 @@ export function slotsFor(g: GameState, xuid: Xuid): number[] {
   return Object.values(g.players).filter((p) => p.xuid === xuid).map((p) => p.index);
 }
 
-/** One row per game the account played in, newest first. */
+/** One row per multiplayer game the account played in, newest first
+ *  (campaign games have their own rows, `campaignHistory`). */
 export function gameHistory(s: LiveState, xuid: Xuid): HistoryRow[] {
-  return gamesFor(s, xuid).map((g) => {
+  return gamesFor(s, xuid, "multiplayer").map((g) => {
     const slots = slotsFor(g, xuid);
     const pl = places(g);
     const sprees = bestSprees(g.kills);
@@ -263,7 +265,8 @@ export function nextRankAt(exp: number): number | null {
   return RANKS[rankIndex(exp) + 1]?.[0] ?? null;
 }
 
-/** Totals for an account; `only` narrows them to some of its games (a map, a playlist). */
+/** Multiplayer totals for an account (campaign games never count); `only`
+ *  narrows them to some of its games (a map, a playlist). */
 export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) => boolean): ServiceRecord {
   const all = gameHistory(s, xuid);
   const hist = only ? all.filter((h) => only(h.game)) : all;
@@ -297,10 +300,11 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
 
 export interface Friend { xuid: Xuid; games: number; lastPlayed: string }
 
-/** People an account has shared a game with, most games first. */
-export function playedWith(s: LiveState, xuid: Xuid): Friend[] {
+/** People an account has shared a game with, most games first; `mode`
+ *  keeps one half of the stats (campaign: co-op partners). */
+export function playedWith(s: LiveState, xuid: Xuid, mode?: GameMode): Friend[] {
   const m = new Map<Xuid, Friend>();
-  for (const g of gamesFor(s, xuid)) {
+  for (const g of gamesFor(s, xuid, mode)) {
     const seen = new Set<Xuid>();
     for (const p of Object.values(g.players)) {
       if (!p.xuid || p.xuid === xuid || seen.has(p.xuid)) continue;
@@ -312,6 +316,140 @@ export function playedWith(s: LiveState, xuid: Xuid): Friend[] {
     }
   }
   return [...m.values()].sort((a, b) => b.games - a.games || b.lastPlayed.localeCompare(a.lastPlayed));
+}
+
+// ---------- campaign ----------
+
+/** How a campaign game went for the record: `finished` is a completed
+ *  level, anything else (quit, connection lost) is not, and a live game is
+ *  still being played. */
+export type CampaignOutcome = "complete" | "playing" | "quit" | "lost" | "ended";
+
+/** `ended` is a game whose end reason isn't known yet (a summary read
+ *  before its detail): not counted as complete. */
+export function campaignOutcome(g: Pick<GameState, "status" | "end_reason">): CampaignOutcome {
+  if (g.status === "live") return "playing";
+  switch (g.end_reason) {
+    case "finished": return "complete";
+    case "lost": return "lost";
+    case "quit": return "quit";
+    default: return "ended";
+  }
+}
+
+export const OUTCOME_WORDS: Record<CampaignOutcome, string> = {
+  complete: "Level complete", playing: "Playing now", quit: "Quit", lost: "Connection lost", ended: "Ended",
+};
+
+export interface CampaignRow {
+  game: GameState;
+  slots: number[];
+  outcome: CampaignOutcome;
+  /** Game time, in seconds. */
+  seconds: number;
+  /** Times the account's players died: the scoreboard's count, or the
+   *  recorded death events when those are more. */
+  deaths: number;
+  /** Kills the scoreboard credits (in campaign these are of the level's AI,
+   *  when the game reports them), or null when it reports none. */
+  kills: number | null;
+  /** Everyone else in the game, by display name. */
+  partners: string[];
+}
+
+/** Deaths for some slots of a game: the scoreboard's count, or the death
+ *  events seen when there are more of those (a scoreboard may lag). */
+export function deathsOf(g: GameState, slots: Iterable<number>): number {
+  const set = new Set(slots);
+  let board = 0;
+  for (const i of set) board += g.scores[i]?.deaths ?? 0;
+  const seen = g.kills.filter((k) => set.has(k.victim)).length;
+  return Math.max(board, seen);
+}
+
+/** One row per campaign game the account played in, newest first. */
+export function campaignHistory(s: LiveState, xuid: Xuid, now: number): CampaignRow[] {
+  return gamesFor(s, xuid, "campaign").map((g) => {
+    const slots = slotsFor(g, xuid);
+    let kills = 0;
+    for (const i of slots) kills += g.scores[i]?.kills ?? 0;
+    return {
+      game: g,
+      slots,
+      outcome: campaignOutcome(g),
+      seconds: gameSeconds(g, now),
+      deaths: deathsOf(g, slots),
+      kills: kills > 0 ? kills : null,
+      partners: Object.values(g.players).filter((p) => !slots.includes(p.index)).map((p) => p.name),
+    };
+  });
+}
+
+export interface LevelRow {
+  map: string;
+  plays: number;
+  completions: number;
+  deaths: number;
+  /** Seconds played on the level, all attempts. */
+  seconds: number;
+  /** The quickest completed run, in seconds, or null before one. */
+  fastest: number | null;
+  lastPlayed: string;
+}
+
+export interface CampaignRecord {
+  games: number;
+  completed: number;
+  /** Games that ended any other way than finished. */
+  unfinished: number;
+  live: number;
+  /** Games with more than one player. */
+  coop: number;
+  deaths: number;
+  /** Scoreboard kills, or null when no game reported any. */
+  kills: number | null;
+  seconds: number;
+  firstPlayed: string | null;
+  lastPlayed: string | null;
+  /** Levels played, most recently played first. */
+  levels: LevelRow[];
+  /** Accounts the player has shared campaign games with. */
+  partners: Friend[];
+}
+
+/** Campaign totals for an account. Nothing here counts towards the
+ *  multiplayer record, and nothing multiplayer counts here. */
+export function campaignRecord(s: LiveState, xuid: Xuid, now: number): CampaignRecord {
+  const rows = campaignHistory(s, xuid, now);
+  const rec: CampaignRecord = {
+    games: rows.length, completed: 0, unfinished: 0, live: 0, coop: 0, deaths: 0, kills: null, seconds: 0,
+    firstPlayed: null, lastPlayed: null, levels: [], partners: playedWith(s, xuid, "campaign"),
+  };
+  const levels = new Map<string, LevelRow>();
+  for (const r of rows) {
+    const g = r.game;
+    if (r.outcome === "complete") rec.completed++;
+    else if (r.outcome === "playing") rec.live++;
+    else rec.unfinished++;
+    if (Object.keys(g.players).length > 1) rec.coop++;
+    rec.deaths += r.deaths;
+    if (r.kills !== null) rec.kills = (rec.kills ?? 0) + r.kills;
+    rec.seconds += r.seconds;
+    if (!rec.firstPlayed || g.started_at < rec.firstPlayed) rec.firstPlayed = g.started_at;
+    if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
+    const l = levels.get(g.map) ?? { map: g.map, plays: 0, completions: 0, deaths: 0, seconds: 0, fastest: null, lastPlayed: g.started_at };
+    l.plays++;
+    l.deaths += r.deaths;
+    l.seconds += r.seconds;
+    if (r.outcome === "complete") {
+      l.completions++;
+      l.fastest = l.fastest === null ? r.seconds : Math.min(l.fastest, r.seconds);
+    }
+    if (g.started_at > l.lastPlayed) l.lastPlayed = g.started_at;
+    levels.set(g.map, l);
+  }
+  rec.levels = [...levels.values()].sort((a, b) => b.lastPlayed.localeCompare(a.lastPlayed));
+  return rec;
 }
 
 /** A short service tag from a gamertag, e.g. "Sneaky Pete" -> "SP7". */

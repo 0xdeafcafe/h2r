@@ -19,5 +19,5 @@ mod file;
 mod store;
 
 pub use def::{Apply, Choice, Def, Kind, Menu, ParseFn, Scope, Tier, Unit, Value};
-pub use file::{SETTINGS_FILE, path_in, write_value};
+pub use file::{PROFILES, SETTINGS_FILE, path_in, write_profile_value, write_value};
 pub use store::{Flag, Outcome, Problem, SetError, Setting, SettingType, Source, State, Store};

@@ -1,6 +1,7 @@
-// Small pieces both sides use for teams and friends: the team emblem (the
+// Small pieces both sides use for clans and friends: the clan emblem (the
 // leader's emblem from their games when known, else one picked from the
-// team id, on a team-coloured field) and presence words for friends.
+// clan id, on a clan-coloured field) and presence words for friends. A clan
+// is the protocol's "team" (Xbox Live Teams), hence the type names.
 
 import { mapTitle } from "../state/gameart";
 import { Show } from "solid-js";
@@ -16,7 +17,7 @@ import type { AccountState } from "../state/reducer";
 /** The team's colour: a hue from its id, so it is stable everywhere. */
 export const teamHue = (t: Pick<Team, "id">) => hueFor(t.id);
 
-export function TeamEmblem(props: { team: Team; size: number; class?: string }) {
+export function ClanEmblem(props: { team: Team; size: number; class?: string }) {
   const appearance = () => latestAppearance(live.state, props.team.creator);
   return (
     <span class={`team-emblem ${props.class ?? ""}`} style={{ "--team-hue": String(teamHue(props.team)), width: `${props.size}px`, height: `${props.size}px` }}>

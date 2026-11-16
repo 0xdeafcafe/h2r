@@ -2,7 +2,7 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, AccountSummary, GameDetail, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
+  AccountCreated, AccountSummary, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
@@ -54,6 +54,15 @@ export interface GameState {
   host: string | null;
   map: string;
   mode: string;
+  /** `custom`, `matchmaking` or `campaign` when the game said; see `gameKind`. */
+  kind: string | null;
+  /** Matchmaking only: the playlist's name and id. */
+  playlist: string | null;
+  playlist_id: string | null;
+  /** Campaign only: the difficulty, when the game said. */
+  difficulty: string | null;
+  /** Campaign only: true for co-op over the network. */
+  online: boolean | null;
   variant: string | null;
   team_play: boolean;
   score_limit: number | null;
@@ -219,6 +228,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         host: d.host ?? null,
         map: d.map,
         mode: d.mode,
+        ...kindFields(d),
         variant: d.variant ?? null,
         team_play: !!d.team_play,
         score_limit: d.score_limit ?? null,
@@ -299,6 +309,19 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
   return true;
 }
 
+const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+
+/** The optional game-type fields, read softly: wrong types become null. */
+function kindFields(d: GameKindFields) {
+  return {
+    kind: str(d.kind)?.toLowerCase() ?? null,
+    playlist: str(d.playlist),
+    playlist_id: str(d.playlist_id),
+    difficulty: str(d.difficulty)?.toLowerCase() ?? null,
+    online: typeof d.online === "boolean" ? d.online : null,
+  };
+}
+
 function applyScores(g: GameState, players: PlayerScore[] | undefined) {
   for (const p of players ?? []) {
     g.scores[p.index] = {
@@ -358,16 +381,30 @@ export function applyEvents(s: LiveState, evs: WireEvent[]) {
 
 // ---------- selectors (pure, used by pages and tests) ----------
 
-export function liveGames(s: LiveState): GameState[] {
-  return s.gameOrder.map((id) => s.games[id]!).filter((g) => g && g.status === "live");
+/** The two halves of the stats: a game is campaign or multiplayer. Anything
+ *  that isn't `campaign` (an older log, an unknown mode) counts as
+ *  multiplayer, which every stats page shows by default. */
+export type GameMode = "multiplayer" | "campaign";
+
+export function modeOf(g: Pick<GameState, "mode">): GameMode {
+  return g.mode === "campaign" ? "campaign" : "multiplayer";
 }
 
-export function endedGames(s: LiveState, limit = 20): GameState[] {
+export function isCampaign(g: Pick<GameState, "mode">): boolean {
+  return modeOf(g) === "campaign";
+}
+
+export function liveGames(s: LiveState, mode?: GameMode): GameState[] {
+  return s.gameOrder.map((id) => s.games[id]!).filter((g) => g && g.status === "live" && (!mode || modeOf(g) === mode));
+}
+
+/** Ended games, newest first; `mode` narrows them to one half of the stats. */
+export function endedGames(s: LiveState, limit = 20, mode?: GameMode): GameState[] {
   const out: GameState[] = [];
   for (const id of s.gameOrder) {
-    const g = s.games[id];
-    if (g && g.status === "ended") out.push(g);
     if (out.length >= limit) break;
+    const g = s.games[id];
+    if (g && g.status === "ended" && (!mode || modeOf(g) === mode)) out.push(g);
   }
   return out;
 }
@@ -423,10 +460,11 @@ export function teamStandings(g: GameState): TeamStanding[] {
 
 export interface PlayerStats { games: number; kills: number; deaths: number; wins: number; live: number }
 
-/** Lifetime stats for an account, derived from game events. */
+/** Lifetime multiplayer stats for an account, derived from game events.
+ *  Campaign games never count towards them. */
 export function playerStats(s: LiveState, xuid: Xuid): PlayerStats {
   const st: PlayerStats = { games: 0, kills: 0, deaths: 0, wins: 0, live: 0 };
-  for (const g of gamesFor(s, xuid)) {
+  for (const g of gamesFor(s, xuid, "multiplayer")) {
     st.games += 1;
     if (g.status === "live") st.live += 1;
     // Scoreboards are authoritative (and complete, unlike a snapshot's
@@ -447,10 +485,11 @@ export function isWinner(g: Pick<GameState, "winner">, p: { index: number; team:
   return "team" in w ? p.team === w.team : p.index === w.player;
 }
 
-export function gamesFor(s: LiveState, xuid: Xuid): GameState[] {
+/** An account's games, newest first; `mode` keeps one half of the stats. */
+export function gamesFor(s: LiveState, xuid: Xuid, mode?: GameMode): GameState[] {
   return s.gameOrder
     .map((id) => s.games[id]!)
-    .filter((g) => g && Object.values(g.players).some((p) => p.xuid === xuid));
+    .filter((g) => g && (!mode || modeOf(g) === mode) && Object.values(g.players).some((p) => p.xuid === xuid));
 }
 
 export function accountByGamertag(s: LiveState, tag: string): AccountState | undefined {
@@ -496,6 +535,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       host: det.host ?? null,
       map: d.map,
       mode: d.mode,
+      ...kindFields(d),
       variant: d.variant ?? null,
       team_play: teamPlay,
       score_limit: det.score_limit ?? null,
@@ -517,6 +557,9 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     s.games[d.game_id] = g;
     s.gameOrder = insertByStart(s, d.game_id, d.started_at);
   } else {
+    const k = kindFields(d);
+    g.kind ??= k.kind; g.playlist ??= k.playlist; g.playlist_id ??= k.playlist_id;
+    g.difficulty ??= k.difficulty; g.online ??= k.online;
     if (det.team_play !== undefined) g.team_play = det.team_play;
     if (det.score_limit !== undefined) g.score_limit = det.score_limit ?? null;
     if (det.time_limit_s !== undefined) g.time_limit_s = det.time_limit_s ?? null;

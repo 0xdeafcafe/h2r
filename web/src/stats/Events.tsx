@@ -6,6 +6,7 @@ import { VerifyMark } from "../components/bits";
 import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
 import { num } from "./fmt";
+import { gameTypeLine } from "../state/gametype";
 
 const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
@@ -141,7 +142,15 @@ function summary(e: WireEvent): string {
     case "SignedOut": return "signed out";
     case "PresenceExpired": return "went quiet";
     case "PresenceChanged": return `${d.state ?? ""}${d.game_id ? " in a game" : ""}`;
-    case "GameStarted": return `${mapTitle(d.map as string)} · ${d.variant ?? d.mode} · ${(d.players as unknown[])?.length ?? 0} players`;
+    case "GameStarted": {
+      const s = (k: string) => (typeof d[k] === "string" ? (d[k] as string) : null);
+      const players = Array.isArray(d.players) ? d.players : [];
+      const type = gameTypeLine({
+        mode: s("mode") ?? "", kind: s("kind"), playlist: s("playlist"), online: d.online === true, players: { ...players },
+        variant: s("variant"), difficulty: s("difficulty"),
+      });
+      return `${mapTitle(d.map as string)} · ${type} · ${players.length} players`;
+    }
     case "PlayerKilled": return `${d.killer ?? "world"} → ${d.victim} (${d.kind}${d.weapon ? ", " + d.weapon : ""})`;
     case "ScoreChanged": return `tick ${d.tick}`;
     case "GameFrame": return `tick ${d.tick}, ${(d.players as unknown[])?.length ?? 0} players`;

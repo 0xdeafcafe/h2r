@@ -10,8 +10,8 @@ import { ROLE_LABEL, friendStatus, friendWrites, roleOf } from "../api/social";
 import type { AccountState } from "../state/reducer";
 import Emblem from "../components/Emblem";
 import { Panel, playerHref } from "./Layout";
-import { TeamEmblem, friendPresence, presenceLine } from "./teamBits";
-import { teamHref } from "./Teams";
+import { ClanEmblem, friendPresence, presenceLine } from "./clanBits";
+import { clanHref } from "./Clans";
 import "../styles/social.css";
 
 /** The add-friend button for `account`, in whatever state the two are. */
@@ -76,18 +76,18 @@ export function PlayerFriends(props: { account: AccountState }) {
   );
 }
 
-export function PlayerTeams(props: { account: AccountState }) {
+export function PlayerClans(props: { account: AccountState }) {
   const teams = () => social.teamsOf(props.account.xuid);
   return (
-    <Panel title="Teams" sub="teams they're on" right={<A href="/stats/teams" class="s-soc-link">all teams</A>} class="s-soc-box">
-      <Show when={teams().length} fallback={<p class="s-recent-empty">{social.teamsLoaded() ? "Not on a team." : "Loading teams…"}</p>}>
+    <Panel title="Clans" sub="clans they're in" right={<A href="/stats/clans" class="s-soc-link">all clans</A>} class="s-soc-box">
+      <Show when={teams().length} fallback={<p class="s-recent-empty">{social.teamsLoaded() ? "Not in a clan." : "Loading clans…"}</p>}>
         <ul class="s-mini-list">
           <For each={teams()}>
             {(t) => {
               const role = () => roleOf(t, props.account.xuid);
               return (
                 <li>
-                  <TeamEmblem team={t} size={14} /><A href={teamHref(t.id)}>{t.properties.name}</A>
+                  <ClanEmblem team={t} size={14} /><A href={clanHref(t.id)}>{t.properties.name}</A>
                   <span class="s-dim">{role() === "recruit" ? "invited" : ROLE_LABEL[role() ?? "member"]}</span>
                 </li>
               );
@@ -103,7 +103,7 @@ export function PlayerTeams(props: { account: AccountState }) {
 export default function PlayerSocial(props: { account: AccountState }) {
   return (
     <>
-      <PlayerTeams account={props.account} />
+      <PlayerClans account={props.account} />
       <PlayerFriends account={props.account} />
     </>
   );

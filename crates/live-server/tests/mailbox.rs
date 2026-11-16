@@ -30,6 +30,7 @@ async fn session(h: &Harness, u: &User) -> String {
         map: None,
         name: None,
         language: None,
+        visibility: Default::default(),
     };
     let r = h
         .call(

@@ -94,6 +94,9 @@ fn flat_quad<B: Backend>(
     color: u32,
 ) {
     quad_vb(m, r.0, r.1, r.2, r.3, color);
+    // Reported, as the runtime's write barrier would (the vertex cache
+    // relies on it).
+    d.note_write(0x8000_0000 | VB_DATA, 4 * 20);
     bind_quad(d, m);
     d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
 }
@@ -105,6 +108,7 @@ fn triangle<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
         bytes.extend(vertex(x, y, color));
     }
     m.write(0x8000_0000 | VB_DATA, &bytes).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, bytes.len() as u32);
     bind_quad(d, m);
     d.draw_vertices(m, 5 /* TRIANGLELIST */, 0, 3).unwrap();
 }
@@ -123,6 +127,7 @@ fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f
         }
     }
     m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, vb.len() as u32);
     m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
     m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
     m.write_u32(VB_HEADER + 8, 0).unwrap();
@@ -506,6 +511,7 @@ fn texel_quad<B: Backend>(
         }
     }
     m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, vb.len() as u32);
     m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
     m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
     m.write_u32(VB_HEADER + 8, 0).unwrap();
@@ -531,6 +537,7 @@ fn z_quad<B: Backend>(
         bytes.extend_from_slice(&color.to_le_bytes());
     }
     m.write(0x8000_0000 | VB_DATA, &bytes).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, bytes.len() as u32);
     m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
     m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
     m.write_u32(VB_HEADER + 8, 0).unwrap();

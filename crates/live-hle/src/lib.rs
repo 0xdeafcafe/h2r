@@ -21,7 +21,10 @@ pub use outbox::{
 mod qos;
 mod qos_memory;
 mod sessions;
-pub use sessions::{LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots};
+pub use sessions::{
+    LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility,
+    VisibilityProbe,
+};
 mod state;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
@@ -29,7 +32,7 @@ mod storage_api;
 mod teams;
 pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
-pub use network_config::NetworkConfig;
+pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};
 
 pub use config::{ConfigError, LiveConfig};
 use entries::{Entry, Operation};
@@ -166,6 +169,31 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_game_id(id)
+    }
+    /// Who may find this console's hosted sessions in the server's lists and
+    /// the custom games browser (docs/live-custom-games.md). Boot sets it from
+    /// the `live.visibility` setting; open advertisements are updated at once.
+    /// No guest memory access.
+    pub fn set_session_visibility(&self, v: Visibility) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_visibility(v)
+    }
+    /// Where the title keeps its own party privacy: read (with guest memory
+    /// already held) each time a lobby is advertised or updated, winning over
+    /// the setting. Boot installs one that reads the squad session.
+    pub fn set_visibility_probe(&self, probe: Option<VisibilityProbe>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_visibility_probe(probe)
+    }
+    pub fn session_visibility(&self) -> Visibility {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_visibility()
     }
     pub fn server_status(&self) -> ServerStatus {
         self.state

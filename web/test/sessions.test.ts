@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { gametype, keepSelection, kind, mapName, openFor, parseSession, parseSessions, roomText, seats, sessionRow, sortSessions, type Session } from "../src/lib/sessions";
+import { gametype, keepSelection, kind, listed, mapName, openFor, parseSession, parseSessions, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../src/lib/sessions";
 import { Sessions } from "../mock/sessions";
 import { World } from "../mock/world";
 
@@ -30,6 +30,16 @@ describe("reading sessions", () => {
     expect(s).toMatchObject({ session_id: "00112233445566aa", host_gamertag: "Sneaky Pete", host_xuid: "0009000000000001", state: "open", flags: "custom", map: "teacup", name: "Team Slayer" });
     expect(s.slots).toEqual({ public_filled: 3, public_open: 5, private_filled: 1, private_open: 1 });
     expect(Object.keys(s.players)).toEqual(["0009000000000001", "0009000000000002"]);
+  });
+
+  test("visibility reads as the server writes it; absent is public", () => {
+    expect(session().visibility).toBe("public");
+    expect(session({}, { visibility: "friends" }).visibility).toBe("friends");
+    expect(session({}, { visibility: "invite" }).visibility).toBe("invite");
+    expect(session({}, { visibility: "secret" }).visibility).toBe("public");
+    expect(visibilityText(session({}, { visibility: "friends" }))).toBe("friends only");
+    expect(visibilityText(session())).toBe("everyone");
+    expect([session(), session({}, { visibility: "friends" }), session({}, { visibility: "invite" })].filter(listed).map((s) => s.visibility)).toEqual(["public", "friends"]);
   });
 
   test("an advertisement with nothing optional still reads", () => {

@@ -2,14 +2,17 @@ import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js";
 import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
-import type { GameState, Kill } from "../state/reducer";
+import { isCampaign, type GameState, type Kill } from "../state/reducer";
+import { OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
+import { difficultyName, gameTypeLine } from "../state/gametype";
+import CampaignReport, { PlayerName, campaignPlayers } from "./CampaignReport";
 import Scoreboard from "../components/Scoreboard";
 import KillFeed from "../components/KillFeed";
 import { VerifySummary } from "../components/bits";
 import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
-import { MapThumb, gameTitle, hostName, playlist } from "./Side";
+import { MapThumb, gameTitle, hostName } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
 import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
@@ -31,9 +34,14 @@ export default function Game() {
     if (mode === "snapshot") return;
     void live.ensureGame(id).then((ok) => setMissing(!ok && !live.state.games[id]));
   }));
+  const crumb = () => {
+    const g = game();
+    if (g?.status !== "ended") return "Game Details";
+    return isCampaign(g) ? "Mission Report" : "Carnage Report";
+  };
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], [game()?.status === "ended" ? "Carnage Report" : "Game Details"]]} />
+      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], [crumb()]]} />
       <Show
         when={game()}
         fallback={
@@ -48,7 +56,7 @@ export default function Game() {
         {(g) => (
           <div class="s-full s-game">
             <GameView game={g()} />
-            <Carnage game={g()} />
+            <Show when={isCampaign(g())} fallback={<Carnage game={g()} />}><CampaignReport game={g()} /></Show>
           </div>
         )}
       </Show>
@@ -58,9 +66,11 @@ export default function Game() {
 
 function Header(props: { game: GameState }) {
   const g = () => props.game;
+  const campaign = () => isCampaign(g());
   const result = () => {
     const w = g().winner;
     if (g().status !== "ended") return "In progress";
+    if (campaign()) return OUTCOME_WORDS[campaignOutcome(g())];
     if (!w) return g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Connection lost" : "No winner";
     return "team" in w ? `${teamName(w.team)} Team won` : `${g().players[w.player]?.name ?? "Someone"} placed 1st`;
   };
@@ -71,9 +81,19 @@ function Header(props: { game: GameState }) {
       <div class="s-overview">
         <MapThumb game={g()} top />
         <ul class="s-summary">
-          <li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {mapTitle(g().map)}</small></span></li>
+          <Show
+            when={campaign()}
+            fallback={<li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {mapTitle(g().map)}</small></span></li>}
+          >
+            <li class="first"><span>{mapTitle(g().map)}<small>{gameTitle(g())}</small></span></li>
+          </Show>
           <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>
-          <li class="styled">Playlist - {playlist(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>
+          <Show
+            when={campaign()}
+            fallback={<li class="styled">{gameTypeLine(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>}
+          >
+            <li class="styled">Difficulty - {difficultyName(g().difficulty) ?? "not reported"}</li>
+          </Show>
           <li title={g().ended_at ? `Ended ${agoWords(g().ended_at, now())}` : undefined}>{usDateTime(g().started_at)}</li>
           <li title={lengthNote(g(), now())}>Length: <span class="s-match-length">{hms(gameSeconds(g(), now()))}</span></li>
         </ul>
@@ -81,7 +101,12 @@ function Header(props: { game: GameState }) {
           <header>Game Record</header>
           <dl class="s-booty-body">
             <div><dt>Players</dt><dd>{Object.keys(g().players).length}</dd></div>
-            <div><dt>Total kills</dt><dd>{Object.values(g().scores).reduce((n, s) => n + s.kills, 0)}</dd></div>
+            <Show
+              when={campaign()}
+              fallback={<div><dt>Total kills</dt><dd>{Object.values(g().scores).reduce((n, s) => n + s.kills, 0)}</dd></div>}
+            >
+              <div><dt>Deaths</dt><dd>{deathsOf(g(), Object.keys(g().players).map(Number))}</dd></div>
+            </Show>
             <Show when={host()}><div><dt>Host</dt><dd title={g().console ?? undefined}>{host()}</dd></div></Show>
             <div><dt>Recording</dt><dd>{g().status === "live" ? "Live stream" : "Recorded game"}</dd></div>
           </dl>
@@ -130,8 +155,10 @@ function GameView(props: { game: GameState }) {
           <div class="s-live-clock"><span>Match in progress</span><b>{hms(elapsedSeconds(props.game, now()))}</b></div>
         </Block>
         <aside class="s-viewer-side">
-          <Block title="Scoreboard" class="s-sec"><Scoreboard game={props.game} onHover={setHover} /></Block>
-          <Block title="Field Report" right="newest first" class="s-sec"><KillFeed game={props.game} kills={props.game.kills} /></Block>
+          <Show when={isCampaign(props.game)} fallback={<Block title="Scoreboard" class="s-sec"><Scoreboard game={props.game} onHover={setHover} /></Block>}>
+            <Block title="Players" class="s-sec"><Fireteam game={props.game} onHover={setHover} /></Block>
+          </Show>
+          <Block title={isCampaign(props.game) ? "Deaths" : "Field Report"} right="newest first" class="s-sec"><KillFeed game={props.game} kills={props.game.kills} /></Block>
         </aside>
       </div>
     </Show>
@@ -190,11 +217,36 @@ function Replay(props: { game: GameState }) {
           </Show>
         </Block>
         <aside class="s-viewer-side">
-          <Block title="Scoreboard" right={`at ${clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}`} class="s-sec"><Scoreboard game={snapshot()} onHover={setHover} /></Block>
-          <Block title="Field Report" right="newest first" class="s-sec"><KillFeed game={props.game} kills={kills()} /></Block>
+          <Show
+            when={isCampaign(props.game)}
+            fallback={<Block title="Scoreboard" right={`at ${clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}`} class="s-sec"><Scoreboard game={snapshot()} onHover={setHover} /></Block>}
+          >
+            <Block title="Players" class="s-sec"><Fireteam game={props.game} onHover={setHover} /></Block>
+          </Show>
+          <Block title={isCampaign(props.game) ? "Deaths" : "Field Report"} right="newest first" class="s-sec"><KillFeed game={props.game} kills={kills()} /></Block>
         </aside>
       </div>
     </>
+  );
+}
+
+/** A campaign game's players beside the map: names and deaths, no scores. */
+function Fireteam(props: { game: GameState; onHover?: (i: number | null) => void }) {
+  const rows = createMemo(() => campaignPlayers(props.game));
+  return (
+    <table class="s-stats s-fireteam" aria-label="Players">
+      <colgroup><col /><col style={{ width: "64px" }} /></colgroup>
+      <thead><tr><th>Player</th><th>Deaths</th></tr></thead>
+      <tbody>
+        <For each={rows()}>
+          {(r) => (
+            <tr classList={{ gone: r.left }} onMouseEnter={() => props.onHover?.(r.index)} onMouseLeave={() => props.onHover?.(null)}>
+              <td><PlayerName r={r} /></td><td>{r.deaths}</td>
+            </tr>
+          )}
+        </For>
+      </tbody>
+    </table>
   );
 }
 

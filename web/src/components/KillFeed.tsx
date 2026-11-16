@@ -30,7 +30,10 @@ export default function KillFeed(props: { game: GameState; kills: Kill[]; limit?
         <For each={shown()} fallback={<li class="killfeed__empty">No knockouts yet. Everyone's being nice.</li>}>
           {(k) => (
             <li class={`kf kf--${k.kind}`}>
-              <Show when={k.kind === "kill" || k.kind === "betrayal"} fallback={<><Name i={k.victim} /> <span class="kf-verb">{killVerb(k.kind, k.position)}</span></>}>
+              <Show
+                when={(k.kind === "kill" && k.killer !== null) || k.kind === "betrayal"}
+                fallback={<><Name i={k.victim} /> <span class="kf-verb">{k.kind === "kill" ? "was killed" : killVerb(k.kind, k.position)}</span></>}
+              >
                 <Name i={k.killer} /> <span class="kf-verb">{killVerb(k.kind, k.position)}</span> <Name i={k.victim} />
               </Show>
               <Show when={k.weapon}><span class="kf-weapon">{k.weapon}</span></Show>

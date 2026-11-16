@@ -233,6 +233,7 @@ mod tests {
             &GameInfo {
                 map: "lockout".into(),
                 mode: "multiplayer".into(),
+                difficulty: None,
                 variant: Some("Slayer".into()),
                 team_play: false,
                 score_limit: Some(25),
@@ -272,6 +273,7 @@ mod tests {
                 yaw: 0.0,
                 ..Default::default()
             }],
+            ..Default::default()
         })
         .unwrap();
         sink.flush().unwrap();
@@ -329,6 +331,7 @@ mod tests {
             game_id: "g".into(),
             tick,
             players: vec![],
+            ..Default::default()
         };
         queue.frame(frame(0));
         started_rx.recv_timeout(Duration::from_secs(2)).unwrap();

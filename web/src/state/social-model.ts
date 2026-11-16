@@ -8,7 +8,7 @@ import {
   byTag, memberProperties, normalizeTeam, teamProperties, type FriendsDoc, type Team, type TeamIdentity,
 } from "../api/social";
 import { authorXuid } from "./verify";
-import { isWinner, type GameState, type LiveState } from "./reducer";
+import { isCampaign, isWinner, type GameState, type LiveState } from "./reducer";
 
 /** A gamertag for an XUID, from whatever the caller knows. */
 export type TagOf = (xuid: Xuid) => string;
@@ -135,19 +135,27 @@ export interface TeamGame {
   score: number;
 }
 
-export interface TeamRecord { games: TeamGame[]; together: number; wins: number; kills: number; deaths: number }
+export interface TeamRecord {
+  games: TeamGame[]; together: number; wins: number; kills: number; deaths: number;
+  /** Campaign games two or more members played in co-op, newest first.
+   *  They count for nothing above: wins and K/D are multiplayer only. */
+  campaign: GameState[];
+}
 
-/** Games two or more members played together (on one side in team games),
- *  newest first, with the members' combined numbers. Derived in the browser
- *  from the games this page has loaded; the API serves no team stats. */
+/** Multiplayer games two or more members played together (on one side in
+ *  team games), newest first, with the members' combined numbers, plus the
+ *  campaign games they shared. Derived in the browser from the games this
+ *  page has loaded; the API serves no team stats. */
 export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
   const ids = new Set(members);
   const out: TeamGame[] = [];
+  const campaign: GameState[] = [];
   for (const gid of s.gameOrder) {
     const g = s.games[gid];
     if (!g) continue;
     const players = Object.values(g.players).filter((p) => p.xuid && ids.has(p.xuid));
     if (players.length < 2) continue;
+    if (isCampaign(g)) { campaign.push(g); continue; }
     let side = players;
     if (g.team_play) {
       const counts = new Map<number, number>();
@@ -167,6 +175,7 @@ export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
     wins: out.filter((x) => x.won).length,
     kills: out.reduce((n, x) => n + x.kills, 0),
     deaths: out.reduce((n, x) => n + x.deaths, 0),
+    campaign,
   };
 }
 

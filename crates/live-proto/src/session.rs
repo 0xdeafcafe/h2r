@@ -47,6 +47,62 @@ impl Slots {
             <= 16
     }
 }
+/// Who may find a session in `GET /v1/sessions` (and so in the game's
+/// custom games browser). Joining by id (invites, `GET /v1/sessions/{id}`)
+/// is unaffected: the id is the capability. Absent means `public`, which is
+/// how every session before this field behaved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// Listed to everyone.
+    #[default]
+    Public,
+    /// Listed only to the host's friends (and the host).
+    Friends,
+    /// Never listed; reached through invitations only.
+    Invite,
+}
+impl Visibility {
+    pub fn is_public(&self) -> bool {
+        *self == Visibility::Public
+    }
+    /// Whether the session appears in lists at all (for someone).
+    pub fn is_listed(self) -> bool {
+        self != Visibility::Invite
+    }
+    /// Whether a list read by `viewer` (None: anonymous) shows a session
+    /// hosted by `host`; `friends` answers "are these two friends".
+    pub fn shows_to(
+        self,
+        host: Xuid,
+        viewer: Option<Xuid>,
+        friends: impl Fn(Xuid, Xuid) -> bool,
+    ) -> bool {
+        if viewer == Some(host) {
+            return true;
+        }
+        match self {
+            Visibility::Public => true,
+            Visibility::Friends => viewer.is_some_and(|v| friends(host, v)),
+            Visibility::Invite => false,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Public => "public",
+            Visibility::Friends => "friends",
+            Visibility::Invite => "invite",
+        }
+    }
+}
+/// Whether an IPv4 address is reachable only inside one network: private
+/// (RFC 1918), loopback, link-local or carrier-grade NAT shared space. A
+/// session whose declared address is one of these cannot aim strangers'
+/// discovery probes at someone else's internet host.
+pub fn is_local_ipv4(a: Ipv4Addr) -> bool {
+    let [x, y, ..] = a.octets();
+    a.is_private() || a.is_loopback() || a.is_link_local() || (x == 100 && (64..128).contains(&y))
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Endpoint {
     pub addr: Ipv4Addr,
@@ -72,6 +128,10 @@ pub struct NewSession {
     pub name: Option<String>,
     #[serde(default)]
     pub language: Option<String>,
+    /// Who finds this session in lists; omitted on the wire when public, so
+    /// older servers and logs read the same bytes.
+    #[serde(default, skip_serializing_if = "Visibility::is_public")]
+    pub visibility: Visibility,
 }
 fn custom() -> String {
     "custom".into()
@@ -98,6 +158,8 @@ pub struct Update {
     pub attributes: Option<BTreeMap<u32, AttributeValue>>,
     pub name: Option<String>,
     pub map: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,7 +192,7 @@ impl NewSession {
         if self.port == 0
             || self.host_address.len() != 36
             || !self.slots.validate()
-            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked")
+            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked" | "coop")
         {
             return Err("invalid session address, slots or flags".into());
         }
@@ -145,7 +207,23 @@ impl NewSession {
         validate_attributes(&self.attributes)
     }
 }
+impl Endpoint {
+    /// Whether a session at this endpoint may be listed: the address is the
+    /// one the server saw the host connect from, or a local-network one.
+    /// A declared internet address is only good for invitations.
+    pub fn listable(&self) -> bool {
+        self.source == "observed" || is_local_ipv4(self.addr)
+    }
+}
 impl Session {
+    /// Whether `GET /v1/sessions` read by `viewer` includes this session.
+    pub fn listed_for(&self, viewer: Option<Xuid>, friends: impl Fn(Xuid, Xuid) -> bool) -> bool {
+        self.endpoint.listable()
+            && self
+                .advertisement
+                .visibility
+                .shows_to(self.host_xuid, viewer, friends)
+    }
     pub fn update(&mut self, u: &Update) -> Result<bool, String> {
         let mut next = self.advertisement.clone();
         if let Some(v) = u.slots {
@@ -159,6 +237,9 @@ impl Session {
         }
         if let Some(v) = &u.map {
             next.map = Some(v.clone());
+        }
+        if let Some(v) = u.visibility {
+            next.visibility = v;
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -246,6 +327,7 @@ mod tests {
             map: None,
             name: None,
             language: None,
+            visibility: Visibility::Public,
         }
     }
     #[test]
@@ -316,5 +398,103 @@ mod tests {
                 .unwrap()
         );
         assert!(s.apply(UPDATED, &json!({}), "", 104).is_err());
+    }
+    fn session(source: &str, addr: &str, v: Visibility) -> Session {
+        Session {
+            session_id: "8000000000000001".into(),
+            host: "synthetic".into(),
+            host_xuid: Xuid(1),
+            host_gamertag: "Host".into(),
+            xnkid: "8000000000000001".into(),
+            endpoint: Endpoint {
+                addr: addr.parse().unwrap(),
+                port: 3074,
+                source: source.into(),
+            },
+            advertisement: NewSession {
+                visibility: v,
+                ..new()
+            },
+            since: "synthetic".into(),
+            last_activity: 100,
+            state: "open".into(),
+            players: BTreeMap::new(),
+        }
+    }
+    #[test]
+    fn visibility_defaults_to_public_and_public_is_not_written() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{}});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.visibility, Visibility::Public);
+        assert!(
+            serde_json::to_value(&n)
+                .unwrap()
+                .get("visibility")
+                .is_none()
+        );
+        let mut f = old;
+        f["visibility"] = json!("friends");
+        let n: NewSession = serde_json::from_value(f).unwrap();
+        assert_eq!(n.visibility, Visibility::Friends);
+        assert_eq!(serde_json::to_value(&n).unwrap()["visibility"], "friends");
+        assert!(serde_json::from_value::<Visibility>(json!("secret")).is_err());
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("visibility")
+                .is_none()
+        );
+    }
+    #[test]
+    fn lists_show_public_to_all_friends_to_friends_invite_to_host_only() {
+        let friends = |a: Xuid, b: Xuid| (a, b) == (Xuid(1), Xuid(2));
+        let p = session("observed", "203.0.113.5", Visibility::Public);
+        let f = session("observed", "203.0.113.5", Visibility::Friends);
+        let i = session("observed", "203.0.113.5", Visibility::Invite);
+        for viewer in [None, Some(Xuid(2)), Some(Xuid(3)), Some(Xuid(1))] {
+            assert!(p.listed_for(viewer, friends));
+        }
+        assert!(!f.listed_for(None, friends));
+        assert!(f.listed_for(Some(Xuid(2)), friends));
+        assert!(!f.listed_for(Some(Xuid(3)), friends));
+        assert!(f.listed_for(Some(Xuid(1)), friends));
+        assert!(!i.listed_for(None, friends));
+        assert!(!i.listed_for(Some(Xuid(2)), friends));
+        assert!(i.listed_for(Some(Xuid(1)), friends));
+    }
+    #[test]
+    fn declared_internet_addresses_are_never_listed() {
+        let none = |_: Xuid, _: Xuid| false;
+        assert!(!session("declared", "198.51.100.7", Visibility::Public).listed_for(None, none));
+        for local in [
+            "192.168.1.50",
+            "10.0.0.2",
+            "172.16.4.4",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.9",
+        ] {
+            assert!(
+                session("declared", local, Visibility::Public).listed_for(None, none),
+                "{local}"
+            );
+        }
+        assert!(!is_local_ipv4("100.128.0.1".parse().unwrap()));
+        assert!(session("observed", "198.51.100.7", Visibility::Public).listed_for(None, none));
+        // Switching such a session to public changes the field, not the gate.
+        let mut s = session("declared", "198.51.100.7", Visibility::Invite);
+        assert!(
+            s.apply(UPDATED, &json!({"visibility":"public"}), "", 101)
+                .unwrap()
+        );
+        assert!(!s.listed_for(None, none));
+        let mut s = session("observed", "198.51.100.7", Visibility::Invite);
+        assert!(
+            s.apply(UPDATED, &json!({"visibility":"friends"}), "", 101)
+                .unwrap()
+        );
+        assert_eq!(s.advertisement.visibility, Visibility::Friends);
     }
 }

@@ -120,6 +120,11 @@
 .dx-bigpod-in .dx-glyph { width: 52%; height: 52%; }
 .dx-map { position: absolute; inset: 0; --map-bg: #0a3c07; --map-grid: rgba(170, 255, 100, .1); --map-floor: rgba(120, 230, 50, .32); --map-floor-edge: #c4ff7a; --map-floor-other: rgba(150, 255, 70, .1); }
 .dx-map .map-canvas { width: 100%; height: 100%; }
+/* A map's picture in the orb: cropped to the circle, toned into the orb's green under its glass. */
+.dx-map--pic { --map-bg: transparent; --map-grid: transparent; }
+.dx-map-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: saturate(.85) brightness(.92); }
+.dx-map--pic::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 44%, rgba(40, 140, 14, .05) 30%, rgba(8, 60, 4, .6) 100%); }
+.dx-map--pic .map-canvas { position: absolute; inset: 0; z-index: 1; }
 .dx-glyph { fill: none; stroke: var(--g-bright); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 3px var(--glow)); }
 
 /* ---- info plates ---- */

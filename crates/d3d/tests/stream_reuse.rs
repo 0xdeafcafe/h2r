@@ -52,6 +52,9 @@ impl Backend for Copies {
 #[test]
 fn stream_storage_is_reused_and_each_draw_reads_current_bytes() {
     let (mut d, mut m) = create(Copies::default(), UploadPolicy::Tracked);
+    // The copy path's pool (the vertex cache, which keeps what the write
+    // tracker reports clean, is tests/vertex_cache.rs).
+    d.set_vertex_cache(None);
     set_states(&mut d, &mut m);
     quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xffff_ffff);
     bind_quad(&mut d, &mut m);

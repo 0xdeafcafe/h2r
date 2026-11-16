@@ -49,7 +49,7 @@ Event types so far (payload fields):
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?` |
-| `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players` |
+| `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
@@ -99,8 +99,52 @@ and stores `aim` normalised to unit length. A frame the server drops for the
 15 Hz limit hands its `shots` on to the next frame it sends, so shots are
 counted since the previous *delivered* frame.
 
+A frame may also carry `vehicles` and `actors`, each left out when empty:
+
+```json
+"vehicles": [ { "id": "90040004", "kind": "ghost", "pos": [20.0, 0.0, 1.0],
+                "forward": [0.0, 1.0, 0.0], "up": [0.0, 0.0, 1.0] } ],
+"actors": [ { "id": "90070007", "species": "grunt", "pos": [5.0, 6.0, 7.0],
+              "yaw": 1.0, "aim": [0.0, 1.0, 0.0], "weapon": "plasma_pistol",
+              "shots": 2, "team": "covenant", "vehicle": "90040004" } ]
+```
+
+`vehicles` are the vehicles someone (player or AI) is in; `id` is the
+object datum in hex, the value `FramePlayer.vehicle` and `FrameActor.vehicle`
+hold. `kind` is the `vehi` tag file stem (`warthog`, `ghost`, `banshee`,
+...), `forward` and `up` unit vectors in game coordinates. `actors` are the
+live AI-controlled bipeds, nearest to a player first, at most 128.
+`species` is the directory of the biped tag (`grunt`, `jackal`, `elite`,
+`marine`, `bugger`, `floodcombat_human`, `tartarus`, ...), lower case; `team` in campaign is `player`,
+`human`, `covenant`, `flood`, `sentinel`, `heretic`, `prophet` or
+`default`, else the team index as text. `kind` and `species` are `unknown`
+when the map's tag names are not available; `aim`, `weapon`, `shots`,
+`team` and `vehicle` are left out when not known. The server refuses
+non-finite positions or vectors, zero `forward`/`up`/`aim`, ids outside
+`[a-z0-9_]{1,32}`, more than 64 vehicles or 128 actors, and stores the
+vectors normalised; actors' shots carry over dropped frames like players'.
+
+Campaign plays as one game per mission (mode `campaign`, no scores): a
+checkpoint revert or restart of the same mission continues it.
+
+A game start (`POST /v1/games`, `GameStarted`) may also say what kind of
+game it is; all five fields are optional and old senders leave them out:
+
+| field | values | rules |
+|---|---|---|
+| `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
+| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only |
+| `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
+| `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
+
+Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
+games) and the others when the start had them.
+
 `GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
-up to 15 Hz and are not stored.
+up to 15 Hz and are not stored. A live frame's `shots` count since the
+previous live frame; a recorded frame's since the previous recorded frame
+(the sum over the frames it stands for, capped at 64 per player or actor), so
+replays show the firing of the whole second.
 
 ## Read endpoints
 
@@ -113,7 +157,7 @@ up to 15 Hz and are not stored.
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, team_play, started_at, ended_at?, players, teams?}` |
+| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?}` |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
@@ -277,10 +321,11 @@ public API. HLE keys stay local while sockets use unencrypted host traffic.
 Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `slots` (`public_filled`, `public_open`, `private_filled`, `private_open`),
 `attributes` (an object keyed by decimal attribute ID), `flags` (default
-`custom`, also `hopper` or `ranked`), and optional `hopper_id`, `map`, `name`,
+`custom`, also `hopper`, `ranked` or `coop`), and optional `hopper_id`, `map`, `name`,
 `language`. Attribute values are `{type: "integer", value: <u64>}`,
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
-`{type: "null"}`. The ID's datatype bits must agree. Limits are 16 total slots,
+`{type: "null"}`, and optional `visibility` (`public`, the default and
+omitted on the wire; `friends`; `invite`). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -316,9 +361,19 @@ without a ping or changed session event produces a server-signed
 from the last recorded event. Deleted/expired sessions remain readable by ID
 and replay from the log, but are absent from the default list.
 
+Lists show a session only to the readers its visibility allows: `public` to
+everyone, `friends` to the host and the host's friends, `invite` to the host
+alone. The reader is the account of an optional `read` bearer (checked when
+present, even on a public server); without one, only public sessions. A
+listed session must also be listable: its endpoint was observed, or its
+declared address is a local-network one. When a listed session is created
+from a non-loopback IPv4, the observed address replaces any declared one
+([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
+ID ignores visibility. `SessionUpdated` may also set `visibility`.
+
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
-(author or canonical gamertag), and `attributes` (URL-encoded JSON with exact
-value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
+(author or canonical gamertag), `visibility`, and `attributes` (URL-encoded
+JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
@@ -326,6 +381,34 @@ is the previous `next` string. Ordering is by session ID. CLI queries are
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
 base through base+6. A Cloudflare HTTP tunnel alone provides no gameplay path.
+
+## Co-op relay
+
+**`GET /v1/sessions/{id}/relay`** is a WebSocket that hands each binary
+message from one member of a co-op session to the other
+([live-coop.md](live-coop.md), section 8). It exists for two machines that
+cannot reach each other directly; the direct path is UDP on the XNet base
+port + 4.
+
+- The first message is `{ "kind": "auth", "token": "<jwt>" }` with
+  `lxm: sessions.relay`. A missing, wrong or expired token closes the
+  socket with 4401, as on the other sockets. Sending a fresh `auth`
+  message later extends the socket; it must be the same account's.
+- The session must be open and created with `flags: "coop"`. The account
+  must be its host, or one whose invitation to this session was answered
+  `accept`. Otherwise the socket closes with 4403. Membership is checked
+  again every few seconds, so a closed session ends its relay.
+- A room has two members. The same account connecting again replaces its
+  older socket (which closes with 4409); a third account gets 4409.
+- Each member receives `{ "kind": "peer", "present": true|false }` when
+  the other arrives or leaves.
+- A binary message is at most 1200 bytes (close 4413). A socket may send
+  240 messages a second with a burst of 480 (`Policy::relay_rate`; close
+  4429).
+- The server does not read, store or log message contents, and it does
+  not queue for an absent member: a message with nobody to take it, or
+  with more than 256 waiting for a slow member, is dropped. The co-op
+  protocol repeats what was lost. Nothing is appended to the event log.
 
 ## Game-invite mailboxes
 

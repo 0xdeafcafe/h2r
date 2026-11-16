@@ -8,9 +8,12 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, type AccountState, type GameState } from "../state/reducer";
 import {
-  MEDALS, RANKS, countMedals, gameHistory, gameMedals, nextRankAt, ordinal, playedWith, rankIndex, serviceRecord, serviceTag,
-  type HistoryRow, type MedalId, type ServiceRecord,
+  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameHistory, gameMedals, nextRankAt, ordinal, playedWith, rankIndex,
+  serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
+import type { GameMode } from "../state/reducer";
+import { difficultyName, gameTypeLine } from "../state/gametype";
+import { historyTab, recordHref } from "./modes";
 import Emblem from "../components/Emblem";
 import MedalIcon from "../components/MedalIcon";
 import RankIcon from "../components/RankIcon";
@@ -84,10 +87,21 @@ export function PlayerStrip(props: { account: AccountState; rec: ServiceRecord }
   );
 }
 
-type Which = "record" | "history" | "career";
-const TITLES: Record<Which, string> = { record: "Service Record", history: "Game History", career: "Career Stats" };
+type Which = "record" | "history" | "career" | "campaign";
+const TITLES: Record<Which, string> = { record: "Service Record", history: "Game History", career: "Career Stats", campaign: "Campaign Record" };
 
-function PlayerFrame(props: { which: Which; children: (a: () => AccountState, rec: () => ServiceRecord, hist: () => HistoryRow[]) => JSX.Element }) {
+/** The service record's two halves, as Bungie.net had them: multiplayer
+ *  (the default) and campaign. */
+export function ModeTabs(props: { gamertag: string; mode: GameMode }) {
+  return (
+    <Tabs label="Service record" active={props.mode} tabs={[
+      { id: "multiplayer", label: "Multiplayer", href: recordHref(props.gamertag, "multiplayer") },
+      { id: "campaign", label: "Campaign", href: recordHref(props.gamertag, "campaign") },
+    ]} />
+  );
+}
+
+export function PlayerFrame(props: { which: Which; children: (a: () => AccountState, rec: () => ServiceRecord, hist: () => HistoryRow[]) => JSX.Element }) {
   const { tag, acct } = useAccount();
   const rec = createMemo(() => (acct() ? serviceRecord(live.state, acct()!.xuid) : null));
   const hist = createMemo(() => (acct() ? gameHistory(live.state, acct()!.xuid) : []));
@@ -104,10 +118,10 @@ function PlayerFrame(props: { which: Which; children: (a: () => AccountState, re
   );
 }
 
-function PlayedWith(props: { account: AccountState }) {
-  const list = createMemo(() => playedWith(live.state, props.account.xuid).slice(0, 6));
+export function PlayedWith(props: { account: AccountState; mode?: GameMode }) {
+  const list = createMemo(() => playedWith(live.state, props.account.xuid, props.mode ?? "multiplayer").slice(0, 6));
   return (
-    <Panel title="Played With" sub="people from shared games">
+    <Panel title={props.mode === "campaign" ? "Co-op Partners" : "Played With"} sub={props.mode === "campaign" ? "people from shared campaign games" : "people from shared games"}>
       <Show when={list().length} fallback={<p class="s-recent-empty">No shared games yet.</p>}>
         <ul class="s-mini-list">
           <For each={list()}>
@@ -143,6 +157,7 @@ export function ServiceRecordPage() {
               <Pills label="Service record" items={[
                 { label: `Game History (${hist().length})`, href: `${base()}/history` },
                 { label: "Career Stats", href: `${base()}/career` },
+                { label: "Campaign Record", href: `${base()}/campaign` },
                 ...(me() && me()!.xuid !== a().xuid ? [{ label: "Compare With Me", href: `${base()}/career?compare=${encodeURIComponent(me()!.gamertag)}` }] : []),
                 { label: "Players & Leaderboards", href: "/stats/players" },
               ]} />
@@ -152,6 +167,7 @@ export function ServiceRecordPage() {
               <PeopleFinder />
             </aside>
             <div class="s-right">
+              <ModeTabs gamertag={a().gamertag} mode="multiplayer" />
               <div class="s-capbar s-capbar--slim">
                 <Show when={latest()} fallback={<span class="s-dim">Latest game</span>}>
                   {(h) => (
@@ -235,33 +251,115 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
   );
 }
 
+function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect: (id: string) => void }) {
+  return (
+    <table class="s-grid">
+      <thead><tr><th>Level</th><th>Date</th><th class="hide-s">Type</th><th>Result</th><th class="num">Deaths</th><th /></tr></thead>
+      <tbody>
+        <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">No campaign games on record yet.</td></tr>}>
+          {(r) => (
+            <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
+              <td><span class="s-who"><MapPreview map={r.game.map} /><A href={`/stats/games/${r.game.game_id}`}>{mapTitle(r.game.map)}</A></span></td>
+              <td>{usDateTime(r.game.started_at)}</td>
+              <td class="hide-s">{gameTypeLine(r.game)}</td>
+              <td>{r.outcome === "playing" ? <span class="s-live-tag">LIVE</span> : OUTCOME_WORDS[r.outcome]}</td>
+              <td class="num">{r.deaths}</td>
+              <td class="num"><button class="s-linkbtn" onClick={(e) => { e.stopPropagation(); props.onSelect(r.game.game_id); }}>preview</button></td>
+            </tr>
+          )}
+        </For>
+      </tbody>
+    </table>
+  );
+}
+
+function CampaignPreview(props: { row: CampaignRow; gamertag: string }) {
+  const g = () => props.row.game;
+  return (
+    <aside class="s-preview">
+      <A href={`/stats/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
+      <div class="s-preview-title"><A href={`/stats/games/${g().game_id}`}>{mapTitle(g().map)}</A></div>
+      <p>
+        {gameTypeLine(g())}<br />
+        {longDate(g().started_at)}<br />
+        Length: {hms(props.row.seconds)}
+      </p>
+      <p>
+        <b>{props.gamertag}</b> {props.row.outcome === "playing" ? "is playing now" : props.row.outcome === "complete" ? "completed the level" : "didn't finish"}
+        {props.row.partners.length ? ` with ${props.row.partners.join(", ")}` : ", solo"}
+      </p>
+      <dl class="s-facts">
+        <div><dt>Result</dt><dd>{OUTCOME_WORDS[props.row.outcome]}</dd></div>
+        <div><dt>Difficulty</dt><dd>{difficultyName(g().difficulty) ?? "–"}</dd></div>
+        <div><dt>Deaths</dt><dd>{props.row.deaths}</dd></div>
+        <Show when={props.row.kills !== null}><div><dt>AI Kills</dt><dd>{props.row.kills}</dd></div></Show>
+      </dl>
+      <div class="s-preview-head">Game Record ({g().positions.length})</div>
+      <ul class="s-pad">
+        <li><VerifySummary positions={() => g().positions} /></li>
+        <li><A href={`/stats/games/${g().game_id}`}>{g().status === "live" ? "Watch it live" : "Mission report and replay"}</A></li>
+      </ul>
+    </aside>
+  );
+}
+
 export function HistoryPage() {
   const PER = 25;
   const [page, setPage] = createSignal(0);
   const [sel, setSel] = createSignal<string | null>(null);
-  const [tab, setTab] = createSignal("all");
+  // The tab rides the URL (`?tab=campaign`); multiplayer by default.
+  const [search, setSearch] = useSearchParams<{ tab?: string }>();
+  const tab = () => historyTab(search.tab);
   return (
     <PlayerFrame which="history">
       {(a, _rec, hist) => {
+        const campaign = createMemo(() => campaignHistory(live.state, a().xuid, now()));
         const list = () => hist().filter((r) => tab() === "all" || (tab() === "team") === r.game.team_play);
-        const pages = () => Math.max(1, Math.ceil(list().length / PER));
+        const total = () => (tab() === "campaign" ? campaign().length : list().length);
+        const pages = () => Math.max(1, Math.ceil(total() / PER));
         const pg = () => Math.min(page(), pages() - 1);
         const rows = () => list().slice(pg() * PER, pg() * PER + PER);
+        const crows = () => campaign().slice(pg() * PER, pg() * PER + PER);
         const chosen = () => rows().find((r) => r.game.game_id === sel()) ?? rows()[0];
+        const cchosen = () => crows().find((r) => r.game.game_id === sel()) ?? crows()[0];
+        // Rows on show that only a summary knows (older than the account's
+        // recent games) are read in full, so their results and numbers fill in.
+        createEffect(() => {
+          if (live.loadMode() === "snapshot") return;
+          for (const r of tab() === "campaign" ? crows() : rows()) if (r.game.status === "ended" && r.game.end_reason === null) void live.ensureGame(r.game.game_id);
+        });
+        const pager = (foot?: boolean) => (
+          <div class="s-grid-pager" classList={{ "s-grid-pager--foot": !!foot }}><Pager page={pg()} pages={pages()} total={total()} per={PER} onPage={setPage} /></div>
+        );
         return (
           <div class="s-full">
             <Title class="s-title--bar" back={["Return to Service Record Main", playerHref(a().gamertag)]}>Game History</Title>
-            <Tabs label="Game history" active={tab()} onPick={(id) => { setTab(id); setPage(0); }} tabs={[
+            <Tabs label="Game history" active={tab()} onPick={(id) => { setSearch({ tab: id === "all" ? undefined : id }, { replace: true, scroll: false }); setPage(0); }} tabs={[
               { id: "all", label: "Multiplayer" }, { id: "team", label: "Team Games" }, { id: "ffa", label: "Free for All" },
+              { id: "campaign", label: `Campaign (${campaign().length})` },
             ]} />
-            <div class="s-history">
-              <div class="s-grid-wrap">
-                <div class="s-grid-pager"><Pager page={pg()} pages={pages()} total={list().length} per={PER} onPage={setPage} /></div>
-                <HistoryTable rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
-                <div class="s-grid-pager s-grid-pager--foot"><Pager page={pg()} pages={pages()} total={list().length} per={PER} onPage={setPage} /></div>
+            <Show
+              when={tab() === "campaign"}
+              fallback={
+                <div class="s-history">
+                  <div class="s-grid-wrap">
+                    {pager()}
+                    <HistoryTable rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
+                    {pager(true)}
+                  </div>
+                  <Show when={chosen()} keyed>{(r) => <Preview row={r} gamertag={a().gamertag} />}</Show>
+                </div>
+              }
+            >
+              <div class="s-history">
+                <div class="s-grid-wrap">
+                  {pager()}
+                  <CampaignTable rows={crows()} selected={cchosen()?.game.game_id} onSelect={setSel} />
+                  {pager(true)}
+                </div>
+                <Show when={cchosen()} keyed>{(r) => <CampaignPreview row={r} gamertag={a().gamertag} />}</Show>
               </div>
-              <Show when={chosen()} keyed>{(r) => <Preview row={r} gamertag={a().gamertag} />}</Show>
-            </div>
+            </Show>
           </div>
         );
       }}
@@ -480,7 +578,7 @@ export function CareerPage() {
           <div class="s-full">
             <Title class="s-title--bar" back={["Return to Service Record Main", playerHref(a().gamertag)]}>Career Stats</Title>
             <Tabs label="Career stats" active={tab()} onPick={setTab} tabs={[
-              { id: "all", label: "All Games" }, { id: "team", label: "Team Games" }, { id: "ffa", label: "Free for All" },
+              { id: "all", label: "Multiplayer" }, { id: "team", label: "Team Games" }, { id: "ffa", label: "Free for All" },
             ]} />
             <div class="s-matte">
               <div class="s-filter">
@@ -543,7 +641,7 @@ export function CareerPage() {
                   <CompareColumn account={other()!} rec={otherRec()!} versus={rec()} sort={sort()} onStop={stop} />
                 </div>
               </Show>
-              <p class="s-note"><sup>*</sup> Medals, sprees, weapon counts, EXP and rank are derived in your browser from the games this page has loaded.</p>
+              <p class="s-note"><sup>*</sup> Medals, sprees, weapon counts, EXP and rank are derived in your browser from the multiplayer games this page has loaded. Campaign games have <A href={`${playerHref(a().gamertag)}/campaign`}>their own record</A>.</p>
             </div>
           </div>
         );

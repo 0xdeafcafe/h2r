@@ -3,10 +3,13 @@
 
 import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal } from "solid-js";
-import { A } from "@solidjs/router";
+import { A, useSearchParams } from "@solidjs/router";
+import { spotlightTab, type SpotlightTab } from "./modes";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
-import { accountByGamertag, endedGames, liveGames, standings, teamStandings, type GameState } from "../state/reducer";
+import { accountByGamertag, endedGames, isCampaign, liveGames, standings, teamStandings, type GameState } from "../state/reducer";
+import { OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
+import { gameTypeLine } from "../state/gametype";
 import MapCanvas from "../components/MapCanvas";
 import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { clock } from "../lib/format";
@@ -14,12 +17,12 @@ import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
-import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, hostName, playlist } from "./Side";
+import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, fireteam, gameTitle, hostName, playlist } from "./Side";
 import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
 import { agoWords, dotDate, num, usDate } from "./fmt";
 
-type Tab = "live" | "recent" | "team" | "ffa";
+type Tab = SpotlightTab;
 
 function ScoreLine(props: { game: GameState }) {
   return (
@@ -38,7 +41,44 @@ function ScoreLine(props: { game: GameState }) {
   );
 }
 
+/** A campaign game in the spotlight: who played, how it went, no scores. */
+function CampaignItem(props: { game: GameState }) {
+  const g = () => props.game;
+  const href = () => `/stats/games/${g().game_id}`;
+  const deaths = () => deathsOf(g(), Object.keys(g().players).map(Number));
+  return (
+    <article class="s-item s-item--campaign" classList={{ "s-item--live": g().status === "live" }}>
+      <div class="s-item-main">
+        <A href={href()} class="s-item-thumb" aria-label={`${gameTitle(g())} on ${mapTitle(g().map)}`}><MapThumb game={g()} /></A>
+        <div class="s-item-text">
+          <h4><A href={href()}>{mapTitle(g().map)}</A></h4>
+          <p>{gameTypeLine(g())}, {usDate(g().started_at)}</p>
+          <p class="s-item-dim">{Object.keys(g().players).length} {Object.keys(g().players).length === 1 ? "player" : "players"}</p>
+        </div>
+        <div class="s-item-author">
+          <div>Players: <b>{fireteam(g())}</b></div>
+          <div class="s-item-score">{OUTCOME_WORDS[campaignOutcome(g())]}</div>
+          <div class="s-item-dim">{num(deaths())} {deaths() === 1 ? "death" : "deaths"}<br />{g().status === "live" ? `${clock(elapsedSeconds(g(), now()))} played` : `${clock(gameSeconds(g(), now()))} long`}</div>
+        </div>
+      </div>
+      <footer>
+        <i>{g().status === "live" ? `started ${agoWords(g().started_at, now())}` : `played ${dotDate(g().ended_at ?? g().started_at)}`}</i>
+        <span>
+          <Show when={g().status === "live"} fallback={<><A href={href()}>Mission Report</A><b>|</b><A href={href()}>Watch Replay</A></>}>
+            <A href={href()}>Watch Live</A>
+          </Show>
+          <b>|</b><A href={href()}>View Game</A>
+        </span>
+      </footer>
+    </article>
+  );
+}
+
 function GameItem(props: { game: GameState }) {
+  return <Show when={isCampaign(props.game)} fallback={<MultiplayerItem game={props.game} />}><CampaignItem game={props.game} /></Show>;
+}
+
+function MultiplayerItem(props: { game: GameState }) {
   const g = () => props.game;
   const href = () => `/stats/games/${g().game_id}`;
   const host = () => hostName(g());
@@ -89,7 +129,7 @@ function Featured(props: { game: GameState | undefined; online: number }) {
             <>
               <span class="s-live-tag">LIVE</span>
               <A href={`/stats/games/${g().game_id}`}>{gameTitle(g())} on {mapTitle(g().map)}</A>
-              <span class="s-capbar-right"><ScoreLine game={g()} /></span>
+              <span class="s-capbar-right"><Show when={!isCampaign(g())} fallback={fireteam(g())}><ScoreLine game={g()} /></Show></span>
             </>
           )}
         </Show>
@@ -114,23 +154,36 @@ function Featured(props: { game: GameState | undefined; online: number }) {
 
 export default function Games() {
   const PER = 8;
-  const [tab, setTab] = createSignal<Tab | null>(null);
+  // The tab rides the URL (`?games=campaign`), so a campaign list can be linked.
+  const [search, setSearch] = useSearchParams<{ games?: string }>();
   const [page, setPage] = createSignal(0);
   const games = createMemo(() => liveGames(live.state));
-  const ended = createMemo(() => endedGames(live.state, 500));
+  // Multiplayer by default; campaign games have their own tab.
+  const ended = createMemo(() => endedGames(live.state, 500, "multiplayer"));
+  const campaign = createMemo(() => [...liveGames(live.state, "campaign"), ...endedGames(live.state, 500, "campaign")]);
   const accounts = createMemo(() => Object.values(live.state.accounts));
   const online = createMemo(() => accounts().filter((a) => a.online).length);
-  const active = (): Tab => tab() ?? (games().length ? "live" : "recent");
-  const featured = createMemo(() => [...games()].sort((a, b) => Object.keys(b.players).length - Object.keys(a.players).length)[0]);
+  const active = (): Tab => spotlightTab(search.games, games().length > 0);
+  // The busiest live game, multiplayer before campaign.
+  const featured = createMemo(() => [...games()].sort((a, b) =>
+    Number(isCampaign(a)) - Number(isCampaign(b)) || Object.keys(b.players).length - Object.keys(a.players).length)[0]);
+  // Knockouts and game counts are multiplayer's; campaign games are counted apart.
   const today = createMemo(() => {
     const d = new Date().toDateString();
     const gs = live.state.gameOrder.map((id) => live.state.games[id]!).filter((g) => g && new Date(g.started_at).toDateString() === d);
-    return { games: gs.length, kills: gs.reduce((n, g) => n + Object.values(g.scores).reduce((m, s) => m + s.kills, 0), 0) };
+    const mp = gs.filter((g) => !isCampaign(g));
+    return { games: mp.length, campaign: gs.length - mp.length, kills: mp.reduce((n, g) => n + Object.values(g.scores).reduce((m, s) => m + s.kills, 0), 0) };
   });
   const totals = createMemo(() => {
-    let kills = 0, n = 0;
-    for (const id of live.state.gameOrder) { const g = live.state.games[id]; if (!g) continue; n++; for (const s of Object.values(g.scores)) kills += s.kills; }
-    return { kills, games: n };
+    let kills = 0, n = 0, campaign = 0;
+    for (const id of live.state.gameOrder) {
+      const g = live.state.games[id];
+      if (!g) continue;
+      if (isCampaign(g)) { campaign++; continue; }
+      n++;
+      for (const s of Object.values(g.scores)) kills += s.kills;
+    }
+    return { kills, games: n, campaign };
   });
   const list = createMemo(() => {
     switch (active()) {
@@ -138,6 +191,7 @@ export default function Games() {
       case "live": return [...games(), ...ended().slice(0, Math.max(0, PER - games().length))];
       case "team": return ended().filter((g) => g.team_play);
       case "ffa": return ended().filter((g) => !g.team_play);
+      case "campaign": return campaign();
       default: return ended();
     }
   });
@@ -164,6 +218,7 @@ export default function Games() {
             <dl class="s-rows">
               <div><dt>Knockouts on Record</dt><dd>{num(totals().kills)}</dd></div>
               <div><dt>Games on Record</dt><dd>{num(totals().games)}</dd></div>
+              <div><dt>Campaign Games</dt><dd>{num(totals().campaign)}</dd></div>
               <div><dt>Accounts</dt><dd>{num(accounts().length)}</dd></div>
             </dl>
             <div class="s-report-sub"><h3>Daily Count</h3><p>updated as it happens</p></div>
@@ -172,6 +227,7 @@ export default function Games() {
               <dl class="s-rows">
                 <div><dt>Active Players</dt><dd>{num(online())}</dd></div>
                 <div><dt>Games Today</dt><dd>{num(today().games)}</dd></div>
+                <div><dt>Campaign Today</dt><dd>{num(today().campaign)}</dd></div>
                 <div><dt>Knockouts Today</dt><dd>{num(today().kills)}</dd></div>
               </dl>
             </div>
@@ -183,8 +239,9 @@ export default function Games() {
           <Featured game={featured()} online={online()} />
           <Title help="Games on this server, newest first. Live games update as they are played." class="s-title--tabs">Games Spotlight</Title>
           <div id="spotlight">
-            <Tabs label="Games" active={active()} onPick={(id) => { setTab(id as Tab); setPage(0); }} tabs={[
+            <Tabs label="Games" active={active()} onPick={(id) => { setSearch({ games: id }, { replace: true, scroll: false }); setPage(0); }} tabs={[
               { id: "live", label: "Live Now" }, { id: "recent", label: "Recent Games" }, { id: "team", label: "Team Games" }, { id: "ffa", label: "Free for All" },
+              { id: "campaign", label: `Campaign (${campaign().length})` },
             ]} />
             <div class="s-matte s-items">
               <div class="s-items-more">

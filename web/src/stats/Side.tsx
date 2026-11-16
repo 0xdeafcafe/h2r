@@ -3,12 +3,14 @@
 // thumbnails.
 
 import GametypeIcon from "../components/GametypeIcon";
-import { mapKey } from "../lib/gameart";
-import { gameImage, mapTitle } from "../state/gameart";
+import { mapTitle } from "../state/gameart";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
-import { standings, teamStandings, type GameState } from "../state/reducer";
+import { isCampaign, standings, teamStandings, type GameState } from "../state/reducer";
+import { campaignLabel, difficultyName, gameKind, gameTypeLabel } from "../state/gametype";
+import { OUTCOME_WORDS, campaignOutcome } from "../state/derive";
+import MapPicture, { mapPicture } from "../components/MapPicture";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import { colourFor, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { ago, titleCase } from "../lib/format";
@@ -53,6 +55,7 @@ export function PeopleFinder() {
           <option value="record">Service Record</option>
           <option value="history">Game History</option>
           <option value="career">Career Stats</option>
+          <option value="campaign">Campaign Record</option>
         </select>
         <div class="s-finder-row">
           <label class="sr-only" for="s-finder">Gamertag</label>
@@ -98,7 +101,8 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
   const liveSrc = liveFrameSource(props.game.game_id, roster);
   const still = stillFrame(props.game);
   const frame = (t: number) => (props.game.status === "live" ? liveSrc(t) : still(t));
-  const preview = () => gameImage(mapKey(props.game.map));
+  // The map's preview, else its top view, else a drawn outline.
+  const preview = mapPicture(() => props.game.map);
   // Only a `top` thumbnail asks for the map's views (a views.json per map).
   const geometry = props.top ? geometryFor(() => props.game.map) : () => null;
   const [broken, setBroken] = createSignal(false);
@@ -109,7 +113,7 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
       when={top()}
       fallback={
         <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
-          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${mapTitle(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
+          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p()} alt={`${mapTitle(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
           <Show when={!preview() || props.game.status === "live"}>
             <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${mapTitle(props.game.map)}`} />
           </Show>
@@ -127,9 +131,9 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
   );
 }
 
-/** A map's preview picture, small, for a table row. Nothing without game art. */
+/** A map's picture, small, for a table row. Nothing without game art. */
 export function MapPreview(props: { map: string }) {
-  return <Show when={gameImage(mapKey(props.map))}>{(p) => <img class="s-mappic" src={p().url} alt="" decoding="async" draggable={false} />}</Show>;
+  return <MapPicture map={props.map} class="s-mappic" />;
 }
 
 /** The gamertag of whoever started the game (the server names them `acct:<xuid>@<server>`). */
@@ -139,12 +143,23 @@ export function hostName(g: GameState): string | null {
   return tag ?? Object.values(g.players).find((p) => p.local)?.name ?? null;
 }
 
+/** A game's headline: the variant for multiplayer, the campaign label
+ *  ("Campaign Co-op") for campaign. */
 export function gameTitle(g: GameState): string {
-  return titleCase(g.variant ?? g.mode);
+  return isCampaign(g) ? campaignLabel(g) : titleCase(g.variant ?? g.mode);
 }
 
+/** The game's type for a "Playlist:" line: "Matchmaking: <playlist>",
+ *  "Custom Game, Team Game", or the campaign label with its difficulty. */
 export function playlist(g: GameState): string {
-  return g.team_play ? "Team Game" : "Free for All";
+  if (gameKind(g) === "campaign") return [campaignLabel(g), difficultyName(g.difficulty)].filter(Boolean).join(", ");
+  const label = gameTypeLabel(g);
+  return gameKind(g) === "matchmaking" ? label : `${label}, ${g.team_play ? "Team Game" : "Free for All"}`;
+}
+
+/** A campaign game's players, by name. */
+export function fireteam(g: GameState): string {
+  return Object.values(g.players).map((p) => p.name).join(", ") || "–";
 }
 
 /** Who is ahead (or won), in a few words. */
@@ -177,9 +192,11 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
               <ul>
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>
                 <li>On {mapTitle(game.map)}</li>
-                <li>Playlist: {playlist(game)}</li>
-                <li>{game.status === "live" ? "In progress now" : `Finished ${ago(game.ended_at, now())}`}</li>
-                <li>{game.status === "live" ? "Leader" : "MVP"}: <b>{standings(game)[0]?.name ?? "–"}</b></li>
+                <li>{isCampaign(game) ? difficultyName(game.difficulty) ?? "Campaign" : `Playlist: ${playlist(game)}`}</li>
+                <li>{game.status === "live" ? "In progress now" : `${isCampaign(game) ? OUTCOME_WORDS[campaignOutcome(game)] : "Finished"} ${ago(game.ended_at, now())}`}</li>
+                <Show when={isCampaign(game)} fallback={<li>{game.status === "live" ? "Leader" : "MVP"}: <b>{standings(game)[0]?.name ?? "–"}</b></li>}>
+                  <li>Players: <b>{fireteam(game)}</b></li>
+                </Show>
               </ul>
             </A>
           )}

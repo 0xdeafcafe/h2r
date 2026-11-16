@@ -14,6 +14,16 @@ describe("map titles", () => {
     setMapTitles({});
   });
 
+  test("campaign levels: the catalog's name, else the stem without its ordering prefix", () => {
+    setMapTitles({});
+    expect(mapTitle("01b_starport")).toBe("Starport");
+    expect(mapTitle("05a_deep_water")).toBe("Deep Water");
+    expect(mapTitle("7_x")).toBe("X");
+    setMapTitles({ "01b_starport": "The Long Dock" });
+    expect(mapTitle("01b_starport")).toBe("The Long Dock");
+    setMapTitles({});
+  });
+
   test("stems drop paths, extension and case", () => {
     expect(mapStem("C:/maps/Lockout.map")).toBe("lockout");
     expect(mapStem(null)).toBe("");

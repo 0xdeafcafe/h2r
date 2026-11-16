@@ -9,7 +9,14 @@
 //! - **maps**: the globals tag's multiplayer level list (`matg +0x178`,
 //!   element 0, block at `+0x10`, `0xc64`-byte entries). The game looks a
 //!   hopper record's id up here (`0x0019c5f0`, compares the entry's first
-//!   dword), so these ids are exactly the record ids that resolve.
+//!   dword), so these ids are exactly the record ids that resolve. Then the
+//!   campaign levels, `kind: "campaign"`, keyed by map file stem: the
+//!   level list the game starts levels from (`matg +0x170`, element 0,
+//!   `0x108`-byte entries: campaign id, map id, scenario path;
+//!   docs/level-boot.md) joined on (campaign id, map id) with the level
+//!   select's entries (`matg +0x178`, element 0, block at `+0x8`,
+//!   `0xb50`-byte entries: campaign id, map id, picture, names,
+//!   descriptions).
 //! - **playlists**: the strings of the `unic` tag the hopper file's
 //!   descriptor names (`matchmaking_hopper_descriptions`), paired
 //!   `<key>_title` / `<key>_description`; the compiled-in defaults
@@ -35,6 +42,18 @@ pub const CATALOG: &str = "catalog.json";
 const MATG_LEVELS: usize = 0x178;
 const LEVEL_DATA_SIZE: u32 = 0x18;
 const LEVEL_DATA_MP: usize = 0x10;
+/// The level select's campaign levels in the same element: `+0` campaign
+/// id, `+4` map id, `+8` the picture (tag reference, ID at `+0xc`), `+0x10`
+/// nine 32-unit UTF-16 names, `+0x250` nine 128-unit descriptions.
+const LEVEL_DATA_CAMPAIGN: usize = 0x8;
+pub const CAMPAIGN_LEVEL_SIZE: usize = 0xb50;
+const CAMPAIGN_PICTURE: usize = 0xc;
+const CAMPAIGN_NAME: usize = 0x10;
+const CAMPAIGN_DESC: usize = 0x250;
+/// `matg +0x170`: the levels the game starts; element 0 holds a block of
+/// `0x108`-byte entries (`+0` campaign id, `+4` map id, `+8` scenario path).
+const MATG_START_LEVELS: usize = 0x170;
+pub const START_LEVEL_SIZE: usize = 0x108;
 /// One multiplayer level: `+0` map id, `+0xc` nine 32-unit UTF-16 names,
 /// `+0x24c` nine 128-unit UTF-16 descriptions, `+0xb4c` the scenario path.
 pub const LEVEL_SIZE: usize = 0xc64;
@@ -67,6 +86,10 @@ pub struct MapEntry {
     /// the level names one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// `"campaign"` for a campaign level (its `id` is the level's map id,
+    /// not a hopper record id); absent for a multiplayer map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// One playlist's text from the hopper descriptions.
@@ -182,16 +205,90 @@ pub fn levels(
                 &path[..path.iter().position(|c| *c == 0).unwrap_or(path.len())],
             )
             .into_owned();
-            let key = path
-                .rsplit(['\\', '/'])
-                .next()
-                .filter(|k| !k.is_empty())
-                .map(str::to_string);
+            let key = stem(&path);
             Some(MapEntry {
                 id,
                 name,
                 description: utf16(e, LEVEL_DESC, 128),
                 key,
+                kind: None,
+            })
+        })
+        .collect())
+}
+
+/// A campaign level for the catalog, and its level-select picture's tag ID
+/// (in the map the globals came from) when it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CampaignLevel {
+    pub entry: MapEntry,
+    pub picture: Option<u32>,
+}
+
+fn stem(path: &str) -> Option<String> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+}
+
+/// The campaign levels from a globals tag's bytes, in the order the game
+/// lists the levels it can start, each named by the level select's entry
+/// with the same campaign and map id. A level the level select does not
+/// name is left out.
+pub fn campaign_levels(
+    matg: &[u8],
+    read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>,
+) -> Result<Vec<CampaignLevel>> {
+    let start = block(matg, MATG_START_LEVELS, 8, 16, read)?;
+    if start.is_empty() {
+        return Err(anyhow!("the globals have no level list"));
+    }
+    let paths = block(&start, 0, START_LEVEL_SIZE, MAX_LEVELS, read)?;
+    let data = block(matg, MATG_LEVELS, LEVEL_DATA_SIZE as usize, 16, read)?;
+    if data.is_empty() {
+        return Err(anyhow!("the globals have no level data"));
+    }
+    let ui = block(
+        &data,
+        LEVEL_DATA_CAMPAIGN,
+        CAMPAIGN_LEVEL_SIZE,
+        MAX_LEVELS,
+        read,
+    )?;
+    let ui: Vec<&[u8]> = ui
+        .as_chunks::<CAMPAIGN_LEVEL_SIZE>()
+        .0
+        .iter()
+        .map(|e| e.as_slice())
+        .collect();
+    Ok(paths
+        .as_chunks::<START_LEVEL_SIZE>()
+        .0
+        .iter()
+        .filter_map(|e| {
+            let (campaign, id) = (le32(e, 0)?, le32(e, 4)?);
+            let path = &e[8..];
+            let path =
+                String::from_utf8_lossy(&path[..path.iter().position(|c| *c == 0)?]).into_owned();
+            let key = stem(&path)?;
+            let u = ui
+                .iter()
+                .find(|u| le32(u, 0) == Some(campaign) && le32(u, 4) == Some(id))?;
+            let name = utf16(u, CAMPAIGN_NAME, 32);
+            if name.is_empty() {
+                return None;
+            }
+            let picture = le32(u, CAMPAIGN_PICTURE).filter(|p| *p != u32::MAX);
+            Some(CampaignLevel {
+                entry: MapEntry {
+                    id,
+                    name,
+                    description: utf16(u, CAMPAIGN_DESC, 128),
+                    key: Some(key),
+                    kind: Some("campaign".into()),
+                },
+                picture,
             })
         })
         .collect())
@@ -284,6 +381,21 @@ pub fn extract(disc: &crate::live_art::Disc) -> Catalog {
         ),
         Err(e) => drop(catalog.skipped.insert("maps".into(), format!("{e:#}"))),
     }
+    // Campaign levels after the multiplayer maps, so a lookup by hopper
+    // record id finds a multiplayer map first.
+    match read_campaign(&mut map) {
+        Ok(c) if !c.is_empty() => catalog.maps.extend(c.into_iter().map(|c| c.entry)),
+        Ok(_) => drop(
+            catalog
+                .skipped
+                .insert("maps/campaign".into(), "no campaign levels".into()),
+        ),
+        Err(e) => drop(
+            catalog
+                .skipped
+                .insert("maps/campaign".into(), format!("{e:#}")),
+        ),
+    }
     let result = localization
         .as_ref()
         .map_err(|e| anyhow!("{e}"))
@@ -324,6 +436,13 @@ fn read_maps<R: Read + Seek>(map: &mut Map<R>) -> Result<Vec<MapEntry>> {
     let globals = map.globals().context("no globals tag")?.clone();
     let matg = tag_bytes(map, &globals)?;
     levels(&matg, &mut reader(map))
+}
+
+/// The campaign levels from a map's globals.
+pub(crate) fn read_campaign<R: Read + Seek>(map: &mut Map<R>) -> Result<Vec<CampaignLevel>> {
+    let globals = map.globals().context("no globals tag")?.clone();
+    let matg = tag_bytes(map, &globals)?;
+    campaign_levels(&matg, &mut reader(map))
 }
 
 fn read_playlists<R: Read + Seek>(map: &mut Map<R>, l: &Localization) -> Result<Vec<PlaylistText>> {
@@ -443,12 +562,14 @@ mod tests {
                     name: "Alpha Yard".into(),
                     description: "A yard.".into(),
                     key: Some("alpha_yard".into()),
+                    kind: None,
                 },
                 MapEntry {
                     id: 0x2a,
                     name: "Beta".into(),
                     description: String::new(),
                     key: None,
+                    kind: None,
                 },
             ]
         );
@@ -468,6 +589,103 @@ mod tests {
         assert!(levels(&[0u8; 0x200], &mut |a, s| mem.read(a, s)).is_err());
         // Short tag.
         assert!(levels(&[0u8; 4], &mut |a, s| mem.read(a, s)).is_err());
+    }
+
+    fn start_level(campaign: u32, id: u32, path: &str) -> Vec<u8> {
+        let mut e = vec![0u8; START_LEVEL_SIZE];
+        put(&mut e, 0, campaign);
+        put(&mut e, 4, id);
+        e[8..8 + path.len()].copy_from_slice(path.as_bytes());
+        e
+    }
+
+    fn select_level(campaign: u32, id: u32, picture: u32, name: &str, desc: &str) -> Vec<u8> {
+        let mut e = vec![0u8; CAMPAIGN_LEVEL_SIZE];
+        put(&mut e, 0, campaign);
+        put(&mut e, 4, id);
+        put(&mut e, 8, u32::from_le_bytes(*b"mtib"));
+        put(&mut e, CAMPAIGN_PICTURE, picture);
+        put_wide(&mut e, CAMPAIGN_NAME, name);
+        put_wide(&mut e, CAMPAIGN_NAME + 0x40, "Autre");
+        put_wide(&mut e, CAMPAIGN_DESC, desc);
+        e
+    }
+
+    /// Globals with both level lists: `(start levels, level select)`.
+    fn campaign_globals(start: &[Vec<u8>], select: &[Vec<u8>]) -> (Vec<u8>, Mem) {
+        let mut matg = vec![0u8; 0x200];
+        put(&mut matg, MATG_START_LEVELS, 1);
+        put(&mut matg, MATG_START_LEVELS + 4, 0x8000_4000);
+        put(&mut matg, MATG_LEVELS, 1);
+        put(&mut matg, MATG_LEVELS + 4, 0x8000_1000);
+        let mut start_el = vec![0u8; 8];
+        put(&mut start_el, 0, start.len() as u32);
+        put(&mut start_el, 4, 0x8000_5000);
+        let mut data = vec![0u8; 0x18];
+        put(&mut data, LEVEL_DATA_CAMPAIGN, select.len() as u32);
+        put(&mut data, LEVEL_DATA_CAMPAIGN + 4, 0x8001_0000);
+        (
+            matg,
+            Mem(vec![
+                (0x8000_1000, data),
+                (0x8000_4000, start_el),
+                (0x8000_5000, start.concat()),
+                (0x8001_0000, select.concat()),
+            ]),
+        )
+    }
+
+    #[test]
+    fn campaign_levels_join_the_start_list_and_the_level_select() {
+        let (matg, mem) = campaign_globals(
+            &[
+                start_level(1, 7, "scenarios\\solo\\07_moon\\07_moon"),
+                start_level(1, 3, "scenarios\\solo\\03_dock\\03_dock"),
+                // Not on the level select: left out.
+                start_level(1, 9, "scenarios\\solo\\09_test\\09_test"),
+                // Same map id in another campaign: not the same level.
+                start_level(2, 3, "scenarios\\solo\\other\\other"),
+            ],
+            &[
+                select_level(1, 3, 0xe00a_0001, "The Dock", "Boats."),
+                select_level(1, 7, u32::MAX, "Moonrise", ""),
+            ],
+        );
+        let got = campaign_levels(&matg, &mut |a, s| mem.read(a, s)).unwrap();
+        let entry = |id: u32, name: &str, desc: &str, key: &str| MapEntry {
+            id,
+            name: name.into(),
+            description: desc.into(),
+            key: Some(key.into()),
+            kind: Some("campaign".into()),
+        };
+        assert_eq!(
+            got,
+            vec![
+                CampaignLevel {
+                    entry: entry(7, "Moonrise", "", "07_moon"),
+                    picture: None,
+                },
+                CampaignLevel {
+                    entry: entry(3, "The Dock", "Boats.", "03_dock"),
+                    picture: Some(0xe00a_0001),
+                },
+            ]
+        );
+        // The multiplayer list in the same globals is untouched by them.
+        assert!(
+            levels(&matg, &mut |a, s| mem.read(a, s))
+                .unwrap()
+                .is_empty()
+        );
+
+        // No start list, or no level data: an error, not an empty list.
+        let mut none = matg.clone();
+        put(&mut none, MATG_START_LEVELS, 0);
+        assert!(campaign_levels(&none, &mut |a, s| mem.read(a, s)).is_err());
+        let mut none = matg;
+        put(&mut none, MATG_LEVELS, 0);
+        assert!(campaign_levels(&none, &mut |a, s| mem.read(a, s)).is_err());
     }
 
     #[test]
@@ -540,6 +758,7 @@ mod tests {
                 name: "A".into(),
                 description: String::new(),
                 key: None,
+                kind: None,
             }],
             playlists: vec![],
             variants: vec![],
@@ -552,6 +771,17 @@ mod tests {
             serde_json::json!({"id": 1, "name": "A", "description": ""})
         );
         assert_eq!(serde_json::from_value::<Catalog>(v).unwrap(), c);
+        let campaign = MapEntry {
+            id: 301,
+            name: "B".into(),
+            description: String::new(),
+            key: Some("03_b".into()),
+            kind: Some("campaign".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&campaign).unwrap(),
+            serde_json::json!({"id": 301, "name": "B", "description": "", "key": "03_b", "kind": "campaign"})
+        );
     }
 
     /// Reads the owner's disc; prints counts only.
@@ -569,5 +799,34 @@ mod tests {
             c.skipped
         );
         assert!(!c.maps.is_empty() && !c.playlists.is_empty() && !c.variants.is_empty());
+        // Stems, kinds, ids and names, outside the repository, for review.
+        let out = std::env::var("H2_CATALOG_CHECK").unwrap_or_else(|_| {
+            "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry/campaign-names.txt"
+                .into()
+        });
+        let mut text = String::new();
+        for m in &c.maps {
+            text += &format!(
+                "{:<20} {:<11} id {:>3} {}\n",
+                m.key.as_deref().unwrap_or("-"),
+                m.kind.as_deref().unwrap_or("multiplayer"),
+                m.id,
+                m.name
+            );
+        }
+        print!("{text}");
+        std::fs::write(out, text).unwrap();
+        let campaign: Vec<_> = disc
+            .maps_of(CacheType::Campaign)
+            .map(|m| m.name().to_string())
+            .collect();
+        for stem in &campaign {
+            assert!(
+                c.maps
+                    .iter()
+                    .any(|m| m.kind.is_some() && m.key.as_deref() == Some(stem)),
+                "{stem} has no catalog entry"
+            );
+        }
     }
 }

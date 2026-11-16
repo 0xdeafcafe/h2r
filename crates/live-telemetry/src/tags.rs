@@ -30,8 +30,9 @@ pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 
 const BIPED: [u8; 4] = *b"bipd";
 const WEAPON: [u8; 4] = *b"weap";
+const VEHICLE: [u8; 4] = *b"vehi";
 
-/// Names of a map's biped and weapon tags by full salted datum.
+/// Names of a map's biped, weapon and vehicle tags by full salted datum.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagNames {
     scenario: u32,
@@ -40,13 +41,14 @@ pub struct TagNames {
 
 impl TagNames {
     /// A table for the map whose scenario tag is `scenario`, from
-    /// (datum, group, name) rows. Only biped and weapon rows are kept.
+    /// (datum, group, name) rows. Only biped, weapon and vehicle rows are
+    /// kept.
     pub fn new(scenario: u32, rows: impl IntoIterator<Item = (u32, [u8; 4], String)>) -> Self {
         Self {
             scenario,
             names: rows
                 .into_iter()
-                .filter(|(_, group, _)| [BIPED, WEAPON].contains(group))
+                .filter(|(_, group, _)| [BIPED, WEAPON, VEHICLE].contains(group))
                 .map(|(datum, group, name)| (datum, (group, name)))
                 .collect(),
         }
@@ -91,6 +93,24 @@ impl TagNames {
     pub fn weapon(&self, datum: u32) -> Option<String> {
         stem_of(self.name(datum, WEAPON)?)
     }
+
+    /// The file stem of the vehicle whose definition is `datum`.
+    pub fn vehicle(&self, datum: u32) -> Option<String> {
+        stem_of(self.name(datum, VEHICLE)?)
+    }
+
+    /// An AI biped's species: the directory of its biped tag
+    /// (`objects\characters\grunt\grunt` -> `grunt`).
+    pub fn actor_species(&self, datum: u32) -> Option<String> {
+        dir_of(self.name(datum, BIPED)?)
+    }
+}
+
+/// The directory holding a tag, lower case.
+pub fn dir_of(name: &str) -> Option<String> {
+    let mut parts = components(name).rev();
+    parts.next()?;
+    model_id(parts.next()?)
 }
 
 /// A frame id, `[a-z0-9_]{1,32}`, from a tag path component; `None` when
@@ -118,8 +138,7 @@ pub fn species_of(name: &str) -> Option<String> {
         return Some("elite".into());
     }
     // The directory that holds the biped tag, so `..\brute\brute` -> brute.
-    let parent = dirs.len().checked_sub(2).map(|i| dirs[i])?;
-    model_id(parent)
+    dir_of(name)
 }
 
 /// The last component of a tag path, lower case.
@@ -186,6 +205,41 @@ mod tests {
         assert_eq!(stem_of("objects\\weapons\\x\\has space"), None);
         assert_eq!(stem_of(&format!("w\\{}", "a".repeat(33))), None);
         assert_eq!(stem_of(""), None);
+    }
+
+    #[test]
+    fn vehicle_kinds_and_actor_species() {
+        let names = TagNames::new(
+            1,
+            [
+                (
+                    10,
+                    VEHICLE,
+                    "objects\\vehicles\\warthog\\warthog".to_string(),
+                ),
+                (11, BIPED, "objects\\characters\\bugger\\bugger".to_string()),
+                (
+                    12,
+                    BIPED,
+                    "objects\\characters\\elite\\elite_specops".to_string(),
+                ),
+                (
+                    13,
+                    BIPED,
+                    "objects\\characters\\FloodCombat_Human\\floodcombat_human".to_string(),
+                ),
+            ],
+        );
+        assert_eq!(names.vehicle(10).as_deref(), Some("warthog"));
+        assert_eq!(names.vehicle(11), None, "a biped is not a vehicle");
+        assert_eq!(names.actor_species(11).as_deref(), Some("bugger"));
+        assert_eq!(names.actor_species(12).as_deref(), Some("elite"));
+        assert_eq!(
+            names.actor_species(13).as_deref(),
+            Some("floodcombat_human")
+        );
+        assert_eq!(names.actor_species(10), None);
+        assert_eq!(dir_of("bare"), None);
     }
 
     #[test]

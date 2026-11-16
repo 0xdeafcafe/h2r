@@ -137,8 +137,75 @@ pub static PAD_MUTE: Def = Def {
     }),
 };
 
+/// The values of [`LIVE_VISIBILITY`], as `live_glue` hands them to the HLE.
+pub const VISIBILITY_PUBLIC: i64 = 0;
+pub const VISIBILITY_FRIENDS: i64 = 1;
+pub const VISIBILITY_INVITE: i64 = 2;
+
+pub static LIVE_VISIBILITY: Def = Def {
+    key: "live.visibility",
+    label: "Game Visibility",
+    help: "Who finds the Live games you host in the Custom Games browser and on the \
+           web: everyone, your friends, or nobody (invitations only). Invitations \
+           work in all three. Changing it updates an open lobby at once \
+           (docs/live-custom-games.md).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: VISIBILITY_PUBLIC,
+            name: "public",
+            label: "Public",
+        },
+        Choice {
+            value: VISIBILITY_FRIENDS,
+            name: "friends",
+            label: "Friends Only",
+        },
+        Choice {
+            value: VISIBILITY_INVITE,
+            name: "invite",
+            label: "Invite Only",
+        },
+    ]),
+    default: Value::Int(VISIBILITY_PUBLIC),
+    env: Some("H2_LIVE_VISIBILITY"),
+    flag: None,
+    aliases: &[
+        ("everyone", Value::Int(VISIBILITY_PUBLIC)),
+        ("private", Value::Int(VISIBILITY_INVITE)),
+    ],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is the Live party lobby's (`live_glue`), not a screen of ours.
+    menu: None,
+};
+
 /// Every setting, in the order `h2 settings list` shows them.
-pub static ALL: &[&Def] = &[&FOV, &FPS, &RENDER_SCALE, &PAD_SPEAKER, &PAD_MUTE];
+pub static ALL: &[&Def] = &[
+    &FOV,
+    &FPS,
+    &RENDER_SCALE,
+    &PAD_SPEAKER,
+    &PAD_MUTE,
+    &LIVE_VISIBILITY,
+    // The campaign skulls, kept per profile (crate::skulls, docs/skulls.md).
+    &crate::skulls::SKULLS[0],
+    &crate::skulls::SKULLS[1],
+    &crate::skulls::SKULLS[2],
+    &crate::skulls::SKULLS[3],
+    &crate::skulls::SKULLS[4],
+    &crate::skulls::SKULLS[5],
+    &crate::skulls::SKULLS[6],
+    &crate::skulls::SKULLS[7],
+    &crate::skulls::SKULLS[8],
+    &crate::skulls::SKULLS[9],
+    &crate::skulls::SKULLS[10],
+    &crate::skulls::SKULLS[11],
+    &crate::skulls::SKULLS[12],
+    &crate::skulls::SKULLS[13],
+    &crate::skulls::SKULLS[14],
+];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
 /// or a routes file whose `enabled` decides.
@@ -232,9 +299,14 @@ mod tests {
                 ("H2_RENDER_SCALE", "6"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
+                ("H2_LIVE_VISIBILITY", "friends"),
             ],
         );
         assert!(p.is_empty(), "{p:?}");
+        assert_eq!(
+            s.get(LIVE_VISIBILITY.key),
+            Some(Value::Int(VISIBILITY_FRIENDS))
+        );
         assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));

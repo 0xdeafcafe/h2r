@@ -218,7 +218,8 @@ friends).
 site's art from your own disc into PNGs and a `manifest.json`. The default
 `--out` is `game-art/` in the server directory. It covers emblem layers, rank
 icons, Live icons, game-type icons, weapon silhouettes, medals, the player
-colour palette and every multiplayer map's preview. A cold run takes well
+colour palette, every multiplayer map's preview and every campaign level's
+level-select picture (`map/<stem>/preview` too). A cold run takes well
 under a second. Keys and emblem colouring are in
 [live-api.md](live-api.md#optional-game-art).
 
@@ -227,7 +228,9 @@ under a second. Keys and emblem colouring are in
   or shared map with a known image count and image shape. Where several
   sizes of the same set exist, the largest wins. A map preview is the one
   single-image UI picture a multiplayer map has that the shared map does
-  not. Maps are told apart by the cache type in their header. Medals and
+  not. A campaign level's preview is the picture the main menu's level
+  select names for it ([live-admin.md](live-admin.md#the-catalog)). Maps
+  are told apart by the cache type in their header. Medals and
   the palette are icon glyphs in the fonts' private-use range
   ([fonts.md](fonts.md)): the medals are the 24-pixel-tall icons and the
   palette the flat colour swatches, from the first font in the engine's font
@@ -622,6 +625,10 @@ The four transport channels are:
 | System Link discovery | 1001 | UDP, SO_BROADCAST | 3075 |
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
+
+Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is the co-op channel
+([live-coop.md](live-coop.md), section 8): the co-op transport binds it on
+the host itself, and no guest socket maps to it.
 
 The option wrapper maps the game's options to SO_REUSEADDR (`4`), SO_LINGER
 (`0x80`), SO_BROADCAST (`0x20`), SO_SNDBUF (`0x1001`), SO_RCVBUF (`0x1002`) and

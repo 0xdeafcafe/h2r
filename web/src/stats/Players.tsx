@@ -5,6 +5,7 @@ import { A, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { rankIndex, serviceRecord } from "../state/derive";
+import { gamesFor } from "../state/reducer";
 import Emblem from "../components/Emblem";
 import RankIcon from "../components/RankIcon";
 import { PresenceBadge } from "../components/bits";
@@ -23,7 +24,8 @@ export default function Players() {
   const [page, setPage] = createSignal(0);
   const PER = 20;
   const rows = createMemo(() =>
-    Object.values(live.state.accounts).map((a) => ({ a, rec: serviceRecord(live.state, a.xuid) })));
+    // Multiplayer records only: campaign games never count on a leaderboard.
+    Object.values(live.state.accounts).map((a) => ({ a, rec: serviceRecord(live.state, a.xuid), campaign: gamesFor(live.state, a.xuid, "campaign").length })));
   type R = ReturnType<typeof rows>[number];
   const ranked = createMemo(() => {
     const key = board();
@@ -65,7 +67,7 @@ export default function Players() {
           </Panel>
         </aside>
         <div class="s-right">
-          <Title class="s-title--cap" help="From the games this page has loaded, not the server's whole history; derived in your browser.">Leaderboards</Title>
+          <Title class="s-title--cap" help="Multiplayer games only, from the games this page has loaded, not the server's whole history; derived in your browser.">Leaderboards</Title>
           <div id="boards">
             <Tabs label="Leaderboards" active={board()} onPick={(id) => setBoard(id as Board)} tabs={BOARDS.map(([id, label]) => ({ id, label }))} />
             <div class="s-matte" style={{ "padding-bottom": "8px" }}>
@@ -84,7 +86,7 @@ export default function Players() {
                 <table class="s-grid s-grid--roomy">
                   <thead><tr><th style={{ width: "34px" }}>#</th><th>Player</th><th class="hide-s">Rank</th><th class="num">{unit()} <Derived>{""}</Derived></th><th class="num">Games</th></tr></thead>
                   <tbody>
-                    <For each={ranked().slice(3)} fallback={<tr><td colspan="5" class="s-dim">{ranked().length ? "That's everyone with a game on record." : "No games played yet."}</td></tr>}>
+                    <For each={ranked().slice(3)} fallback={<tr><td colspan="5" class="s-dim">{ranked().length ? "That's everyone with a multiplayer game on record." : "No multiplayer games played yet."}</td></tr>}>
                       {(r, i) => (
                         <tr>
                           <td>{i() + 4}</td>
@@ -110,9 +112,9 @@ export default function Players() {
             <div class="s-grid-wrap">
               <div class="s-grid-pager"><Pager page={page()} pages={pages()} total={directory().length} per={PER} onPage={setPage} /></div>
               <table class="s-grid s-grid--roomy">
-                <thead><tr><th>Player</th><th class="hide-s">Rank</th><th>Status</th><th class="num">Games</th><th class="num">Kills</th><th class="num">K/D</th></tr></thead>
+                <thead><tr><th>Player</th><th class="hide-s">Rank</th><th>Status</th><th class="num">Games</th><th class="num">Kills</th><th class="num">K/D</th><th class="num hide-s" title="Campaign games">Campaign</th></tr></thead>
                 <tbody>
-                  <For each={directory().slice(page() * PER, page() * PER + PER)} fallback={<tr><td colspan="6" class="s-dim">No matching gamertags.</td></tr>}>
+                  <For each={directory().slice(page() * PER, page() * PER + PER)} fallback={<tr><td colspan="7" class="s-dim">No matching gamertags.</td></tr>}>
                     {(r) => (
                       <tr>
                         <td><span class="s-who"><Emblem seed={r.a.xuid} size={16} /><A href={playerHref(r.a.gamertag)}>{r.a.gamertag}</A></span></td>
@@ -121,6 +123,7 @@ export default function Players() {
                         <td class="num">{num(r.rec.games)}</td>
                         <td class="num">{num(r.rec.kills)}</td>
                         <td class="num">{r.rec.games ? ratio(r.rec.kills, r.rec.deaths) : "–"}</td>
+                        <td class="num hide-s"><Show when={r.campaign} fallback="–"><A href={`${playerHref(r.a.gamertag)}/campaign`}>{num(r.campaign)}</A></Show></td>
                       </tr>
                     )}
                   </For>

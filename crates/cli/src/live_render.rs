@@ -177,7 +177,7 @@ pub fn fit(spec: &ViewSpec, mesh: &LevelMesh, frame: &Bounds) -> Camera {
 /// The corners of every drawn (non-glass) triangle cut to `clip`.
 pub fn drawn_points(mesh: &LevelMesh, clip: &Bounds) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
-    for (class, p) in &mesh.primitives {
+    for (class, p) in mesh.primitives.iter().chain(&mesh.objects) {
         if *class == Class::Glass {
             continue;
         }
@@ -329,7 +329,7 @@ pub fn shadow_map(mesh: &LevelMesh, frame: &Bounds) -> ShadowMap {
     let n = SHADOW_SIZE as f32;
     let cam = fit_box([right, up, forward], &frame.grown(0.15), n, n, 0.0);
     let mut depth = vec![f32::INFINITY; SHADOW_SIZE * SHADOW_SIZE];
-    for (class, p) in &mesh.primitives {
+    for (class, p) in mesh.primitives.iter().chain(&mesh.objects) {
         if *class == Class::Glass {
             continue;
         }
@@ -623,7 +623,10 @@ pub fn gbuffer(
     let (hw, hh) = (w * ss, h * ss);
     let mut depth = vec![f32::INFINITY; hw * hh];
     let mut normal = vec![[0i8; 4]; hw * hh];
-    for (class, p) in &mesh.primitives {
+    // Placed objects are never cut away.
+    let level = mesh.primitives.iter().map(|x| (x, cut));
+    let objects = mesh.objects.iter().map(|x| (x, None));
+    for ((class, p), cut) in level.chain(objects) {
         if *class == Class::Glass {
             continue;
         }

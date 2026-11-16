@@ -48,7 +48,10 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60], data: Vec<u8>) -> Res
         primitive: PrimitiveType::TriangleList,
         vertex_count: 3,
         layout,
-        streams: vec![StreamBytes { data, stride }],
+        streams: vec![StreamBytes {
+            data: data.into(),
+            stride,
+        }],
         indices: None,
         state: words.translate(&RenderStateTable::default()),
         extras: words.stage_extras(),

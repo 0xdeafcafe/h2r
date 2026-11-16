@@ -11,6 +11,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
@@ -30,6 +31,7 @@ pub mod sha;
 pub mod shim;
 pub mod speaker_row;
 pub mod setting_defs;
+pub mod skulls;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;
@@ -591,6 +593,11 @@ pub fn run_hosted_with_live(
         None => None,
     };
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
+    // The party privacy as the Live session's visibility, and the Live
+    // menu's Custom Games row (registered with the layouts above;
+    // docs/live-custom-games.md).
+    custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
+        .context("installing the Live game visibility")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/level-boot.md).
@@ -606,6 +613,12 @@ pub fn run_hosted_with_live(
     let level_name = level.as_ref().map(|l| l.name.clone());
     level_boot::install(&loaded.runtime, &mut features, level, perf_from == Some(level_boot::PerfFrom::Level))
         .context("installing the level boot")?;
+    // Campaign skulls kept per profile: a pickup is remembered and a
+    // campaign start turns on the profile's chosen skulls (docs/skulls.md).
+    // Headless runs (no settings store) leave skulls as retail.
+    if let Some(store) = host.settings.clone() {
+        skulls::install(&loaded.runtime, store).context("installing the skulls")?;
+    }
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));

@@ -33,6 +33,7 @@
 //! [`MAX_SPAN`]) before anything is read.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -42,7 +43,8 @@ use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, DrawOutcome, ResolvedDraw, StreamBytes, TargetInfo, TextureInfo, Viewport,
+    Backend, CachedBytes, CachedIndices, DrawOutcome, IndexData, ResolvedDraw, StreamBytes,
+    StreamData, TargetInfo, TextureInfo, Viewport,
 };
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
 use crate::events::{D3dError, Event, HleStop};
@@ -56,6 +58,7 @@ use crate::resource::{
 };
 use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
 use crate::state::{DrawState, StateWords, Translator, slot};
+use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
 mod display;
 mod fragments;
@@ -371,6 +374,18 @@ pub struct Stats {
     pub mirror_loads: u64,
     /// Mirror bytes flushed to guest memory (one read-back each).
     pub mirror_flushes: u64,
+    /// Vertex-stream bytes copied out of guest memory for draws (vertex
+    /// cache fills included).
+    pub vertex_bytes_copied: u64,
+    /// Vertex streams drawn from a vertex cache snapshot, without a copy.
+    pub vertex_cache_hits: u64,
+    /// Bytes those streams held.
+    pub vertex_bytes_reused: u64,
+    /// Vertex cache snapshots taken.
+    pub vertex_cache_fills: u64,
+    /// Indexed draws whose index list came from the index cache (already
+    /// scanned and rebased).
+    pub index_cache_hits: u64,
 }
 
 /// What made the device write a render-to-texture level back to guest
@@ -652,6 +667,12 @@ pub struct Device<B: Backend> {
     stream_pool: Vec<Vec<u8>>,
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
+    /// Snapshots of vertex windows the guest has not written since
+    /// (`docs/d3d.md`, "Vertex cache"); `None` with `H2_VERTEX_CACHE=0`
+    /// ([`Device::set_vertex_cache`]).
+    vertex_cache: Option<VertexCache>,
+    /// Index lists the same way (on and off with `vertex_cache`).
+    index_cache: Option<IndexCache>,
     /// Data words of the push-buffer command being executed, reused.
     push_words: Vec<u32>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
@@ -780,7 +801,7 @@ struct DrawParts {
     vertex: VertexProcessing,
     streams: Vec<StreamBytes>,
     /// Indices into `streams` (indexed draws).
-    indices: Option<Vec<u32>>,
+    indices: Option<IndexData>,
     words: StateWords,
 }
 
@@ -811,6 +832,10 @@ impl<B: Backend> Device<B> {
             stream_pool: Vec::new(),
             stream_pool_bytes: 0,
             stream_scratch: Vec::new(),
+            vertex_cache: vertex_cache_on()
+                .then(|| VertexCache::new(VertexCache::budget_from_env())),
+            index_cache: vertex_cache_on()
+                .then(|| IndexCache::new(VertexCache::budget_from_env() / 4)),
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
@@ -1211,6 +1236,12 @@ impl<B: Backend> Device<B> {
         self.swap_count = 0;
         self.fence = 0;
         self.cache.clear();
+        if let Some(c) = &mut self.vertex_cache {
+            c.clear();
+        }
+        if let Some(c) = &mut self.index_cache {
+            c.clear();
+        }
         self.depth_copy = None;
         self.depth_read_generation = None;
         self.depth_alias.clear();
@@ -3039,6 +3070,12 @@ impl<B: Backend> Device<B> {
         timeline::frame();
         self.display.swapped = true;
         self.swap_count = self.swap_count.wrapping_add(1);
+        if let Some(c) = &mut self.vertex_cache {
+            c.end_frame();
+        }
+        if let Some(c) = &mut self.index_cache {
+            c.end_frame();
+        }
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
         self.sync_registers(mem)?;
         self.vblanks_after_swap(mem)
@@ -3415,7 +3452,76 @@ impl<B: Backend> Device<B> {
             s.offset as u64 + first as u64 * s.stride as u64,
         )?;
         at(va, len as u64)?;
-        self.copy_stream(mem, va, len, s.stride)
+        self.cached_stream(mem, s.buffer, va, len, s.stride)
+    }
+
+    /// [`copy_stream`](Self::copy_stream) through the vertex cache: a
+    /// window whose pages are unwritten since it was last read comes back
+    /// as the same shared snapshot. `header` names the vertex buffer in a
+    /// [`Event::MissedInvalidation`].
+    fn cached_stream(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+        va: u32,
+        len: usize,
+        stride: u32,
+    ) -> Result<StreamBytes, D3dError> {
+        let policy = self.cfg.upload;
+        let Some(cache) = self
+            .vertex_cache
+            .as_mut()
+            .filter(|_| policy != UploadPolicy::Always)
+        else {
+            return self.copy_stream(mem, va, len, stride);
+        };
+        crate::guest::check_range(va, len)?;
+        let len32 = len as u32;
+        match cache.probe(va, len32, &self.tracker) {
+            Probe::Hit(snapshot) => {
+                if policy == UploadPolicy::Verify {
+                    let copy = self.copy_stream(mem, va, len, stride)?;
+                    if *copy.data != *snapshot.bytes {
+                        self.events.push(Event::MissedInvalidation {
+                            header,
+                            addr: va,
+                            len: len32,
+                        });
+                        let generation = self.tracker.generation();
+                        if let Some(c) = &mut self.vertex_cache {
+                            c.invalidate(va, len32, generation);
+                        }
+                        return Ok(copy);
+                    }
+                    self.recycle_stream(copy.data);
+                }
+                self.stats.vertex_cache_hits += 1;
+                self.stats.vertex_bytes_reused += len as u64;
+                count_vertex_bytes(timeline::phase::Counter::VertexReused, len);
+                Ok(StreamBytes {
+                    data: StreamData::Cached(snapshot),
+                    stride,
+                })
+            }
+            Probe::Fill => {
+                let copy = self.copy_stream(mem, va, len, stride)?;
+                let bytes: Arc<[u8]> = Arc::from(&*copy.data);
+                self.recycle_stream(copy.data);
+                self.tracker.watch(va, len32);
+                let generation = self.tracker.generation();
+                let cache = self.vertex_cache.as_mut().expect("probed above");
+                let snapshot = cache.fill(va, len32, generation, |id| CachedBytes { id, bytes });
+                self.stats.vertex_cache_fills += 1;
+                Ok(StreamBytes {
+                    data: StreamData::Cached(snapshot),
+                    stride,
+                })
+            }
+            Probe::Copy => {
+                self.tracker.watch(va, len32);
+                self.copy_stream(mem, va, len, stride)
+            }
+        }
     }
 
     fn copy_stream(
@@ -3428,10 +3534,27 @@ impl<B: Backend> Device<B> {
         crate::guest::check_range(va, len)?;
         let mut data = self.stream_buffer(len);
         if let Err(e) = mem.read_append(va, len, &mut data) {
-            self.recycle_stream(data);
+            self.recycle_stream(data.into());
             return Err(e.into());
         }
-        Ok(StreamBytes { data, stride })
+        self.stats.vertex_bytes_copied += len as u64;
+        count_vertex_bytes(timeline::phase::Counter::VertexCopied, len);
+        Ok(StreamBytes {
+            data: data.into(),
+            stride,
+        })
+    }
+
+    /// Turns the vertex cache on (with `budget` bytes of snapshots) or off
+    /// (every draw copies its streams: `H2_VERTEX_CACHE=0`). Starts empty.
+    pub fn set_vertex_cache(&mut self, budget: Option<usize>) {
+        self.vertex_cache = budget.map(VertexCache::new);
+        self.index_cache = budget.map(|b| IndexCache::new(b / 4));
+    }
+
+    /// Bytes the vertex cache holds in snapshots (0 when it is off).
+    pub fn vertex_cache_bytes(&self) -> usize {
+        self.vertex_cache.as_ref().map_or(0, VertexCache::bytes)
     }
 
     /// An empty pooled buffer with room for `len` bytes: the smallest that
@@ -3452,10 +3575,14 @@ impl<B: Backend> Device<B> {
         Vec::with_capacity(len)
     }
 
-    fn recycle_stream(&mut self, data: Vec<u8>) {
+    fn recycle_stream(&mut self, data: StreamData) {
         // Retain ordinary draws without keeping an exceptional 64 MiB span.
         const MAX_POOL_BYTES: usize = 16 << 20;
         const MAX_POOL_BUFFERS: usize = 64;
+        // A cache snapshot is shared, not the device's to refill.
+        let Some(data) = data.into_owned_buffer() else {
+            return;
+        };
         let c = data.capacity();
         if c > 0
             && self.stream_pool.len() < MAX_POOL_BUFFERS
@@ -3718,16 +3845,12 @@ impl<B: Backend> Device<B> {
         let primitive = Self::primitive(E, primitive)?;
         vertex_limit(E, count)?;
         let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
-        let raw = mem.read_vec(indices, span(E, count, 2)?)?;
-        let (mut lo16, mut hi16) = (u16::MAX, 0u16);
-        for c in raw.as_chunks::<2>().0 {
-            let i = u16::from_le_bytes(*c);
-            lo16 = lo16.min(i);
-            hi16 = hi16.max(i);
-        }
-        if raw.len() < 2 {
+        let index_bytes = span(E, count, 2)?;
+        if index_bytes < 2 {
+            crate::guest::check_range(indices, index_bytes)?;
             return Ok(());
         }
+        let (lo16, hi16, list) = self.index_list(mem, indices, index_bytes)?;
         // Every index overflows alike or none does: the largest decides.
         let overflow = || D3dError::invalid(E, format!("base vertex {base:#x} + index overflows"));
         let hi = u32::try_from(base as u64 + hi16 as u64).map_err(|_| overflow())?;
@@ -3762,16 +3885,89 @@ impl<B: Backend> Device<B> {
                 layout,
                 vertex,
                 streams,
-                indices: Some(
-                    raw.as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| u16::from_le_bytes(*c) as u32 - lo16 as u32)
-                        .collect(),
-                ),
+                indices: Some(list),
                 words,
             },
         )
+    }
+
+    /// The 16-bit index list `[va, va + len)`: its smallest and largest
+    /// index and the list rebased by the smallest, through the index cache
+    /// when `va` is in the alias the write tracker reports (the contiguous
+    /// view; a list elsewhere is read every time).
+    fn index_list(
+        &mut self,
+        mem: &dyn GuestMemory,
+        va: u32,
+        len: usize,
+    ) -> Result<(u16, u16, IndexData), D3dError> {
+        fn scan(raw: &[u8]) -> (u16, u16, Vec<u32>) {
+            let (mut lo, mut hi) = (u16::MAX, 0u16);
+            for c in raw.as_chunks::<2>().0 {
+                let i = u16::from_le_bytes(*c);
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
+            let rebased = raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| (u16::from_le_bytes(*c) - lo) as u32)
+                .collect();
+            (lo, hi, rebased)
+        }
+        let map = self.cfg.address_map;
+        let tracked = map.to_virtual(map.to_data(va)) == va;
+        let policy = self.cfg.upload;
+        let Some(cache) = self
+            .index_cache
+            .as_mut()
+            .filter(|_| tracked && policy != UploadPolicy::Always)
+        else {
+            let (lo, hi, list) = scan(&mem.read_vec(va, len)?);
+            return Ok((lo, hi, list.into()));
+        };
+        crate::guest::check_range(va, len)?;
+        let len32 = len as u32;
+        match cache.probe(va, len32, &self.tracker) {
+            Probe::Hit(snapshot) => {
+                if policy == UploadPolicy::Verify {
+                    let (lo, hi, list) = scan(&mem.read_vec(va, len)?);
+                    if (lo, hi) != (snapshot.lo, snapshot.hi) || *list != *snapshot.rebased {
+                        self.events.push(Event::MissedInvalidation {
+                            header: 0,
+                            addr: va,
+                            len: len32,
+                        });
+                        let generation = self.tracker.generation();
+                        if let Some(c) = &mut self.index_cache {
+                            c.invalidate(va, len32, generation);
+                        }
+                        return Ok((lo, hi, list.into()));
+                    }
+                }
+                self.stats.index_cache_hits += 1;
+                Ok((snapshot.lo, snapshot.hi, IndexData::Cached(snapshot)))
+            }
+            Probe::Fill => {
+                let (lo, hi, list) = scan(&mem.read_vec(va, len)?);
+                self.tracker.watch(va, len32);
+                let generation = self.tracker.generation();
+                let cache = self.index_cache.as_mut().expect("probed above");
+                let snapshot = cache.fill(va, len32, generation, |id| CachedIndices {
+                    id,
+                    lo,
+                    hi,
+                    rebased: Arc::from(list),
+                });
+                Ok((lo, hi, IndexData::Cached(snapshot)))
+            }
+            Probe::Copy => {
+                self.tracker.watch(va, len32);
+                let (lo, hi, list) = scan(&mem.read_vec(va, len)?);
+                Ok((lo, hi, list.into()))
+            }
+        }
     }
 
     /// `D3DDevice_DrawVerticesUP`: vertices for stream 0 straight from guest
@@ -3953,7 +4149,7 @@ impl<B: Backend> Device<B> {
                 }
             }
             streams.push(StreamBytes {
-                data,
+                data: data.into(),
                 stride: s.stride,
             });
         }
@@ -4055,7 +4251,10 @@ impl<B: Backend> Device<B> {
                 vertex_count: count,
                 layout,
                 vertex,
-                streams: vec![StreamBytes { data, stride: size }],
+                streams: vec![StreamBytes {
+                    data: data.into(),
+                    stride: size,
+                }],
                 indices: None,
                 words,
             },
@@ -4214,6 +4413,16 @@ pub(crate) fn sampled_stages(
         on &= state.stages[n].color_op != gfx::state::TextureOp::Disable;
         on
     })
+}
+
+/// The vertex and index caches are on unless `H2_VERTEX_CACHE=0`.
+fn vertex_cache_on() -> bool {
+    std::env::var_os("H2_VERTEX_CACHE").is_none_or(|v| v != "0")
+}
+
+/// Adds `len` to a frame-stats byte counter (when frame stats are on).
+fn count_vertex_bytes(counter: timeline::phase::Counter, len: usize) {
+    timeline::phase::count(counter, len as u64);
 }
 
 #[cfg(test)]

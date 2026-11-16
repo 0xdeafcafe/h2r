@@ -1,7 +1,7 @@
 # Map geometry and pre-drawn views
 
 `h2 live assets extract` (and `h2 play --live`, once per disc) writes each
-multiplayer map's level geometry and five pre-drawn pictures of it next to
+multiplayer and campaign level's geometry and five pre-drawn pictures of it next to
 the rest of the game art ([live.md](live.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
 model. Everything comes from the owner's disc at run time and is served
@@ -27,13 +27,19 @@ map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
 
 ```json
 "maps": { "<stem>": { "geometry": "map/<stem>/map.glb",
-                      "views": "map/<stem>/views.json" } }
+                      "views": "map/<stem>/views.json",
+                      "kind": "multiplayer", "bsps": 1 } }
 ```
 
-Paths are relative to the manifest. A map whose geometry could not be read
-is listed under `skipped` as `map/<stem>/geometry` and has no entry.
-`GEOMETRY_VERSION` is 1; the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 5, so a disc extracted by an older build is extracted again.
+`kind` is `"multiplayer"` or `"campaign"` (the map's cache type); `bsps` is
+how many structure BSPs `map.glb` holds. Both are absent in manifests from
+older builds. Paths are relative to the manifest. A map whose geometry could
+not be read is listed under `skipped` as `map/<stem>/geometry` and has no
+entry; a single BSP of a level that could not be read is listed as
+`map/<stem>/bsp_<index>` and the level keeps its other BSPs.
+`GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
+it); the art's `EXTRACTOR_VERSION` (part of the cache
+key) is 7, so a disc extracted by an older build is extracted again.
 
 ### `map.glb`
 
@@ -41,19 +47,40 @@ key) is 5, so a disc extracted by an older build is extracted again.
   `(x, y, z)` (z up, as telemetry frames give it) is the glTF point
   `(x, z, -y)`; normals are converted the same way. There are no node
   transforms.
-- One node and one mesh, both named `structure`, with one triangle
-  primitive per surface class present: `POSITION`, `NORMAL` (both float
-  VEC3) and u32 indices. No `COLOR_0` and no texture coordinates: the colour
+- A scenario with one structure BSP (every multiplayer map) has one node
+  and one mesh, both named `structure`. A scenario with several (campaign
+  levels) has a node and mesh per BSP, named `bsp_<index>` by the BSP's
+  index in the scenario, with `extras.bsp` holding that index; all are root
+  nodes of the scene, in index order, already in world space. Each mesh has
+  one triangle primitive per surface class present: `POSITION`, `NORMAL`
+  (both float VEC3) and u16 indices. A class with more than 65,536 vertices
+  in one mesh is split into several primitives so every index fits in 16
+  bits. No `COLOR_0` and no texture coordinates: the colour
   is the material's.
-- Materials are named by class: `floor`, `wall`, `metal`, `glass`, `water`,
-  `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
+- Materials are named by class (one material per class, shared by every
+  mesh): `floor`, `wall`, `metal`, `glass`, `water`, `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
   `glass` and `water` are `alphaMode: BLEND`. Single-sided: the level's
   triangles face into the playable space, so back faces should be culled.
+- **Machines.** When the scenario places machines (`mach` objects: doors,
+  lifts, the turning wheel and the like), a root node `machines` (no mesh)
+  follows the BSP nodes with a child per placement, named
+  `<tag stem>_<placement index>`. A child's mesh is the machine's render
+  model in model space (same axes conversion), shared by every placement
+  of that machine and named after the first, and the child has a
+  `matrix`: the placement's rotation, uniform scale and position in glTF
+  axes. These are the only nodes with a transform. Machines are all class
+  `metal`, unless their shader names them glass, water or foliage. The
+  model is drawn at rest (no animation): each region's first permutation
+  at the highest detail level up to 3 of 5 it has.
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below).
-- Retail multiplayer maps come out at 11k to 31k triangles and 0.4 to
-  1.3 MB.
+- Retail multiplayer maps come out at 11k to 31k triangles of level and
+  0.3 to 1.1 MB (0 to 6 machines). Campaign levels (1 to 8 BSPs) come out
+  at 38k to 412k triangles of level, 6 to 206 machines, and 1.2 to 15.9 MB;
+  the level is not simplified. The largest (356k triangles and 538k
+  vertices of level, 108 machines) is about the most a browser should be
+  asked to fetch. Before `EXTRACTOR_VERSION` 6 indices were u32.
 
 ### `views.json`
 
@@ -101,10 +128,31 @@ view), the same for every view.
 
 ## Pipeline
 
-1. **Maps.** The multiplayer maps, found by cache type, each opened with its
-   shared maps (`live_art::Disc`).
+1. **Maps.** The multiplayer and campaign maps, found by cache type, each
+   opened with its shared maps (`live_art::Disc`).
 2. **BSPs.** The scenario's structure BSP block (`scnr+0x210`, stride
-   `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used.
+   `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used
+   and becomes its own mesh (steps 3 to 5 run per BSP); the views draw them
+   all together. A BSP that fails to read is skipped on its own.
+   **Machines** come next: the scenario's machine placements (`scnr+0xa8`,
+   stride `0x48`) and palette (`scnr+0xb0`, stride `0x28`, tag reference
+   first), from the object type table (docs/objects.md). A placement record
+   starts with the palette index (`+0`), position (`+8`), yaw, pitch and
+   roll in radians (`+0x14`) and scale (`+0x20`, 0 meaning 1): the public
+   scenario object layout, checked on the disc by the retail machines
+   landing on their levels (the Zanzibar wheel stands in its gate). The
+   rotation is `Rz(yaw) · Ry(−pitch) · Rx(roll)`: forward is `+x`, pitch
+   tips it up, roll turns left (`+y`) up. The machine's `obje` model
+   (`hlmt`) gives the `render_model`, decoded by `tags::model`, vertices in
+   model space. Each machine is read once per level. A machine without a
+   model is not drawn; one whose model fails to read or has nothing drawn
+   is listed under `skipped` as `map/<stem>/machine_<index>` (on the retail
+   disc: a few volumes and trays with only undrawn parts, and nine campaign
+   machines whose `hlmt` is not in the level). Machines are drawn in every
+   view and cast shadows, but the top view's cutaway (step 8) neither cuts
+   them nor counts their surfaces: a closed model hanging over a floor
+   would otherwise read as a roof and vanish. They are not part of the
+   frame, `bounds` or the triangle counts.
 3. **Triangles.** `tags::structure::StructureRender` and the shared section
    decoder ([structure-bsp.md](structure-bsp.md)): every cluster as stored and
    every instanced-geometry placement transformed (`translation + scale ×
@@ -160,7 +208,7 @@ view), the same for every view.
    upper storey) and a floor at least 0.6 units below it (headroom for a
    crouching player): everything nearer than that ceiling is not drawn
    there, nor its shadow. Single-sided ceilings with nothing above them are
-   already invisible from above and need no cut. Cut regions are then
+   already invisible from above and need no cut. Machines take no part. Cut regions are then
    opened (eroded and dilated by a 0.8-unit square), so regions narrower
    than about 1.6 units, such as bridges and walkways over open ground,
    keep their top. Walls have no ceiling inside them, so they keep their
@@ -170,10 +218,10 @@ view), the same for every view.
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
 
-Maps load on all CPUs, then all 60 pictures are drawn on all CPUs. On a
-10-core machine the whole geometry step takes 2 to 3 s for the 12 retail
-multiplayer maps (about 0.1 s to load each map; most of the rest is
-drawing).
+Maps load on all CPUs, then all pictures (five per level) are drawn on all
+CPUs. On a 10-core machine the whole geometry step takes about 7 s for the
+12 retail multiplayer maps and 15 campaign levels (0.02 to 0.36 s to load
+each; most of the rest is drawing, 1 to 3 s of CPU per level).
 
 ## Checking against your disc
 
@@ -183,8 +231,11 @@ cargo test --release -p cli geometry_from_the_disc -- --ignored --nocapture
 
 writes the outputs, a timing report, the shader names behind the classes,
 a contact sheet of every view and, under `cutaway/`, each top view with and
-without the cutaway side by side to a directory outside the repository (the
-path is `CHECK_DIR` in the test). Do not commit anything it writes.
+without the cutaway side by side, and under `machines/` the top and
+`iso-ne` views of two multiplayer maps with large machines, to a
+directory outside the repository (the
+path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR` in the test). Do not commit
+anything it writes.
 
 ## Limits
 
@@ -199,8 +250,12 @@ path is `CHECK_DIR` in the test). Do not commit anything it writes.
 - The frame is a heuristic too. It keeps every retail map's playable area on
   the disc this was checked against, but a map with a dense, detailed
   backdrop could be framed wider than its play space.
-- No textures, lightmaps or object geometry (scenery, crates, vehicles):
-  only the BSP.
+- No textures or lightmaps, and no object geometry but machines
+  (scenery, crates and vehicles are not drawn). Machines are at rest: a
+  door is drawn as its model's default pose has it, and the wheel does not
+  turn.
+- Campaign levels sit in large backdrop planes (sea or ground around the
+  playable strip); the frame keeps much of that in their views.
 
 # Player and weapon models
 
@@ -290,8 +345,9 @@ Keys (what telemetry sends):
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
   idle stance (or its own idle, below): the posed shape is baked into the
   vertices; nothing is skinned or animated.
-- A vehicle is in its rest pose, origin at the vehicle's object origin,
-  facing glTF +x.
+- A vehicle is in its neutral pose (below), origin at the vehicle's object
+  origin, facing glTF +x. `asset.extras.pose` names the frame used
+  (`combat:any:any:closing, last frame`, or `rest pose`).
 
 On the retail disc: spartan 3,042 triangles and 0.8 MB, elite 2,744
 triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
@@ -308,7 +364,11 @@ whole step takes about 0.6 s on 10 cores.
    Campaign characters: every `bipd` tag on the campaign maps, one per
    species key (above), built in parallel.
 2. **Vehicles.** Every `vehi` tag of the shared, multiplayer and campaign
-   maps, first one per stem. Per region the permutation named `base` (else
+   maps, first one per stem. Posed like a biped from its animation graph:
+   the last frame of `closing` (a vehicle's rest pose has its canopy or
+   hatch open: a banshee's whole cab is tilted up), else the first frame of
+   `opening`, else an `idle` (turrets, the enforcer); else the rest pose
+   (the warthog, ghost, phantom and most turrets have no actions). Per region the permutation named `base` (else
    the first), the highest detail level under 40,000 triangles. Vehicle tags
    with fewer than 8 drawn triangles are placeholders and are skipped
    (two on the retail disc).
@@ -331,7 +391,9 @@ whole step takes about 0.6 s on 10 cores.
    (the combat mode first); else any action with `idle` in its name; else
    the rest pose. An inherited action is read from its graph. Frame 0 is sampled (`tags::anim_sample`). Graph
    nodes are matched to model nodes by name; a channel the frame does not
-   supply keeps the rest value.
+   supply keeps the rest value. Sections whose vertices carry no node
+   indices are rigid pieces of their section's first mapped node (a
+   banshee's cab, a jackal's shield, a helmet), not of the root.
 7. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
    of `posed_world × inverse(rest_world)` of its nodes (weights
    renormalised), normals likewise. Then the model is lifted so its lowest
@@ -378,7 +440,9 @@ it writes.
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
-- Vehicles are in their rest pose: no turret aim, no wheel suspension. A
+- Vehicles are posed once: no turret aim, no wheel suspension. A vehicle
+  turret is its own tag and model (`cannon` on the scorpion, `mortar` on the
+  wraith, `chaingun`/`gauss` on the warthog), not part of the vehicle. A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.
 - Change-colour weights are per vertex, so their edges are as coarse as the

@@ -9,7 +9,7 @@ import { gameImage, mapTitle } from "../state/gameart";
 import { mapKey } from "../lib/gameart";
 import { live } from "../state/live";
 import { now } from "../lib/now";
-import { gametype, keepSelection, kind, mapName, openFor, roomText, seats, sessionRow, sortSessions, type Session } from "../lib/sessions";
+import { gametype, keepSelection, kind, listed, mapName, openFor, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../lib/sessions";
 import { useSession, useSessions } from "../state/sessions";
 import Emblem from "../components/Emblem";
 import { BigPod, Glyph, Plate, Prompts } from "./parts";
@@ -66,6 +66,7 @@ function Facts(props: { session: Session }) {
       <dt>game</dt><dd>{gametype(s())}</dd>
       <dt>players</dt><dd>{seats(s()).filled} <span>of</span> {seats(s()).max} <span>{roomText(s())}</span></dd>
       <dt>type</dt><dd>{kind(s())}</dd>
+      <dt>open to</dt><dd>{visibilityText(s())}</dd>
       <dt>open for</dt><dd>{openFor(s().since, now())}</dd>
     </dl>
   );
@@ -73,7 +74,7 @@ function Facts(props: { session: Session }) {
 
 function SessionList(props: SessionsProps) {
   const feed = useSessions();
-  const list = createMemo(() => sortSessions(feed.items()));
+  const list = createMemo(() => sortSessions(feed.items().filter(listed)));
   const rows = createMemo(() => list().map((s) => sessionRow(s, mapTitle)));
   const [sel, setSel] = createSignal(0);
   // The list reorders as it refreshes: stay on the session, not the row number.
