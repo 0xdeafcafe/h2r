@@ -24,7 +24,15 @@
 //! then writes the whole next frame: every clear, copy and draw with its
 //! textures, blend state and combiner words, and the colour target read
 //! back after each step at a few points. Uploads of 2048x4 `L8` textures
-//! log their decoded texels (channel sums), which should be grey.
+//! log their decoded texels (channel sums), which should be grey. Each
+//! draw's `src` line says where each stage's host texture came from: a
+//! copy of a surface, a render-to-texture surface sampled in place, the
+//! depth buffer's bits, or an upload.
+//!
+//! The yellow was rasterizer target 3 (`0x509370`, a colour surface over
+//! the depth buffer's memory): the loading screen copies its image there
+//! and filters it back through `0x509368`, the texture over that memory,
+//! which read the depth bits instead (`d3d` `raster.rs`, `DepthColor`).
 
 use std::io::Write;
 
@@ -88,6 +96,11 @@ impl SweepDiag {
     /// Whether frame `frame` is the one being logged.
     pub fn dumping(&self, frame: u64) -> bool {
         matches!(self.phase, Phase::Dumping(f) if f == frame)
+    }
+
+    /// Not finished yet.
+    pub fn active(&self) -> bool {
+        !matches!(self.phase, Phase::Done)
     }
 
     /// Draws logged so far.

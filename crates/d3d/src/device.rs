@@ -685,6 +685,13 @@ pub struct Device<B: Backend> {
     /// Bumped by every draw or clear that may write the device's own depth
     /// buffer (`raster.rs`, textures over [`DEPTH_BUFFER_DATA`]).
     depth_generation: u64,
+    /// A colour surface over the depth buffer's memory (`raster.rs`,
+    /// [`raster::DepthColor`]).
+    depth_color: Option<raster::DepthColor>,
+    /// That colour surface was drawn into after the depth buffer last was:
+    /// the memory both name holds its pixels, and textures over the depth
+    /// buffer read them.
+    depth_color_newer: bool,
     /// The depth buffer as guest bytes, and the generation they were read
     /// at.
     depth_copy: Option<(u64, Vec<u8>)>,
@@ -825,6 +832,8 @@ impl<B: Backend> Device<B> {
             display: display::Display::default(),
             rtt: HashMap::new(),
             depth_generation: 0,
+            depth_color: None,
+            depth_color_newer: false,
             depth_copy: None,
             depth_alias_decodes: Vec::new(),
             depth_read_generation: None,
@@ -1192,6 +1201,8 @@ impl<B: Backend> Device<B> {
         self.depth_copy = None;
         self.depth_read_generation = None;
         self.depth_alias.clear();
+        self.depth_color = None;
+        self.depth_color_newer = false;
         self.drop_visibility_tests();
         self.hw.zpass_count_enable = false;
         // The original D3D_DestroyResource runs for these after this returns
@@ -1966,6 +1977,10 @@ impl<B: Backend> Device<B> {
         if let Some((_, s)) = self.other_surfaces.remove(&header) {
             self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
         }
+        if self.depth_color.is_some_and(|c| c.header == header) {
+            self.depth_color = None;
+            self.depth_color_newer = false;
+        }
         self.cache.retain(|k, _| k.0 != header && k.1 != header);
         // A texture over the depth buffer holds a host copy of it.
         self.depth_alias.retain(|(h, _), _| *h != header);
@@ -2620,6 +2635,7 @@ impl<B: Backend> Device<B> {
                 .destroy_surface(old)
                 .map_err(D3dError::Backend)?;
         }
+        self.note_depth_color(header, &h, &desc, depth);
         Ok(s)
     }
 
