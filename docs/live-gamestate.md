@@ -330,6 +330,28 @@ body (`H` lookup above); `W` is a weapon object body.
 
 **Shots:** `0x00104150` is the barrel fire: stdcall `(weapon object datum, i16 barrel index)`, `ret 8`, with a `0x1e98`-byte frame. Its only direct caller is the pending-fire loop `0x000fd980` (reached from `0x000a2df5` and `0x000fd95e`). It resolves the owner through `0x00101fb0`, reports the shot to the game engine (`0x0015cca0` with the owner's player datum), and creates the projectiles of every firing marker of the barrel through `object_new` (`0x000b7b40`). One call per shot is **likely** (a shotgun's pellets are created inside one call; a battle-rifle burst should be three calls). A hook on it counts shots for every weapon type, including those without magazines, which a rounds-loaded delta (`W+0x22c`) would miss; the delta would also need reload and pickup filtering.
 
+### AI bipeds, teams and vehicles
+
+Added 2026-11-16 for campaign frames (static reading, no game run).
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|
+| actor datum | unit `+0x12c` | `u32` | confirmed | `unit_new` `0x000c4410` sets it to none; `0x000c6810` indexes the actor datum array (`[0x004f55f0]`, element stride `0x888`) with it and copies the actor's team (`actor+0x24`, `i16`) into the unit |
+| player datum | unit `+0x13c` | `u32` | confirmed | Section above; set to none by `unit_new` |
+| team | unit `+0x138` | `i16` | confirmed | `unit_new` takes it from the placement (`placement+0x64`), and in campaign (`[G+8] == 1`) when that is 0 or -1 from the unit definition's default team (`+0xc0`); `0x0014bfc0` copies the player's team (`player+0xc0`); `0x000c6810` the actor's; `0x000b7930` hands `(i16)+0x138` on as the owner team of objects the unit creates |
+| up vector | `+0x7c` | `f32[3]` | confirmed | Section above |
+| campaign team names | — | enum | likely | 0 default, 1 player, 2 human, 3 covenant, 4 flood, 5 sentinel, 6 heretic, 7 prophet: the tag definitions' order, not checked against code |
+
+An AI biped is a biped object (type 0) with an actor datum, no player datum,
+and damage flags (`+0x10a`) without bit 2. A unit's vehicle is its parent
+when the parent is type 1; the vehicle's own `+0x64/+0x70/+0x7c` are world
+space unless the vehicle is itself parented (turrets on dropships).
+
+Campaign re-activation: `0x0018e700` copies the active options (`G+8`,
+`0x1118` bytes), re-selects the BSP and calls `0x0018f000` again, so the
+activation hook also fires on checkpoint reverts and restarts of the same
+map.
+
 ## 7. Kill/death and damage hooks
 
 ### Best player-facing event: `0x0015ce70`

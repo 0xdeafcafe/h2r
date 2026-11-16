@@ -306,6 +306,41 @@ fn main() {
                     }
                 })
                 .collect(),
+            // One AI-driven ghost and a ring of grunts, as campaign frames
+            // carry them.
+            vehicles: vec![live_proto::game::FrameVehicle {
+                id: "90400040".into(),
+                kind: "ghost".into(),
+                pos: [20.0 * (t * 0.3).cos(), 20.0 * (t * 0.3).sin(), 1.0],
+                forward: [-(t * 0.3).sin(), (t * 0.3).cos(), 0.0],
+                up: [0.0, 0.0, 1.0],
+            }],
+            actors: (0..6)
+                .map(|i| {
+                    let a = i as f64 * TAU / 6.0 - t * 0.2;
+                    let yaw = a + TAU / 2.0;
+                    live_proto::game::FrameActor {
+                        id: format!("9{:03x}{:04x}", 0x41 + i, 0x41 + i),
+                        species: if i == 0 { "elite" } else { "grunt" }.into(),
+                        pos: [24.0 * a.cos(), 24.0 * a.sin(), 1.0],
+                        yaw,
+                        aim: Some([yaw.cos(), yaw.sin(), 0.0]),
+                        weapon: Some("plasma_pistol".into()),
+                        shots: (tick % 90 < 6).then_some(1),
+                        team: Some("covenant".into()),
+                        vehicle: None,
+                    }
+                })
+                .chain(std::iter::once(live_proto::game::FrameActor {
+                    id: "90470047".into(),
+                    species: "elite".into(),
+                    pos: [20.0 * (t * 0.3).cos(), 20.0 * (t * 0.3).sin(), 1.0],
+                    yaw: t * 0.3 + TAU / 4.0,
+                    team: Some("covenant".into()),
+                    vehicle: Some("90400040".into()),
+                    ..Default::default()
+                }))
+                .collect(),
         };
         send(
             &mut ws,

@@ -99,6 +99,34 @@ and stores `aim` normalised to unit length. A frame the server drops for the
 15 Hz limit hands its `shots` on to the next frame it sends, so shots are
 counted since the previous *delivered* frame.
 
+A frame may also carry `vehicles` and `actors`, each left out when empty:
+
+```json
+"vehicles": [ { "id": "90040004", "kind": "ghost", "pos": [20.0, 0.0, 1.0],
+                "forward": [0.0, 1.0, 0.0], "up": [0.0, 0.0, 1.0] } ],
+"actors": [ { "id": "90070007", "species": "grunt", "pos": [5.0, 6.0, 7.0],
+              "yaw": 1.0, "aim": [0.0, 1.0, 0.0], "weapon": "plasma_pistol",
+              "shots": 2, "team": "covenant", "vehicle": "90040004" } ]
+```
+
+`vehicles` are the vehicles someone (player or AI) is in; `id` is the
+object datum in hex, the value `FramePlayer.vehicle` and `FrameActor.vehicle`
+hold. `kind` is the `vehi` tag file stem (`warthog`, `ghost`, `banshee`,
+...), `forward` and `up` unit vectors in game coordinates. `actors` are the
+live AI-controlled bipeds, nearest to a player first, at most 128.
+`species` is the directory of the biped tag (`grunt`, `jackal`, `elite`,
+`marine`, `bugger`, `floodcombat_human`, `tartarus`, ...), lower case; `team` in campaign is `player`,
+`human`, `covenant`, `flood`, `sentinel`, `heretic`, `prophet` or
+`default`, else the team index as text. `kind` and `species` are `unknown`
+when the map's tag names are not available; `aim`, `weapon`, `shots`,
+`team` and `vehicle` are left out when not known. The server refuses
+non-finite positions or vectors, zero `forward`/`up`/`aim`, ids outside
+`[a-z0-9_]{1,32}`, more than 64 vehicles or 128 actors, and stores the
+vectors normalised; actors' shots carry over dropped frames like players'.
+
+Campaign plays as one game per mission (mode `campaign`, no scores): a
+checkpoint revert or restart of the same mission continues it.
+
 `GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
 up to 15 Hz and are not stored.
 

@@ -88,6 +88,12 @@ pub const OBJECT_BODY: u32 = 0x8;
 pub const BODY_PARENT: u32 = 0x14;
 pub const BODY_POSITION: u32 = 0x64;
 pub const BODY_FORWARD: u32 = 0x70;
+pub const BODY_UP: u32 = 0x7c;
+/// Damage flags (`u16`); bit 2 is body depleted (`0x000d6800`).
+pub const BODY_DAMAGE_FLAGS: u32 = 0x10a;
+pub const BODY_DEPLETED: u16 = 1 << 2;
+pub const OBJECT_TYPE_BIPED: u8 = 0;
+pub const OBJECT_TYPE_VEHICLE: u8 = 1;
 /// Object body `+0`: the definition tag's full salted datum.
 pub const BODY_DEFINITION: u32 = 0x0;
 pub const OBJECT_TYPE_WEAPON: u8 = 2;
@@ -105,6 +111,18 @@ pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 // to none, and initialises five vectors from the object forward vector
 // (`+0x150`, `+0x15c`, `+0x168`, `+0x180`, `+0x18c`). Readers: `0x000c85c0`
 // and `0x000cf3d0` index `+0x218` by the `i8` at `+0x212`.
+/// The unit's actor datum, or none: what makes it AI-controlled. Confirmed:
+/// `unit_new` sets it to none; `0x000c6810` indexes the actor datum array
+/// (`[0x004f55f0]`, stride `0x888`) with it and copies the actor's team
+/// (`actor+0x24`) into the unit.
+pub const UNIT_ACTOR: u32 = 0x12c;
+/// The unit's player datum, or none (docs/live-gamestate.md, confirmed).
+pub const UNIT_PLAYER: u32 = 0x13c;
+/// The unit's team, `i16`. Confirmed: `unit_new` takes it from the placement
+/// (and in campaign, when that is 0 or -1, from the unit definition `+0xc0`);
+/// `0x0014bfc0` copies the player's team, `0x000c6810` the actor's, and
+/// `0x000b7930` hands it on to objects the unit spawns.
+pub const UNIT_TEAM: u32 = 0x138;
 pub const UNIT_WEAPON_INDEX: u32 = 0x212; // i8; -1 none
 pub const UNIT_WEAPONS: u32 = 0x218; // u32[4] weapon object datums
 pub const UNIT_WEAPON_SLOTS: i8 = 4;
@@ -142,8 +160,30 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("profile.appearance.emblem_foreground", 0x11d),
     ("profile.appearance.emblem_background", 0x11e),
     ("unit.aiming_vector", UNIT_AIM),
+    ("campaign_team.names", 0),
     ("weapon_fire.one_call_per_shot", WEAPON_FIRE),
 ];
+
+/// likely: campaign team names by index, from the tag-definition enum
+/// (`unit` default team, `+0xc0`); not checked against the executable. Other
+/// indexes are sent as the number.
+pub const fn campaign_team(index: i16) -> Option<&'static str> {
+    match index {
+        0 => Some("default"),
+        1 => Some("player"),
+        2 => Some("human"),
+        3 => Some("covenant"),
+        4 => Some("flood"),
+        5 => Some("sentinel"),
+        6 => Some("heretic"),
+        7 => Some("prophet"),
+        _ => None,
+    }
+}
+
+/// Upper bound on object headers an actor scan reads (`objects_initialize`
+/// creates 2,048).
+pub const OBJECT_CAPACITY: u32 = 2048;
 
 pub const fn variant_name(index: i32) -> Option<&'static str> {
     match index {

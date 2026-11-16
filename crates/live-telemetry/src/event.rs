@@ -92,6 +92,20 @@ pub struct ObjectState {
     pub aim: Option<[f64; 3]>,
     /// The weapon the unit holds.
     pub weapon: Option<Weapon>,
+    /// The up vector of the transform in `pos`/`forward` (the vehicle's
+    /// when riding one).
+    pub up: [f64; 3],
+    /// The ridden vehicle's definition tag datum.
+    pub vehicle_definition: Option<u32>,
+    /// The unit's team (`+0x138`); `None` when negative.
+    pub team: Option<i16>,
+}
+
+/// An AI-controlled biped: its object datum and state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorState {
+    pub datum: u32,
+    pub object: ObjectState,
 }
 
 /// A held weapon: its object datum and its definition tag datum.
@@ -129,6 +143,8 @@ pub struct Snapshot {
     /// Shots fired since the previous snapshot, by weapon object datum
     /// (from the weapon-fire hook; empty when it is not installed).
     pub shots: BTreeMap<u32, u32>,
+    /// AI-controlled bipeds; read on frame ticks only, empty otherwise.
+    pub actors: Vec<ActorState>,
 }
 
 impl Snapshot {

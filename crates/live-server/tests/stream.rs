@@ -239,6 +239,7 @@ fn ingest_frame(game_id: &str, tick: u64) -> Message {
             yaw: 0.25,
             ..Default::default()
         }],
+        ..Default::default()
     };
     Message::Text(
         serde_json::to_string(&ClientMessage::Frame {
@@ -477,6 +478,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
         game_id: game_id.clone(),
         tick: 30,
         players: vec![player],
+        ..Frame::default()
     };
     let good = FramePlayer {
         index: 0,
@@ -590,4 +592,107 @@ async fn frames_carry_species_aim_weapon_and_shots() {
     assert_eq!(player["weapon"], "battle_rifle");
     assert_eq!(player["shots"], 3);
     assert_eq!(player["aim"], serde_json::json!([0.0, 0.6, 0.8]));
+}
+
+#[tokio::test]
+async fn campaign_frames_carry_vehicles_and_actors() {
+    use live_proto::Author;
+    use live_proto::game::{Frame, FrameActor, FramePlayer, FrameVehicle, NewGame, Player};
+
+    let (live, addr) = serve(Policy::default()).await;
+    let (key, account) = create(&live, "Host").await;
+    let new = NewGame {
+        console: None,
+        map: "03a_oldmombasa".into(),
+        mode: "campaign".into(),
+        variant: None,
+        team_play: false,
+        score_limit: None,
+        time_limit_s: None,
+        tick: None,
+        players: vec![Player {
+            index: 0,
+            name: "Host".into(),
+            xuid: Some(account.xuid),
+            team: 1,
+            local: Some(true),
+            appearance: None,
+        }],
+    };
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
+    let author = Author::parse(&account.id).unwrap();
+    let mut reader = connect(addr, &format!("?games={game_id}&exclude=GameFrame")).await;
+    assert!(matches!(
+        next(&mut reader).await,
+        StreamMessage::CaughtUp { .. }
+    ));
+
+    let good = Frame {
+        game_id: game_id.clone(),
+        tick: 30,
+        players: vec![FramePlayer {
+            index: 0,
+            alive: true,
+            vehicle: Some("90040004".into()),
+            ..FramePlayer::default()
+        }],
+        vehicles: vec![FrameVehicle {
+            id: "90040004".into(),
+            kind: "warthog".into(),
+            pos: [1.0, 2.0, 3.0],
+            forward: [2.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }],
+        actors: vec![FrameActor {
+            id: "90070007".into(),
+            species: "grunt".into(),
+            pos: [5.0, 6.0, 7.0],
+            yaw: 1.0,
+            aim: Some([0.0, 3.0, 4.0]),
+            weapon: Some("plasma_pistol".into()),
+            shots: Some(2),
+            team: Some("covenant".into()),
+            vehicle: None,
+        }],
+    };
+    let mut bad_up = good.clone();
+    bad_up.vehicles[0].up = [f64::NAN, 0.0, 1.0];
+    let mut bad_species = good.clone();
+    bad_species.actors[0].species = "Grunt Major".into();
+    for bad in [bad_up, bad_species] {
+        assert!(live.ingest_frame(&author, bad).await.is_err());
+    }
+
+    live.ingest_frame(&author, good).await.unwrap();
+    let StreamMessage::Frame { frame } = next(&mut reader).await else {
+        panic!("expected a frame")
+    };
+    assert_eq!(frame.vehicles[0].kind, "warthog");
+    assert_eq!(frame.vehicles[0].forward, [1.0, 0.0, 0.0]);
+    assert_eq!(frame.actors[0].aim, Some([0.0, 0.6, 0.8]));
+    assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
+    assert_eq!(frame.actors[0].shots, Some(2));
+
+    let mut recorded = Vec::new();
+    for _ in 0..50 {
+        recorded = live
+            .recorded_frames(&game_id, None, None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        if !recorded.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(recorded[0]["vehicles"][0]["kind"], "warthog");
+    assert_eq!(recorded[0]["actors"][0]["species"], "grunt");
+    assert_eq!(recorded[0]["actors"][0]["weapon"], "plasma_pistol");
 }

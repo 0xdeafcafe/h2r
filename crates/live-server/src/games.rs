@@ -36,9 +36,9 @@ struct FrameClock {
     last_sent: Instant,
     /// Unix second of the last recorded `GameFrame`.
     last_recorded: i64,
-    /// Shots of throttled frames by player index, added to the next frame
-    /// sent so none are lost.
-    unsent_shots: Vec<(u32, u32)>,
+    /// Shots of throttled frames by shooter, added to the next frame sent
+    /// so none are lost.
+    unsent_shots: Vec<(game::Shooter, u32)>,
 }
 
 /// What a frame turned into.
@@ -222,9 +222,8 @@ impl Live {
                 unsent_shots: Vec::new(),
             });
             if clock.last_sent.elapsed() < FRAME_INTERVAL {
-                // Bounded: at most one entry per player per throttled frame,
-                // and frames arrive at about the interval.
-                if clock.unsent_shots.len() < 4 * game::MAX_PLAYERS {
+                // Bounded: a few throttled frames' worth of shooters.
+                if clock.unsent_shots.len() < 4 * (game::MAX_PLAYERS + game::MAX_FRAME_ACTORS) {
                     clock.unsent_shots.extend(frame.shots());
                 }
                 return Ok(FrameOutcome::Throttled);

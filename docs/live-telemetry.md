@@ -60,6 +60,33 @@ shots"):
   frame the sink coalesces (it keeps the newest queued frame) are added to
   the frame it keeps.
 
+Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md),
+"AI bipeds, teams and vehicles"):
+
+- Actors: on frame ticks the object header table is read once (12 bytes a
+  slot up to the high-water mark, at most 2,048) and every biped with an
+  actor datum (`+0x12c`), no player (`+0x13c`) and no body-depleted flag
+  is read like a player's unit (position, or its vehicle's; aim; held
+  weapon). Nearest to any player first, at most 128. A fault on one biped
+  skips it; a failed scan sends no actors.
+- `team` is the unit's `+0x138`; in campaign it is named (likely names),
+  elsewhere sent as the number.
+- `species` is the biped tag's directory; vehicles' `kind` the `vehi`
+  stem; both `unknown` without the map's names.
+- Actors' shots: every weapon's fire-hook count since the last frame,
+  given to the actor holding that weapon at frame time.
+- Vehicles: each vehicle a player or sent actor rides, once, with its
+  forward and up vectors; a vehicle whose vectors are not finite and
+  non-zero is left out.
+
+Campaign: the map activation `0x0018f000` also runs on every checkpoint
+revert and mission restart (`0x0018e700` re-activates with a copy of the
+active options). A re-activation of the campaign map the current game is on
+continues that game instead of ending it and starting another (which also
+spent one `POST /v1/games` per revert against the server's write rate
+limit, and a refused creation stops the sink). A different mission, a
+multiplayer map or the main menu ends it as before.
+
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks the boot for the
@@ -182,3 +209,8 @@ relying on live output, check in this order:
    `shots` matching trigger pulls (battle rifle 3 per burst, shotgun 1 per
    pull, plasma weapons and the sentinel beam counted at all), and the fire
    hook installing (stderr says when it does not).
+8. Campaign: one game per mission across deaths and reverts; actors'
+   `+0x12c`/`+0x13c` split (allies, enemies, Flood, the Arbiter's levels);
+   the team names (likely: tag-definition order); vehicle `up` for banshees;
+   that dropship-mounted turrets (vehicles parented to vehicles) look right
+   (their `+0x64` is parent-relative and is sent as is).
