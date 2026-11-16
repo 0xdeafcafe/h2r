@@ -171,7 +171,9 @@ pub enum Adopted {
 }
 
 /// Makes the Controls screen at `screen` ours: vtables, row chosen, and the
-/// rows trimmed to `rows` (at most the six item widgets). The loaded byte is
+/// rows trimmed to `rows`. More rows than the constructor made (six, seven
+/// with the speaker row's list hook) cannot be added here; past six the list
+/// scrolls through its six item widgets. The loaded byte is
 /// set as the Controls loader sets it.
 pub fn adopt(
     m: &mut dyn GuestMemory,
@@ -202,7 +204,6 @@ pub fn adopt(
     list.set_vtable(m, e.list_vtable)?;
     press.set_function(m, e.row_chosen)?;
     let array = list.row_array(m)?;
-    let rows = rows.min(ui::CONTROLS_ITEMS as usize);
     let live = array.live(m, i32::MAX)?;
     for (h, _) in live.iter().skip(rows) {
         array.array.delete(m, *h)?;
@@ -605,14 +606,14 @@ mod tests {
     }
 
     #[test]
-    fn more_rows_than_item_widgets_are_cut_to_six() {
+    fn more_rows_than_the_array_holds_are_cut_to_its_size() {
         let mut g = guest();
         g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
             .map(ROWS - 0x20, 0x200);
         construct(&mut g, 7);
         assert_eq!(
             adopt(&mut g, SCREEN, &entries(), 9),
-            Ok(Adopted::Ours { rows: 6 })
+            Ok(Adopted::Ours { rows: 7 })
         );
     }
 
