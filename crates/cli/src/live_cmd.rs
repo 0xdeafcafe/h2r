@@ -66,6 +66,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
   account export <gamertag> [--file PATH] [--server URL]
   admin grant|revoke <gamertag> [--server URL] [--data DIR]
   hopper import <file> [--title ID] [--server URL] [--data DIR]
+  hopper defaults --out FILE [--raw] [--force]
+                          write the built-in playlists (what a server with
+                          no hopper file serves): the download file, or with
+                          --raw the image a console caches
   team create <name> [--as GAMERTAG] [--server URL]
   team edit <id> [--name NAME] [--description TEXT] [--motto TEXT] [--url URL]
   team delete|accept|decline|leave|show <id> [--as GAMERTAG] [--server URL]
@@ -125,6 +129,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("admin", Some("grant")) => crate::live_admin::admin_grant(rest.shift()),
         ("admin", Some("revoke")) => crate::live_admin::admin_revoke(rest.shift()),
         ("hopper", Some("import")) => crate::live_admin::hopper_import(rest.shift()),
+        ("hopper", Some("defaults")) => crate::live_admin::hopper_defaults(rest.shift()),
         ("friend", Some("add")) => friend(rest.shift(), FriendAction::Add),
         ("friend", Some("accept")) => friend(rest.shift(), FriendAction::Accept),
         ("friend", Some("decline")) => friend(rest.shift(), FriendAction::Decline),
