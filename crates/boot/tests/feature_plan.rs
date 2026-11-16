@@ -43,6 +43,9 @@ fn the_full_plan_builds_and_reads_as_expected() {
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
     r.add(&feature::leaves::EngineLeaves).unwrap();
+    // The aim assist's map-load hook (docs/game/aim-assist.md).
+    let settings = settings::Store::defaults(boot::setting_defs::ALL);
+    r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
     let plan = r.build(&feature::Base).unwrap();
     let _ = std::fs::remove_file(path);
     assert_eq!(
@@ -55,12 +58,13 @@ feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
 feature engine-leaves: on
+feature aim-assist: on
 0x000d9640 DAMAGE_REPORT: observe_before [live-telemetry:hits] -> original
 0x00104150 WEAPON_FIRE: observe_before [live-telemetry:shots] -> original
 0x00137fe0 GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash]
 0x001389c0 GAME_END: original -> observe_after [live-telemetry:end]
 0x0015ce70 PLAYER_KILLED: observe_before [live-telemetry:kill] -> original
-0x0018f000 GAME_ACTIVATE: original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
+0x0018f000 GAME_ACTIVATE: before [aim-assist:weapon aim assist] -> original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
 0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original

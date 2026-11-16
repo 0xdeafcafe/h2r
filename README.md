@@ -107,6 +107,24 @@ You can also pass a path to any command, or set `H2_DISC`. Both XISO (game
 partition only) and full Redump images work. Without an argument `h2` uses
 `$H2_DISC`, then the first `.iso` in `disc/`.
 
+## Building
+
+The root `justfile` builds every target from your disc
+([casey/just](https://github.com/casey/just), `brew install just`):
+
+```sh
+just                 # list the recipes
+just doctor          # what each target needs and what is missing
+just mac-play        # build and play on this Mac
+just tvos            # the Apple TV app's inputs; then just tvos-install
+just ios maps=all    # the iPhone/iPad app with every map and the map pack
+just windows-dll     # the game module cross-built for Windows
+```
+
+It uses `disc/halo2.iso` and, when present, `disc/mappack.iso` (or `iso=`,
+`mappack=`, `H2_ISO`, `H2_MAPPACK`). Every recipe and what it needs is in
+[docs/runtime/building.md](docs/runtime/building.md).
+
 ## Commands
 
 `.cargo/config.toml` defines an alias, so `cargo h2 <command>` is

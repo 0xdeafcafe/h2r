@@ -643,6 +643,12 @@ fn layout_pins() {
     assert_eq!(pin(&l::BIPD, "flags"), (0x1f0, 0, none));
     assert_eq!(pin(&l::VEHI, "flags"), (0x1ec, 0, none));
     assert_eq!(pin(&l::VEHI, "vehicle_type"), (0x1f0, 0, none));
+    // Weapon aim assist (docs/game/aim-assist.md), read by 0x001a50a0.
+    assert_eq!(pin(&l::WEAP, "autoaim_angle"), (0x208, 0, none));
+    assert_eq!(pin(&l::WEAP, "autoaim_range"), (0x20c, 0, none));
+    assert_eq!(pin(&l::WEAP, "magnetism_angle"), (0x210, 0, none));
+    assert_eq!(pin(&l::WEAP, "magnetism_range"), (0x214, 0, none));
+    assert_eq!(pin(&l::WEAP, "deviation_angle"), (0x218, 0, none));
     assert_eq!(pin(&l::HLMT, "render_model"), (0x00, 0, &["mode"][..]));
     assert_eq!(pin(&l::HLMT, "collision_model"), (0x08, 0, &["coll"][..]));
     assert_eq!(pin(&l::HLMT, "animation"), (0x10, 0, &["jmad"][..]));

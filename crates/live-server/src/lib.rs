@@ -342,6 +342,22 @@ pub fn start_embedded(
     data_dir: &std::path::Path,
     site: http::Site,
 ) -> Result<Embedded> {
+    let policy = Policy {
+        admins: crate::admin::Admins::from_flags_and_env(&[]).map_err(anyhow::Error::msg)?,
+        ..Policy::default()
+    };
+    start_embedded_with(db, listen, data_dir, site, policy)
+}
+
+/// [`start_embedded`] with a policy of the caller's (tests: an
+/// invite-only server).
+pub fn start_embedded_with(
+    db: &str,
+    listen: SocketAddr,
+    data_dir: &std::path::Path,
+    site: http::Site,
+    policy: Policy,
+) -> Result<Embedded> {
     check_bind(listen, false, false)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -392,10 +408,6 @@ pub fn start_embedded(
                     }
                 },
             },
-        };
-        let policy = Policy {
-            admins: crate::admin::Admins::from_flags_and_env(&[]).map_err(anyhow::Error::msg)?,
-            ..Policy::default()
         };
         let live = Live::start(store, identity, policy).await?;
         live.set_data_dir(data_dir);

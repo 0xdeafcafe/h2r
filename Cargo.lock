@@ -767,6 +767,7 @@ dependencies = [
  "flate2",
  "font",
  "gltf",
+ "h1convert",
  "h1map",
  "hs",
  "iced-x86",
@@ -1405,8 +1406,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "content",
+ "h1map",
  "map",
  "tags",
+ "toml 0.9.12+spec-1.1.0",
  "variants",
  "xbe",
  "xiso",
@@ -2122,8 +2125,10 @@ dependencies = [
 name = "h1convert"
 version = "0.1.0"
 dependencies = [
+ "content",
  "h1map",
  "map",
+ "scenario-edit",
  "tags",
  "thiserror 2.0.21",
  "xiso",
@@ -2137,6 +2142,17 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "h1models"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
  "xiso",
 ]
 
@@ -4030,6 +4046,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
+name = "pathfind"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "tags",
+ "xiso",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5396,6 +5422,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "h1map",
  "hopper-edit",
  "live-proto",
  "png",

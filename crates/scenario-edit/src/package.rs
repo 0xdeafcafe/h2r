@@ -86,7 +86,9 @@ pub fn edited_bytes(source: &MapSource, scenario: &Scenario) -> Result<Vec<u8>> 
 /// Save `scenario` (read from `source`) as package `form.dir` for map
 /// `map` under `maps`. `replace` names the package directory being edited:
 /// saving to it replaces its layer and manifest; any other existing
-/// directory is refused.
+/// directory is refused. A `derived` (new) map's base is `source.bytes`,
+/// its whole unedited file, which the package carries as its first layer
+/// (`[base] derived = true`); the edits are the second.
 pub fn save_package(
     maps: &Path,
     map: &str,
@@ -94,6 +96,7 @@ pub fn save_package(
     scenario: &Scenario,
     form: &PackageForm,
     replace: Option<&str>,
+    derived: bool,
 ) -> Result<SavedPackage> {
     let name = form.name.trim();
     if name.is_empty() {
@@ -113,7 +116,11 @@ pub fn save_package(
         }
         None => None,
     };
-    let base = source.read_base()?;
+    let base = match (&source.bytes, derived) {
+        (Some(b), true) => b.to_vec(),
+        (None, true) => return Err(bad("a new map's package needs its map file")),
+        (_, false) => source.read_base()?,
+    };
     let mut edited = edited_bytes(source, scenario)?;
     // The resolver repairs +0x2d0 after the layers. The writer already
     // left the right checksum, so the patch carries it and the repair
@@ -134,7 +141,20 @@ pub fn save_package(
         sha256: sha,
     }];
     manifest.result = geometry.map(|g| ResultInfo { geometry: Some(g) });
+    let whole = format!("{map}.map");
     let mut files: Vec<(&str, &[u8])> = vec![(&file, &w.bytes)];
+    if derived {
+        manifest.base.sha256 = None;
+        manifest.base.derived = true;
+        manifest.patches.insert(
+            0,
+            Layer {
+                file: whole.clone(),
+                sha256: Sha256::of(&base),
+            },
+        );
+        files.insert(0, (&whole, &base));
+    }
     if let Some((n, b)) = &image {
         files.push((n, b));
     }

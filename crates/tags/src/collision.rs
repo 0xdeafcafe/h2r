@@ -9,8 +9,9 @@
 //! block. A block is `{count, address}` where the address is a virtual address
 //! inside that payload (`address - tag base` is the payload offset).
 //!
-//! Collision BSPs here are the *object* collision model's BSPs. Structure-BSP
-//! (`sbsp`) collision is a separate decoder and is not shared on purpose.
+//! Collision BSPs here are the *object* collision model's BSPs. A structure
+//! BSP's (`sbsp`) collision BSP has the same blocks without the leading word;
+//! [`Bsp::decode_structure`] reads it (docs/formats/pathfinding.md).
 use crate::wire::StringId;
 use crate::{Error, Result};
 use map::{FourCC, Map, TagQuery};
@@ -280,7 +281,18 @@ pub const COLL_ROOT_SIZE: usize = 0x34;
 
 fn decode_bsp(p: &Payload, at: usize) -> Result<Bsp> {
     // `at` is the element's payload offset; its blocks start at `+4`.
-    let off = |i: usize| at + 4 + i * 8;
+    let unknown_00 = u32_at(
+        p.bytes
+            .get(at..at + 4)
+            .ok_or(Error::Invalid("collision BSP outside payload"))?,
+        0,
+    );
+    decode_bsp_blocks(p, at + 4, unknown_00)
+}
+
+/// The eight blocks of a collision BSP, starting at payload offset `blocks`.
+fn decode_bsp_blocks(p: &Payload, blocks: usize, unknown_00: u32) -> Result<Bsp> {
+    let off = |i: usize| blocks + i * 8;
     let nodes = p
         .chunks(off(0), 8)?
         .map(|c| Node3d {
@@ -342,7 +354,7 @@ fn decode_bsp(p: &Payload, at: usize) -> Result<Bsp> {
         })
         .collect();
     Ok(Bsp {
-        unknown_00: u32_at(p.bytes, at),
+        unknown_00,
         nodes,
         planes,
         leaves,
@@ -636,6 +648,24 @@ impl Bsp {
 }
 
 impl Bsp {
+    /// Element size of a structure BSP's collision BSP: the same eight blocks
+    /// as a `coll` BSP without the leading word (V: on every disc BSP the
+    /// first child block starts `0x40` bytes after the element).
+    pub const STRUCTURE_SIZE: usize = 0x40;
+
+    /// Decode a structure BSP's (`sbsp`) collision BSP: the eight blocks
+    /// start at payload offset `at` of a payload loaded at `base`.
+    /// `unknown_00` is 0, as there is no leading word.
+    pub fn decode_structure(bytes: &[u8], base: u32, at: usize) -> Result<Self> {
+        if at
+            .checked_add(Self::STRUCTURE_SIZE)
+            .is_none_or(|end| end > bytes.len())
+        {
+            return Err(Error::Invalid("collision BSP outside payload"));
+        }
+        decode_bsp_blocks(&Payload::new(bytes, base), at, 0)
+    }
+
     /// Vertex indices around a surface, following the engine's edge walk.
     /// Bounded by the edge count, so a malformed ring cannot loop.
     pub fn surface_ring(&self, surface: usize) -> Vec<usize> {

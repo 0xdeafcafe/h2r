@@ -16,13 +16,16 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--data <dir>] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
+[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map>] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
 
 struct Args {
     source: Option<PathBuf>,
+    halo1: Option<PathBuf>,
+    halo1_map: Option<String>,
+    package: Option<String>,
     data: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     size: [f32; 2],
@@ -44,6 +47,9 @@ struct Args {
 fn args() -> Result<Args> {
     let mut a = Args {
         source: None,
+        halo1: None,
+        halo1_map: None,
+        package: None,
         data: None,
         screenshot: None,
         size: [1600.0, 1000.0],
@@ -69,6 +75,9 @@ fn args() -> Result<Args> {
         match flag.as_str() {
             "--disc" | "--map" | "--folder" => a.source = Some(value()?.into()),
             "--data" => a.data = Some(value()?.into()),
+            "--halo1" => a.halo1 = Some(value()?.into()),
+            "--halo1-map" => a.halo1_map = Some(value()?),
+            "--package" => a.package = Some(value()?),
             "--screenshot" => a.screenshot = Some(value()?.into()),
             "--pick" => a.pick = Some(value()?),
             "--tool" => {
@@ -165,11 +174,26 @@ fn main() -> Result<()> {
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());
     }
+    app.refresh_packages();
     if let Some(src) = editor_core::default_disc(args.source.clone()) {
+        app.dispatch(Action::OpenSource(src));
+    }
+    // Halo 1 maps: --halo1, else $H1_ISO, $H1_MAP_DIR or disc/halo1.iso.
+    if let Some(src) = args
+        .halo1
+        .clone()
+        .or_else(editor_core::halo1::default_source)
+    {
         app.dispatch(Action::OpenSource(src));
     }
     if let Some(name) = &args.pick {
         app.dispatch(Action::SelectMap(name.clone()));
+    }
+    if let Some(key) = &args.package {
+        app.dispatch(Action::OpenPackageEntry(key.clone()));
+    }
+    if let Some(name) = &args.halo1_map {
+        app.dispatch(Action::SelectHalo1Map(name.clone()));
     }
     match args.hopper.as_deref() {
         Some("default") => app.dispatch(Action::NewDefaultHopper),

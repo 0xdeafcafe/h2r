@@ -9,7 +9,7 @@ use crate::query::{first_hit, leaf_at};
 use crate::sandbox::{H2Item, h2_equivalent, h2_name_matches};
 use crate::*;
 
-fn room() -> CollisionBsp {
+pub(crate) fn room() -> CollisionBsp {
     let base = 0x8190_0000;
     let (bytes, at) = collision_room(base);
     CollisionBsp::read(&Space::new(&bytes, base), &bytes[at..at + 0x60]).unwrap()
@@ -223,4 +223,89 @@ fn roles_resolve_to_the_base_maps_collections() {
     );
     assert_eq!(resolve(H2Item::Weapon("needler"), &tags), None);
     assert_eq!(resolve(H2Item::Dropped, &tags), None);
+}
+
+#[test]
+fn the_assault_rifle_becomes_the_battle_rifle_in_precision_variants() {
+    use crate::sandbox::h2_equivalent_precision;
+    let ar = "weapons\\assault rifle\\assault rifle";
+    assert_eq!(h2_equivalent(ar), Some(H2Item::Weapon("smg")));
+    assert_eq!(
+        h2_equivalent_precision(ar),
+        Some(H2Item::Weapon("battle_rifle"))
+    );
+    assert_eq!(
+        h2_equivalent_precision("weapons\\pistol\\pistol"),
+        Some(H2Item::Weapon("magnum"))
+    );
+}
+
+#[test]
+fn a_plan_replaces_the_base_scenarios_spawns_flags_and_items() {
+    use crate::apply::apply;
+    use crate::placements::*;
+    use scenario_edit::{BlockKind, Scenario, Value};
+    use std::io::Cursor;
+    let mut base =
+        map::Map::from_reader(Cursor::new(scenario_edit::fixture::fixture_at_end())).unwrap();
+    let mut s = Scenario::read(&mut base).unwrap();
+    let tags: Vec<_> = base
+        .tags()
+        .iter()
+        .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let plan = Plan {
+        spawns: (0..5)
+            .map(|i| Spawn {
+                position: [i as f32, 1.0, 2.0],
+                facing: 0.5,
+                team: (i % 2) as u16,
+            })
+            .collect(),
+        flags: vec![Flag {
+            position: [9.0, 9.0, 9.0],
+            facing: 1.0,
+            kind: H2Flag::TeleporterSource,
+            team: 3,
+        }],
+        items: vec![
+            ItemSpawn {
+                position: [4.0, 4.0, 4.0],
+                facing: 0.25,
+                item: H2Item::Weapon("kit"),
+                respawn: 15,
+            },
+            ItemSpawn {
+                position: [0.0; 3],
+                facing: 0.0,
+                item: H2Item::Weapon("missing"),
+                respawn: 0,
+            },
+        ],
+        dropped: vec![],
+    };
+    let done = apply(&mut s, &plan, &tags).unwrap();
+    assert_eq!(done.counts, [5, 1, 1]);
+    assert_eq!(done.unresolved.len(), 1);
+    assert_eq!(done.removed, 3, "two weapons and a scenery");
+    // Saved through the editor's writer, read back from the bytes.
+    let mut out = Cursor::new(Vec::new());
+    scenario_edit::save::write_patched(&mut base, &s, &mut out).unwrap();
+    let mut m = map::Map::from_reader(Cursor::new(out.into_inner())).unwrap();
+    let back = Scenario::read(&mut m).unwrap();
+    let k = BlockKind::StartingLocations;
+    assert_eq!(back.block(k).len(), 5);
+    assert_eq!(
+        back.get(k, 4, "position").unwrap(),
+        Value::Vec3([4.0, 1.0, 2.0])
+    );
+    assert_eq!(back.get(k, 3, "team").unwrap(), Value::Int(1));
+    let f = BlockKind::NetgameFlags;
+    assert_eq!(back.get(f, 0, "type").unwrap(), Value::Int(7));
+    assert_eq!(back.get(f, 0, "team").unwrap(), Value::Int(3));
+    let e = BlockKind::NetgameEquipment;
+    assert_eq!(back.block(e).len(), 1);
+    assert!(back.block(BlockKind::Weapons).is_empty());
+    assert_eq!(back.get(e, 0, "respawn time").unwrap(), Value::Int(15));
+    assert_eq!(back.get(e, 0, "position").unwrap(), Value::Vec3([4.0; 3]));
 }

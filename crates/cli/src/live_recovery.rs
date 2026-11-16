@@ -75,7 +75,18 @@ pub(crate) fn recover(
     gamertag: &Gamertag,
     code: &str,
 ) -> Result<LocalAccount> {
-    let key = KeyPair::generate();
+    recover_with_key(client, accounts, gamertag, code, KeyPair::generate())
+}
+
+/// [`recover`] adding `key` (one this machine already holds for the same
+/// gamertag on another server, so the player keeps one key).
+pub(crate) fn recover_with_key(
+    client: &Client,
+    accounts: &Path,
+    gamertag: &Gamertag,
+    code: &str,
+    key: KeyPair,
+) -> Result<LocalAccount> {
     let body = RecoverBody {
         request: RecoverRequest::sign(&key, gamertag.as_str(), &client.discovery.id, now()),
         code: code.trim().to_string(),

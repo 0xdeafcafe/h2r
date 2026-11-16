@@ -166,8 +166,26 @@ pub enum Chosen {
     Stepped(String),
     /// Open this screen.
     Open(&'static str),
+    /// Run the screen's own action (`list_class::ListClass::action`): the
+    /// Skulls page's Start row.
+    Act,
+    /// Make these guest calls, in order, then open a retail screen by its
+    /// loader; log the line first.
+    Retail {
+        line: String,
+        calls: Vec<(u32, Vec<GuestArg>)>,
+        loader: u32,
+    },
     /// Not a row of ours.
     Nothing,
+}
+
+/// A guest call's argument for [`Chosen::Retail`]: a value, or the word at
+/// a guest address when the call is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestArg {
+    Value(u32),
+    Load(u32),
 }
 
 /// The screens and extensions of a run, over its store.
@@ -452,10 +470,11 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key)
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 6), 5);
+        assert_eq!(m.count(List::Screen("video"), 6), 6);
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);

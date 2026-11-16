@@ -287,6 +287,18 @@ aim-by-position scheme. Gentler options if it feels bad: smoothing across
 frames, or an acceleration curve. Neither is implemented. There is also no "walk" modifier for half stick
 deflection yet.
 
+### On-screen touch controls (`touch.rs`, iOS)
+
+The iOS app's own touch overlay reports held buttons, the move thumb's
+offset and the look drag (`TouchFrame`); `TouchPad` turns them into a pad:
+a radial deadzone on the move stick, look through `look::LookMotion` (held
+until the guest reads it) with acceleration, sensitivity and a response
+curve, optional gyro, and a crouch toggle on the left-stick click.
+`KeyboardMouse::touch_update` merges it into the keyboard pad, so it joins
+player one on port 0 (buttons add, triggers and the move stick take the
+stronger, look adds to the mouse's). Using it marks the last-used device as
+a pad, for pad prompts. See docs/runtime/ios.md, "Controls".
+
 ## Button layouts
 
 Halo 2's retail layouts (Default, Southpaw, Boxer, Green Thumb), the added

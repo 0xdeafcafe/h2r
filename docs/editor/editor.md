@@ -26,7 +26,7 @@ it shows come from your own disc at run time.
 ## Running it
 
 ```
-cargo run --release -p studio -- [--disc <iso> | --map <file.map> | --folder <maps dir>] [--hopper <file>|default] [--data <dir>]
+cargo run --release -p studio -- [--disc <iso> | --map <file.map> | --folder <maps dir>] [--halo1 <iso|maps dir>] [--hopper <file>|default] [--data <dir>]
 ```
 
 The package is `studio`; its binary is `h2-editor`. With no source it
@@ -36,6 +36,12 @@ Open disc or map...** opens one later. A disc image lists every
 `/maps/*.map`; a loose `.map` lists itself, and its directory's
 `mainmenu.map`, `shared.map` and `single_player_shared.map` serve as the
 shared caches. The source is read-only.
+
+A Halo 1 source opens beside it: `--halo1`, else `$H1_ISO`, `$H1_MAP_DIR`
+or the repository's `disc/halo1.iso` (`editor_core::halo1::default_source`).
+**Open...** and a dropped path try Halo 1 first (`H1Source::open`: a disc
+whose XBE is Halo: Combat Evolved's, a Halo 1 `.map`, or a folder holding
+any), then Halo 2.
 
 `--data` is the runtime's data root, as `h2 play --data`; the default is
 the runtime's, `$TMPDIR/h2boot-data` (`content::store::default_data_root`).
@@ -97,6 +103,62 @@ Picking a map in **Maps** opens it, unless the open map has unsaved edits
 `.map`, the export): the source map is never overwritten. **Save as
 package...** and **Open package...** save and open map packages in
 `<data>/maps` (scenario-editor.md §5, [maps.md](../game/maps.md) §8).
+
+### Packages and Halo 1 in the Maps list
+
+Below the source's maps, **Maps** lists what is under `<data>/maps`
+(`editor_core::packages::list`, re-read when the data root changes and
+after a save), then Halo 1:
+
+- **Packages**: edits of disc maps and new maps, by `[package] name`.
+  An edit opens its disc map, then the package over it
+  (`Session::open_package`, through `content::Library`); it needs a source
+  with that map. A new map (`[base] derived = true`) opens from its
+  resolved bytes (`Session::open_derived`), with the open disc's
+  `shared.map` region as the place the shared caches come from. Saving
+  either replaces that package.
+- **Halo 1**: maps converted by the Halo 1 import
+  ([h1-multiplayer.md](../game/h1-multiplayer.md)), one entry per sandbox
+  variant, `Blood Gulch (H1 sandbox)` and `(H2 sandbox)`. Then, with a
+  Halo 1 source open, its maps, read-only.
+
+**What marks a converted map** is decided in one function,
+`editor_core::packages::halo1_origins`: an `origin` table with
+`game = "halo1"` (and `map`, `sandbox = "h1" | "h2"`, `source_sha256`),
+either at the top of the manifest or in each entry of a top-level array
+of tables (one per variant, each with its own `file`). The manifest is
+read there as plain TOML, because `content::Manifest` rejects fields it
+does not know; a variant's own `file` is read directly, anything else
+through the resolver, and a derived package the resolver refuses is read
+only when its single layer is the whole map.
+
+A converted variant opens as a new map and saves as a **new** package
+(`<map>-edit`): the import's package holds both variants and their
+origins, and the editor does not rewrite it. A derived package saved by
+the editor carries the unedited map as its first layer and the edit as
+the second (`package::save_package` with `derived`), so the resolver
+rebuilds it without the import.
+
+**Halo 1 maps, read-only.** `editor_core::halo1` reads a map through
+`h1map`: every structure BSP's rendered triangles (each lightmap
+material's render surfaces over its own vertices) and the multiplayer
+placements (starting locations, netgame flags, netgame equipment,
+vehicles), each with its fields as text. The studio shows them as a
+`scenario_edit::Reference`: the session's world and markers with no
+scenario, so the viewport, picking and framing are the same and nothing
+can be edited. The BSP is slope-shaded: `h1map` has no Halo 1 bitmap
+decoder yet. The inspector has a disabled **Convert to Halo 2**, whose
+tooltip names the entry point it waits on
+(`h1convert::convert(h1, base, sandbox) -> Converted`).
+
+**The Halo 1 overlay.** Opening a converted variant looks for its
+`[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks
+the stored file's SHA-256 against `source_sha256`. When it matches, View >
+Halo 1 overlay (and the viewport toolbar's toggle) draws the Halo 1 BSP
+and placement glyphs in orange at 35 % over the converted map, through
+everything (`render::Viewport::set_overlay`), to check a conversion by
+eye. The inspector says where the map came from, and why there is no
+overlay when there is none.
 
 ### What the viewport shows, and what it does not yet
 
@@ -284,8 +346,10 @@ studio crate only draws them and turns input into actions.
 - `crates/editor-core`: map sources (`MapSource`: a disc image, a loose
   `.map` with its siblings, or a folder of maps; `map_names()`,
   `open_map(name)`, `resources(name)`), the snapshot `UndoStack`
-  (coalescing by `u64` keys), `Status`, and `variant_sources` (the
-  variant schema, XBE save names and save storage for a source).
+  (coalescing by `u64` keys), `Status`, `variant_sources` (the
+  variant schema, XBE save names and save storage for a source),
+  `packages` (the packages under a data root, Halo 1 origins) and
+  `halo1` (Halo 1 sources and what is shown of a map).
 - `crates/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages). `render` and `geometry` draw it offscreen with
@@ -302,7 +366,8 @@ studio crate only draws them and turns input into actions.
     (open, select map, save, packages, undo/redo, select, delete,
     duplicate, add; variants; playlist files and entries; quit), with the
     unsaved-changes guard (`dispatch` holds an action that would drop a
-    tool's edits; `resolve` answers and re-dispatches it). Tested without
+    tool's edits; `resolve` answers and re-dispatches it). `app/library.rs`
+    holds the packages, the Halo 1 source and the overlay. Tested without
     a window (`app/tests.rs`).
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
     turns input into `Action`s and draws `App`. `ui/variants.rs` and
@@ -326,6 +391,9 @@ last. The flags that set the scene up:
 | Flag | Effect |
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
+| `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
+| `--halo1-map <map>` | show a map of it, read-only |
+| `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | focus the camera on the selection |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |

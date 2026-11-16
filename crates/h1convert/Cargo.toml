@@ -5,10 +5,14 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The package manifest of a converted map.
+content.workspace = true
 h1map = { path = "../h1map" }
 map.workspace = true
 tags.workspace = true
 thiserror.workspace = true
+# Writing placements into the base scenario. Without its egui panel.
+scenario-edit = { path = "../scenario-edit", default-features = false }
 
 [dev-dependencies]
 xiso.workspace = true

@@ -10,6 +10,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use h1convert::convert::{Sandbox, known, map_name, prepare, structure_mopp};
 use h1map::disc::{self, Copied, Disc};
 use h1map::{Group, H1Map, HEADER_LEN};
 use xiso::{Entry, Xiso};
@@ -18,11 +19,21 @@ use crate::safe_out::OutDir;
 
 const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
        h2 h1 tags <iso|map> [map] [--group G]
+       h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
+                     [--disc halo2.iso] [--dry-run] [--force]
 
 info: with a disc and no map, the disc's title and each map's header; with a
 map (a .map file, or a disc and a map name such as a30), its header, tag index
 and tag counts by group. tags: every tag, or one group's: ID, group, data
-range and name. See docs/formats/h1-map-format.md.";
+range and name. See docs/formats/h1-map-format.md.
+
+convert: a Halo 1 multiplayer map (a .map file, or a disc and a map name such
+as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
+$H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
+(manifest.toml and h1_<map>.map). --base picks the base (default per map,
+mostly beavercreek). --dry-run does everything but write and prints what it
+would write. Until the MOPP writer is merged no map is written. See
+docs/game/h1-multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--force] [--dry-run]
 
@@ -45,6 +56,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match sub.as_str() {
         "info" => info(rest),
         "tags" => tags(rest),
+        "convert" => convert(rest),
         "-h" | "--help" => {
             println!("{H1_USAGE}");
             Ok(())
@@ -370,12 +382,255 @@ fn import(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The arguments of `h1 convert`.
+#[derive(Debug, PartialEq)]
+pub struct ConvertArgs {
+    pub path: PathBuf,
+    pub map: Option<String>,
+    pub out: Option<PathBuf>,
+    pub sandbox: Sandbox,
+    pub base: Option<String>,
+    pub disc: Option<PathBuf>,
+    pub dry_run: bool,
+    pub force: bool,
+}
+
+pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
+    let mut a = ConvertArgs {
+        path: PathBuf::new(),
+        map: None,
+        out: None,
+        sandbox: Sandbox::Halo2,
+        base: None,
+        disc: None,
+        dry_run: false,
+        force: false,
+    };
+    let mut path = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = |what: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs {what}"))
+        };
+        match arg.as_str() {
+            "--out" => a.out = Some(value("a directory")?.into()),
+            "--disc" => a.disc = Some(value("the Halo 2 disc")?.into()),
+            "--base" => a.base = Some(value("a Halo 2 map name")?),
+            "--sandbox" => {
+                a.sandbox = match value("h2 or h1")?.as_str() {
+                    "h2" => Sandbox::Halo2,
+                    "h1" => Sandbox::Halo1,
+                    other => return Err(format!("--sandbox is h2 or h1, not {other}")),
+                }
+            }
+            "--dry-run" => a.dry_run = true,
+            "--force" => a.force = true,
+            s if s.starts_with("--") => return Err(format!("unknown option {s}")),
+            _ if path.is_none() => path = Some(PathBuf::from(arg)),
+            _ if a.map.is_none() => a.map = Some(arg.clone()),
+            _ => return Err(format!("unexpected argument {arg}")),
+        }
+    }
+    a.path = path.ok_or("missing the Halo 1 disc or map")?;
+    if a.out.is_none() && !a.dry_run {
+        return Err("--out is needed unless --dry-run".into());
+    }
+    Ok(a)
+}
+
+/// The Halo 1 map's file bytes as stored (for its hash) and the map.
+fn read_source(path: &Path, map: Option<&str>) -> Result<(Vec<u8>, H1Map)> {
+    crate::safe_out::protect(path);
+    let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let bytes = match Xiso::open(BufReader::new(f)) {
+        Ok(mut iso) => {
+            let name = map.context("a disc needs a map name, such as beavercreek")?;
+            let d = Disc::open(&mut iso)?;
+            let e = d
+                .map(name)
+                .with_context(|| format!("no map {name} on the disc"))?
+                .clone();
+            if e.size > MAP_MAX {
+                bail!("{} is {} bytes, too big for a map", e.path, e.size);
+            }
+            iso.read(&e)?
+        }
+        Err(_) => {
+            if map.is_some() {
+                bail!(
+                    "{} is not a disc image, so it takes no map name",
+                    path.display()
+                );
+            }
+            std::fs::read(path)?
+        }
+    };
+    let m = H1Map::from_reader(Cursor::new(bytes.as_slice()))
+        .with_context(|| path.display().to_string())?;
+    Ok((bytes, m))
+}
+
+/// A Halo 2 map's bytes from the disc.
+fn read_h2_map(disc: &Path, name: &str) -> Result<Vec<u8>> {
+    crate::safe_out::protect(disc);
+    let f = File::open(disc).with_context(|| format!("opening {}", disc.display()))?;
+    let mut iso = Xiso::open(BufReader::new(f))?;
+    let e = iso
+        .entries()?
+        .into_iter()
+        .find(|e| {
+            e.path
+                .rsplit(['/', '\\'])
+                .next()
+                .is_some_and(|f| f.eq_ignore_ascii_case(&format!("{name}.map")))
+        })
+        .with_context(|| format!("no {name}.map on {}", disc.display()))?;
+    Ok(iso.read(&e)?)
+}
+
+fn convert(args: &[String]) -> Result<()> {
+    let a = parse_convert(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
+    let (file, h1) = read_source(&a.path, a.map.as_deref())?;
+    let h1_name = h1.header().name.clone();
+    let base_name = a
+        .base
+        .clone()
+        .or_else(|| known(&h1_name).map(|k| k.1.to_owned()))
+        .unwrap_or_else(|| "beavercreek".into());
+    let disc = match &a.disc {
+        Some(d) => d.clone(),
+        None => std::env::var_os("H2_DISC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")),
+    };
+    let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
+        .with_context(|| format!("reading {base_name}.map"))?;
+    let sha = content::Sha256::of(&file);
+    let p = prepare(&h1, sha, &mut base, a.sandbox)?;
+    let name = map_name(&h1_name);
+    let vertices: usize = p.sections.iter().map(|s| s.vertices.len()).sum();
+    let triangles: usize = p.sections.iter().map(|s| s.indices.len() / 3).sum();
+    println!(
+        "{h1_name} ({}) onto {base_name}, {} sandbox, as {name}",
+        p.display_name,
+        a.sandbox.name()
+    );
+    println!(
+        "  structure: {} cluster(s), {vertices} vertices, {triangles} triangles, {} materials, \
+         {} collision materials, {} collision surfaces{}",
+        p.sections.len(),
+        p.materials.len(),
+        p.collision_materials,
+        p.collision.surfaces.len(),
+        if p.flipped { ", winding flipped" } else { "" }
+    );
+    let [spawns, flags, items] = p.applied.counts;
+    println!(
+        "  placements: {spawns} spawns, {flags} flags, {items} items; {} base placements removed, \
+         {} base trigger volumes moved out of the level",
+        p.applied.removed, p.trigger_volumes
+    );
+    for u in p.applied.unresolved.iter().chain(&p.dropped) {
+        println!("  not placed: {u}");
+    }
+    let mopp = structure_mopp(&p.collision);
+    let dir = a.out.as_ref().map(|o| o.join(&name));
+    let where_ = dir
+        .as_ref()
+        .map_or_else(|| "<--out>".into(), |d| d.display().to_string());
+    if a.dry_run {
+        println!(
+            "would write {where_}/manifest.toml and {where_}/{}",
+            h1convert::convert::variant_file(&h1_name, a.sandbox)
+        );
+        if let Err(e) = mopp {
+            println!("but would refuse: {e}");
+        }
+        return Ok(());
+    }
+    let mopp = mopp?;
+    let done = p.build(&mut base, &mopp)?;
+    let out = OutDir::new(a.out.clone().expect("checked"), a.force)?.protecting(&a.path);
+    // One package per map; this run's variant beside any other already
+    // there (docs/game/h1-multiplayer.md, "Package").
+    let manifest_path = dir
+        .as_ref()
+        .expect("checked")
+        .join(content::manifest::MANIFEST_FILE);
+    let mut manifest = done.manifest.clone();
+    if let Some(old) = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|t| content::Manifest::from_toml(&t).ok())
+    {
+        let ours = a.sandbox.name();
+        manifest.variants.extend(
+            old.variants
+                .into_iter()
+                .filter(|v| v.origin.sandbox != ours),
+        );
+        manifest
+            .variants
+            .sort_by(|x, y| x.origin.sandbox.cmp(&y.origin.sandbox));
+    }
+    let file = done.manifest.variants[0].file.clone();
+    let parts: Vec<String> = std::iter::once(name.clone())
+        .chain(file.split('/').map(str::to_owned))
+        .collect();
+    let map_file = out.write(&parts, &done.bytes)?;
+    let manifest = out.write(
+        &[name.clone(), content::manifest::MANIFEST_FILE.to_owned()],
+        manifest.to_toml().as_bytes(),
+    )?;
+    println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
+    println!("wrote {}", manifest.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_convert_arguments() {
+        let a = parse_convert(&s(&[
+            "h1.iso",
+            "beavercreek",
+            "--out",
+            "o",
+            "--sandbox",
+            "h2",
+        ]))
+        .unwrap();
+        assert_eq!(a.path, PathBuf::from("h1.iso"));
+        assert_eq!(a.map.as_deref(), Some("beavercreek"));
+        assert_eq!(a.out, Some(PathBuf::from("o")));
+        assert_eq!(a.sandbox, Sandbox::Halo2);
+        assert!(!a.dry_run && !a.force && a.base.is_none() && a.disc.is_none());
+        let a = parse_convert(&s(&[
+            "x.map",
+            "--dry-run",
+            "--base",
+            "lockout",
+            "--sandbox",
+            "h1",
+        ]))
+        .unwrap();
+        assert!(a.dry_run && a.out.is_none());
+        assert_eq!(
+            (a.base.as_deref(), a.sandbox),
+            (Some("lockout"), Sandbox::Halo1)
+        );
+        assert!(parse_convert(&s(&["x.map"])).unwrap_err().contains("--out"));
+        assert!(parse_convert(&s(&["x.map", "--sandbox", "h3", "--dry-run"])).is_err());
+        assert!(parse_convert(&s(&["x.map", "--out"])).is_err());
+        assert!(parse_convert(&s(&["--dry-run"])).is_err());
+        assert!(parse_convert(&s(&["a", "b", "c", "--dry-run"])).is_err());
     }
 
     #[test]

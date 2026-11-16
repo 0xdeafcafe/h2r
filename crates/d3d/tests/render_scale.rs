@@ -1723,3 +1723,208 @@ fn lighting_changes_at_a_frame_boundary() {
         assert_eq!(shadow_answers(&mut d, &mut m), plain_answers, "{scale}x");
     }
 }
+
+// --- E3 lighting through Halo's render-target pool ------------------------
+//
+// In a level the shadow map shares its memory with the colour levels the
+// frame's later passes draw into (a 320x240 and two 160x120 `LIN_A8R8G8B8`
+// levels over the 512x512 `LIN_D24S8` map; docs/graphics/d3d.md,
+// "Overlapping levels on the GPU"). So between one frame's shadow pass and
+// the next, a colour level is drawn over the map's bytes, the device moves
+// the map into the alias mirror (`mirror_store`), and binding the map again
+// fills it from there (`mirror_load`), which leaves the view's copy stale
+// until the shadow pass clears it. Here a 16x16 colour level over the 32x32
+// map's first rows stands for the pool.
+
+/// The colour level over the map's first 1 KiB, and its texture.
+const POOL_TEX: u32 = MISC + 0x5660;
+const POOL_COLOR: u32 = MISC + 0x5680;
+const POOL: u32 = 16;
+
+fn pool_header(m: &mut SparseMemory) {
+    use d3d::resource::SurfaceHeader;
+    let pitch = POOL * 4;
+    // LIN_A8R8G8B8 (0x12), 2D.
+    let fmt = (2 << 4) | (0x12 << 8) | (1 << 16);
+    let size = (POOL - 1) | ((POOL - 1) << 12) | ((pitch / 64 - 1) << 24);
+    for (i, w) in [0x0004_0001, SMAP_DATA, 0, fmt, size].iter().enumerate() {
+        m.write_u32(POOL_TEX + 4 * i as u32, *w).unwrap();
+    }
+    let mut h = SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, POOL, POOL, pitch, SMAP_DATA);
+    h.pixels.format = fmt;
+    h.pixels.size = size;
+    h.parent = POOL_TEX;
+    h.write(m, POOL_COLOR).unwrap();
+}
+
+/// A later pass of the frame (bloom, say): a triangle into the pool's
+/// colour level, over the shadow map's bytes. The back buffer is the
+/// target again after it.
+fn pool_pass<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
+    let back = device_field(m, d3d::layout::device_field::RENDER_TARGET);
+    d.set_render_target(m, POOL_COLOR, 0).unwrap();
+    set_states(d, m);
+    z_state(m, false, false, Z_ALWAYS);
+    let mut bytes = Vec::new();
+    for (x, y) in [
+        (0.0, 0.0),
+        (2.0 * POOL as f32, 0.0),
+        (0.0, 2.0 * POOL as f32),
+    ] {
+        bytes.extend(vertex(x, y, 0xFF40_8020));
+    }
+    m.write(0x8000_0000 | VB_DATA, &bytes).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, bytes.len() as u32);
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    bind_quad(d, m);
+    d.draw_vertices(m, 5 /* TRIANGLELIST */, 0, 3).unwrap();
+    d.set_render_target(m, back, 0).unwrap();
+}
+
+/// `frames` frames of Halo's order: shadow pass, then the pool's pass,
+/// then the swap; the last frame stops after its shadow pass, so the
+/// back buffer holds its shadows (the pool's bytes are the map's first
+/// rows, so [`shadow_answers`] covers them).
+fn pool_scene<B: Backend>(backend: B, frames: u32) -> (Device<B>, SparseMemory) {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    smap_headers(&mut m);
+    pool_header(&mut m);
+    for f in 0..frames {
+        shadow_pass(&mut d, &mut m, true);
+        if f + 1 < frames {
+            pool_pass(&mut d, &mut m);
+            d.swap(&mut m, 0).unwrap();
+        }
+    }
+    (d, m)
+}
+
+/// The view's image of the back buffer, and its error against the
+/// caster ([`shadow_error`]).
+fn view_shadows(d: &mut Device<Scaled>, scale: u32) -> (Vec<u8>, (u32, u32)) {
+    let bb = d.back_buffer().unwrap();
+    let v = d.backend.view_surface(&bb).expect("the view is awake");
+    let (px, size) = pixels(d.backend.view_mut(), v);
+    assert_eq!(size, (W * scale, H * scale));
+    let err = shadow_error(size.0, size.1, scale, |x, y| {
+        let i = ((y * size.0 + x) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2], px[i + 3]]
+    });
+    (px, err)
+}
+
+/// Whether host pixel `(x, y)` at `scale` is within two map texels of
+/// the caster's outline (retail's 2x2 filter reaches one).
+fn near_outline(x: u32, y: u32, scale: u32) -> bool {
+    let s = scale as f32;
+    let p = ((x as f32 + 0.5) / s / 2.0, (y as f32 + 0.5) / s / 2.0);
+    let [a, b, c] = CASTER;
+    [(a, b), (b, c), (c, a)].iter().any(|&(a, b)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let (ex, ey) = (a.0 + t * dx - p.0, a.1 + t * dy - p.1);
+        ex * ex + ey * ey < 4.0
+    })
+}
+
+/// Through the pool, as in a level: the map goes into the alias mirror
+/// and back every frame, and every frame's shadows are still drawn from
+/// the view's scaled copy with one tap (the image is the single-pass
+/// scene's exactly, no refill), different from retail's at the shadow
+/// edges and only there. The guest's answers (the map and so the pool,
+/// the colour level, device memory) and the reference's frame are the
+/// plain backend's; retail through the wrapper draws nothing extra.
+#[test]
+fn e3_shadow_maps_survive_halos_render_target_pool() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    const FRAMES: u32 = 3;
+    let (mut plain, mut pm) = pool_scene(GfxBackend::new(share(&ctx)), FRAMES);
+    let st = plain.stats();
+    assert!(
+        st.mirror_stores >= FRAMES as u64 && st.mirror_loads >= FRAMES as u64 - 1,
+        "the map goes through the alias mirror: {st:?}"
+    );
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    assert_eq!(argb(&plain_px, 60, 60), 0xFFFF_FFFF);
+    assert_eq!(argb(&plain_px, 20, 24), 0);
+    let plain_answers = shadow_answers(&mut plain, &mut pm);
+    for scale in [1, 2, 4] {
+        // E3 through the pool against the single-pass scene.
+        let (mut once, _) = shadow_scene(e3(&ctx, scale), true);
+        let (want, _) = view_shadows(&mut once, scale);
+        let (mut d, mut m) = pool_scene(e3(&ctx, scale), FRAMES);
+        let st = d.stats();
+        assert!(st.mirror_loads >= FRAMES as u64 - 1, "{scale}x: {st:?}");
+        let (px, (wrong, grey)) = view_shadows(&mut d, scale);
+        assert_eq!(grey, 0, "{scale}x: one tap");
+        assert!(
+            px == want,
+            "{scale}x: the pool's last frame is the single pass's image ({wrong} off the outline)"
+        );
+        let s = d.backend.stats();
+        assert_eq!(
+            (s.shadow_draws, s.shadow_textures, s.shadow_refills),
+            (FRAMES as u64, FRAMES as u64, 0),
+            "{scale}x: every frame drawn and sampled at {}x: {s:?}",
+            scale.max(2)
+        );
+        assert_eq!(
+            (s.view_errors, s.fallback_frames, s.mismatches),
+            (0, 0, 0),
+            "{scale}x: {s:?}"
+        );
+        let bb = d.back_buffer().unwrap();
+        let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+        assert!(ref_px == plain_px, "{scale}x: the reference");
+        assert_eq!(
+            shadow_answers(&mut d, &mut m),
+            plain_answers,
+            "{scale}x: what the guest reads"
+        );
+        if scale == 1 {
+            continue;
+        }
+        // Retail at the same scale: filtered edges where E3's are hard.
+        let (mut r, mut rm) = pool_scene(scaled(&ctx, scale), FRAMES);
+        let (retail_px, (retail_wrong, retail_grey)) = view_shadows(&mut r, scale);
+        assert!(retail_grey > 0, "{scale}x: retail's 2x2 filter");
+        assert!(
+            wrong < retail_wrong,
+            "{scale}x: E3 {wrong}, retail {retail_wrong} off the outline"
+        );
+        let w = W * scale;
+        let mut differ = 0;
+        for (i, (a, b)) in px.chunks(4).zip(retail_px.chunks(4)).enumerate() {
+            if a != b {
+                let (x, y) = (i as u32 % w, i as u32 / w);
+                assert!(
+                    near_outline(x, y, scale),
+                    "{scale}x: ({x}, {y}) differs away from the shadow's edges"
+                );
+                differ += 1;
+            }
+        }
+        assert!(differ > 0, "{scale}x: E3 and retail differ at the edges");
+        eprintln!("{scale}x: {differ} host pixels differ from retail, all at the shadow's edges");
+        let s = r.backend.stats();
+        assert_eq!(
+            (s.shadow_draws, s.shadow_textures),
+            (0, 0),
+            "{scale}x retail: {s:?}"
+        );
+        assert!(r.backend.shadow_copies().is_empty());
+        assert_eq!(
+            shadow_answers(&mut r, &mut rm),
+            plain_answers,
+            "{scale}x retail"
+        );
+    }
+}

@@ -42,8 +42,9 @@ impl Installed {
 /// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
 /// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
 /// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
-/// too when the scale is 1. Halo's frame wait goes through
-/// `d3d::register_frame_wait` either way.
+/// too when the scale is 1. `H2_BOOT_GFX_SHADOWS=N` also writes the first
+/// N frames that sample a shadow map (`d3d_diag::samples_shadow_map`).
+/// Halo's frame wait goes through `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_with(rt, Headless::default()),
@@ -58,12 +59,24 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
+            // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
+            // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
+            // in every run of the same input), whatever `every` says.
+            let shadow_shots: u64 = std::env::var("H2_BOOT_GFX_SHADOWS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
             let shots = |suffix: &'static str| {
                 let dir = dir.clone();
                 let mut swaps = 0u64;
+                let mut shadows = 0u64;
                 move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
-                    if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
+                    let shadow =
+                        shadows < shadow_shots && crate::d3d_diag::samples_shadow_map(swaps);
+                    shadows += u64::from(shadow);
+                    if !shadow && (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every)
+                    {
                         return;
                     }
                     if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}{suffix}.png"))) {
