@@ -30,7 +30,7 @@ use runtime::GuestFault;
 use runtime::guest::Permissions;
 
 use crate::layout_glue::chosen_row;
-use crate::list_class::{self, ListClass, TextBlock};
+use crate::list_class::{self, ListClass, ListLayout, PictureSpec, TextBlock};
 use crate::skulls_menu::{self, SkullsScreen, TITLE_ID};
 use crate::skulls_mp::{self, SCREEN_SLOT, SCREEN_WINDOW, VARIANT_ROW};
 
@@ -41,12 +41,18 @@ pub const MP_FEATURE: &str = "skulls-mp-screen";
 /// The row (`features.skulls-mp-row` switches it).
 pub const ROW_FEATURE: &str = "skulls-mp-row";
 
-/// The multiplayer screen's class, with the campaign screen's description
-/// block and picture.
-pub fn mp_class(screen: Arc<SkullsScreen>, block: TextBlock) -> ListClass {
+/// The multiplayer screen's class, with the campaign page's layout,
+/// description block and picture.
+pub fn mp_class(
+    screen: Arc<SkullsScreen>,
+    block: TextBlock,
+    layout: ListLayout,
+    picture: PictureSpec,
+) -> ListClass {
     ListClass::with_rows(MP_FEATURE, MP_SCREEN, screen)
         .description(block)
-        .picture(skulls_menu::PICTURE)
+        .picture(picture)
+        .layout(layout)
 }
 
 /// Whether the row's hooks are on the plan: the list is grown only then.
@@ -253,8 +259,13 @@ mod tests {
     fn the_row_and_the_class_are_on_the_plan() {
         let mut r = feature::Registry::new(feature::Switches::defaults());
         let s = screen();
-        r.add(&mp_class(Arc::clone(&s), skulls_menu::DESCRIPTION_TEXT))
-            .unwrap();
+        r.add(&mp_class(
+            Arc::clone(&s),
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
+        ))
+        .unwrap();
         r.add(&VariantRow(s)).unwrap();
         let text = r.build(&feature::Base).unwrap().text();
         for line in [

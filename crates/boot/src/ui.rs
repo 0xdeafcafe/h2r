@@ -166,6 +166,9 @@ pub enum Chosen {
     Stepped(String),
     /// Open this screen.
     Open(&'static str),
+    /// Run the screen's own action (`list_class::ListClass::action`): the
+    /// Skulls page's Start row.
+    Act,
     /// Not a row of ours.
     Nothing,
 }
