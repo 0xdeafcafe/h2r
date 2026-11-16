@@ -10,6 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_probe;
@@ -731,6 +732,10 @@ pub fn run_hosted_with_live(
     });
     let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
+    // magnetism at each map load, from the Aim Assist setting (Auto: Strong
+    // while the touch controls show). Headless runs keep retail.
+    aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));

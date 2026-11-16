@@ -46,6 +46,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [controller-layouts.md](input/controller-layouts.md): the retail button layouts and the extra ones we add
 - [button-icons.md](input/button-icons.md): button glyphs that follow the device in use (Xbox 360, PlayStation, keyboard; `H2_ICONS`)
 - [steam-controller.md](input/steam-controller.md): Steam Controllers over raw HID, trackpad aim and haptics (`H2_STEAM_*`)
+- [ios.md](runtime/ios.md#controls): the iOS touch controls (`input::touch`, `TouchControls.swift`) and their settings
 - [keyboard-charset.md](input/keyboard-charset.md): design for extending the on-screen keyboard's characters (not built)
 
 ## Graphics (`graphics/`)
@@ -109,6 +110,7 @@ goals, the two-stage plan, the crate table and milestones.
 ## Game features and enhancements (`game/`)
 
 - [settings-menu.md](game/settings-menu.md) (**start here**): the expanded settings menu, the Video screen, FOV, the settings schema and the `H2_*` flag map
+- [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built

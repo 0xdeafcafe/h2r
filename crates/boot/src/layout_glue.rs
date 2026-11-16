@@ -1739,7 +1739,7 @@ mod tests {
         // A retail Controls row saves nothing new.
         let before = std::fs::read_to_string(&path).unwrap();
         assert_eq!(model.row(List::Controls, 5), None);
-        assert_eq!(model.row(video_screen::LIST, 5), None);
+        assert_eq!(model.row(video_screen::LIST, 6), None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         // The next run reads them all back.
         let next = load();

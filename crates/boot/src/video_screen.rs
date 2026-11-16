@@ -1,7 +1,7 @@
 //! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
 //! (after Player Profiles and Game Variants) that opens a Controls screen
 //! holding our video rows (Field of View, Frame Rate, Resolution,
-//! Lighting, Mute Button: every setting whose `Def` names this screen, through the `ui`
+//! Lighting, Mute Button, Aim Assist: every setting whose `Def` names this screen, through the `ui`
 //! model) instead of the retail six. See docs/game/settings-menu.md "Video
 //! screen" for the trace.
 //!
@@ -35,7 +35,10 @@ use std::sync::Arc;
 use settings::Store;
 
 use crate::layout_glue::{Gm, ID_BASE};
-use crate::setting_defs::{FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER};
+use crate::setting_defs::{
+    FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_CROUCH, TOUCH_GYRO,
+    TOUCH_LOOK,
+};
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
 
@@ -60,12 +63,18 @@ pub const LIST: List = List::Screen(SCREEN);
 pub const MODEL_IDS: Range<u32> = ID_BASE + 0x40..ID_BASE + 0xff;
 
 /// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_STEAM_ROWS`,
-/// `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs out.
+/// `H2_NO_TOUCH_ROWS`, `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs
+/// out. On iOS the touch controls' rows take the Steam Controller's place
+/// (no Steam Controller reaches an iPhone or iPad); elsewhere there are no
+/// touch controls, so no touch rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switches {
     pub speaker_row: bool,
     /// The Steam Controller's three rows on Controls, after the speaker's.
     pub steam_rows: bool,
+    /// The touch controls' three rows on Controls (iOS), after the
+    /// speaker's: look speed, crouch, gyro.
+    pub touch_rows: bool,
     pub fov_row: bool,
     pub video_screen: bool,
 }
@@ -74,6 +83,7 @@ impl Switches {
     pub const ALL: Switches = Switches {
         speaker_row: true,
         steam_rows: true,
+        touch_rows: false,
         fov_row: true,
         video_screen: true,
     };
@@ -82,12 +92,16 @@ impl Switches {
         let off = |k: &str| std::env::var_os(k).is_some();
         Switches {
             speaker_row: !off("H2_NO_SPEAKER_ROW"),
-            steam_rows: !off("H2_NO_STEAM_ROWS"),
+            steam_rows: !IOS && !off("H2_NO_STEAM_ROWS"),
+            touch_rows: IOS && !off("H2_NO_TOUCH_ROWS"),
             fov_row: !off("H2_NO_FOV_ROW"),
             video_screen: !off("H2_NO_VIDEO_SCREEN"),
         }
     }
 }
+
+/// The touch controls' rows replace the Steam Controller's here.
+const IOS: bool = cfg!(target_os = "ios");
 
 /// The retail Settings list: its screen id, its datum array's name (VA)
 /// and row count, its row text (thiscall, item at `[esp+4]`, `ret 8`) and
@@ -124,6 +138,13 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             .row(Row::setting(STEAM_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID))
             .row(Row::setting(STEAM_SENSITIVITY.key))
             .row(Row::setting(STEAM_LEFT_PAD.key));
+    }
+    // The iOS touch controls' rows (docs/runtime/ios.md).
+    if on.touch_rows {
+        controls = controls
+            .row(Row::setting(TOUCH_LOOK.key))
+            .row(Row::setting(TOUCH_CROUCH.key))
+            .row(Row::setting(TOUCH_GYRO.key));
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
     Model::new(store, vec![video], vec![controls, settings], MODEL_IDS)
@@ -265,7 +286,8 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -277,7 +299,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 4);
+        assert_eq!(no_fov.rows(LIST).len(), 5);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
         // No Video screen: no Video row on Settings either.
@@ -298,11 +320,43 @@ mod tests {
                 video_screen: false,
                 speaker_row: false,
                 steam_rows: false,
+                touch_rows: false,
                 fov_row: true,
             },
         )
         .unwrap();
         assert_eq!(bare.count(List::Controls, 6), 6);
+    }
+
+    /// iOS: the touch controls' rows where Steam's would be, drawn with
+    /// their values and stepped by a press.
+    #[test]
+    fn the_touch_rows_take_the_steam_rows_place_on_ios() {
+        let ios = Switches {
+            steam_rows: false,
+            touch_rows: true,
+            ..Switches::ALL
+        };
+        let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
+        assert_eq!(
+            m.count(List::Controls, 6),
+            10,
+            "the speaker's and the touch rows"
+        );
+        assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
+        assert_eq!(drawn(&m, List::Controls, 8), s("Touch Crouch", "Toggle"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Gyro Aim", "0"));
+        assert_eq!(drawn(&m, List::Controls, 10), None);
+        assert_eq!(
+            m.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
+            None
+        );
+        const { assert!(!Switches::ALL.touch_rows, "no touch controls off iOS") };
+        if cfg!(target_os = "ios") {
+            assert_eq!(Switches::from_env(), ios);
+        } else {
+            assert!(!Switches::from_env().touch_rows);
+        }
     }
 
     #[test]
@@ -415,7 +469,8 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
         assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "On"));
-        assert_eq!(drawn(&m, LIST, 5), None);
+        assert_eq!(drawn(&m, LIST, 5), s("Aim Assist", "Auto"));
+        assert_eq!(drawn(&m, LIST, 6), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -510,7 +565,7 @@ mod tests {
             ]
         );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(press(&m, LIST, 5), Chosen::Nothing);
+        assert_eq!(press(&m, LIST, 6), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 10), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
