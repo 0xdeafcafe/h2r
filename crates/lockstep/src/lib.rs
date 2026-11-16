@@ -21,8 +21,7 @@ use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use runtime::exec::OriginalHandler;
-use runtime::{Guest, Runtime, TransferAbi, abi, guest::Permissions};
+use runtime::{Guest, Runtime};
 
 /// RAM is hashed in chunks of this many bytes, so a divergence can name
 /// where in physical memory it is.
@@ -385,22 +384,17 @@ pub fn compare(a: &Trace, b: &Trace) -> Verdict {
 pub struct TickHook {
     /// The tick function (called once per simulated tick).
     pub entry: u32,
-    /// A private, otherwise unused page address for the observer's call back
-    /// into the original (mapped read-execute by [`install_tick_observer`]).
-    pub shadow: u32,
     /// The guest word holding a pointer to the game-time record, whose
     /// `+8` is the tick count. `None`: no game tick in the records.
     pub game_time: Option<u32>,
 }
 
 impl TickHook {
-    /// Halo 2: `game_tick` `0x00137fe0`, the game-time pointer at
-    /// `0x00510c54` (docs/high-framerate.md section 1). Shadow page
-    /// `0xa0ff9000` (boot's shadow list is in crates/boot/src/lib.rs).
+    /// Halo 2: `game_tick` and the game-time pointer, from the points table
+    /// (docs/high-framerate.md section 1).
     pub const HALO2: TickHook = TickHook {
-        entry: 0x0013_7fe0,
-        shadow: 0xa0ff_9000,
-        game_time: Some(0x0051_0c54),
+        entry: engine::points::GAME_TICK.base,
+        game_time: Some(engine::points::GAME_TIME.base),
     };
 }
 
@@ -471,80 +465,60 @@ impl Recorder {
     }
 }
 
-/// Wraps the guest's tick function: the original runs unchanged, and when it
-/// returns `recorder` hashes RAM before the caller continues.
+/// The tick observer as a feature (`lockstep`): after each `game_tick`
+/// returns, `recorder` hashes RAM before the caller continues. It is a
+/// read-only listener on the `frame` bridge, so it shares the tick with
+/// Live telemetry (docs/feature-engine.md).
 ///
-/// The original return address is popped and the call goes through
-/// `hook.shadow`, so during the tick the guest stack slot holds the
-/// continuation token instead of the caller's address, and the observer's
-/// own transfers count against the slice budget. Both are the same in every
-/// run that has the observer on. Fails when the tick has no generated
-/// original or something else already overrides it (Live telemetry wraps
-/// the same function).
+/// The tick runs through the plan's shadow entry, so during the tick the
+/// guest stack slot holds the continuation token instead of the caller's
+/// address, and the chain's own transfers count against the slice budget.
+/// Both are the same in every run with the same plan.
+pub struct TickObserver(pub Arc<Recorder>);
+
+impl feature::Feature for TickObserver {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("lockstep", "Per-tick guest RAM hashes")
+            .doc("docs/high-framerate.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        let recorder = Arc::clone(&self.0);
+        b.frame().on_tick("hash", move |o| {
+            let clock = o.clock();
+            recorder.record(Kind::Tick, &o.guest(), clock);
+        });
+        Ok(())
+    }
+}
+
+/// Installs [`TickObserver`] alone, with the tick at `hook.entry`: for
+/// harnesses that have no other features (the synthetic guest). Fails when
+/// the tick has no generated original or an override the plan did not
+/// place is already there.
 pub fn install_tick_observer(
     rt: &Runtime,
     hook: TickHook,
     recorder: Arc<Recorder>,
 ) -> Result<(), String> {
-    // resolve_original takes the dispatch read lock: not under edit_dispatch.
-    let original = || {
-        rt.resolve_original(hook.entry).ok_or_else(|| {
-            format!(
-                "lockstep: the tick function {:#x} has no generated original",
-                hook.entry
-            )
-        })
-    };
-    let (via_shadow, fallback): (OriginalHandler, OriginalHandler) = (original()?, original()?);
-    rt.memory()
-        .map_zeroed(hook.shadow, runtime::guest::PAGE_SIZE, Permissions::RX)
-        .map_err(|e| {
-            format!(
-                "lockstep: mapping the shadow page {:#x}: {e:?}",
-                hook.shadow
-            )
-        })?;
-    rt.edit_dispatch(|d| {
-        for a in [hook.entry, hook.shadow] {
-            if let Some(name) = d.override_name(a) {
-                return Err(format!("lockstep: {a:#x} is already overridden ({name})"));
-            }
-        }
-        let entry = hook.entry;
-        let _ = d.register_override(hook.shadow, "lockstep tick original", move |cpu, ctx, _| {
-            Ok(via_shadow.invoke(cpu, ctx, entry))
-        });
-        let _ = d.register_override(hook.entry, "lockstep tick observer", move |cpu, ctx, _| {
-            let Ok(return_pc) = ctx.memory().u32(cpu.esp) else {
-                return Ok(fallback.invoke(cpu, ctx, entry));
-            };
-            cpu.esp = cpu.esp.wrapping_add(4);
-            let recorder = Arc::clone(&recorder);
-            let transfer = {
-                let runtime = Arc::clone(ctx.runtime());
-                let mut memory = runtime.memory();
-                ctx.call_guest(cpu, &mut memory, hook.shadow, move |_cpu, ctx| {
-                    let clock = ctx.runtime().guest_time();
-                    let runtime = Arc::clone(ctx.runtime());
-                    recorder.record(Kind::Tick, &runtime.memory(), clock);
-                    Ok(TransferAbi::ret(return_pc))
-                })
-            };
-            match transfer {
-                Ok(t) if t.kind != abi::FAULT => Ok(t),
-                _ => {
-                    cpu.esp = cpu.esp.wrapping_sub(4);
-                    Ok(fallback.invoke(cpu, ctx, entry))
-                }
-            }
-        });
-        Ok(())
-    })
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    r.add(&TickObserver(recorder))
+        .map_err(|e| format!("lockstep: {e}"))?;
+    let addrs = feature::Remap::new(&[(&engine::points::GAME_TICK, hook.entry)]);
+    let plan = r.build(&addrs).map_err(|c| {
+        let c: Vec<String> = c.iter().map(|c| c.to_string()).collect();
+        format!("lockstep: {}", c.join("; "))
+    })?;
+    let installed = plan.install(rt).map_err(|e| format!("lockstep: {e}"))?;
+    match installed.off_reason("lockstep") {
+        Some(why) => Err(format!("lockstep: {why}")),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime::guest::Permissions;
 
     fn guest_with(pages: &[(u32, u32)]) -> Guest {
         let mut g = Guest::new();

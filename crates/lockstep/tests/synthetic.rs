@@ -164,3 +164,46 @@ fn the_observer_refuses_a_tick_someone_else_wraps() {
     let bare = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
     assert!(install_tick_observer(&bare, synthetic::HOOK, Recorder::new(None)).is_err());
 }
+
+/// The tick collision, fixed: Live telemetry's sample used to make the
+/// observer refuse the tick. Now both listen on the `frame` bridge and the
+/// trace is the one the observer makes alone.
+#[test]
+fn the_hash_shares_the_tick_with_another_listener() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let alone = record(walk).0.trace;
+
+    let mut toy = Toy::new();
+    let recorder = Recorder::new(synthetic::HOOK.game_time);
+    let samples = std::sync::Arc::new(AtomicU32::new(0));
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    r.add(&lockstep::TickObserver(std::sync::Arc::clone(&recorder)))
+        .unwrap();
+    let s = std::sync::Arc::clone(&samples);
+    r.add(&feature::from_fn("live-telemetry", move |b| {
+        let s = std::sync::Arc::clone(&s);
+        b.frame().on_tick("sample", move |_| {
+            s.fetch_add(1, Ordering::Relaxed);
+        });
+        Ok(())
+    }))
+    .unwrap();
+    let addrs = feature::Remap::new(&[(&engine::points::GAME_TICK, synthetic::TICK)]);
+    r.build(&addrs).unwrap().install(&toy.runtime).unwrap();
+    let (mut tap, _) = InputRecorder::new();
+    for f in 0..FRAMES {
+        let (mut status, mut packet) = (0, walk(f));
+        tap.read(HANDLE, &mut status, &mut packet);
+        toy.set_input(&packet);
+        toy.frame();
+        recorder.record_presents(u64::from(f) + 1, &toy.runtime.memory(), Some(toy.clock()));
+    }
+    assert_eq!(samples.load(Ordering::Relaxed), FRAMES);
+    assert_eq!(
+        compare(&alone, &recorder.trace()),
+        Verdict::Identical {
+            records: alone.records.len()
+        }
+    );
+    assert_eq!(alone.ticks(), FRAMES as usize);
+}

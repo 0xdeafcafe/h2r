@@ -2221,6 +2221,8 @@ dependencies = [
 name = "lockstep"
 version = "0.1.0"
 dependencies = [
+ "engine",
+ "feature",
  "input",
  "runtime",
  "xapi",
