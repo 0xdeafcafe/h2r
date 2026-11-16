@@ -348,8 +348,9 @@ pub struct ResolvedDraw {
     pub state: DrawState,
     /// The raw state words the translation came from: everything the guest
     /// set, including what `DrawState` does not model (combiner registers,
-    /// deferred states, ...).
-    pub raw: Box<StateWords>,
+    /// deferred states, ...). Shared with the device's pushed snapshot,
+    /// so a draw does not copy the arrays.
+    pub raw: std::sync::Arc<StateWords>,
     /// Stage state outside `TextureStageState` (alpha kill, colour sign,
     /// bump environment, colour key).
     pub extras: [StageExtras; 4],

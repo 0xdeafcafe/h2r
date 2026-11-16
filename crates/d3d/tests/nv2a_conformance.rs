@@ -400,7 +400,7 @@ impl Gpu {
                 pixel_shader,
                 combiner_state,
             },
-            raw: Box::new(words.clone()),
+            raw: std::sync::Arc::new(words.clone()),
             viewport: Viewport {
                 x: 0,
                 y: 0,

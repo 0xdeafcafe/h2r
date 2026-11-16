@@ -110,7 +110,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
             final_combiner_latch: psdef[8] | psdef[9] != 0,
             affine_projection: false,
         },
-        raw: Box::new(words),
+        raw: std::sync::Arc::new(words),
         viewport: Viewport {
             x: 0,
             y: 0,

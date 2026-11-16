@@ -14,6 +14,10 @@
 //! game thread pays per draw with `H2_RENDER_THREAD` (queueing each backend
 //! call), timed without the render thread's own work.
 //!
+//! A third run puts the real shader judge (`Nv2aJudge`, what `GfxBackend`
+//! judges with) behind the render thread, so the guest's side pays for
+//! deciding each draw's outcome as it does in the game.
+//!
 //! `cargo bench -p d3d --bench pushbuf` prints ms per frame. Env:
 //! `H2_BENCH_FRAMES` (default 200), `H2_BENCH_DRAWS` (default 1200).
 
@@ -36,6 +40,55 @@ struct NullBackend {
     next: u32,
     draws: u64,
     sink: u64,
+    /// With `judged`: the real shader judge (`Nv2aJudge`) answers each
+    /// draw, as `GfxBackend` does, so the render thread runs it on the
+    /// guest's side too.
+    judged: bool,
+    verdicts: Option<Box<dyn d3d::shader::ShaderJudge>>,
+}
+
+impl NullBackend {
+    fn judged() -> Self {
+        Self {
+            judged: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// `GfxJudge`'s provider half: every view sampleable, every draw routed
+/// to the provider.
+struct BenchJudge(Box<dyn d3d::shader::ShaderJudge>);
+
+fn nv2a_judge() -> Box<dyn d3d::shader::ShaderJudge> {
+    use d3d::shader::ShaderProvider;
+    d3d::nv2a::Nv2aShaders::new()
+        .judge(gfx::translate::Capabilities::ALL)
+        .expect("nv2a judges")
+}
+
+fn verdict(
+    j: &mut dyn d3d::shader::ShaderJudge,
+    d: &ResolvedDraw,
+    views: [Option<bool>; 4],
+) -> DrawOutcome {
+    let present = std::array::from_fn(|i| d.texture_info[i].is_some() && views[i] == Some(true));
+    match j.check(d, present) {
+        Ok(()) => DrawOutcome::Drawn,
+        Err(e) => DrawOutcome::Skipped(e),
+    }
+}
+
+impl d3d::backend::DrawJudge for BenchJudge {
+    fn upload_view(&self, _: &DecodedTexture) -> bool {
+        true
+    }
+    fn surface_view(&self, _: D3DFormat) -> bool {
+        true
+    }
+    fn draw(&mut self, d: &ResolvedDraw, views: [Option<bool>; 4]) -> DrawOutcome {
+        verdict(&mut *self.0, d, views)
+    }
 }
 
 impl Backend for NullBackend {
@@ -67,7 +120,15 @@ impl Backend for NullBackend {
     ) -> Result<DrawOutcome, String> {
         self.draws += 1;
         self.sink += d.vertex_count as u64 + d.indices.as_ref().map_or(0, |i| i.len() as u64);
+        if self.judged {
+            let j = self.verdicts.get_or_insert_with(nv2a_judge);
+            let views = std::array::from_fn(|i| d.texture_info[i].map(|_| true));
+            return Ok(verdict(&mut **j, d, views));
+        }
         Ok(DrawOutcome::Drawn)
+    }
+    fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
+        self.judged.then(|| Box::new(BenchJudge(nv2a_judge())) as _)
     }
     fn present(&mut self, _: u32, _: u32) -> Result<(), String> {
         Ok(())
@@ -338,4 +399,22 @@ fn main() {
         w.throttle_wait.as_secs_f64() * 1e3,
         w.busy.as_secs_f64() * 1e3,
     );
+
+    // The same with the real shader judge, as the game runs it: the
+    // guest's side decides each draw's outcome before queueing it.
+    let (mut d, mut m) = setup(ThreadedBackend::new(NullBackend::judged()).unwrap());
+    let (total, times) = run(&mut d, &mut m, frames, draws);
+    report(
+        "pushbuf bench, render thread with the shader judge (guest side)",
+        frames,
+        draws,
+        total,
+        &times,
+    );
+    let skips = d
+        .take_events()
+        .iter()
+        .filter(|e| matches!(e, d3d::Event::DrawSkipped { .. }))
+        .count();
+    println!("skipped draws {skips}  misses {}", d.backend.misses());
 }

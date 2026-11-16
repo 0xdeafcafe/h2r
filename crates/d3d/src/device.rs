@@ -699,7 +699,7 @@ pub struct Device<B: Backend> {
     immediate: Immediate,
     consumed: u32,
     /// State as the GPU has seen it (see the module docs).
-    pushed: Option<StateWords>,
+    pushed: Option<Arc<StateWords>>,
     /// A latched push-buffer failure.
     fault: Option<String>,
     swap_count: u32,
@@ -817,7 +817,7 @@ struct DrawParts {
     streams: Vec<StreamBytes>,
     /// Indices into `streams` (indexed draws).
     indices: Option<IndexData>,
-    words: StateWords,
+    words: Arc<StateWords>,
 }
 
 impl<B: Backend> Device<B> {
@@ -1146,7 +1146,7 @@ impl<B: Backend> Device<B> {
         mem.write_u32(l.dirty_flags, 0)?;
         let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
         defaults.write(mem, &l)?;
-        self.pushed = Some(defaults);
+        self.pushed = Some(Arc::new(defaults));
         if pp_device != 0 {
             mem.write_u32(pp_device, dev)?;
         }
@@ -1789,14 +1789,14 @@ impl<B: Backend> Device<B> {
     // ---------------------------------------------------------------------
 
     fn refresh_pushed(&mut self, mem: &dyn GuestMemory) -> Result<(), D3dError> {
-        self.pushed = Some(self.state(mem)?);
+        self.pushed = Some(Arc::new(self.state(mem)?));
         Ok(())
     }
 
-    fn pushed_state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
+    fn pushed_state(&self, mem: &dyn GuestMemory) -> Result<Arc<StateWords>, D3dError> {
         match &self.pushed {
             Some(s) => Ok(s.clone()),
-            None => self.state(mem),
+            None => Ok(Arc::new(self.state(mem)?)),
         }
     }
 
@@ -1810,7 +1810,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         mem.write_u32(self.cfg.layout.render_state_slot(guest_slot), value)?;
         if let Some(p) = &mut self.pushed {
-            p.render[guest_slot as usize] = value;
+            Arc::make_mut(p).render[guest_slot as usize] = value;
         }
         Ok(())
     }
@@ -1879,7 +1879,7 @@ impl<B: Backend> Device<B> {
             self.refresh_pushed(mem)?;
         }
         let p = self.pushed.as_mut().expect("just set");
-        p.render[slot as usize] = value;
+        Arc::make_mut(p).render[slot as usize] = value;
         Ok(())
     }
 
@@ -1929,7 +1929,7 @@ impl<B: Backend> Device<B> {
         }
         mem.write_u32(self.cfg.layout.texture_state_slot(stage, state), value)?;
         if let Some(p) = &mut self.pushed {
-            p.stages[stage as usize][state as usize] = value;
+            Arc::make_mut(p).stages[stage as usize][state as usize] = value;
         }
         Ok(())
     }
@@ -3754,7 +3754,7 @@ impl<B: Backend> Device<B> {
             indices: parts.indices,
             state,
             extras,
-            raw: Box::new(parts.words),
+            raw: parts.words,
             shader,
             viewport: self.viewport,
             clip: Some(clip),
@@ -3818,8 +3818,10 @@ impl<B: Backend> Device<B> {
 
     /// State for an API draw: D3D commits all pending state first, so the
     /// live arrays are what the GPU sees, and they become the pushed state.
-    fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
-        let s = self.state(mem)?;
+    /// The draw and the pushed snapshot share the words until either side
+    /// changes (a setter copies the snapshot then, `Arc::make_mut`).
+    fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<Arc<StateWords>, D3dError> {
+        let s = Arc::new(self.state(mem)?);
         self.pushed = Some(s.clone());
         Ok(s)
     }
