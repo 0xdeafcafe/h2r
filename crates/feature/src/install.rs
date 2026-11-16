@@ -212,6 +212,17 @@ impl Plan {
                     }
                 }
             }
+            for e in &self.entries {
+                if let Some(existing) = d.override_name(e.addr) {
+                    occupied = Some(InstallError::Occupied {
+                        addr: e.addr,
+                        point: e.label,
+                        existing: existing.to_owned(),
+                        features: vec![e.feature],
+                    });
+                    return;
+                }
+            }
         });
         if let Some(e) = occupied {
             return Err(e);
@@ -237,6 +248,15 @@ impl Plan {
                     out.placed.push(s);
                 }
                 place(d, c, body);
+            }
+            for e in self.entries.iter().filter(|e| !off_ids.contains(e.feature)) {
+                out.placed.push(e.addr);
+                let (run, addr) = (Arc::clone(&e.run), e.addr);
+                d.register_override(
+                    addr,
+                    format!("plan:entry:{}:{}", e.feature, e.label),
+                    move |cpu, ctx, _| crate::entry::start(&*run, cpu, ctx, addr),
+                );
             }
         });
         Ok(out)

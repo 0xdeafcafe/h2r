@@ -408,8 +408,11 @@ button when no flag or variable sets them.
 
 ### How the screen is made (Local, static reading of the retail XBE)
 
-The Video screen is a second Controls screen (screen 39) with our rows in
-its list. Nothing new is allocated by us and no tag is added.
+The Video screen is our own list class (docs/feature-engine.md "UI step
+b", `boot::list_class`): a screen built by the Controls constructor (screen
+39, so the Controls tag's layout) whose screen and list handler point at our
+copies of the Controls vtables. No tag is added and no retail function is
+patched for it; the rows below marked "before" describe what it replaced.
 
 | Address | Role | Evidence and what we do |
 |---|---|---|
@@ -419,13 +422,13 @@ its list. Nothing new is allocated by us and no tag is added.
 | `0x2b1da9` | its row chosen (thiscall, `ret 8`) | row 0 opens `0x2b19dc` (Player Profiles), row 1 `0x2b1b01` (Game Variants), through `0x149f1e`; any other row does nothing. Row 2 is ours: `0x149f1e(1 << player, 0x2b7714)` |
 | `0x230427` | the pane for a row (thiscall, the row, `ret 4`; no bounds check) | the tag has one pane per retail row; for row 2 the hook returns at once, so the shown pane stays (as for the Skulls row) |
 | `0x2b79f9` | the per-profile Settings list's row chosen (thiscall, `ret 8`) | row 0 calls `0x149f1e(1 << player, 0x2b7714)`: this is how Controls opens |
-| `0x149f1e` | open a screen: build a 0x20-byte request (`0x149f49`) and call its loader with it (stdcall, `ret 8`) | request `+0` 0, `+2` the player mask, `+4` 5, `+8` 4, `+0xc` 0, `+0x10..+0x1b` -1, `+0x1c` the loader. Controls' own dialogs (`0x2c8719`) build the same request. Our Video row calls it with the Controls loader |
-| `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`) |
+| `0x149f1e` | open a screen: build a 0x20-byte request (`0x149f49`) and call its loader with it (stdcall, `ret 8`) | request `+0` 0, `+2` the player mask, `+4` 5, `+8` 4, `+0xc` 0, `+0x10..+0x1b` -1, `+0x1c` the loader. Controls' own dialogs (`0x2c8719`) build the same request. Our Video row calls it with our class's loader, an entry at a feature-arena address |
+| `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`). Our loader does the same steps and, between construct and push, adopts the screen: vtables, the press record's function, the rows trimmed to the model's |
 | `0x2b7752` | Controls screen constructor (EDI = screen; request `+4`, `+8` and the `+2` word) | base screen `0x230451(39, ...)` with its list handler at `screen + 0x614`, vtable `0x45be30`, then the list handler constructor `0x2c84b8` |
-| `0x1a480d` → `0x16b650` | datum array constructor | copies the name it is given into the array (`+0`, 0x20 bytes). While our open call runs, the list hook gives the Controls list our name, "h2r video settings", and our row count. A list whose array has that name is a Video list; no table of screens to keep |
-| `0x2c8548`, `0x2c8719` | Controls row text and row chosen (thiscall on the list handler) | on a Video list every row is ours and the originals never run |
-| `0x24bb60` | "add items" | a Video list keeps the six retail item widgets (no extras) |
-| `0x22fda6` | build a screen's header (stdcall, the screen) | sets the tag's header string (`+0x2c`, `0x06000233` for Controls) through `0x253b1a`; for a Video screen the text hook swaps that id for our "Video" while it runs |
+| `0x1a480d` | datum array constructor | the Controls list hook may grow the array (the speaker row); adopting deletes the rows past ours. Before: the open call named the array "h2r video settings" to mark a Video list |
+| `0x2c8548`, `0x2c8719` | Controls row text and row chosen | never reached for a Video screen: list slot 20 and the press record point at our entries. Before: both hooks branched on the array name |
+| `0x24bb60` | "add items" | the speaker hook skips any handler whose vtable is not the Controls one, so ours keeps its six item widgets |
+| `0x22fda6` | build a screen's header | runs as retail; our screen slot 18 then sets our title on the header text widget (`screen + 0x80`, `0x253b1a`). Before: the text hook swapped the id while the header was built |
 
 **B returns to Settings.** The Video screen is opened by the same call,
 with the same request, that the Settings list uses for Player Profiles
