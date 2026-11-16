@@ -990,3 +990,85 @@ fn disc_maps_convert_open_and_find_their_source() {
         );
     }
 }
+
+/// A converted map's textures are its base's: every bitmap the converted
+/// Blood Gulch shares by name with Coagulation, its Halo 2 base, decodes
+/// to the same pixels through the editor's path (`scene::resource_files`,
+/// then `scene::decode_bitmap`). The converted map lives in memory and its
+/// source's disc location is only where the shared caches are found (not
+/// the base map), so its local raw pointers must be read from its bytes;
+/// read from that disc map's file instead, as `resource_files` did, they
+/// decode another map's bytes as pixels: the noise the viewport showed.
+/// Needs both discs.
+#[test]
+#[ignore = "needs the owner's Halo 1 and Halo 2 discs"]
+fn disc_converted_textures_decode_as_their_bases() {
+    use scenario_edit::scene::{decode_bitmap, resource_files};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let disc = |var: &str, file: &str| {
+        std::env::var_os(var).map_or_else(|| root.join("disc").join(file), PathBuf::from)
+    };
+    let t = Temp::new("convertpixels");
+    let mut app = app_with(&t);
+    app.session.build_scenes = false;
+    app.dispatch(Action::OpenSource(disc("H2_DISC", "halo2.iso")));
+    app.dispatch(Action::OpenSource(disc("H1_ISO", "halo1.iso")));
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    app.wait_convert();
+    assert_eq!(app.convert_error(), None);
+    let converted = app.session.source().unwrap().clone();
+    assert!(
+        converted.bytes.is_some(),
+        "a converted map opens from memory"
+    );
+    let maps = scenario_edit::MapSource::disc_maps(&disc("H2_DISC", "halo2.iso")).unwrap();
+    let find = |n: &str| maps.iter().find(|(m, _)| m == n).unwrap().1.clone();
+    let base = find("coagulation");
+    let shown_from = maps
+        .iter()
+        .find(|(_, s)| s.region == converted.region)
+        .map_or("?", |(n, _)| n.as_str());
+    let mut cmap = converted.open().unwrap();
+    let mut bmap = base.open().unwrap();
+    let (mut cfiles, mut bfiles) = (resource_files(&converted), resource_files(&base));
+    // The old reading: local pointers taken into the source's disc map.
+    let mut old = resource_files(&converted.base());
+    let bitm = map::FourCC(*b"bitm");
+    let named = |m: &map::Map<scenario_edit::save::MapReader>| -> Vec<(String, map::TagId)> {
+        m.tags()
+            .iter()
+            .filter(|t| t.group == bitm)
+            .filter_map(|t| Some((t.name.clone()?, t.id)))
+            .collect()
+    };
+    let base_tags = named(&bmap);
+    let (mut same, mut differ, mut old_differ) = (0, Vec::new(), 0);
+    for (name, id) in named(&cmap) {
+        let Some(&(_, bid)) = base_tags.iter().find(|(n, _)| *n == name) else {
+            continue;
+        };
+        let Some(want) = decode_bitmap(&mut bmap, &mut bfiles, bid) else {
+            continue;
+        };
+        if decode_bitmap(&mut cmap, &mut cfiles, id).as_ref() == Some(&want) {
+            same += 1;
+        } else {
+            differ.push(name.clone());
+        }
+        if decode_bitmap(&mut cmap, &mut old, id).is_none_or(|w| w != want) {
+            old_differ += 1;
+        }
+    }
+    eprintln!(
+        "bloodgulch (shared caches from {shown_from}): {same} bitmaps decode as Coagulation's, \
+         {} differ; read from {shown_from}'s file, {old_differ} would differ",
+        differ.len()
+    );
+    assert!(same > 20, "{same} bitmaps compared");
+    assert!(differ.is_empty(), "{differ:?}");
+    assert!(
+        old_differ > 0,
+        "the old reading agrees: the test proves nothing"
+    );
+}

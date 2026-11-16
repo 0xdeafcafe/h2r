@@ -232,7 +232,12 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   part's shader (`sbsp +0xa4`) gives its base map, the first bitmap of the
   compiled postprocess whose name reads as diffuse (the Live site's rule,
   docs/live/live-art.md). Bitmaps are decoded once by
-  `assets::decode_image`, shrunk to 512 a side, given a mip chain and
+  `assets::decode_image` (`scene::resource_files` gives it the map's own
+  file for local raw pointers: a map held in memory, a package or a
+  converted map, is read from its bytes, never from the disc map its
+  source names; a converted map's source names `shared`, whose bytes
+  drew as noise, `app::tests::disc_converted_textures_decode_as_their_bases`),
+  shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
   lightmaps) where no lightmap lights them.
 - **Lightmaps.** Each cluster's and instance's lightmap page (its `ltmp`

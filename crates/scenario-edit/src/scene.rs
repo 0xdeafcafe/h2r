@@ -472,7 +472,10 @@ pub fn model_to_world(m: &Marker, p: Vec3) -> Vec3 {
 }
 
 /// The files a map's raw pointers select, for `assets::decode_image`: the
-/// map's base on disk and the shared caches beside it.
+/// map itself and the shared caches beside it. A map held in memory (a
+/// package resolved over its base, or a converted map) is read from those
+/// bytes: its local raw offsets are its own, and the base map on disk (for a
+/// converted Halo 1 map, Coagulation or Beaver Creek) has other data there.
 pub fn resource_files(source: &MapSource) -> ResourceFiles {
     let mut files = ResourceFiles::new();
     let region = |s: &MapSource| -> Option<Region> {
@@ -491,9 +494,14 @@ pub fn resource_files(source: &MapSource) -> ResourceFiles {
             let _ = files.set(file, r);
         }
     };
-    set(ResourceFile::Local, &source.base());
+    if source.bytes.is_none() {
+        set(ResourceFile::Local, &source.base());
+    }
     for (file, s) in geometry::shared_sources(source) {
         set(file, &s);
+    }
+    if let Some(b) = &source.bytes {
+        files.set_bytes(ResourceFile::Local, b.clone());
     }
     files
 }
