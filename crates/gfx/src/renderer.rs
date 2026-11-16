@@ -607,6 +607,7 @@ impl Renderer {
                 layout,
                 vs_entry: "vs_main".into(),
                 fs_entry: "fs_main".into(),
+                count_entry: None,
             },
         );
         Self {
@@ -1329,8 +1330,12 @@ fn create_count_pipeline(
             alpha_to_coverage_enabled: false,
         },
         fragment: Some(wgpu::FragmentState {
-            module: fragment,
-            entry_point: Some("fs_count"),
+            module: if program.count_entry.is_some() {
+                &program.module
+            } else {
+                fragment
+            },
+            entry_point: Some(program.count_entry.as_deref().unwrap_or("fs_count")),
             compilation_options: Default::default(),
             targets: &targets,
         }),

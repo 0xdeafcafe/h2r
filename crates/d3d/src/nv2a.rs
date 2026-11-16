@@ -311,7 +311,10 @@ impl Nv2aShaders {
                 let bindings = self
                     .bindings
                     .get_or_insert_with(|| ProgramBindings::new(&ctx.device));
-                renderer.register_shader(id, bindings.program(&ctx.device, module, dims));
+                renderer.register_shader(
+                    id,
+                    registered_program(bindings, &ctx.device, module, dims, &key),
+                );
                 self.stats.prewarmed += 1;
                 if let Some(p) = self.persist.as_mut() {
                     p.ids.insert(id, (program_id(&key), key.clone()));
@@ -1628,8 +1631,31 @@ fn compile(
     report_warnings(id, &warnings);
     let module = module(&ctx.device, source);
     let id = ShaderId(id);
-    renderer.register_shader(id, bindings.program(&ctx.device, module, dims));
+    renderer.register_shader(
+        id,
+        registered_program(bindings, &ctx.device, module, dims, key),
+    );
     Ok(Compiled { id, dims, discards, warnings })
+}
+
+/// The registered program for `key`'s module. A W-buffered program writes
+/// its depth from the fragment stage, so its pixel-count pass must too
+/// (`shaders::psh::COUNT_DEPTH_ENTRY`): counted with the rasterized z, a
+/// visibility test compares a value the depth buffer does not hold. That
+/// was every lens flare in front of level geometry counting nothing and
+/// never showing (docs/d3d.md, "Visibility tests").
+fn registered_program(
+    bindings: &mut ProgramBindings,
+    device: &wgpu::Device,
+    module: wgpu::ShaderModule,
+    dims: StageDims,
+    key: &ProgramKey,
+) -> gfx::pipeline::ShaderProgram {
+    let mut p = bindings.program(device, module, dims);
+    if key.pixel_options.w_buffer {
+        p.count_entry = Some(shaders::psh::COUNT_DEPTH_ENTRY.into());
+    }
+    p
 }
 
 /// The WGSL module of a translated program.

@@ -112,6 +112,12 @@ pub struct PixelOptions {
     pub glyph: u8,
 }
 
+/// The fragment entry a W-buffered program ([`PixelOptions::w_buffer`])
+/// also has for a pixel-count pass (`gfx::occlusion`): it writes the depth
+/// `fs_main` writes and a colour of 1 in red, so the count tests the depth
+/// the draws stored (the interpolated w), not the rasterized z.
+pub const COUNT_DEPTH_ENTRY: &str = "fs_count_depth";
+
 fn is_zero(v: &u8) -> bool {
     *v == 0
 }
@@ -877,6 +883,11 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         // reciprocal is the perspective-correct w the NV2A stores
         // (xemu's z-perspective path in glsl/psh.c does the same). The
         // slope comes before any discard, in uniform control flow.
+        //
+        // `fs_count_depth` (COUNT_DEPTH_ENTRY) is the pixel-count pass's
+        // fragment for this program: the same depth, and 1 per fragment.
+        // Without it the count pass tests the rasterized z, which under
+        // W-buffering is not what the draws stored.
         s.push_str(
             r#"
 struct XpsOut {
@@ -884,13 +895,22 @@ struct XpsOut {
     @builtin(frag_depth) depth: f32,
 }
 
-@fragment
-fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> XpsOut {
-    let zw = 1.0 / v.position.w;
+fn xps_w_depth(position: vec4f) -> f32 {
+    let zw = 1.0 / position.w;
     let slope = max(abs(dpdx(zw)), abs(dpdy(zw)));
     let zc = clamp(zw + xps.depth.y + xps.depth.z * slope, xps.depth_range.x, xps.depth_range.y);
     let zq = select(zc, floor(zc), xps.depth.w != 0.0);
-    let depth = clamp(zq / xps.depth.x, 0.0, 1.0);
+    return clamp(zq / xps.depth.x, 0.0, 1.0);
+}
+
+@fragment
+fn fs_count_depth(@builtin(position) position: vec4f) -> XpsOut {
+    return XpsOut(vec4f(1.0, 0.0, 0.0, 0.0), xps_w_depth(position));
+}
+
+@fragment
+fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> XpsOut {
+    let depth = xps_w_depth(v.position);
     let r = xps_program(XpsInputs(v.d0, v.d1, v.b0, v.b1, v.t0, v.t1, v.t2, v.t3, v.fog, front));
 "#,
         );
