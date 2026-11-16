@@ -734,6 +734,7 @@ dependencies = [
  "anyhow",
  "audio",
  "bink-hle",
+ "content",
  "d3d",
  "dsound",
  "emit",
