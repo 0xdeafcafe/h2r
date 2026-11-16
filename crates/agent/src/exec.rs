@@ -315,6 +315,7 @@ impl Agent {
         if s.pending.is_empty() && !idle_work {
             if !s.waits.is_empty() {
                 s.settle_waits();
+                s.prune();
             }
             return;
         }
@@ -459,6 +460,14 @@ impl State {
             .chain(self.waits.iter().map(|w| w.conn))
             .collect();
         self.conns.retain(|id, c| !c.closing || busy.contains(id));
+        // Control never outlives its connection.
+        if self
+            .controller
+            .is_some_and(|c| !self.conns.contains_key(&c))
+        {
+            self.controller = None;
+            self.resume("released");
+        }
     }
 
     /// Answers queued requests. Between slices, world reads stay queued
@@ -547,6 +556,10 @@ impl State {
                 claimed: self.controller.is_some(),
             })),
             method::METHODS => Ok(Value::from(method::ALL.to_vec())),
+            method::CLAIM if self.conns.get(&conn).is_none_or(|c| c.closing) => Err(RpcError::new(
+                code::NOT_CONTROLLER,
+                "a closed connection can't take control",
+            )),
             method::CLAIM => match self.controller {
                 Some(c) if c != conn => Err(RpcError::new(
                     code::NOT_CONTROLLER,

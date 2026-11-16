@@ -709,3 +709,20 @@ fn non_requests_are_invalid_and_unknown_params_refused() {
     assert_eq!(v["error"]["code"], code::INVALID_PARAMS);
     assert!(v["error"]["message"].as_str().unwrap().contains("mapp"));
 }
+
+#[test]
+fn a_closed_connection_cannot_take_control() {
+    let a = Agent::new();
+    let (c1, rx1) = client(&a);
+    ask(&a, c1, 1, method::CLAIM, Value::Null);
+    ask(&a, c1, 2, method::PAUSE, json!({"max_ms": 60000}));
+    a.disconnect(c1);
+    a.between_slices(&mut level(), 0);
+    assert_eq!(next(&rx1)["error"]["code"], code::NOT_CONTROLLER);
+    assert_eq!(next(&rx1)["error"]["code"], code::NOT_CONTROLLER);
+    assert!(!a.is_paused());
+    let (c2, rx2) = client(&a);
+    ask(&a, c2, 3, method::CLAIM, Value::Null);
+    a.between_slices(&mut level(), 0);
+    assert_eq!(next(&rx2)["result"]["controller"], true);
+}
