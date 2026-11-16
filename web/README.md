@@ -40,14 +40,21 @@ either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
 `H2_MOCK_ACTORS=1` puts the mock campaign's AI and vehicles
-(`mock/campaign.ts`: about thirty actors and two vehicles, added by a frame
+(`mock/campaign.ts`: about thirty actors, two vehicles in use and three
+parked empty, and a `bsp` zone that changes every 25 s, added by a frame
 hook) into every game's frames; without it only games whose mode is
 `campaign` get them. `H2_MOCK_INDOOR=1` shuts each arena's glb inside a busy building (an
 inward-facing shell, partition walls, an upper floor, pillars and two
-"machines", over `bsp_<n>` and `machines` nodes), for trying the 3D view's
-cutaways. `H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
-`mock/models.ts`) to the art manifest, so the 3D view's model path runs;
-without it players are capsules, as on a server with no models.
+"machines", over two `bsp_<n>` zones and a `machines` node, plus a third
+zone marked cinematic-only and a `backdrop` of far hills), for trying the 3D
+view's cutaways and zones. `H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
+`mock/models.ts`) to the art manifest, so the 3D view's model path runs:
+the bipeds are skinned and carry a dozen clips (models version 2);
+`H2_MOCK_MODELS=static` makes them the static version 1 kind; without it
+players are capsules, as on a server with no models. Every game's frames
+carry stances, speeds, actions and hits (`mock/action.ts`: players jump,
+crouch, throw grenades, swing, reload, and hit who they fire at);
+`H2_MOCK_ACTION=0` leaves them out, like a sender from before they existed.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -256,8 +263,7 @@ under its `weapon` node, in the roster's colour: the glb's `COLOR_0` gives
 each vertex a primary weight (R, the player's colour) and a secondary one
 (G, a darker shade), and a model without it is tinted all over. Each glb is
 fetched once and cloned per player; team mates share the coloured mesh
-(`viewer/players3d.ts`). Nothing animates: the posed model glides and turns
-with the smoothed frames. It is life size up close and grows as the camera
+(`viewer/players3d.ts`). It is life size up close and grows as the camera
 backs away, up to the size capsules are drawn at. Without models (the mock
 by default, an older extraction) players stay capsules. Either way a faint
 ray from the head shows the aim (level along the yaw when the frame has
@@ -268,6 +274,50 @@ flash and up to three tracers along the aim that fade in 150 ms
 shot. With reduced motion nothing flashes: the aim ray turns bright while a
 player is firing instead. Recorded frames are one a second, so a replay
 shows a second's shots as one burst.
+
+**Animation, actions and damage (optional).** Frames may also say how each
+player and AI biped is moving (`stance`: stand, crouch, airborne, vehicle,
+dead; `speed`), what they just did (`actions`: grenade, melee, reload,
+jump, switch, pickup; `grenade`: the type), who hit whom (`hits`: attacker
+and victim as `p<index>` or an actor or vehicle id, the victim's position,
+an amount and a kind), every vehicle in the world with whether anyone is in
+it (`occupied`), and which zone of a campaign level is loaded (`bsp`). All
+optional; a frame without them draws as before.
+
+- *Clips.* A models table of version 2 has skinned bipeds whose glb carries
+  clips named `<weapon_class>:<state>`, and gives each weapon stem its
+  class. `viewer/anim.ts` (pure) picks the looping state from the stance
+  and speed (idle, walk, run, crouch, airborne, die; a sender without
+  speeds has them worked out from how far the player moved) and lays
+  one-shots over it (fire on a frame's shots, grenade, melee, reload,
+  switch from its actions, land on coming down); the clip is the held
+  weapon's class's, else the rifle's, the unarmed, or any class that has
+  the state, a missing loop falls back to a nearer one and a missing
+  one-shot isn't played. `BipedAnimator` (`viewer/players3d.ts`) plays them
+  on a three.js mixer per biped: loops cross-fade, walk and run are paced
+  to the ground speed, a one-shot outweighs the loop only on the bones it
+  moves, and a dying clip holds its last frame before the model goes. A
+  version 1 (static) model glides in its pose as before, a capsule squats
+  when crouched, and reduced motion leaves every model in its pose.
+- *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
+  A hit draws a line from attacker to victim that fades in a quarter of a
+  second, and a hit marker with the damage floating up from the victim for
+  under a second; sustained fire on one victim is one marker with a rising
+  number; the last hit before a victim is found dead is the kill: red,
+  ringed, bigger, and it stays longer. A grenade throw draws the arc of the
+  throw from the hand along the aim (the frames don't carry the grenade
+  itself, so it shows the throw, not where it bounced). The 3D view
+  (`viewer/effects3d.ts`) and both 2D maps draw them; with reduced motion
+  the numbers stay put, the line holds instead of flashing, and no grenade
+  flies.
+- *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
+  faint grey outline (2D) and has no label.
+- *Zones* (`viewer/zones.ts`). When a level's glb has `bsp_<n>` nodes, the
+  3D view shows only the one the frames name; with no `bsp` in the frames
+  (or one the glb lacks) it shows every zone not marked cinematic-only in
+  its node's extras, and never none at all. A `backdrop` node (far scenery)
+  is hidden. The toolbar gets "All zones" and "Backdrop" buttons when the
+  level has them; the camera and the lights fit the playable zones only.
 
 ## Architecture
 

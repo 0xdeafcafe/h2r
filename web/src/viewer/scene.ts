@@ -2,9 +2,13 @@
 // none) under a sun, with players as their species' model in their team or
 // own colour, holding their weapon (a capsule when the server has no
 // models), an aim ray from the head, name labels, muzzle flashes and
-// tracers when they fire, and fading knockout marks. Models don't animate:
-// they glide in the pose they were exported in. Game positions (z up) are
-// placed at glTF (x, z, -y), as the map geometry contract says.
+// tracers when they fire, damage drawn from attacker to victim, grenades
+// in flight, every vehicle in the world, and fading knockout marks. A
+// skinned model plays its clips (standing, walking, running, crouching, in
+// the air, throwing, hitting, reloading, firing) as the frames say; a
+// static one glides in the pose it was exported in. A campaign level shows
+// the zone the game has loaded. Game positions (z up) are placed at glTF
+// (x, z, -y), as the map geometry contract says.
 //
 // This file pulls in three.js, so it is only ever loaded lazily.
 
@@ -25,6 +29,10 @@ import { actorColour, bipedFile, modelScale, modelUrl, vehicleBasis, vehicleBox,
 import type { SampledVehicle } from "../state/frames";
 import { ModelLibrary, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
+import { BipedAnim, SpeedMeter, actionShot, clipFor, paceScale, weaponClass, type OneShot } from "./anim";
+import { EventFeed } from "../map/events";
+import { Effects3D } from "./effects3d";
+import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "./zones";
 import { cameraFit, markerScale, type Box3 } from "./camera";
 import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
 
@@ -65,9 +73,16 @@ interface PlayerObj {
   weaponName: string | null;
   /** An AI-controlled biped: no name label or aim ray unless asked for, and its model keeps its own colours. */
   actor: boolean;
+  /** What they are doing, for the model's clips (or the capsule's squat). */
+  anim: BipedAnim;
+  meter: SpeedMeter;
+  /** The last one-shot started on the model. */
+  shotId: number;
+  /** When they were first seen dead; null while alive. */
+  diedAt: number | null;
 }
 
-/** A vehicle with someone in it: its model, or a box of about its size. */
+/** A vehicle: its model, or a box of about its size; darker when nobody is in it. */
 interface VehicleObj {
   group: THREE.Group;
   box: THREE.Mesh;
@@ -114,6 +129,13 @@ export class ViewerScene {
   private library: ModelLibrary;
   private models: { root: string; table: PlayerModels } | null = null;
   private shots = new ShotQueue();
+  private feed = new EventFeed();
+  private effects: Effects3D;
+  // A campaign level's zones (`bsp_<n>` nodes) and far scenery, and which are shown.
+  private zones: Array<{ obj: THREE.Object3D; name: string; cinematic: boolean }> = [];
+  private bsp: number | null = null;
+  private allZones = false;
+  private backdrop = false;
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
   // Seeing into the level: a clipping plane that drops everything above a
@@ -214,6 +236,7 @@ export class ViewerScene {
     this.geoBeam = new THREE.CylinderGeometry(0.35, 1, 1, 5, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
     this.geoFlash = new THREE.OctahedronGeometry(1, 0).scale(1.7, 0.75, 0.75).translate(0.9, 0, 0);
     this.library = new ModelLibrary(() => { this.dirty = true; });
+    this.effects = new Effects3D(scene, this.camera);
 
     this.setBounds({ min: [-20, -20, 0], max: [20, 20, 4] }, false);
     this.frameCamera(true);
@@ -230,8 +253,13 @@ export class ViewerScene {
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
       // `machines` and its children), every mesh is found by walking it once.
-      const walk = (o: THREE.Object3D, names: string[]) => {
+      // The camera and the lights fit the playable level: not far scenery,
+      // nor a zone only a cutscene uses.
+      const assetExtras = (gltf.asset as { extras?: unknown } | undefined)?.extras;
+      const box = new THREE.Box3();
+      const walk = (o: THREE.Object3D, names: string[], aside = false) => {
         const path = o.name ? [...names, o.name] : names;
+        aside ||= isBackdrop(o.name) || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
         const role = meshRole(path);
         if (role === "hidden") { o.visible = false; return; }
         const mesh = o as THREE.Mesh;
@@ -252,13 +280,21 @@ export class ViewerScene {
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
+          if (!aside) box.expandByObject(mesh);
         }
-        for (const c of o.children) walk(c, path);
+        for (const c of o.children) walk(c, path, aside);
       };
+      root.updateWorldMatrix(true, true);
       walk(root, []);
-      const box = new THREE.Box3().setFromObject(root);
+      if (box.isEmpty()) box.setFromObject(root);
       if (box.isEmpty()) return false;
       this.clearMap();
+      // Zones and far scenery, wherever in the tree the glb keeps them.
+      root.traverse((o) => {
+        if (bspNumber(o.name) === null && !isBackdrop(o.name)) return;
+        this.zones.push({ obj: o, name: o.name, cinematic: isCinematic(o.userData, o.name, assetExtras) });
+      });
+      this.applyZones();
       this.map = root;
       this.scene.add(root);
       this.hasMap = true;
@@ -271,6 +307,26 @@ export class ViewerScene {
       return false;
     }
   }
+
+  /** Shows the zone the game has loaded (every playable one when the
+   *  frames don't say, or when asked for all), and the backdrop if wanted. */
+  private applyZones() {
+    const show = zoneVisibility(this.zones, this.allZones ? null : this.bsp, { backdrop: this.backdrop });
+    this.zones.forEach((z, i) => {
+      if (z.obj.visible !== show[i]) { z.obj.visible = show[i]!; this.dirty = true; }
+    });
+  }
+
+  /** What the level is split into, for the toolbar: how many zones, and whether it has a backdrop. */
+  zoneInfo(): { zones: number; backdrop: boolean; active: number | null } {
+    return { zones: this.zones.filter((z) => bspNumber(z.name) !== null).length, backdrop: this.zones.some((z) => isBackdrop(z.name)), active: this.bsp };
+  }
+
+  /** Every playable zone at once, instead of only the loaded one. */
+  setAllZones(on: boolean) { this.allZones = on; this.applyZones(); }
+
+  /** The far scenery around the playable space: hidden unless asked for. */
+  setBackdrop(on: boolean) { this.backdrop = on; this.applyZones(); }
 
   /** Gives a level material the height cut and the see-through. */
   private cutaway(m: THREE.Material) {
@@ -355,6 +411,7 @@ export class ViewerScene {
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
     this.map = null;
+    this.zones = [];
     this.hasMap = false;
   }
 
@@ -491,7 +548,7 @@ export class ViewerScene {
     p.label.removeFromParent();
     p.el.remove();
     // The model's parts belong to the library; the rest is this player's.
-    if (p.biped) p.turn.remove(p.biped.object);
+    if (p.biped) { p.biped.animator?.dispose(); p.turn.remove(p.biped.object); }
     disposeMaterials(p.group);
   }
 
@@ -518,17 +575,19 @@ export class ViewerScene {
     const file = m ? vehicleFile(m.table, v.kind) : null;
     const url = m && file ? modelUrl(m.root, file) : null;
     const template = url ? this.library.vehicle(url) : null;
-    const key = (template ? url : "box:" + v.kind) + "|" + (colour ?? "");
+    const empty = !v.occupied;
+    const key = (template ? url : "box:" + v.kind) + "|" + (empty ? "empty" : colour ?? "");
     if (key !== o.key) {
       if (o.model) o.group.remove(o.model);
-      o.model = template ? this.library.instantiateVehicle(template, colour) : null;
+      o.model = template ? this.library.instantiateVehicle(template, empty ? null : colour, empty) : null;
       if (o.model) o.group.add(o.model);
       o.box.visible = !o.model;
       const [len, wid, tall] = vehicleBox(v.kind);
       o.box.scale.set(len, tall, wid);
       // A box takes a little more of the colour than a model: it has nothing else to say.
-      o.boxMat.color.set(0x8a9199);
-      if (colour) o.boxMat.color.lerp(new THREE.Color(colour), 0.45);
+      // One nobody is in is darker: there, but not part of the fight.
+      o.boxMat.color.set(empty ? 0x4d545b : 0x8a9199);
+      if (colour && !empty) o.boxMat.color.lerp(new THREE.Color(colour), 0.45);
       o.height = template ? template.height : tall;
       o.key = key;
       o.kind = v.kind;
@@ -568,7 +627,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), shotId: 0, diedAt: -Infinity };
     this.players.set(index, p);
     return p;
   }
@@ -582,7 +641,7 @@ export class ViewerScene {
     const template = url ? this.library.biped(url) : null;
     const have = template ? url : null;
     if (have !== p.bipedUrl) {
-      if (p.biped) p.turn.remove(p.biped.object);
+      if (p.biped) { p.biped.animator?.dispose(); p.turn.remove(p.biped.object); }
       p.biped = template ? this.library.instantiateBiped(template, p.actor ? null : p.colour) : null;
       p.bipedUrl = have;
       p.weapon = null;
@@ -609,6 +668,48 @@ export class ViewerScene {
       p.weaponName = s.weapon;
       p.gun.textContent = weaponLabel(s.weapon);
     }
+  }
+
+  /** The class of clips a player's weapon calls for. */
+  private clipClass(s: SmoothPlayer): string {
+    return weaponClass(this.models?.table.classes, s.weapon);
+  }
+
+  /** Starts a one-shot (firing, a throw, a melee, a reload, a swap) on a
+   *  player: it lasts as long as their model's clip for it. */
+  private oneShot(index: number, state: OneShot, now: number) {
+    const p = this.players.get(index), s = this.shown.get(index);
+    if (!p || !s || !s.alive) return;
+    const an = p.biped?.animator;
+    const clip = an ? clipFor(an.names, this.clipClass(s), state) : null;
+    p.anim.trigger(state, now, an?.duration(clip) ?? undefined);
+  }
+
+  /** Moves a player's model through its clips for this moment; a capsule
+   *  can only squat. Reduced motion leaves the model in its pose. */
+  private animate(p: PlayerObj, s: SmoothPlayer, now: number, dt: number) {
+    const speed = s.speed ?? p.meter.update(s.x, s.y, dt);
+    const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed });
+    const squat = st.loop === "crouch" ? 0.7 : 1;
+    if (p.body.scale.y !== squat) { p.body.scale.y = squat; this.dirty = true; }
+    const an = p.biped?.animator;
+    if (!an || this.opts.reducedMotion) return;
+    const cls = this.clipClass(s);
+    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), st.loop === "die");
+    if (st.shotId !== p.shotId) {
+      p.shotId = st.shotId;
+      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot));
+    }
+    an.update(dt);
+    this.dirty = true;
+  }
+
+  /** How long a dead player's model stays to play its dying clip (ms); 0 when it has none. */
+  private dyingFor(p: PlayerObj, s: SmoothPlayer): number {
+    const an = p.biped?.animator;
+    if (!an || this.opts.reducedMotion) return 0;
+    const d = an.duration(clipFor(an.names, this.clipClass(s), "die"));
+    return d === null ? 0 : d + 700;
   }
 
   /** Where a player's shots leave from, in the scene: the weapon's muzzle,
@@ -699,8 +800,15 @@ export class ViewerScene {
 
     const snap = seeking || this.opts.reducedMotion;
     smoothPlayers(this.shown, frame.actors?.length ? [...frame.players, ...frame.actors] : frame.players, dt, { snap });
-    this.shots.observe(frame.players, now, { quiet: seeking });
-    if (frame.actors?.length) this.shots.observe(frame.actors, now, { quiet: seeking });
+    const fired = this.shots.observe(frame.players, now, { quiet: seeking });
+    if (frame.actors?.length) fired.push(...this.shots.observe(frame.actors, now, { quiet: seeking }));
+    for (const index of fired) this.oneShot(index, "fire", now);
+    for (const e of this.feed.observe(frame, now, { quiet: seeking })) {
+      const shot = actionShot(e.action);
+      if (shot) this.oneShot(e.index, shot, now);
+    }
+    const bsp = frame.bsp ?? null;
+    if (bsp !== this.bsp) { this.bsp = bsp; this.applyZones(); }
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
@@ -747,9 +855,14 @@ export class ViewerScene {
         if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
         continue;
       }
-      p.turn.visible = p.ring.visible = true;
-      p.ray.visible = !p.actor;
       this.dress(p, s);
+      if (s.alive) p.diedAt = null;
+      else if (p.diedAt === null) p.diedAt = seeking ? -Infinity : now;
+      // A model with a dying clip stays to play it; anything else is gone at once.
+      const show = s.alive || now - p.diedAt! < this.dyingFor(p, s);
+      p.turn.visible = true;
+      p.ring.visible = s.alive;
+      p.ray.visible = s.alive && !p.actor;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
@@ -760,8 +873,8 @@ export class ViewerScene {
         ? modelScale(this.camera.position.distanceTo(this.v0.set(x, y, z)), p.biped.height, S)
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
-      if (g.visible !== s.alive || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
-      g.visible = s.alive;
+      if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
+      g.visible = show;
       p.label.visible = s.alive && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
@@ -770,6 +883,7 @@ export class ViewerScene {
       p.ring.scale.setScalar(p.biped ? k * p.biped.height * 1.25 * (big ? 1.25 : 1) : k);
       p.label.position.y = p.biped ? p.biped.height * k * 1.08 + 0.12 * S : 1.15 * k;
       p.el.classList.toggle("on", big);
+      if (show) this.animate(p, s, now, dt);
       if (!s.alive || p.actor) continue;
       // The aim ray: from the eye point, along the eased aim. Reduced motion
       // has no flashes; the ray itself says "firing" for a moment instead.
@@ -798,6 +912,7 @@ export class ViewerScene {
       this.dirty = true;
     }
     this.drawShots(now);
+    if (this.effects.update(this.feed.liveHits(now), still ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
     this.updateCutaway(dt, highlight);
 
     frame.markers.forEach((m, i) => {
@@ -913,6 +1028,7 @@ export class ViewerScene {
     for (const o of this.vehicles.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
     this.vehicles.clear();
     this.geoBox.dispose();
+    this.effects.dispose();
     this.library.dispose();
     disposeTree(this.scene);
     this.scene.environment?.dispose();

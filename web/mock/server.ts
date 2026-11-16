@@ -9,7 +9,11 @@
 // way, in a manifest of its own when there is no game art;
 // H2_MOCK_MAP_GEOMETRY=0 turns it off, and then /art/game answers 404.
 // H2_MOCK_MODELS=1 adds stand-in player and weapon models (mock/models.ts:
-// block figures) to the manifest; without it players are capsules.
+// block figures, skinned, with a few animation clips) to the manifest;
+// H2_MOCK_MODELS=static makes them the static version 1 kind; without it
+// players are capsules.
+// H2_MOCK_ACTION=0 leaves stances, actions and damage (mock/action.ts) out
+// of the frames, like a sender from before they existed.
 // H2_MOCK_ACTORS=1 puts the campaign's AI and vehicles (mock/campaign.ts)
 // into every game's frames, not only games whose mode is "campaign".
 // H2_MOCK_INDOOR=1 shuts each arena's glb inside a busy building (walls, a
@@ -26,6 +30,7 @@ import { Sessions } from "./sessions";
 import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
 import { campaignHook } from "./campaign";
+import { actionHooks } from "./action";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -45,13 +50,19 @@ setInterval(() => sessions.step(), 2500);
 // AI and vehicles in the frames of campaign games; H2_MOCK_ACTORS=1 puts them in every game.
 const actorsEverywhere = !!process.env.H2_MOCK_ACTORS && process.env.H2_MOCK_ACTORS !== "0";
 world.frameHooks.push(campaignHook(actorsEverywhere ? () => true : undefined));
+// Stances, actions and damage in every game's frames (mock/action.ts); H2_MOCK_ACTION=0 leaves them out, like an old sender.
+if (process.env.H2_MOCK_ACTION !== "0") {
+  const action = actionHooks();
+  world.frameHooks.push(action.frame);
+  world.recordHooks.push(action.record);
+}
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
 const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
 const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor });
-const models = process.env.H2_MOCK_MODELS && process.env.H2_MOCK_MODELS !== "0" ? mockModels() : null;
+const models = process.env.H2_MOCK_MODELS && process.env.H2_MOCK_MODELS !== "0" ? mockModels(process.env.H2_MOCK_MODELS !== "static") : null;
 
 interface StreamData {
   kind: "stream";

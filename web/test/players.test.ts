@@ -193,14 +193,14 @@ describe("the manifest's models", () => {
     expect(parseModels(raw)).toEqual({
       bipeds: { spartan: "models/biped/spartan.glb", elite: "models/biped/elite.glb" },
       weapons: { battle_rifle: "models/weapon/battle_rifle.glb" },
-      vehicles: {},
+      vehicles: {}, objects: {}, classes: {},
     });
     expect(parseManifest({ version: 1, images: {}, models: raw })!.models).toEqual(parseModels(raw));
     expect(parseManifest({ version: 1, images: {} })!.models).toBeNull();
   });
 
   test("another version, nothing in it, or files outside the art are refused", () => {
-    expect(parseModels({ ...raw, version: 2 })).toBeNull();
+    expect(parseModels({ ...raw, version: 3 })).toBeNull();
     expect(parseModels({ version: 1, bipeds: {}, weapons: {} })).toBeNull();
     expect(parseModels(null)).toBeNull();
     expect(parseModels("models")).toBeNull();
@@ -216,8 +216,8 @@ describe("the manifest's models", () => {
     expect(bipedFile(m, null)).toBe("models/biped/spartan.glb");
     // No models, or no spartan to fall back on: the capsule.
     expect(bipedFile(null, "elite")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {} }, "brute")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {} }, "elite")).toBe("e.glb");
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {} }, "brute")).toBeNull();
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {}, objects: {}, classes: {} }, "elite")).toBe("e.glb");
     expect(weaponFile(m, "battle_rifle")).toBe("models/weapon/battle_rifle.glb");
     expect(weaponFile(m, "smg")).toBeNull();
     expect(weaponFile(m, null)).toBeNull();
@@ -322,10 +322,13 @@ describe("model glbs", () => {
     expect(t.regions).toBe(true);
     const head = findNode(t.root, "head")!, hand = findNode(t.root, "weapon")!;
     // The eye point is near the top and ahead of the feet; the hand is on the right (game -y is glTF +z).
-    expect(head.position.y).toBeGreaterThan(0.6);
-    expect(head.position.y).toBeLessThan(0.72);
-    expect(hand.position.x).toBeGreaterThan(0.1);
-    expect(hand.position.z).toBeGreaterThan(0);
+    // (They ride on the skeleton's joints, so it is where they are in the model that counts.)
+    t.root.updateWorldMatrix(true, true);
+    const eye = head.getWorldPosition(new THREE.Vector3()), grip = hand.getWorldPosition(new THREE.Vector3());
+    expect(eye.y).toBeGreaterThan(0.6);
+    expect(eye.y).toBeLessThan(0.72);
+    expect(grip.x).toBeGreaterThan(0.1);
+    expect(grip.z).toBeGreaterThan(0);
     // It stands on the origin.
     expect(new THREE.Box3().setFromObject(t.root).min.y).toBeCloseTo(0, 6);
   });

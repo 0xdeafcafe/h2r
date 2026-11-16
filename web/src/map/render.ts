@@ -6,6 +6,7 @@ import type { SampledPlayer, SampledVehicle } from "../state/frames";
 import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
 import type { LiveShot } from "./shots";
+import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "./events";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -38,7 +39,76 @@ export interface Scene {
   /** Players to show as firing with a steady, brighter aim line (reduced
    *  motion, where nothing flashes). */
   firing?: ReadonlySet<number>;
+  /** Reduced motion: nothing floats or flashes. */
+  still?: boolean;
+  /** Damage on screen now: a line from attacker to victim, a marker and a number. */
+  hits?: LiveHit[];
+  /** Grenades in flight: the arc of the throw. */
+  grenades?: Array<Grenade & { age: number; alpha: number }>;
 }
+
+type Px = readonly [number, number];
+
+/** Damage on a 2D map: a line from the attacker (`from`, when known) to
+ *  the victim at `to`, a tick-cross marker there, and the amount floating
+ *  up from it. A kill is red, bigger, and ringed. */
+export function drawHit(ctx: CanvasRenderingContext2D, from: Px | null, to: Px, h: LiveHit, still = false) {
+  const colour = hitColour(h);
+  const [x, y] = to;
+  ctx.lineCap = "round";
+  if (from && (still ? h.mark > 0 : h.line > 0)) {
+    ctx.globalAlpha = still ? 0.5 * h.mark : h.line;
+    for (const [style, w] of [["rgba(0, 0, 0, 0.6)", h.kill ? 4.5 : 3.5], [colour, h.kill ? 2.5 : 1.5]] as const) {
+      ctx.strokeStyle = style; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(x, y); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = Math.max(0, Math.min(1, h.mark));
+  // The marker: four ticks around the victim, like a hit marker.
+  const a = h.kill ? 7 : 5, b = h.kill ? 13 : 9;
+  for (const [style, w] of [["rgba(0, 0, 0, 0.8)", 4], [colour, 2]] as const) {
+    ctx.strokeStyle = style; ctx.lineWidth = w;
+    ctx.beginPath();
+    for (const [dx, dy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) { ctx.moveTo(x + dx * a, y + dy * a); ctx.lineTo(x + dx * b, y + dy * b); }
+    if (h.kill) { ctx.moveTo(x + b + 4, y); ctx.arc(x, y, b + 4, 0, Math.PI * 2); }
+    ctx.stroke();
+  }
+  if (h.text) {
+    ctx.font = `700 ${h.kill ? 13 : 11}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const ty = y - b - 8 - (still ? 0 : h.rise * 14);
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineJoin = "round";
+    ctx.strokeText(h.text, x, ty);
+    ctx.fillStyle = colour;
+    ctx.fillText(h.text, x, ty);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A thrown grenade on a 2D map: the path flown so far as a dashed line,
+ *  and the grenade at its end. `pts` are canvas points along the arc. */
+export function drawGrenade(ctx: CanvasRenderingContext2D, pts: readonly Px[], alpha: number, type: string | null) {
+  if (pts.length < 2 || !(alpha > 0)) return;
+  const colour = grenadeColour(type);
+  ctx.globalAlpha = Math.min(1, alpha);
+  ctx.lineCap = "round";
+  ctx.setLineDash([3, 4]);
+  for (const [style, w] of [["rgba(0, 0, 0, 0.6)", 3], [colour, 1.5]] as const) {
+    ctx.strokeStyle = style; ctx.lineWidth = w;
+    ctx.beginPath();
+    pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  const [x, y] = pts[pts.length - 1]!;
+  ctx.fillStyle = colour; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+/** The colour and look of a vehicle nobody is in: grey and faint. */
+export const EMPTY_VEHICLE_COLOUR = "#9aa3ab";
+export const EMPTY_VEHICLE_ALPHA = 0.5;
 
 /** The line a shot draws on a 2D map: from (x0, y0) to (x1, y1), bright at
  *  the player and fading out along its length, over a dark under-stroke so
@@ -235,7 +305,9 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     for (const veh of s.vehicles ?? []) {
       const [len, wid] = vehicleBox(veh.kind);
       const k = Math.max(v.scale, 9 / wid);
-      drawVehicle(ctx, sx(veh.x), sy(veh.y), Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, vehicleColour(veh.id, s.players, s.actors, s.roster));
+      if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;
+      drawVehicle(ctx, sx(veh.x), sy(veh.y), Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, veh.occupied ? vehicleColour(veh.id, s.players, s.actors, s.roster) : EMPTY_VEHICLE_COLOUR);
+      ctx.globalAlpha = 1;
     }
   }
   for (const a of s.actors ?? []) {
@@ -300,6 +372,12 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     if (!s.mini && info) drawLabel(ctx, pal, x, y, r, info.name);
   }
   ctx.globalAlpha = 1;
+
+  // Over everyone: grenades in flight, then damage.
+  if (!s.mini) {
+    for (const g of s.grenades ?? []) drawGrenade(ctx, grenadeTrail(g, g.age).map(([gx, gy]) => [sx(gx), sy(gy)] as const), g.alpha, g.type);
+    for (const hit of s.hits ?? []) drawHit(ctx, hit.from ? [sx(hit.from.x), sy(hit.from.y)] : null, [sx(hit.x), sy(hit.y)], hit, s.still);
+  }
 }
 
 /** A player's name in a small dark pill above their dot. */

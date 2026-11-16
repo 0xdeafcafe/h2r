@@ -43,6 +43,28 @@ export interface FramePlayer {
   weapon?: string | null;
   /** Shots the held weapon fired since this player's previous frame. */
   shots?: number | null;
+  /** "stand", "crouch", "airborne" (jumping or falling), "vehicle" or "dead". */
+  stance?: string | null;
+  /** Horizontal speed, game units a second. */
+  speed?: number | null;
+  /** One-shot actions started since their previous frame, in order:
+   *  "grenade", "melee", "reload", "jump", "switch", "pickup". */
+  actions?: string[] | null;
+  /** The grenade held or thrown: "frag" or "plasma". */
+  grenade?: string | null;
+}
+
+/** Damage dealt since the previous frame. */
+export interface FrameHit {
+  /** Attacker and victim: "p<index>" for a player, else an actor's or vehicle's id. */
+  from?: string | null;
+  to?: string | null;
+  weapon?: string | null;
+  /** Where the victim was. */
+  pos: [number, number, number];
+  amount?: number | null;
+  /** "bullet", "explosion", "melee", "fall", "vehicle"... */
+  kind?: string | null;
 }
 
 /** A vehicle with someone in it. A player's or actor's `vehicle` is its `id`. */
@@ -54,6 +76,8 @@ export interface FrameVehicle {
   /** Unit vectors, game coordinates (z up). */
   forward: [number, number, number];
   up: [number, number, number];
+  /** False for one nobody is in; older senders list only occupied ones and leave this out. */
+  occupied?: boolean | null;
 }
 
 /** An AI-controlled biped (campaign); only living ones are sent. */
@@ -69,6 +93,10 @@ export interface FrameActor {
   /** "covenant", "human", "flood", "sentinel", "prophet", "player", or a team index as text. */
   team?: string | null;
   vehicle?: string | null;
+  stance?: string | null;
+  speed?: number | null;
+  actions?: string[] | null;
+  grenade?: string | null;
 }
 
 export interface Frame {
@@ -77,6 +105,9 @@ export interface Frame {
   players: FramePlayer[];
   vehicles?: FrameVehicle[];
   actors?: FrameActor[];
+  hits?: FrameHit[];
+  /** The structure BSP the game has loaded (a campaign level's current zone). */
+  bsp?: number | null;
 }
 
 export interface PlayerScore {

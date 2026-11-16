@@ -38,6 +38,8 @@ export interface Arena {
   extra?: Tri[];
   /** The glb's bounds with `extra` counted in. */
   outer?: { min: V3; max: V3 };
+  /** Extras for the glb's nodes, by node name. */
+  nodeExtras?: Record<string, Record<string, unknown>>;
 }
 
 // ---- small vector helpers ----
@@ -257,7 +259,8 @@ export function buildArena(name: string): Arena | null {
  *  ceiling that faces inwards like a real level's structure (and is written
  *  double-sided, so only the viewer's culling opens it), partition walls
  *  with doorways, an upper floor over half the rooms and rows of pillars,
- *  split over two `bsp_<n>` nodes; and two outward-facing "device machines"
+ *  split over two `bsp_<n>` nodes (zones), a third marked cinematic-only,
+ *  a `backdrop` of far hills; and two outward-facing "device machines"
  *  under a `machines` node. Only the glb has these: the pre-drawn views
  *  stay the open arena. */
 export function enclose(a: Arena): Arena {
@@ -298,7 +301,17 @@ export function enclose(a: Arena): Arena {
   // Machines: ordinary closed models, facing outwards.
   add("machines/wheel", (b) => b.column((x0 + x1) / 2, (y0 + y1) / 2, 3.2, 3.2, upper + 1, upper + 2.2, 20, [0.75, 0.42, 0.2], "metal"));
   add("machines/dish", (b) => b.column(x0 + cw * 0.5, y0 + ch * 0.5, 0.4, 2.4, ground, ground + 2.6, 14, [0.3, 0.55, 0.7], "metal"));
-  return { ...a, extra, outer: { min: [x0, y0, floor - 0.5], max: [x1, y1, top] } };
+  // A zone only a cutscene uses (marked so in its node's extras): a stage hung over the middle.
+  add("bsp_2", (b) => b.box((x0 + x1) / 2 - 6, (y0 + y1) / 2 - 6, top - 2.5, (x0 + x1) / 2 + 6, (y0 + y1) / 2 + 6, top - 1.5, [0.8, 0.25, 0.6], "metal"));
+  // Far scenery: a ring of hills well outside the walls.
+  add("backdrop", (b) => {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, far = Math.max(x1 - x0, y1 - y0) * 1.1;
+    for (let i = 0; i < 12; i++) {
+      const t = (i / 12) * Math.PI * 2, tall = 14 + (i % 3) * 7;
+      b.column(cx + Math.cos(t) * far, cy + Math.sin(t) * far, 12, 2, floor - 0.5, floor + tall, 7, [0.36, 0.42, 0.34], "default");
+    }
+  });
+  return { ...a, extra, outer: { min: [x0, y0, floor - 0.5], max: [x1, y1, top] }, nodeExtras: { bsp_2: { cinematic: true } } };
 }
 
 // ---- glb ----
@@ -356,11 +369,11 @@ export function encodeGlb(a: Arena): Uint8Array {
    });
   }
   // A node per mesh; `machines/<name>` ones hang under one `machines` node.
-  const nodes: Array<{ name: string; mesh?: number; children?: number[] }> = [];
+  const nodes: Array<{ name: string; mesh?: number; children?: number[]; extras?: Record<string, unknown> }> = [];
   const roots: number[] = [];
   let machines: { name: string; children: number[] } | null = null;
   nodeNames.forEach((nodeName, i) => {
-    nodes.push({ name: meshes[i]!.name, mesh: i });
+    nodes.push({ name: meshes[i]!.name, mesh: i, ...(a.nodeExtras?.[nodeName] ? { extras: a.nodeExtras[nodeName] } : {}) });
     if (!nodeName.startsWith("machines/")) { roots.push(nodes.length - 1); return; }
     if (!machines) { machines = { name: "machines", children: [] }; }
     machines.children.push(nodes.length - 1);

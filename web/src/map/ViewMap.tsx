@@ -8,9 +8,10 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import { drawActor, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
+import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawActor, drawGrenade, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
 import { actorColour, vehicleBox } from "../viewer/models";
 import { ShotQueue } from "./shots";
+import { EventFeed, grenadeTrail } from "./events";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
   type MapViewDef, type MapViews, type PanZoom,
@@ -57,6 +58,7 @@ export default function ViewMap(props: {
   let engaged = false;
   const images = new Map<string, HTMLImageElement>();
   const shots = new ShotQueue();
+  const feed = new EventFeed();
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const def = (): MapViewDef => props.views.views.find((v) => v.id === props.view) ?? props.views.views[0]!;
@@ -231,7 +233,9 @@ export default function ViewMap(props: {
       if (!props.mini) for (const veh of f.vehicles ?? []) {
         const [px, py] = worldToPixel(m, veh.x, veh.y, veh.z), [fx, fy] = worldToPixel(m, veh.x + veh.forward[0], veh.y + veh.forward[1], veh.z + veh.forward[2]);
         const [len, wid] = vehicleBox(veh.kind), unit = Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k, k = Math.max(unit, 9 / wid);
-        drawVehicle(ctx, sx(px), sy(py), Math.atan2(fy - py, fx - px), len * k, wid * k, vehicleColour(veh.id, f.players, f.actors, roster));
+        if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;
+        drawVehicle(ctx, sx(px), sy(py), Math.atan2(fy - py, fx - px), len * k, wid * k, veh.occupied ? vehicleColour(veh.id, f.players, f.actors, roster) : EMPTY_VEHICLE_COLOUR);
+        ctx.globalAlpha = 1;
       }
       for (const a of f.actors ?? []) {
         if (!a.alive || a.vehicle) continue;
@@ -269,6 +273,13 @@ export default function ViewMap(props: {
       for (const q of placed) {
         const info = roster.get(q.p.index);
         if (info && (hover === q.p.index || highlight === q.p.index)) label(ctx, pal, q.x, q.y, r, info.name);
+      }
+      // Over everyone: grenades in flight and damage, plotted in the world like the shots.
+      if (!props.mini) {
+        feed.observe(f, now);
+        const at = (x: number, y: number, z: number) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)] as const; };
+        if (!still) for (const g of feed.liveGrenades(now)) drawGrenade(ctx, grenadeTrail(g, g.age).map((q) => at(...q)), g.alpha, g.type);
+        for (const hit of feed.liveHits(now)) drawHit(ctx, hit.from ? at(hit.from.x, hit.from.y, hit.from.z + 0.5) : null, at(hit.x, hit.y, hit.z), hit, still);
       }
     });
     onCleanup(() => {
