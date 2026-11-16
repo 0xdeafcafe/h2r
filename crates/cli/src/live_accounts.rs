@@ -1,6 +1,6 @@
 //! The local accounts file (`live/accounts.json`, 0600): one entry per
 //! account this machine holds a key for, on whichever server. `h2 live
-//! account create` and `import` write it, `h2 play --live` reads it, and
+//! account create` and `import` write it, `h2 play` reads it with Live on, and
 //! the game-side HLE answers sign-in from `xuid` and `gamertag`.
 //!
 //! An entry is `{xuid, gamertag, id, server, server_id, kid, key}` where

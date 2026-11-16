@@ -30,6 +30,36 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Halo 2's title ID, `4D530064`.
 pub const HALO_2_TITLE_ID: TitleId = TitleId(0x4D530064);
 
+/// The public Live service: what `h2 play --live` signs in to, and what the
+/// tvOS, iOS and Xbox apps use unless told otherwise (docs/live/live.md
+/// "Playing on Live"). The one place it is written; `$H2_LIVE_SERVER`
+/// replaces it for a run.
+pub const DEFAULT_SERVER: &str = "https://live.forbes.red";
+
+/// What `$H2_LIVE_SERVER` says about the server Live would use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerOverride {
+    /// Unset or blank: no change.
+    Unset,
+    /// `off`, `none` or `0`: Live off for this run.
+    Off(String),
+    /// This server instead (any trailing `/` dropped).
+    Url(String),
+}
+
+impl ServerOverride {
+    /// Reads the variable's value.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => ServerOverride::Unset,
+            Some(v) if matches!(v.to_ascii_lowercase().as_str(), "off" | "none" | "0") => {
+                ServerOverride::Off(v.to_string())
+            }
+            Some(v) => ServerOverride::Url(v.trim_end_matches('/').to_string()),
+        }
+    }
+}
+
 /// The downloadable file the game reads after sign-in (docs/live/live.md
 /// section 2). Published with [`HALO_2_TITLE_ID`] by `h2 live motd set`.
 pub const HALO_2_MOTD_FILE: &str = "message_of_the_day.dat";
@@ -622,6 +652,23 @@ pub fn valid_file_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_server_variable_overrides_or_turns_live_off() {
+        assert_eq!(DEFAULT_SERVER, "https://live.forbes.red");
+        assert_eq!(ServerOverride::parse(None), ServerOverride::Unset);
+        assert_eq!(ServerOverride::parse(Some("  ")), ServerOverride::Unset);
+        for off in ["off", "OFF", "none", " 0 "] {
+            assert!(
+                matches!(ServerOverride::parse(Some(off)), ServerOverride::Off(_)),
+                "{off}"
+            );
+        }
+        assert_eq!(
+            ServerOverride::parse(Some(" https://live.example/ ")),
+            ServerOverride::Url("https://live.example".into())
+        );
+    }
 
     #[test]
     fn gamertag_accepts_live_spellings() {

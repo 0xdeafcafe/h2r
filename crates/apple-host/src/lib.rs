@@ -6,8 +6,9 @@
 //!
 //! * [`h2host_start`] once, with the layer, its drawable size and the
 //!   bundle, Caches and (iOS) Documents paths: the shell
-//!   ([`app::embedded::Embedded`]) and the game (`boot::run_hosted`, as
-//!   `h2 play` runs it) start on a guest thread;
+//!   ([`app::embedded::Embedded`]) and the game (`boot::run_hosted_with_live`,
+//!   as `h2 play` runs it, but with Live on by default: `live_hle::platform`)
+//!   start on a guest thread;
 //! * [`h2host_redraw`] from a `CADisplayLink`;
 //! * [`h2host_resize`] when the drawable size changes, [`h2host_set_paused`]
 //!   when the app leaves or regains the screen;
@@ -67,6 +68,16 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
         // device last used, which picks the button icons (the remote's, or
         // a pad's), and carries the system keyboard's text.
         let keyboard = host.keyboard().cloned();
+        // Live: on against the public service unless live.toml or
+        // H2_LIVE_SERVER says otherwise; signed in, cloud saves too.
+        let (live, lines) = live_hle::platform::config(
+            &layout.data,
+            std::env::var("H2_LIVE_SERVER").ok().as_deref(),
+        );
+        for line in lines {
+            eprintln!("h2host: live: {line}");
+        }
+        let cloud = cloud_saves(&live, &layout.data, &store);
         let hosted = boot::Host {
             gfx: Some(gfx),
             gfx_view: None,
@@ -85,7 +96,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             between_slices: Some(Box::new(move |k: &kernel::Kernel| {
                 host.tick(k.clock().counter()) == app::Control::Continue
             })),
-            on_vfs: None,
+            on_vfs: cloud.as_ref().map(|c| c.on_vfs()),
         };
         let opts = boot::RunOpts {
             disc: layout.disc.clone(),
@@ -99,8 +110,10 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             dsound: true,
             xapi: true,
         };
-        let r = boot::run_hosted(&xbe, &layout.module, &opts, hosted);
+        let r = boot::run_hosted_with_live(&xbe, &layout.module, &opts, hosted, &live);
         vfs::flush_pending_metadata();
+        // Pushes what is still waiting.
+        drop(cloud);
         let r = r?;
         for l in &r.kernel_log {
             eprintln!("DbgPrint: {}", l.trim_end());
@@ -113,6 +126,56 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
         eprintln!("last eip: {:#010x}", r.eip);
         Ok(())
     })
+}
+
+/// Cloud saves for the account signed in to `live`'s server: its saves
+/// merged into `data` now, before the game reads them, and pushed as it
+/// writes. `None`, with a line, when Live is off, no account is set up yet,
+/// `H2_CLOUD_SAVES=0`, or the server is not reached: the game plays with
+/// the saves on this device.
+fn cloud_saves(
+    live: &boot::LiveConfig,
+    data: &Path,
+    store: &Arc<settings::Store>,
+) -> Option<cloud_saves::session::Cloud> {
+    let say = |line: &str| eprintln!("h2host: cloud saves: {line}");
+    let entry = live_hle::platform::account(live)?;
+    if !cloud_saves::session::enabled(std::env::var("H2_CLOUD_SAVES").ok().as_deref()) {
+        say("off (H2_CLOUD_SAVES); saves stay on this device");
+        return None;
+    }
+    let (api, server_id) = match live_hle::account_setup::discover(&entry.server) {
+        Ok(found) => found,
+        Err(e) => {
+            say(&format!(
+                "{} not reached ({e}); saves stay on this device",
+                entry.server
+            ));
+            return None;
+        }
+    };
+    if server_id != entry.server_id {
+        say(&format!(
+            "{} is another server now; saves stay on this device",
+            entry.server
+        ));
+        return None;
+    }
+    let key = live_proto::sign::KeyPair::from_private_jwk(&entry.key.private_jwk()).ok()?;
+    let settings: Arc<dyn cloud_saves::local::ProfileSettings> = store.clone();
+    cloud_saves::session::start(
+        cloud_saves::session::SignedIn {
+            server: entry.server,
+            api,
+            server_id,
+            xuid: entry.xuid,
+            gamertag: entry.gamertag,
+            key,
+        },
+        data,
+        Some(settings),
+        say,
+    )
 }
 
 /// The default output device, or a sink nobody plays if it will not open
@@ -439,6 +502,35 @@ pub extern "C" fn h2host_overlay_wanted(physical_pads: u32, keyboard_shown: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The app builds play on Live by default (the public service), and
+    /// sync nothing until an account is set up; live.toml turns Live off.
+    #[test]
+    fn live_is_on_by_default_and_saves_wait_for_an_account() {
+        let data = std::env::temp_dir().join(format!("h2host-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).unwrap();
+        let store = Arc::new(boot::setting_defs::load(&data, &[]).0);
+        let (live, _) = live_hle::platform::config(&data, None);
+        assert!(live.enabled);
+        assert_eq!(live.server_url.as_deref(), Some(live_proto::DEFAULT_SERVER));
+        assert!(
+            cloud_saves(&live, &data, &store).is_none(),
+            "no account: nothing contacted"
+        );
+        live_hle::platform::write(
+            &data,
+            &live_hle::platform::Switch {
+                enabled: Some(false),
+                server: None,
+            },
+        )
+        .unwrap();
+        let (live, _) = live_hle::platform::config(&data, None);
+        assert_eq!(live, boot::LiveConfig::default());
+        assert!(cloud_saves(&live, &data, &store).is_none());
+        let _ = std::fs::remove_dir_all(&data);
+    }
 
     #[test]
     fn a_failed_start_reports_why_through_the_handle() {

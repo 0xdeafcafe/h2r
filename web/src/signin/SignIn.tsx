@@ -1,4 +1,4 @@
-// `/signin#once=…`: signs this browser in from the link `h2 play --live`
+// `/signin#once=…`: signs this browser in from the link `h2 play --live-local`
 // prints (./redeem.ts). The fragment is cleared before anything else runs.
 
 import { Match, Switch, createSignal, onMount } from "solid-js";
@@ -66,7 +66,7 @@ export default function SignIn() {
                 </Match>
                 <Match when={step().s === "none"}>
                   <p>
-                    There's no sign-in link here. <code>h2 play --live</code> prints one each time it
+                    There's no sign-in link here. <code>h2 play --live-local</code> prints one each time it
                     starts; open it on this machine.
                   </p>
                   <p>

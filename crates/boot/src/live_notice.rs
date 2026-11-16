@@ -4,9 +4,10 @@
 //! menu's row handler (`0x002308e0`, transport check at `0x00230928`) shows UI
 //! error `0x23`, the dialog that offers the troubleshooter. A sign-in whose
 //! task result is CANNOT_ACCESS_SERVICE reaches the same error through the
-//! connection-result handler (`0x001486fa`). Without `--live` the console
-//! reports no cable, so transport never starts and the first path is taken;
-//! with `--live` and a server that cannot be reached, the second.
+//! connection-result handler (`0x001486fa`). With Live off (`h2 play`
+//! without a Live flag) the console reports no cable, so transport never
+//! starts and the first path is taken; with Live on and a server that cannot
+//! be reached, the second.
 //!
 //! A dialog widget keeps its error ID at `+0x610` and four 256-unit UTF-16
 //! buffers: title `+0x614`, message `+0x814`, then the two button labels.
@@ -56,8 +57,8 @@ pub enum Notice {
 // of its body font; each line below measures under 240 pixels. Lines break on
 // `\r`, as the game's own strings do; `|` would start a markup escape.
 const START_AGAIN: &str = "Quit and start again with one of:\r\n\
-                           h2 play --live  (built-in server)\r\n\
-                           h2 play --live --live-server <URL>";
+                           h2 play --live  (live.forbes.red)\r\n\
+                           h2 play --live-local  (this machine)";
 
 impl Notice {
     /// The notice for a boot configuration. Live on without a server signs
@@ -332,10 +333,18 @@ mod tests {
                 .text()
                 .starts_with("Xbox Live isn't set up in h2recomp.\r\n")
         );
+        let text = Notice::NotSetUp.text();
         assert!(
-            Notice::NotSetUp
-                .text()
-                .contains("h2 play --live --live-server <URL>")
+            text.contains("\r\nh2 play --live  (live.forbes.red)\r\n"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("h2 play --live-local  (this machine)"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(live_proto::DEFAULT_SERVER.trim_start_matches("https://")),
+            "the notice names the default service"
         );
         assert!(
             Notice::NotSetUp

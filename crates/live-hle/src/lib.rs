@@ -20,6 +20,7 @@ mod host;
 mod network;
 mod network_config;
 mod outbox;
+pub mod platform;
 pub use outbox::{
     BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
     MessageValue, RecruitProperties,
