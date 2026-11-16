@@ -151,7 +151,9 @@ impl fmt::Display for GameType {
 
 /// A setting number, as the `sily` definitions and the built-in entries'
 /// `(setting, value)` pairs carry it (0..0x70).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct SettingId(pub u32);
 
 /// How the setting writer stores a value.
@@ -349,7 +351,9 @@ impl GameVariant {
     /// A zeroed record of `ty` (what the game starts from before applying
     /// a type's defaults; see [`crate::schema::Schema::new_variant`]).
     pub fn blank(ty: GameType) -> Self {
-        let mut v = Self { raw: [0; RECORD_SIZE] };
+        let mut v = Self {
+            raw: [0; RECORD_SIZE],
+        };
         v.set_game_type(ty);
         v
     }
@@ -517,44 +521,40 @@ pub struct Problem {
 /// their evidence). Returns every broken rule; empty means the game keeps
 /// the record as it is.
 pub fn check(v: &GameVariant) -> Vec<Problem> {
-    let mut out = Vec::new();
-    let mut bad = |offset: usize, what: String| out.push(Problem { offset, what });
-    let i32_at = |at: usize| v.u32_at(at) as i32;
-    let i16_at = |at: usize| v.u16_at(at) as i16;
-    let mut i32_in = |at: usize, lo: i32, hi: i32, bad: &mut dyn FnMut(usize, String)| {
-        let x = i32_at(at);
-        if !(lo..=hi).contains(&x) {
-            bad(at, format!("{x} is outside {lo}..={hi}"));
-        }
-    };
-    let mut b = |at: usize, s: String| bad(at, s);
+    let mut c = Checker { v, out: Vec::new() };
     if v.raw[0] > 1 || v.raw[1] != 0 {
-        b(0, "the header word may only have bit 0".into());
+        c.bad(0, "the header word may only have bit 0".into());
     }
     if v.u16_at(NAME_AT + 2 * MAX_NAME_UNITS) != 0 {
-        b(NAME_AT + 2 * MAX_NAME_UNITS, "the name's last unit must be 0".into());
+        c.bad(
+            NAME_AT + 2 * MAX_NAME_UNITS,
+            "the name's last unit must be 0".into(),
+        );
     }
-    let engine = i32_at(ENGINE_AT);
+    let engine = v.u32_at(ENGINE_AT) as i32;
     if !matches!(engine, 1..=4 | 7..=9) {
-        b(ENGINE_AT, format!("engine {engine} is not a playable game type"));
+        c.bad(
+            ENGINE_AT,
+            format!("engine {engine} is not a playable game type"),
+        );
     }
     if v.u32_at(FLAGS_AT) & !0x7fff != 0 {
-        b(FLAGS_AT, "flags above bit 14 are set".into());
+        c.bad(FLAGS_AT, "flags above bit 14 are set".into());
     }
-    i32_in(0x4c, 0, 6, &mut b);
+    c.i32_in(0x4c, 0, 6);
     for at in [0x50, 0x54, 0x7c, 0x80, 0x84, 0xac] {
-        i32_in(at, 0, 0x7fff, &mut b);
+        c.i32_in(at, 0, 0x7fff);
     }
     for at in [0x58, 0x88, 0xa4, 0xa8] {
-        i32_in(at, 0, 2, &mut b);
+        c.i32_in(at, 0, 2);
     }
     for at in [0x74, 0x78] {
-        i32_in(at, 0, 16, &mut b);
+        c.i32_in(at, 0, 16);
     }
     if v.u32_at(0xb0) != 0 {
-        b(0xb0, "must be 0".into());
+        c.bad(0xb0, "must be 0".into());
     }
-    i32_in(0xb4, 0, 8, &mut b);
+    c.i32_in(0xb4, 0, 8);
     for (at, hi) in [
         (0xcc, 3),
         (0xcd, 7),
@@ -570,68 +570,88 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
         (0xd7, 0x14),
     ] {
         if v.raw[at] > hi {
-            b(at, format!("{} is above {hi}", v.raw[at]));
+            c.bad(at, format!("{} is above {hi}", v.raw[at]));
         }
     }
-    let i16_in = |at: usize, lo: i16, hi: i16, b: &mut dyn FnMut(usize, String)| {
-        let x = i16_at(at);
-        if !(lo..=hi).contains(&x) {
-            b(at, format!("{x} is outside {lo}..={hi}"));
-        }
-    };
-    let mask = |m: u32, b: &mut dyn FnMut(usize, String)| {
-        if v.u32_at(0xf0) & !m != 0 {
-            b(0xf0, format!("game-type flags outside {m:#x}"));
-        }
-    };
-    let ctf = |b: &mut dyn FnMut(usize, String), i32_in: &mut dyn FnMut(usize, i32, i32, &mut dyn FnMut(usize, String))| {
-        if !v.team_play() {
-            b(FLAGS_AT, "this game type is always team play".into());
-        }
-        if v.u32_at(0xf0) & !0xff != 0 {
-            b(0xf0, "game-type flags outside 0xff".into());
-        }
-        i32_in(0xf4, 0, 0x7fff, b);
-        i32_in(0xf8, 0, 2, b);
-        i32_in(0xfc, 0, 1, b);
-        i32_in(0x100, 0, 3, b);
-        i32_in(0x104, 0, 2, b);
-    };
     match engine {
-        1 => ctf(&mut b, &mut i32_in),
+        1 => c.ctf(),
         9 => {
-            i16_in(0x108, 0, 15, &mut b);
-            i16_in(0x10a, 0, 15, &mut b);
-            ctf(&mut b, &mut i32_in);
+            c.i16_in(0x108, 0, 15);
+            c.i16_in(0x10a, 0, 15);
+            c.ctf();
         }
-        2 => mask(7, &mut b),
+        2 => c.mask(7),
         3 => {
-            mask(7, &mut b);
-            i16_in(0xf4, 0, 3, &mut b);
-            i16_in(0xf6, 0, 1, &mut b);
-            i16_in(0xf8, 0, 2, &mut b);
-            i16_in(0xfa, 0, 3, &mut b);
+            c.mask(7);
+            c.i16_in(0xf4, 0, 3);
+            c.i16_in(0xf6, 0, 1);
+            c.i16_in(0xf8, 0, 2);
+            c.i16_in(0xfa, 0, 3);
         }
         4 => {
-            mask(0x1f, &mut b);
-            i16_in(0xf4, 0, 0x7fff, &mut b);
+            c.mask(0x1f);
+            c.i16_in(0xf4, 0, 0x7fff);
         }
         7 => {
             if v.team_play() {
-                b(FLAGS_AT, "Juggernaut is never team play".into());
+                c.bad(FLAGS_AT, "Juggernaut is never team play".into());
             }
-            mask(0x7f, &mut b);
-            i16_in(0xf4, 0, 2, &mut b);
+            c.mask(0x7f);
+            c.i16_in(0xf4, 0, 2);
         }
         8 => {
-            i16_in(0xf0, 1, 8, &mut b);
-            i16_in(0xf2, 1, 0x7fff, &mut b);
-            i16_in(0xf4, 1, 0x7fff, &mut b);
+            c.i16_in(0xf0, 1, 8);
+            c.i16_in(0xf2, 1, 0x7fff);
+            c.i16_in(0xf4, 1, 0x7fff);
         }
         _ => {}
     }
-    drop(b);
-    out
+    c.out
+}
+
+struct Checker<'a> {
+    v: &'a GameVariant,
+    out: Vec<Problem>,
+}
+
+impl Checker<'_> {
+    fn bad(&mut self, offset: usize, what: String) {
+        self.out.push(Problem { offset, what });
+    }
+
+    fn i32_in(&mut self, at: usize, lo: i32, hi: i32) {
+        let x = self.v.u32_at(at) as i32;
+        if !(lo..=hi).contains(&x) {
+            self.bad(at, format!("{x} is outside {lo}..={hi}"));
+        }
+    }
+
+    fn i16_in(&mut self, at: usize, lo: i16, hi: i16) {
+        let x = self.v.u16_at(at) as i16;
+        if !(lo..=hi).contains(&x) {
+            self.bad(at, format!("{x} is outside {lo}..={hi}"));
+        }
+    }
+
+    /// The game-type flags at `+0xf0` within `m`.
+    fn mask(&mut self, m: u32) {
+        if self.v.u32_at(0xf0) & !m != 0 {
+            self.bad(0xf0, format!("game-type flags outside {m:#x}"));
+        }
+    }
+
+    /// CTF's rules, which Assault shares.
+    fn ctf(&mut self) {
+        if !self.v.team_play() {
+            self.bad(FLAGS_AT, "this game type is always team play".into());
+        }
+        self.mask(0xff);
+        self.i32_in(0xf4, 0, 0x7fff);
+        self.i32_in(0xf8, 0, 2);
+        self.i32_in(0xfc, 0, 1);
+        self.i32_in(0x100, 0, 3);
+        self.i32_in(0x104, 0, 2);
+    }
 }
 
 #[cfg(test)]
@@ -645,7 +665,8 @@ mod tests {
         }
         // A valid UTF-16 name of 20 units, then noise after its NUL.
         for i in 0..20 {
-            b[NAME_AT + 2 * i..NAME_AT + 2 * i + 2].copy_from_slice(&(u16::from(b'a') + i as u16).to_le_bytes());
+            b[NAME_AT + 2 * i..NAME_AT + 2 * i + 2]
+                .copy_from_slice(&(u16::from(b'a') + i as u16).to_le_bytes());
         }
         b[NAME_AT + 40..NAME_AT + 42].fill(0);
         b
@@ -656,7 +677,10 @@ mod tests {
         let b = noisy();
         let v = GameVariant::from_bytes(&b).unwrap();
         assert_eq!(v.to_bytes(), b);
-        assert_eq!(GameVariant::from_bytes(&b[..0x12f]), Err(RecordError::Size(0x12f)));
+        assert_eq!(
+            GameVariant::from_bytes(&b[..0x12f]),
+            Err(RecordError::Size(0x12f))
+        );
     }
 
     #[test]
@@ -713,9 +737,18 @@ mod tests {
         assert_eq!(v.bytes()[0xd6], 9);
         v.set(SettingId(96), 2).unwrap();
         assert_eq!(&v.bytes()[0xf4..0xf6], &2i16.to_le_bytes());
-        assert_eq!(v.set(SettingId(91), 2), Err(RecordError::OutOfRange { id: 91, value: 2 }));
-        assert_eq!(v.set(SettingId(27), 0), Err(RecordError::UnknownSetting(27)));
-        assert_eq!(v.set(SettingId(89), 256), Err(RecordError::OutOfRange { id: 89, value: 256 }));
+        assert_eq!(
+            v.set(SettingId(91), 2),
+            Err(RecordError::OutOfRange { id: 91, value: 2 })
+        );
+        assert_eq!(
+            v.set(SettingId(27), 0),
+            Err(RecordError::UnknownSetting(27))
+        );
+        assert_eq!(
+            v.set(SettingId(89), 256),
+            Err(RecordError::OutOfRange { id: 89, value: 256 })
+        );
     }
 
     #[test]
@@ -725,7 +758,10 @@ mod tests {
         assert_eq!(v.name(), "Sun King \u{e006}");
         assert_eq!(&v.bytes()[4..6], &[b'S', 0]);
         v.set_name("ab").unwrap();
-        assert!(v.bytes()[8..0x44].iter().all(|b| *b == 0), "the rest is NUL-filled");
+        assert!(
+            v.bytes()[8..0x44].iter().all(|b| *b == 0),
+            "the rest is NUL-filled"
+        );
         assert_eq!(v.set_name(&"x".repeat(32)), Err(RecordError::NameTooLong));
         v.set_name(&"x".repeat(31)).unwrap();
         assert!(check(&v).is_empty());
@@ -735,7 +771,10 @@ mod tests {
     fn game_types_map_engine_and_content() {
         for t in GameType::ALL {
             assert_eq!(GameType::from_engine(t.engine()), t);
-            assert_eq!(GameType::from_content_type(t.content_type().unwrap()), Some(t));
+            assert_eq!(
+                GameType::from_content_type(t.content_type().unwrap()),
+                Some(t)
+            );
             assert_eq!(field(t.score_setting().unwrap()).unwrap().offset, 0x50);
         }
         assert_eq!(GameType::from_list_index(3), Some(GameType::King));
@@ -780,8 +819,14 @@ mod tests {
     fn known_settings_follow_the_type() {
         let v = GameVariant::blank(GameType::Juggernaut);
         let ids: Vec<u32> = v.known_settings().iter().map(|(s, _)| s.0).collect();
-        assert!(ids.contains(&7) && !ids.contains(&2), "only its own score setting");
-        assert!(ids.contains(&96) && !ids.contains(&45), "its own type-area settings");
+        assert!(
+            ids.contains(&7) && !ids.contains(&2),
+            "only its own score setting"
+        );
+        assert!(
+            ids.contains(&96) && !ids.contains(&45),
+            "its own type-area settings"
+        );
         assert!(ids.contains(&89), "common settings");
     }
 }

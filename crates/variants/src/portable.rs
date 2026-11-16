@@ -91,10 +91,22 @@ mod tests {
     fn bad_files_are_refused() {
         let good = export(&GameVariant::blank(GameType::Slayer));
         assert!(matches!(import("{"), Err(PortableError::Json(_))));
-        assert!(matches!(import(&good.replace(FORMAT, "other")), Err(PortableError::Format(_))));
-        assert_eq!(import(&good.replace("\"version\": 1", "\"version\": 9")).unwrap_err(), PortableError::Version(9));
-        assert_eq!(import(&good.replace("\"record\": \"00", "\"record\": \"zz")).unwrap_err(), PortableError::Record);
-        assert_eq!(import(&good.replace("\"record\": \"00", "\"record\": \"")).unwrap_err(), PortableError::Record);
+        assert!(matches!(
+            import(&good.replace(FORMAT, "other")),
+            Err(PortableError::Format(_))
+        ));
+        assert_eq!(
+            import(&good.replace("\"version\": 1", "\"version\": 9")).unwrap_err(),
+            PortableError::Version(9)
+        );
+        assert_eq!(
+            import(&good.replace("\"record\": \"00", "\"record\": \"zz")).unwrap_err(),
+            PortableError::Record
+        );
+        assert_eq!(
+            import(&good.replace("\"record\": \"00", "\"record\": \"")).unwrap_err(),
+            PortableError::Record
+        );
         // A record the game would clean up imports with its problems listed.
         let mut v = GameVariant::blank(GameType::Slayer);
         v.set(SettingId(19), 5).unwrap();

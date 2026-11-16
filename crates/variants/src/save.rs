@@ -65,13 +65,16 @@ pub fn encode_meta(save_name: &str) -> Vec<u8> {
 pub fn parse_meta_name(bytes: &[u8]) -> Option<String> {
     let units: Vec<u16> = bytes
         .get(2..)?
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let key: Vec<u16> = "Name=".encode_utf16().collect();
     units.split(|u| *u == u16::from(b'\n')).find_map(|line| {
         let line = line.strip_suffix(&[u16::from(b'\r')]).unwrap_or(line);
-        line.strip_prefix(key.as_slice()).map(String::from_utf16_lossy)
+        line.strip_prefix(key.as_slice())
+            .map(String::from_utf16_lossy)
     })
 }
 
@@ -213,7 +216,9 @@ impl XbeNames {
                     continue;
                 }
             };
-            let Some(imm) = code.get(imm_at..imm_at + 4) else { break };
+            let Some(imm) = code.get(imm_at..imm_at + 4) else {
+                break;
+            };
             let addr = u32::from_le_bytes(imm.try_into().unwrap());
             if let Some(n) = file_names.get_mut(slot) {
                 *n = ascii_at(x, addr)?;
@@ -240,7 +245,10 @@ impl XbeNames {
 
     /// The game type whose file this is.
     pub fn game_type_of(&self, file: &str) -> Option<GameType> {
-        let t = self.file_names.iter().position(|n| n.eq_ignore_ascii_case(file))?;
+        let t = self
+            .file_names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(file))?;
         GameType::from_content_type(t as u32)
     }
 
@@ -249,22 +257,31 @@ impl XbeNames {
     pub fn strip_label<'a>(&self, save_name: &'a str) -> &'a str {
         self.labels
             .iter()
-            .find_map(|l| save_name.strip_prefix(l.as_str())?.strip_prefix(LABEL_SEPARATOR))
+            .find_map(|l| {
+                save_name
+                    .strip_prefix(l.as_str())?
+                    .strip_prefix(LABEL_SEPARATOR)
+            })
             .unwrap_or(save_name)
     }
 }
 
 fn ascii_at(x: &xbe::Xbe, addr: u32) -> Result<String, NamesError> {
     let b = x.bytes_at(addr, 32)?;
-    let end = b.iter().position(|c| *c == 0).ok_or(NamesError::Shape(addr))?;
+    let end = b
+        .iter()
+        .position(|c| *c == 0)
+        .ok_or(NamesError::Shape(addr))?;
     Ok(String::from_utf8_lossy(&b[..end]).into_owned())
 }
 
 fn utf16_at(x: &xbe::Xbe, addr: u32) -> Result<String, NamesError> {
     let b = x.bytes_at(addr, 128)?;
     let units: Vec<u16> = b
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|u| *u != 0)
         .collect();
     Ok(String::from_utf16_lossy(&units))
@@ -282,7 +299,11 @@ fn mov_eax(x: &xbe::Xbe, at: u32) -> Result<u32, NamesError> {
 fn label(x: &xbe::Xbe, f: u32, lang: u32) -> Result<String, NamesError> {
     let b = x.bytes_at(f, 13)?;
     // dec eax; cmp eax,7; ja rel8; jmp [eax*4+table]
-    if b[0] != 0x48 || b[1..4] != [0x83, 0xf8, 0x07] || b[4] != 0x77 || b[6..9] != [0xff, 0x24, 0x85] {
+    if b[0] != 0x48
+        || b[1..4] != [0x83, 0xf8, 0x07]
+        || b[4] != 0x77
+        || b[6..9] != [0xff, 0x24, 0x85]
+    {
         return Err(NamesError::Shape(f));
     }
     let default = f + 6 + u32::from(b[5]);
@@ -320,7 +341,11 @@ pub struct SaveStore {
 
 impl SaveStore {
     pub fn new(root: impl Into<PathBuf>, names: Option<XbeNames>) -> Self {
-        SaveStore { root: root.into(), key: RUNTIME_KEY, names }
+        SaveStore {
+            root: root.into(),
+            key: RUNTIME_KEY,
+            names,
+        }
     }
 
     /// `<data root>/disk/Partition1/UDATA/4D530064`, the data root being
@@ -381,7 +406,9 @@ impl SaveStore {
                 continue;
             }
             let bytes = fs::read(dir.join(&file))?;
-            let Ok(contents) = decode_file(&bytes, &self.key) else { continue };
+            let Ok(contents) = decode_file(&bytes, &self.key) else {
+                continue;
+            };
             let ty = contents.variant.game_type();
             if ty.content_type().is_none() {
                 continue;
@@ -391,7 +418,12 @@ impl SaveStore {
             {
                 continue;
             }
-            return Ok(SavedVariant { dir: dir.to_path_buf(), file, save_name, contents });
+            return Ok(SavedVariant {
+                dir: dir.to_path_buf(),
+                file,
+                save_name,
+                contents,
+            });
         }
         Err(not())
     }
@@ -402,7 +434,10 @@ impl SaveStore {
         check_saveable(v)?;
         let names = self.names.as_ref().ok_or(SaveError::NoNames)?;
         let ty = v.game_type();
-        let (label, file) = names.label(ty).zip(names.file_name(ty)).ok_or(SaveError::GameType(ty))?;
+        let (label, file) = names
+            .label(ty)
+            .zip(names.file_name(ty))
+            .ok_or(SaveError::GameType(ty))?;
         let save_name = save_name(label, &v.name());
         let dir = self.root.join(directory_name(&save_name));
         if dir.join(SAVE_META).exists() {
@@ -454,7 +489,10 @@ fn check_saveable(v: &GameVariant) -> Result<(), SaveError> {
         Ok(())
     } else {
         Err(SaveError::Rejected(
-            p.iter().map(|p| format!("+{:#x} {}", p.offset, p.what)).collect::<Vec<_>>().join("; "),
+            p.iter()
+                .map(|p| format!("+{:#x} {}", p.offset, p.what))
+                .collect::<Vec<_>>()
+                .join("; "),
         ))
     }
 }
@@ -492,7 +530,9 @@ mod tests {
         assert_eq!(directory_name("A"), "000000000041");
         assert_eq!(directory_name("AB"), "000000410042");
         // Four units overflow 48 bits: the modulus applies.
-        let h = [0x41u64, 0x42, 0x43, 0x44].iter().fold(0u64, |h, u| ((h << 16) + u) % HASH_MODULUS);
+        let h = [0x41u64, 0x42, 0x43, 0x44]
+            .iter()
+            .fold(0u64, |h, u| ((h << 16) + u) % HASH_MODULUS);
         assert_eq!(directory_name("ABCD"), format!("{h:012X}"));
         assert_ne!(h, 0x0041_0042_0043_0044 & 0xffff_ffff_ffff);
     }
@@ -501,7 +541,14 @@ mod tests {
     fn meta_round_trips() {
         let m = encode_meta("Label 1: Zombies");
         assert_eq!(&m[..2], &[0xff, 0xfe]);
-        assert_eq!(&m[2..12], "Name=".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>().as_slice());
+        assert_eq!(
+            &m[2..12],
+            "Name="
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
         assert!(m.ends_with(&[b'\r', 0, b'\n', 0]));
         assert_eq!(parse_meta_name(&m).as_deref(), Some("Label 1: Zombies"));
         assert_eq!(parse_meta_name(&[0xff, 0xfe]), None);
@@ -510,7 +557,12 @@ mod tests {
     #[test]
     fn save_names_carry_the_label_and_are_bounded() {
         assert_eq!(save_name("King", "Sun King"), "King: Sun King");
-        assert_eq!(save_name(&"L".repeat(120), "abcdefghij").encode_utf16().count(), MAX_SAVE_NAME_UNITS);
+        assert_eq!(
+            save_name(&"L".repeat(120), "abcdefghij")
+                .encode_utf16()
+                .count(),
+            MAX_SAVE_NAME_UNITS
+        );
         let n = names();
         assert_eq!(n.strip_label("Label 2: Hill"), "Hill");
         assert_eq!(n.strip_label("Hill"), "Hill");
@@ -533,7 +585,10 @@ mod tests {
         let mut long = f.clone();
         long.extend_from_slice(b"xyz");
         assert_eq!(decode_file(&long, &RUNTIME_KEY).unwrap().trailing, b"xyz");
-        assert!(matches!(decode_file(&f[..FILE_SIZE - 1], &RUNTIME_KEY), Err(SaveError::Short(_))));
+        assert!(matches!(
+            decode_file(&f[..FILE_SIZE - 1], &RUNTIME_KEY),
+            Err(SaveError::Short(_))
+        ));
     }
 
     #[test]
@@ -545,7 +600,10 @@ mod tests {
         assert_eq!(a.file, "type1");
         assert_eq!(a.dir, root.join(directory_name("Label 1: Duel")));
         assert!(a.contents.signed);
-        assert!(matches!(store.create(&slayer("Duel")), Err(SaveError::Exists(_))));
+        assert!(matches!(
+            store.create(&slayer("Duel")),
+            Err(SaveError::Exists(_))
+        ));
 
         // Junk next to it is ignored.
         fs::create_dir_all(root.join("JUNK")).unwrap();
@@ -572,12 +630,18 @@ mod tests {
         assert_ne!(c.dir, b.dir);
         assert!(!b.dir.exists());
         path = c.dir.join(SAVE_META);
-        assert_eq!(parse_meta_name(&fs::read(path).unwrap()).as_deref(), Some("Label 1: Duel 2"));
+        assert_eq!(
+            parse_meta_name(&fs::read(path).unwrap()).as_deref(),
+            Some("Label 1: Duel 2")
+        );
 
         // A record the game would clean up is refused.
         let mut bad = v.clone();
         bad.set(SettingId(19), 3).unwrap();
-        assert!(matches!(store.update(&c, &bad), Err(SaveError::Rejected(_))));
+        assert!(matches!(
+            store.update(&c, &bad),
+            Err(SaveError::Rejected(_))
+        ));
 
         store.delete(&c).unwrap();
         assert!(store.list().unwrap().is_empty());
@@ -593,8 +657,16 @@ mod tests {
         let l = plain.list().unwrap();
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].contents.variant.name(), "Duel");
-        assert!(matches!(plain.create(&slayer("Other")), Err(SaveError::NoNames)));
-        assert!(SaveStore::new(root.join("missing"), None).list().unwrap().is_empty());
+        assert!(matches!(
+            plain.create(&slayer("Other")),
+            Err(SaveError::NoNames)
+        ));
+        assert!(
+            SaveStore::new(root.join("missing"), None)
+                .list()
+                .unwrap()
+                .is_empty()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

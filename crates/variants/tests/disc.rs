@@ -18,7 +18,12 @@ pub fn mainmenu() -> map::Map<BufReader<File>> {
     let mut x = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = x.find("/maps/mainmenu.map").unwrap();
     let base = x.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
-    map::Map::from_region(BufReader::new(File::open(&path).unwrap()), base, e.size.into()).unwrap()
+    map::Map::from_region(
+        BufReader::new(File::open(&path).unwrap()),
+        base,
+        e.size.into(),
+    )
+    .unwrap()
 }
 
 /// The schema from the retail tag: every definition has a place in the
@@ -33,17 +38,33 @@ fn schema_from_the_disc() {
     let s = variants::Schema::from_map(&mut m, tags::Language::English).unwrap();
     assert!(!s.pages.is_empty());
     for (id, def) in &s.settings {
-        assert!(record::field(*id).is_some(), "setting {} has no field", id.0);
+        assert!(
+            record::field(*id).is_some(),
+            "setting {} has no field",
+            id.0
+        );
         assert!(!def.choices.is_empty(), "setting {} offers nothing", id.0);
         if std::env::var("VERBOSE").is_ok() {
-            println!("{:3} {:?} / {:?} ({} choices)", id.0, def.title, def.help, def.choices.len());
+            println!(
+                "{:3} {:?} / {:?} ({} choices)",
+                id.0,
+                def.title,
+                def.help,
+                def.choices.len()
+            );
         }
     }
     for p in &s.pages {
         if (13..=21).contains(&p.id) {
             let ty = GameType::from_engine(p.id as i32 - 12);
             for id in &p.settings {
-                assert_eq!(record::fallback_owner(*id), Some(ty), "setting {} on page {}", id.0, p.id);
+                assert_eq!(
+                    record::fallback_owner(*id),
+                    Some(ty),
+                    "setting {} on page {}",
+                    id.0,
+                    p.id
+                );
             }
         }
     }
@@ -51,13 +72,22 @@ fn schema_from_the_disc() {
         assert!(!s.defaults[&ty].is_empty(), "{ty} has no defaults");
         let v = s.new_variant(ty);
         assert!(s.pages_for(ty).len() >= 5, "{ty}");
-        assert!(record::check(&v).is_empty() || ty == GameType::Ctf || ty == GameType::Assault, "{ty}: {:?}", record::check(&v));
+        assert!(
+            record::check(&v).is_empty() || ty == GameType::Ctf || ty == GameType::Assault,
+            "{ty}: {:?}",
+            record::check(&v)
+        );
     }
     assert!(s.builtins.len() >= 30);
     for b in &s.builtins {
         let v = s.build(b).unwrap();
         let issues = s.validate(&v);
-        assert!(issues.is_empty(), "{}: {:?}", b.name, issues.iter().map(|i| i.to_string()).collect::<Vec<_>>());
+        assert!(
+            issues.is_empty(),
+            "{}: {:?}",
+            b.name,
+            issues.iter().map(|i| i.to_string()).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -84,10 +114,15 @@ fn descriptors_match_the_xbe() {
         let (mut arg, mut eax_one) = (0u32, false);
         let mut out = [None::<u32>; 3];
         let mut scale_one = false;
-        for i in Decoder::with_ip(32, code, fp.into(), DecoderOptions::NONE).iter().take(16) {
+        for i in Decoder::with_ip(32, code, fp.into(), DecoderOptions::NONE)
+            .iter()
+            .take(16)
+        {
             match i.mnemonic() {
                 Mnemonic::Ret => break,
-                Mnemonic::Mov if i.op1_kind() == OpKind::Memory && i.memory_base() == Register::ESP => {
+                Mnemonic::Mov
+                    if i.op1_kind() == OpKind::Memory && i.memory_base() == Register::ESP =>
+                {
                     arg = i.memory_displacement32() / 4 - 1;
                 }
                 Mnemonic::Xor if i.op0_register() == i.op1_register() => eax_one = false,
@@ -97,25 +132,37 @@ fn descriptors_match_the_xbe() {
                     scale_one = f32::from_bits(v) == 1.0;
                 }
                 Mnemonic::Movss => out[arg as usize] = Some(if scale_one { 1 } else { u32::MAX }),
-                Mnemonic::Mov if i.op1_kind() == OpKind::Immediate32 => out[arg as usize] = Some(i.immediate32()),
-                Mnemonic::Mov if i.op0_kind() == OpKind::Memory && eax_one => out[arg as usize] = Some(1),
-                Mnemonic::And if i.op1_kind() == OpKind::Immediate8to32 => out[arg as usize] = Some(0),
+                Mnemonic::Mov if i.op1_kind() == OpKind::Immediate32 => {
+                    out[arg as usize] = Some(i.immediate32())
+                }
+                Mnemonic::Mov if i.op0_kind() == OpKind::Memory && eax_one => {
+                    out[arg as usize] = Some(1)
+                }
+                Mnemonic::And if i.op1_kind() == OpKind::Immediate8to32 => {
+                    out[arg as usize] = Some(0)
+                }
                 _ => {}
             }
         }
-        let [Some(kind), Some(offset), Some(param)] = out else { panic!("setting {k}: {out:?}") };
+        let [Some(kind), Some(offset), Some(param)] = out else {
+            panic!("setting {k}: {out:?}")
+        };
         let got = match kind {
             0 => Kind::Bit16(param as u8),
             1 => Kind::Bit32(param as u8),
             2 => Kind::Bool8,
-            3 | 4 | 5 => {
+            3..=5 => {
                 assert_eq!(param, 1, "setting {k} has a scale");
                 [Kind::U8, Kind::I16, Kind::I32][kind as usize - 3]
             }
             n => panic!("setting {k}: kind {n}"),
         };
         let want = want.unwrap_or_else(|| panic!("setting {k} is missing"));
-        assert_eq!((want.offset, want.kind), (offset as usize, got), "setting {k}");
+        assert_eq!(
+            (want.offset, want.kind),
+            (offset as usize, got),
+            "setting {k}"
+        );
     }
 }
 
@@ -143,7 +190,10 @@ fn names_from_the_xbe() {
     let mut differs = false;
     for l in tags::Language::ALL {
         let n = XbeNames::read(&x, l).unwrap();
-        assert_eq!(n.file_names, en.file_names, "file names do not depend on the language");
+        assert_eq!(
+            n.file_names, en.file_names,
+            "file names do not depend on the language"
+        );
         assert!(n.labels.iter().all(|s| !s.is_empty()), "{l:?}");
         differs |= n.labels != en.labels;
     }
@@ -162,6 +212,34 @@ fn saved_variant_verifies() {
     };
     let bytes = std::fs::read(path).unwrap();
     let f = variants::save::decode_file(&bytes, &variants::save::RUNTIME_KEY).unwrap();
-    assert!(f.signed, "the signature does not match HMAC-SHA1 with a zero key");
+    assert!(
+        f.signed,
+        "the signature does not match HMAC-SHA1 with a zero key"
+    );
     assert!(variants::record::check(&f.variant).is_empty());
+}
+
+/// The panel over the disc's schema: every built-in opens and draws
+/// headlessly, read-only, with nothing the game would reject.
+#[test]
+#[ignore = "needs the user's disc"]
+fn panel_over_the_disc() {
+    let mut m = mainmenu();
+    let s = variants::Schema::from_map(&mut m, tags::Language::English).unwrap();
+    let n = s.builtins.len();
+    let mut e = variants::VariantEditor::new(s, None);
+    let ctx = egui::Context::default();
+    for i in 0..n {
+        e.open_builtin(i);
+        assert!(e.is_read_only() && e.issues().is_empty());
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| e.ui(ui));
+        out.textures_delta.clear();
+    }
 }

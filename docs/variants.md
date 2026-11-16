@@ -50,8 +50,8 @@ an offset and a bit or scale; then it stores the value:
 Every scale in this build is 1.0, so values are stored as given. Settings
 27, 31..37, 48 and 49 have no descriptor. `record::field` is our
 encoding of the answers. The ignored test `descriptors_match_the_xbe`
-should decode the table from `$H2_XBE` and compare (not written yet; see
-"Status").
+decodes all 0x70 descriptors from `$H2_XBE` with iced-x86 and compares them
+with `record::field` entry by entry (passes).
 
 Which settings belong to which game type comes from the `goof` tag's pages
 (below): the type-area settings are Slayer 28..30; Oddball 43..47, 100,
@@ -105,8 +105,8 @@ rule. `record::check` reports the broken ones:
   the record; that it starts zeroed is **inferred**.
 
 A `sily` tag: `+0` setting number, `+8` its `unic` reference (datum
-`+0xc`), `+0x10`, `+0x14`, `+0x18` three string ids (title and help
-inferred from the order), `+0x1c` the options block of 0xc-byte options
+`+0xc`), `+0x10` title, `+0x14` the title in capitals and `+0x18` help
+string ids (checked by reading their text), `+0x1c` the options block of 0xc-byte options
 (`+0` default flag, `+4` value, `+8` label string id). Confirmed layout.
 
 Without a disc, `Schema::fallback` lists every setting the record stores
@@ -166,8 +166,9 @@ here) adds a second HMAC with the hard-disk key.
 Our kernel never fills export 325 (crates/kernel/STOPS.md), so on our
 runtime the key is 16 zero bytes. **Unverified**: no save written by the
 game under our runtime has been compared yet. To check: save one variant
-in the game, then run the editor's "verify" on it (or the ignored test
-`saved_variant_verifies` with `H2_SAVED_VARIANT=<path to the file>`). A
+in the game, then run the ignored test `saved_variant_verifies` with
+`H2_SAVED_VARIANT=<the payload file in its save directory>` (the panel also
+reports a saved variant whose signature does not match when it is opened). A
 real console derives the key from the certificate's signature key with a
 console secret, so its saves cannot be re-signed here; the key is a
 parameter of the codec.
@@ -189,20 +190,51 @@ clears record bit 0 of `+0`, runs the clean-up, sets the new name (at most
 
 ## Portable files
 
-Planned (not written yet): `.h2variant`, our sharing format, JSON with a format tag, version, the
-name and game type for people, and the 0x130 record as hex (the source of
-truth). Importing checks the length and the clean-up rules; the game never
-sees this file, so it carries no signature.
+`.h2variant` (`portable`) is our sharing format: JSON with a format tag,
+version, the name and game type for people, and the 0x130 record as hex
+(the source of truth, so unknown bytes travel too). Importing checks the
+length and lists what the clean-up would reject; the game never sees this
+file, so it carries no signature.
 
-## Status
+## The panel
 
-Done: the record model and lossless codec (`record`), the clean-up rules,
-SHA-1/HMAC, the schema reader for `goof`/`sily` with page grouping and
-defaults (`schema`), all from the facts above.
+`variants::VariantEditor::new(schema, store)` takes a `Schema`
+(`Schema::from_map` on the main menu map, or `Schema::fallback()`) and an
+optional `SaveStore` (`SaveStore::new(SaveStore::default_root()?,
+XbeNames::read(&xbe, language).ok())`; without `XbeNames` saves list and
+update in place, but new saves cannot be named).
 
-Not done (the job stopped when the shared disk fell under 10 GiB): the
-saved-file codec and store (`save`), the XBE readers for the content-type
-file names and labels, the portable format, the panel, the
-`descriptors_match_the_xbe` test, and running the crate's tests after the
-last edits to `record::fallback_owner` and the schema's page, `sily` and
-defaults offsets.
+- `ui(&mut self, ui: &mut egui::Ui)`: toolbar (Save, Undo, Redo, Revert,
+  New of a type, Export to the clipboard, Delete, Import), the list of
+  saved and built-in variants, and the settings form: the game's pages for
+  the variant's type, a combo of the disc's labelled values per setting
+  (a checkbox or number in the fallback), help and the default on hover,
+  changed settings in bold, the changes from the type's defaults and what
+  the game would reject.
+- `is_dirty`, `save` (refuses records the clean-up would change),
+  `undo`/`redo`/`can_undo`/`can_redo`/`revert`, `set_setting`,
+  `set_name` (typing a name is one undo step), `copy_builtin(name)`,
+  `new_variant(type)`, `open_builtin`/`open_saved`, `delete`,
+  `export_current`/`import`, `current`, `origin`, `issues`, `status`.
+
+Built-ins are read-only; the form offers "Copy as <name>", which clears the
+built-in flag like the game's Edit. Picking another variant with unsaved
+changes asks first.
+
+## Tests
+
+`cargo test -p variants`: synthetic records, files, stores in a temp dir,
+an invented schema, and headless frames of the panel (no window). With the
+disc (`H2_XBE`, `halo2.iso` beside it), `cargo test -p variants --test disc
+-- --ignored` checks the setter descriptors, the schema (every setting has
+a field and values, type pages match `fallback_owner`, every built-in
+built the game's way passes the clean-up and offers only listed values),
+the XBE names in every language, and draws every built-in in the panel.
+
+## Open
+
+- The signing key on our runtime (above): one in-game save settles it.
+- What byte `+2` of the record means; that a new record starts zeroed;
+  what the UI shows when a load fails.
+- Our page titles are symbolic: the game's titles live in the UI screens,
+  not in the `goof` tag.

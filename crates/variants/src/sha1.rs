@@ -2,7 +2,13 @@
 //! specifications. Saved variants carry an HMAC-SHA1 signature
 //! ([`crate::save`]); this keeps the crate free of the kernel's HLE.
 
-const INITIAL: [u32; 5] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0];
+const INITIAL: [u32; 5] = [
+    0x6745_2301,
+    0xefcd_ab89,
+    0x98ba_dcfe,
+    0x1032_5476,
+    0xc3d2_e1f0,
+];
 const BLOCK: usize = 64;
 
 /// Incremental SHA-1.
@@ -16,7 +22,12 @@ pub struct Sha1 {
 
 impl Default for Sha1 {
     fn default() -> Self {
-        Self { h: INITIAL, length: 0, block: [0; BLOCK], filled: 0 }
+        Self {
+            h: INITIAL,
+            length: 0,
+            block: [0; BLOCK],
+            filled: 0,
+        }
     }
 }
 
@@ -48,16 +59,16 @@ impl Sha1 {
         }
         self.update(&bits.to_be_bytes());
         let mut out = [0; 20];
-        for (o, h) in out.chunks_exact_mut(4).zip(self.h) {
-            o.copy_from_slice(&h.to_be_bytes());
+        for (o, h) in out.as_chunks_mut::<4>().0.iter_mut().zip(self.h) {
+            *o = h.to_be_bytes();
         }
         out
     }
 
     fn compress(&mut self, block: &[u8; BLOCK]) {
         let mut w = [0u32; 80];
-        for (i, c) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes(c.try_into().unwrap());
+        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -70,7 +81,12 @@ impl Sha1 {
                 40..60 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdc),
                 _ => (b ^ c ^ d, 0xca62_c1d6),
             };
-            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
             e = d;
             d = c;
             c = b.rotate_left(30);

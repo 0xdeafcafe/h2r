@@ -117,7 +117,11 @@ impl std::fmt::Display for Issue {
         match self {
             Issue::Record(p) => write!(f, "+{:#x}: {}", p.offset, p.what),
             Issue::NotOffered { id, value } => {
-                write!(f, "setting {} holds {value}, which the editor does not offer", id.0)
+                write!(
+                    f,
+                    "setting {} holds {value}, which the editor does not offer",
+                    id.0
+                )
             }
         }
     }
@@ -177,7 +181,15 @@ impl Schema {
             let title = record::symbolic_name(id)
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("Setting {}", id.0));
-            settings.insert(id, SettingDef { id, title, help: String::new(), choices: Vec::new() });
+            settings.insert(
+                id,
+                SettingDef {
+                    id,
+                    title,
+                    help: String::new(),
+                    choices: Vec::new(),
+                },
+            );
         }
         let mut pages = vec![Page {
             id: 9,
@@ -209,7 +221,10 @@ impl Schema {
     }
 
     /// The schema from a main menu map.
-    pub fn from_map<R: Read + Seek>(map: &mut Map<R>, language: Language) -> Result<Self, SchemaError> {
+    pub fn from_map<R: Read + Seek>(
+        map: &mut Map<R>,
+        language: Language,
+    ) -> Result<Self, SchemaError> {
         let tag = map
             .tags()
             .iter()
@@ -218,7 +233,12 @@ impl Schema {
             .clone();
         let goof = tag_bytes(map, &tag)?;
         let l = Localization::read(map)?;
-        let mut src = MapSource { map, l: &l, unics: BTreeMap::new(), language };
+        let mut src = MapSource {
+            map,
+            l: &l,
+            unics: BTreeMap::new(),
+            language,
+        };
         let mut s = Self::from_goof(&goof, &mut src)?;
         s.source = format!("{} ({language:?})", tag.name.as_deref().unwrap_or("goof"));
         Ok(s)
@@ -231,18 +251,23 @@ impl Schema {
         let page_bytes = block(goof, GOOF_PAGES, PAGE_SIZE, MAX_PAGES, &mut read)?;
         let mut pages = Vec::new();
         let mut settings = BTreeMap::new();
-        for (k, p) in page_bytes.chunks_exact(PAGE_SIZE).enumerate() {
+        for p in page_bytes.as_chunks::<PAGE_SIZE>().0.iter() {
             let id = le32(p, PAGE_ID).unwrap();
             let refs = block(p, PAGE_REFS, 8, MAX_REFS, &mut |a, s| src.read(a, s))?;
-            let _ = k;
-            let mut page = Page { id, title: page_title(id), settings: Vec::new() };
-            for r in refs.chunks_exact(8) {
+            let mut page = Page {
+                id,
+                title: page_title(id),
+                settings: Vec::new(),
+            };
+            for r in refs.as_chunks::<8>().0.iter() {
                 let datum = le32(r, 4).unwrap();
                 if datum == u32::MAX {
                     continue;
                 }
                 let Some(sily) = src.tag(datum) else { continue };
-                let Some(def) = setting_def(&sily, src)? else { continue };
+                let Some(def) = setting_def(&sily, src)? else {
+                    continue;
+                };
                 page.settings.push(def.id);
                 settings.entry(def.id).or_insert(def);
             }
@@ -256,9 +281,17 @@ impl Schema {
             }
         }
         let mut builtins = Vec::new();
-        let entries = block(goof, GOOF_BUILTINS, ENTRY_SIZE, MAX_BUILTINS, &mut |a, s| src.read(a, s))?;
-        for e in entries.chunks_exact(ENTRY_SIZE) {
-            let Some(game_type) = GameType::from_list_index(le32(e, 4).unwrap()) else { continue };
+        let entries = block(
+            goof,
+            GOOF_BUILTINS,
+            ENTRY_SIZE,
+            MAX_BUILTINS,
+            &mut |a, s| src.read(a, s),
+        )?;
+        for e in entries.as_chunks::<ENTRY_SIZE>().0.iter() {
+            let Some(game_type) = GameType::from_list_index(le32(e, 4).unwrap()) else {
+                continue;
+            };
             let name = src.text(goof_unic, le32(e, 0).unwrap()).unwrap_or_default();
             builtins.push(Builtin {
                 name,
@@ -267,7 +300,13 @@ impl Schema {
                 pairs: pairs(e, 8, src)?,
             });
         }
-        Ok(Schema { settings, pages, defaults, builtins, source: "goof tag".into() })
+        Ok(Schema {
+            settings,
+            pages,
+            defaults,
+            builtins,
+            source: "goof tag".into(),
+        })
     }
 
     /// A new variant of `ty` with the type's defaults, as the game builds
@@ -313,7 +352,12 @@ impl Schema {
             .map(|p| Page {
                 id: p.id,
                 title: p.title.clone(),
-                settings: p.settings.iter().copied().filter(|s| applies(*s, ty)).collect(),
+                settings: p
+                    .settings
+                    .iter()
+                    .copied()
+                    .filter(|s| applies(*s, ty))
+                    .collect(),
             })
             .filter(|p| !p.settings.is_empty())
             .collect()
@@ -326,7 +370,9 @@ impl Schema {
         let ty = v.game_type();
         for page in self.pages_for(ty) {
             for id in page.settings {
-                let Some(def) = self.settings.get(&id) else { continue };
+                let Some(def) = self.settings.get(&id) else {
+                    continue;
+                };
                 if def.choices.is_empty() {
                     continue;
                 }
@@ -401,13 +447,17 @@ pub fn applies(s: SettingId, ty: GameType) -> bool {
 fn pairs(b: &[u8], at: usize, src: &mut dyn Source) -> Result<Vec<(SettingId, i32)>, SchemaError> {
     let raw = block(b, at, 8, MAX_PAIRS, &mut |a, s| src.read(a, s))?;
     Ok(raw
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|p| (SettingId(le32(p, 0).unwrap()), le32(p, 4).unwrap() as i32))
         .collect())
 }
 
 fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, SchemaError> {
-    let Some(setting) = le32(sily, SILY_SETTING) else { return Ok(None) };
+    let Some(setting) = le32(sily, SILY_SETTING) else {
+        return Ok(None);
+    };
     let id = SettingId(setting);
     let unic = le32(sily, SILY_UNIC).unwrap_or(u32::MAX);
     let text = |src: &mut dyn Source, at| le32(sily, at).and_then(|sid| src.text(unic, sid));
@@ -415,9 +465,13 @@ fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, 
         .or_else(|| record::symbolic_name(id).map(str::to_string))
         .unwrap_or_else(|| format!("Setting {setting}"));
     let help = text(src, SILY_HELP).unwrap_or_default();
-    let opts = block(sily, SILY_OPTIONS, OPTION_SIZE, MAX_OPTIONS, &mut |a, s| src.read(a, s))?;
+    let opts = block(sily, SILY_OPTIONS, OPTION_SIZE, MAX_OPTIONS, &mut |a, s| {
+        src.read(a, s)
+    })?;
     let choices = opts
-        .chunks_exact(OPTION_SIZE)
+        .as_chunks::<OPTION_SIZE>()
+        .0
+        .iter()
         .map(|o| {
             let value = le32(o, 4).unwrap() as i32;
             Choice {
@@ -429,11 +483,18 @@ fn setting_def(sily: &[u8], src: &mut dyn Source) -> Result<Option<SettingDef>, 
             }
         })
         .collect();
-    Ok(Some(SettingDef { id, title, help, choices }))
+    Ok(Some(SettingDef {
+        id,
+        title,
+        help,
+        choices,
+    }))
 }
 
 fn tag_bytes<R: Read + Seek>(map: &mut Map<R>, tag: &map::Tag) -> Result<Vec<u8>, SchemaError> {
-    let loc = tag.location.ok_or(SchemaError::Malformed("the tag has no data"))?;
+    let loc = tag
+        .location
+        .ok_or(SchemaError::Malformed("the tag has no data"))?;
     Ok(map.read_file_range(loc.file_offset()?, loc.size.into())?)
 }
 
@@ -462,6 +523,9 @@ impl<R: Read + Seek> Source for MapSource<'_, R> {
             self.unics.insert(unic, u);
         }
         let u = self.unics.get(&unic)?.as_ref()?;
-        self.l.text_in(u, StringId(id), self.language).ok().flatten()
+        self.l
+            .text_in(u, StringId(id), self.language)
+            .ok()
+            .flatten()
     }
 }
