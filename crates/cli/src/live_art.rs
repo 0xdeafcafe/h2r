@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 8;
+pub const EXTRACTOR_VERSION: u32 = 9;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -555,7 +555,7 @@ impl Disc {
     }
 
     /// A file's bytes, by path (case-insensitive).
-    fn read(&self, path: &str) -> Result<Vec<u8>> {
+    pub(crate) fn read(&self, path: &str) -> Result<Vec<u8>> {
         let e = self
             .entries
             .iter()

@@ -576,6 +576,215 @@ fn a_single_bsp_keeps_the_structure_node_and_no_bsp_is_an_error() {
     assert!(format!("{:#}", lone.err().unwrap()).contains("bad tag"));
 }
 
+#[test]
+fn templates_drop_effects_decals_and_sky_and_mark_water_and_glass() {
+    let t = surface_from_template;
+    // Not level geometry: sky, clouds, additive glows and light volumes,
+    // decal and overlay layers.
+    for name in [
+        r"shaders\shader_templates\opaque\sky_one",
+        r"shaders\shader_templates\transparent\two_alpha_clouds",
+        r"shaders\shader_templates\transparent\one_add_illum_detail",
+        r"shaders\shader_templates\transparent\add_glow",
+        r"shaders\shader_templates\opaque\overlay",
+        r"shaders\shader_templates\transparent\decal_simple",
+    ] {
+        assert_eq!(t(name), Some(Surface::Sky), "{name}");
+    }
+    assert_eq!(
+        t(r"shaders\shader_templates\water\riverbed"),
+        Some(Surface::Class(Class::Water)),
+        "a water folder"
+    );
+    assert_eq!(
+        t(r"shaders\shader_templates\transparent\waves"),
+        Some(Surface::Class(Class::Water))
+    );
+    assert_eq!(
+        t(r"shaders\shader_templates\transparent\one_alpha_env"),
+        Some(Surface::Class(Class::Glass))
+    );
+    assert_eq!(t(r"shaders\shader_templates\opaque\tex_bump_env"), None);
+    assert_eq!(
+        t(r"shaders\shader_templates\opaque\tex_bump_env_detail_overlay"),
+        None,
+        "a detail overlay blend on a solid surface"
+    );
+    // Whole words only: "address" is not "add", "decals" folder is not
+    // the template's own name.
+    assert_eq!(t(r"shaders\shader_templates\opaque\address_bump"), None);
+    assert_eq!(t(r"shaders\decal\tex_bump"), None);
+
+    // The template decides sky, effects and water; the name decides the
+    // rest; a transparent template makes an unnamed surface glass.
+    let add = Some(r"shaders\shader_templates\transparent\one_add_illum");
+    let alpha = Some(r"shaders\shader_templates\transparent\one_alpha_env");
+    let opaque = Some(r"shaders\shader_templates\opaque\tex_bump");
+    assert_eq!(
+        surface_of(Some(r"a\b\light_long_volume"), add),
+        Surface::Sky
+    );
+    assert_eq!(surface_of(Some(r"a\b\metal_glow"), add), Surface::Sky);
+    assert_eq!(
+        surface_of(Some(r"a\b\metal_grate"), alpha),
+        Surface::Class(Class::Metal)
+    );
+    assert_eq!(
+        surface_of(Some(r"a\b\panel"), alpha),
+        Surface::Class(Class::Glass)
+    );
+    assert_eq!(surface_of(None, alpha), Surface::Class(Class::Glass));
+    assert_eq!(surface_of(Some(r"a\b\panel"), opaque), Surface::Unknown);
+    assert_eq!(surface_of(Some(r"a\b\sky_far"), opaque), Surface::Sky);
+    assert_eq!(surface_of(Some(r"a\b\panel"), None), Surface::Unknown);
+    assert_eq!(surface_of(None, None), Surface::Unknown);
+    // Machines: as the level, except unknown is metal.
+    assert_eq!(machine_surface(Some(r"a\b\beam"), add), Surface::Sky);
+    assert_eq!(
+        machine_surface(Some(r"a\b\panel"), opaque),
+        Surface::Class(Class::Metal)
+    );
+}
+
+#[test]
+fn a_triangle_is_backdrop_by_area() {
+    // Area 0.5 * side²: 4000 at side sqrt(8000).
+    let side = (2.0 * BACKDROP_AREA).sqrt();
+    let right = |s: f32| tri([[0.0; 3], [s, 0.0, 0.0], [0.0, s, 0.0]]);
+    assert!(is_backdrop(&right(side * 1.001)));
+    assert!(!is_backdrop(&right(side * 0.999)));
+    assert!(!is_backdrop(&right(40.0)), "a big multiplayer floor");
+    // Tilted: area, not footprint.
+    let wall = tri([[0.0; 3], [200.0, 0.0, 0.0], [0.0, 0.0, 200.0]]);
+    assert!(is_backdrop(&wall));
+    let sea = Tri {
+        surface: Surface::Class(Class::Water),
+        ..right(1000.0)
+    };
+    assert!(!is_backdrop(&sea), "water stays");
+}
+
+#[test]
+fn a_backdrop_plane_goes_whole_and_the_level_beside_it_stays() {
+    // A huge plane at z = 0 and, sharing its corner (200, 0, 0), a fan of
+    // small coplanar triangles; a small floor beyond them, slightly raised
+    // (out of the plane) but sharing a corner; a wall standing on the
+    // plane's edge; a coplanar triangle of another surface; and a detached
+    // small triangle in the same plane.
+    let huge = tri([[0.0; 3], [200.0, 0.0, 0.0], [0.0, 200.0, 0.0]]);
+    let fan = [
+        tri([[200.0, 0.0, 0.0], [210.0, 0.0, 0.0], [205.0, 5.0, 0.1]]),
+        tri([[210.0, 0.0, 0.0], [220.0, 0.0, 0.0], [205.0, 5.0, 0.1]]),
+    ];
+    let raised = tri([[220.0, 0.0, 0.0], [230.0, 0.0, 2.0], [225.0, 5.0, 2.0]]);
+    let wall = tri([[0.0; 3], [0.0, 0.0, 10.0], [0.0, 10.0, 0.0]]);
+    let metal = Tri {
+        surface: Surface::Class(Class::Metal),
+        ..tri([[0.0, 200.0, 0.0], [5.0, 200.0, 0.0], [0.0, 205.0, 0.0]])
+    };
+    let apart = tri([
+        [500.0, 500.0, 0.0],
+        [510.0, 500.0, 0.0],
+        [500.0, 510.0, 0.0],
+    ]);
+    let tris = vec![fan[0], raised, huge, wall, metal, fan[1], apart];
+    let (level, backdrop) = split_backdrop(tris);
+    let ps = |v: &[Tri]| v.iter().map(|t| t.p).collect::<Vec<_>>();
+    assert_eq!(ps(&backdrop), [fan[0].p, huge.p, fan[1].p]);
+    assert_eq!(ps(&level), [raised.p, wall.p, metal.p, apart.p]);
+    let (level, backdrop) = split_backdrop(Vec::new());
+    assert!(level.is_empty() && backdrop.is_empty());
+}
+
+#[test]
+fn scripts_switch_to_gameplay_bsps_by_number_only() {
+    let source = "(script startup main (begin (switch_bsp 2) (sleep 30)))\n\
+                  (script dormant cine (switch_bsp_by_name level_cine_bsp))\n\
+                  (script static void a (switch_bsp 4 ))\n\
+                  (script static void b (switch_bsp (+ 1 2)))\n\
+                  (script static void c (switch_bsp 7x))\n\
+                  (script static void d (switch_bsp 12))";
+    assert_eq!(
+        scripted_switches(source).into_iter().collect::<Vec<_>>(),
+        [2, 4, 12]
+    );
+    assert!(scripted_switches("").is_empty());
+
+    // BSP 0 always; both ends of every switch volume; scripted targets.
+    let scripted = BTreeSet::from([5]);
+    let g = gameplay_from(&[(0, 1), (1, 2), (2, 1), (-1, 3)], &scripted);
+    assert_eq!(g.into_iter().collect::<Vec<_>>(), [0, 1, 2, 3, 5]);
+    assert_eq!(
+        gameplay_from(&[], &BTreeSet::new())
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [0]
+    );
+}
+
+#[test]
+fn cinematic_bsps_are_flagged_and_left_out_of_the_views_and_backdrops_are_children() {
+    let play = build_mesh(&cuboid([0.0; 3], [10.0, 10.0, 3.0]));
+    let cine = build_mesh(&cuboid([500.0, 500.0, 0.0], [510.0, 510.0, 3.0]));
+    let far = build_mesh(&[tri([
+        [-1000.0, -1000.0, -5.0],
+        [1000.0, -1000.0, -5.0],
+        [0.0, 1000.0, -5.0],
+    ])]);
+    let mut level = Level::build(
+        "lvl",
+        MapKind::Campaign,
+        vec![(0, Ok(play)), (1, Ok(build_mesh(&[]))), (2, Ok(cine))],
+    )
+    .unwrap();
+    assert_eq!(level.mesh.bounds.max[0], 510.0, "every BSP before");
+    level.backdrops.insert(0, far);
+    let level = level.with_cinematic(BTreeSet::from([1, 2]));
+    // The views and frame are the gameplay BSPs only.
+    assert_eq!(level.mesh.triangles(), 12);
+    assert_eq!(level.mesh.bounds.max, [10.0, 10.0, 3.0]);
+    assert!(level.frame.max[0] <= 10.0 * 1.1);
+
+    let glb = level.glb();
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    // The node index is still the scenario's BSP index.
+    assert_eq!(node_names(&doc), ["bsp_0", "backdrop_0", "bsp_2"]);
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 2]));
+    assert_eq!(doc["nodes"][0]["extras"], serde_json::json!({ "bsp": 0 }));
+    assert_eq!(doc["nodes"][0]["children"], serde_json::json!([1]));
+    assert_eq!(
+        doc["nodes"][1]["extras"],
+        serde_json::json!({ "backdrop": true })
+    );
+    assert_eq!(
+        doc["nodes"][2]["extras"],
+        serde_json::json!({ "bsp": 2, "cinematic": true })
+    );
+    assert_eq!(
+        doc["asset"]["extras"]["bounds"]["max"],
+        serde_json::json!([10.0, 10.0, 3.0])
+    );
+
+    // A single BSP: the backdrop hangs off `structure`; marking every BSP
+    // cinematic leaves the views alone.
+    let mut one = Level::build(
+        "mp",
+        MapKind::Campaign,
+        vec![(0, Ok(build_mesh(&cuboid([0.0; 3], [1.0; 3]))))],
+    )
+    .unwrap();
+    one.backdrops.insert(
+        0,
+        build_mesh(&[tri([[0.0; 3], [200.0, 0.0, 0.0], [0.0, 200.0, 0.0]])]),
+    );
+    let one = one.with_cinematic(BTreeSet::from([0]));
+    assert_eq!(one.mesh.triangles(), 12);
+    let (doc, _) = parse_glb(&one.glb());
+    assert_eq!(node_names(&doc), ["structure", "backdrop"]);
+    assert!(doc["nodes"][0].get("extras").is_none());
+}
+
 // ---- Views ---------------------------------------------------------------
 
 fn level(tris: &[Tri]) -> (LevelMesh, Bounds) {
@@ -928,7 +1137,11 @@ fn views_json_and_manifest_entries_follow_the_contract() {
 
 /// Where the disc check writes: `$H2_GEOMETRY_CHECK`, else this default
 /// (outside the repository either way).
-const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry";
+const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/map-quality";
+
+/// The extraction to compare against: the campaign geometry check's art.
+const BEFORE_DIR: &str =
+    "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry/art";
 
 /// Every level the extractor reads, with its kind.
 fn levels(disc: &Disc) -> Vec<(&MapFile, MapKind)> {
@@ -993,7 +1206,7 @@ fn geometry_from_the_disc() {
     );
     for s in &x.stats {
         report += &format!(
-            "{:<20} {:<11} bsps {}/{} machines {:>3} ({:>6} tris) src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
+            "{:<20} {:<11} bsps {}/{} machines {:>3} ({:>6} tris) src {:>7} backdrop {:>4} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
             s.stem,
             format!("{:?}", s.kind.unwrap()),
             s.bsps,
@@ -1001,6 +1214,7 @@ fn geometry_from_the_disc() {
             s.machines,
             s.machine_triangles,
             s.source_triangles,
+            s.backdrop_triangles,
             s.triangles,
             s.vertices,
             s.glb_bytes / 1024,
@@ -1074,11 +1288,36 @@ fn geometry_from_the_disc() {
     let pairs = check.join("cutaway");
     let _ = fs::remove_dir_all(&pairs);
     fs::create_dir_all(&pairs).unwrap();
+    let mut split = String::new();
     for (m, kind) in levels(&disc) {
         let mut stats = MapStats::default();
         let Ok(level) = load_level(&disc, m, kind, &mut stats) else {
             continue;
         };
+        let (mut map, _) = disc.open(m).unwrap();
+        let names: Vec<String> = scenario_bsps(&mut map)
+            .unwrap()
+            .into_iter()
+            .map(|id| {
+                let name = map.tag(id).ok().and_then(|t| t.name.clone());
+                let name = name.unwrap_or_default();
+                name.rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        split += &format!(
+            "{:<20} bsps {} cinematic {:?} backdrop {:?} {names:?}\n",
+            m.name(),
+            level.bsp_count,
+            level.cinematic,
+            level
+                .backdrops
+                .iter()
+                .map(|(i, b)| (*i, b.triangles()))
+                .collect::<Vec<_>>()
+        );
         let (entry, cam) = cameras(&level.mesh, &level.frame).remove(0);
         let (w, h) = (entry.width as usize, entry.height as usize);
         let bg = [0x15, 0x19, 0x1e];
@@ -1099,6 +1338,61 @@ fn geometry_from_the_disc() {
         let mut png = Vec::new();
         assets::png::write_rgba(&mut png, (tw * 2) as u32, th as u32, &pair).unwrap();
         fs::write(pairs.join(format!("{}.png", m.name())), png).unwrap();
+    }
+
+    fs::write(check.join("bsps.txt"), split).unwrap();
+
+    // Before and after: a reference extraction's top and iso-ne views
+    // beside these, a row per map (`H2_GEOMETRY_BEFORE`, an earlier art
+    // directory; skipped when absent).
+    let before = std::env::var("H2_GEOMETRY_BEFORE").unwrap_or_else(|_| BEFORE_DIR.into());
+    let before = Path::new(&before);
+    if before.exists() {
+        let compare = check.join("compare");
+        let _ = fs::remove_dir_all(&compare);
+        fs::create_dir_all(&compare).unwrap();
+        let bg = [0x15, 0x19, 0x1e];
+        let f = 4;
+        let cell = 2048 / f;
+        let mut sheet_rows = Vec::new();
+        for stem in x.maps.keys() {
+            let mut row = vec![0u8; cell * 4 * cell * 4];
+            for px in row.as_chunks_mut::<4>().0 {
+                *px = [bg[0], bg[1], bg[2], 255];
+            }
+            for (col, (dir, view)) in [
+                (before, "top"),
+                (out.as_path(), "top"),
+                (before, "iso-ne"),
+                (out.as_path(), "iso-ne"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let spec = VIEWS.iter().find(|v| v.id == view).unwrap();
+                let path = dir.join("map").join(stem).join(format!("views/{view}.png"));
+                let Ok(img) = image_rgba(&path) else { continue };
+                let (tw, th, t) = thumb(&img, spec.width as usize, spec.height as usize, f, bg);
+                for y in 0..th.min(cell) {
+                    let dst = (y * cell * 4 + col * cell) * 4;
+                    let n = tw.min(cell) * 4;
+                    row[dst..dst + n].copy_from_slice(&t[y * tw * 4..y * tw * 4 + n]);
+                }
+            }
+            let mut png = Vec::new();
+            assets::png::write_rgba(&mut png, (cell * 4) as u32, cell as u32, &row).unwrap();
+            fs::write(compare.join(format!("{stem}.png")), png).unwrap();
+            sheet_rows.push(thumb(&row, cell * 4, cell, 2, bg));
+        }
+        let (rw, rh) = (sheet_rows[0].0, sheet_rows[0].1);
+        let mut sheet = Vec::with_capacity(rw * rh * 4 * sheet_rows.len());
+        for (_, _, r) in &sheet_rows {
+            sheet.extend_from_slice(r);
+        }
+        let mut png = Vec::new();
+        assets::png::write_rgba(&mut png, rw as u32, (rh * sheet_rows.len()) as u32, &sheet)
+            .unwrap();
+        fs::write(check.join("compare.png"), png).unwrap();
     }
 
     // Contact sheet: a row per map, its five views.
@@ -1235,12 +1529,12 @@ fn machines_are_metal_shared_meshes_under_a_machines_node() {
     let mut tris: Vec<Tri> = cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0])
         .into_iter()
         .map(|t| Tri {
-            surface: machine_surface(None),
+            surface: machine_surface(None, None),
             ..t
         })
         .collect();
     tris.extend(flat(-1.0, -1.0, 1.0, 1.0, 3.0, true).map(|t| Tri {
-        surface: machine_surface(Some("objects\\thing\\shaders\\glass_pane")),
+        surface: machine_surface(Some("objects\\thing\\shaders\\glass_pane"), None),
         ..t
     }));
     let model = MachineModel {
@@ -1338,4 +1632,84 @@ fn the_cutaway_never_erases_a_machine() {
         6.0,
         "the machine keeps its top"
     );
+}
+
+/// Diagnostic: per map, BSP and material, the shader template, shader,
+/// drawn triangle count and surface by name alone and with the template;
+/// the materials whose surface the template changed on their own (outside
+/// the repository).
+#[test]
+#[ignore = "needs the disc; writes outside the repository"]
+fn shader_templates_on_the_disc() {
+    let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
+    });
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    let mut out = String::new();
+    let mut changed = String::new();
+    for (m, _) in levels(&disc) {
+        let (mut map, mut files) = disc.open(m).unwrap();
+        for (bi, bsp_id) in scenario_bsps(&mut map).unwrap().into_iter().enumerate() {
+            if bsp_id == TagId::NULL {
+                continue;
+            }
+            let ids = material_shader_ids(&mut map, bsp_id).unwrap();
+            let bsp = StructureRender::read(&mut map, bsp_id).unwrap();
+            let mut count =
+                vec![(0usize, 0f32, BTreeMap::<u16, usize>::new(), 0f32); ids.len() + 1];
+            let materials = Some(bsp.material_count as usize);
+            let mut raw = Raw(&mut files);
+            let mut add = |s: &Section| {
+                let Ok(v) = s.vertices(None) else { return };
+                for part in &s.parts {
+                    let k = usize::from(part.material).min(ids.len());
+                    *count[k].2.entry(part.kind).or_default() += 1;
+                    if !part.is_drawn() {
+                        continue;
+                    }
+                    for t in s.part_triangles(part) {
+                        let [a, b, c] = t.map(|i| v.positions[usize::from(i)]);
+                        let f = cross(sub(b, a), sub(c, a));
+                        let area = dot(f, f).sqrt() / 2.0;
+                        count[k].0 += 1;
+                        count[k].1 += area;
+                        count[k].3 = count[k].3.max(area);
+                    }
+                }
+            };
+            for c in &bsp.clusters {
+                if let Ok(Some(s)) = c.geometry.load(&mut raw, materials) {
+                    add(&s);
+                }
+            }
+            for d in &bsp.instance_definitions {
+                if let Ok(Some(s)) = d.geometry.load(&mut raw, materials) {
+                    add(&s);
+                }
+            }
+            for (i, id) in ids.iter().enumerate() {
+                let shader = map
+                    .tag(*id)
+                    .ok()
+                    .and_then(|t| t.name.clone())
+                    .unwrap_or_default();
+                let template = shader_template(&mut map, *id).unwrap_or_default();
+                let (n, area, kinds, max) = &count[i];
+                let before = surface_from_name(&shader);
+                let after = surface_of(Some(&shader), Some(&template));
+                let line = format!(
+                    "{} bsp{bi} m{i:<3} tris {n:>6} area {area:>9.0} max {max:>8.0} kinds {kinds:?} {before:?} -> {after:?} {template} | {shader}\n",
+                    m.name()
+                );
+                if before != after && *n > 0 {
+                    changed += &line;
+                }
+                out += &line;
+            }
+        }
+    }
+    let keep = std::env::var("H2_GEOMETRY_CHECK").unwrap_or_else(|_| CHECK_DIR.into());
+    fs::create_dir_all(&keep).unwrap();
+    fs::write(Path::new(&keep).join("templates.txt"), out).unwrap();
+    fs::write(Path::new(&keep).join("surfaces-changed.txt"), changed).unwrap();
 }
