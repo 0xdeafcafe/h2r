@@ -5,11 +5,12 @@ use crate::patch::apply;
 use crate::testutil::{G, build};
 use crate::{MAX_GLYPH_BYTES, decode_pixels};
 
-const SETS: [IconSet; 4] = [
+const SETS: [IconSet; 5] = [
     IconSet::Xbox360,
     IconSet::PlayStation,
     IconSet::Keyboard,
     IconSet::Remote,
+    IconSet::Steam,
 ];
 
 /// Every button bound, the way the default bindings would.
@@ -440,6 +441,22 @@ fn sets_replace_only_what_differs_from_the_xbox_pad() {
         [A, B, DpadUp, DpadDown, DpadLeft, DpadRight, Start],
         "what the remote has; the rest stay Xbox"
     );
+    assert_eq!(
+        replaced(IconSet::Steam),
+        [
+            Black,
+            White,
+            DpadUp,
+            DpadDown,
+            DpadLeft,
+            DpadRight,
+            Start,
+            Back,
+            RightStick,
+            RightStickClick
+        ],
+        "bumpers, Start and Back, and the two trackpads"
+    );
     // `replaces` and `icon` agree for every set and button.
     for set in [
         IconSet::Xbox,
@@ -447,6 +464,7 @@ fn sets_replace_only_what_differs_from_the_xbox_pad() {
         IconSet::PlayStation,
         IconSet::Keyboard,
         IconSet::Remote,
+        IconSet::Steam,
     ] {
         for (_, b) in BUTTON_UNITS {
             assert_eq!(
@@ -489,6 +507,11 @@ fn each_set_has_its_own_code_units_inside_the_icon_range() {
         0xe102,
         "X stays Xbox"
     );
+    assert_eq!(shown_unit(IconSet::Steam, 0xe104, &keys), 0xe284, "Black");
+    assert_eq!(shown_unit(IconSet::Steam, 0xe10d, &keys), 0xe28d, "Back");
+    assert_eq!(shown_unit(IconSet::Steam, 0xe111, &keys), 0xe291, "R click");
+    assert_eq!(shown_unit(IconSet::Steam, 0xe100, &keys), 0xe100, "A");
+    assert_eq!(alias_unit(IconSet::Steam, 0xe111), 0xe291);
     // Not a button: untouched in every set.
     for unit in [0x41, 0xe0ff, 0xe112, 0xe204] {
         assert_eq!(shown_unit(IconSet::Keyboard, unit, &keys), unit);
@@ -553,6 +576,7 @@ fn choice_parses_and_resolves() {
         (" playstation ", IconChoice::Set(IconSet::PlayStation)),
         ("KEYBOARD", IconChoice::Set(IconSet::Keyboard)),
         ("remote", IconChoice::Set(IconSet::Remote)),
+        ("Steam", IconChoice::Set(IconSet::Steam)),
     ] {
         assert_eq!(text.parse::<IconChoice>(), Ok(want));
     }
@@ -585,6 +609,10 @@ fn choice_parses_and_resolves() {
     assert_eq!(
         auto.resolve(Some("Apple TV Remote"), true, false),
         IconSet::Remote
+    );
+    assert_eq!(
+        auto.resolve(Some("Steam Controller"), true, false),
+        IconSet::Steam
     );
     assert_eq!(auto.resolve(None, true, true), IconSet::Keyboard);
     assert_eq!(auto.resolve(None, false, true), IconSet::Keyboard);
@@ -657,8 +685,8 @@ fn replacements_add_every_set_beside_the_retail_glyphs() {
     assert!(alias_range_free(&font));
     let reps = replacements(&font, &keys);
     // Two bumpers, ten PlayStation pictures, every keyboard button and the
-    // remote's seven.
-    assert_eq!(reps.len(), 2 + 10 + BUTTON_UNITS.len() + 7);
+    // remote's seven and the Steam Controller's ten.
+    assert_eq!(reps.len(), 2 + 10 + BUTTON_UNITS.len() + 7 + 10);
     let out = apply(&data, &reps).unwrap();
     let patched = Font::parse(&out).unwrap();
     assert_eq!(
@@ -888,4 +916,65 @@ fn remote_icons_are_monochrome_clickpads_a_chevron_and_play_pause() {
         .collect();
     let runs = row.windows(2).filter(|w| w[0] < 8 && w[1] >= 8).count() + usize::from(row[0] >= 8);
     assert_eq!(runs, 3, "triangle, bar, bar across the middle: {row:?}");
+}
+
+#[test]
+fn steam_icons_are_monochrome_with_mirrored_chevrons_and_trackpads() {
+    use Button::*;
+    let keys = KeyLabels::new();
+    let get = |set, b| icon(set, b, 18, &keys).unwrap();
+    let steam = |b| get(IconSet::Steam, b);
+    let opaque = |i: &Icon, x: usize, y: usize| i.pixels[y * usize::from(i.width) + x] >> 12;
+    for b in [
+        Black,
+        White,
+        Start,
+        Back,
+        DpadUp,
+        DpadDown,
+        DpadLeft,
+        DpadRight,
+        RightStick,
+        RightStickClick,
+    ] {
+        let i = steam(b);
+        assert!(
+            i.pixels
+                .iter()
+                .all(|p| p & 0x0fff == 0x0fff || p >> 12 == 0),
+            "{b:?} is white only"
+        );
+    }
+    // The bumpers are the 360's.
+    for b in [Black, White] {
+        assert_eq!(steam(b), get(IconSet::Xbox360, b), "{b:?}");
+    }
+    // Trackpads are the clickpad pictures; look and its click fill the centre.
+    for b in [DpadUp, DpadDown, DpadLeft, DpadRight] {
+        assert_eq!(steam(b), get(IconSet::Remote, b), "{b:?}");
+    }
+    assert_eq!(steam(RightStick), get(IconSet::Remote, A));
+    assert_eq!(steam(RightStickClick), steam(RightStick));
+    assert_eq!(opaque(&steam(RightStick), 8, 9), 15);
+    // Back is the "<" chevron, Remote's B unchanged by the refactor; Start
+    // is its mirror image, ">" in the same ring.
+    let (back, start) = (steam(Back), steam(Start));
+    assert_eq!(back, get(IconSet::Remote, B));
+    assert_ne!(back.pixels, start.pixels);
+    let w = usize::from(back.width);
+    assert_eq!(w, usize::from(start.width));
+    for y in 0..18 {
+        for x in 0..w {
+            assert_eq!(
+                opaque(&back, x, y),
+                opaque(&start, w - 1 - x, y),
+                "({x}, {y})"
+            );
+        }
+    }
+    assert!(opaque(&start, 10, 9) >= 12, "the point is on the right");
+    assert!(
+        opaque(&start, 6, 6) >= 8 && opaque(&start, 6, 12) >= 8,
+        "the arms"
+    );
 }

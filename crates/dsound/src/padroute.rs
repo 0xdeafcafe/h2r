@@ -258,6 +258,19 @@ impl PadSpeakerConfig {
     }
 }
 
+impl PadSpeakerConfig {
+    /// The settings for a Steam Controller's haptics
+    /// (`docs/input/steam-controller.md`): the same routes, but every routed
+    /// sound also stays on the main output, since the trackpads only buzz
+    /// its pitch and loudness.
+    pub fn for_haptics(&self) -> Self {
+        Self {
+            exclusive: false,
+            ..self.clone()
+        }
+    }
+}
+
 /// Tag name globs to outputs.
 #[derive(Clone, Debug)]
 pub struct RouteTable {
@@ -507,6 +520,30 @@ mod tests {
         let r = router(&idx, &PadSpeakerConfig::default());
         assert_eq!(r.classify(&mine), Classified::Start(VoiceOutput::Side));
         assert_eq!(r.classify(&jackal), Classified::Start(VoiceOutput::Main));
+    }
+
+    #[test]
+    fn haptics_get_the_same_sounds_and_the_main_output_keeps_them() {
+        let speaker = RouteTable::new(&PadSpeakerConfig::default());
+        let haptics = RouteTable::new(&PadSpeakerConfig::default().for_haptics());
+        for name in [r"sound\ui\shield_gone", r"sound\weapons\smg\reload_full"] {
+            assert_eq!(speaker.output_for(name), VoiceOutput::Side, "{name}");
+            assert_eq!(haptics.output_for(name), VoiceOutput::Both, "{name}");
+        }
+        for name in [r"sound\characters\jackal\shield_hit", r"music\level\loop"] {
+            assert_eq!(speaker.output_for(name), VoiceOutput::Main, "{name}");
+            assert_eq!(haptics.output_for(name), VoiceOutput::Main, "{name}");
+        }
+        // Exclusions carry over.
+        let cfg = PadSpeakerConfig {
+            exclude: vec!["*reload*".into()],
+            ..PadSpeakerConfig::default()
+        };
+        let t = RouteTable::new(&cfg.for_haptics());
+        assert_eq!(
+            t.output_for(r"sound\weapons\smg\reload_full"),
+            VoiceOutput::Main
+        );
     }
 
     #[test]

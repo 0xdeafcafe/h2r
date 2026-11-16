@@ -46,6 +46,7 @@ pub mod skulls_mp;
 pub mod skulls_mp_row;
 pub mod skulls_screen;
 pub mod speaker_setting;
+pub mod steam_speaker;
 pub mod ui;
 pub mod video_screen;
 pub mod sse;

@@ -479,11 +479,16 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
     let has = |list, kind| model.as_ref().is_some_and(|m| m.index_of(list, &kind).is_some());
     let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
+    // Any row of ours on the Controls list (the speaker's, the Steam
+    // Controller's): its text and press hooks.
+    let with_controls = model
+        .as_ref()
+        .is_some_and(|m| m.count(List::Controls, speaker_row::VANILLA_ROWS) > speaker_row::VANILLA_ROWS);
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
     let with_custom_games = custom_games::row_enabled();
     let with_skulls = model.as_ref().is_some_and(|m| skulls_menu::enabled(m.store()));
-    if !layouts && !with_speaker && !with_video && !with_custom_games && !with_skulls {
+    if !layouts && !with_speaker && !with_controls && !with_video && !with_custom_games && !with_skulls {
         return Ok(());
     }
     let model = model.unwrap_or_else(|| {
@@ -1138,9 +1143,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             .map_err(|e| anyhow::anyhow!("skulls variant row: {e}"))?;
     }
     // The Controls list's row text and row chosen, on the plan: our rows
-    // there (the speaker row) as data, and the layouts' value text around
-    // the original.
-    if with_speaker {
+    // there (the speaker row, the Steam Controller's) as data, and the
+    // layouts' value text around the original.
+    if with_controls {
         let rows = crate::retail_rows::Extension {
             id: "controls-rows",
             title: "Our rows on the Controls list",
