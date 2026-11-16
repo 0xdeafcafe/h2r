@@ -368,17 +368,34 @@ fn default_disc() -> Result<PathBuf> {
         return Ok(p.into());
     }
     let dir = repo_root().join("disc");
-    let mut isos: Vec<PathBuf> = fs::read_dir(&dir)
+    let isos: Vec<PathBuf> = fs::read_dir(&dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| is_disc(p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
         .collect();
-    isos.sort();
-    isos.into_iter().next().with_context(|| {
+    pick_default_disc(isos).with_context(|| {
         format!("no disc given and none found in {} (put your .iso there or set H2_DISC)", dir.display())
     })
+}
+
+/// The Halo 2 disc among `isos`: `halo2.iso` when present, else the first
+/// by name that isn't another game's disc this repo also reads (`halo1.iso`,
+/// the Map Pack's `mappack.iso`).
+fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
+    const OTHER_DISCS: [&str; 2] = ["halo1.iso", "mappack.iso"];
+    let name = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+    };
+    if let Some(p) = isos.iter().find(|p| name(p) == "halo2.iso") {
+        return Some(p.clone());
+    }
+    isos.sort();
+    isos.into_iter().find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
 }
 
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
@@ -869,6 +886,16 @@ fn emit_run_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_disc_prefers_halo2_and_skips_other_games() {
+        let p = |n: &str| PathBuf::from("disc").join(n);
+        let all = vec![p("halo1.iso"), p("halo2.iso"), p("mappack.iso")];
+        assert_eq!(pick_default_disc(all), Some(p("halo2.iso")));
+        let renamed = vec![p("halo1.iso"), p("my halo 2.iso"), p("mappack.iso")];
+        assert_eq!(pick_default_disc(renamed), Some(p("my halo 2.iso")));
+        assert_eq!(pick_default_disc(vec![p("halo1.iso")]), None);
+    }
 
     /// Opening a disc registers it, so any exporter's `OutDir` refuses it even
     /// under `--force` and even when the file has an innocent name.

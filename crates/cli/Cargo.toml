@@ -20,6 +20,8 @@ map.workspace = true
 xiso.workspace = true
 # Halo 1 maps and disc (`h2 h1`, `h2 import halo1`).
 h1map = { path = "../h1map" }
+# Halo 1 multiplayer maps converted (`h2 h1 convert`).
+h1convert = { path = "../h1convert" }
 movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true

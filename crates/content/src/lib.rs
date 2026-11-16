@@ -29,7 +29,7 @@ pub mod store;
 pub use canonical::{NotInteger, canonicalize};
 pub use hash::{BadHex, Hasher, Sha256};
 pub use id::MapId;
-pub use manifest::{Manifest, ManifestError};
+pub use manifest::{Manifest, ManifestError, Origin, Variant};
 pub use resolve::{
     ACTIVE_FILE, BaseRef, CACHE_DIR, DEFAULT_CACHE_CAP, Data, DiscHashes, Library, Package,
     ResolveError, Resolved, repair_checksum,
