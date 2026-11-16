@@ -296,3 +296,77 @@ fn guest_adapter_read_append_matches_read_and_keeps_the_fault() {
     assert_eq!(out, before);
     assert_eq!(m.take_fault().unwrap().reason, FaultReason::Unmapped);
 }
+
+/// The stream layout a program draw gets follows the attribute format words
+/// and the strides bound at that draw, whatever the device derived for the
+/// draws before it: formats rewritten in place under the same handle, a
+/// stream rebound with another stride, a register moved to another stream,
+/// the original formats again, and a fixed-function draw in between. Each
+/// draw matches the one a fresh device makes after the same changes.
+#[test]
+fn layout_follows_formats_and_strides_whatever_came_before() {
+    // The program's formats as the device reads them (the selected
+    // shader object's copy), and the source the next selection copies.
+    fn word(m: &mut SparseMemory, reg: u32, j: u32, w: u32) {
+        let obj = d3d::GuestLayout::HALO2.static_vertex_shader;
+        m.write_u32(obj + 0x14 + 16 * reg + 4 * j, w).unwrap();
+        m.write_u32(VAF + 16 * reg + 4 * j, w).unwrap();
+    }
+    fn rebind(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, stride0: u32) {
+        bind(d, m, set_headers(0), 0);
+        m.write_u32(STREAM_INPUTS + 4, stride0).unwrap();
+        let handle = d3d::GuestLayout::HALO2.static_vertex_shader | 1;
+        d.set_vertex_shader_input(m, handle, 3, STREAM_INPUTS)
+            .unwrap();
+    }
+    // Each step changes something and leaves it changed for the next.
+    let steps: [fn(&mut Device<RecordingBackend>, &mut SparseMemory); 8] = [
+        |d, m| rebind(d, m, 16),
+        |d, m| rebind(d, m, 24), // same formats, another stride
+        |_, m| {
+            word(m, 9, 2, 0x02); // texcoord off
+            word(m, 3, 1, 4); // colour at offset 4
+        },
+        |d, m| rebind(d, m, 32),
+        |_, m| word(m, 3, 0, 2), // colour from stream 2
+        |d, m| rebind(d, m, 16),
+        |d, m| {
+            d.set_vertex_shader(m, fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+            d.set_stream_source(m, 0, vb_header(0, 0), 20).unwrap();
+        },
+        |d, m| {
+            word(m, 9, 2, 0x22);
+            word(m, 3, 0, 1);
+            word(m, 3, 1, 0);
+            rebind(d, m, 16);
+        },
+    ];
+    let draw = |d: &mut Device<RecordingBackend>, m: &mut SparseMemory| {
+        d.draw_vertices(m, TRIANGLESTRIP, 0, 3).unwrap();
+    };
+    let (mut warm, mut wm) = setup(RecordingBackend::new());
+    for (k, step) in steps.iter().enumerate() {
+        step(&mut warm, &mut wm);
+        draw(&mut warm, &mut wm);
+        let (mut cold, mut cm) = setup(RecordingBackend::new());
+        for s in &steps[..=k] {
+            s(&mut cold, &mut cm);
+        }
+        draw(&mut cold, &mut cm);
+        let w = draws(std::mem::take(&mut warm.backend.calls))
+            .pop()
+            .unwrap();
+        let c = draws(std::mem::take(&mut cold.backend.calls))
+            .pop()
+            .unwrap();
+        assert_eq!(w.layout, c.layout, "step {k}");
+        let strides = |d: &ResolvedDraw| {
+            d.streams
+                .iter()
+                .map(|s| (s.stride, s.data.len()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(strides(&w), strides(&c), "step {k}");
+        assert_eq!(w.shader.vertex, c.shader.vertex, "step {k}");
+    }
+}

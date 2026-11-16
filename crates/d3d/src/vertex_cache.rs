@@ -23,7 +23,7 @@
 //! Index lists are kept the same way ([`IndexCache`]): a clean list comes
 //! back already scanned and rebased onto its vertex window.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::backend::{CachedBytes, CachedIndices};
@@ -102,7 +102,7 @@ impl<T: Snapshot> RangeCache<T> {
     /// An empty cache keeping at most `budget` bytes of snapshots.
     pub fn new(budget: usize) -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: HashMap::default(),
             bytes: 0,
             budget,
             tick: 0,
