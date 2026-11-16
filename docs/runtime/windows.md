@@ -41,7 +41,7 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 
 | | macOS | Windows |
 | --- | --- | --- |
-| compile | clang `-target arm64-apple-macos11` | the same clang, `-target x86_64-pc-windows-msvc -fms-runtime-lib=dll -isystem $H2_XWIN/crt/include -isystem $H2_XWIN/sdk/include/ucrt` |
+| compile | clang `-target arm64-apple-macos11` | the same clang, `-target x86_64-pc-windows-msvc -fms-runtime-lib=static -isystem $H2_XWIN/crt/include -isystem $H2_XWIN/sdk/include/ucrt` |
 | objects | `shard.arm64.<key>.o` | `shard.x86_64-windows.<key>.o` (keyed apart) |
 | archive | libtool | `llvm-lib` (Apple's libtool takes only Mach-O) |
 | link | `clang -dynamiclib` | `lld-link /dll /noimplib`, against the splat's CRT, UCRT and um libs |

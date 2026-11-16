@@ -1,0 +1,2 @@
+# build.sh output: the package, the signed .msix and its certificate.
+/build/

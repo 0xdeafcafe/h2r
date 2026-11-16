@@ -5837,6 +5837,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "uwp-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "apple-host",
+ "d3d",
+ "png",
+ "sha2",
+ "vfs",
+ "windows",
+ "windows-core",
+ "windows-numerics",
+]
+
+[[package]]
 name = "variants"
 version = "0.1.0"
 dependencies = [

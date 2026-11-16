@@ -130,17 +130,11 @@ fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols()
             .collect();
         want.sort();
         assert_eq!(names(&readobj(&readobj_tool, &["--coff-exports"], dll)), want, "{}", dll.display());
-        // One C runtime, the DLL one the Rust host links too, and the
-        // kernel: no static CRT, nothing else.
+        // The static C runtime (emit::compile::windows_target_args): no
+        // vcruntime140.dll, which an Xbox app container lacks, and no UCRT
+        // DLLs; the kernel only.
         let imports = names(&readobj(&readobj_tool, &["--coff-imports"], dll));
-        assert!(imports.iter().any(|i| i.eq_ignore_ascii_case("VCRUNTIME140.dll")), "{imports:?}");
-        assert!(
-            imports.iter().all(|i| {
-                let i = i.to_ascii_lowercase();
-                i == "kernel32.dll" || i == "vcruntime140.dll" || i.starts_with("api-ms-win-crt-")
-            }),
-            "{imports:?}"
-        );
+        assert!(imports.iter().all(|i| i.eq_ignore_ascii_case("KERNEL32.dll")), "{imports:?}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
