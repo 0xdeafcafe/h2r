@@ -2,8 +2,10 @@
 // is up (so canvas y is flipped), z is height.
 
 import type { MapOutline } from "../api/types";
-import type { SampledPlayer } from "../state/frames";
+import type { SampledPlayer, SampledVehicle } from "../state/frames";
+import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
+import type { LiveShot } from "./shots";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -27,6 +29,96 @@ export interface Scene {
   flat?: boolean;
   /** Player index under the pointer, when the canvas is tracking one. */
   hover?: number | null;
+  /** AI-controlled bipeds (campaign): small squares in their side's colour, never named. */
+  actors?: SampledPlayer[];
+  /** Vehicles in use: an outline of about their size under whoever is in them. */
+  vehicles?: SampledVehicle[];
+  /** Shots on screen now: a fading line from the player along their aim. */
+  shots?: LiveShot[];
+  /** Players to show as firing with a steady, brighter aim line (reduced
+   *  motion, where nothing flashes). */
+  firing?: ReadonlySet<number>;
+}
+
+/** The line a shot draws on a 2D map: from (x0, y0) to (x1, y1), bright at
+ *  the player and fading out along its length, over a dark under-stroke so
+ *  it reads on any picture. */
+export function strokeTracer(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, alpha: number, width = 2) {
+  if (!(alpha > 0) || (x0 === x1 && y0 === y1)) return;
+  const fade = (rgb: string, a: number) => {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    g.addColorStop(0, `rgba(${rgb}, ${a})`);
+    g.addColorStop(1, `rgba(${rgb}, 0)`);
+    return g;
+  };
+  ctx.lineCap = "round";
+  ctx.globalAlpha = Math.min(1, alpha);
+  for (const [style, w] of [[fade("0, 0, 0", 0.55), width + 2], [fade("255, 240, 190", 1), width]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A vehicle seen from above: a rounded outline `len` by `wid` pixels,
+ *  turned to `angle` (canvas radians), with a notch of a nose. */
+export function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, len: number, wid: number, colour: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.roundRect(-len / 2, -wid / 2, len, wid, Math.min(len, wid) * 0.25);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+  ctx.fill();
+  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = colour;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(len / 2, -wid * 0.3); ctx.lineTo(len / 2 + wid * 0.35, 0); ctx.lineTo(len / 2, wid * 0.3);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** An AI-controlled biped: a small square, so it is never taken for a player's dot. */
+export function drawActor(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, colour: string) {
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(x - r, y - r, r * 2, r * 2);
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** The colour a vehicle's outline takes: its first player's, else its first actor's side, else grey. */
+export function vehicleColour(id: string, players: readonly SampledPlayer[], actors: readonly SampledPlayer[] | undefined, roster: Map<number, RosterEntry>): string {
+  const p = players.find((q) => q.alive && q.vehicle === id);
+  if (p) return roster.get(p.index)?.colour ?? "#999";
+  const a = actors?.find((q) => q.vehicle === id);
+  return a ? actorColour(a.actor?.team) : "#9aa3ab";
+}
+
+/** A short line from a dot the way its player is looking. */
+export function strokeAim(ctx: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, from: number, to: number, colour: string, hot = false) {
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return;
+  const ux = dx / len, uy = dy / len;
+  ctx.lineCap = "round";
+  for (const [style, w] of [["rgba(0, 0, 0, 0.7)", hot ? 4.5 : 3.5], [hot ? "rgb(255, 240, 190)" : colour, hot ? 2.5 : 1.5]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x + ux * from, y + uy * from);
+    ctx.lineTo(x + ux * to, y + uy * to);
+    ctx.stroke();
+  }
 }
 
 export interface View { cx: number; cy: number; scale: number; ready: boolean }
@@ -125,8 +217,33 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   }
   ctx.globalAlpha = 1;
 
-  // Players.
   const r = s.flat ? (s.mini ? 3 : 5) : s.mini ? 3.5 : 8;
+
+  // Shots: a fading line from the player along their aim (not on thumbnails).
+  if (!s.mini) {
+    for (const shot of s.shots ?? []) {
+      const [ax, ay] = shot.aim, flatLen = Math.hypot(ax, ay);
+      if (flatLen < 0.05) continue; // straight up or down: nothing to draw from above
+      const len = Math.max(46, 9 * v.scale) * flatLen;
+      const x = sx(shot.x), y = sy(shot.y);
+      strokeTracer(ctx, x + (ax / flatLen) * r, y - (ay / flatLen) * r, x + (ax / flatLen) * (r + len), y - (ay / flatLen) * (r + len), shot.alpha);
+    }
+  }
+
+  // Vehicles, then the AI, under the players.
+  if (!s.mini) {
+    for (const veh of s.vehicles ?? []) {
+      const [len, wid] = vehicleBox(veh.kind);
+      const k = Math.max(v.scale, 9 / wid);
+      drawVehicle(ctx, sx(veh.x), sy(veh.y), Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, vehicleColour(veh.id, s.players, s.actors, s.roster));
+    }
+  }
+  for (const a of s.actors ?? []) {
+    if (!a.alive || a.vehicle) continue;
+    drawActor(ctx, sx(a.x), sy(a.y), s.mini ? 1.5 : 2.5, actorColour(a.actor?.team));
+  }
+
+  // Players.
   const sorted = s.players.slice().sort((a, b) => a.z - b.z);
   for (const p of sorted) {
     if (!p.alive) continue;
@@ -138,6 +255,11 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     // Facing: a soft wedge ahead of the dot. Yaw 0 = +x, counter-clockwise.
     const a = -p.yaw;
     const picked = s.highlight === p.index || s.hover === p.index;
+    // Where they are looking, when the frame says: a short line from the dot.
+    if (!s.mini && p.aim) {
+      const hot = s.firing?.has(p.index) ?? false;
+      strokeAim(ctx, x, y, p.aim[0], -p.aim[1], r, r + (hot ? 22 : 11) * Math.hypot(p.aim[0], p.aim[1]), colour, hot);
+    }
     if (s.flat) {
       // Flat style: a small solid dot with a dark hairline, no wedge or
       // nose; the label only for the hovered or selected player.

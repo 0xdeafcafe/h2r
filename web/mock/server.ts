@@ -8,6 +8,12 @@
 // pictures for the maps that have an arena) is served under /art/game either
 // way, in a manifest of its own when there is no game art;
 // H2_MOCK_MAP_GEOMETRY=0 turns it off, and then /art/game answers 404.
+// H2_MOCK_MODELS=1 adds stand-in player and weapon models (mock/models.ts:
+// block figures) to the manifest; without it players are capsules.
+// H2_MOCK_ACTORS=1 puts the campaign's AI and vehicles (mock/campaign.ts)
+// into every game's frames, not only games whose mode is "campaign".
+// H2_MOCK_INDOOR=1 shuts each arena's glb inside a busy building (walls, a
+// ceiling, an upper floor, pillars, machines), for the 3D view's cutaways.
 
 import type { ServerWebSocket } from "bun";
 import type { Frame, WireEvent } from "../src/api/types";
@@ -18,6 +24,8 @@ import { mockGameArt } from "./gameart";
 import { Social } from "./social";
 import { Sessions } from "./sessions";
 import { mockMapGeometry } from "./arena";
+import { mockModels } from "./models";
+import { campaignHook } from "./campaign";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -34,11 +42,16 @@ world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") socia
 const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0));
 sessions.seed();
 setInterval(() => sessions.step(), 2500);
+// AI and vehicles in the frames of campaign games; H2_MOCK_ACTORS=1 puts them in every game.
+const actorsEverywhere = !!process.env.H2_MOCK_ACTORS && process.env.H2_MOCK_ACTORS !== "0";
+world.frameHooks.push(campaignHook(actorsEverywhere ? () => true : undefined));
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
-const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry();
+const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
+const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor });
+const models = process.env.H2_MOCK_MODELS && process.env.H2_MOCK_MODELS !== "0" ? mockModels() : null;
 
 interface StreamData {
   kind: "stream";
@@ -247,11 +260,11 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   if (path.startsWith("/art/game/")) {
     const name = decodeURIComponent(path.slice("/art/game/".length));
-    if (name === "manifest.json" && (art || geometry)) {
+    if (name === "manifest.json" && (art || geometry || models)) {
       const base = art?.manifest ?? { version: 1, source: "mock-geometry", images: {} };
-      return json(geometry ? { ...base, maps: geometry.maps } : base);
+      return json({ ...base, ...(geometry ? { maps: geometry.maps } : {}), ...(models ? { models: models.models } : {}) });
     }
-    const f = geometry?.file(name) ?? (art ? await art.file(name) : null);
+    const f = models?.file(name) ?? geometry?.file(name) ?? (art ? await art.file(name) : null);
     return f
       ? new Response(f.bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": f.type, "cache-control": "max-age=3600", ...CORS } })
       : err(404, "not_found", "no game art");

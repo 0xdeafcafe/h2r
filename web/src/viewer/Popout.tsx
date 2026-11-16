@@ -36,9 +36,9 @@ export default function Popout() {
   );
 }
 
-function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: () => string | null; mode?: ViewMode; ao?: boolean }) => import("solid-js").JSX.Element }) {
+function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: () => string | null; mode?: ViewMode; ao?: boolean; cut?: number | null; seeThrough?: boolean }) => import("solid-js").JSX.Element }) {
   const geometry = geometryFor(() => props.game.map);
-  const [params] = useSearchParams<{ cam?: string; ao?: string }>();
+  const [params] = useSearchParams<{ cam?: string; ao?: string; cut?: string; see?: string }>();
   createEffect(() => { document.title = `3D view · ${mapTitle(props.game.map)} · h2 live`; });
   return (
     <>
@@ -53,6 +53,9 @@ function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: (
             glb: () => geometry()?.glb ?? null,
             mode: params.cam === "top" || params.cam === "follow" ? params.cam : undefined,
             ao: params.ao !== "0",
+            // `?cut=<height>` opens with the height cut there; `?see=0` without the see-through.
+            cut: params.cut !== undefined && Number.isFinite(Number(params.cut)) ? Number(params.cut) : null,
+            seeThrough: params.see !== "0",
           })}
         </Suspense>
       </div>

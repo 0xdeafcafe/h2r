@@ -15,6 +15,9 @@ const TAGS = [
   "Tofu Tank", "Lemon Drop", "Grumbles", "Sprinkles", "Bean Machine", "Moss", "Pancake Pal",
 ];
 const WEAPONS = ["blaster", "rifle", "sniper", "shotgun", "rocket", "sword", "grenade", "pistol", "smg"];
+// What players hold in frames: invented stems, with rounds per frame while firing.
+const HELD: Array<[string, number]> = [["battle_rifle", 1], ["smg", 2], ["shotgun", 1], ["sniper_rifle", 1], ["plasma_rifle", 1], ["rocket_launcher", 1]];
+const SPECIES = ["spartan", "spartan", "elite"];
 const CONSOLES = ["Den", "Basement", "Lounge", "Bedroom"];
 const VARIANTS_FFA = ["Free for All", "Rumble", "Slayer", "Snowball Fight", "Oddball Party", "Hill Hopping"];
 const VARIANTS_TEAM = ["Team Tag", "Team Slayer", "Team Rumble", "Capture the Cushion", "Big Team Picnic", "Team Territories"];
@@ -43,6 +46,15 @@ interface SimPlayer {
   respawnAt: number;
   speed: number;
   score: PlayerScore;
+  species: string;
+  /** Index into HELD. */
+  held: number;
+  /** Frames left in the burst being fired, and frames to the next one. */
+  burst: number;
+  /** Shots since the last recorded (1 Hz) frame. */
+  shotsSince: number;
+  /** Aim pitch, radians. */
+  pitch: number;
 }
 
 interface SimGame {
@@ -68,6 +80,10 @@ interface SimGame {
 
 export type Listener = { onEvent(ev: WireEvent): void; onFrame(f: Frame): void };
 
+/** Something that adds to a game's frame before it is sent and recorded
+ *  (mock/campaign.ts puts AI and vehicles in). */
+export type FrameHook = (frame: Frame, game: { id: string; map: MockMap; tick: number; mode?: string }) => void;
+
 let rngState = 0x2f6e2b1;
 export function rand(): number {
   // mulberry32, deterministic per run so screenshots are comparable.
@@ -88,6 +104,7 @@ export class World {
   readonly outlines = new Map<string, MapOutline>();
   readonly files = new Map<string, { bytes: Uint8Array<ArrayBuffer>; sha256: string }>();
   readonly listeners = new Set<Listener>();
+  readonly frameHooks: FrameHook[] = [];
   /** Virtual clock in ms; real time once caught up. */
   now = Date.now();
   live = false;
@@ -215,6 +232,7 @@ export class World {
           p, pos: [w[0], w[1], w[2]] as [number, number, number], yaw: rand() * Math.PI * 2,
           target: Math.floor(rand() * map.waypoints.length), alive: true, respawnAt: 0, speed: 3.5 + rand() * 2.5,
           score: { index: p.index, score: 0, kills: 0, deaths: 0, assists: 0 },
+          species: SPECIES[(p.index + (p.team ?? 0)) % SPECIES.length]!, held: Math.floor(rand() * HELD.length), burst: 0, shotsSince: 0, pitch: 0,
         };
       }),
       teams: new Map(team_play ? [[0, 0], [1, 0]] : []),
@@ -246,6 +264,8 @@ export class World {
           sp.pos = [w[0], w[1], w[2]];
           sp.target = Math.floor(rand() * wps.length);
           sp.alive = true;
+          sp.held = Math.floor(rand() * HELD.length);
+          sp.burst = 0;
         }
         continue;
       }
@@ -266,21 +286,44 @@ export class World {
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       sp.yaw += diff * 0.25;
+      // They look where they face, a little up or down, and now and then fire a burst.
+      sp.pitch = Math.sin(g.tick / 37 + sp.p.index * 1.7) * 0.28;
+      if (sp.burst <= 0 && rand() < 0.35 * dt) sp.burst = 2 + Math.floor(rand() * 7);
     }
 
     if (rand() < g.killRate * dt) this.kill(g);
 
     const frame: Frame = {
       game_id: g.id, tick: g.tick,
-      players: g.players.map((sp) => ({
-        index: sp.p.index, alive: sp.alive,
-        pos: [round(sp.pos[0]), round(sp.pos[1]), round(sp.pos[2])], yaw: round(sp.yaw), vehicle: null,
-      })),
+      players: g.players.map((sp) => {
+        const cp = Math.cos(sp.pitch);
+        const p: Frame["players"][number] = {
+          index: sp.p.index, alive: sp.alive,
+          pos: [round(sp.pos[0]), round(sp.pos[1]), round(sp.pos[2])], yaw: round(sp.yaw), vehicle: null,
+          species: sp.species, weapon: HELD[sp.held]![0],
+          aim: [round4(Math.cos(sp.yaw) * cp), round4(Math.sin(sp.yaw) * cp), round4(Math.sin(sp.pitch))],
+        };
+        if (sp.alive && sp.burst > 0) {
+          sp.burst -= 1;
+          p.shots = HELD[sp.held]![1];
+          sp.shotsSince += p.shots;
+        }
+        return p;
+      }),
     };
+    for (const hook of this.frameHooks) hook(frame, g);
     if (this.live) for (const l of this.listeners) l.onFrame(frame);
     if (g.tick % TICKS === 0) {
-      g.frames.push(frame);
-      this.append(`game-${g.id}`, [{ type: "GameFrame", data: { ...frame, source: `acct:${g.host.xuid}@${HOST}` } }], null);
+      // The recorded frame is one a second: it carries the second's shots (at
+      // most 64), so a replay still shows who was firing.
+      const kept: Frame = { ...frame, players: frame.players.map((p, i) => {
+        const sp = g.players[i]!, shots = Math.min(64, sp.shotsSince);
+        sp.shotsSince = 0;
+        const { shots: _, ...rest } = p;
+        return shots ? { ...rest, shots } : rest;
+      }) };
+      g.frames.push(kept);
+      this.append(`game-${g.id}`, [{ type: "GameFrame", data: { ...kept, source: `acct:${g.host.xuid}@${HOST}` } }], null);
     }
 
     const leader = g.team_play ? Math.max(...g.teams.values()) : Math.max(...g.players.map((p) => p.score.score));
@@ -305,6 +348,7 @@ export class World {
     victim.alive = false;
     victim.respawnAt = g.tick + 3 * TICKS;
     victim.score.deaths += 1;
+    if (killer && killer.burst <= 0) killer.burst = 3;
     if (kind === "kill" && killer) {
       killer.score.kills += 1;
       killer.score.score += 1;
@@ -436,4 +480,8 @@ function dist(a: SimPlayer, b: SimPlayer) {
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
+}
+
+function round4(n: number) {
+  return Math.round(n * 1e4) / 1e4;
 }
