@@ -184,6 +184,11 @@ pub struct ShaderProgram {
     pub vs_entry: String,
     /// Fragment entry point.
     pub fs_entry: String,
+    /// The fragment entry the pixel-count pass uses instead of its own
+    /// (see [`crate::occlusion`]), for a program whose fragment stage
+    /// writes the depth: it must write the same depth and 1 in red. `None`
+    /// counts with the rasterized depth.
+    pub count_entry: Option<String>,
 }
 
 /// Builds a wgpu render pipeline from a key and the program it names.

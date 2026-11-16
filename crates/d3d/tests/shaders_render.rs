@@ -938,6 +938,72 @@ fn w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range() {
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
 
+/// Halo's lens-flare occlusion test (the callback `0x2e540` that
+/// `0x20bb0` runs between `BeginVisibilityTest` and `EndVisibilityTest`):
+/// a screen-space quad around the flare drawn through a vertex program,
+/// W-buffered, depth tested LessEqual without writes, its passing samples
+/// divided by the quad's area. The scene's depth holds w (the W-buffered
+/// programs write it from the fragment stage), so the count pass must test
+/// w too. Testing the rasterized z (here `0.9 * D24`, above every stored
+/// w) counted nothing in front of geometry, so flares there never showed:
+/// the Armory's look-test light (`looker_light_red`, a lens flare on a
+/// model-less device) stayed dark.
+#[test]
+fn w_buffered_visibility_test_counts_against_the_stored_w() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[2]).unwrap();
+    const D24: f32 = 16_777_215.0;
+    const DEV: u32 = 0x0040_4FE0;
+    let green = [0.0, 1.0, 0.0, 1.0];
+    // The wall: w = 10, z small.
+    let _ = depth_quads(&mut d, &mut m, &[(0.0, W as f32, 0.1 * D24, 10.0, green)]);
+    // One 16x16 test quad at window (8..24, 8..24) and w, counted.
+    let test = |d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory, w: f32, index: u32| {
+        let mut put = m.read_u32(DEV).unwrap();
+        // 0x20cec: CLEAR_REPORT_VALUE 1, SET_ZPASS_PIXEL_COUNT_ENABLE 1.
+        for word in [(2 << 18) | 0x17C8, 1, 1] {
+            m.write_u32(put, word).unwrap();
+            put += 4;
+        }
+        m.write_u32(DEV, put).unwrap();
+        let v = |x: f32, y: f32| [x, y, 0.9 * D24, w, 1.0, 1.0, 1.0, 1.0];
+        let verts = [
+            v(8.0, 8.0),
+            v(24.0, 8.0),
+            v(8.0, 24.0),
+            v(24.0, 8.0),
+            v(24.0, 24.0),
+            v(8.0, 24.0),
+        ];
+        // The quads share the vertex buffer: report the rewrite.
+        d.note_write(0x8000_0000 | VB_DATA, 6 * 32);
+        draw_pass(d, m, &plain_program(), &verts, 0x203, false); // LESSEQUAL
+        let r = d3d::abi::Regs {
+            eax: index,
+            ..d3d::abi::Regs::default()
+        };
+        call(d, m, 0x3f85d0, r, &[]).unwrap();
+        d.set_visibility_poll(false);
+        d.get_visibility_test_result(m, index)
+            .unwrap()
+            .expect("waited")
+            .count
+    };
+    assert_eq!(test(&mut d, &mut m, 20.0, 1), 0, "behind the wall: none");
+    assert_eq!(
+        test(&mut d, &mut m, 1.0, 2),
+        16 * 16,
+        "in front of the wall: every sample"
+    );
+    assert_eq!(test(&mut d, &mut m, 20.0, 3), 0, "behind again");
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
+
 // Hardware constant registers for the skinning programs below.
 const SK_VIEWPROJ: u8 = 0;
 const SK_SCALE: u8 = 4;
