@@ -163,6 +163,9 @@ replays show the firing of the whole second.
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
+| `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
+| `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
+| `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
 
 ## Write endpoints
 
@@ -176,7 +179,8 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
-| `POST /v1/invites` | (operator token) | create a single-use invite |
+| `POST /v1/invites` | none with an operator token (`?days=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token | create a single-use invite; 201 `{invite}` (admin: also `jti`, `exp`, `position`) (live-admin.md §5) |
+| `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |

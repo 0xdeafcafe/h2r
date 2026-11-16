@@ -146,7 +146,7 @@ pub fn router(live: Arc<Live>) -> Router {
     router_with_web(live, None)
 }
 
-fn api_router(live: Arc<Live>) -> Router {
+fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
     let files = Router::new()
         .route(
             "/v1/titles/{title}/files/{name}",
@@ -195,7 +195,16 @@ fn api_router(live: Arc<Live>) -> Router {
         )
         .route("/v1/presence", get(presence))
         .route("/v1/presence/ping", post(ping))
-        .route("/v1/invites", post(create_invite))
+        .route(
+            "/v1/invites",
+            post(create_invite).get(crate::invites::get_invites),
+        )
+        .route(
+            "/v1/invites/{jti}/revoke",
+            post(crate::invites::revoke_invite),
+        )
+        .route("/v1/server", get(crate::status::get_server))
+        .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/events", get(list_events).post(post_event))
         .route("/v1/stream", get(stream))
         .route(
@@ -222,6 +231,7 @@ fn api_router(live: Arc<Live>) -> Router {
                 .with_status(StatusCode::METHOD_NOT_ALLOWED)
         })
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(axum::Extension(facts))
         .layer(middleware::from_fn(cors))
         .with_state(live)
 }
@@ -251,7 +261,12 @@ pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router
 /// The API plus everything in `site`. `/art/game/*` answers a JSON 404
 /// when there is no game art.
 pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
-    let mut api = api_router(live);
+    let mut api = api_router(
+        live,
+        crate::status::SiteFacts {
+            game_art: site.game_art.clone(),
+        },
+    );
     api = match &site.game_art {
         Some(art) => api.merge(crate::art::routes(art)),
         None => api.route(
@@ -704,11 +719,23 @@ async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
     ))
 }
 
+/// `POST /v1/invites`: with a signed `InviteCreated` event as the body, an
+/// admin account's invite ([`crate::invites::create`]); with no body, the
+/// operator's (`?days=`).
 async fn create_invite(
     State(live): Shared,
     headers: HeaderMap,
     Params(p): Params<HashMap<String, String>>,
+    body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
+    let body = body_bytes(body)?;
+    if !body.iter().all(u8::is_ascii_whitespace) {
+        let jws = std::str::from_utf8(&body)
+            .map_err(|_| invalid("the body must be a compact JWS"))?
+            .trim();
+        let v = crate::invites::create(&live, bearer(&headers), jws).await?;
+        return Ok(json(StatusCode::CREATED, &v));
+    }
     let days = p
         .get("days")
         .map(|d| d.parse().map_err(|_| invalid("days must be a number")))

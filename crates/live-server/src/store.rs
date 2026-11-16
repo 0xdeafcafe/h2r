@@ -153,6 +153,11 @@ pub trait EventStore: Send + Sync + 'static {
 
     /// A wake source that fires after appends commit.
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError>;
+
+    /// `postgres`, `file` or `memory`, for the admin status.
+    fn kind(&self) -> &'static str {
+        "unknown"
+    }
 }
 
 /// The in-memory log, for tests.
@@ -203,6 +208,10 @@ impl Wake for MemoryWake {
 
 #[async_trait]
 impl EventStore for MemoryStore {
+    fn kind(&self) -> &'static str {
+        "memory"
+    }
+
     async fn append(
         &self,
         events: Vec<NewEvent>,

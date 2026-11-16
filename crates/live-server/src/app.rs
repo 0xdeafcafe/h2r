@@ -149,6 +149,10 @@ pub struct Live {
     pub(crate) session_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
+    pub(crate) invites: Arc<crate::invites::Invites>,
+    /// Unix seconds the service started.
+    pub(crate) started_at: i64,
+    data_dir: crate::status::DataDir,
     dispatcher: tokio::task::AbortHandle,
 }
 
@@ -367,6 +371,8 @@ impl Live {
         let mut dispatcher = Dispatcher::new(store.clone());
         dispatcher.subscribe(model.clone());
         dispatcher.subscribe(admins.clone());
+        let invites = Arc::new(crate::invites::Invites::default());
+        dispatcher.subscribe(invites.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -388,6 +394,9 @@ impl Live {
             session_writes: Default::default(),
             local_signin: Default::default(),
             relays: Default::default(),
+            invites,
+            started_at: now(),
+            data_dir: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
         };
@@ -417,6 +426,16 @@ impl Live {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// Records where the server keeps its key and log, for the admin
+    /// status (shown only to callers on this machine). Set once.
+    pub fn set_data_dir(&self, dir: &std::path::Path) {
+        let _ = self.data_dir.set(dir.to_path_buf());
+    }
+
+    pub fn data_dir(&self) -> Option<&std::path::Path> {
+        self.data_dir.get().map(|p| p.as_path())
     }
 
     /// Makes an account an admin until the process stops: the embedded
@@ -569,6 +588,7 @@ impl Live {
             (Some(code), true) => {
                 let invite = Invite::open(code, self.identity.key.public(), &self.identity.id, now)
                     .map_err(|e| forbidden(format!("invite: {e}")))?;
+                crate::invites::check_redeemable(self, &invite.jti)?;
                 Some(invite.jti)
             }
             (None, true) => return Err(forbidden("this server needs an invite code")),

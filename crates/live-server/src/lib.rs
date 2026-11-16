@@ -24,6 +24,7 @@ pub mod guard;
 pub mod http;
 pub mod identity;
 pub mod ingest;
+pub mod invites;
 pub mod local_signin;
 mod mailbox;
 pub mod model;
@@ -31,6 +32,7 @@ pub mod pg;
 pub mod public;
 pub mod relay;
 mod sessions;
+pub mod status;
 pub mod store;
 mod teams;
 pub mod title_headers;
@@ -126,6 +128,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let id = identity.id.clone();
     let private = config.policy.private;
     let live = Live::start(Arc::new(store), identity, config.policy).await?;
+    live.set_data_dir(&config.data_dir);
     for name in title_headers::reseal_legacy(&live).await? {
         println!("h2 live: republished {name} with the game's header");
     }
@@ -276,6 +279,7 @@ pub fn start_embedded(
             ..Policy::default()
         };
         let live = Live::start(store, identity, policy).await?;
+        live.set_data_dir(data_dir);
         if kind != "memory" {
             match title_headers::reseal_legacy(&live).await {
                 Ok(names) => {

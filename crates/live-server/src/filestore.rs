@@ -164,6 +164,10 @@ fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 #[async_trait]
 impl EventStore for FileStore {
+    fn kind(&self) -> &'static str {
+        "file"
+    }
+
     async fn append(
         &self,
         events: Vec<NewEvent>,
