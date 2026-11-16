@@ -382,7 +382,8 @@ Recommendation: prototype volumes and shadow maps side by side **in the
 viewer** (`crates/viewer`), which already draws structure BSPs and render
 models from tags with no game run. Decide on pictures and timings from that.
 The scene-knowledge work is the same for all three, so the choice does not
-block anything before it.
+block anything before it. That prototype is `shadowlab`; see "Phase 3:
+shadow prototype".
 
 For volumes, the caster geometry is the open design point:
 
@@ -516,6 +517,128 @@ Risks, largest first:
    has other priorities first; this sits behind 30 fps.
 8. **Expectation.** The result will be a new renderer's idea of the E3 look
    on retail content. It should be described that way to users.
+
+## Phase 3: shadow prototype
+
+`crates/viewer/src/bin/shadowlab` renders one scene with each shadow
+technique, offscreen with wgpu, and times them. It reads the owner's disc at
+run time and writes only into a directory outside the repository; it refuses
+an output path inside it. Nothing it writes from the disc is committed. The
+numbers below are filled in by hand from a run.
+
+```sh
+cargo run -p viewer --release --bin shadowlab -- --list-models <map>
+cargo run -p viewer --release --bin shadowlab -- --out "$OUT" \
+    --model <mode tag> [--model <mode tag>@x,y,z[,yaw]]... [--level-casts] <map>
+cargo run -p viewer --release --bin shadowlab -- --out "$OUT" --synthetic
+```
+
+### What it does
+
+- **Scene.** The scenario's structure BSP (`--bsp N`) as the receiver:
+  clusters plus placed instances, flat shaded. Casters are render models
+  (`--model`, default level of detail or `--lod N`), stood on the level near
+  its centre or placed at a given point. With `--level-casts` the BSP casts
+  too, in every technique. `--synthetic` swaps in invented geometry (a cube,
+  an open box and a plane with a hole over a ground plane).
+- **Lights.** A sun (`--sun YAW,ELEV`) and a point light (`--point`, with a
+  range for falloff). The default camera and point light are framed on the
+  casters; the default sun is fixed (yaw 35, elevation 50) and not yet read
+  from the `sky` tag.
+- **Volumes.** Caster triangles are welded by position, so material and
+  normal seams do not read as holes, and an edge table is built once. Per
+  light, the volume is the lit faces' prisms with shared sides cancelled:
+  sides on the silhouette and on lit faces' open edges, the lit faces as the
+  near cap and their copies at infinity as the far cap. That volume is closed
+  whatever the caster's topology, so depth-fail counting is always well
+  formed; open geometry costs extra side quads instead of leaking. Rendered
+  with an infinite far plane: ambient pass, two-sided stencil pass, additive
+  light pass on stencil 0.
+- **Shadow maps.** The sun gets one orthographic map fitted to the view
+  frustum out to 2.5 times the target distance, with its depth range
+  stretched over every caster, so casters outside the view still cast. A
+  point light gets six cube faces. The map edge scales with the resolution
+  (default 2048 at 1x for the sun, 1024 per cube face). Sampled with one
+  nearest comparison tap (`map-hard`) or nine bilinear comparison taps
+  (`map-pcf`), with slope-scaled bias and a normal offset of 1.5 texels.
+- **Output.** For each light and scale (default 640x480 times 1, 2 and 4):
+  each technique's image, a grid (volume, map-hard, map-pcf, and the
+  volume-against-map-hard difference), `report.md` and `timings.csv`. Times
+  are GPU timestamps at pass boundaries, median of `--frames` (30) frames,
+  or wall time per technique where the adapter has no timestamp queries (the
+  report says which).
+
+### What the invented scenes show
+
+These come from the tests (`cargo test -p viewer --bin shadowlab`), which use
+invented geometry only.
+
+- A closed cube's volume has a four-edge silhouette under a vertical sun and
+  is closed under any light. Depth-pass counting fails with the eye inside a
+  volume; depth-fail does not, but needs both caps.
+- Open edges are counted per mesh (open, non-manifold, winding flips, closed
+  pieces). An open box and a plane with a hole still give closed volumes.
+- Where light enters an open mesh and meets a face turned away from it (the
+  inside of the open box's far wall), the volume lets it through and the map
+  shadows it. That is the open-mesh artefact to look for in the difference
+  images: cyan in the grid.
+- Elsewhere the volume and the one-tap map agree on almost every pixel.
+
+### Results
+
+To fill in from a run against the disc. Record the command, the adapter and
+the clock the report names.
+
+| Scene | Map, BSP, casters, level casts |
+|---|---|
+| | |
+
+Geometry (from `report.md`, "Geometry"):
+
+| Mesh | Triangles | Open edges | Non-manifold | Closed pieces | Closed triangles |
+|---|---:|---:|---:|---:|---:|
+| Level clusters | | | | | |
+| Level instance definitions | | | | | |
+| Caster, each level of detail | | | | | |
+
+Volumes (CPU build ms is the per-light silhouette cost):
+
+| Light | Silhouette edges | Side quads | Of which open | Volume triangles | CPU build ms |
+|---|---:|---:|---:|---:|---:|
+| Sun | | | | | |
+| Point | | | | | |
+
+GPU ms, total per technique (passes in `report.md`):
+
+| Light | Scale | none | volume | map-hard | map-pcf |
+|---|---:|---:|---:|---:|---:|
+| Sun | 1x | | | | |
+| Sun | 2x | | | | |
+| Sun | 4x | | | | |
+| Point | 1x | | | | |
+| Point | 2x | | | | |
+| Point | 4x | | | | |
+
+Agreement and look:
+
+| Light | Volume vs map-hard | Volume vs map-pcf | Notes from the images |
+|---|---:|---:|---|
+| Sun | | | |
+| Point | | | |
+
+### Deciding
+
+- **Cost.** The stencil pass against the map passes, and how each grows from
+  1x to 4x: volume fill grows with pixels, map cost with the map edge.
+- **Geometry.** Open edges and the share of closed triangles per caster; the
+  side quads on open edges are the extra fill open meshes cost. Per level of
+  detail, whether silhouettes change enough to pop.
+- **Look.** Red and cyan in the grids: red is shadow only the volume casts,
+  cyan only the map. Edge acne or peter-panning in `map-hard`, and how far
+  `map-pcf` softens the hard edge the E3 look wants.
+- **Not covered yet.** Alpha-tested casters (grates, foliage) are drawn
+  solid by both techniques: the prototype does not read materials. Poses: models are
+  drawn unposed, as the model viewer draws them. Cascades: one sun map only.
 
 ## Sources
 
