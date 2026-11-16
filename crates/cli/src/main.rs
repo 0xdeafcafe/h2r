@@ -15,6 +15,7 @@ mod emit_cache;
 mod emit_output;
 mod extract_shaders;
 mod fonts;
+mod h1_cmd;
 mod lighting;
 mod live_accounts;
 mod live_art;
@@ -85,6 +86,13 @@ const USAGE: &str = "usage: h2 <command> [disc]
   font <font> <text> --out <png>
                           render text with a /maps/fonts file; --all validates every font
                           (options --color RRGGBB[AA], --force, --disc <iso>)
+  import halo1 [iso] [--data DIR]
+                          check the Halo 1 disc (default disc/halo1.iso) and copy
+                          its campaign maps to <data>/campaigns/halo1/source/
+                          (docs/game/campaigns.md)
+  h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
+  h1 tags <iso|map> [map] [--group G]
+                          Halo 1 map's tags (docs/formats/h1-map-format.md)
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
@@ -200,6 +208,12 @@ fn main() -> Result<()> {
     }
     if cmd == "movies" {
         std::process::exit(movies_cmd::run(args.collect()));
+    }
+    if cmd == "import" {
+        return h1_cmd::run_import(args.collect());
+    }
+    if cmd == "h1" {
+        return h1_cmd::run(args.collect());
     }
     if cmd == "import-mappack" {
         return mappack_cmd::run(args.collect());
