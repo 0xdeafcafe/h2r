@@ -362,7 +362,102 @@ fn report(name: &str, frames: u32, draws: u32, total: f64, times: &[f64]) {
     );
 }
 
+/// Guest memory as the game's D3D entries reach it: `GuestAdapter` over the
+/// runtime's `Guest`, with many mappings (so the mapping hints miss as they
+/// do in the game) and the d3d write watch over all of RAM. Times the
+/// small reads and writes the device makes (words, resource headers, the
+/// state arrays) and a 64 KiB data read, without and with the fast page
+/// table the game's generated code builds (`Guest::prepare_fast_pages`).
+fn guest_memory_bench(fast: bool) {
+    use d3d::runtime_glue::GuestAdapter;
+    use runtime::guest::{PAGE_SIZE, Permissions, RAM_SIZE};
+    const MAPS: u32 = 256;
+    const SPAN: u32 = 16 * PAGE_SIZE;
+    let mut g = runtime::Guest::new();
+    // Every other 64 KiB slot mapped, each to its own physical pages.
+    for i in 0..MAPS {
+        g.map(0x0100_0000 + 2 * SPAN * i, SPAN, SPAN * i, Permissions::RW)
+            .unwrap();
+    }
+    let id = g.subscribe_writes("bench");
+    g.watch_writes(id, runtime::watch::CONTIGUOUS_BASE, RAM_SIZE as u32)
+        .unwrap();
+    if fast {
+        g.prepare_fast_pages();
+    }
+    let mut seed = 0x2545_f491u32;
+    let addrs: Vec<u32> = (0..4096)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (0x0100_0000 + 2 * SPAN * (seed % MAPS) + (seed >> 8) % (SPAN - 0x800)) & !3
+        })
+        .collect();
+    let mut layout = d3d::GuestLayout::HALO2;
+    layout.render_state = addrs[0] & !0xFFF;
+    layout.texture_state = (addrs[1] & !0xFFF) + 0x400;
+    let mem = GuestAdapter::new(&mut g);
+    let time = |name: &str, n: usize, f: &mut dyn FnMut()| {
+        let mut best = f64::MAX;
+        for _ in 0..7 {
+            let t = Instant::now();
+            f();
+            best = best.min(t.elapsed().as_secs_f64());
+        }
+        println!(
+            "guest memory ({}): {name}: {:.1} ns/op",
+            if fast { "fast pages" } else { "mapping walk" },
+            best * 1e9 / n as f64
+        );
+    };
+    let mut sink = 0u64;
+    let mut mem = mem;
+    time("read_u32", 100 * addrs.len(), &mut || {
+        for _ in 0..100 {
+            for &a in &addrs {
+                sink = sink.wrapping_add(mem.read_u32(a).unwrap() as u64);
+            }
+        }
+    });
+    time("write_u32", 100 * addrs.len(), &mut || {
+        for i in 0..100u32 {
+            for &a in &addrs {
+                mem.write_u32(a, i).unwrap();
+            }
+        }
+    });
+    time("20-byte header", 100 * addrs.len(), &mut || {
+        for _ in 0..100 {
+            for &a in &addrs {
+                let w = d3d::guest::read_array::<5>(&mem, a).unwrap();
+                sink = sink.wrapping_add(w[4] as u64);
+            }
+        }
+    });
+    time("state arrays", 10_000, &mut || {
+        for _ in 0..10_000 {
+            let s = d3d::state::StateWords::read(&mem, &layout).unwrap();
+            sink = sink.wrapping_add(s.render[3] as u64);
+        }
+    });
+    time("64 KiB read_vec", 2_000, &mut || {
+        for i in 0..2_000u32 {
+            let v = mem
+                .read_vec(0x0100_0000 + 2 * SPAN * (i % MAPS), SPAN as usize)
+                .unwrap();
+            sink = sink.wrapping_add(v[17] as u64);
+        }
+    });
+    std::hint::black_box(sink);
+}
+
 fn main() {
+    if std::env::var_os("H2_BENCH_GUEST_ONLY").is_some() {
+        guest_memory_bench(false);
+        guest_memory_bench(true);
+        return;
+    }
     let env = |k, v: u32| {
         std::env::var(k)
             .ok()
@@ -417,4 +512,7 @@ fn main() {
         .filter(|e| matches!(e, d3d::Event::DrawSkipped { .. }))
         .count();
     println!("skipped draws {skips}  misses {}", d.backend.misses());
+
+    guest_memory_bench(false);
+    guest_memory_bench(true);
 }
