@@ -106,6 +106,27 @@ static inline uint32_t h2x87n_ld_f32(X87Abi *s, uint32_t b) {
     if (e) v |= ((uint64_t)(e + (1023 - 127)) << 52) | ((uint64_t)(b & 0x7fffffu) << 29);
     return h2x87n_ld_f64(s, v);
 }
+/* FILD m16/m32: every such integer is exact in binary64 (normal or +0),
+ * so this is FLD of that double; the conversion is exact, flag-free and
+ * independent of the rounding mode. Overflow and pending #MF fall back. */
+static inline uint32_t h2x87n_ld_i32(X87Abi *s, int32_t v) {
+    uint64_t b = 0;
+    if (v) {
+        uint32_t m = v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
+        unsigned top = 31u - (unsigned)__builtin_clz(m);
+        b = ((uint64_t)(v < 0) << 63) | ((uint64_t)(1023u + top) << 52) |
+            (((uint64_t)m << (52u - top)) & UINT64_C(0xfffffffffffff));
+    }
+    unsigned p = h2x87n_phys(s, 7);
+    if ((s->status & 0x80u) || h2x87n_live(s, p)) return h2x87_v1_ld_i32(s, v);
+    s->status = (uint16_t)((s->status & ~0x3a00u) | (p << 11));
+    h2x87n_put(s, p, b); return H2X87_OK;
+}
+static inline uint32_t h2x87n_ld_i16(X87Abi *s, int16_t v) {
+    unsigned p = h2x87n_phys(s, 7);
+    if ((s->status & 0x80u) || h2x87n_live(s, p)) return h2x87_v1_ld_i16(s, v);
+    return h2x87n_ld_i32(s, v);
+}
 static inline uint32_t h2x87n_ld_const(X87Abi *s, uint32_t which) {
     if (which <= 1) return h2x87n_ld_f64(s, which ? 0 : UINT64_C(0x3ff0000000000000));
     return h2x87_v1_ld_const(s, which);
@@ -226,6 +247,8 @@ slow:
 #else
 #define h2x87n_ld_f32 h2x87_v1_ld_f32
 #define h2x87n_ld_f64 h2x87_v1_ld_f64
+#define h2x87n_ld_i16 h2x87_v1_ld_i16
+#define h2x87n_ld_i32 h2x87_v1_ld_i32
 #define h2x87n_ld_const h2x87_v1_ld_const
 #define h2x87n_ld_st h2x87_v1_ld_st
 #define h2x87n_st_f32 h2x87_v1_st_f32

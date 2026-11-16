@@ -27,6 +27,12 @@ The emitter already caches environment pointers in handler locals.
 
 The native path uses inline C functions in `emit/c/h2x87_native.h` for
 loads, register copies, store conversion/commit and guarded arithmetic.
+FILD m16/m32 is native too: every such integer is exact in binary64, so
+the load builds that double's bits directly (no host FP) and pushes it
+like FLD m64; stack overflow and a pending #MF use the helper. Old
+Mombasa's hot SSE routine (0x002dc220) alone has 18 `fild m32` sites.
+`integer_loads_match_the_authority` checks every bit position, the
+extremes and 1,000,000 random values over random TOP/tags/status.
 Eligible ADD/SUB/SUBR/MUL/DIV/DIVR and SQRT use transient C `double`
 locals; every rejected operation calls the original helper. The helper
 ABI, dispatch, interpreter and authoritative soft-float implementation

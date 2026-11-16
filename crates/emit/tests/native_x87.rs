@@ -19,6 +19,8 @@ uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
 uint32_t n_load(X87Abi *s, uint64_t bits) { return h2x87n_ld_f64(s, bits); }
 uint32_t n_copy(X87Abi *s, uint32_t i) { return h2x87n_ld_st(s, i); }
 uint32_t n_load32(X87Abi *s, uint32_t b) { return h2x87n_ld_f32(s, b); }
+uint32_t n_ld_i32(X87Abi *s, int32_t v) { return h2x87n_ld_i32(s, v); }
+uint32_t n_ld_i16(X87Abi *s, int16_t v) { return h2x87n_ld_i16(s, v); }
 uint32_t n_const(X87Abi *s, uint32_t i) { return h2x87n_ld_const(s, i); }
 uint32_t n_st_st(X87Abi *s, uint32_t i, uint32_t pop) { return h2x87n_st_st(s, i, pop); }
 uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return h2x87n_store_commit(s, sw, pop); }
@@ -588,4 +590,48 @@ fn x87_fast_paths_inline_into_generated_handlers() {
     }
     assert!(body.contains("fmul") && body.contains("fadd"), "{body}");
     assert!(!body.contains("constrained"), "{body}");
+}
+
+/// FILD m16/m32 against the authority: every bit position, both signs, the
+/// extremes and random values, over random TOP, tags (including a full
+/// stack) and pending exceptions.
+#[test]
+fn integer_loads_match_the_authority() {
+    type Ld32 = unsafe extern "C" fn(&mut X87Abi, i32) -> u32;
+    type Ld16 = unsafe extern "C" fn(&mut X87Abi, i16) -> u32;
+    // SAFETY: each type matches its wrapper's declaration.
+    let (ld32, ld16) = unsafe {
+        (
+            native().get::<Ld32>(b"n_ld_i32").unwrap(),
+            native().get::<Ld16>(b"n_ld_i16").unwrap(),
+        )
+    };
+    let mut values: Vec<i32> = vec![0, 1, -1, i32::MIN, i32::MAX, i32::MIN + 1];
+    for bit in 0..31 {
+        values.extend([1 << bit, -(1 << bit), (1 << bit) - 1, -(1 << bit) + 1]);
+    }
+    let mut r = 0x0f1e_2d3c_4b5a_6978;
+    values.extend((0..1_000_000).map(|_| next(&mut r) as i32 >> (next(&mut r) % 32)));
+    for (i, &v) in values.iter().enumerate() {
+        let mut want = state(F80::ONE, F80::PI, 0x027f, (next(&mut r) % 8) as u16);
+        want.tag = next(&mut r) as u16;
+        if next(&mut r).is_multiple_of(4) {
+            want.tag = 0xffff; // empty: the push always succeeds
+        }
+        if next(&mut r).is_multiple_of(32) {
+            want.status |= 0x80;
+        }
+        want.status |= (next(&mut r) & 0x23f) as u16;
+        let (mut got, mut want16) = (want, want);
+        let mut got16 = want;
+        let expected = abi::ld_int(&mut want, v.into());
+        // SAFETY: matching signature and valid state.
+        let actual = unsafe { ld32(&mut got, v) };
+        assert_eq!((got, actual), (want, expected), "fild m32 {v} case {i}");
+        let h = v as i16;
+        let expected = abi::ld_int(&mut want16, h.into());
+        // SAFETY: matching signature and valid state.
+        let actual = unsafe { ld16(&mut got16, h) };
+        assert_eq!((got16, actual), (want16, expected), "fild m16 {h} case {i}");
+    }
 }
