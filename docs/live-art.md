@@ -39,7 +39,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 6, so a disc extracted by an older build is extracted again.
+key) is 7, so a disc extracted by an older build is extracted again.
 
 ### `map.glb`
 
