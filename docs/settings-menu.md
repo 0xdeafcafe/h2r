@@ -414,7 +414,12 @@ and structures differ.
   the datum array constructor (`0x1a480d`: retail count plus the rows we
   add); the row text (`0x2c8548`) fills our label and the degrees as our own
   strings (English digits; ids in `layout_glue::is_ours`'s range); the
-  row-chosen handler (`0x2c8719`) steps the value and returns.
+  row-chosen handler (`0x2c8719`) steps the value and returns. The list
+  gets one item widget of ours per added row and the tag's visible count
+  goes from 6 to 6 plus those rows (`speaker_row::grow_visible`, the "add
+  items" hook `0x24bb60`; docs/playstation-audio.md), so with both rows all
+  eight show at once. The pause menu's smaller controller settings dialog
+  has no Field of View row.
 - **Setting** (`boot::fov_setting`): `[graphics] fov = <degrees>` in
   `settings.toml` in `h2 play`'s data root, next to `[pad_speaker]`,
   written atomically and keeping every other key. 0 or 70 is retail; the

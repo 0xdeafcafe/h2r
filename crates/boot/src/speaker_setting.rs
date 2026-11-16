@@ -26,6 +26,12 @@ use dsound::padroute::{PadRouter, PadSpeakerConfig};
 /// The host settings file, under `h2 play`'s data root (`--data`), next to
 /// the guest's `disk/` tree but not in it.
 pub const SETTINGS_FILE: &str = "settings.toml";
+
+/// The settings file under the data root `data`: `<data>/settings.toml`.
+/// Every in-game setting row (Controller Speaker, Field of View) saves here.
+pub fn settings_path(data: &Path) -> PathBuf {
+    data.join(SETTINGS_FILE)
+}
 /// The TOML table and key of the setting.
 const TABLE: &str = "pad_speaker";
 const KEY: &str = "enabled";

@@ -122,7 +122,7 @@ fn fov_setting(data: &std::path::Path) -> Arc<boot::fov_setting::FovSetting> {
     let forced = boot::fov_setting::forced_by_env(std::env::var("H2_FOV").ok().as_deref())
         .map_err(|e| eprintln!("play: {e}; ignored"))
         .unwrap_or(None);
-    let setting = boot::fov_setting::FovSetting::new(forced, Some(data.join(boot::speaker_setting::SETTINGS_FILE)));
+    let setting = boot::fov_setting::FovSetting::new(forced, Some(boot::speaker_setting::settings_path(data)));
     if setting.target().is_some() {
         eprintln!("play: field of view {} degrees", setting.shown());
     }
@@ -150,7 +150,7 @@ fn pad_speaker(audio: bool, data: &std::path::Path) -> PadParts {
     let forced = boot::speaker_setting::forced_by_env(env("H2_PAD_SPEAKER").as_deref(), config.as_ref(), audio);
     let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(
         forced,
-        Some(data.join(boot::speaker_setting::SETTINGS_FILE)),
+        Some(boot::speaker_setting::settings_path(data)),
     ));
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.

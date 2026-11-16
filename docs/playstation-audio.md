@@ -292,10 +292,19 @@ Hook points (retail XBE, all function entries in our analysis):
 | Address | Role | What we do |
 |---|---|---|
 | `0x2c84b8` | Controls list handler constructor: datum array `0x45d298`, element size 4, count 6 in EAX, six embedded item widgets | nothing; it shows the convention |
-| `0x1a480d` | datum array constructor | for the name `0x45d298` and EAX 6, EAX becomes 7 |
+| `0x1a480d` | datum array constructor | for the name `0x45d298` and EAX 6, EAX becomes 7 (8 with the Field of View row, docs/settings-menu.md) |
 | `0x2c8548` | row text (`ret 8`, item at `[esp+4]`, row at `[item+0x70]`): label text 0 and value text 1 of the row | row 6: label is our "Controller Speaker" (our string id, English only), value is the retail on/off ids `0x02000181` / `0x03000182`, the ones the vibration row uses, so the value is localized. Rows 0 to 5 run the original |
 | `0x2c8719` | row chosen (thiscall, `ret 8`, row pointer at `[esp+8]`); rows past 4 open the vibration dialog | row 6: toggle and return; rows 0 to 5 run the original |
 | `0x1a02d0` | string lookup | our id returns our text |
+
+| `0x24bb60` | list handler "add items" (vtable slot 17, thiscall, plain `ret`): links the six embedded item widgets (`+0x88`, `0x80` bytes each) as children | for the Controls handler (vtable `0x45d240`): after the original, one item widget of ours per added row (`0x24abae` constructs it, `0x22ee92` sets its local player, `0x22eb18` appends it), in a slot of our page `0xa2f20000` per open screen; an item already linked only moves back to the end |
+| `0x22f871` | screen tag (EAX = screen, returns its definition) | for screen 39, the list block's visible count (`i16` at `+6`) goes from 6 to 6 plus the rows we add, in every pane, once |
+| `0x2b48c2`, `0x2b49e6`, `0x2b4a4d` | the smaller Controls screen the pause menu opens (screen 200, `controller_settings`: datum array `0x45b8b0`, one text per row, a value word per datum mapped to a string table) | its array also grows from 6 to 7; after its constructor we give the new datum value 6 (`0x16b840`, new datum), draw it as "Controller Speaker: On" or "Off" (our ids, `ID_BASE+0x30`, `+0x31`) and toggle on it |
+
+So the main Controls list shows every row at once (seven, or eight with the
+Field of View row) instead of scrolling: the list lays out one row per child
+item widget up to the tag's visible count (`0x24bc12`), so adding the item
+widgets and raising the count together is what it takes.
 
 The row text is redrawn every update (the item's update method `0x24abe0`
 calls the screen's row text slot), so the value changes as soon as the row
@@ -477,9 +486,13 @@ output).
 The in-game row:
 
 5. Settings, a profile, Controls: a seventh row "Controller Speaker" under
-   the vibration row, showing the game's "on" value (scroll down; six rows
-   are visible). stderr says `layouts: list 0x45d298 grows from 6 to 7 rows` and
-   `speaker row: row text active`.
+   the vibration row, showing the game's "on" value, and "Field of View"
+   under it: all eight rows visible, no scrolling. stderr says
+   `layouts: list 0x45d298 grows from 6 to 8 rows`,
+   `speaker row: controls list shows 8 rows` and
+   `speaker row: row text active`. In a game, the pause menu's controller
+   settings dialog has a last row "Controller Speaker: On" that toggles the
+   same setting.
 6. A on it: the value flips to the "off" text at once, no dialog opens, stderr
    says `pad speaker: off`. Reload sounds now come from the TV. A again:
    back to "on", they come from the pad. Vibration and the other five rows
