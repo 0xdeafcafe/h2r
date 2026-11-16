@@ -9,6 +9,7 @@ mod anim;
 mod bitmap;
 mod boot_cmd;
 mod collision;
+mod coop_probe_cmd;
 mod effects;
 mod emit_cache;
 mod emit_output;
@@ -57,6 +58,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           <data>/settings.toml (docs/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/high-framerate.md)
+  coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
+                          that differ (docs/live-coop.md section 9)
   play <disc> --live      play signed in to Xbox Live, on a service started in
                           the process (or --live-server URL; docs/live.md)
   info                    title, sections, libraries
@@ -214,6 +217,9 @@ fn main() -> Result<()> {
     }
     if cmd == "lockstep" {
         std::process::exit(lockstep_cmd::run(args.collect())?);
+    }
+    if cmd == "coop-probe" {
+        std::process::exit(coop_probe_cmd::run(args.collect())?);
     }
     if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());
