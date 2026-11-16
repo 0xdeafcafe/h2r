@@ -400,11 +400,44 @@ impl State {
         self.sessions
             .set_visibility(v, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_session_skulls(&mut self, skulls: Option<Vec<u8>>) {
+        let session = self.session();
+        self.sessions
+            .set_skulls(skulls, self.service.as_ref(), session.as_ref());
+    }
+    /// The session this console joined: a registered key (`keys`, from
+    /// `XNetRegisterKey`) that is not one of its own advertisements.
+    pub fn joined_session(&self, keys: &[[u8; 8]]) -> Option<String> {
+        let own = self.sessions.own_ids();
+        keys.iter()
+            .find(|k| !own.contains(k))
+            .map(|k| live_proto::sign::hex(k))
+    }
+    /// Asks the server for session `id` again (its answer lands in the
+    /// worker's [`crate::client::Seen`]); the request, when one could be
+    /// sent, and where the answer goes.
+    pub fn refresh_session(
+        &self,
+        id: &str,
+    ) -> (Option<crate::client::Pending>, Option<crate::client::Seen>) {
+        let Some(service) = self.service.as_ref() else {
+            return (None, None);
+        };
+        let pending = self.session().and_then(|c| {
+            service
+                .match_request(&c, crate::client::MatchRequest::Find(id.to_owned()))
+                .ok()
+        });
+        (pending, Some(service.seen.clone()))
+    }
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
     }
     pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
         self.sessions.set_map_probe(probe);
+    }
+    pub fn set_skulls_probe(&mut self, probe: Option<crate::sessions::SkullsProbe>) {
+        self.sessions.set_skulls_probe(probe);
     }
     pub fn session_visibility(&self) -> crate::sessions::Visibility {
         self.sessions.visibility()

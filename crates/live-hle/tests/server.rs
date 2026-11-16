@@ -1661,6 +1661,110 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
         vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
     );
 }
+/// A host's multiplayer skulls ride on its advertisement (docs/skulls.md
+/// "In multiplayer"): a guest that found and joined the session reads them
+/// at game start, asking the server again, so a change the host made after
+/// the join is what the guest applies.
+#[test]
+fn guests_read_the_skulls_their_host_advertises() {
+    use live_hle::HostSkulls;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    guest.logon();
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.host_skulls(wait), HostSkulls::NotJoined);
+    // What the boot installs: the signed-in profiles' choice, read when the
+    // game advertises.
+    host.hle
+        .set_skulls_probe(Some(std::sync::Arc::new(|_: &runtime::Guest| {
+            Some(vec![6])
+        })));
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert_eq!(host.hle.local_sessions()[0].skulls, Some(vec![6]));
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert_eq!(created.data["advertisement"]["skulls"], json!([6]));
+    // The host's own key is not a joined session.
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    assert_eq!(host.call("XNetRegisterKey", &[MATCH_ID, MATCH_KEY]), 0);
+    assert_eq!(host.hle.host_skulls(wait), HostSkulls::NotJoined);
+    // The guest finds it in the browser and joins (registers its key).
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let session = live_proto::sign::hex(&host.hle.local_sessions()[0].id);
+    assert_eq!(
+        guest.hle.host_skulls(wait),
+        HostSkulls::Known {
+            session: session.clone(),
+            skulls: vec![6],
+            refreshed: true
+        }
+    );
+    // The host turns Famine on too, then all off: open lobbies follow at
+    // once, without waiting for the game's next update.
+    host.hle.set_skulls_probe(None);
+    host.hle.set_session_skulls(Some(vec![4, 6]));
+    s.until(|| {
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .skulls
+            == Some(vec![4, 6])
+    });
+    assert_eq!(
+        guest.hle.host_skulls(wait),
+        HostSkulls::Known {
+            session: session.clone(),
+            skulls: vec![4, 6],
+            refreshed: true
+        }
+    );
+    host.hle.set_session_skulls(None);
+    s.until(|| {
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .skulls
+            .is_none()
+    });
+    assert_eq!(
+        guest.hle.host_skulls(wait),
+        HostSkulls::Known {
+            session,
+            skulls: vec![],
+            refreshed: true
+        }
+    );
+}
 /// The custom games browser (docs/live-custom-games.md) is the retail
 /// System Link browser in its Live mode: its search is `0x0008fa80`'s
 /// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly

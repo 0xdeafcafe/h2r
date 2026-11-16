@@ -507,6 +507,7 @@ mod tests {
             language: None,
             visibility: Default::default(),
             map_id,
+            skulls: None,
         }
     }
 
