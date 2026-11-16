@@ -254,7 +254,6 @@ fn hosted(
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
     store: Arc<settings::Store>,
-    on_vfs: Option<boot::VfsReady>,
 ) -> boot::Host {
     let configure = |mut gfx: d3d::GfxBackend| {
         // As for `h2 run`: passes are merged by default (the fast rule;
@@ -342,7 +341,8 @@ fn hosted(
                 host.tick(now) == app::Control::Continue
             }
         })),
-        on_vfs,
+        // `run` sets it when cloud saves are on.
+        on_vfs: None,
     }
 }
 
@@ -660,9 +660,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Arc::clone(&interrupted),
             icons,
             store,
-            on_vfs,
         );
         host.level = level;
+        host.on_vfs = on_vfs;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether

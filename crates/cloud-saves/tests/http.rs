@@ -102,7 +102,7 @@ fn http_remote_round_trip_versions_and_owner_only() {
     assert_eq!((item.version, item.modified), (1, 1234));
     assert_eq!(item.sha256, Some(Sha256::of(b"Name=Chief")));
     assert_eq!(remote.get(&k).unwrap(), b"Name=Chief");
-    assert_eq!(remote.list().unwrap(), [item.clone()]);
+    assert_eq!(remote.list().unwrap(), std::slice::from_ref(&item));
     // A name that needs escaping.
     let odd = Key::save("TitleMeta (copy).xbx");
     remote.put(&odd, b"t", 0, 1).unwrap();

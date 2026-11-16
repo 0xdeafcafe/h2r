@@ -144,7 +144,7 @@ mod tests {
         d.touch(a.clone(), s(0));
         d.touch(a.clone(), s(50));
         assert!(d.due(s(120)).is_empty(), "70 ms since the last write");
-        assert_eq!(d.due(s(150)), [a.clone()]);
+        assert_eq!(d.due(s(150)), std::slice::from_ref(&a));
         assert!(d.is_empty());
         // Written every 50 ms: pushed at the max delay anyway.
         for n in (0..=1000).step_by(50) {
@@ -153,7 +153,7 @@ mod tests {
             if n < 1000 {
                 assert!(due.is_empty(), "{n}");
             } else {
-                assert_eq!(due, [b.clone()]);
+                assert_eq!(due, std::slice::from_ref(&b));
             }
         }
         d.touch(a.clone(), s(5000));
