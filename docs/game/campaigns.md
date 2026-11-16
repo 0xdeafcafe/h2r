@@ -84,7 +84,11 @@ Each step is proven with tests; the user plays the result.
    checked against a real disc.
 2. **Map builder.** Write a whole v8 map. Proof: read a retail Halo 2 map
    into a tag set, build it again, and check the result reads the same, tag
-   by tag.
+   by tag. **Built:** `map::build` and `tags::rebuild`
+   ([map-builder.md](../formats/map-builder.md)). All 30 retail maps
+   rebuild byte-identical; 18 also pass with every bitmap moved. Not yet
+   loaded by the game. A map made from scratch has open questions: the
+   index tail, zeroed header fields, salts.
 3. **a30 walkable.** Geometry, collision, lightmaps, sky, shaders, one
    player spawn. You walk around a30 in Halo 2's engine with Halo 2's
    physics. Halo 2's assets stand in for anything not converted yet.
