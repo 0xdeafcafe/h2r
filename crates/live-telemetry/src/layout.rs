@@ -1,12 +1,17 @@
 //! Guest addresses and offsets from `docs/live-gamestate.md`.
 //!
 //! Keep validation-sensitive layout changes here rather than in readers.
+//! Players, object headers and the shared object body are `engine::view`
+//! records; their offsets are aliased here.
+
+use engine::view::objects::{Body, Header as ObjectHeader};
+use engine::view::players::Player;
 
 pub const GAME_GLOBALS_PTR: u32 = engine::points::GAME_GLOBALS.base;
 pub const GAME_TIME_PTR: u32 = engine::points::GAME_TIME.base;
 pub const ENGINE_GLOBALS_PTR: u32 = 0x004e_9ae8;
-pub const PLAYERS_PTR: u32 = 0x004e_8c24;
-pub const OBJECTS_PTR: u32 = 0x004e_0300;
+pub const PLAYERS_PTR: u32 = engine::points::PLAYERS.base;
+pub const OBJECTS_PTR: u32 = engine::points::OBJECTS.base;
 pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
 
 // The hooked functions (match start, tick, end, kill, weapon fire) are
@@ -35,16 +40,27 @@ pub const VARIANT_TIME_LIMIT: u32 = 0x54;
 pub const GAME_ENDED: u32 = 0x1128;
 pub const TIME_TICK: u32 = 0x8;
 
-pub const DATUM_HIGH_WATER: u32 = 0x38;
-pub const DATUM_DATA: u32 = 0x44;
-pub const PLAYER_SIZE: u32 = 0x21c;
-pub const PLAYER_SALT: u32 = 0x0;
-pub const PLAYER_FLAGS: u32 = 0x2;
-pub const PLAYER_LOCAL_USER: u32 = 0x28;
-pub const PLAYER_UNIT: u32 = 0x2c;
-pub const PLAYER_NAME: u32 = 0x44;
-pub const PLAYER_TEAM: u32 = 0xc0;
-pub const PLAYER_NAME_CODE_UNITS: usize = 32;
+// Datum arrays, players and object headers are read through
+// `engine::view`; these names alias its offsets for the readers that still
+// add them by hand and for the test fixtures.
+pub const DATUM_HIGH_WATER: u32 = engine::datum::layout::HIGH_WATER;
+pub const DATUM_DATA: u32 = engine::datum::layout::DATA;
+#[allow(dead_code)]
+pub const PLAYER_SIZE: u32 = Player::SIZE;
+#[allow(dead_code)]
+pub const PLAYER_SALT: u32 = Player::SALT;
+#[allow(dead_code)]
+pub const PLAYER_FLAGS: u32 = Player::FLAGS;
+#[allow(dead_code)]
+pub const PLAYER_LOCAL_USER: u32 = Player::LOCAL_USER;
+#[allow(dead_code)]
+pub const PLAYER_UNIT: u32 = Player::UNIT;
+#[allow(dead_code)]
+pub const PLAYER_NAME: u32 = engine::view::players::NAME;
+#[allow(dead_code)]
+pub const PLAYER_TEAM: u32 = Player::TEAM;
+#[allow(dead_code)]
+pub const PLAYER_NAME_CODE_UNITS: usize = engine::view::players::NAME_UNITS;
 
 // Player appearance (profile colours and emblem layers). The player record's
 // confirmed local user index (`PLAYER_LOCAL_USER`, 0..3) selects one of four
@@ -91,28 +107,29 @@ pub const STAT_DEATHS: u32 = 0x6;
 pub const STAT_SUICIDES: u32 = 0x8;
 pub const STAT_ASSISTS: u32 = 0xc;
 
-pub const OBJECT_HEADER_SIZE: u32 = 0xc;
-pub const OBJECT_SALT: u32 = 0x0;
-pub const OBJECT_TYPE: u32 = 0x3;
-pub const OBJECT_BODY: u32 = 0x8;
-pub const BODY_PARENT: u32 = 0x14;
-pub const BODY_POSITION: u32 = 0x64;
-pub const BODY_FORWARD: u32 = 0x70;
-pub const BODY_UP: u32 = 0x7c;
+pub const OBJECT_HEADER_SIZE: u32 = ObjectHeader::SIZE;
+#[allow(dead_code)]
+pub const OBJECT_SALT: u32 = ObjectHeader::SALT;
+pub const OBJECT_TYPE: u32 = ObjectHeader::KIND;
+pub const OBJECT_BODY: u32 = ObjectHeader::BODY;
+pub const BODY_PARENT: u32 = Body::PARENT;
+pub const BODY_POSITION: u32 = Body::POSITION;
+pub const BODY_FORWARD: u32 = Body::FORWARD;
+pub const BODY_UP: u32 = Body::UP;
 /// Damage flags (`u16`); bit 2 is body depleted (`0x000d6800`).
-pub const BODY_DAMAGE_FLAGS: u32 = 0x10a;
+pub const BODY_DAMAGE_FLAGS: u32 = Body::DAMAGE_FLAGS;
 pub const BODY_DEPLETED: u16 = 1 << 2;
 pub const OBJECT_TYPE_BIPED: u8 = 0;
 pub const OBJECT_TYPE_VEHICLE: u8 = 1;
 /// Object body `+0`: the definition tag's full salted datum.
-pub const BODY_DEFINITION: u32 = 0x0;
+pub const BODY_DEFINITION: u32 = Body::DEFINITION;
 pub const OBJECT_TYPE_WEAPON: u8 = 2;
 
 // Tag index (docs/engine/tag_get_checked.md). The cache loader `0x00122a52`
 // publishes the index header and reads the scenario datum from `+0x0c`
 // (`0x00122ad8`); the map file's own index carries the same datums, which is
 // how a host-side name table is checked against the loaded map.
-pub const TAG_INDEX_PTR: u32 = 0x0054_7f00;
+pub const TAG_INDEX_PTR: u32 = engine::points::TAG_INDEX.base;
 pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 
 // Unit body, players frame fields (docs/live-gamestate.md, "Unit aim and held

@@ -8,6 +8,8 @@ use crate::event::{
     PlayerStats, Snapshot, VehicleState, Weapon, World,
 };
 use crate::layout;
+use engine::DatumHandle;
+use engine::view::{Datums, objects, players};
 
 pub type ReadResult<T> = Result<T, GuestFault>;
 
@@ -41,18 +43,6 @@ fn text(guest: &Guest, address: u32, capacity: usize) -> ReadResult<String> {
     guest.read_bytes(address, &mut bytes, 1)?;
     let len = bytes.iter().position(|b| *b == 0).unwrap_or(capacity);
     Ok(String::from_utf8_lossy(&bytes[..len]).into_owned())
-}
-
-fn wide_text(guest: &Guest, address: u32, code_units: usize) -> ReadResult<String> {
-    let mut values = Vec::with_capacity(code_units);
-    for i in 0..code_units {
-        let c = guest.u16(address + 2 * i as u32)?;
-        if c == 0 {
-            break;
-        }
-        values.push(c);
-    }
-    Ok(String::from_utf16_lossy(&values))
 }
 
 pub fn game_tick(guest: &Guest) -> ReadResult<u64> {
@@ -141,20 +131,34 @@ fn appearance(guest: &Guest, local_user: i16) -> ReadResult<Appearance> {
     })
 }
 
+/// A view's read fault as the runtime's (views report no reason).
+fn fault(f: engine::MemFault) -> GuestFault {
+    GuestFault {
+        addr: f.addr,
+        len: f.len as usize,
+        access: if f.write {
+            runtime::guest::Access::Write
+        } else {
+            runtime::guest::Access::Read
+        },
+        reason: runtime::guest::FaultReason::Unmapped,
+    }
+}
+
 pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
     let array = ptr(guest, layout::PLAYERS_PTR)?;
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    // A null data pointer is an error, as a null array is.
+    ptr(guest, array + layout::DATUM_DATA)?;
+    let players: Datums<players::Player> = Datums::at(array);
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
-    let high_water = guest.u32(array + layout::DATUM_HIGH_WATER)?.min(16);
     let mut out = Vec::new();
-    for slot in 0..high_water {
-        let address = data + slot * layout::PLAYER_SIZE;
-        let salt = guest.u16(address + layout::PLAYER_SALT)?;
-        if salt == 0 || guest.u16(address + layout::PLAYER_FLAGS)? & 2 != 0 {
+    for (handle, player) in players.live(guest, 16).map_err(fault)? {
+        if !player.listed(guest).map_err(fault)? {
             continue;
         }
+        let slot = u32::from(handle.index());
         let stats = if has_stats {
             let row = engine + layout::ENGINE_PLAYER_STATS + slot * layout::PLAYER_STAT_SIZE;
             PlayerStats {
@@ -167,18 +171,14 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
         } else {
             PlayerStats::ZERO
         };
-        let local_user = i16(guest.u16(address + layout::PLAYER_LOCAL_USER)?);
+        let local_user = player.local_user(guest).map_err(fault)?;
         out.push(PlayerState {
-            datum: (u32::from(salt) << 16) | slot,
+            datum: handle.raw(),
             player: Player {
                 index: slot,
-                name: wide_text(
-                    guest,
-                    address + layout::PLAYER_NAME,
-                    layout::PLAYER_NAME_CODE_UNITS,
-                )?,
+                name: player.name(guest).map_err(fault)?,
                 xuid: None,
-                team: i32::from(guest.u8(address + layout::PLAYER_TEAM)? as i8),
+                team: i32::from(player.team(guest).map_err(fault)?),
                 local: Some(local_user != -1),
                 appearance: None,
             },
@@ -186,7 +186,7 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
             local_user: u8::try_from(local_user)
                 .ok()
                 .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
-            unit: guest.u32(address + layout::PLAYER_UNIT)?,
+            unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
         });
     }
@@ -217,27 +217,18 @@ pub fn team_scores(guest: &Guest, players: &[PlayerState]) -> ReadResult<Vec<Tea
 }
 
 /// An object's concrete type and body address, if `datum` names a live
-/// object (high-water, salt and non-null body checks of `0x000badc0`).
+/// object (high-water, salt and non-null body checks of `0x000badc0`, as
+/// the objects view makes them).
 fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
-    if datum == u32::MAX {
+    let Some(handle) = DatumHandle::from_raw(datum) else {
         return Ok(None);
-    }
+    };
+    // A null array or data pointer is an error, not "no object".
     let array = ptr(guest, layout::OBJECTS_PTR)?;
-    let slot = datum & 0xffff;
-    if slot >= guest.u32(array + layout::DATUM_HIGH_WATER)? {
-        return Ok(None);
-    }
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let header = data + slot * layout::OBJECT_HEADER_SIZE;
-    let salt = guest.u16(header + layout::OBJECT_SALT)?;
-    if salt == 0 || u32::from(salt) != datum >> 16 {
-        return Ok(None);
-    }
-    let body = guest.u32(header + layout::OBJECT_BODY)?;
-    if body == 0 {
-        return Ok(None);
-    }
-    Ok(Some((guest.u8(header + layout::OBJECT_TYPE)?, body)))
+    ptr(guest, array + layout::DATUM_DATA)?;
+    Ok(objects::get(guest, handle)
+        .map_err(fault)?
+        .map(|(kind, body)| (kind, body.addr)))
 }
 
 fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
@@ -589,6 +580,19 @@ pub(crate) mod fixture {
             .unwrap();
         guest
             .set_u32(OBJECTS + super::layout::DATUM_DATA, OBJECT_DATA)
+            .unwrap();
+        // The views read the element size from the array, as the game does.
+        guest
+            .set_u32(
+                PLAYERS + engine::datum::layout::ELEMENT_SIZE,
+                super::layout::PLAYER_SIZE,
+            )
+            .unwrap();
+        guest
+            .set_u32(
+                OBJECTS + engine::datum::layout::ELEMENT_SIZE,
+                super::layout::OBJECT_HEADER_SIZE,
+            )
             .unwrap();
         guest
             .set_u32(ENGINE + super::layout::ENGINE_STATBORG, 1)

@@ -259,6 +259,14 @@ globals! { GLOBALS;
     GAME_GLOBALS @ 0x004e_6948; "docs/level-boot.md";
     /// Pointer to the game-time record; `+8` is the tick count.
     GAME_TIME @ 0x0051_0c54; "docs/high-framerate.md";
+    /// Pointer to the players datum array (`0x21c`-byte players).
+    PLAYERS @ 0x004e_8c24; "docs/live-gamestate.md";
+    /// Pointer to the objects datum array (`0xc`-byte headers).
+    OBJECTS @ 0x004e_0300; "docs/objects.md";
+    /// Holds the guest address of the tag-index header.
+    TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
+    /// Holds the guest address of the 16-byte tag-entry table.
+    TAG_ENTRIES @ 0x004e_3b44; "docs/engine/tag_get_checked.md";
 }
 
 /// The point at `base`, if the table names one.
