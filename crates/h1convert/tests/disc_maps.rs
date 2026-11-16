@@ -173,8 +173,8 @@ fn check_structure_texturing(
         let uv: Vec<[f32; 2]> = s.vertices.iter().map(|v| v.texcoord).collect();
         assert_eq!(v.texcoords, uv, "{name}: diffuse UVs");
         for (a, b) in v.lightmap_texcoords.iter().zip(&s.vertices) {
-            for k in 0..2 {
-                assert!((a[k] - b.lightmap[k]).abs() < 1e-4, "{name}: lightmap UVs");
+            for (x, y) in a.iter().zip(b.lightmap) {
+                assert!((x - y).abs() < 1e-4, "{name}: lightmap UVs");
             }
         }
         let parts: Vec<u16> = got.parts.iter().map(|p| p.material).collect();
