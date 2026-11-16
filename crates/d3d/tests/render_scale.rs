@@ -1209,44 +1209,55 @@ fn every_scene_is_the_same_with_the_lazy_reference_on_and_off() {
 fn unread_frames_are_never_drawn_by_the_reference() {
     let Some(ctx) = context() else { return };
     const FRAMES: u32 = 5;
-    let run = |backend: Scaled| {
-        let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
-        set_states(&mut d, &mut m);
-        for f in 0..FRAMES {
-            d.clear(&mut m, 0, 0, 0xF3, 0xFF10_2030, 1.0, 0).unwrap();
-            for q in 0..4u32 {
-                let x = (q * 16) as f32;
-                flat_quad(
-                    &mut d,
-                    &mut m,
-                    (x, 4.0 * f as f32, x + 12.0, 40.0),
-                    0xFF00_0000 | (f * 40 + q * 7) << 8,
-                );
+    // Without and with depth testing and writes: a frame's draws then
+    // depend on the depth its own whole clear wrote, not on the frame
+    // before's.
+    for depth in [false, true] {
+        let run = |backend: Scaled| {
+            let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+            set_states(&mut d, &mut m);
+            if depth {
+                z_state(&mut m, true, true, Z_LESS);
             }
-            d.swap(&mut m, 0).unwrap();
-        }
-        let per_frame = d.backend.stats();
-        let bb = d.back_buffer().unwrap();
-        // The device flips: the frame shown last is the front buffer, the
-        // back buffer holds the one before.
-        let (px, _) = pixels(d.backend.reference_mut(), bb.reference);
-        (px, per_frame, d.backend.stats())
-    };
-    let (eager, _, _) = run(scaled_lazy(&ctx, 4, false));
-    let (lazy, before_read, after_read) = run(scaled_lazy(&ctx, 4, true));
-    assert!(lazy == eager, "the reference's image when read");
-    // Each frame: one clear and four draws.
-    assert_eq!(before_read.reference_deferred, u64::from(FRAMES) * 5);
-    // A frame's whole clear drops the work of the last frame on that
-    // buffer (the device flips between two), so only the last two
-    // frames' work is pending.
-    assert_eq!(
-        before_read.reference_dropped,
-        u64::from(FRAMES - 2) * 5,
-        "{before_read:?}"
-    );
-    assert_eq!(before_read.reference_replayed, 0, "{before_read:?}");
-    assert_eq!(after_read.reference_replayed, 2 * 5, "{after_read:?}");
+            for f in 0..FRAMES {
+                d.clear(&mut m, 0, 0, 0xF3, 0xFF10_2030, 1.0, 0).unwrap();
+                for q in 0..4u32 {
+                    let x = (q * 16) as f32;
+                    flat_quad(
+                        &mut d,
+                        &mut m,
+                        (x, 4.0 * f as f32, x + 12.0, 40.0),
+                        0xFF00_0000 | (f * 40 + q * 7) << 8,
+                    );
+                }
+                d.swap(&mut m, 0).unwrap();
+            }
+            let per_frame = d.backend.stats();
+            let bb = d.back_buffer().unwrap();
+            // The device flips: the frame shown last is the front buffer, the
+            // back buffer holds the one before.
+            let (px, _) = pixels(d.backend.reference_mut(), bb.reference);
+            (px, per_frame, d.backend.stats())
+        };
+        let (eager, _, _) = run(scaled_lazy(&ctx, 4, false));
+        let (lazy, before_read, after_read) = run(scaled_lazy(&ctx, 4, true));
+        assert!(
+            lazy == eager,
+            "depth {depth}: the reference's image when read"
+        );
+        // Each frame: one clear and four draws.
+        assert_eq!(before_read.reference_deferred, u64::from(FRAMES) * 5);
+        // A frame's whole clear drops the work of the last frame on that
+        // buffer (the device flips between two), so only the last two
+        // frames' work is pending.
+        assert_eq!(
+            before_read.reference_dropped,
+            u64::from(FRAMES - 2) * 5,
+            "{before_read:?}"
+        );
+        assert_eq!(before_read.reference_replayed, 0, "{before_read:?}");
+        assert_eq!(after_read.reference_replayed, 2 * 5, "{after_read:?}");
+    }
 }
 
 /// A deferred draw into the back buffer samples a guest-size level in

@@ -355,6 +355,22 @@ impl<R: Backend> Deferred<R> {
         }
     }
 
+    /// The surfaces it overwrites whole: a clear's colour, and its depth
+    /// surface when it clears depth and stencil.
+    fn overwrites(&self) -> [Option<R::Surface>; 2] {
+        match self {
+            Deferred::Clear {
+                color,
+                depth,
+                clear,
+            } => [
+                clear.color.is_some().then_some(*color),
+                depth.filter(|_| clear.depth.is_some() && clear.stencil.is_some()),
+            ],
+            Deferred::Draw { .. } => [None, None],
+        }
+    }
+
     /// The surfaces whose earlier contents its result depends on. A clear
     /// overwrites what it clears (a depth clear that keeps the stencil, or
     /// the reverse, depends on the surface); a draw depends on its colour
@@ -587,6 +603,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 keep[i] = false;
                 continue;
             }
+            // What a kept op overwrites whole, the work before it cannot
+            // be needed for (by the ops after it).
+            needed.retain(|s| !op.overwrites().contains(&Some(*s)));
             for s in op.reads().into_iter().flatten() {
                 if !needed.contains(&s) {
                     needed.push(s);
