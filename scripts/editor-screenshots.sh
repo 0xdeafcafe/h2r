@@ -27,7 +27,9 @@ usage() {
 Usage: scripts/editor-screenshots.sh [--disc <iso>] [--only <name>] [--out <dir>]
 
   --disc <iso>    the disc image (default: $H2_DISC, else disc/halo2.iso)
-  --only <name>   render only this shot (e.g. scenario-weapon)
+  --only <name>   render only this shot (e.g. scenario-weapon); several,
+                  comma-separated, share one scratch data root
+                  (halo1-converted,halo1-overlay)
   --out <dir>     where to write (default: docs/images/editor)
   -h, --help      show this help
 EOF
@@ -90,7 +92,7 @@ render() {
 }
 
 wanted() {
-  [[ -z "$only" || "$only" == "$1" ]]
+  [[ -z "$only" || ",$only," == *",$1,"* ]]
 }
 
 # shot <name> <h2-editor flags...>: the whole window, or a crop of the 3D

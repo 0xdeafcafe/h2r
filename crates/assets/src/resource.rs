@@ -1,12 +1,14 @@
 //! Reading raw resource bytes. A bitmap's LOD pointers carry a file selector
 //! (`map::ResourceFile`); this module maps each selector to a byte region of a
-//! host file (a standalone `.map`, or an entry inside an ISO) and reads ranges.
+//! host file (a standalone `.map`, or an entry inside an ISO), or to bytes in
+//! memory (a map built or resolved in memory), and reads ranges.
 
 use crate::{Error, Result};
 use map::ResourceFile;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Largest single read, in bytes. Declared sizes come from untrusted tags.
 pub const MAX_READ: u32 = 256 << 20;
@@ -27,6 +29,8 @@ pub struct Region {
 pub struct ResourceFiles {
     regions: [Option<Region>; 4],
     open: [Option<File>; 4],
+    /// Selectors backed by bytes in memory instead ([`Self::set_bytes`]).
+    memory: [Option<Arc<[u8]>>; 4],
 }
 
 fn slot(file: ResourceFile) -> usize {
@@ -60,11 +64,24 @@ impl ResourceFiles {
         }
         self.regions[slot(file)] = Some(region);
         self.open[slot(file)] = None;
+        self.memory[slot(file)] = None;
         Ok(())
+    }
+
+    /// Supplies a selector's bytes in memory: a map that exists only in
+    /// memory (a package resolved over its base, or a new map), whose raw
+    /// pointers are offsets into those bytes and not into any file on disk.
+    pub fn set_bytes(&mut self, file: ResourceFile, bytes: Arc<[u8]>) {
+        self.regions[slot(file)] = None;
+        self.open[slot(file)] = None;
+        self.memory[slot(file)] = Some(bytes);
     }
 
     /// Length of a supplied file.
     pub fn length(&self, file: ResourceFile) -> Option<u64> {
+        if let Some(m) = &self.memory[slot(file)] {
+            return Some(m.len() as u64);
+        }
         self.regions[slot(file)].as_ref().map(|r| r.length)
     }
 
@@ -72,10 +89,28 @@ impl ResourceFiles {
     /// Sizes above [`MAX_READ`] are rejected before allocating.
     pub fn read(&mut self, file: ResourceFile, offset: u32, size: u32) -> Result<Vec<u8>> {
         let i = slot(file);
-        let region = self.regions[i].as_ref().ok_or(Error::MissingResource(file))?;
         if size > MAX_READ {
-            return Err(Error::Invalid(format!("read of {size} bytes exceeds cap {MAX_READ}")));
+            return Err(Error::Invalid(format!(
+                "read of {size} bytes exceeds cap {MAX_READ}"
+            )));
         }
+        if let Some(m) = &self.memory[i] {
+            let range = usize::try_from(offset).ok().and_then(|at| {
+                let end = at.checked_add(size as usize)?;
+                m.get(at..end)
+            });
+            return range
+                .map(<[u8]>::to_vec)
+                .ok_or(Error::Map(map::Error::Bounds {
+                    what: "resource",
+                    offset: offset.into(),
+                    size: size.into(),
+                    limit: m.len() as u64,
+                }));
+        }
+        let region = self.regions[i]
+            .as_ref()
+            .ok_or(Error::MissingResource(file))?;
         if u64::from(offset) + u64::from(size) > region.length {
             return Err(Error::Map(map::Error::Bounds {
                 what: "resource",
@@ -111,11 +146,38 @@ mod tests {
     fn region_must_fit_host_file_and_not_wrap() {
         let p = temp("region", &[0u8; 64]);
         let mut f = ResourceFiles::new();
-        assert!(f.set(ResourceFile::Local, Region { path: p.clone(), base: 0, length: 64 }).is_ok());
-        assert!(f.set(ResourceFile::Shared, Region { path: p.clone(), base: 32, length: 64 }).is_err());
         assert!(
-            f.set(ResourceFile::Shared, Region { path: p.clone(), base: u64::MAX - 1, length: 8 })
-                .is_err()
+            f.set(
+                ResourceFile::Local,
+                Region {
+                    path: p.clone(),
+                    base: 0,
+                    length: 64
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            f.set(
+                ResourceFile::Shared,
+                Region {
+                    path: p.clone(),
+                    base: 32,
+                    length: 64
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            f.set(
+                ResourceFile::Shared,
+                Region {
+                    path: p.clone(),
+                    base: u64::MAX - 1,
+                    length: 8
+                }
+            )
+            .is_err()
         );
         std::fs::remove_file(p).unwrap();
     }
@@ -124,10 +186,57 @@ mod tests {
     fn huge_declared_sizes_are_rejected_before_allocation() {
         let p = temp("huge", &[0u8; 16]);
         let mut f = ResourceFiles::new();
-        f.set(ResourceFile::Local, Region { path: p.clone(), base: 0, length: 16 }).unwrap();
-        assert!(matches!(f.read(ResourceFile::Local, 0, u32::MAX), Err(Error::Invalid(_))));
-        assert!(matches!(f.read(ResourceFile::Local, 8, 16), Err(Error::Map(_))));
+        f.set(
+            ResourceFile::Local,
+            Region {
+                path: p.clone(),
+                base: 0,
+                length: 16,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            f.read(ResourceFile::Local, 0, u32::MAX),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            f.read(ResourceFile::Local, 8, 16),
+            Err(Error::Map(_))
+        ));
         assert_eq!(f.read(ResourceFile::Local, 4, 4).unwrap().len(), 4);
         std::fs::remove_file(p).unwrap();
+    }
+
+    /// A selector backed by bytes in memory reads them, bounds-checked,
+    /// and replaces a file region set before it (and the reverse).
+    #[test]
+    fn memory_bytes_replace_a_file_region() {
+        let p = temp("mem", &[9u8; 16]);
+        let mut f = ResourceFiles::new();
+        f.set(
+            ResourceFile::Local,
+            Region {
+                path: p.clone(),
+                base: 0,
+                length: 16,
+            },
+        )
+        .unwrap();
+        f.set_bytes(ResourceFile::Local, Arc::from(&[1u8, 2, 3, 4, 5][..]));
+        assert_eq!(f.length(ResourceFile::Local), Some(5));
+        assert_eq!(f.read(ResourceFile::Local, 1, 3).unwrap(), [2, 3, 4]);
+        assert!(f.read(ResourceFile::Local, 3, 3).is_err());
+        assert!(f.read(ResourceFile::Local, u32::MAX, 2).is_err());
+        f.set(
+            ResourceFile::Local,
+            Region {
+                path: p.clone(),
+                base: 0,
+                length: 16,
+            },
+        )
+        .unwrap();
+        assert_eq!(f.read(ResourceFile::Local, 0, 2).unwrap(), [9, 9]);
+        let _ = std::fs::remove_file(p);
     }
 }
