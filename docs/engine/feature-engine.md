@@ -1575,8 +1575,11 @@ Tests only; nothing here was run in the game.
   on Controls is a `before`/`after` pair inside the speaker row's hook at
   the same point. A `before` hook answers with an async body through
   `Call::answer_async`.
-- **The Skulls screen** is our list class (`boot::skulls_screen`); its row
-  on the difficulty list is two plan hooks. Gone from `layout_glue`: the
+- **The Skulls screen** is our list class (`boot::skulls_screen`), now a
+  page between the difficulty and the level: one `before` hook on the
+  difficulty press opens it, and its Start replays that press
+  (docs/game/skulls.md "Menu"). Its row on the difficulty list, two plan
+  hooks, is gone. Gone from `layout_glue`: the
   Skulls open flag, its array-name test, the header hook (`0x22fda6`) and
   the text hook's title swap, the Skulls branches in the Controls hooks.
   Its rows' array is built at the screen's count: while a class loader
@@ -1592,6 +1595,13 @@ Tests only; nothing here was run in the game.
   widget to the focused row's description (`0x24c447`) when the focus
   moves (docs/formats/ui.md "A text of our own on a screen"). The Skulls screen
   uses it for each skull's effect, level and Legendary requirement.
+- **A layout of a class's own** (`ListClass::layout`, `ListLayout`): the
+  screen-tag hook (`0x22f871`) gives a screen of such a class a copy of
+  the Controls tag with its list block moved and reskinned and the frame
+  art right of the centre left out (`list_class::copy_tag`); the Skulls
+  screens use the level select's list. **An action** (`ListClass::action`,
+  `Chosen::Act`): what a row's press, or the Start button through the
+  class's own screen slot 10, runs.
 - **Open rows** open another screen of ours: classes register their loader
   by screen id (`list_class::loader_of`), and a press on an `Open` row
   calls `0x149f1e(1 << player, loader)` for the pressing player.

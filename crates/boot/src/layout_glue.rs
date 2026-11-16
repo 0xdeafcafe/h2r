@@ -39,7 +39,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::custom_games;
 use crate::fov_row;
 use crate::setting_defs::{FOV, PAD_SPEAKER};
-use crate::skulls;
 use crate::skulls_menu;
 use crate::speaker_row;
 use crate::ui::{List, Model, RowKind};
@@ -604,16 +603,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
-                // The difficulty list gets the Skulls row; the line says what
-                // each signed-in profile (else the default one) has. The
-                // store is read with guest memory released.
-                let n = if with_skulls && name == skulls_menu::DIFFICULTY_LIST_NAME {
-                    let profiles = skulls::profiles_or_default(&*ctx.runtime().memory());
-                    eprintln!("{}", skulls_menu::difficulty_line(model.store(), &profiles));
-                    skulls_menu::difficulty_count(name, n)
-                } else {
-                    n
-                };
                 // The variant editor's categories get the multiplayer
                 // Skulls row.
                 let n = if with_skulls && crate::skulls_mp_row::row_on() {
@@ -705,12 +694,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 let screen = cpu.ecx;
                 let id = mem.u16(screen + 0x70)? as i16;
                 let row = mem.u16(mem.u32(cpu.esp + 4)?)? as i16;
-                // The Skulls row on the difficulty screen has no pane: keep
+                // The Skulls row in the variant editor has no pane: keep
                 // the one shown (thiscall, `ret 4`).
-                if with_skulls && skulls_menu::skip_pane(id, row) {
-                    return mem.ret(cpu, 4);
-                }
-                // Nor has the Skulls row in the variant editor.
                 if with_skulls && crate::skulls_mp::skip_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
@@ -777,25 +762,47 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             let seen = AtomicBool::new(false);
             let grown = Arc::new(AtomicBool::new(false));
             let odd = Arc::new(AtomicBool::new(false));
+            let copied = Arc::new(AtomicBool::new(false));
             d.register_override(SCREEN_TAG, "layouts:panes", move |cpu, ctx, _| {
                 announce(&seen, "layouts: screen tag");
-                let id = {
+                let screen = cpu.eax;
+                let (id, ours) = {
                     let mem = ctx.runtime().memory();
-                    mem.u16(cpu.eax + 0x70).map_or(-1, |v| v as i16)
+                    (
+                        mem.u16(screen + 0x70).map_or(-1, |v| v as i16),
+                        mem.u32(screen).is_ok_and(crate::list_class::has_layout),
+                    )
                 };
                 let wanted = (layouts && id == SCREEN_ID)
                     || (extra_rows > 0 && id == speaker_row::SCREEN_ID)
-                    || (with_custom_games && id == custom_games::SCREEN_ID);
+                    || (with_custom_games && id == custom_games::SCREEN_ID)
+                    || ours;
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
                 }
                 let grown = Arc::clone(&grown);
                 let odd = Arc::clone(&odd);
+                let copied = Arc::clone(&copied);
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
                     if cpu.eax == 0 {
                         return Ok(());
                     }
                     let mut mem = ctx.runtime().memory();
+                    // A screen of our list class with a layout of its own
+                    // (the Skulls screens): our copy of its tag.
+                    if ours {
+                        match crate::list_class::served_tag(&mut *mem, screen, cpu.eax) {
+                            Ok(Some(tag)) => {
+                                if !copied.swap(true, Ordering::Relaxed) {
+                                    eprintln!("list class: a screen of ours gets its own layout (tag copy at {tag:#x})");
+                                }
+                                cpu.eax = tag;
+                            }
+                            Ok(None) => {}
+                            Err(e) => eprintln!("list class: no layout copy ({e:?}); the retail layout stays"),
+                        }
+                        return Ok(());
+                    }
                     if id == custom_games::SCREEN_ID {
                         // Ours already (our pane array) or freshly extended.
                         if mem.u32(cpu.eax + 0x24).ok() == Some(live.0) {
@@ -1112,28 +1119,45 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         };
         registry.add(&rows).map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
-    // The Skulls screen: our own list class, opened by its row on the
-    // difficulty list (plan hooks).
+    // The Skulls page: our own list class, opened after the difficulty when
+    // the pressing profile has a skull (a plan hook on the difficulty
+    // press), with the level select's layout.
     if with_skulls {
         let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
         let (block, line) = skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
         if let Some(line) = line {
             eprintln!("{line}");
         }
-        match registry.add(&crate::skulls_screen::class(Arc::clone(&screen), block)) {
+        let (layout, picture, lines) = skulls_menu::placement(|k| std::env::var(k).ok());
+        for line in lines {
+            eprintln!("{line}");
+        }
+        let flow = Arc::new(crate::skulls_screen::PageFlow::default());
+        let class = crate::skulls_screen::class(Arc::clone(&screen), block, layout, picture, Arc::clone(&flow));
+        match registry.add(&class) {
             Ok(true) => {}
-            Ok(false) => eprintln!("skulls menu: features.skulls-screen is off"),
-            Err(e) => eprintln!("skulls menu: {e}"),
+            Ok(false) => {
+                flow.set_on(false);
+                eprintln!("skulls menu: features.skulls-screen is off; the difficulty starts as retail")
+            }
+            Err(e) => {
+                flow.set_on(false);
+                eprintln!("skulls menu: {e}")
+            }
         }
         registry
-            .add(&crate::skulls_screen::DifficultyRow(Arc::clone(&screen)))
-            .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
+            .add(&crate::skulls_screen::DifficultyPage {
+                screen: Arc::clone(&screen),
+                flow,
+                store: Arc::clone(model.store()),
+            })
+            .map_err(|e| anyhow::anyhow!("skulls page: {e}"))?;
         // The multiplayer screen, an instance and class of its own, opened
         // from the game variant editor (docs/game/skulls.md "In multiplayer").
         let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(Arc::clone(
             model.store(),
         )));
-        match registry.add(&crate::skulls_mp_row::mp_class(Arc::clone(&mp), block)) {
+        match registry.add(&crate::skulls_mp_row::mp_class(Arc::clone(&mp), block, layout, picture)) {
             Ok(true) => {}
             Ok(false) => eprintln!("skulls menu: features.skulls-mp-screen is off"),
             Err(e) => eprintln!("skulls menu: {e}"),
