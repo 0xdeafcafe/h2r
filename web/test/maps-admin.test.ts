@@ -117,3 +117,37 @@ describe("moderation", () => {
     expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ reason: "breaks the lift" });
   });
 });
+
+describe("the mock's packages", async () => {
+  const { Content, UNKNOWN_MAP_ID, customFor } = await import("../mock/content");
+  const { Admin } = await import("../mock/admin");
+  const { World } = await import("../mock/world");
+  const world = new World();
+  const content = new Content(world, new Admin(world, false));
+  const get = async (path: string) => {
+    const r = await content.handle(new Request("http://m" + path), new URL("http://m" + path), (b) => new Response(b as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png" } }));
+    return r instanceof Response ? { status: r.status, body: null } : r!;
+  };
+
+  test("lists the published packages and answers 200, 410 and 404 like the server", async () => {
+    const list = await get("/v1/maps");
+    const items = parseMapSummaries((list.body as { items: unknown[] }).items);
+    expect(items.map((m) => m.name)).toEqual(["Orchard Towers", "Teacup Crates"]);
+    const crates = items.find((m) => m.name === "Teacup Crates")!;
+    expect((await get(`/v1/maps/${crates.map_id}`)).status).toBe(200);
+    expect((await get(`/v1/maps/${crates.map_id}/image`)).status).toBe(200);
+    expect((await get(`/v1/maps/${content.packages[2]!.map_id}`)).status).toBe(410);
+    expect((await get(`/v1/maps/${UNKNOWN_MAP_ID}`)).status).toBe(404);
+    expect(await get("/v1/maps/teacup/outline")).toBeNull();
+    expect((await get("/v1/admin/content")).status).toBe(401);
+  });
+
+  test("custom maps are picked from the id, on the right base, about a third of the time", () => {
+    const picks = Array.from({ length: 300 }, (_, i) => customFor(`g${i}`, "teacup"));
+    const named = picks.filter(Boolean);
+    expect(named.length).toBeGreaterThan(60);
+    expect(named.length).toBeLessThan(140);
+    expect(new Set(named).size).toBe(2); // the teacup package and the unknown id
+    expect(customFor("g1", "teacup")).toBe(customFor("g1", "teacup"));
+  });
+});

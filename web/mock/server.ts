@@ -38,10 +38,14 @@ import { campaignHook } from "./campaign";
 import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
+import { Content, customFor } from "./content";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
 world.tamperEvery = Number(process.env.H2_MOCK_TAMPER ?? 0);
+// Some games on custom map packages (mock/content.ts); H2_MOCK_CUSTOM_MAPS=0 for none.
+const customMaps = process.env.H2_MOCK_CUSTOM_MAPS !== "0";
+if (customMaps) world.customMap = customFor;
 const historyMin = Number(process.env.H2_MOCK_HISTORY_MIN ?? 20);
 const t0 = performance.now();
 world.seed(historyMin * 60_000);
@@ -51,7 +55,7 @@ const social = new Social(world);
 social.seed();
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
 // Open sessions for the dashboard's "find a game" (mock/sessions.ts).
-const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0));
+const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0), customMaps ? customFor : undefined);
 sessions.seed();
 setInterval(() => sessions.step(), 2500);
 // AI and vehicles in the frames of campaign games; H2_MOCK_ACTORS=1 puts them in every game.
@@ -73,6 +77,7 @@ if (furniture) {
 world.run();
 
 const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
+const content = new Content(world, admin);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
@@ -167,6 +172,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (ses) return json(ses.body, ses.status);
   const adm = await admin.handle(req, u);
   if (adm) return json(adm.body, adm.status);
+  const con = await content.handle(req, u, (bytes) => new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "max-age=3600", ...CORS } }));
+  if (con) return con instanceof Response ? con : json(con.body, con.status);
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
@@ -204,8 +211,12 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   }
   if (path === "/v1/games" && req.method === "GET") {
     const state = u.searchParams.get("state");
-    const all = [...world.games.values()].reverse().filter((g) => !state || (state === "live" ? !g.ended_at : !!g.ended_at));
-    return list(all.slice(0, limitOf(u)).map((g) => world.gameSummary(g)));
+    // `map` is the base map (modded or not); `map_id` one package exactly, or `none` for retail.
+    const map = u.searchParams.get("map"), mapId = u.searchParams.get("map_id");
+    const all = [...world.games.values()].reverse().filter((g) => !state || (state === "live" ? !g.ended_at : !!g.ended_at))
+      .map((g) => world.gameSummary(g) as ReturnType<World["gameSummary"]> & { map_id?: string })
+      .filter((g) => (!map || g.map === map) && (!mapId || (mapId === "none" ? !g.map_id : g.map_id === mapId)));
+    return list(all.slice(0, limitOf(u)));
   }
   if (path === "/v1/games" && req.method === "POST") {
     // Mock only: accepts GameStarted data and appends it unsigned by a console.
