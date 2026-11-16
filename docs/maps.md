@@ -1,8 +1,9 @@
 # Maps: new, edited, patched and shared (design)
 
 Status: design, with the foundation built: `crates/content` (manifest,
-`MapId`, PPF/IPS/BPS, resolver), `vfs::PackageBackend` and the boot
-wiring. Sections marked **Built** say exactly what exists; see also
+`MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`,
+the boot wiring, and the scenario editor's "Save as package" and "Open
+package" (§8). Sections marked **Built** say exactly what exists; see also
 §7. Agreed with the Live session (network side) and built on
 the feature engine's content packs ([feature-engine.md](feature-engine.md),
 "Content packs"). What exists today: the editor (`h2-editor`,
@@ -57,6 +58,31 @@ sha256 = "…"
 [result]
 geometry = "…"               # hash of the structure BSP sections after patching
 ```
+
+### The geometry hash
+
+`[result] geometry` is the SHA-256 of this byte stream, built from the
+patched map (`scenario_edit::package::geometry_hash`). For each entry of
+the scenario's structure BSP block (`scnr+0x210`, stride `0x44`), in
+order:
+
+1. If the entry's file offset (`+0x00`) is 0: a `u32` 0, and nothing
+   more for this entry. Otherwise the `u32` section size (`+0x04`), then
+   the BSP section's bytes, `[offset, offset + size)` of the map file.
+2. Then each geometry block of that BSP's `sbsp` tag (`+0x14`): its
+   clusters in order, then its instanced geometry definitions in order.
+   For each:
+   - no block: the byte `0x00`;
+   - a block in the map's own file: the byte `0x01`, the `u32` block
+     size, then the block's bytes;
+   - a block in a shared cache: the byte `0x02`, the `u32` raw pointer
+     word (file selector in the top two bits, offset below), then the
+     `u32` block size.
+
+Integers are little-endian. A map with no BSP entries hashes no bytes.
+Placement edits and metadata appended past every tag change none of
+these bytes, so an editor package reports its base's geometry and the 3D
+viewer can use the base's.
 
 A user-made map with no retail base has `[base]` naming the map it was
 derived from, if any, with `derived = true`, and the map file itself as
@@ -203,7 +229,7 @@ geometry is extracted from the patched map.
 | Lane | Work | Depends on |
 |---|---|---|
 | content | **Built.** `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
-| editor | save as package: an offset patch or a `map-variant` pack against the base, plus manifest and image; open packages | content |
+| editor | **Built** (§8): save as package (one PPF3 or BPS layer against the base, manifest, image, optional `active.toml`), open packages; `map-variant` packs not yet | content |
 | map list | synthesised `patch.lvl` for new maps (and the Map Pack, if 1.0 loads it) | the 1.0 research |
 | live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
 | realtime | folder watch, then the editor-to-game socket for `map-variant` edits | feature engine loader hook |
@@ -295,5 +321,57 @@ and `H2_MAP_DIR` unset, the disc is mounted exactly as before
 **Not yet:** applying content packs; the folder watch (§3); `MapId` in
 sessions (§5); SPPF and Serenity; caching the base's hash between runs
 (each session reads a patched map's base once, in full, on first use).
+
+## 8. Saving packages from the editor
+
+**Built** (`content::patch::write`, `content::store`,
+`scenario_edit::package`, the scenario panel; [scenario-editor.md](scenario-editor.md) §5).
+
+**Patch writer.** `content::patch::diff(base, edited, description)` makes
+one layer:
+
+- same length: **PPF3**, which the resolver overlays without copying.
+  Records are the differing runs, runs closer than a record header (9
+  bytes) merged, split at 255 bytes; no block check, no undo data (the
+  resolver checks the base's SHA-256 instead), no FILE_ID.DIZ. A body
+  whose last six bytes would read as a FILE_ID.DIZ tail gets one more
+  1-byte record, so it never does.
+- any other length (a grown block): **BPS**: SourceRead where bytes match
+  in place, SourceCopy that continues the last copy or finds a 64-byte
+  source block through a hash index, TargetRead for new bytes.
+
+Both reproduce the edited bytes exactly, **header checksum included**. The
+editor's map writer leaves the checksum right, so the resolver's repair at
++0x2d0 writes the same four bytes again, and the patch works in any other
+PPF or BPS tool without a "resign" step. Tests round-trip random edits
+(near the end, at +0x2d0, growth, insertion, truncation) through the
+crate's own readers and through the resolver.
+
+**Writing a package.** `content::store::write_package` assembles a new
+package in a hidden sibling directory and renames it into place; replacing
+the package being edited writes its new files, then the manifest by
+rename (the commit point), then removes files only the old manifest named.
+`store::set_active` rewrites `active.toml` by rename, keeping other
+entries. `store::default_data_root()` is the runtime's default data root,
+`$TMPDIR/h2boot-data`, the one `h2 play` and `h2 run` use without
+`--data` (`vfs::Config::for_title`'s `~/Library/Application
+Support/h2recomp` is not used by any run).
+
+**The editor's package**:
+
+```text
+<data>/maps/<dir>/
+  manifest.toml        [package] name, author, description, image
+                       [base] map = the disc map's name, sha256 = its SHA-256
+                       [[patch]] <map>-<first 8 hex of its sha256>.ppf|.bps
+                       [result] geometry (above)
+  <map>-<hash>.ppf     base -> current, always one layer
+  preview.png|.jpg     optional, PNG/JPEG <= 512 KB, checked before writing
+```
+
+Opening a package resolves it with the content resolver over the disc's
+map (`Library::resolve_package`, `Resolved::read_all`) into memory; that
+becomes the editor's unedited state, with the disc's map kept as the base.
+Saving it again replaces its one layer with a new base-to-current patch.
 
 [formats]: https://connortumbleson.com/2020/04/12/halo-2-patch-format-types/

@@ -11,26 +11,85 @@ use crate::scenario::Scenario;
 use crate::{Error, Result};
 use map::Map;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Where a map's bytes come from: a whole file, or a byte range of one
 /// (a map inside an XISO). The source is only ever read.
+///
+/// `bytes`, when set, are the map's current bytes held in memory (a map
+/// package resolved over this location, docs/maps.md); `path` and
+/// `region` then name its base, the disc's map, which the shared caches
+/// are found beside and which a package's patch starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapSource {
     pub path: PathBuf,
     /// `(offset, length)` inside `path`, or `None` for the whole file.
     pub region: Option<(u64, u64)>,
+    pub bytes: Option<Arc<[u8]>>,
 }
+
+/// A map's reader: a host file, or bytes in memory.
+pub enum MapReader {
+    File(BufReader<File>),
+    Memory(Cursor<Arc<[u8]>>),
+}
+impl Read for MapReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(f) => f.read(buf),
+            Self::Memory(m) => m.read(buf),
+        }
+    }
+}
+impl Seek for MapReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::File(f) => f.seek(pos),
+            Self::Memory(m) => m.seek(pos),
+        }
+    }
+}
+
 impl MapSource {
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             region: None,
+            bytes: None,
         }
     }
-    pub fn open(&self) -> Result<Map<BufReader<File>>> {
-        let reader = BufReader::new(File::open(&self.path)?);
+    /// `length` bytes at `offset` in `path` (a map inside a disc image).
+    pub fn region(path: impl Into<PathBuf>, region: Option<(u64, u64)>) -> Self {
+        Self {
+            path: path.into(),
+            region,
+            bytes: None,
+        }
+    }
+    /// This source without its in-memory bytes: the base map on disk.
+    pub fn base(&self) -> Self {
+        Self::region(self.path.clone(), self.region)
+    }
+    /// The base map's bytes (the file or region, never `bytes`).
+    pub fn read_base(&self) -> Result<Vec<u8>> {
+        let mut f = File::open(&self.path)?;
+        let (at, len) = match self.region {
+            Some(r) => r,
+            None => (0, f.metadata()?.len()),
+        };
+        let len = usize::try_from(len).map_err(|_| Error::Save("map too large"))?;
+        f.seek(SeekFrom::Start(at))?;
+        let mut out = vec![0; len];
+        f.read_exact(&mut out)?;
+        Ok(out)
+    }
+    pub fn open(&self) -> Result<Map<MapReader>> {
+        if let Some(b) = &self.bytes {
+            return Ok(Map::from_reader(MapReader::Memory(Cursor::new(b.clone())))?);
+        }
+        let reader = MapReader::File(BufReader::new(File::open(&self.path)?));
         Ok(match self.region {
             None => Map::from_reader(reader)?,
             Some((base, len)) => Map::from_region(reader, base, len)?,
@@ -58,13 +117,13 @@ impl MapSource {
                 let start = e.path.len() - 4 - name.len();
                 Some((
                     e.path[start..e.path.len() - 4].to_owned(),
-                    MapSource {
-                        path: iso.to_owned(),
-                        region: Some((
+                    MapSource::region(
+                        iso,
+                        Some((
                             partition + u64::from(e.sector) * xiso::SECTOR,
                             u64::from(e.size),
                         )),
-                    },
+                    ),
                 ))
             })
             .collect())

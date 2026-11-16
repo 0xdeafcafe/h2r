@@ -1264,3 +1264,426 @@ fn disc_add_and_remove_round_trip() {
     eprintln!("{checked} maps grown, {refused} refused at the bound");
     assert!(checked > 0);
 }
+
+// ---- Map packages -------------------------------------------------------
+
+mod packages {
+    use super::*;
+    use crate::ScenarioEditor;
+    use crate::package::{self, PackageForm};
+    use content::patch::Format;
+    use content::{Library, Manifest, MapId, Sha256};
+    use std::path::{Path, PathBuf};
+
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir()
+                .join(format!("scenario-edit-pkg-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// An editor over `bytes` saved as `<tmp>/lockout.map`, packages in
+    /// `<tmp>/data/maps`.
+    fn editor(t: &Temp, bytes: &[u8]) -> (ScenarioEditor, PathBuf) {
+        let path = t.0.join("lockout.map");
+        std::fs::write(&path, bytes).unwrap();
+        let mut ed = ScenarioEditor::new();
+        ed.set_data_root(t.0.join("data"));
+        ed.open(MapSource::file(&path)).unwrap();
+        assert_eq!(ed.map_name(), Some("lockout"));
+        (ed, path)
+    }
+
+    fn form(dir: &str) -> PackageForm {
+        PackageForm {
+            name: "Lockout Moved".into(),
+            author: "tester".into(),
+            description: "a flag moved".into(),
+            image: None,
+            dir: dir.into(),
+            activate: false,
+        }
+    }
+
+    fn move_flag(ed: &mut ScenarioEditor, x: f32) {
+        ed.apply(Command::set(
+            BlockKind::NetgameFlags,
+            0,
+            "position",
+            Value::Vec3([x, 3.0, 3.0]),
+        ))
+        .unwrap();
+    }
+
+    /// The bytes the runtime would serve for `lockout`.
+    fn served(maps: &Path, base: &[u8]) -> Vec<u8> {
+        let mut lib = Library::open(maps);
+        assert!(lib.take_notices().iter().all(|n| !n.contains("warning")));
+        let r = lib.resolve("lockout", &mut &base[..]).unwrap().unwrap();
+        r.read_all(&mut &base[..]).unwrap()
+    }
+
+    fn current(ed: &ScenarioEditor, base: &MapSource) -> Vec<u8> {
+        write(&base.read_base().unwrap(), ed.scenario().unwrap())
+    }
+
+    #[test]
+    fn saved_package_resolves_to_the_edited_map() {
+        let t = Temp::new("save");
+        let src = fixture();
+        let (mut ed, path) = editor(&t, &src);
+        move_flag(&mut ed, 9.0);
+        let edited = current(&ed, &MapSource::file(&path));
+        // The writer leaves the checksum the resolver would write.
+        let mut repaired = edited.clone();
+        content::repair_checksum(&mut repaired);
+        assert_eq!(repaired, edited);
+        let saved = ed.save_package(&form("lockout-moved")).unwrap();
+        assert!(!ed.is_dirty());
+        assert_eq!(saved.format, Format::Ppf3);
+        assert_eq!(ed.last_package().unwrap().1, saved.id);
+        assert_eq!(ed.package_dir(), Some("lockout-moved"));
+        let maps = ed.maps_dir();
+        assert_eq!(served(&maps, &src), edited);
+        // The manifest on disk.
+        let text = std::fs::read_to_string(maps.join("lockout-moved/manifest.toml")).unwrap();
+        let m = Manifest::from_toml(&text).unwrap();
+        assert_eq!(m, saved.manifest);
+        assert_eq!(m.package.name, "Lockout Moved");
+        assert_eq!(m.package.author.as_deref(), Some("tester"));
+        assert_eq!(m.package.description.as_deref(), Some("a flag moved"));
+        assert_eq!(m.package.image, None);
+        assert_eq!(m.base.map, "lockout");
+        assert_eq!(m.base.sha256, Some(Sha256::of(&src)));
+        assert!(!m.base.derived);
+        assert_eq!(m.patches.len(), 1);
+        assert!(m.packs.is_empty());
+        let layer = &m.patches[0];
+        let patch = std::fs::read(maps.join("lockout-moved").join(&layer.file)).unwrap();
+        assert_eq!(Sha256::of(&patch), layer.sha256);
+        assert_eq!(
+            layer.file,
+            format!("lockout-{}.ppf", &layer.sha256.to_string()[..8])
+        );
+        // No structure BSPs in the fixture: the hash of no bytes.
+        assert_eq!(m.result.as_ref().unwrap().geometry, Some(Sha256::of(b"")));
+        assert_eq!(saved.id, MapId::of(&m));
+        // Only the edit and the checksum are in the patch: small.
+        assert!(saved.patch_len < 60 + 2 * (9 + 12), "{}", saved.patch_len);
+        // The same edit saved elsewhere has the same MapId; the source map
+        // is untouched.
+        let again = ed.save_package(&form("lockout-copy")).unwrap();
+        assert_eq!(again.id, saved.id);
+        assert_eq!(std::fs::read(&path).unwrap(), src);
+        // Another directory that exists is not replaced.
+        assert!(ed.save_package(&form("lockout-moved")).is_err());
+    }
+
+    #[test]
+    fn reopen_edit_and_save_again_keeps_one_layer() {
+        let t = Temp::new("reopen");
+        let src = fixture();
+        let (mut ed, path) = editor(&t, &src);
+        move_flag(&mut ed, 9.0);
+        let first = ed.save_package(&form("lockout-moved")).unwrap();
+        // Open the plain map again, then the package over it.
+        ed.open(MapSource::file(&path)).unwrap();
+        assert_eq!(ed.packages().len(), 1);
+        let id = ed.open_package("lockout-moved").unwrap();
+        assert_eq!(id, first.id);
+        assert!(!ed.is_dirty() && !ed.can_undo());
+        let s = ed.scenario().unwrap();
+        assert_eq!(
+            s.get(BlockKind::NetgameFlags, 0, "position").unwrap(),
+            Value::Vec3([9.0, 3.0, 3.0])
+        );
+        // The form starts from the package.
+        let f = ed.form_defaults();
+        assert_eq!(
+            (f.name.as_str(), f.dir.as_str()),
+            ("Lockout Moved", "lockout-moved")
+        );
+        // A second edit; opening another package over it is refused.
+        ed.apply(Command::set(
+            BlockKind::StartingLocations,
+            1,
+            "facing",
+            Value::Float(2.5),
+        ))
+        .unwrap();
+        assert!(matches!(
+            ed.open_package("lockout-moved"),
+            Err(Error::Refused(_))
+        ));
+        let mut base_ed = ScenarioEditor::new();
+        base_ed.open(MapSource::file(&path)).unwrap();
+        let second = ed.save_package(&f).unwrap();
+        assert_ne!(second.id, first.id);
+        let dir = ed.maps_dir().join("lockout-moved");
+        let files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != "manifest.toml")
+            .collect();
+        assert_eq!(files, [second.manifest.patches[0].file.clone()]);
+        // base -> current, both edits.
+        let got = served(&ed.maps_dir(), &src);
+        let mut want = read(src.clone());
+        want.set(
+            BlockKind::NetgameFlags,
+            0,
+            "position",
+            Value::Vec3([9.0, 3.0, 3.0]),
+        )
+        .unwrap();
+        want.set(BlockKind::StartingLocations, 1, "facing", Value::Float(2.5))
+            .unwrap();
+        assert_eq!(got, write(&src, &want));
+    }
+
+    #[test]
+    fn a_grown_block_saves_as_bps_and_reopens() {
+        let t = Temp::new("grow");
+        let src = fixture_at_end();
+        let (mut ed, _) = editor(&t, &src);
+        ed.set_allow_growth(true);
+        let n = ed
+            .scenario()
+            .unwrap()
+            .block(BlockKind::NetgameEquipment)
+            .len();
+        ed.add_entry(BlockKind::NetgameEquipment, Some(0)).unwrap();
+        let mut f = form("lockout-more");
+        f.activate = true;
+        let saved = ed.save_package(&f).unwrap();
+        assert_eq!(saved.format, Format::Bps);
+        assert!(saved.manifest.patches[0].file.ends_with(".bps"));
+        let maps = ed.maps_dir();
+        let got = served(&maps, &src);
+        assert_eq!(got.len(), src.len() + 0x1000);
+        let mut m = Map::from_reader(Cursor::new(got.clone())).unwrap();
+        m.validate_checksum().unwrap();
+        assert_eq!(
+            Scenario::read(&mut m)
+                .unwrap()
+                .block(BlockKind::NetgameEquipment)
+                .len(),
+            n + 1
+        );
+        // Reopen, edit the grown entry, save: still one BPS layer from the
+        // base, and the result has both.
+        ed.open_package("lockout-more").unwrap();
+        ed.apply(Command::set(
+            BlockKind::NetgameEquipment,
+            n,
+            "respawn time",
+            Value::Int(7),
+        ))
+        .unwrap();
+        let again = ed.save_package(&f).unwrap();
+        assert_eq!(again.format, Format::Bps);
+        let got2 = served(&maps, &src);
+        assert_eq!(got2.len(), got.len());
+        let r = Scenario::read(&mut Map::from_reader(Cursor::new(got2)).unwrap()).unwrap();
+        assert_eq!(
+            r.get(BlockKind::NetgameEquipment, n, "respawn time")
+                .unwrap(),
+            Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn images_are_validated() {
+        let t = Temp::new("image");
+        let (mut ed, _) = editor(&t, &fixture());
+        move_flag(&mut ed, 1.0);
+        let img = t.0.join("shot.png");
+        let mut f = form("lockout-img");
+        f.image = Some(img.clone());
+        std::fs::write(&img, b"GIF89a....").unwrap();
+        assert!(
+            ed.save_package(&f)
+                .unwrap_err()
+                .to_string()
+                .contains("PNG or JPEG")
+        );
+        let mut big = b"\x89PNG\r\n\x1a\n".to_vec();
+        big.resize(512 * 1024 + 1, 0);
+        std::fs::write(&img, &big).unwrap();
+        assert!(
+            ed.save_package(&f)
+                .unwrap_err()
+                .to_string()
+                .contains("over")
+        );
+        f.image = Some(t.0.join("missing.png"));
+        assert!(ed.save_package(&f).is_err());
+        assert!(!ed.maps_dir().join("lockout-img").exists());
+        assert!(ed.is_dirty(), "a refused save leaves the edits unsaved");
+        let jpeg = t.0.join("shot.jpeg");
+        std::fs::write(&jpeg, [0xff, 0xd8, 0xff, 0xe0, 1, 2]).unwrap();
+        f.image = Some(jpeg);
+        let saved = ed.save_package(&f).unwrap();
+        assert_eq!(saved.manifest.package.image.as_deref(), Some("preview.jpg"));
+        assert_eq!(
+            std::fs::read(saved.dir.join("preview.jpg")).unwrap(),
+            [0xff, 0xd8, 0xff, 0xe0, 1, 2]
+        );
+        // The image does not change the MapId.
+        f.image = None;
+        f.dir = "lockout-noimg".into();
+        assert_eq!(ed.save_package(&f).unwrap().id, saved.id);
+    }
+
+    #[test]
+    fn activation_picks_the_package() {
+        let t = Temp::new("active");
+        let src = fixture();
+        let (mut ed, _) = editor(&t, &src);
+        move_flag(&mut ed, 1.0);
+        let mut a = form("lockout-a");
+        a.activate = true;
+        let first = ed.save_package(&a).unwrap();
+        move_flag(&mut ed, 2.0);
+        // Sorts last, so it would win by name, but is not active.
+        let second = ed.save_package(&form("lockout-z")).unwrap();
+        let maps = ed.maps_dir();
+        let text = std::fs::read_to_string(maps.join(content::ACTIVE_FILE)).unwrap();
+        assert_eq!(text.trim(), "lockout = \"lockout-a\"");
+        let mut lib = Library::open(&maps);
+        let r = lib.resolve("lockout", &mut &src[..]).unwrap().unwrap();
+        assert_eq!(r.id, first.id);
+        content::store::set_active(&maps, "lockout", None).unwrap();
+        let mut lib = Library::open(&maps);
+        assert_eq!(
+            lib.resolve("lockout", &mut &src[..]).unwrap().unwrap().id,
+            second.id
+        );
+    }
+
+    #[test]
+    fn form_checks_and_default_dirs() {
+        assert_eq!(
+            PackageForm::default_dir("lockout", "Snipers Only!"),
+            "lockout-snipers-only"
+        );
+        assert_eq!(PackageForm::default_dir("lockout", "  "), "lockout-edit");
+        assert!(PackageForm::default_dir("lockout", &"x".repeat(100)).len() <= 64);
+        let t = Temp::new("form");
+        // The fixture's checksum is not filled in; a real map's is.
+        let mut src = fixture();
+        content::repair_checksum(&mut src);
+        let (mut ed, _) = editor(&t, &src);
+        let mut f = form("lockout-x");
+        f.name = " ".into();
+        assert!(ed.save_package(&f).is_err());
+        for dir in ["", "cache", "a b", "../x", ".x"] {
+            let mut f = form(dir);
+            f.name = "n".into();
+            assert!(ed.save_package(&f).is_err(), "{dir:?}");
+        }
+        // An unedited map saves as an empty patch, identical when resolved.
+        let saved = ed.save_package(&form("lockout-same")).unwrap();
+        assert_eq!(saved.patch_len, 60);
+        assert_eq!(served(&ed.maps_dir(), &src), src);
+        assert!(package::packages_for(&ed.maps_dir(), "LOCKOUT").len() == 1);
+        assert!(package::packages_for(&ed.maps_dir(), "midship").is_empty());
+    }
+
+    /// On the owner's disc: move a flag on a multiplayer map, save it as a
+    /// package under `$TMPDIR`, resolve it as the runtime would over the
+    /// disc's map, re-read the scenario, then reopen the package and save
+    /// a second edit. Only the disc is read.
+    #[test]
+    #[ignore = "needs the owner's disc image"]
+    fn disc_package_round_trip() {
+        let iso = std::env::var_os("H2_DISC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../disc/halo2.iso"))
+            });
+        let t = Temp::new("disc");
+        let maps = MapSource::disc_maps(&iso).unwrap();
+        let (name, source) = maps
+            .iter()
+            .find(|(_, s)| {
+                s.open()
+                    .is_ok_and(|m| m.header().cache_type == map::CacheType::Multiplayer)
+            })
+            .cloned()
+            .unwrap();
+        let mut ed = ScenarioEditor::new();
+        ed.set_data_root(t.0.join("data"));
+        ed.open_named(source.clone(), &name).unwrap();
+        let s = ed.scenario().unwrap();
+        assert!(!s.block(BlockKind::NetgameFlags).is_empty(), "{name}");
+        ed.apply(Command::set(
+            BlockKind::NetgameFlags,
+            0,
+            "position",
+            Value::Vec3([1.0, 2.0, 3.0]),
+        ))
+        .unwrap();
+        let edited = package::edited_bytes(&source, ed.scenario().unwrap()).unwrap();
+        let mut f = form(&PackageForm::default_dir(
+            &name.to_ascii_lowercase(),
+            "disc test",
+        ));
+        f.activate = true;
+        let saved = ed.save_package(&f).unwrap();
+        assert_eq!(saved.format, Format::Ppf3);
+        let base = source.read_base().unwrap();
+        let mut lib = Library::open(ed.maps_dir());
+        let r = lib.resolve(&name, &mut &base[..]).unwrap().unwrap();
+        assert_eq!(r.id, saved.id);
+        let got = r.read_all(&mut &base[..]).unwrap();
+        assert!(
+            got == edited,
+            "{name}: resolved bytes differ from the edited map"
+        );
+        let mut m = Map::from_reader(Cursor::new(got)).unwrap();
+        m.validate_checksum().unwrap();
+        let geometry = package::geometry_hash(&mut source.open().unwrap()).unwrap();
+        assert_eq!(
+            saved.manifest.result.as_ref().unwrap().geometry,
+            Some(geometry)
+        );
+        let r = Scenario::read(&mut m).unwrap();
+        assert_eq!(
+            r.get(BlockKind::NetgameFlags, 0, "position").unwrap(),
+            Value::Vec3([1.0, 2.0, 3.0])
+        );
+        ed.open_package(&f.dir).unwrap();
+        ed.apply(Command::set(
+            BlockKind::NetgameFlags,
+            0,
+            "facing",
+            Value::Float(0.5),
+        ))
+        .unwrap();
+        let second = ed.save_package(&f).unwrap();
+        let mut lib = Library::open(ed.maps_dir());
+        let r = lib.resolve(&name, &mut &base[..]).unwrap().unwrap();
+        assert_eq!(r.id, second.id);
+        let mut m = Map::from_reader(Cursor::new(r.read_all(&mut &base[..]).unwrap())).unwrap();
+        let r = Scenario::read(&mut m).unwrap();
+        assert_eq!(
+            r.get(BlockKind::NetgameFlags, 0, "facing").unwrap(),
+            Value::Float(0.5)
+        );
+        eprintln!(
+            "{name}: package {} ({} bytes of PPF3), geometry unchanged",
+            second.dir.display(),
+            second.patch_len
+        );
+    }
+}
