@@ -22,6 +22,7 @@ const USAGE: &str = "usage:
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--tunnel | --tunnel-name NAME [--hostname HOST]]
           [--icons auto|xbox|xbox360|playstation|keyboard]
+          [--level MAP [--difficulty easy|normal|heroic|legendary]]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
 
@@ -48,6 +49,10 @@ always runs at 30; docs/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
 screen (Settings, Controls, Video), saved as [graphics] fps and render_scale
 in <data>/settings.toml and applied from the next launch.
+--level MAP (or H2_LEVEL) starts that campaign level instead of the main menu,
+at --difficulty (or H2_DIFFICULTY; normal by default), with one default player:
+no title, profile or menus. MAP is a map file name from the disc
+(03a_oldmombasa); a name the disc lacks lists them (docs/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
@@ -282,6 +287,8 @@ fn hosted(
         fps_setting: Some(fps_setting),
         scale_setting: Some(scale_setting),
         trace_limit: Some(TRACE_LIMIT),
+        // `run` sets it from --level or H2_LEVEL, resolved before the window.
+        level: None,
         input,
         keyboard,
         icons: Some(icons),
@@ -406,6 +413,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut no_watermark = false;
     let mut fps_flag: Option<String> = None;
     let mut live = crate::play_live::LiveOpts::default();
+    let mut level_flag: Option<String> = None;
+    let mut difficulty_flag: Option<String> = None;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -467,6 +476,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     ..Default::default()
                 });
             }
+            "--level" => level_flag = Some(val()?),
+            "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
                 let path = PathBuf::from(val()?);
@@ -516,6 +527,23 @@ pub fn run(args: Vec<String>) -> Result<()> {
         },
         gamepads: config.gamepads,
     };
+    // Before the build and the window, so a bad name stops here with the
+    // disc's list.
+    let level = match level_choice(
+        level_flag,
+        difficulty_flag,
+        std::env::var("H2_LEVEL").ok(),
+        std::env::var("H2_DIFFICULTY").ok(),
+    )? {
+        Some((name, difficulty)) => Some(boot::level_boot::resolve(&disc, &name, difficulty)?),
+        None => None,
+    };
+    if let Some(l) = &level {
+        eprintln!(
+            "play: starting {} on {} ({})",
+            l.name, l.difficulty, l.scenario
+        );
+    }
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
     if needs_build(&xbe, &lib) {
@@ -577,7 +605,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .context("starting frame stats")?;
     }
     let report = app::run(config, move |host| {
-        let host = hosted(
+        let mut host = hosted(
             host,
             audio,
             status,
@@ -589,6 +617,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 fps: fps_setting,
             },
         );
+        host.level = level;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -622,6 +651,33 @@ pub fn run(args: Vec<String>) -> Result<()> {
         std::process::exit(crate::follow::RESTART_EXIT);
     }
     Ok(())
+}
+
+/// The level to start and its difficulty: `--level`/`--difficulty`, else
+/// `H2_LEVEL`/`H2_DIFFICULTY` (each flag wins over its variable; empty
+/// variables count as unset). `None` boots to the main menu as before. A
+/// difficulty with no level is refused rather than ignored.
+fn level_choice(
+    level: Option<String>,
+    difficulty: Option<String>,
+    env_level: Option<String>,
+    env_difficulty: Option<String>,
+) -> Result<Option<(String, boot::level_boot::Difficulty)>> {
+    let set = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    let from_flag = difficulty.is_some();
+    let difficulty = set(difficulty).or(set(env_difficulty));
+    let Some(level) = set(level).or(set(env_level)) else {
+        if from_flag {
+            bail!("--difficulty needs --level (or H2_LEVEL)");
+        }
+        return Ok(None);
+    };
+    let difficulty = difficulty
+        .as_deref()
+        .map(boot::level_boot::Difficulty::parse)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Some((level.trim().to_string(), difficulty)))
 }
 
 /// Starts `--live`: the server and account, with a line saying where the
@@ -783,6 +839,89 @@ mod tests {
         assert!(!render_thread(Some("0")), "H2_RENDER_THREAD=0 turns it off");
         for v in ["1", "", "true", "yes", "2", " 0"] {
             assert!(render_thread(Some(v)), "{v:?}");
+        }
+    }
+
+    fn some(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn level_flags_win_over_the_variables() {
+        use boot::level_boot::Difficulty;
+        assert_eq!(
+            level_choice(None, None, None, None).unwrap(),
+            None,
+            "the main menu"
+        );
+        assert_eq!(
+            level_choice(some("03a_oldmombasa"), None, None, None).unwrap(),
+            Some(("03a_oldmombasa".into(), Difficulty::Normal)),
+            "normal by default"
+        );
+        assert_eq!(
+            level_choice(
+                some("03a_oldmombasa"),
+                some("legendary"),
+                some("01a_tutorial"),
+                some("easy")
+            )
+            .unwrap(),
+            Some(("03a_oldmombasa".into(), Difficulty::Legendary))
+        );
+        assert_eq!(
+            level_choice(None, None, some("01a_tutorial"), some("heroic")).unwrap(),
+            Some(("01a_tutorial".into(), Difficulty::Heroic))
+        );
+        // An empty variable is unset; the flag's difficulty applies to the
+        // variable's level.
+        assert_eq!(
+            level_choice(None, None, some(""), some("heroic")).unwrap(),
+            None
+        );
+        assert_eq!(
+            level_choice(None, some("easy"), some("01a_tutorial"), None).unwrap(),
+            Some(("01a_tutorial".into(), Difficulty::Easy))
+        );
+    }
+
+    #[test]
+    fn level_flags_refuse_bad_input() {
+        let e = level_choice(None, some("heroic"), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--difficulty needs --level"), "{e}");
+        let e = level_choice(some("03a_oldmombasa"), some("hard"), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown difficulty"), "{e}");
+    }
+
+    #[test]
+    fn play_parses_the_level_flags() {
+        // Each stops before the disc is read: a missing value, and a
+        // difficulty with no level.
+        let run_err = |a: &[&str]| {
+            run(a.iter().map(|s| s.to_string()).collect())
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(run_err(&["/nonexistent/halo2.iso", "--level"]).contains("--level needs a value"));
+        assert!(
+            run_err(&["/nonexistent/halo2.iso", "--difficulty"])
+                .contains("--difficulty needs a value")
+        );
+        if std::env::var_os("H2_LEVEL").is_none() {
+            let e = run_err(&["/nonexistent/halo2.iso", "--difficulty", "heroic"]);
+            assert!(e.contains("--difficulty needs --level"), "{e}");
+            let e = run_err(&[
+                "/nonexistent/halo2.iso",
+                "--level",
+                "03a_oldmombasa",
+                "--difficulty",
+                "hard",
+            ]);
+            assert!(e.contains("unknown difficulty"), "{e}");
         }
     }
 

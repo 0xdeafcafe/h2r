@@ -94,6 +94,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         keyboard: Some(keyboard),
         icons: None,
         trace_limit: Some(16),
+        level: None,
         between_slices: Some(Box::new({
             let (slices, clock) = (Arc::clone(&slices), Arc::clone(&clock));
             move |k: &kernel::Kernel| {
