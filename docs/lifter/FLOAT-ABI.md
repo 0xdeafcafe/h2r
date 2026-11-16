@@ -14,8 +14,9 @@ This is the interface the lifter and emitter build against for x87 floating
 point. It follows the correctness-first decision in [FLOAT.md](FLOAT.md). The
 IR models the full architectural x87 state. Every x87 operation goes through a
 runtime helper backed by the exact ext80 implementation in `crates/x87`. A
-`double` fast path may come later, but only under the written proof rule in
-FLOAT.md §2.8. SSE is not covered here: see §5.
+guarded native `double` path (on by default, see [x87-native.md](x87-native.md))
+applies the written proof rule in FLOAT.md §2.8 per operation; the helpers
+remain the authority. SSE is not covered here: see §5.
 
 The C ABI is versioned `h2x87_v1_*`, declared in
 [`crates/x87/include/h2x87.h`](../../crates/x87/include/h2x87.h). The Rust crate is

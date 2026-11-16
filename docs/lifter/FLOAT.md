@@ -28,8 +28,9 @@ control. It runs on master's `X87Abi`, keeps the stack as architectural state
 (TOP in the status word), and handles stack faults, sticky flags and #MF
 delivery like a P6 does. No host floating point and no libm decide any
 guest-visible bit. The game pins PC=53 and round-to-nearest with all
-exceptions masked, which makes a later `double` fast path possible, but only
-under the written value-level proof rule in §2.8, never by default. The one
+exceptions masked, which makes a `double` fast path possible, but only
+under the written value-level proof rule in §2.8. The guarded native path in
+[x87-native.md](x87-native.md) applies it per operation and is on by default. The one
 documented approximation is the x87 transcendentals. They are evaluated at 512
 bits and rounded to nearest, which is very likely correctly rounded but not
 proven, and they are not the PIII's 66-bit-π results. They sit under a named
@@ -219,7 +220,7 @@ under any control word, any stack depth and any exception mask.
 The cost is a function call per x87 instruction, at about 65 ns or less for
 arithmetic (FLOAT-ABI.md §6.2). x87 is 25% of FP instructions and is
 concentrated in a few functions, so this is acceptable as a first build. Speed
-comes later, from a `double` fast path where the proof rule in §2.8 allows it,
+comes from the guarded `double` path where the proof rule in §2.8 allows it,
 and never at the expense of a bit.
 
 **`long double`: never.** On Apple arm64, `long double` is `double`. On x86-64
@@ -403,12 +404,12 @@ Measured facts that `crates/simd` relies on:
   `saved & ~0x3f` (§1.2).
 - `rcp`/`rsqrt` need hardware tables or a tolerance (simd.md).
 
-### 2.8 Proof rule for a future `double` fast path
+### 2.8 Proof rule for the `double` fast path
 
 The optional native path in [x87-native.md](x87-native.md) applies this
 rule per operation with narrower range guards and exact PE/C1 recovery.
 It retains the architectural ext80 stack. A function, or a region of one,
-may later keep
+may keep
 x87 values in host `double` locals only if, for every value, the lifter can
 prove that the `double` computation gives the same bits as the ext80 helpers.
 The rule is:
