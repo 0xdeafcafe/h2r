@@ -191,3 +191,51 @@ render-timing:   shader shader_begin own code 0.80 ms (guest 0.80 d3d 0.00) 40.0
 shader draw makes there. The 21 extra observers run on every shader draw
 and are charged to the sites; `foreign` now also counts their calls from
 elsewhere (`0x00018900` is called by the layer setup too).
+
+### What the four hot callees call (and why they are not leaves)
+
+The second 4x run (shader sites, inflated by the observers but ranked)
+put the time in pure guest code with no D3D calls: `0x000174d0` 2.17 ms,
+`0x00018a90` 1.94, `0x0001b0a0` 1.36, `0x00019ca0` 0.57 per frame, each
+about 482 calls. Read with `h2 disasm`, they are loops over the pass's
+parameters and texture bindings that call shared helpers per element:
+
+- `0x000174d0` checks bounds and calls `0x00017550`. That calls
+  `SHADER_PARAMETER` (`0x0001b230`) once per animated parameter and
+  stores the float result at `ctx+0x338+…`. `0x0001b230` reads up to two
+  inputs through `[0x00485a58]`'s function table (two indirect calls
+  returning in ST0). It divides with `fdivr qword`, takes the CRT `fmod`
+  (`0x00373b6a`) when ESI is zero and the function's type byte is not
+  3, and then calls
+  `FUNCTION_EVALUATE` (`0x0013b390`).
+- `0x00018a90` copies 64 bytes per texture binding (`rep movsd`) and, for
+  binding source `0x0b` (the lightmap), recomputes
+  `log2(max(width, height))` with `fyl2x` whenever the lightmap page
+  differs from the cached one. Other sources go through `TEXTURE_SOURCE`
+  (`0x00019530`, a jump table). It marks each binding dirty in
+  `ctx+0x1420`.
+- `0x0001b0a0` walks those dirty bits. Per binding it takes the CRT `fmod`
+  of the animation frame by the bitmap's frame count, floors it with SSE,
+  and calls `BITMAP_FRAME` (`0x000143c0`) when the frame changed.
+- `0x00016b90`'s own code also runs one `fyl2x` per call (`ln` of its
+  stack argument at `+0x30` into `ctx+0x2c`).
+
+The CRT `fmod` is not `fprem` alone. It saves the control word, loads a
+new one, classifies both operands with `fxam` and `fnstsw` and `xlat`,
+dispatches through `0x004800ac`, runs the `fprem` loop (`0x00373b74`),
+and on the way out stores a double, checks error state and restores the
+control word. That is about thirty x87 and environment instructions on
+the soft-float x87, with `fwait` checks in between.
+
+Host cost of the soft-float helpers (`crates/x87`, release, one core):
+`fyl2x` about 870 ns for a non-exact logarithm and 120 ns for a power of
+two, `fprem` about 23 ns, `fmul` about 12 ns.
+
+So the per-draw guest time is probably in these shared helpers rather
+than in the four loops themselves, and a port of the loops alone would
+keep calling them. `render-timing` now times the helpers as stages of
+their own, but only when they run inside the render front-end (the
+simulation calls `fmod` too): `parameter` (`0x0001b230`), `function`
+(`0x0013b390`), `fmod` (`0x00373b6a`), `texture_source` (`0x00019530`)
+and `bitmap_frame` (`0x000143c0`). The shader sites then hold only the
+loops' own code.
