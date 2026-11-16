@@ -1087,6 +1087,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     if layouts {
         registry.add(&LayoutValueText).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     }
+    // The retail Controls row text, ported (crate::controls_text); our
+    // rows' hooks and the layouts' value pair run around it.
+    registry.add(&crate::controls_text::ControlsText).map_err(|e| anyhow::anyhow!("controls text: {e}"))?;
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
     registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;

@@ -426,7 +426,7 @@ patched for it; the rows below marked "before" describe what it replaced.
 | `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`). Our loader does the same steps and, between construct and push, adopts the screen: vtables, the press record's function, the rows trimmed to the model's |
 | `0x2b7752` | Controls screen constructor (EDI = screen; request `+4`, `+8` and the `+2` word) | base screen `0x230451(39, ...)` with its list handler at `screen + 0x614`, vtable `0x45be30`, then the list handler constructor `0x2c84b8` |
 | `0x1a480d` | datum array constructor | the Controls list hook may grow the array (the speaker row); adopting deletes the rows past ours. Before: the open call named the array "h2r video settings" to mark a Video list |
-| `0x2c8548`, `0x2c8719` | Controls row text and row chosen | never reached for a Video screen: list slot 20 and the press record point at our entries. Before: both hooks branched on the array name |
+| `0x2c8548`, `0x2c8719` | Controls row text and row chosen | never reached for a Video screen: list slot 20 and the press record point at our entries. Before: both hooks branched on the array name. The row text is now ported (`boot::controls_text`; switch `features.controls-text`) |
 | `0x24bb60` | "add items" | the speaker hook skips any handler whose vtable is not the Controls one, so ours keeps its six item widgets |
 | `0x22fda6` | build a screen's header | runs as retail; our screen slot 18 then sets our title on the header text widget (`screen + 0x80`, `0x253b1a`). Before: the text hook swapped the id while the header was built |
 

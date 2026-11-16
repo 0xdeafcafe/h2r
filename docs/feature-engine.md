@@ -1595,15 +1595,16 @@ Tests only; nothing here was run in the game.
   speaker row, the added item widgets and the camera's field of view (it
   needs EAX from entry after the original, which an `after` hook does not
   see).
-- **Not done: the retail handlers ported (step c proper).** The Controls
-  row text (`0x2c8548`) is a switch over the row that picks one of about
-  25 retail string ids by setting; a Rust port would carry those ids as a
-  table, which the public repo does not take (copied lookup tables). Two
-  ways to do it: read each id from its instruction in the loaded image at
-  run time (named research points, no copied data), or keep the retail
-  rows' original and port only the control flow around it. Needs a
-  decision before porting, and call captures from a play session for the
-  differential tests.
+- **The Controls row text is ported** (`boot::controls_text`, feature
+  `controls-text`, an `implement` at `0x2c8548`). Every string id is read
+  at run time from its instruction in the loaded image (the `mov ecx` /
+  `mov esi` immediates, the `and`/`add` pair of the on/off rows, row 2's
+  jump table), named by instruction address; nothing is copied. Our rows'
+  `before` hooks and the layouts' value pair run around it as they did
+  around the original. Its tests run it on a synthetic image and capture
+  its guest calls (`ITEM_TEXT` twice, then `TEXT_SET` for each text that
+  exists). Not yet: captures of the retail function from a play session to
+  diff against, and the Button Layout list's handlers.
 
 Why this first:
 

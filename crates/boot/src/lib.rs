@@ -11,6 +11,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod controls_text;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
