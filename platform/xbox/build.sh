@@ -58,10 +58,14 @@ host_target=${H2_XBOX_HOST_TARGET_DIR:-$root/target/xbox-host}
 echo "build.sh: h2uwp.exe for x86_64-pc-windows-msvc (static CRT, app container)"
 # The static CRT: an Xbox has no desktop vcruntime140.dll, and the Store
 # one (vcruntime140_app, a framework package) is not in the xwin splat.
-# /APPCONTAINER marks the executable for the UWP app container.
+# /APPCONTAINER marks the executable for the UWP app container. wgpu's GL
+# backend (never used: app::embedded::host_surface::backends) imports
+# opengl32.dll and two gdi32 pixel-format calls, which the console may not
+# have; delay-loading them keeps the loader from looking.
 (cd "$root" && CARGO_TARGET_DIR="$xbox_target" \
   CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS -C target-feature=+crt-static -C link-arg=/APPCONTAINER" \
-  cargo build -Zbuild-std=std,panic_abort --target x86_64-pc-windows-msvc --release -p uwp-host --bin h2uwp)
+  cargo rustc -Zbuild-std=std,panic_abort --target x86_64-pc-windows-msvc --release -p uwp-host --bin h2uwp -- \
+  -C link-arg=/DELAYLOAD:opengl32.dll -C link-arg=/DELAYLOAD:gdi32.dll -C link-arg=delayimp.lib)
 cp "$xbox_target/x86_64-pc-windows-msvc/release/h2uwp.exe" "$stage/h2uwp.exe"
 
 echo "build.sh: disc subset, game module and boot cache"

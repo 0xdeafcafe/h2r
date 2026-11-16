@@ -10,20 +10,24 @@ use std::collections::BTreeSet;
 /// One imported function: (DLL, function name).
 pub type Import = (String, String);
 
-/// The imports in `llvm-readobj --coff-imports` output: each `Import` or
-/// `DelayImport` block's `Name:` and its `Symbol:` lines. Imports by
-/// ordinal (no name) are skipped.
+/// The load-time imports in `llvm-readobj --coff-imports` output: each
+/// `Import` block's `Name:` and its `Symbol:` lines. `DelayImport` blocks
+/// are left out: a delay-loaded DLL is only looked for when one of its
+/// functions is first called (wgpu's GL backend's `opengl32.dll`, which the
+/// app never calls). Imports by ordinal (no name) are skipped.
 pub fn parse_readobj(listing: &str) -> Vec<Import> {
     let mut out = Vec::new();
     let mut dll: Option<String> = None;
+    let mut delayed = false;
     for line in listing.lines().map(str::trim) {
         if line.starts_with("Import {") || line.starts_with("DelayImport {") {
             dll = None;
+            delayed = line.starts_with("DelayImport");
         } else if let Some(n) = line.strip_prefix("Name: ") {
             dll.get_or_insert_with(|| n.trim().to_owned());
         } else if let Some(s) = line.strip_prefix("Symbol: ") {
             let name = s.split(" (").next().unwrap_or("").trim();
-            if let (Some(d), false) = (&dll, name.is_empty()) {
+            if let (Some(d), false, false) = (&dll, name.is_empty(), delayed) {
                 out.push((d.clone(), name.to_owned()));
             }
         }
@@ -75,23 +79,22 @@ DelayImport {
 ";
 
     #[test]
-    fn readobj_listings_give_each_dll_and_its_named_functions() {
+    fn readobj_listings_give_each_dll_and_its_named_functions_but_not_delay_loads() {
         assert_eq!(
             parse_readobj(READOBJ),
             [
                 ("KERNEL32.dll".into(), "GetLastError".into()),
                 ("KERNEL32.dll".into(), "CreateFileW".into()),
                 ("USER32.dll".into(), "MessageBoxW".into()),
-                ("d3d12.dll".into(), "D3D12CreateDevice".into()),
             ]
         );
     }
 
     #[test]
     fn functions_outside_the_umbrella_library_are_reported() {
-        let nm = "\napi-ms-win-core-errorhandling-l1-1-0.dll:\n__imp_GetLastError\nGetLastError\n__imp_CreateFileW\nCreateFileW\n__imp_D3D12CreateDevice\n";
+        let nm = "\napi-ms-win-core-errorhandling-l1-1-0.dll:\n__imp_GetLastError\nGetLastError\n__imp_CreateFileW\nCreateFileW\n";
         let allowed = parse_nm(nm);
-        assert_eq!(allowed.len(), 3);
+        assert_eq!(allowed.len(), 2);
         assert_eq!(outside(&parse_readobj(READOBJ), &allowed), [("USER32.dll".to_owned(), "MessageBoxW".to_owned())]);
     }
 }

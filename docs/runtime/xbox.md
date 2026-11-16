@@ -108,6 +108,23 @@ the Xbox included. An import outside it may not exist on the console, and
 then the app fails to start with no log. By default the check warns;
 `H2_XBOX_API_STRICT=1` makes it fail the build.
 
+What the check found, and what was done:
+
+- wgpu's GL backend imports `opengl32.dll` (`wgl*`) and two `gdi32`
+  pixel-format calls. The shell's instance is DX12 only on Windows
+  (`app::embedded::host_surface::backends`), and the executable
+  delay-loads both DLLs (`/DELAYLOAD`, `delayimp.lib`), so the loader
+  never looks for them. The check skips delay-loaded imports.
+- Five imports remain outside `OneCoreUAP.lib`, all from Rust's std for
+  the msvc target: `bcryptprimitives!ProcessPrng` (random numbers), and
+  `ntdll!NtOpenFile`, `NtReadFile`, `NtWriteFile` and
+  `RtlNtStatusToDosError` (file and pipe paths). Both DLLs are part of every
+  Windows 10 system, so these are expected to resolve on the console, but
+  that is unverified. If they do not, the next step is the
+  `x86_64-uwp-windows-msvc` target, whose std avoids them.
+- `h2game.dll` imports only `KERNEL32.dll`, and all of it is inside the
+  library.
+
 ## Building
 
 On the Mac, you need:

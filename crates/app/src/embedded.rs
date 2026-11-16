@@ -40,6 +40,21 @@ pub mod host_surface {
     #[cfg(windows)]
     pub const NAME: &str = "SwapChainPanel";
 
+    /// The backends the shell's instance may use: Metal on Apple
+    /// platforms; on Windows, DX12 only. wgpu's GL backend imports
+    /// `opengl32.dll`, which an Xbox app container lacks: it is
+    /// delay-loaded (platform/xbox/build.sh) and must never be called.
+    pub fn backends() -> wgpu::Backends {
+        if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
+    }
+
+    /// The instance a host's surface is made on, with [`backends`].
+    pub fn instance() -> wgpu::Instance {
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = backends();
+        wgpu::Instance::new(desc)
+    }
+
     /// The wgpu target for the host's `layer`.
     #[cfg(target_vendor = "apple")]
     pub fn target(layer: *mut std::ffi::c_void) -> wgpu::SurfaceTargetUnsafe {
@@ -85,7 +100,7 @@ impl Embedded {
         if layer.is_null() {
             anyhow::bail!("no {}", host_surface::NAME);
         }
-        let instance = wgpu::Instance::default();
+        let instance = host_surface::instance();
         // SAFETY: the caller guarantees the layer and its lifetime.
         let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
@@ -251,6 +266,17 @@ mod tests {
         assert!(!c.audio, "boot's DirectSound owns the device");
         assert_eq!(c.aspect, crate::DisplayAspect::Standard);
         assert_eq!(c.scaling, crate::Scaling::Fit);
+    }
+
+    #[test]
+    fn windows_hosts_use_dx12_alone() {
+        // No GL on Windows: opengl32.dll is not in the Xbox app container.
+        let b = host_surface::backends();
+        if cfg!(windows) {
+            assert_eq!(b, wgpu::Backends::DX12);
+        } else {
+            assert_eq!(b, wgpu::Backends::all());
+        }
     }
 
     #[test]
