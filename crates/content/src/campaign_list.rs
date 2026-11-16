@@ -157,7 +157,10 @@ impl CampaignManifest {
 
     pub fn validate(&self) -> Result<(), CampaignError> {
         if self.format != FORMAT {
-            return err(format!("format {} (this build reads {FORMAT})", self.format));
+            return err(format!(
+                "format {} (this build reads {FORMAT})",
+                self.format
+            ));
         }
         let key = &self.campaign.key;
         if !valid_map_name(key) {
@@ -175,7 +178,10 @@ impl CampaignManifest {
         let mut seen = BTreeSet::new();
         for l in &self.levels {
             if !valid_map_name(&l.map) {
-                return err(format!("{key}: map {:?}: lower-case letters, digits and _, at most {MAX_MAP_NAME}", l.map));
+                return err(format!(
+                    "{key}: map {:?}: lower-case letters, digits and _, at most {MAX_MAP_NAME}",
+                    l.map
+                ));
             }
             if !seen.insert(l.map.as_str()) {
                 return err(format!("{key}: map {} twice", l.map));
@@ -185,7 +191,10 @@ impl CampaignManifest {
             }
             let path = l.scenario_path();
             if !path.is_ascii() || path.len() >= PATH_LEN || path.contains('\0') {
-                return err(format!("{key}: {}: scenario path {path:?} does not fit", l.map));
+                return err(format!(
+                    "{key}: {}: scenario path {path:?} does not fit",
+                    l.map
+                ));
             }
             if path.rsplit('\\').next() != Some(l.map.as_str()) {
                 // 1.0 opens d:\maps\<basename of the path>.map (0x214db0).
@@ -454,7 +463,12 @@ pub fn ui_campaign_record(b: &Built) -> Vec<u8> {
     let mut r = vec![0u8; UI_CAMPAIGN_LEN];
     put(&mut r, 0, b.campaign_id);
     texts_into(&mut r, UI_CAMPAIGN_NAMES, NAME_UNITS, &b.names);
-    texts_into(&mut r, UI_CAMPAIGN_DESCRIPTIONS, DESCRIPTION_UNITS, &b.descriptions);
+    texts_into(
+        &mut r,
+        UI_CAMPAIGN_DESCRIPTIONS,
+        DESCRIPTION_UNITS,
+        &b.descriptions,
+    );
     r
 }
 
@@ -467,7 +481,12 @@ pub fn ui_level_record(campaign_id: u32, l: &BuiltLevel, picture: [u32; 2]) -> V
     put(&mut r, UI_LEVEL_PICTURE, picture[0]);
     put(&mut r, UI_LEVEL_PICTURE + 4, picture[1]);
     texts_into(&mut r, UI_LEVEL_NAMES, NAME_UNITS, &l.names);
-    texts_into(&mut r, UI_LEVEL_DESCRIPTIONS, DESCRIPTION_UNITS, &l.descriptions);
+    texts_into(
+        &mut r,
+        UI_LEVEL_DESCRIPTIONS,
+        DESCRIPTION_UNITS,
+        &l.descriptions,
+    );
     r
 }
 

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod campaign_maps;
 mod dir_disc;
 mod disc;
 mod host;
@@ -16,6 +17,7 @@ mod types;
 mod write_behind;
 
 pub use backend::Backend;
+pub use campaign_maps::CampaignMapsBackend;
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
