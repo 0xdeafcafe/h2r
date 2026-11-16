@@ -18,7 +18,7 @@ use scenario_edit::Scenario;
 
 use crate::apply::{Applied, apply};
 use crate::structure::{Mesh, Section, Structure, Templates};
-use crate::{Error, Result, collision, placements, structure};
+use crate::{Error, Result, collision, placements, shaders, structure};
 
 /// Which game's objects a converted map uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,27 +53,32 @@ pub fn structure_mopp(bsp: &tags::collision::Bsp) -> Result<Vec<u8>> {
 
 /// Halo 1's multiplayer maps: internal name, display name, and the Halo 2
 /// map used as the base when none is given. The base gives the sky, the
-/// item and vehicle collections and the globals; snowy levels take
-/// Lockout's sky, the rest Beaver Creek's.
+/// item and vehicle collections and the globals. Maps with vehicles take a
+/// base that has Halo 2's vehicle collections (`multiplayer\single_vehicles\*`;
+/// Beaver Creek and Lockout have none): Coagulation (warthog, ghost,
+/// banshee). Waterworks would suit the snowy ones (the same and a wraith,
+/// and snow), but Sidewinder's placements grow its metadata past the
+/// engine's tag memory, so they take Coagulation too. The rest keep Beaver
+/// Creek's sky.
 pub const MAPS: [(&str, &str, &str); 19] = [
     ("beavercreek", "Battle Creek", "beavercreek"),
-    ("bloodgulch", "Blood Gulch", "beavercreek"),
+    ("bloodgulch", "Blood Gulch", "coagulation"),
     ("boardingaction", "Boarding Action", "beavercreek"),
     ("carousel", "Derelict", "beavercreek"),
     ("chillout", "Chill Out", "beavercreek"),
     ("damnation", "Damnation", "beavercreek"),
-    ("dangercanyon", "Danger Canyon", "beavercreek"),
-    ("deathisland", "Death Island", "beavercreek"),
-    ("gephyrophobia", "Gephyrophobia", "beavercreek"),
+    ("dangercanyon", "Danger Canyon", "coagulation"),
+    ("deathisland", "Death Island", "coagulation"),
+    ("gephyrophobia", "Gephyrophobia", "coagulation"),
     ("hangemhigh", "Hang 'Em High", "beavercreek"),
-    ("icefields", "Ice Fields", "lockout"),
-    ("infinity", "Infinity", "beavercreek"),
+    ("icefields", "Ice Fields", "coagulation"),
+    ("infinity", "Infinity", "coagulation"),
     ("longest", "Longest", "beavercreek"),
     ("prisoner", "Prisoner", "beavercreek"),
     ("putput", "Chiron TL-34", "beavercreek"),
     ("ratrace", "Rat Race", "beavercreek"),
-    ("sidewinder", "Sidewinder", "lockout"),
-    ("timberland", "Timberland", "beavercreek"),
+    ("sidewinder", "Sidewinder", "coagulation"),
+    ("timberland", "Timberland", "coagulation"),
     ("wizard", "Wizard", "beavercreek"),
 ];
 
@@ -101,6 +106,20 @@ pub fn variant_file(h1: &str, sandbox: Sandbox) -> String {
     format!("{}/{}.map", sandbox.name(), map_name(h1))
 }
 
+/// The Halo 1 map's multiplayer placements, counted as the source holds
+/// them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceCounts {
+    /// Starting locations.
+    pub spawns: usize,
+    /// Netgame flags.
+    pub flags: usize,
+    /// Netgame equipment (item spawns).
+    pub items: usize,
+    /// Vehicle placements.
+    pub vehicles: usize,
+}
+
 /// What [`prepare`] found and will write.
 pub struct Prepared {
     /// The Halo 1 map's name.
@@ -115,6 +134,8 @@ pub struct Prepared {
     pub applied: Applied,
     /// Placements with no Halo 2 equivalent.
     pub dropped: Vec<String>,
+    /// What the Halo 1 map has, to compare with what was placed.
+    pub source: SourceCounts,
     /// The collision BSP, converted.
     pub collision: tags::collision::Bsp,
     /// Collision materials written.
@@ -123,6 +144,10 @@ pub struct Prepared {
     pub sections: Vec<Section>,
     /// Halo 1 shader name of each structure material.
     pub materials: Vec<String>,
+    /// For each structure material, the base shader it draws with
+    /// ([`crate::shaders::pick`]): its index among the base's materials
+    /// and its tag name.
+    pub material_shaders: Vec<(usize, String)>,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
@@ -232,6 +257,13 @@ pub fn prepare<R: Read + Seek>(
     let display_name = known(&h1_name).map_or_else(|| h1_name.clone(), |(d, _)| d.to_owned());
 
     let plan = placements::plan_map(h1)?;
+    let mp = h1.multiplayer()?;
+    let source = SourceCounts {
+        spawns: mp.starting_locations.len(),
+        flags: mp.flags.len(),
+        items: mp.equipment.len(),
+        vehicles: mp.vehicles.len(),
+    };
     let tags: Vec<_> = base
         .tags()
         .iter()
@@ -295,6 +327,35 @@ pub fn prepare<R: Read + Seek>(
         .ok_or(Error::Invalid("base sbsp has no data"))?
         .address;
     let templates = Templates::from_base(&base.read_tag_bytes(sbsp)?, sbsp_at)?;
+    let mut base_shaders = Vec::new();
+    for i in 0..templates.material_heads.len() {
+        let id = templates.shader(i);
+        let name = base
+            .tag(id)
+            .ok()
+            .and_then(|t| t.name.clone())
+            .unwrap_or_default();
+        let template = scenario_edit::scene::shader_bitmaps(base, id)
+            .map(|(t, _)| t)
+            .unwrap_or_default();
+        base_shaders.push(shaders::BaseShader { name, template });
+    }
+    let h1_shaders: Vec<(String, String)> = materials
+        .iter()
+        .map(|n| {
+            let group = h1
+                .tags()
+                .iter()
+                .find(|t| &t.name == n)
+                .map(|t| t.group.to_string())
+                .unwrap_or_default();
+            (n.clone(), group)
+        })
+        .collect();
+    let material_shaders = shaders::pick(&h1_shaders, &base_shaders)
+        .into_iter()
+        .map(|i| (i, base_shaders[i].name.clone()))
+        .collect();
 
     Ok(Prepared {
         h1_name,
@@ -303,10 +364,12 @@ pub fn prepare<R: Read + Seek>(
         source_sha256,
         applied,
         dropped: plan.dropped,
+        source,
         collision,
         collision_materials,
         sections,
         materials,
+        material_shaders,
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
@@ -382,7 +445,11 @@ impl Prepared {
             collision: &self.collision,
             collision_materials: self.collision_materials,
             sections: &self.sections,
-            materials: self.materials.len(),
+            materials: &self
+                .material_shaders
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
             bounds: self.bounds,
             mopp,
             checksum: fnv(&geometry),

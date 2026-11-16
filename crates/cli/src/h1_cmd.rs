@@ -642,11 +642,19 @@ fn convert(args: &[String]) -> Result<()> {
         if p.flipped { ", winding flipped" } else { "" }
     );
     let [spawns, flags, items] = p.applied.counts;
+    let src = p.source;
     println!(
-        "  placements: {spawns} spawns, {flags} flags, {items} items; {} base placements removed, \
-         {} base trigger volumes moved out of the level",
+        "  placements: {spawns} spawns, {flags} flags, {items} items ({} of them vehicles); \
+         Halo 1 has {} spawns, {} flags, {} items, {} vehicles",
+        p.applied.vehicles, src.spawns, src.flags, src.items, src.vehicles
+    );
+    println!(
+        "  base: {} placements removed, {} trigger volumes moved out of the level",
         p.applied.removed, p.trigger_volumes
     );
+    for (h1s, (_, b)) in p.materials.iter().zip(&p.material_shaders) {
+        println!("  shader {h1s} -> {b}");
+    }
     for u in p.applied.unresolved.iter().chain(&p.dropped) {
         println!("  not placed: {u}");
     }

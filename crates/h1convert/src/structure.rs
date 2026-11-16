@@ -359,14 +359,23 @@ pub struct Templates {
     /// A collision material: global material index at `+0x08`, shader
     /// reference at `+0x0c`. No pointers, so it copies as is.
     pub collision_material: [u8; COLLISION_MATERIAL],
-    /// A render material's first 16 bytes (shader reference at `+0x08`).
-    /// The rest is written here: its block at `+0x10` empty, `+0x1c` 0xff.
-    pub material_head: [u8; 16],
+    /// Each base render material's first 16 bytes (shader reference at
+    /// `+0x08`, its datum at `+0x0c`). A written material copies one; the
+    /// rest is written here: its block at `+0x10` empty, `+0x1c` 0xff.
+    pub material_heads: Vec<[u8; 16]>,
 }
 
 impl Templates {
-    /// The first collision and render material of a base `sbsp` payload
-    /// loaded at `address`.
+    /// The shader datum of base material `i`.
+    pub fn shader(&self, i: usize) -> map::TagId {
+        let h = &self.material_heads[i];
+        map::TagId(u32::from_le_bytes(h[0xc..0x10].try_into().expect("4")))
+    }
+}
+
+impl Templates {
+    /// The first collision material and every render material of a base
+    /// `sbsp` payload loaded at `address`.
     pub fn from_base(sbsp: &[u8], address: u32) -> Result<Self> {
         let word = |at: usize| -> Result<u32> {
             sbsp.get(at..at + 4)
@@ -383,7 +392,20 @@ impl Templates {
         };
         Ok(Self {
             collision_material: first(0x0c, COLLISION_MATERIAL)?.try_into().expect("size"),
-            material_head: first(0xa4, 16)?.try_into().expect("size"),
+            material_heads: {
+                let n = word(0xa4)? as usize;
+                let at = word(0xa8)?.wrapping_sub(address) as usize;
+                let all = at
+                    .checked_add(n * MATERIAL)
+                    .and_then(|end| sbsp.get(at..end))
+                    .ok_or(Error::Invalid("base sbsp material outside the tag"))?;
+                first(0xa4, 16)?;
+                all.as_chunks::<MATERIAL>()
+                    .0
+                    .iter()
+                    .map(|m| m[..16].try_into().expect("16"))
+                    .collect()
+            },
         })
     }
 }
@@ -398,8 +420,10 @@ pub struct Structure<'a> {
     pub collision_materials: usize,
     /// Render sections, one cluster each.
     pub sections: &'a [Section],
-    /// Render materials to write (one past the largest part material).
-    pub materials: usize,
+    /// Render materials to write (one past the largest part material):
+    /// for each, the base material (index into
+    /// [`Templates::material_heads`]) whose shader it draws with.
+    pub materials: &'a [usize],
     /// World bounds, `[x min, x max, y min, y max, z min, z max]`.
     pub bounds: [f32; 6],
     /// The Havok MOPP code block (`sbsp+0x1e0`), as the block holds it.
@@ -504,9 +528,22 @@ impl Structure<'_> {
                 .tag_id(base + 0x40, sbsp);
         }
 
-        let mut materials = Block::zeroed(MATERIAL * self.materials.max(1));
-        for m in materials.bytes.as_chunks_mut::<MATERIAL>().0 {
-            m[..16].copy_from_slice(&self.templates.material_head);
+        let count = self.materials.len().max(1);
+        let mut materials = Block::zeroed(MATERIAL * count);
+        for (k, m) in materials
+            .bytes
+            .as_chunks_mut::<MATERIAL>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let from = self.materials.get(k).copied().unwrap_or(0);
+            let head = self
+                .templates
+                .material_heads
+                .get(from)
+                .ok_or(Error::Invalid("no such base material"))?;
+            m[..16].copy_from_slice(head);
             m[0x1c] = 0xff;
         }
         let mut collision_materials =
@@ -542,7 +579,7 @@ impl Structure<'_> {
         let vis = self.visibility();
         root.block(0x54, vis.len() as u32, Block::new(vis));
         root.block(0x9c, clusters as u32, cluster_elements);
-        root.block(0xa4, self.materials.max(1) as u32, materials);
+        root.block(0xa4, count as u32, materials);
         root.block(
             0x1e0,
             self.mopp.len() as u32,

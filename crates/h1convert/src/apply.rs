@@ -17,6 +17,10 @@ use crate::placements::{Plan, resolve};
 pub struct Applied {
     /// Entries written per block: starting locations, flags, equipment.
     pub counts: [usize; 3],
+    /// Of the equipment entries, how many are vehicles (Halo 2 spawns
+    /// multiplayer vehicles from netgame equipment naming a vehicle
+    /// collection, `vehc`).
+    pub vehicles: usize,
     /// Item spawns whose role has no collection in the base map.
     pub unresolved: Vec<String>,
     /// Base object placements removed (they belong to the base's level).
@@ -146,6 +150,9 @@ pub fn apply(
             }),
         )?;
         out.counts[2] += 1;
+        if matches!(item.item, crate::sandbox::H2Item::Vehicle(_)) {
+            out.vehicles += 1;
+        }
     }
     Ok(out)
 }

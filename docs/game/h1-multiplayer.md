@@ -210,19 +210,35 @@ The base's old BSP region stays in the file, unused.
   bit set, and every collision leaf is in cluster 0, so everything is
   drawn from everywhere. Halo 1's own portals and clusters are the
   improvement for large levels.
-- **Materials.** One structure material per Halo 1 shader, all naming the
-  base's first structure material's shader for now (`Templates`); one
-  collision material per Halo 1 collision material, copies of the base's
-  first (no pointers in it), `+0x0a` = -1. Choosing a base shader per Halo
-  1 shader is the next visual step.
+- **Materials** (`h1convert::shaders`). One structure material per Halo 1
+  shader, each copying the head (shader reference) of the base structure
+  material it is matched to by name: the words of the Halo 1 shader's name
+  against each base shader's (`grass`, `cliff`, `metal panel`, ...), Halo 1
+  water (`swat`) to a base water shader, anything unmatched to the base's
+  first plain opaque shader. Water, glass, sky, decal, transparent,
+  self-illuminated, plasma and `unwrapped` shaders never stand in for an
+  ordinary surface. Until this, every surface used the base's first
+  material's shader, which on Beaver Creek is an `unwrapped` cliff (its
+  textures laid out for one mesh's own UVs) and on Coagulation a water
+  pool: tiled over Halo 1's UVs both look like scattered multicoloured
+  blocks, which is what the editor saw. The bitmaps themselves were never
+  wrong: `disc_maps.rs` decodes every image of every converted map
+  through `assets::decode_image` and compares it with the base's, and all
+  are identical (1618 images on Beaver Creek, 1686 on Coagulation). The
+  CLI prints each choice (`shader <Halo 1> -> <Halo 2>`). Halo 1's own
+  textures replace these once they convert. One collision material per
+  Halo 1 collision material, copies of the base's first (no pointers in
+  it), `+0x0a` = -1.
 - **The sky is the base's.** Cluster `+0x6e` is the cluster's sky index
   into the scenario's skies (`scnr+0x8`, 8-byte references; E
   `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to the first sky
   when the scenario has one). Every cluster gets 0, so the base's first
   sky. Halo 1's skies are models and bitmaps of their own and convert
-  with the Halo 1 sandbox work. The base per map (`convert::MAPS`) is
-  chosen for its sky: Lockout's snow for Ice Fields and Sidewinder,
-  Beaver Creek's otherwise.
+  with the Halo 1 sandbox work. The base per map (`convert::MAPS`):
+  Coagulation for the maps with vehicles (below), Beaver Creek otherwise.
+  Waterworks (snow, and a wraith) would suit Sidewinder and Ice Fields,
+  but Sidewinder's placements grow Waterworks' metadata past the engine's
+  tag memory, so they take Coagulation too.
 - **Lightmap.** One group, the structure checksum (FNV-1a of the
   positions), no bitmap, a render info entry `{-1, -1}` per cluster.
   Levels render unlit (the default texture path) until Halo 1's lightmap
@@ -399,13 +415,69 @@ gets the choice (`Manifest::select_variant(Some(..))` in place of `None`
 in `content::resolve::load`, through a `Library` option that
 `new_maps::install` sets from the setting).
 
+## Vehicles
+
+Halo 2 spawns multiplayer vehicles from netgame equipment naming a
+vehicle collection (`vehc`, `multiplayer\single_vehicles\<name>`), not
+from the scenario's vehicle block, so converted vehicles go there and the
+Vehicles block stays empty, as on retail maps. Only some bases have the
+collections: Coagulation (warthog, ghost, banshee), Headlong, Zanzibar,
+Burial Mounds, Waterworks (also a wraith); Beaver Creek and Lockout have
+none. Halo 1's maps with vehicles therefore use Coagulation as their base.
+Warthog, rocket warthog (no closer Halo 2 vehicle: the gauss warthog's
+turret is a different weapon), ghost and banshee map to the same names;
+the name match prefers an exact collection name, so `warthog` never
+lands on `warthog_gauss`. **No Halo 2 multiplayer map has a scorpion
+collection**, so Halo 1's scorpions are not placed.
+
+## What isn't placed, and why
+
+Every placement a conversion leaves out is one of these, and `h2 h1
+convert` lists each with its position (`not placed: ...`):
+
+| Left out | Why |
+|---|---|
+| Race flags (`RaceTrack`, `RaceVehicle`) | Halo 2 has no race game type |
+| Health packs | Halo 2's sandbox has no health; they return with the Halo 1 sandbox (health, phase 4) |
+| Active camouflage | The base has no `invisibility` collection (Beaver Creek and Coagulation have none) |
+| Overshield | The base has no `super_shield` collection (Coagulation has none) |
+| Scorpion | No Halo 2 multiplayer base has one (above) |
+
+All 13 multiplayer maps on the Halo 1 disc convert
+(`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
+build), each map reads back with a valid checksum, and its bitmaps are
+the base's, pixel for pixel. Per map (placed / Halo 1; items include
+vehicles, which Halo 2 places as items):
+
+| Map | Base | Triangles | Spawns | Flags | Items | Vehicles | Left out |
+|---|---|---|---|---|---|---|---|
+| beavercreek | beavercreek | 3317 | 70/70 | 88/97 | 28/35 | 0/0 | 11 race, 4 health, 3 camo |
+| bloodgulch | coagulation | 5503 | 71/71 | 172/191 | 37/43 | 6/8 | 21 race, 2 health, 1 camo, 1 overshield, 2 scorpion |
+| boardingaction | beavercreek | 7142 | 73/73 | 66/77 | 43/52 | 0/0 | 13 race, 7 health, 2 camo |
+| carousel | beavercreek | 2940 | 63/63 | 71/79 | 33/37 | 0/0 | 10 race, 1 health, 3 camo |
+| chillout | beavercreek | 3108 | 58/58 | 39/49 | 27/33 | 0/0 | 12 race, 4 health, 2 camo |
+| damnation | beavercreek | 8618 | 67/67 | 77/79 | 41/46 | 0/0 | 4 race, 4 health, 1 camo |
+| hangemhigh | beavercreek | 3218 | 67/67 | 83/92 | 41/45 | 0/0 | 11 race, 2 health, 2 camo |
+| longest | beavercreek | 2319 | 71/71 | 48/51 | 35/40 | 0/0 | 5 race, 4 health, 1 camo |
+| prisoner | beavercreek | 5234 | 58/58 | 40/47 | 45/51 | 0/0 | 9 race, 5 health, 1 camo |
+| putput | beavercreek | 10494 | 59/59 | 127/134 | 26/40 | 0/0 | 9 race, 13 health, 1 camo |
+| ratrace | beavercreek | 2692 | 48/48 | 41/43 | 27/30 | 0/0 | 4 race, 2 health, 1 camo |
+| sidewinder | coagulation | 10036 | 76/76 | 147/166 | 48/55 | 6/8 | 21 race, 2 health, 1 camo, 2 overshield, 2 scorpion |
+| wizard | beavercreek | 2972 | 48/48 | 57/59 | 36/44 | 0/0 | 4 race, 4 health, 4 camo |
+
+Flag counts don't add up one for one: a Halo 1 flag can become several
+Halo 2 flags (`placements::h2_flags`). Danger Canyon, Death Island,
+Gephyrophobia, Ice Fields, Infinity and Timberland aren't on the Xbox
+disc.
+
 ## Still to do, in order
 
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. **Decals, lights, decorators** of the base (above).
-3. **Shaders** per Halo 1 shader instead of one, and **lightmaps** from
-   Halo 1's lightmap pages.
+3. **Lightmaps** from Halo 1's lightmap pages, then **Halo 1's own
+   textures** on per-shader Halo 2 shaders (base shaders are chosen by
+   name until then).
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at

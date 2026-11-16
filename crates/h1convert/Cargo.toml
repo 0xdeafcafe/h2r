@@ -17,4 +17,6 @@ thiserror.workspace = true
 scenario-edit = { path = "../scenario-edit", default-features = false }
 
 [dev-dependencies]
+# Converted maps' bitmaps decoded against the base's (tests/disc_maps.rs).
+assets.workspace = true
 xiso.workspace = true

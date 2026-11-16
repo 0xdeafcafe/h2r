@@ -66,9 +66,11 @@ fn templates() -> Templates {
     collision_material[0xc..0x14].fill(0xff);
     let mut material_head = [0u8; 16];
     material_head[8..16].fill(0xff);
+    let mut second = [0u8; 16];
+    second[8..16].fill(0xee);
     Templates {
         collision_material,
-        material_head,
+        material_heads: vec![material_head, second],
     }
 }
 
@@ -119,7 +121,7 @@ fn build(sections: &[Section]) -> Built {
         collision: &collision,
         collision_materials: 2,
         sections,
-        materials: 2,
+        materials: &[0, 1],
         bounds: [-1.0, 2.0, -1.0, 2.0, -1.0, 2.0],
         mopp: &mopp,
         checksum: 0x1234_5678,
@@ -238,6 +240,11 @@ fn a_converted_structure_reads_back_through_halo_2s_decoders() {
     // Each material: the template's head, an empty block, 0xff at +0x1c.
     let mats = off(word(&p, 0xa8));
     assert_eq!(&p[mats + 8..mats + 16], [0xff; 8]);
+    assert_eq!(
+        &p[mats + 0x28..mats + 0x30],
+        [0xee; 8],
+        "material 1 from base material 1"
+    );
     assert_eq!(word(&p, mats + 0x10), 0);
     assert_eq!(p[mats + 0x1c], 0xff);
 }
@@ -325,9 +332,14 @@ fn the_structure_gets_valid_mopp_code_keying_every_surface() {
     let code = structure_mopp(&collision).unwrap();
     let code = mopp::code::Code::parse(&code).unwrap();
     assert!(mopp::check::validate(&code.bytecode).is_ok());
-    let mut keys = mopp::bounds::key_bounds(&code).unwrap().into_keys().collect::<Vec<_>>();
+    let mut keys = mopp::bounds::key_bounds(&code)
+        .unwrap()
+        .into_keys()
+        .collect::<Vec<_>>();
     keys.sort();
-    let want: Vec<u32> = (0..collision.surfaces.len() as u32).map(|i| 0x2000_0000 | i).collect();
+    let want: Vec<u32> = (0..collision.surfaces.len() as u32)
+        .map(|i| 0x2000_0000 | i)
+        .collect();
     assert_eq!(keys, want);
 }
 
@@ -339,7 +351,8 @@ fn names_and_known_maps() {
         "scenarios\\multi\\h1_beavercreek\\h1_beavercreek"
     );
     assert_eq!(known("beavercreek"), Some(("Battle Creek", "beavercreek")));
-    assert_eq!(known("icefields").map(|k| k.1), Some("lockout"));
+    assert_eq!(known("icefields").map(|k| k.1), Some("coagulation"));
+    assert_eq!(known("bloodgulch").map(|k| k.1), Some("coagulation"));
     assert_eq!(known("nowhere"), None);
     assert_eq!(Sandbox::Halo2.name(), "h2");
 }
