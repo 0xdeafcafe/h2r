@@ -254,3 +254,51 @@ fn override_entry_overhead() {
         println!("entry, dirty page pending: {dirty:<5}  {ns:.1} ns/entry");
     }
 }
+
+/// Dirty pages come back as the same runs a page-by-page model gives, for
+/// random sets of written pages: single pages, runs inside one bitmap word,
+/// runs across words, whole words and the last page of RAM.
+#[test]
+fn take_dirty_runs_match_a_page_by_page_model() {
+    let pages = runtime::guest::RAM_SIZE as u32 / PAGE_SIZE;
+    let mut g = Guest::new();
+    g.map(0x1000_0000, pages * PAGE_SIZE, 0, Permissions::RW)
+        .unwrap();
+    let id = g.subscribe_writes("test");
+    g.watch_writes(id, CONTIGUOUS_BASE, pages * PAGE_SIZE)
+        .unwrap();
+    let mut seed = 0x9E37_79B9u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for round in 0..300 {
+        let mut written = std::collections::BTreeSet::new();
+        for _ in 0..next() % 40 {
+            let first = match next() % 4 {
+                0 => pages - 1 - next() % 3,
+                1 => (next() % (pages / 64)) * 64 + 60,
+                _ => next() % pages,
+            };
+            let n = 1 + next() % 130;
+            for p in first..(first + n).min(pages) {
+                g.set_u8(0x1000_0000 + p * PAGE_SIZE + next() % PAGE_SIZE, 1)
+                    .unwrap();
+                written.insert(p);
+            }
+        }
+        let mut want = Vec::new();
+        let mut it = written.iter().copied().peekable();
+        while let Some(start) = it.next() {
+            let mut end = start + 1;
+            while it.peek() == Some(&end) {
+                it.next();
+                end += 1;
+            }
+            want.push(range(start * PAGE_SIZE, end - start));
+        }
+        assert_eq!(g.take_dirty(id).unwrap(), want, "round {round}");
+    }
+}

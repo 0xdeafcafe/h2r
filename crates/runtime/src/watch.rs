@@ -229,7 +229,11 @@ impl Guest {
     /// non-adjacent runs in the folded view. Empty when nothing changed.
     pub fn take_dirty(&mut self, id: WatchId) -> Result<Vec<DirtyRange>, WatchError> {
         let s = self.watch.get(id)?;
-        let mut out: Vec<(usize, usize)> = Vec::new();
+        let mut out: Vec<DirtyRange> = Vec::new();
+        let range = |(a, b): (usize, usize)| DirtyRange {
+            addr: CONTIGUOUS_BASE | ((a as u32) << PAGE_SHIFT),
+            len: ((b - a) as u32) << PAGE_SHIFT,
+        };
         if !s.any_dirty {
             return Ok(Vec::new());
         }
@@ -238,27 +242,28 @@ impl Guest {
         let mut run: Option<(usize, usize)> = None;
         for w in lo..hi {
             let mut word = std::mem::take(&mut s.dirty[w]);
+            // A run of set bits at a time, not a bit at a time.
             while word != 0 {
-                let page = w * 64 + word.trailing_zeros() as usize;
-                word &= word - 1;
+                let low = word.trailing_zeros() as usize;
+                let ones = (word >> low).trailing_ones() as usize;
+                let (page, next) = (w * 64 + low, w * 64 + low + ones);
+                word &= if low + ones == 64 {
+                    0
+                } else {
+                    u64::MAX << (low + ones)
+                };
                 run = match run {
-                    Some((start, end)) if end == page => Some((start, page + 1)),
+                    Some((start, end)) if end == page => Some((start, next)),
                     Some(done) => {
-                        out.push(done);
-                        Some((page, page + 1))
+                        out.push(range(done));
+                        Some((page, next))
                     }
-                    None => Some((page, page + 1)),
+                    None => Some((page, next)),
                 };
             }
         }
-        out.extend(run);
-        Ok(out
-            .into_iter()
-            .map(|(a, b)| DirtyRange {
-                addr: CONTIGUOUS_BASE | ((a as u32) << PAGE_SHIFT),
-                len: ((b - a) as u32) << PAGE_SHIFT,
-            })
-            .collect())
+        out.extend(run.map(range));
+        Ok(out)
     }
     /// Run `f` with `id` muted: its writes, and any other write made through
     /// this guard meanwhile, do not dirty `id`'s pages. Other subscribers still
