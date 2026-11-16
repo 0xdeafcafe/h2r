@@ -114,6 +114,9 @@ pub struct Policy {
     pub public: crate::public::PublicUrl,
     /// Custom content: caps, quota and upload rate (docs/live/live-admin.md).
     pub content: crate::content::ContentLimits,
+    /// Cloud saves: item cap, quota and item count per account
+    /// (docs/live/live-cloud-saves.md).
+    pub storage: crate::cloud_saves::StorageLimits,
 }
 
 impl Default for Policy {
@@ -131,6 +134,7 @@ impl Default for Policy {
             admins: Vec::new(),
             public: Default::default(),
             content: Default::default(),
+            storage: Default::default(),
         }
     }
 }
@@ -159,6 +163,8 @@ pub struct Live {
     pub(crate) stats: Arc<crate::stats::Stats>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
+    /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
+    pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
@@ -412,6 +418,7 @@ impl Live {
             stats,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
+            cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
             policy,

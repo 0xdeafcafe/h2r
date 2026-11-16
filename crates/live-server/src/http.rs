@@ -203,6 +203,19 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/content/{sha256}",
             get(crate::content::get_content).put(crate::content::put_content),
         )
+        // Cloud saves (docs/live/live-cloud-saves.md). The segment is
+        // `{gamertag}` as on the other /v1/accounts routes (the router
+        // wants one name per position); these take a xuid there.
+        .route(
+            "/v1/accounts/{gamertag}/storage",
+            get(crate::cloud_saves::list),
+        )
+        .route(
+            "/v1/accounts/{gamertag}/storage/{kind}/{*name}",
+            get(crate::cloud_saves::get_item)
+                .put(crate::cloud_saves::put_item)
+                .delete(crate::cloud_saves::delete_item),
+        )
         .layer(DefaultBodyLimit::disable());
     Router::new()
         .route("/healthz", get(healthz))

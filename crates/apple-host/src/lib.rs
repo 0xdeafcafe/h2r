@@ -85,6 +85,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             between_slices: Some(Box::new(move |k: &kernel::Kernel| {
                 host.tick(k.clock().counter()) == app::Control::Continue
             })),
+            on_vfs: None,
         };
         let opts = boot::RunOpts {
             disc: layout.disc.clone(),

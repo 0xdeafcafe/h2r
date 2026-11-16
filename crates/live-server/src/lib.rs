@@ -17,6 +17,7 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod cloud_saves;
 pub mod content;
 pub mod default_hopper;
 pub mod default_motd;

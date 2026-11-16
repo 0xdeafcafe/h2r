@@ -47,6 +47,8 @@ asf = { path = "../asf" }
 wma = { path = "../wma" }
 live-proto.workspace = true
 live-server.workspace = true
+# Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
+cloud-saves.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

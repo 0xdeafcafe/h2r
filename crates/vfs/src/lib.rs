@@ -123,11 +123,18 @@ struct OpenFile {
     enumeration: Option<Enumeration>,
     delete_requested: bool,
     directory: bool,
+    /// Created, overwritten, written or truncated through this object:
+    /// reported as [`ChangeKind::Written`] at its last close.
+    changed: bool,
 }
 
 /// Told about every file (not directory) the VFS opens; see
 /// [`Vfs::set_open_observer`].
 pub type OpenObserver = Box<dyn FnMut(&OpenedFile) + Send>;
+
+/// Told about every file written and every file or directory removed; see
+/// [`Vfs::set_change_observer`].
+pub type ChangeObserver = Box<dyn FnMut(&Changed) + Send>;
 
 /// One storage session and its NT file objects. Use one Vfs for all guest threads;
 /// put a mutex around it in the kernel. Share checks span every alias within this instance.
@@ -141,6 +148,7 @@ pub struct Vfs {
     cleanup_pending: HashSet<(usize, String)>,
     next_handle: u64,
     observer: Option<OpenObserver>,
+    change_observer: Option<ChangeObserver>,
 }
 impl Vfs {
     pub fn new() -> Self {
@@ -317,6 +325,25 @@ impl Vfs {
     /// `None` removes it.
     pub fn set_open_observer(&mut self, observer: Option<OpenObserver>) {
         self.observer = observer;
+    }
+    /// Calls `observer` when a change is finished, with the guard on this
+    /// `Vfs` held (quick, and no calls back into the VFS):
+    /// [`ChangeKind::Written`] at the last close of a file object that
+    /// created, overwrote, wrote or truncated a file (after its cleanup,
+    /// so the bytes are on the host), and [`ChangeKind::Removed`] when a
+    /// deletion is carried out. Cloud saves watch U: with it
+    /// (docs/live/live-cloud-saves.md). `None` removes it.
+    pub fn set_change_observer(&mut self, observer: Option<ChangeObserver>) {
+        self.change_observer = observer;
+    }
+    fn report_change(&mut self, mount: usize, path: &str, kind: ChangeKind) {
+        if let Some(observe) = self.change_observer.as_mut() {
+            observe(&Changed {
+                device: self.mounts[mount].device.clone(),
+                path: path.to_owned(),
+                kind,
+            });
+        }
     }
     /// Where the file `name` (any object name or link) sits on the host, as
     /// [`Backend::host_file`] says; `None` if it is not one contiguous host
@@ -581,6 +608,7 @@ impl Vfs {
                 enumeration: None,
                 delete_requested: false,
                 directory,
+                changed: !directory && information != CreateInformation::Opened,
             },
         );
         Ok(OpenResult {
@@ -635,6 +663,11 @@ impl Vfs {
             self.pending.remove(&key);
             self.cleanup_pending.remove(&key);
             result?;
+            self.report_change(object.mount, &object.path, ChangeKind::Removed);
+            return Ok(());
+        }
+        if object.changed {
+            self.report_change(object.mount, &object.path, ChangeKind::Written);
         }
         Ok(())
     }
@@ -716,7 +749,9 @@ impl Vfs {
             return Err(Error::InvalidParameter);
         }
         let len = self.mounts[mount].backend.write_at(&path, at, buffer)?;
-        self.object_mut(handle)?.position = at + len as u64;
+        let object = self.object_mut(handle)?;
+        object.position = at + len as u64;
+        object.changed |= len > 0;
         Ok(len)
     }
     pub fn set_end_of_file(&mut self, handle: Handle, size: u64) -> Result<()> {
@@ -725,7 +760,9 @@ impl Vfs {
             return Err(Error::AccessDenied);
         }
         let (mount, path) = (file.mount, file.path.clone());
-        self.mounts[mount].backend.set_len(&path, size)
+        self.mounts[mount].backend.set_len(&path, size)?;
+        self.object_mut(handle)?.changed = true;
+        Ok(())
     }
     /// Full logical metadata replacement. Kernel merges zero/-1 NT sentinel fields first.
     pub fn set_basic_information(&mut self, handle: Handle, basic: BasicInfo) -> Result<()> {

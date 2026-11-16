@@ -104,6 +104,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
                 n < 400
             }
         })),
+        on_vfs: None,
     };
     let r = boot::run_hosted(&xbe, &dylib, &opts, host).unwrap();
     let _ = std::fs::remove_dir_all(&data);
