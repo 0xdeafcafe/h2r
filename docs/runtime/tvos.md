@@ -147,7 +147,8 @@ keyboard still cancels. Not yet tried on the Apple TV.
   `shared`, `single_player_shared`, `00a_introduction` and `zanzibar`, the
   fonts, `media/` and the intro movie. Choosing another level or map makes the
   game fail to open it (it may stop or hang on the loading screen). The map
-  pack is not bundled.
+  pack is not bundled. `just tvos maps=all` bundles the whole disc and the
+  map pack instead (7 GB or more; [building.md](building.md)).
 - Speed: expect 3 to 4 fps in a level. Nothing is tuned for the A15 yet.
 - No BC textures on the Apple TV's GPU: DXT textures are decoded on the CPU
   (`gfx::dxt`), which costs load time and memory.
