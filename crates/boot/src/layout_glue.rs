@@ -1064,6 +1064,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     } else {
                         "coop-live: opening the co-op screen"
                     };
+                    eprintln!(
+                        "coop-live: Live menu row {} opens screen {:?}, loader {loader:#x}",
+                        row.unwrap_or(-1),
+                        screen.unwrap_or("?")
+                    );
                     return open_screen(cpu, ctx, mask, loader, note);
                 }
                 if !custom_games::remember_row(&mut *ctx.runtime().memory()) {
