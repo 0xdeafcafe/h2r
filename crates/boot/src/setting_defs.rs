@@ -138,7 +138,29 @@ pub static PAD_MUTE: Def = Def {
 };
 
 /// Every setting, in the order `h2 settings list` shows them.
-pub static ALL: &[&Def] = &[&FOV, &FPS, &RENDER_SCALE, &PAD_SPEAKER, &PAD_MUTE];
+pub static ALL: &[&Def] = &[
+    &FOV,
+    &FPS,
+    &RENDER_SCALE,
+    &PAD_SPEAKER,
+    &PAD_MUTE,
+    // The campaign skulls, kept per profile (crate::skulls, docs/skulls.md).
+    &crate::skulls::SKULLS[0],
+    &crate::skulls::SKULLS[1],
+    &crate::skulls::SKULLS[2],
+    &crate::skulls::SKULLS[3],
+    &crate::skulls::SKULLS[4],
+    &crate::skulls::SKULLS[5],
+    &crate::skulls::SKULLS[6],
+    &crate::skulls::SKULLS[7],
+    &crate::skulls::SKULLS[8],
+    &crate::skulls::SKULLS[9],
+    &crate::skulls::SKULLS[10],
+    &crate::skulls::SKULLS[11],
+    &crate::skulls::SKULLS[12],
+    &crate::skulls::SKULLS[13],
+    &crate::skulls::SKULLS[14],
+];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
 /// or a routes file whose `enabled` decides.
