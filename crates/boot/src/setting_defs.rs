@@ -155,7 +155,7 @@ pub const VISIBILITY_INVITE: i64 = 2;
 pub static LIVE_VISIBILITY: Def = Def {
     key: "live.visibility",
     label: "Game Visibility",
-    help: "Who finds the Live games you host in the Custom Games browser and on the \
+    help: "Who finds the Live games you host in the Custom Game Browser and on the \
            web: everyone, your friends, or nobody (invitations only). Invitations \
            work in all three. Changing it updates an open lobby at once \
            (docs/live-custom-games.md).",

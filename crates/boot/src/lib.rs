@@ -601,7 +601,7 @@ pub fn run_hosted_with_live(
     };
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Games row (registered with the layouts above;
+    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
