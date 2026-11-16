@@ -202,7 +202,7 @@ The parts:
   the widget a child of the screen (docs/ui.md "A text of our own on a
   screen"). Row text asks the list for its focused row (`0x24c447`) and,
   when that changed, sets the widget to the row's description. The
-  Controls list spans the screen's width, so the text sits right of the
+  Controls list spans the screen's width, so the text sits under
   the list, across its width (`[-25 -225 -140 245]`, top, left, bottom, right; Y up from the screen centre);
   `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 - **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
