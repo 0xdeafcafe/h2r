@@ -403,6 +403,20 @@ points! { ALL;
     CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-preflight.md";
     /// HaloScript `cinematic_stop`.
     CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-preflight.md";
+    /// One local player's control update (look input to the player's
+    /// action): stdcall, the local user index first of five stack words,
+    /// the player's local controller index (player `+0x24`) in EDX. Its
+    /// only caller is `0x186ab0` (`0x186b16`), which `0x1870a0` runs for
+    /// each bound local user. Reads magnetism friction and adhesion at
+    /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
+    PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
+    /// The aim-assist parameters of a unit's held weapons, from the weapon
+    /// tags (autoaim and magnetism angles and ranges, zoom applied):
+    /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
+    /// level on the stack, AL whether there is one. Callers: the local
+    /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim
+    /// `0x1a4c00` (`0x1a4cbf`, from the barrel fire `0x104150`).
+    AIM_ASSIST_PARAMS @ 0x001a_50a0: [fn(unit: ecx, out: esi, zoom: stack 0) -> al ret 4]; "docs/game/aim-assist.md";
 }
 
 globals! { GLOBALS;
