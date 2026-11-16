@@ -201,10 +201,41 @@ The parts:
   left-justified) to the pane builder's text step `0x22f9bf`, which makes
   the widget a child of the screen (docs/ui.md "A text of our own on a
   screen"). Row text asks the list for its focused row (`0x24c447`) and,
-  when that changed, sets the widget to the row's description. The
-  Controls list spans the screen's width, so the text sits under
-  the list, across its width (`[-25 -225 -140 245]`, top, left, bottom, right; Y up from the screen centre);
+  when that changed, sets the widget to the row's description. It sits
+  under the picture (below);
   `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
+- **The picture** (both screens): the difficulty screen's Legendary skull,
+  the game's own art (`ui\screens\game_shell\difficulty\difficulty_options`
+  image 3, 256 by 256), right of the list with its top-left at (56, 150),
+  and the description under it (`[-112 56 -230 312]`, top, left, bottom,
+  right; Y up from the screen centre; `H2_SKULLS_TEXT_RECT` still moves
+  the text). At pane set-up the class finds the difficulty screen's tag
+  through the interface's screen list (`0x148098(12)`, the tag's handle;
+  its metadata from the tag entries at `[0x4e3b44]`), copies pane 3's
+  first bitmap block (checking it is a `bitm` showing image 3), sets its
+  point to ours and its animation to none, and hands it to the pane
+  builder's bitmap step `0x22fa30` (ESI the screen, the block on the
+  stack, `ret 4`; allocates 0x90, constructs with `0x2b01eb`, links the
+  widget to the screen). The bitmap reference is the loaded map's own, so
+  nothing is hard-coded but the screen, pane and image.
+- **Gold and silver.** The art has one colour, a pale silver. The bitmap
+  draw (`0x2b0565`) builds its colour from the widget's alpha (`+0x64`)
+  and three floats at `+0x28`, `+0x2c`, `+0x30` (`0x2b05e2` to `0x2b0632`),
+  which the widget header (`0x22e27b`) sets to 1; so they tint the image.
+  When the focus moves, row text sets them from the focused skull: gold
+  `(1.0, 0.78, 0.3)` or silver `(0.86, 0.9, 1.0)` by tier, a third as
+  bright while the skull is Locked (`skulls_menu::tint`).
+- **The list is still full width.** The Controls list the class is built
+  on uses the `setting_lists` skin, whose row background
+  (`settings_list_bkd`) and highlight are bitmaps 508 units wide, drawn at
+  their image's size; the value column ends right of the screen's centre.
+  So the picture sits over the right part of the rows. Narrowing the list
+  means another skin, which the list reads from its screen's tag each time
+  (`0x24bbf3` → `0x14837a`): a copy of the Controls tag for our screens,
+  served by the screen-tag hook (`0x22f871` gets the screen in EAX, so it
+  can tell ours by vtable), with the list on the default skin (one label,
+  200 wide, as the difficulty list). Not done: it is unverified without a
+  game run, and our rows would need their value in the label.
 - **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
 
 | Address | What | Confidence |
@@ -358,34 +389,83 @@ refuses a multiplayer game or session that names any other.
 
 ### Choosing them
 
-A "Skulls" row is added to the Game Setup list of a multiplayer custom
-game (`skulls-mp-row`, `boot::skulls_screen::GameSetupRow`). A on it
-opens the same Skulls screen in its multiplayer mode: titled "Multiplayer
-Skulls", rows Famine and Blind, each On, Off or Locked, the description
-saying what it does in multiplayer, that the host's choice is everyone's,
-and where it is found. The choice is per profile, apart from the campaign
-one: `skulls.mp_famine` and `skulls.mp_blind` under
-`[profiles."<name>".skulls]`.
+A "Skulls" row is added to the game variant editor's category list
+(`variant_editing_options`, screen 178: Match, Player, Team, Game Type,
+Vehicle and Equipment Options; feature `skulls-mp-row`,
+`boot::skulls_mp_row::VariantRow`). A on it opens the multiplayer Skulls
+screen: a screen of its own (a second `SkullsScreen`,
+`SkullsScreen::multiplayer`, on its own list class `skulls-mp-screen`),
+titled "Multiplayer Skulls", rows Famine and Blind, each On, Off or
+Locked, the description saying what it does in multiplayer, that the
+host's choice is everyone's, and where it is found. The choice is per
+profile, apart from the campaign one: `skulls.mp_famine` and
+`skulls.mp_blind` under `[profiles."<name>".skulls]`.
 
-`skulls.mp_require_collected` (default true, a global setting): on, a
-skull can be turned on for multiplayer only once that profile has picked it
-up in the campaign (Locked otherwise); off, both can be.
+**Collecting is the rule.** A skull is Locked on the multiplayer screen
+until that profile has picked it up in the campaign, and a press on a
+locked one changes nothing. There is no setting to waive it (the
+`skulls.mp_require_collected` setting is gone); a value left in
+`settings.toml` for a skull the profile has not collected stays Locked and
+is never applied or advertised. Guests apply the host's advertised set
+whatever their own profiles hold.
+
+**Not stored with the variant.** The variant's record (the 0x130-byte
+game variant the editor edits at `0x54e4a4`) has no field we know to be
+free, and guests read a variant with retail code; a byte of ours there
+could be read as something else. The choice stays per host profile and
+travels with the Live session, as before.
 
 | Address | What | Confidence |
 |---|---|---|
-| `0x2bb4d2` | Game Setup ("squad settings") list constructor, handler in ESI, `ret 4`: fills the "squad setting list" datum array at handler `+0x70` (capacity 10, element 4 bytes, the row's action word at `+2`) | confirmed |
-| `0x2bb74f` | row text (thiscall, item, word; `ret 8`): an action it does not know leaves the text as it was | confirmed |
-| `0x2bb801` | row chosen (thiscall, chain, row; `ret 8`): a jump table on the action with no bounds check (0 to 9; 5 is null) | confirmed |
-| `0x2bbbf6` | the help text for the focused row: blank for an action it does not know | confirmed |
+| `0x23764f` | the variant editor's loader, screen id 178 (`ui\screens\game_shell\settings_screen\variant_settings\variant_editing_options`), constructor `0x23768d`; opened by `0x2387d8` and `0x2ba9d0`, both with window 5 (the main menu's stack) | confirmed |
+| `0x2b74c3` | its list handler constructor (ESI the handler at screen `+0x614`, `ret 4`): datum array "variant editing options list" (`0x45be10`) of 6 rows, each row's word (`+2`) set to its index by a loop over the count; six item widgets | confirmed |
+| `0x2b7581` | row text (list slot 20, thiscall, item and word, `ret 8`): a table of six `(word, string id)` pairs through `0x24c75c`; a word not in it leaves the text as it was | confirmed |
+| `0x2b75e8` | row chosen (the press record's function, thiscall, chain and row pointer, `ret 8`): words 0 to 5 open a category's screen (`0x2c83e6`, window 5); any other word returns at `0x2b7711` having done nothing | confirmed |
 
-The constructor's `after` hook adds one row with action 10 (ours), only to
-a list whose rows include action 0 ("Change Map"): retail builds that only
-for lobby kinds 1, 3 and 5, the multiplayer custom game lobbies, and only
-the host reaches this dialog. Row text draws "Skulls" for action 10; row
-chosen, for action 10, opens our screen (`0x149f1e`) and returns `ret 8`
-without the jump table (which would read past its end). The help pane is
-blank on our row (`0x2bbbf6` has no entry for it); filling it needs a
-hook there, not done.
+The shared datum array hook grows "variant editing options list" from 6 to
+7 when the row is on, so the constructor's loop gives our row word 6. Our
+`before` on `0x2b7581` draws "Skulls" for row 6; our `before` on `0x2b75e8`
+opens the multiplayer screen for row 6 and returns (`ret 8`), and leaves
+rows 0 to 5 to retail. The tag has one pane per category and none for
+ours (`0x230427` does not check), so the pane hook keeps the last
+category's pane, its help text included, while our row is focused. The
+list has six item widgets for seven rows, so it scrolls.
+
+### Why the Game Setup row broke
+
+The first version put the row on the lobby's Game Setup dialog
+(`squad_settings_dialog`, screen 23) and opened the screen the way the
+difficulty row does, with `0x149f1e(1 << player, loader)`. In game it
+"breaks, it looks like it tries to use the campaign screen". Read
+statically (not seen running), the cause is the screen stack it opened
+on:
+
+- A screen request (`0x149f49`) carries a window at `+4` and a slot at
+  `+8`. The base screen constructor `0x22f5ca` keeps them at screen
+  `+0x74` and `+0x78` (screen vtable slots 20 and 21 return them,
+  `0x23012c`, `0x230130`).
+- The push `0x147f6d` picks the stack by the window: 5 is the per-player
+  array at `0x54d62c` (stride 0x40), 3 the one at `0x54d76c` (stride
+  0x38), 1 `0x54d884`, and 0, 2 and 4 single stacks. The generic back
+  handler (`0x2300ea`, B or Back) closes the screen through `0x14800c`
+  with the same window and slot.
+- `0x149f1e` always says window 5, slot 4. The Game Setup dialog is opened
+  on window 3 (`0x25102e`, `0x2c7eef` both push 3), and every screen it
+  opens itself (Change Map `0x2bb8ac`, the variant list `0x2bb8df`, and the
+  others in its jump table) says window 3 too.
+- So our Skulls screen went onto the main menu's stack (window 5), under
+  the lobby's dialogs, not over the Game Setup dialog: the screen shown is
+  the main menu's (where Campaign is), and B closed our screen on window
+  5, back to whatever the main menu's stack held.
+
+Two fixes, both in: the row moved to the variant editor (where the
+variant's settings are edited), and our press opens the screen on the
+pressing screen's own stack: it reads the variant editor's window and slot
+(`+0x74`, `+0x78`) and builds the request itself
+(`skulls_mp::open_request`, written to a page of ours and handed to the
+class's loader), so it would be right on a lobby's window 3 as well as the
+main menu's 5. And the multiplayer screen is no longer the campaign
+screen in another mode: it is its own instance and class.
 
 ### How the host's set reaches guests
 
@@ -435,7 +515,9 @@ Limits:
 
 - `H2_FEATURES=skulls-mp=off`: no multiplayer skull is applied and nothing
   is advertised (`skulls-mp: off: switched off (H2_FEATURES)`).
-- `H2_FEATURES=skulls-mp-row=off`: no Game Setup row.
+- `H2_FEATURES=skulls-mp-row=off`: no Skulls row in the variant editor.
+- `H2_FEATURES=skulls-mp-screen=off`: the row stays, and says the screen
+  is off when pressed.
 - `H2_NO_SKULLS=1`: neither, nor the campaign skulls.
 - As with every plan hook, a clash at one of the points refuses the plan
   at boot rather than replacing a hook.
@@ -483,7 +565,11 @@ The menu:
    Eye, Catch, Iron, Mythic, Angry, then Envy, Grunt Birthday Party,
    IWHBYD, Ghost, Sputnik, Bandana; each value On, Off or Locked. Scroll
    to the end and back: all fifteen are reachable.
-10. The description: under the list, "Gold skull:" or "Silver skull:",
+10. The picture: a large skull right of the list, gold on a gold skull
+    and silver on a silver one, dim on a locked one, changing as the
+    cursor moves. If there is none, stderr says `skulls-screen: no
+    picture: <why>` once. The description: under the picture, "Gold
+    skull:" or "Silver skull:",
     the focused skull's effect and "Found on <level>, Legendary only" (Blind: "any difficulty"); it
     changes as the cursor moves. If it is missing, clipped or over the
     list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
@@ -507,16 +593,23 @@ Multiplayer (a Live server running; two machines for 20 to 22):
 16. At boot: `skulls-mp: hooks installed via feature plan at 0x18f000
     (multiplayer start), 0x13939b (Blind: HUD), 0x165f16 (Blind:
     first-person weapon), 0xfda00 (Famine: placed weapons); offered:
-    Famine, Blind; collecting required: yes`.
-17. Host a custom game, open Game Setup: a "Skulls" row after the others;
-    stderr `skulls menu: Game Setup list: Skulls row added (N rows)`. Its
-    help pane is blank (known).
-18. A on it: "Multiplayer Skulls", rows Famine and Blind. stderr `skulls
-    menu: opening the multiplayer Skulls screen for <profile> (player 0)`.
-    A on Blind (collected): `skulls: Blind on in multiplayer for
-    <profile>`; on one not collected: Locked, and nothing changes. With
-    `skulls.mp_require_collected = false` in `settings.toml`, both can be
-    turned on.
+    Famine, Blind (each once the host's profile has collected it)`.
+17. Main menu, Settings, Game Variants, pick or create a variant, edit it:
+    the category list is Match Options ... Equipment Options, then
+    "Skulls" (the list scrolls by one). stderr `layouts: list 0x45be10
+    grows from 6 to 7 rows` (only when no other list
+    grew earlier in the run, as that line is said once) and `skulls menu: variant editor
+    row text`. Moving onto Skulls keeps the Equipment Options pane.
+18. A on it: "Multiplayer Skulls", rows Famine and Blind, over the variant
+    editor. stderr `skulls menu: opening the multiplayer Skulls screen for
+    <profile> (player 0) on window 5`, then `skulls-mp-screen: opened with
+    2 rows (our list class)`. The big skull: gold for both (both are gold
+    skulls), dim while locked. A on Blind (collected): `skulls: Blind on
+    in multiplayer for <profile>`; on one not collected: Locked, nothing
+    changes, and `skulls menu: Famine is locked for <profile> in
+    multiplayer: not collected yet (found on The Oracle, Legendary only)`.
+    B returns to the variant editor, the cursor on Skulls. The other
+    categories still open their screens.
 19. Start the game alone: `skulls-mp: multiplayer start (local): Blind`;
     no HUD and no first-person weapon, and `skulls-mp: Blind is hiding
     the HUD and first-person weapon this game`. With Famine: `skulls-mp:

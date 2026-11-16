@@ -42,6 +42,7 @@ pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
 pub mod skulls_mp;
+pub mod skulls_mp_row;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
@@ -795,8 +796,8 @@ pub fn run_hosted_with_live(
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
         eprintln!("{}", skulls::report(&plan, &installed, store));
     }
-    if let Some(store) = host.settings.as_ref().filter(|_| skulls_mp_on) {
-        eprintln!("{}", skulls_mp::report(&plan, &installed, store));
+    if skulls_mp_on {
+        eprintln!("{}", skulls_mp::report(&plan, &installed));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");

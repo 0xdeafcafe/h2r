@@ -19,8 +19,9 @@
 //!   decides, so the set must be the host's on every machine.
 //!
 //! **Whose set.** The host's: the union of the "on" multiplayer skulls of
-//! the profiles signed in on the host ([`chosen`]), each only if collected
-//! while `skulls.mp_require_collected` holds (the default). A guest applies
+//! the profiles signed in on the host ([`chosen`]), each only if that
+//! profile has collected it in the campaign (the rule, not a setting). A
+//! guest applies
 //! what its host advertised on our Live service ([`at_start`]); with
 //! nothing heard (System Link, no server) it applies none.
 //!
@@ -93,26 +94,6 @@ const fn mp_def(key: &'static str, label: &'static str, order: u32) -> Def {
 
 pub static MP_FAMINE: Def = mp_def("skulls.mp_famine", "Famine (multiplayer)", 104);
 pub static MP_BLIND: Def = mp_def("skulls.mp_blind", "Blind (multiplayer)", 106);
-/// Whether a profile must have collected a skull in the campaign before it
-/// can turn it on for multiplayer.
-pub static MP_REQUIRE_COLLECTED: Def = Def {
-    key: "skulls.mp_require_collected",
-    label: "Multiplayer Skulls Need Collecting",
-    help: "On, a skull can be turned on for multiplayer only once the profile has picked it \
-           up in the campaign, as for the campaign. Off, any skull that works in multiplayer \
-           can be.",
-    kind: Kind::Bool,
-    default: Value::Bool(true),
-    env: None,
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Live,
-    scope: Scope::Sim,
-    tier: Tier::Advanced,
-    menu: None,
-};
-
 /// The skulls offered in multiplayer, in the engine's order:
 /// `live_proto::skulls::MULTIPLAYER`.
 pub static MP: [MpSkull; 2] = [
@@ -138,20 +119,13 @@ pub fn row_of(index: usize) -> Option<usize> {
     MP.iter().position(|m| m.index == index)
 }
 
-/// Whether a skull must be collected first (`skulls.mp_require_collected`).
-pub fn require_collected(store: &Store) -> bool {
-    store
-        .get(MP_REQUIRE_COLLECTED.key)
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-}
-
-/// Row `row`'s state for `profile`: Locked when it must be collected and is
-/// not, else the profile's multiplayer On or Off (Off until set).
+/// Row `row`'s state for `profile`: Locked until the profile has collected
+/// the skull in the campaign (a host can only turn on what it has found),
+/// else the profile's multiplayer On or Off (Off until set). A value left
+/// in the store for a skull not collected stays Locked and is not applied.
 pub fn state(store: &Store, profile: &str, row: usize) -> Option<State> {
     let m = MP.get(row)?;
-    let collected = skulls::state(store, profile, m.index)? != State::Locked;
-    if require_collected(store) && !collected {
+    if skulls::state(store, profile, m.index)? == State::Locked {
         return Some(State::Locked);
     }
     Some(
@@ -172,8 +146,7 @@ pub fn press(store: &Store, profile: &str, row: usize) -> Option<String> {
     let (def, about) = (&SKULLS[m.index], &ABOUT[m.index]);
     Some(match state(store, profile, row)? {
         State::Locked => format!(
-            "skulls menu: {} is locked for {profile} in multiplayer: not collected yet (found on {}{}); \
-             skulls.mp_require_collected = false allows it",
+            "skulls menu: {} is locked for {profile} in multiplayer: not collected yet (found on {}{})",
             def.label,
             about.level,
             if about.legendary {
@@ -650,7 +623,7 @@ pub fn install(
 }
 
 /// The install line, once `plan` is in.
-pub fn report(plan: &feature::Plan, installed: &feature::Installed, store: &Store) -> String {
+pub fn report(plan: &feature::Plan, installed: &feature::Installed) -> String {
     use feature::points::{FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT};
     if let Some(why) = installed.off_reason(FEATURE) {
         return format!("skulls-mp: NOT installed: {why}; multiplayer games run without skulls");
@@ -670,91 +643,68 @@ pub fn report(plan: &feature::Plan, installed: &feature::Installed, store: &Stor
         }
     };
     format!(
-        "skulls-mp: hooks installed via feature plan at {}, {}, {}, {}; offered: {}; collecting \
-         required: {}",
+        "skulls-mp: hooks installed via feature plan at {}, {}, {}, {}; offered: {} (each once \
+         the host's profile has collected it)",
         at(&GAME_ACTIVATE, "multiplayer start"),
         at(&HUD_SHOWN, "Blind: HUD"),
         at(&FIRST_PERSON_RENDER, "Blind: first-person weapon"),
         at(&WEAPON_FROM_PLACEMENT, "Famine: placed weapons"),
         names(&MP.iter().map(|m| m.index as u8).collect::<Vec<_>>()),
-        if require_collected(store) {
-            "yes"
-        } else {
-            "no"
-        }
     )
 }
 
-// ---- the Game Setup row ----
+// ---- the variant editor's Skulls row ----
 
-/// The Game Setup dialog's list (screen 23): its rows' datum array is at
-/// handler `+0x70`, each row's action word at datum `+2`.
-pub const SETUP_ROWS: u32 = 0x70;
-pub const SETUP_ACTION: u32 = 2;
-/// The action of retail's "Change Map": only a multiplayer custom game's
-/// list has it (lobby kinds 1, 3 and 5).
-pub const CHANGE_MAP: i16 = 0;
-/// Our row's action: past retail's nine (0 to 9; the row-chosen jump table
-/// has no bounds check, so the press must never reach the original).
-pub const SKULLS_ACTION: i16 = 10;
+/// The variant editor's category list (`variant_editing_options`, screen
+/// 178, list handler `0x2b74c3` at screen `+0x614`): a datum array named
+/// "variant editing options list" of six rows, each row's word (`+2`) its
+/// index, set by the constructor's loop over the count. Grown by one, the
+/// loop gives our row word 6, which retail's row text leaves blank and its
+/// row chosen ignores (`ret 8`).
+pub const VARIANT_LIST_NAME: u32 = 0x0045_be10;
+pub const VARIANT_ROWS: u32 = 6;
+pub const VARIANT_ROW: i16 = 6;
+pub const VARIANT_SCREEN_ID: i16 = 178;
 
-/// Whether a Game Setup list with these actions gets our row.
-pub fn wants_row(actions: &[i16]) -> bool {
-    actions.contains(&CHANGE_MAP) && !actions.contains(&SKULLS_ACTION)
-}
-
-/// The actions of the list at `list`, in slot order.
-pub fn setup_actions(
-    m: &dyn engine::memory::GuestMemory,
-    list: u32,
-) -> Result<Vec<i16>, engine::memory::MemFault> {
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS))?);
-    let hw = array.header_field(m, engine::datum::layout::HIGH_WATER)?;
-    let mut out = Vec::new();
-    for i in 0..hw.max(0) {
-        if let Some(elem) = array.get_absolute(m, i)? {
-            out.push(m.u16(elem.wrapping_add(SETUP_ACTION))? as i16);
-        }
+/// The variant editor list's count when the game builds the array `name`
+/// with `retail` rows: one more (the Skulls row) for that list at its
+/// retail size.
+pub fn variant_count(name: u32, retail: u32) -> u32 {
+    if name == VARIANT_LIST_NAME && retail == VARIANT_ROWS {
+        retail + 1
+    } else {
+        retail
     }
-    Ok(out)
 }
 
-/// Adds our row to a multiplayer custom game's Game Setup list. `Ok(None)`
-/// when the list is not one (or has it); the new count otherwise.
-pub fn add_setup_row(
-    m: &mut dyn engine::memory::GuestMemory,
-    list: u32,
-) -> Result<Option<usize>, String> {
-    let actions = setup_actions(m, list).map_err(|e| format!("{e:?}"))?;
-    if !wants_row(&actions) {
-        return Ok(None);
-    }
-    let array = engine::datum::DatumArray::at(
-        m.u32(list.wrapping_add(SETUP_ROWS))
-            .map_err(|e| format!("{e:?}"))?,
-    );
-    let h = array
-        .new_datum(m)
-        .map_err(|e| format!("{e:?}"))?
-        .ok_or("the list is full")?;
-    let elem = array
-        .try_get(m, h)
-        .map_err(|e| format!("{e:?}"))?
-        .ok_or("the new row is not there")?;
-    m.set_u16(elem.wrapping_add(SETUP_ACTION), SKULLS_ACTION as u16)
-        .map_err(|e| format!("{e:?}"))?;
-    Ok(Some(actions.len() + 1))
+/// A pane change to skip: our row on the variant editor, whose tag has a
+/// pane for each of the six categories and none for ours (`0x230427` does
+/// not check), so the last category's pane stays up.
+pub fn skip_pane(screen_id: i16, row: i16) -> bool {
+    screen_id == VARIANT_SCREEN_ID && row == VARIANT_ROW
 }
 
-/// The action of the row whose handle is `row` on the list at `list`.
-pub fn row_action(m: &dyn engine::memory::GuestMemory, list: u32, row: u32) -> Option<i16> {
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).ok()?);
-    let elem = array
-        .try_get(m, engine::DatumHandle::from_raw(row)?)
-        .ok()??;
-    m.u16(elem.wrapping_add(SETUP_ACTION))
-        .ok()
-        .map(|v| v as i16)
+/// A screen's window (`+0x74`) and slot (`+0x78`): the request fields its
+/// loader was handed (`+4`, `+8`), kept by the base screen constructor
+/// (`0x22f5ca`). The push (`0x147f6d`) and the back handler (`0x2300ea`
+/// through `0x14800c`) pick the screen stack by them: window 5 is the main
+/// menu's, 3 the lobby dialogs'.
+pub const SCREEN_WINDOW: u32 = 0x74;
+pub const SCREEN_SLOT: u32 = 0x78;
+
+/// The request that opens a screen with `loader` for `mask` on the stack of
+/// window `window`, slot `slot`: what `0x149f49` builds (`+0` 0, `+2` the
+/// mask, `+4` the window, `+8` the slot, `+0xc` 0, `+0x10..0x1c` -1, `+0x1c`
+/// the loader). `0x149f1e` always says window 5; a screen opened from a
+/// screen on another stack must say that one's.
+pub fn open_request(mask: u16, window: u32, slot: u32, loader: u32) -> [u8; 0x20] {
+    let mut r = [0u8; 0x20];
+    r[2..4].copy_from_slice(&mask.to_le_bytes());
+    r[4..8].copy_from_slice(&window.to_le_bytes());
+    r[8..0xc].copy_from_slice(&slot.to_le_bytes());
+    r[0x10..0x1c].fill(0xff);
+    r[0x1c..0x20].copy_from_slice(&loader.to_le_bytes());
+    r
 }
 
 #[cfg(test)]
@@ -770,6 +720,13 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    /// `profiles` pick up both multiplayer skulls in the campaign.
+    fn collect(st: &Store, profiles: &[&str]) {
+        for i in [FAMINE, BLIND] {
+            skulls::record_pickup(st, &names_of(profiles), i);
+        }
+    }
+
     #[test]
     fn only_the_skulls_that_work_in_multiplayer_are_offered() {
         let offered: Vec<u8> = MP.iter().map(|m| m.index as u8).collect();
@@ -780,7 +737,7 @@ mod tests {
         assert_eq!(MP[1].reach, Reach::Local);
         assert_eq!(row_of(BLIND), Some(1));
         assert_eq!(row_of(12), None, "Mythic needs AI");
-        for d in [&MP_FAMINE, &MP_BLIND, &MP_REQUIRE_COLLECTED] {
+        for d in [&MP_FAMINE, &MP_BLIND] {
             assert!(
                 crate::setting_defs::ALL.iter().any(|a| a.key == d.key),
                 "{}",
@@ -789,10 +746,16 @@ mod tests {
         }
     }
 
+    /// Collecting is the rule: no setting waives it.
     #[test]
-    fn collecting_is_required_by_default_and_can_be_waived() {
+    fn a_skull_must_be_collected_before_multiplayer_can_use_it() {
         let st = store();
-        assert!(require_collected(&st));
+        assert!(
+            crate::setting_defs::ALL
+                .iter()
+                .all(|d| d.key != "skulls.mp_require_collected"),
+            "no setting turns the rule off"
+        );
         assert_eq!(state(&st, "Chief", 1), Some(State::Locked));
         let line = press(&st, "Chief", 1).unwrap();
         assert!(
@@ -813,16 +776,13 @@ mod tests {
         // The campaign toggle is its own.
         skulls::toggle(&st, "Chief", "skulls.blind").unwrap();
         assert_eq!(chosen(&st, "Chief"), vec![6]);
-        // Waived: Famine can be turned on uncollected.
-        st.set(MP_REQUIRE_COLLECTED.key, Value::Bool(false))
+        // A value in the store for a skull not collected (an edited file,
+        // or an older build's waiver): still locked, and not applied.
+        st.profile_set("Chief", MP_FAMINE.key, Value::Bool(true))
             .unwrap();
-        assert_eq!(state(&st, "Chief", 0), Some(State::Off));
-        press(&st, "Chief", 0);
-        assert_eq!(chosen(&st, "Chief"), vec![4, 6]);
-        // Required again: the uncollected one is locked, and not applied.
-        st.set(MP_REQUIRE_COLLECTED.key, Value::Bool(true)).unwrap();
         assert_eq!(state(&st, "Chief", 0), Some(State::Locked));
         assert_eq!(chosen(&st, "Chief"), vec![6]);
+        assert!(press(&st, "Chief", 0).unwrap().contains("is locked"));
         assert_eq!(press(&st, "Chief", 2), None);
     }
 
@@ -911,8 +871,7 @@ mod tests {
     #[test]
     fn the_start_uses_the_profiles_choice_as_pressed() {
         let st = store();
-        st.set(MP_REQUIRE_COLLECTED.key, Value::Bool(false))
-            .unwrap();
+        collect(&st, &["Chief", "Arbiter"]);
         press(&st, "Chief", 1);
         let mp = MpSkulls::new(Arc::clone(&st), None, None);
         assert_eq!(
@@ -990,8 +949,7 @@ mod tests {
     #[test]
     fn the_probe_reads_the_signed_in_profiles() {
         let st = store();
-        st.set(MP_REQUIRE_COLLECTED.key, Value::Bool(false))
-            .unwrap();
+        collect(&st, &[skulls::DEFAULT_PROFILE]);
         press(&st, skulls::DEFAULT_PROFILE, 1);
         let mp = MpSkulls::new(st, None, None);
         // Nobody signed in: the default profile's choice.
@@ -1007,50 +965,38 @@ mod tests {
         assert_eq!(mp.current(), vec![6]);
     }
 
-    /// A Game Setup list as the constructor leaves it: a datum array of
-    /// ten, rows with their action word at `+2`.
-    fn setup_list(actions: &[i16]) -> (engine::testing::FakeGuest, u32) {
-        use engine::datum::DatumArray;
-        use engine::memory::GuestMemory;
-        let mut g = engine::testing::FakeGuest::new();
-        g.map(0x10000, 0x4000);
-        let (list, header, data, bitmap, name) = (0x10000, 0x11000, 0x12000, 0x13000, 0x13800);
-        g.set_u32(list + SETUP_ROWS, header).unwrap();
-        g.write(name, b"squad setting list\0").unwrap();
-        let a = DatumArray::at(header);
-        a.initialize(&mut g, name, 10, 4, 0, 0, bitmap).unwrap();
-        a.attach(&mut g, 10, data).unwrap();
-        for act in actions {
-            let h = a.new_datum(&mut g).unwrap().unwrap();
-            let e = a.try_get(&g, h).unwrap().unwrap();
-            g.set_u16(e + 2, *act as u16).unwrap();
-        }
-        (g, list)
+    /// The variant editor's list grows by our row, only at its size.
+    #[test]
+    fn the_variant_editor_list_gets_one_more_row() {
+        assert_eq!(variant_count(VARIANT_LIST_NAME, 6), 7);
+        assert_eq!(
+            variant_count(VARIANT_LIST_NAME, 7),
+            7,
+            "not its retail size"
+        );
+        assert_eq!(
+            variant_count(crate::skulls_menu::DIFFICULTY_LIST_NAME, 6),
+            6
+        );
+        assert!(skip_pane(178, 6));
+        assert!(!skip_pane(178, 5), "a category keeps its pane");
+        assert!(!skip_pane(12, 6));
     }
 
+    /// The request names the pressing screen's stack, not the main menu's
+    /// alone, as `0x149f49` lays a request out.
     #[test]
-    fn the_skulls_row_joins_only_a_custom_games_setup() {
-        // Local, System Link or Live custom game (kinds 1, 3, 5).
-        for retail in [&[0, 1, 4, 6][..], &[0, 1, 4, 6, 8]] {
-            let (mut g, list) = setup_list(retail);
-            assert_eq!(add_setup_row(&mut g, list), Ok(Some(retail.len() + 1)));
-            let mut want = retail.to_vec();
-            want.push(SKULLS_ACTION);
-            assert_eq!(setup_actions(&g, list).unwrap(), want);
-            assert_eq!(add_setup_row(&mut g, list), Ok(None), "once");
-            // The new row's handle reads back as ours.
-            let a = engine::datum::DatumArray::at(0x11000);
-            let h = a.handle_of(&g, retail.len() as i32).unwrap().unwrap();
-            assert_eq!(row_action(&g, list, h.raw()), Some(SKULLS_ACTION));
-            let h0 = a.handle_of(&g, 0).unwrap().unwrap();
-            assert_eq!(row_action(&g, list, h0.raw()), Some(0));
-            assert_eq!(row_action(&g, list, u32::MAX), None, "no row");
-        }
-        // Co-op lobbies and matchmaking: no Change Map, no row.
-        for retail in [&[2, 3, 7][..], &[2, 3, 7, 8], &[9, 6, 7], &[]] {
-            let (mut g, list) = setup_list(retail);
-            assert_eq!(add_setup_row(&mut g, list), Ok(None), "{retail:?}");
-            assert_eq!(setup_actions(&g, list).unwrap(), retail);
-        }
+    fn the_request_opens_on_the_pressing_screens_stack() {
+        let r = open_request(1 << 2, 3, 4, 0xa0f0_5000);
+        let word = |o: usize| u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+        assert_eq!(
+            u16::from_le_bytes([r[0], r[1]]),
+            0,
+            "an opening, not a back"
+        );
+        assert_eq!(u16::from_le_bytes([r[2], r[3]]), 4);
+        assert_eq!((word(4), word(8), word(0xc)), (3, 4, 0));
+        assert_eq!(&r[0x10..0x1c], &[0xff; 12]);
+        assert_eq!(word(0x1c), 0xa0f0_5000);
     }
 }

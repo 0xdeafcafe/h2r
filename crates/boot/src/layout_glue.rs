@@ -609,6 +609,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 } else {
                     n
                 };
+                // The variant editor's categories get the multiplayer
+                // Skulls row.
+                let n = if with_skulls && crate::skulls_mp_row::row_on() {
+                    crate::skulls_mp::variant_count(name, n)
+                } else {
+                    n
+                };
                 // One of our list class screens being built: its own count.
                 let n = crate::list_class::array_count(name, n);
                 if n != cpu.eax {
@@ -696,6 +703,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 // The Skulls row on the difficulty screen has no pane: keep
                 // the one shown (thiscall, `ret 4`).
                 if with_skulls && skulls_menu::skip_pane(id, row) {
+                    return mem.ret(cpu, 4);
+                }
+                // Nor has the Skulls row in the variant editor.
+                if with_skulls && crate::skulls_mp::skip_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
                 // Our Video row on the Settings list has none either.
@@ -1112,11 +1123,19 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         registry
             .add(&crate::skulls_screen::DifficultyRow(Arc::clone(&screen)))
             .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
-        // The same screen in its multiplayer mode, from a custom game's Game
-        // Setup (docs/skulls.md "In multiplayer").
+        // The multiplayer screen, an instance and class of its own, opened
+        // from the game variant editor (docs/skulls.md "In multiplayer").
+        let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(Arc::clone(
+            model.store(),
+        )));
+        match registry.add(&crate::skulls_mp_row::mp_class(Arc::clone(&mp), block)) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("skulls menu: features.skulls-mp-screen is off"),
+            Err(e) => eprintln!("skulls menu: {e}"),
+        }
         registry
-            .add(&crate::skulls_screen::GameSetupRow(screen))
-            .map_err(|e| anyhow::anyhow!("skulls game setup row: {e}"))?;
+            .add(&crate::skulls_mp_row::VariantRow(mp))
+            .map_err(|e| anyhow::anyhow!("skulls variant row: {e}"))?;
     }
     // The Controls list's row text and row chosen, on the plan: our rows
     // there (the speaker row) as data, and the layouts' value text around
