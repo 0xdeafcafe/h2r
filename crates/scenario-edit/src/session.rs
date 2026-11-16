@@ -8,9 +8,11 @@ use crate::layout::{BlockKind, Role};
 use crate::package::{self, PackageForm, SavedPackage};
 use crate::save::{self, MapSource};
 use crate::scenario::{Changes, Scenario, Value};
+use crate::scene::{Scene, SceneBuilder};
 use crate::{Error, Result};
-use map::ResourceFile;
+use map::{ResourceFile, TagId};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// An open map.
 struct Doc {
@@ -26,7 +28,14 @@ struct Doc {
     world: Vec<Tri>,
     /// How many BSP sections failed to load.
     world_failed: usize,
+    /// The textured BSP and the placed objects' models, when the map's art
+    /// could be read.
+    scene: Option<Arc<Scene>>,
 }
+
+/// Scenes kept for maps opened before (reopening one, or opening its
+/// package, reuses its art). A few levels are tens of MB each.
+const SCENE_CACHE: usize = 4;
 
 /// A drag of the selected placement on a plane (the egui viewport's
 /// primary-button drag).
@@ -69,6 +78,10 @@ pub struct Session {
     data_root: PathBuf,
     /// The last package saved or opened.
     last_package: Option<(String, content::MapId)>,
+    /// Built scenes by map (path, region, name), newest last.
+    scenes: Vec<(String, Arc<Scene>)>,
+    /// Whether opening a map builds its [`Scene`] (textures and models).
+    pub build_scenes: bool,
 }
 
 impl Default for Session {
@@ -94,6 +107,8 @@ impl Session {
             allow_growth: false,
             data_root: content::store::default_data_root(),
             last_package: None,
+            scenes: Vec::new(),
+            build_scenes: true,
         }
     }
 
@@ -258,12 +273,29 @@ impl Session {
         }
         let mut raw = geometry::RawFiles::new(files);
         let mut map = source.open()?;
-        let (world, world_failed) =
-            geometry::world_triangles(&mut map, &mut raw).unwrap_or_default();
+        let started = std::time::Instant::now();
+        let (parts, world_failed) = geometry::world_parts(&mut map, &mut raw).unwrap_or_default();
+        let world = geometry::opaque_triangles(&parts);
         let markers = geometry::markers(&scenario);
+        let scene = self.build_scenes.then(|| {
+            self.scene_for(
+                &source, name, &scenario, &markers, &parts, &mut map, &mut raw,
+            )
+        });
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
+        let art = match &scene {
+            Some(s) => format!(
+                ", {} of {} shaders textured, {} of {} objects modelled ({} ms)",
+                s.stats.textured,
+                s.stats.shaders,
+                s.stats.modelled,
+                s.stats.objects,
+                started.elapsed().as_millis()
+            ),
+            None => String::new(),
+        };
         self.status = format!(
-            "{} triangles{}, {} placements",
+            "{} triangles{}, {} placements{art}",
             world.len(),
             if world_failed > 0 {
                 format!(" ({world_failed} sections not loaded)")
@@ -281,6 +313,7 @@ impl Session {
             saved: Changes::default(),
             world,
             world_failed,
+            scene,
         });
         self.selected = None;
         self.drag = None;
@@ -321,6 +354,50 @@ impl Session {
             None => (&[], 0),
         }
     }
+    /// The open map's textured world and object models, if built.
+    pub fn scene(&self) -> Option<&Arc<Scene>> {
+        self.doc.as_ref().and_then(|d| d.scene.as_ref())
+    }
+
+    /// The cached scene of a map, else a new one (cached).
+    #[allow(clippy::too_many_arguments)]
+    fn scene_for<R: std::io::Read + std::io::Seek>(
+        &mut self,
+        source: &MapSource,
+        name: &str,
+        scenario: &Scenario,
+        markers: &[Marker],
+        parts: &[geometry::WorldPart],
+        map: &mut map::Map<R>,
+        raw: &mut dyn tags::geometry::RawSource,
+    ) -> Arc<Scene> {
+        let key = format!("{:?}|{:?}|{name}", source.path, source.region);
+        if let Some(i) = self.scenes.iter().position(|(k, _)| *k == key) {
+            let hit = self.scenes.remove(i);
+            let scene = hit.1.clone();
+            self.scenes.push(hit);
+            return scene;
+        }
+        let mut b = SceneBuilder::new(map, raw, crate::scene::resource_files(source));
+        b.world(parts);
+        // Every palette entry, so a placement switched to another entry
+        // has its model too, and each placement's own reference.
+        let objects: Vec<TagId> = scenario
+            .blocks
+            .iter()
+            .flat_map(|b| b.palette.iter().map(|r| r.id))
+            .chain(markers.iter().filter_map(|m| m.object))
+            .filter(|id| *id != TagId::NULL)
+            .collect();
+        b.objects(objects);
+        let scene = Arc::new(b.finish());
+        self.scenes.push((key, scene.clone()));
+        if self.scenes.len() > SCENE_CACHE {
+            self.scenes.remove(0);
+        }
+        scene
+    }
+
     /// Changes when another map (or none) is opened.
     pub fn world_rev(&self) -> u64 {
         self.world_rev
@@ -377,7 +454,10 @@ impl Session {
 
     /// The placement under a camera ray, if any.
     pub fn pick(&self, ray: &Ray) -> Option<(BlockKind, usize)> {
-        geometry::pick(&self.markers, ray)
+        match self.scene() {
+            Some(s) => s.pick(&self.markers, ray),
+            None => geometry::pick(&self.markers, ray),
+        }
     }
 
     /// Edits since the last save (undoing back to the saved state clears it).
@@ -730,8 +810,18 @@ fn close3(a: Vec3, b: Vec3) -> bool {
     (0..3).all(|k| (a[k] - b[k]).abs() <= 1e-5)
 }
 
+/// What "frame the map" frames: the placements when there are a few (the
+/// playable space; distant scenery such as Ascension's canyon rocks, 300
+/// units out, would shrink the level to a speck), padded a little, else
+/// the opaque world.
 fn frame_bounds(world: &[Tri], markers: &[Marker]) -> Bounds {
     let mut bounds = Bounds::EMPTY;
+    if markers.len() >= 4 {
+        markers.iter().for_each(|m| bounds.add(m.position));
+        bounds.add(geometry::sub(bounds.min, [FRAME_PAD; 3]));
+        bounds.add(geometry::add(bounds.max, [FRAME_PAD; 3]));
+        return bounds;
+    }
     for t in world {
         t.p.iter().for_each(|&p| bounds.add(p));
     }
@@ -740,3 +830,6 @@ fn frame_bounds(world: &[Tri], markers: &[Marker]) -> Bounds {
     }
     bounds
 }
+
+/// Units around the placements that framing keeps in view.
+const FRAME_PAD: f32 = 4.0;

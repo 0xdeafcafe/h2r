@@ -13,6 +13,8 @@
 //!   egui panel and `h2-studio`.
 //! - [`geometry`], [`render`]: the structure BSP and markers, the camera
 //!   and picking, and an offscreen wgpu viewport (no UI toolkit).
+//! - [`scene`]: the map's art for the viewport: the BSP textured with each
+//!   shader's base map, and the placed objects' render models.
 //! - [`panel`] (feature `egui`, on by default): the egui panel
 //!   [`ScenarioEditor`].
 //!
@@ -34,6 +36,7 @@ pub mod panel;
 pub mod render;
 pub mod save;
 pub mod scenario;
+pub mod scene;
 pub mod session;
 #[cfg(test)]
 mod tests;

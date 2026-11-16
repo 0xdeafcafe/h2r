@@ -661,11 +661,11 @@ impl Scenario {
         Ok(entry)
     }
 
-    /// A short label for an element: the base name of its palette tag or
-    /// item reference (from the map's own tag names), else its index.
-    pub fn label(&self, kind: BlockKind, index: usize) -> String {
+    /// The tag an element places: its palette entry, or its item reference
+    /// (netgame and starting equipment).
+    pub fn object_tag(&self, kind: BlockKind, index: usize) -> Option<TagRef> {
         let block = self.block(kind);
-        let tag = if let Some(f) = block.def.role(Role::PaletteIndex) {
+        if let Some(f) = block.def.role(Role::PaletteIndex) {
             self.get(kind, index, f.name)
                 .ok()
                 .and_then(Value::as_int)
@@ -681,7 +681,13 @@ impl Scenario {
                     Ok(Value::Tag(r)) => Some(r),
                     _ => None,
                 })
-        };
+        }
+    }
+
+    /// A short label for an element: the base name of its palette tag or
+    /// item reference (from the map's own tag names), else its index.
+    pub fn label(&self, kind: BlockKind, index: usize) -> String {
+        let tag = self.object_tag(kind, index);
         match tag.and_then(|r| self.tag_name(r.id)) {
             Some(name) => format!("{index}: {name}"),
             None => format!("{index}"),

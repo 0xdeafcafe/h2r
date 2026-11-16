@@ -8,6 +8,8 @@
 //! toolkit is used here; the egui panel registers [`Viewport::color_view`]
 //! with `egui_wgpu`, `h2-studio` with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles};
+use crate::scene::{Blend, Scene, SceneVertex};
+use std::ops::Range;
 use wgpu::util::DeviceExt;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -21,21 +23,67 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 3],
+    /// The glyph's centre: the vertex is pushed out from it as the glyph
+    /// grows with distance ([`crate::geometry::glyph_scale`]). Equal to
+    /// `position` for geometry that keeps its size.
+    pub center: [f32; 3],
+}
+
+/// One placed copy of a mesh: model-space axes scaled, the translation,
+/// and a tint (rgb multiplies; alpha mixes in the selection highlight).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Instance {
+    pub x: [f32; 4],
+    pub y: [f32; 4],
+    pub z: [f32; 4],
+    pub t: [f32; 4],
+    pub tint: [f32; 4],
+}
+
+impl Instance {
+    pub const IDENTITY: Self = Self {
+        x: [1.0, 0.0, 0.0, 0.0],
+        y: [0.0, 1.0, 0.0, 0.0],
+        z: [0.0, 0.0, 1.0, 0.0],
+        t: [0.0, 0.0, 0.0, 1.0],
+        tint: [1.0, 1.0, 1.0, 0.0],
+    };
+
+    /// A placement's transform, highlighted when selected.
+    pub fn of(m: &Marker, selected: bool) -> Self {
+        let s = m.scale;
+        let [f, l, u] = m.axes;
+        let col = |v: Vec3| [v[0] * s, v[1] * s, v[2] * s, 0.0];
+        Self {
+            x: col(f),
+            y: col(l),
+            z: col(u),
+            t: [m.position[0], m.position[1], m.position[2], 1.0],
+            tint: if selected {
+                [1.0, 1.0, 1.0, 0.45]
+            } else {
+                [1.0, 1.0, 1.0, 0.0]
+            },
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
     view_proj: [[f32; 4]; 4],
+    eye: [f32; 4],
 }
 
 const SHADER: &str = r#"
-struct U { view_proj: mat4x4<f32> };
+struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @location(1) c: vec3<f32> };
-@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec3<f32>) -> V {
+@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec3<f32>, @location(3) center: vec3<f32>) -> V {
     var o: V;
-    o.clip = u.view_proj * vec4<f32>(p, 1.0);
+    let s = max(1.0, length(center - u.eye.xyz) / GLYPH_DISTANCE);
+    o.clip = u.view_proj * vec4<f32>(center + (p - center) * s, 1.0);
     o.n = n;
     o.c = c;
     return o;
@@ -44,6 +92,58 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
     let l = normalize(vec3<f32>(0.4, 0.3, 0.85));
     let d = abs(dot(normalize(v.n), l));
     return vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0);
+}
+"#;
+
+/// Textured meshes: placed per instance, lit by one sun and the sky.
+const SCENE_SHADER: &str = r#"
+struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
+struct V {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) n: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) tint: vec4<f32>,
+};
+@vertex fn vs(
+    @location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>,
+    @location(3) x: vec4<f32>, @location(4) y: vec4<f32>, @location(5) z: vec4<f32>,
+    @location(6) t: vec4<f32>, @location(7) tint: vec4<f32>,
+) -> V {
+    var o: V;
+    let m = mat4x4<f32>(x, y, z, t);
+    o.clip = u.view_proj * m * vec4<f32>(p, 1.0);
+    o.n = (m * vec4<f32>(n, 0.0)).xyz;
+    o.uv = uv;
+    o.tint = tint;
+    return o;
+}
+fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
+    let n = normalize(v.n + vec3<f32>(0.0, 0.0, 1e-5));
+    let sun = normalize(vec3<f32>(0.45, 0.3, 0.84));
+    let d = max(dot(n, sun), 0.0);
+    let sky = 0.5 + 0.5 * n.z;
+    // Base maps are drawn without their detail maps (which double in the
+    // game) and lightmaps: lift them so dark metals do not go black.
+    let light = 1.4 * (0.36 + 0.14 * sky + 0.5 * d);
+    let lin = albedo * light * v.tint.rgb;
+    // Roll off highlights (snow, sand) instead of clipping them.
+    let c = lin / (vec3<f32>(1.0) + max(lin - vec3<f32>(0.7), vec3<f32>(0.0)));
+    return mix(c, vec3<f32>(1.0, 0.78, 0.25), v.tint.a);
+}
+@fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
+    return vec4<f32>(lit(v, textureSample(tex, samp, v.uv).rgb), 1.0);
+}
+@fragment fn fs_mask(v: V) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, v.uv);
+    if (c.a < 0.5) { discard; }
+    return vec4<f32>(lit(v, c.rgb), 1.0);
+}
+@fragment fn fs_translucent(v: V) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, v.uv);
+    return vec4<f32>(c.rgb * (0.6 + 0.4 * v.tint.rgb), 0.3);
 }
 "#;
 
@@ -58,6 +158,7 @@ pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
                 position: p,
                 normal: t.n,
                 color,
+                center: p,
             });
         }
     }
@@ -69,9 +170,22 @@ pub fn marker_vertices(
     markers: &[Marker],
     selected: Option<(crate::BlockKind, usize)>,
 ) -> Vec<Vertex> {
+    glyph_vertices(markers, selected, |_| false)
+}
+
+/// Glyph vertices for the placements `modelled` says have no model, and
+/// for the selection whatever it is (white and larger).
+pub fn glyph_vertices(
+    markers: &[Marker],
+    selected: Option<(crate::BlockKind, usize)>,
+    modelled: impl Fn(&Marker) -> bool,
+) -> Vec<Vertex> {
     let mut out = Vec::new();
     for m in markers {
         let is_sel = selected == Some((m.block, m.index));
+        if !is_sel && modelled(m) {
+            continue;
+        }
         let mut m = *m;
         if is_sel {
             m.axes = m.axes.map(|a| crate::geometry::scale(a, 1.6));
@@ -91,11 +205,38 @@ pub fn marker_vertices(
                     position: p,
                     normal: n,
                     color,
+                    center: m.position,
                 });
             }
         }
     }
     out
+}
+
+/// Each model's placements as instances, grouped by model: the instances
+/// and, per model, its range in them.
+pub fn placement_instances(
+    scene: &Scene,
+    markers: &[Marker],
+    selected: Option<(crate::BlockKind, usize)>,
+) -> (Vec<Instance>, Vec<(usize, Range<u32>)>) {
+    let mut placed: Vec<(usize, Instance)> = markers
+        .iter()
+        .filter_map(|m| {
+            let model = scene.model_of(m)?;
+            Some((model, Instance::of(m, selected == Some((m.block, m.index)))))
+        })
+        .collect();
+    placed.sort_by_key(|(model, _)| *model);
+    let mut ranges: Vec<(usize, Range<u32>)> = Vec::new();
+    for (i, (model, _)) in placed.iter().enumerate() {
+        let i = i as u32;
+        match ranges.last_mut() {
+            Some((m, r)) if m == model => r.end = i + 1,
+            _ => ranges.push((*model, i..i + 1)),
+        }
+    }
+    (placed.into_iter().map(|(_, i)| i).collect(), ranges)
 }
 
 struct Target {
@@ -105,21 +246,48 @@ struct Target {
     depth_view: wgpu::TextureView,
 }
 
+/// A mesh on the GPU: one vertex and index buffer, drawn batch by batch.
+struct GpuMesh {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    /// Index range, texture bind group (`None`: the grey one), blend.
+    batches: Vec<(Range<u32>, Option<usize>, Blend)>,
+}
+
+/// A [`Scene`] uploaded: textures, the world and the models.
+struct GpuScene {
+    textures: Vec<wgpu::BindGroup>,
+    world: Option<GpuMesh>,
+    models: Vec<Option<GpuMesh>>,
+    instances: Option<wgpu::Buffer>,
+    ranges: Vec<(usize, Range<u32>)>,
+}
+
 /// Offscreen renderer for the viewport.
 pub struct Viewport {
     pipeline: wgpu::RenderPipeline,
+    opaque: wgpu::RenderPipeline,
+    mask: wgpu::RenderPipeline,
+    translucent: wgpu::RenderPipeline,
+    texture_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// The texture of untextured batches (made with the first scene).
+    grey: Option<wgpu::BindGroup>,
+    identity: wgpu::Buffer,
     uniforms: wgpu::Buffer,
     bind: wgpu::BindGroup,
     world: Option<(wgpu::Buffer, u32)>,
     markers: Option<(wgpu::Buffer, u32)>,
+    scene: Option<GpuScene>,
     target: Option<Target>,
 }
 
 impl Viewport {
     pub fn new(device: &wgpu::Device) -> Self {
+        let glyph = format!("{:.1}", crate::geometry::GLYPH_NATIVE_DISTANCE);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scenario viewport"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(SHADER.replace("GLYPH_DISTANCE", &glyph).into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -139,7 +307,16 @@ impl Viewport {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+        let depth = |write: bool| {
+            Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(write),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            })
+        };
+        let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("scenario viewport"),
             layout: Some(&layout),
@@ -154,13 +331,7 @@ impl Viewport {
                 })],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: depth(true),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -171,6 +342,96 @@ impl Viewport {
             multiview_mask: None,
             cache: None,
         });
+
+        // Textured meshes.
+        let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scenario viewport scene"),
+            source: wgpu::ShaderSource::Wgsl(SCENE_SHADER.into()),
+        });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scenario viewport texture"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&bgl), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
+        let instance_attrs = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+        let scene_pipeline = |entry: &str, blend: Option<wgpu::BlendState>, write: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("scenario viewport scene"),
+                layout: Some(&scene_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<SceneVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &vertex_attrs,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<Instance>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }),
+                    ],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth(write),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let opaque = scene_pipeline("fs_opaque", None, true);
+        let mask = scene_pipeline("fs_mask", None, true);
+        let translucent = scene_pipeline(
+            "fs_translucent",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("scenario viewport"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 8,
+            ..Default::default()
+        });
+
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -185,14 +446,90 @@ impl Viewport {
                 resource: uniforms.as_entire_binding(),
             }],
         });
+        let identity = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scenario viewport identity"),
+            contents: bytemuck::bytes_of(&Instance::IDENTITY),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         Self {
             pipeline,
+            opaque,
+            mask,
+            translucent,
+            texture_layout,
+            sampler,
+            grey: None,
+            identity,
             uniforms,
             bind,
             world: None,
             markers: None,
+            scene: None,
             target: None,
         }
+    }
+
+    /// A texture with its mip chain, as a bind group.
+    fn texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        image: crate::scene::Image,
+    ) -> wgpu::BindGroup {
+        let chain = image.mip_chain();
+        let size = wgpu::Extent3d {
+            width: chain[0].width,
+            height: chain[0].height,
+            depth_or_array_layers: 1,
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some("scenario viewport texture"),
+            size,
+            mip_level_count: chain.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        };
+        let texture = device.create_texture(&desc);
+        for (level, img) in chain.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &img.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(img.width * 4),
+                    rows_per_image: Some(img.height),
+                },
+                wgpu::Extent3d {
+                    width: img.width,
+                    height: img.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = texture.create_view(&Default::default());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
     }
 
     fn upload(device: &wgpu::Device, v: &[Vertex]) -> Option<(wgpu::Buffer, u32)> {
@@ -205,11 +542,110 @@ impl Viewport {
             (buffer, v.len() as u32)
         })
     }
+    /// Draw the world as grey slope-shaded triangles (no scene).
     pub fn set_world(&mut self, device: &wgpu::Device, tris: &[Tri]) {
         self.world = Self::upload(device, &world_vertices(tris));
+        self.scene = None;
     }
     pub fn set_markers(&mut self, device: &wgpu::Device, v: &[Vertex]) {
         self.markers = Self::upload(device, v);
+    }
+
+    /// Upload a map's textured world and models (replacing the grey world
+    /// and any earlier scene). Placements are set with
+    /// [`Self::set_placements`].
+    pub fn set_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
+        let textures = scene
+            .textures
+            .iter()
+            .map(|img| {
+                Self::texture(
+                    device,
+                    queue,
+                    &self.texture_layout,
+                    &self.sampler,
+                    img.clone(),
+                )
+            })
+            .collect();
+        if self.grey.is_none() {
+            let grey = crate::scene::Image {
+                width: 1,
+                height: 1,
+                rgba: vec![150, 152, 158, 255],
+            };
+            self.grey = Some(Self::texture(
+                device,
+                queue,
+                &self.texture_layout,
+                &self.sampler,
+                grey,
+            ));
+        }
+        self.world = None;
+        self.scene = Some(GpuScene {
+            textures,
+            world: Self::mesh(device, &scene.world),
+            models: scene.models.iter().map(|m| Self::mesh(device, m)).collect(),
+            instances: None,
+            ranges: Vec::new(),
+        });
+    }
+
+    /// The placed models and the glyphs of placements without one.
+    pub fn set_placements(
+        &mut self,
+        device: &wgpu::Device,
+        scene: &Scene,
+        markers: &[Marker],
+        selected: Option<(crate::BlockKind, usize)>,
+    ) {
+        self.markers = Self::upload(
+            device,
+            &glyph_vertices(markers, selected, |m| scene.model_of(m).is_some()),
+        );
+        if let Some(gpu) = &mut self.scene {
+            let (instances, ranges) = placement_instances(scene, markers, selected);
+            gpu.instances = (!instances.is_empty()).then(|| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("scenario viewport placements"),
+                    contents: bytemuck::cast_slice(&instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
+            gpu.ranges = ranges;
+        }
+    }
+
+    fn mesh(device: &wgpu::Device, mesh: &crate::scene::Mesh) -> Option<GpuMesh> {
+        let mut vertices: Vec<SceneVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut batches = Vec::new();
+        // Solid first, then cut-outs, then see-through.
+        let mut order: Vec<&crate::scene::Batch> = mesh.batches.iter().collect();
+        order.sort_by_key(|b| b.blend);
+        for b in order {
+            let base = vertices.len() as u32;
+            let start = indices.len() as u32;
+            vertices.extend_from_slice(&b.vertices);
+            indices.extend(b.indices.iter().map(|i| i + base));
+            batches.push((start..indices.len() as u32, b.texture, b.blend));
+        }
+        if indices.is_empty() {
+            return None;
+        }
+        let buffer = |contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scenario viewport mesh"),
+                contents,
+                usage,
+            })
+        };
+        Some(GpuMesh {
+            vertices: buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
+            indices: buffer(bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX),
+            batches,
+        })
     }
 
     fn ensure_target(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
@@ -268,6 +704,10 @@ impl Viewport {
             0,
             bytemuck::bytes_of(&Uniforms {
                 view_proj: camera.view_proj(aspect),
+                eye: {
+                    let e = camera.eye();
+                    [e[0], e[1], e[2], 1.0]
+                },
             }),
         );
         let mut enc = device.create_command_encoder(&Default::default());
@@ -300,15 +740,54 @@ impl Viewport {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
+            // Solid and cut-out scene batches, then the glyphs, then the
+            // see-through batches over them.
+            self.draw_scene(&mut pass, false);
+            pass.set_pipeline(&self.pipeline);
             for (buffer, count) in [&self.world, &self.markers].into_iter().flatten() {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
+            self.draw_scene(&mut pass, true);
         }
         queue.submit([enc.finish()]);
         resized
+    }
+
+    /// The scene's batches: solid and cut-out ones, or the see-through ones.
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool) {
+        let (Some(scene), Some(grey)) = (&self.scene, &self.grey) else {
+            return;
+        };
+        let mut draw = |mesh: &GpuMesh, instances: &wgpu::Buffer, range: Range<u32>| {
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            for (indices, texture, blend) in &mesh.batches {
+                if (*blend == Blend::Translucent) != translucent {
+                    continue;
+                }
+                pass.set_pipeline(match blend {
+                    Blend::Opaque => &self.opaque,
+                    Blend::Mask => &self.mask,
+                    Blend::Translucent => &self.translucent,
+                });
+                let bind = texture.and_then(|t| scene.textures.get(t)).unwrap_or(grey);
+                pass.set_bind_group(1, bind, &[]);
+                pass.draw_indexed(indices.clone(), 0, range.clone());
+            }
+        };
+        if let Some(world) = &scene.world {
+            draw(world, &self.identity, 0..1);
+        }
+        if let Some(instances) = &scene.instances {
+            for (model, range) in &scene.ranges {
+                if let Some(Some(mesh)) = scene.models.get(*model) {
+                    draw(mesh, instances, range.clone());
+                }
+            }
+        }
     }
 
     /// The colour texture (for readback in tests).

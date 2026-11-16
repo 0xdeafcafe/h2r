@@ -6,7 +6,7 @@ gizmo, the game variant tool and the playlist (hopper) tool. See [docs/editor/st
 
 ```
 cargo run --release -p studio -- [--disc <iso> | --map <file.map> | --folder <dir>] [--data <dir>]
-cargo run --release -p studio -- --disc <iso> --pick <map> --screenshot out.png
+cargo run --release -p studio -- --disc <iso> --pick <map> [--select <block>:<index>] --screenshot out.png
 cargo run --release -p studio -- --disc <iso> --tool variants --variant 3 --screenshot out.png
 cargo run --release -p studio -- --disc <iso> --hopper default --playlist 2 --screenshot out.png
 ```

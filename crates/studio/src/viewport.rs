@@ -1,6 +1,6 @@
 //! The 3D viewport: the scenario crate's offscreen wgpu renderer
-//! ([`scenario_edit::render::Viewport`]: the structure BSP and a marker per
-//! placement) registered with `dear-imgui-wgpu` as an external texture and
+//! ([`scenario_edit::render::Viewport`]: the textured structure BSP, the
+//! placed objects' models and a glyph per placement without one) registered with `dear-imgui-wgpu` as an external texture and
 //! drawn as an ImGui image, with picking, an orbit/fly camera and an
 //! ImGuizmo translate/rotate gizmo on the selection.
 use dear_imgui_rs::{MouseButton, TextureId, Ui};
@@ -68,15 +68,27 @@ impl ViewportView {
     fn prepare(&mut self, gpu: &mut Gpu<'_>, app: &App, size_px: [u32; 2]) -> Option<TextureId> {
         let vp = self.vp.get_or_insert_with(|| Viewport::new(gpu.device));
         let session = &app.session;
-        if self.world_rev != Some(session.world_rev()) {
-            vp.set_world(gpu.device, session.world().0);
+        // The map's textured world and models when it has them (built once
+        // per map and kept on the GPU until another map opens), else the
+        // grey world and glyphs.
+        let world_changed = self.world_rev != Some(session.world_rev());
+        if world_changed {
+            match session.scene() {
+                Some(scene) => vp.set_scene(gpu.device, gpu.queue, scene),
+                None => vp.set_world(gpu.device, session.world().0),
+            }
             self.world_rev = Some(session.world_rev());
         }
-        if self.markers_rev != Some(session.markers_rev()) {
-            vp.set_markers(
-                gpu.device,
-                &render::marker_vertices(session.markers(), session.selected()),
-            );
+        if world_changed || self.markers_rev != Some(session.markers_rev()) {
+            match session.scene() {
+                Some(scene) => {
+                    vp.set_placements(gpu.device, scene, session.markers(), session.selected())
+                }
+                None => vp.set_markers(
+                    gpu.device,
+                    &render::marker_vertices(session.markers(), session.selected()),
+                ),
+            }
             self.markers_rev = Some(session.markers_rev());
         }
         let resized = vp.render(gpu.device, gpu.queue, session.camera(), size_px);

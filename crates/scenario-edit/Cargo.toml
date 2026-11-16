@@ -12,6 +12,7 @@ egui = ["dep:egui", "dep:egui-wgpu"]
 
 [dependencies]
 map.workspace = true
+assets.workspace = true
 content.workspace = true
 tags.workspace = true
 thiserror.workspace = true

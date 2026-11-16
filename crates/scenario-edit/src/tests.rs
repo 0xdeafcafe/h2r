@@ -629,6 +629,8 @@ fn viewport_renders_markers_offscreen() {
         index: 0,
         position: [0.0; 3],
         axes: geometry::rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
     };
     vp.set_markers(&device, &crate::render::marker_vertices(&[marker], None));
     vp.render(&device, &queue, &cam, size);
@@ -636,6 +638,135 @@ fn viewport_renders_markers_offscreen() {
     assert_ne!(empty, drawn);
     // Orange weapons: red dominates blue.
     assert!(drawn[0] > drawn[2], "{drawn:?}");
+}
+
+/// Transparent parts (glass, water, cloud decks) are neither framed nor
+/// picked: only opaque parts become triangles.
+#[test]
+fn transparent_parts_are_left_out_of_the_opaque_world() {
+    let part = |transparent, z: f32| geometry::WorldPart {
+        transparent,
+        positions: vec![[0.0, 0.0, z], [500.0, 0.0, z], [0.0, 500.0, z]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        uvs: vec![[0.0; 2]; 3],
+        tris: vec![[0, 1, 2]],
+        ..Default::default()
+    };
+    let tris = geometry::opaque_triangles(&[part(true, -14.0), part(false, 2.0)]);
+    assert_eq!(tris.len(), 1);
+    assert_eq!(tris[0].p[0][2], 2.0);
+    assert_eq!(tris[0].n, [0.0, 0.0, 1.0]);
+}
+
+/// Glyphs keep a minimum size on screen: far away they grow, and so does
+/// what picks them.
+#[test]
+fn far_glyphs_grow_and_stay_pickable() {
+    let near = [0.0, 0.0, 10.0];
+    let far = [0.0, 0.0, 400.0];
+    assert_eq!(geometry::glyph_scale(near, [0.0; 3]), 1.0);
+    assert_eq!(geometry::glyph_scale(far, [0.0; 3]), 10.0);
+    let spawn = geometry::Marker {
+        block: BlockKind::StartingLocations,
+        index: 2,
+        position: [0.0; 3],
+        axes: geometry::rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
+    };
+    // 3 units to the side: a miss from close up, a hit from 400 up.
+    let down = |z: f32| Ray {
+        origin: [3.0, 0.0, z],
+        dir: [0.0, 0.0, -1.0],
+    };
+    assert_eq!(geometry::pick(&[spawn], &down(10.0)), None);
+    assert_eq!(
+        geometry::pick(&[spawn], &down(400.0)),
+        Some((BlockKind::StartingLocations, 2))
+    );
+    // Spawns and flags have their own glyphs, bigger than a diamond.
+    for kind in [BlockKind::StartingLocations, BlockKind::NetgameFlags] {
+        let m = geometry::Marker {
+            block: kind,
+            ..spawn
+        };
+        let top = geometry::marker_triangles(&m)
+            .iter()
+            .flatten()
+            .map(|p| p[2])
+            .fold(f32::MIN, f32::max);
+        assert!(top > 1.0, "{kind:?} glyph is {top} tall");
+    }
+}
+
+fn disc_iso() -> std::path::PathBuf {
+    std::env::var_os("H2_DISC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../disc/halo2.iso"))
+        })
+}
+
+/// Ascension regression: its BSP has a 700-unit transparent cloud deck
+/// (part kind 4, `transparent\sky_two_alpha_clouds`) at z = -14.5, below
+/// the playable structure. Drawn opaque and framed, it hid the structure's
+/// lower half and shrank the rest to a speck: only "the ground plane and
+/// rocks" showed. The structure (six clusters) must be opaque world, the
+/// deck must not, and the camera must frame the level, not the deck.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "ascension").unwrap();
+    let mut map = source.open().unwrap();
+    let mut raw = geometry::RawFiles::new(vec![(map::ResourceFile::Local, source.open().unwrap())]);
+    let (parts, failed) = geometry::world_parts(&mut map, &mut raw).unwrap();
+    assert_eq!(failed, 0);
+    let deck: Vec<_> = parts.iter().filter(|p| p.transparent).collect();
+    assert!(!deck.is_empty());
+    let span = |ps: &[&geometry::WorldPart]| {
+        let mut b = geometry::Bounds::EMPTY;
+        ps.iter().flat_map(|p| &p.positions).for_each(|&q| b.add(q));
+        b.max[0] - b.min[0]
+    };
+    assert!(span(&deck) > 600.0, "the cloud deck spans {}", span(&deck));
+    let opaque = geometry::opaque_triangles(&parts);
+    // The structure: the opaque triangles inside its 50-unit footprint.
+    let structure = opaque
+        .iter()
+        .filter(|t| t.p.iter().all(|p| p[0].abs() < 30.0 && p[1].abs() < 30.0))
+        .count();
+    assert!(structure > 8000, "{structure} structure triangles");
+    assert!(
+        !opaque
+            .iter()
+            .any(|t| t.p.iter().all(|p| (p[2] + 14.485).abs() < 0.01) && t.p[0][0].abs() > 300.0),
+        "the cloud deck is in the opaque world"
+    );
+
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "ascension").unwrap();
+    let cam = *s.camera();
+    assert!(cam.distance < 150.0, "framed from {}", cam.distance);
+    assert!(cam.target[0].abs() < 30.0 && cam.target[1].abs() < 30.0);
+    let scene = s.scene().expect("a scene");
+    assert!(
+        scene.stats.textured * 2 > scene.stats.shaders,
+        "{:?}",
+        scene.stats
+    );
+    assert!(
+        scene.stats.modelled * 2 > scene.stats.objects,
+        "{:?}",
+        scene.stats
+    );
+    assert!(
+        scene
+            .world
+            .batches
+            .iter()
+            .any(|b| b.blend == crate::scene::Blend::Translucent)
+    );
 }
 
 /// Reads every map on the owner's disc (`H2_DISC`, else `disc/halo2.iso`),
