@@ -32,7 +32,7 @@
 //! arithmetic, and allocations are bounded ([`MAX_VERTICES`],
 //! [`MAX_SPAN`]) before anything is read.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
@@ -823,7 +823,7 @@ impl<B: Backend> Device<B> {
             back_header: 0,
             frame_headers: Vec::new(),
             depth_header: 0,
-            other_surfaces: HashMap::new(),
+            other_surfaces: HashMap::default(),
             render_target: 0,
             depth_stencil: 0,
             textures: [0; 4],
@@ -851,7 +851,7 @@ impl<B: Backend> Device<B> {
                 min_z: 0.0,
                 max_z: 1.0,
             },
-            transforms: HashMap::new(),
+            transforms: HashMap::default(),
             scissors: Vec::new(),
             scissor_exclusive: false,
             immediate: Immediate::default(),
@@ -862,7 +862,7 @@ impl<B: Backend> Device<B> {
             fence: 0,
             fence_at: cfg.push_buffer.addr,
             regs: None,
-            cache: HashMap::new(),
+            cache: HashMap::default(),
             tracker: WriteTracker::new(),
             events: Vec::new(),
             last_stop: None,
@@ -870,30 +870,30 @@ impl<B: Backend> Device<B> {
             encode: None,
             hw: HwState::default(),
             display: display::Display::default(),
-            rtt: HashMap::new(),
+            rtt: HashMap::default(),
             depth_generation: 0,
             depth_color: None,
             depth_color_newer: false,
             depth_copy: None,
             depth_alias_decodes: Vec::new(),
             depth_read_generation: None,
-            depth_alias: HashMap::new(),
-            depth_level_tex: HashMap::new(),
+            depth_alias: HashMap::default(),
+            depth_level_tex: HashMap::default(),
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
-            rtt_synced: HashMap::new(),
-            rtt_stores: HashMap::new(),
+            rtt_synced: HashMap::default(),
+            rtt_stores: HashMap::default(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
             mirror_depth: std::env::var_os("H2_D3D_MIRROR_DEPTH").is_none_or(|v| v != "0"),
             mirror: None,
-            mirror_stale: HashSet::new(),
+            mirror_stale: HashSet::default(),
             rtt_direct: true,
             active_callback: None,
             undelivered: None,
-            visibility: HashMap::new(),
+            visibility: HashMap::default(),
             visibility_poll: std::env::var_os("H2_D3D_VISIBILITY_POLL").is_none_or(|v| v != "0"),
             glyph_smoothing: crate::glyph::smoothing_from_env(),
             pending_destroys: Vec::new(),
-            torn_down: HashSet::new(),
+            torn_down: HashSet::default(),
         }
     }
 
