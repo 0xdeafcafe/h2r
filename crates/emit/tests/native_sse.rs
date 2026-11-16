@@ -491,3 +491,40 @@ fn fast_paths_inline_into_generated_handlers() {
     assert!(body.contains("fmul") && body.contains("fadd"), "{body}");
     assert!(!body.contains("constrained"), "{body}");
 }
+
+/// Per-op timing (`tests/c/sse_bench.c`): the native entry points against
+/// the integer authority (`H2_SSE_NATIVE=0`), at the production `-O1`.
+/// To compare with an older header, build the same file against it.
+#[test]
+#[ignore = "timing experiment; run serially"]
+fn benchmark_sse_ops() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-sse-bench");
+    std::fs::create_dir_all(&dir).unwrap();
+    for native in [0, 1] {
+        let exe = dir.join(format!("bench-{native}"));
+        let out = Command::new("clang")
+            .args(["-std=c11", "-O1", "-fno-fast-math", "-ffp-contract=off"])
+            .arg(format!("-DH2_SSE_NATIVE={native}"))
+            .arg("-I")
+            .arg(root.join("c"))
+            .arg("-I")
+            .arg(root.join("../simd/c"))
+            .arg(root.join("tests/c/sse_bench.c"))
+            .arg("-o")
+            .arg(&exe)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let run = Command::new(&exe).output().unwrap();
+        assert!(run.status.success());
+        println!(
+            "H2_SSE_NATIVE={native}\n{}",
+            String::from_utf8_lossy(&run.stdout)
+        );
+    }
+}

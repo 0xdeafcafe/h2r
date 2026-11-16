@@ -67,6 +67,29 @@ Unmasked guest exceptions use the authority, preserving lane-wide exception
 priority, sticky flags, #XM and an unchanged destination. NaN selection,
 payload quieting and signed zeros outside the guard use the same authority.
 
+## Per-op timing
+
+`benchmark_sse_ops` (ignored; `tests/c/sse_bench.c`) times each entry
+point as generated code uses it: operands loaded from a CPU struct, MXCSR
+read-modify-written, result stored, generated-C flags at `-O1`. arm64,
+ns per op, minimum of 15 runs of 2M ops. "Strict FP" is the previous
+header built from the same file:
+
+| Op | Authority | Strict FP | Inlined | vs strict FP |
+| --- | ---: | ---: | ---: | ---: |
+| addps | 42.0 | 16.5 | 5.0 | 3.3x |
+| subps | 41.8 | 16.4 | 5.2 | 3.2x |
+| mulps | 37.4 | 15.9 | 3.7 | 4.2x |
+| divps | 38.2 | 16.2 | 3.7 | 4.4x |
+| sqrtps | 195.6 | 14.0 | 2.8 | 5.0x |
+| addss | 12.7 | 6.2 | 2.5 | 2.5x |
+| mulss | 10.8 | 5.6 | 2.1 | 2.6x |
+| divss | 11.1 | 5.8 | 2.2 | 2.6x |
+
+```sh
+RUSTC_WRAPPER= cargo test -p emit --test native_sse benchmark_sse_ops -- --ignored --nocapture
+```
+
 ## Evidence
 
 `emit/tests/native_sse.rs` builds with UBSan at the production C `-O1` and

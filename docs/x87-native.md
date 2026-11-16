@@ -170,6 +170,26 @@ cargo clippy -p emit -p perf --all-targets --features emit/oracle-tests -- -D wa
 
 ## Benchmark and profile
 
+`tests/c/x87_bench.c` times fld m32 / op / fstp m32 sequences with the
+authority stubbed out (reaching it aborts). arm64, `-O1`, ns per
+sequence; "strict FP" is the previous header built from the same file:
+
+| Sequence | Strict FP | Inlined |
+| --- | ---: | ---: |
+| fld + fadd m32 + fstp | 41.5 | 34.2 |
+| fld + fmul m32 + fstp | 39.4 | 32.4 |
+| fld + fdiv m32 + fstp | 42.2 | 35.6 |
+| fld + fsqrt + fstp | 44.3 | 36.6 |
+| fld + fstp | 21.3 | 18.7 |
+
+Most of what remains is the loop-carried read-modify-write of status,
+tag and register bytes in `X87Abi`, which only static stack allocation
+would remove. `mrs fpcr` itself costs about one cycle.
+
+```sh
+clang -std=c11 -O1 -fno-fast-math -ffp-contract=off -DH2_X87_NATIVE=1 -Icrates/emit/c -Icrates/x87/include -Icrates/runtime/include crates/emit/tests/c/x87_bench.c -o "$TMPDIR/x87-bench" && "$TMPDIR/x87-bench"
+```
+
 `hot-loop/x87` is a synthetic workload assembled at runtime, never copied
 from the game. Each trip loads a binary32, multiplies, adds, square-roots,
 divides and stores a binary32 through the generated C and real runtime.
