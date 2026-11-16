@@ -215,8 +215,49 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
+| `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
 | `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
 | `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
+
+## Stats summary
+
+`GET /v1/stats/summary?window=` (default `7d`) feeds the stats site's home
+page. It is a projection of the game streams (`crates/live-server/src/stats.rs`),
+kept in UTC-day buckets for the last 30 days, hour buckets for the same span,
+and a running all-time bucket, so an answer merges at most 30 buckets and
+never reads the log. Answers are cached until the log moves or the hour
+turns. `window` is `today` (the current UTC day), `7d` or `30d` (that many
+UTC days, today included) or `all`; anything else is 400.
+
+```json
+{ "window": "7d", "from": "2026-11-10T00:00:00Z", "to": "2026-11-16T15:04:05Z", "position": 1042,
+  "totals":   { "games": 41, "multiplayer": 33, "campaign": 8, "matchmaking": 20, "custom": 13,
+                "coop": 3, "kills": 1210, "deaths": 1302, "betrayals": 17, "suicides": 75,
+                "campaign_deaths": 40, "player_seconds": 302400, "legendary": 2 },
+  "last_24h": { ...the same counts, over the last 24 hours },
+  "all_time": { ...the same counts, over the whole log },
+  "players":  [ { "xuid": "...", "name": "Sneaky Pete", "games": 9, "multiplayer": 8, "campaign": 1,
+                  "wins": 5, "kills": 120, "deaths": 88, "betrayals": 1, "best_spree": 9,
+                  "seconds": 7200, "legendary": 1 } ],
+  "maps":      [ { "map": "lockout", "map_id": "...?", "campaign": false, "games": 12, "kills": 480 } ],
+  "weapons":   [ { "weapon": "battle_rifle", "kills": 310 } ],
+  "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
+  "skulls":    [ { "skull": 4, "games": 3 } ],
+  "activity":  [ { "hour": "2026-11-16T14:00:00Z", "games": 3, "kills": 95 } ] }
+```
+
+The rules match the web app's: `kills` (kind `kill` with a killer other
+than the victim), `deaths` (every death), `betrayals`, `suicides`, `wins`
+and `best_spree` (scoring kills without dying, within one game) are
+multiplayer's; campaign has `campaign_deaths` and `legendary` (levels
+finished on Legendary: per game in totals, distinct levels per player).
+A game counts on the day it started; kills on the day they happened; time
+played (`player_seconds`, a player's `seconds`) on the day the game ended,
+capped at 12 hours a game. `players` lists accounts only (a player with an
+`xuid`), at most 500, by kills then games; totals count everyone.
+`activity` lists hours with any game starts or kills, within the window
+and at most 30 days back. There are no headshots or medals: the events do
+not carry them (the web app derives medals itself).
 
 ## Write endpoints
 
