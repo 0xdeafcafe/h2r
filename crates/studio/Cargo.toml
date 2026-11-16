@@ -28,3 +28,7 @@ scenario-edit = { path = "../scenario-edit" }
 variants = { path = "../variants" }
 hopper-edit = { path = "../hopper-edit" }
 live-proto.workspace = true
+
+[dev-dependencies]
+# Invented Halo 1 maps and discs for the tests.
+h1map = { path = "../h1map" }

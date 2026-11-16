@@ -525,3 +525,248 @@ fn quitting_asks_about_each_tool_with_unsaved_edits() {
     app.resolve(Answer::Discard);
     assert!(app.pending().is_none() && app.should_quit());
 }
+
+// ---------- packages and Halo 1 ----------
+
+/// A converted Halo 1 map as the import writes it: one package holding
+/// both sandbox variants (each a whole map, here the invented cache), and
+/// an `[origin]` per variant.
+fn converted_package(t: &Temp, source_sha256: &str) {
+    let dir = t.0.join("data/maps/h1_bloodgulch");
+    std::fs::create_dir_all(dir.join("h1")).unwrap();
+    std::fs::create_dir_all(dir.join("h2")).unwrap();
+    std::fs::write(dir.join("h1/h1_bloodgulch.map"), fixture::fixture()).unwrap();
+    std::fs::write(dir.join("h2/h1_bloodgulch.map"), fixture::fixture()).unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            r#"[package]
+format = 1
+name = "Blood Gulch"
+
+[base]
+map = "h1_bloodgulch"
+derived = true
+
+[[variant]]
+file = "h1/h1_bloodgulch.map"
+origin = {{ game = "halo1", map = "bloodgulch", sandbox = "h1", source_sha256 = "{source_sha256}" }}
+
+[[variant]]
+file = "h2/h1_bloodgulch.map"
+origin = {{ game = "halo1", map = "bloodgulch", sandbox = "h2", source_sha256 = "{source_sha256}" }}
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn labels(app: &App) -> Vec<String> {
+    app.packages().iter().map(|e| e.label()).collect()
+}
+
+#[test]
+fn the_maps_list_groups_user_packages_and_both_halo1_variants() {
+    let t = Temp::new("pkglist");
+    let p = t.map("example", &fixture::fixture());
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(p));
+    move_flag(&mut app, 7.0);
+    let mut form = app.session.form_defaults();
+    form.name = "Flag moved".into();
+    app.dispatch(Action::SavePackage(form));
+    converted_package(&t, "00");
+    app.refresh_packages();
+    assert_eq!(
+        labels(&app),
+        [
+            "Flag moved",
+            "Blood Gulch (H1 sandbox)",
+            "Blood Gulch (H2 sandbox)"
+        ]
+    );
+    let own: Vec<_> = app
+        .packages()
+        .iter()
+        .filter(|e| e.halo1.is_none())
+        .collect();
+    assert_eq!(own.len(), 1);
+    assert!(!own[0].derived);
+}
+
+#[test]
+fn a_user_package_opens_over_its_disc_map_from_the_list() {
+    let t = Temp::new("pkgopen");
+    let p = t.map("example", &fixture::fixture());
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(p));
+    move_flag(&mut app, 7.0);
+    let form = app.session.form_defaults();
+    app.dispatch(Action::SavePackage(form));
+    assert_eq!(app.opened_package(), Some("example-edit"));
+    // Back to the disc's map, then the package from the list.
+    app.dispatch(Action::SelectMap("example".into()));
+    assert_eq!(app.opened_package(), None);
+    assert!((flag_x(&app) - 7.0).abs() > 1e-6, "the disc map, unedited");
+    app.dispatch(Action::OpenPackageEntry("example-edit".into()));
+    assert_eq!(app.opened_package(), Some("example-edit"));
+    assert_eq!(app.session.package_dir(), Some("example-edit"));
+    assert!((flag_x(&app) - 7.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_converted_variant_opens_and_saves_as_a_new_derived_package() {
+    let t = Temp::new("h1pkg");
+    let mut app = app_with(&t);
+    converted_package(&t, "00");
+    app.refresh_packages();
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H2".into()));
+    assert_eq!(app.loaded_map(), Some("h1_bloodgulch"));
+    assert!(app.session.is_derived());
+    // Its Halo 1 source is not at hand: the overlay says why.
+    let c = app.compare().unwrap();
+    assert_eq!(c.origin.map, "bloodgulch");
+    assert!(c.view.is_err());
+    assert!(app.overlay().is_none());
+
+    move_flag(&mut app, 9.0);
+    let form = app.session.form_defaults();
+    assert_eq!(
+        form.dir, "h1_bloodgulch-edit",
+        "not the import's own package"
+    );
+    app.dispatch(Action::SavePackage(form));
+    assert!(!app.is_dirty());
+    // The new package is a derived map the resolver reads: the whole
+    // converted map, then the edit.
+    let pkgs = scenario_edit::package::packages_for(&app.session.maps_dir(), "h1_bloodgulch");
+    let saved = pkgs
+        .iter()
+        .find(|p| p.dir_name() == "h1_bloodgulch-edit")
+        .unwrap();
+    assert!(saved.manifest.base.derived);
+    assert_eq!(saved.manifest.patches.len(), 2);
+    // The import's package is untouched.
+    let import = std::fs::read_to_string(t.0.join("data/maps/h1_bloodgulch/manifest.toml"));
+    assert!(import.unwrap().contains("[[variant]]"));
+    // Reopened from the list, the edit is there.
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H1".into()));
+    assert!((flag_x(&app) - 9.0).abs() > 1e-6);
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch-edit".into()));
+    assert!((flag_x(&app) - 9.0).abs() < 1e-6);
+    assert_eq!(app.session.package_dir(), Some("h1_bloodgulch-edit"));
+}
+
+#[test]
+fn unsaved_edits_hold_opening_a_package() {
+    let t = Temp::new("pkgguard");
+    let mut app = app_with(&t);
+    converted_package(&t, "00");
+    app.refresh_packages();
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H1".into()));
+    move_flag(&mut app, 4.0);
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H2".into()));
+    assert_eq!(app.pending_tool(), Some(ToolKind::Scenario));
+    app.resolve(Answer::Cancel);
+    assert_eq!(app.opened_package(), Some("h1_bloodgulch#H1"));
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H2".into()));
+    app.resolve(Answer::Discard);
+    assert_eq!(app.opened_package(), Some("h1_bloodgulch#H2"));
+    assert!(!app.is_dirty());
+}
+
+/// A folder holding one invented Halo 1 map, `bloodgulch`.
+fn halo1_folder(t: &Temp) -> (PathBuf, String) {
+    let dir = t.0.join("h1maps");
+    std::fs::create_dir_all(&dir).unwrap();
+    let map = h1map::testing::tiny_map();
+    std::fs::write(dir.join("bloodgulch.map"), &map).unwrap();
+    (dir, content::Sha256::of(&map).to_string())
+}
+
+#[test]
+fn a_halo1_source_lists_its_maps_and_shows_one_read_only() {
+    let t = Temp::new("h1src");
+    let iso = t.0.join("halo1.iso");
+    std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(iso));
+    assert!(app.halo1_maps().contains(&"bloodgulch".to_string()));
+    assert!(
+        app.source().is_none(),
+        "a Halo 1 disc is not a Halo 2 source"
+    );
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    assert_eq!(app.loaded_halo1(), Some("bloodgulch"));
+    assert!(app.halo1_view().is_some());
+    assert!(app.session.reference().is_some());
+    assert!(!app.session.is_open(), "nothing to edit");
+    assert!(!app.is_dirty());
+    // Opening a Halo 2 map leaves it.
+    let p = t.map("example", &fixture::fixture());
+    app.dispatch(Action::OpenSource(p));
+    assert!(app.halo1_view().is_none());
+    assert!(app.session.reference().is_none());
+    assert_eq!(app.halo1_maps().len(), 12, "the Halo 1 source stays listed");
+}
+
+#[test]
+fn halo1_placements_become_markers_in_their_blocks() {
+    use editor_core::halo1::{H1Kind, H1Placement, H1Tri, H1View};
+    let v = H1View {
+        name: "x".into(),
+        tris: vec![H1Tri {
+            p: [[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            n: [0.0, 0.0, 1.0],
+        }],
+        placements: vec![H1Placement {
+            kind: H1Kind::NetgameFlag,
+            index: 2,
+            position: [1.0, 2.0, 3.0],
+            facing: std::f32::consts::FRAC_PI_2,
+            label: "CTF flag 2".into(),
+            fields: Vec::new(),
+        }],
+        notes: Vec::new(),
+    };
+    let m = library_markers(&v);
+    assert_eq!(m[0].block, BlockKind::NetgameFlags);
+    assert_eq!(m[0].index, 2);
+    assert!((m[0].axes[0][1] - 1.0).abs() < 1e-6, "facing turns forward");
+    assert_eq!(kind_of(BlockKind::NetgameFlags), Some(H1Kind::NetgameFlag));
+    assert_eq!(kind_of(BlockKind::Scenery), None);
+    let mut app = App::new();
+    app.session.open_reference(scenario_edit::Reference {
+        name: v.name.clone(),
+        world: library_tris(&v),
+        markers: m,
+    });
+    app.dispatch(Action::Select(Some((BlockKind::NetgameFlags, 2))));
+    app.dispatch(Action::FocusSelected);
+    assert_eq!(app.session.camera().target, [1.0, 2.0, 3.0]);
+    assert!(app.session.selected_transform().is_none(), "no gizmo");
+}
+
+#[test]
+fn a_converted_map_finds_its_halo1_source_by_hash_for_the_overlay() {
+    let t = Temp::new("h1cmp");
+    let (dir, sha) = halo1_folder(&t);
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(dir));
+    converted_package(&t, &sha);
+    app.refresh_packages();
+    let rev = app.overlay_rev();
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H1".into()));
+    let c = app.compare().unwrap();
+    assert!(c.view.is_ok(), "{:?}", c.view);
+    assert!(app.overlay().is_some());
+    assert!(app.overlay_rev() > rev);
+    app.dispatch(Action::SetOverlay(false));
+    assert!(app.overlay().is_none());
+    // A different source hash is not this map's source.
+    converted_package(&t, "0000");
+    app.refresh_packages();
+    app.dispatch(Action::OpenPackageEntry("h1_bloodgulch#H2".into()));
+    let c = app.compare().unwrap();
+    assert!(c.view.as_ref().unwrap_err().contains("another SHA-256"));
+}
