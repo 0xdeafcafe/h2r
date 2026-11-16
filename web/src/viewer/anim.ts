@@ -5,11 +5,20 @@
 //
 // A v2 biped glb names its clips `<weapon_class>:<state>`; the manifest
 // gives each weapon stem its class, so the clip set follows the held weapon.
+// Clips every class shares (dying, lying dead) are `any:<state>`.
+//
+// The game's jump has no take-off clip: its `airborne` animation is the
+// whole leap (legs tucked, then hanging), played once from leaving the
+// ground and held; touching down plays `land_soft`, or `land_hard` after
+// a long drop. Dying plays a death animation once (`s_kill`) and the body
+// keeps its last frame until it is taken away; a body first seen already
+// dead (after a seek, or one that died before the viewer joined) lies in
+// the dead pose (`landing_dead`) instead.
 
 import type { Action, Stance } from "../state/frames";
 
-export const LOOPS = ["idle", "walk", "run", "crouch", "airborne", "die"] as const;
-export const ONE_SHOTS = ["grenade", "melee", "reload", "switch", "fire", "land"] as const;
+export const LOOPS = ["idle", "walk", "run", "crouch", "airborne", "die", "dead"] as const;
+export const ONE_SHOTS = ["grenade", "melee", "reload", "switch", "fire", "land", "land_hard"] as const;
 export type Loop = (typeof LOOPS)[number];
 export type OneShot = (typeof ONE_SHOTS)[number];
 export type AnimState = Loop | OneShot;
@@ -17,6 +26,10 @@ export type AnimState = Loop | OneShot;
 /** Game units a second: slower than the first is standing, faster than the second is running. */
 export const WALK_SPEED = 0.2;
 export const RUN_SPEED = 1.4;
+/** Loops played once and held on their last frame rather than repeated. */
+export const HELD: ReadonlySet<Loop> = new Set<Loop>(["airborne", "die", "dead"]);
+/** A drop from this much higher than the jump started (game units) lands hard. */
+export const HARD_LANDING_DROP = 1.2;
 /** The pace the walk and run clips are taken to be made for, to match feet to ground. */
 export const WALK_PACE = 0.9;
 export const RUN_PACE = 2.25;
@@ -47,6 +60,8 @@ export function paceScale(state: AnimState, speed: number | null | undefined): n
 
 const STATE_FALLBACK: Partial<Record<AnimState, AnimState[]>> = {
   run: ["walk", "idle"], walk: ["run", "idle"], crouch: ["idle"], airborne: ["idle"], idle: [],
+  // Art before the shared clips: its `die` was already the dead pose.
+  dead: ["die"], land_hard: ["land"],
 };
 
 /** The clip to play for a state with the held weapon's class: that class's,
@@ -70,9 +85,9 @@ export function actionShot(a: Action): OneShot | null {
 }
 
 /** A one-shot holds the body this long when the glb's clip doesn't say (ms). */
-export const ONE_SHOT_MS: Record<OneShot, number> = { grenade: 900, melee: 600, reload: 1500, switch: 600, fire: 180, land: 300 };
+export const ONE_SHOT_MS: Record<OneShot, number> = { grenade: 900, melee: 600, reload: 1500, switch: 600, fire: 180, land: 300, land_hard: 600 };
 /** A more important one-shot interrupts a lesser; a lesser waits its turn out. */
-const RANK: Record<OneShot, number> = { melee: 4, grenade: 4, switch: 3, reload: 2, land: 1, fire: 0 };
+const RANK: Record<OneShot, number> = { melee: 4, grenade: 4, switch: 3, reload: 2, land_hard: 1, land: 1, fire: 0 };
 
 export interface AnimNow {
   loop: Loop;
@@ -81,11 +96,30 @@ export interface AnimNow {
   shotId: number;
 }
 
+/** One biped's moment, as its animation reads it. */
+export interface Moment {
+  alive: boolean;
+  stance?: Stance | null;
+  speed?: number | null;
+  /** Height of the feet (game units), to tell a hard landing from a soft one. */
+  z?: number | null;
+}
+
 /** One biped's animation state over time. */
 export class BipedAnim {
   loop: Loop = "idle";
   private shot: { state: OneShot; until: number } | null = null;
   private shotId = 0;
+  /** While in the air: the highest the feet have been. */
+  private peak = -Infinity;
+  /** Whether it has been seen alive: dying then plays the death clip,
+   *  rather than lying in the dead pose from the start. */
+  private sawAlive: boolean;
+
+  /** `dying`: it was alive a moment ago (a player's body made as they fall). */
+  constructor(dying = false) {
+    this.sawAlive = dying;
+  }
 
   /** Starts a one-shot unless a more important one is still running.
    *  `ms` is how long it lasts (the clip's length, when known). */
@@ -97,12 +131,24 @@ export class BipedAnim {
     return true;
   }
 
-  /** Moves to this moment's looping state. Coming down from the air lands;
-   *  dying ends whatever was going on. */
-  update(now: number, p: { alive: boolean; stance?: Stance | null; speed?: number | null }): AnimNow {
-    const next = locomotion(p);
-    if (this.loop === "airborne" && next !== "airborne" && next !== "die") this.trigger("land", now);
-    if (next === "die") this.shot = null;
+  /** Moves to this moment's looping state. Coming down from the air lands
+   *  (hard after a long drop); dying ends whatever was going on and plays
+   *  the death clip, held on its last frame; a body never seen alive lies
+   *  in the dead pose. */
+  update(now: number, p: Moment): AnimNow {
+    let next: Loop = locomotion(p);
+    const z = typeof p.z === "number" && Number.isFinite(p.z) ? p.z : null;
+    if (next === "airborne") {
+      if (this.loop !== "airborne") this.peak = -Infinity;
+      if (z !== null) this.peak = Math.max(this.peak, z);
+    } else if (this.loop === "airborne" && next !== "die") {
+      const hard = z !== null && this.peak - z >= HARD_LANDING_DROP;
+      this.trigger(hard ? "land_hard" : "land", now);
+    }
+    if (next === "die") {
+      this.shot = null;
+      if (!this.sawAlive) next = "dead";
+    } else this.sawAlive = true;
     this.loop = next;
     if (this.shot && now >= this.shot.until) this.shot = null;
     return { loop: next, shot: this.shot?.state ?? null, shotId: this.shotId };
@@ -161,6 +207,19 @@ export function legTwist(aimYaw: number, moveYaw: number | null): number {
   let d = wrapAngle(moveYaw - aimYaw);
   if (Math.abs(d) > Math.PI / 2) d = wrapAngle(d + Math.PI);
   return Math.max(-MAX_TWIST, Math.min(MAX_TWIST, d));
+}
+
+/** An AI's aim on its spine. The game turns an AI's whole body to where
+ *  it looks and its aim animations move the arms more than the trunk;
+ *  turning a grunt's or hunter's spine by the whole difference swings its
+ *  tank or back plates about. So an AI's spine takes a third of the turn
+ *  (at most `ACTOR_MAX_TWIST`) and its pitch only up to `ACTOR_MAX_PITCH`. */
+export const ACTOR_TWIST_SHARE = 1 / 3;
+export const ACTOR_MAX_TWIST = 0.3;
+export const ACTOR_MAX_PITCH = 0.6;
+export function actorAim(pitch: number, twist: number): { pitch: number; twist: number } {
+  const clamp = (v: number, m: number) => Math.max(-m, Math.min(m, v));
+  return { pitch: clamp(pitch, ACTOR_MAX_PITCH), twist: clamp(twist * ACTOR_TWIST_SHARE, ACTOR_MAX_TWIST) };
 }
 
 /** Which bones carry the aim, and each one's share of the pitch and of the

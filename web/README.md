@@ -343,19 +343,33 @@ optional; a frame without them draws as before.
 
 - *Clips.* A models table of version 2 has skinned bipeds whose glb carries
   clips named `<weapon_class>:<state>`, and gives each weapon stem its
-  class. `viewer/anim.ts` (pure) picks the looping state from the stance
-  and speed (idle, walk, run, crouch, airborne, die; a sender without
-  speeds has them worked out from how far the player moved) and lays
-  one-shots over it (fire on a frame's shots, grenade, melee, reload,
-  switch from its actions, land on coming down); the clip is the held
-  weapon's class's, else the rifle's, the unarmed, or any class that has
-  the state, a missing loop falls back to a nearer one and a missing
-  one-shot isn't played. `BipedAnimator` (`viewer/players3d.ts`) plays them
-  on a three.js mixer per biped: loops cross-fade, walk and run are paced
-  to the ground speed, a one-shot outweighs the loop only on the bones it
-  moves, and a dying clip holds its last frame before the model goes. A
+  class (clips every class shares are `any:<state>`). `viewer/anim.ts`
+  (pure) picks the looping state from the stance and speed (idle, walk,
+  run, crouch, airborne, die, dead; a sender without speeds has them
+  worked out from how far the player moved) and lays one-shots over it
+  (fire on a frame's shots, grenade, melee, reload, switch from its
+  actions, land or land_hard on coming down, hard after a drop of more
+  than 1.2 units below the jump's peak); the clip is the held weapon's
+  class's, else the rifle's, the unarmed, or any class that has the
+  state, a missing loop falls back to a nearer one and a missing one-shot
+  isn't played. The game's jump has no take-off clip: `airborne` is the
+  whole leap (tuck, then hang) and plays once from leaving the ground,
+  held; dying plays once (`die`) and holds its last frame; a body first
+  seen already dead lies in `dead`.
+  `BipedAnimator` (`viewer/players3d.ts`) plays them on a three.js mixer
+  per biped: loops cross-fade, walk and run are paced to the ground speed,
+  and a one-shot outweighs the loop only on the bones it moves. An AI's
+  model faces where it aims and its spine takes a third of the aim's turn
+  (at most 0.3 rad) and a pitch of at most 0.6 rad: turning a grunt's or
+  hunter's whole spine to the aim swung its tank or back plates about. A
   version 1 (static) model glides in its pose as before, a capsule squats
   when crouched, and reduced motion leaves every model in its pose.
+- *Bodies* (`viewer/bodies.ts`). A player who dies leaves their model
+  where they fell (where the frames put the dead, which is their body),
+  playing the death clip and holding it; respawning makes a new model and the body stays
+  for a minute, at most 24 of them, all cleared on a seek. AI bodies come
+  in the frames as actors with the `dead` stance and lie until the game
+  clears them away.
 - *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
   A hit draws a line from attacker to victim that fades in a quarter of a
   second, and a hit marker with the damage floating up from the victim for
@@ -369,13 +383,21 @@ optional; a frame without them draws as before.
   the numbers stay put, the line holds instead of flashing, and no grenade
   flies.
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
-  faint grey outline (2D) and has no label.
+  faint grey outline (2D) and has no label. Once the frames carry
+  vehicles the level's own copies (`vehi` placements and multiplayer
+  vehicle spawns) are hidden, so a vehicle isn't drawn twice
+  (`viewer/objects3d.ts`).
 - *Zones* (`viewer/zones.ts`). When a level's glb has `bsp_<n>` nodes, the
-  3D view shows only the one the frames name; with no `bsp` in the frames
-  (or one the glb lacks) it shows every zone not marked cinematic-only in
-  its node's extras, and never none at all. A `backdrop` node (far scenery)
-  is hidden. When the level has several, the toolbar's zone picker offers
-  "Zone in play" (following the frames), "All zones", and each zone by its
+  3D view shows only the zone in play (`ZoneFollower`): the one the frames
+  name when the players are in it (by each zone's bounding box, a unit of
+  margin), else the one the followed player, or most players, stand in,
+  the zone already shown winning ties where zones overlap. A cutscene's
+  zone isn't play. A new zone has to be wanted for 0.8 s before the view
+  moves to it (at once on a seek), and the camera, unless following
+  someone, moves to frame it. With nothing to go on it shows every zone
+  not marked cinematic-only in its node's extras, and never none at all.
+  A `backdrop` node (far scenery) is hidden. When the level has several,
+  the toolbar's zone picker offers "Zone in play", "All zones", and each zone by its
   BSP's name (`extras.name`; cutscene zones too when "Cutscene zones" is
   ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones

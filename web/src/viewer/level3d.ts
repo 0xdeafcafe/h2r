@@ -9,7 +9,7 @@
 
 import * as THREE from "three";
 import { SkyDome, fogRange, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
-import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneEntry, type ZonePick } from "./zones";
+import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneBox, type ZoneEntry, type ZonePick } from "./zones";
 
 /** What the toolbar offers for a level. */
 export interface LevelInfo {
@@ -18,7 +18,7 @@ export interface LevelInfo {
   zones: ZoneEntry[];
   zoneCount: number;
   cinematicCount: number;
-  /** The zone the frames say is loaded, if any. */
+  /** The zone in play (the frames' and the players' word, viewer/zones.ts), if any. */
   active: number | null;
   backdrop: boolean;
   decals: boolean;
@@ -46,6 +46,8 @@ export class LevelLook {
   private generation = 0;
   private centre = new THREE.Vector3();
   private radius = 1;
+  /** Each zone's extent in game coordinates, measured once a level is in. */
+  private boxes: ZoneBox[] = [];
 
   /** `gradient` is the view's own sky, used when a level has none. */
   constructor(private scene: THREE.Scene, private gradient: THREE.Texture, private changed: () => void) {
@@ -64,6 +66,16 @@ export class LevelLook {
       const label = typeof o.userData?.name === "string" && o.userData.name !== o.name ? o.userData.name : undefined;
       this.zones.push({ obj: o, name: o.name, cinematic: isCinematic(o.userData, o.name, assetExtras), label });
     });
+    root.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+    for (const z of this.zones) {
+      const bsp = bspNumber(z.name);
+      if (bsp === null || this.boxes.some((b) => b.bsp === bsp)) continue;
+      box.setFromObject(z.obj);
+      if (box.isEmpty()) continue;
+      // gl (x, y, z) is game (x, -z, y).
+      this.boxes.push({ bsp, cinematic: z.cinematic, min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] });
+    }
     this.skyInfo = skyOf(assetExtras);
     const c = skyColour(this.skyInfo);
     this.background = c ? new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace) : null;
@@ -82,6 +94,7 @@ export class LevelLook {
   clear() {
     this.generation++;
     this.zones = [];
+    this.boxes = [];
     this.layers = [];
     this.sky?.dispose();
     this.sky = null;
@@ -90,12 +103,22 @@ export class LevelLook {
     this.apply();
   }
 
-  /** The zone the frames say is loaded. */
-  setActive(bsp: number | null) {
-    if (bsp === this.active) return;
+  /** The zone in play; whether that changed it. */
+  setActive(bsp: number | null): boolean {
+    if (bsp === this.active) return false;
     this.active = bsp;
     this.apply();
+    return true;
   }
+
+  /** The zones' extents (game coordinates), cutscene ones marked. */
+  zoneBoxes(): readonly ZoneBox[] { return this.boxes; }
+  /** One zone's extent, if the level has it. */
+  zoneBox(bsp: number): ZoneBox | undefined { return this.boxes.find((b) => b.bsp === bsp); }
+  /** Whether the view follows the zone in play (no zone picked by hand). */
+  following(): boolean { return this.pick === "auto"; }
+  /** Whether cutscene zones are offered. */
+  cinematicOn(): boolean { return this.cinematic; }
 
   setPick(p: ZonePick) { this.pick = p; this.apply(); }
   setCinematic(on: boolean) { this.cinematic = on; this.apply(); }

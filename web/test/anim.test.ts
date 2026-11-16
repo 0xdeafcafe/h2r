@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame } from "../src/api/types";
 import { FrameBuffer, sampleBsp, sampleFrames, sampleHits, sampleVehicles, type SampledHit, type SampledPlayer } from "../src/state/frames";
-import { BipedAnim, ONE_SHOT_MS, RUN_SPEED, SpeedMeter, WALK_SPEED, actionShot, clipFor, locomotion, paceScale, weaponClass } from "../src/viewer/anim";
+import { ACTOR_MAX_PITCH, ACTOR_MAX_TWIST, BipedAnim, HELD, ONE_SHOT_MS, actorAim, RUN_SPEED, SpeedMeter, WALK_SPEED, actionShot, clipFor, locomotion, paceScale, weaponClass } from "../src/viewer/anim";
 import { ActionWatch, EventFeed, GRENADE_MS, GrenadeQueue, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_MARK_MS, entityIndex, grenadeAt, grenadeTrail, hitColour, hitText, locator, mergeHits } from "../src/map/events";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "../src/viewer/zones";
 import { parseModels } from "../src/viewer/models";
@@ -89,6 +89,54 @@ describe("which clip a biped plays", () => {
     const b = new BipedAnim();
     b.update(0, { alive: true, stance: "airborne" });
     expect(b.update(100, { alive: true, stance: "dead" }).shot).toBeNull();
+  });
+
+  test("a jump: the airborne clip from take-off, held; a long drop lands hard", () => {
+    expect([...HELD].sort()).toEqual(["airborne", "dead", "die"]);
+    const a = new BipedAnim();
+    a.update(0, { alive: true, stance: "stand", z: 1 });
+    // Up 0.5 and back down to where it started: a soft landing.
+    a.update(100, { alive: true, stance: "airborne", z: 1.2 });
+    a.update(400, { alive: true, stance: "airborne", z: 1.5 });
+    expect(a.update(800, { alive: true, stance: "stand", z: 1 })).toMatchObject({ loop: "idle", shot: "land" });
+    // Off a ledge: from 1.5 down to -0.5 is a hard landing.
+    a.update(2000, { alive: true, stance: "airborne", z: 1.5 });
+    expect(a.update(2900, { alive: true, stance: "stand", z: -0.5 })).toMatchObject({ shot: "land_hard" });
+    // The peak is the next jump's own.
+    a.update(5000, { alive: true, stance: "airborne", z: -0.4 });
+    expect(a.update(5600, { alive: true, stance: "stand", z: -0.5 }).shot).toBe("land");
+    // Without heights it is always soft.
+    a.update(7000, { alive: true, stance: "airborne" });
+    expect(a.update(7600, { alive: true, stance: "stand" }).shot).toBe("land");
+  });
+
+  test("dying plays its clip and holds it; a body never seen alive lies in the dead pose", () => {
+    const a = new BipedAnim();
+    a.update(0, { alive: true });
+    expect(a.update(100, { alive: false }).loop).toBe("die");
+    expect(a.update(1100, { alive: true, stance: "dead" }).loop).toBe("die");
+    expect(a.update(60000, { alive: false }).loop).toBe("die");
+    expect(a.update(61000, { alive: true }).loop).toBe("idle");
+    expect(a.update(61001, { alive: false }).loop).toBe("die");
+    // First seen dead (a seek, a body from before the viewer joined).
+    expect(new BipedAnim().update(0, { alive: true, stance: "dead" }).loop).toBe("dead");
+    // A player's body, made as they fall, plays the death clip.
+    expect(new BipedAnim(true).update(0, { alive: false }).loop).toBe("die");
+  });
+
+  test("shared clips: dying and the dead pose for every class, older art's per-class die", () => {
+    const art = ["rifle:idle", "rifle:land", "any:die", "any:dead"];
+    expect(clipFor(art, "pistol", "die")).toBe("any:die");
+    expect(clipFor(art, "rifle", "dead")).toBe("any:dead");
+    expect(clipFor(art, "rifle", "land_hard")).toBe("rifle:land");
+    expect(clipFor(["rifle:die"], "rifle", "dead")).toBe("rifle:die");
+  });
+
+  test("an AI's spine takes a little of its aim's turn and a bounded pitch", () => {
+    expect(actorAim(0.2, 0.3).pitch).toBe(0.2);
+    expect(actorAim(0.2, 0.3).twist).toBeCloseTo(0.1, 9);
+    expect(actorAim(1.2, -1)).toEqual({ pitch: ACTOR_MAX_PITCH, twist: -ACTOR_MAX_TWIST });
+    expect(actorAim(-2, 3)).toEqual({ pitch: -ACTOR_MAX_PITCH, twist: ACTOR_MAX_TWIST });
   });
 
   test("actions that have a clip, and those that don't", () => {

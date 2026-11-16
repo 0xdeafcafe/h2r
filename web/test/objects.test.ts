@@ -15,6 +15,7 @@ class FakeTarget implements ScenarioTarget {
     return true;
   }
   restAll() { this.calls.push("rest"); }
+  setVehiclesHidden(hidden: boolean) { this.calls.push(hidden ? "hide vehicles" : "show vehicles"); }
 }
 
 const frame = (tick: number, objects?: Frame["objects"]): Frame => ({ game_id: "g", tick, players: [], ...(objects ? { objects } : {}) });
@@ -39,12 +40,18 @@ describe("FrameObjects", () => {
     ]);
   });
 
-  test("a moved placed vehicle is hidden when the frames draw vehicles", () => {
+  test("the level's vehicles are hidden from the first frame that carries vehicles, until a new level", () => {
     const t = new FakeTarget();
     const o = new FrameObjects(t);
-    o.update([{ k: "vehi", i: 1, p: [0, 0, 0] }, { k: "weap", i: 2, p: [1, 1, 1] }], true);
-    o.update([{ k: "vehi", i: 1, p: [0, 0, 0] }], false);
-    expect(t.calls).toEqual(["apply vehi:1-,weap:2", "rest", "apply vehi:1"]);
+    // Frames without vehicles leave the level's own.
+    o.update([], false);
+    // Standing on its spawn (nothing out of place) or moved, a vehicle the
+    // frames draw is not drawn again; a moment without vehicles changes nothing.
+    o.update([], true);
+    o.update([{ k: "netgame", i: 1, p: [0, 0, 0] }, { k: "weap", i: 2, p: [1, 1, 1] }], true);
+    o.update([{ k: "netgame", i: 1, p: [0, 0, 1] }], false);
+    o.reset();
+    expect(t.calls).toEqual(["hide vehicles", "apply netgame:1,weap:2", "rest", "apply netgame:1", "show vehicles"]);
   });
 
   test("a new level starts with nothing applied", () => {
