@@ -12,13 +12,18 @@ use std::io::{Cursor, Read, Seek};
 
 use content::{Manifest, Origin, Sha256, Variant};
 use h1map::H1Map;
-use map::build::TagSet;
-use map::{Map, TagId};
+use map::build::{Block, TagPayload, TagSet};
+use map::{FourCC, Map, TagId};
 use scenario_edit::Scenario;
 
 use crate::apply::{Applied, apply};
 use crate::structure::{Mesh, Section, Structure, Templates};
-use crate::{Error, Result, collision, placements, shaders, structure};
+use crate::{Error, Result, collision, placements, shaders, slots, structure};
+
+/// Size of a collection's (`itmc`, `vehc`) root.
+pub const COLLECTION_ROOT: usize = 0xc;
+/// Size of a collection entry.
+pub const COLLECTION_ENTRY: usize = 0x10;
 
 /// Which game's objects a converted map uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,13 +58,12 @@ pub fn structure_mopp(bsp: &tags::collision::Bsp) -> Result<Vec<u8>> {
 
 /// Halo 1's multiplayer maps: internal name, display name, and the Halo 2
 /// map used as the base when none is given. The base gives the sky, the
-/// item and vehicle collections and the globals. Maps with vehicles take a
-/// base that has Halo 2's vehicle collections (`multiplayer\single_vehicles\*`;
-/// Beaver Creek and Lockout have none): Coagulation (warthog, ghost,
-/// banshee). Waterworks would suit the snowy ones (the same and a wraith,
-/// and snow), but Sidewinder's placements grow its metadata past the
-/// engine's tag memory, so they take Coagulation too. The rest keep Beaver
-/// Creek's sky.
+/// item and vehicle collections and the globals. Maps with vehicles take
+/// Coagulation, which has most of Halo 2's vehicle collections (warthog,
+/// ghost, banshee; a missing one is built, `apply::NewCollection`).
+/// Waterworks would suit the snowy ones, but Sidewinder's placements grow
+/// its metadata past the engine's tag memory. The rest keep Beaver Creek's
+/// sky.
 pub const MAPS: [(&str, &str, &str); 19] = [
     ("beavercreek", "Battle Creek", "beavercreek"),
     ("bloodgulch", "Blood Gulch", "coagulation"),
@@ -270,7 +274,6 @@ pub fn prepare<R: Read + Seek>(
         .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
         .collect();
     let mut scenario = Scenario::read(base)?;
-    let applied = apply(&mut scenario, &plan, &tags)?;
 
     let refs = h1.structure_bsps()?;
     let [bsp] = refs.as_slice() else {
@@ -352,10 +355,23 @@ pub fn prepare<R: Read + Seek>(
             (n.clone(), group)
         })
         .collect();
-    let material_shaders = shaders::pick(&h1_shaders, &base_shaders)
+    let material_shaders: Vec<(usize, String)> = shaders::pick(&h1_shaders, &base_shaders)
         .into_iter()
         .map(|i| (i, base_shaders[i].name.clone()))
         .collect();
+
+    // Slots for new tags: tags only the base's structure named, except
+    // the shaders the converted one still names and the base's lightmap
+    // bitmap, kept for the converted lightmap.
+    let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
+    let mut keep: Vec<TagId> = material_shaders
+        .iter()
+        .map(|(i, _)| templates.shader(*i))
+        .collect();
+    keep.push(templates.collision_shader());
+    keep.extend(lightmap_slot);
+    let mut spare = slots::spare(base, sbsp, ltmp, &keep)?;
+    let applied = apply(&mut scenario, &plan, &tags, &mut spare)?;
 
     Ok(Prepared {
         h1_name,
@@ -420,12 +436,61 @@ impl Prepared {
         m
     }
 
+    /// Adds the vehicle collections the placements name but the base lacks
+    /// ([`Applied::collections`]): a `0xc` root whose block at `+0` holds one
+    /// `0x10` entry (weight `+0`, vehicle reference `+4`, variant string ID
+    /// `+0xc`; docs/formats/objects.md), and the base's own collection
+    /// root's `+0x8` word (each retail `vehc` and `itmc` has one). Each
+    /// takes the slot and datum of a tag the converted map no longer uses
+    /// ([`crate::slots`]), which the scenario already names.
+    fn add_collections<R: Read + Seek>(&self, base: &mut Map<R>, set: &mut TagSet) -> Result<()> {
+        if self.applied.collections.is_empty() {
+            return Ok(());
+        }
+        let like = base
+            .tags()
+            .iter()
+            .filter(|t| t.group.0 == *b"vehc" || t.group.0 == *b"itmc")
+            .min_by_key(|t| t.group.0 != *b"vehc")
+            .map(|t| t.id);
+        let word8 = match like {
+            Some(id) => base
+                .read_tag_bytes(id)?
+                .get(8..12)
+                .map_or(0, |b| u32::from_le_bytes(b.try_into().expect("4"))),
+            None => 0,
+        };
+        set.add_group(FourCC(*b"vehc"), None, None);
+        for c in &self.applied.collections {
+            let slot = set
+                .slots
+                .get_mut(c.id.index())
+                .ok_or(Error::Invalid("a reused slot is outside the index"))?;
+            slot.name = Some(c.name.clone());
+            let mut entry = Block::zeroed(COLLECTION_ENTRY);
+            entry.put_f32(0, 1.0).tag_ref(4, c.vehicle);
+            if let Some(v) = c.variant {
+                entry.string_id(0xc, v);
+            }
+            let mut root = Block::zeroed(COLLECTION_ROOT);
+            root.put_u32(8, word8).block(0, 1, entry);
+            let tag = set
+                .tag_mut(c.id)
+                .ok_or(Error::Invalid("a reused slot holds no tag"))?;
+            tag.group = FourCC(*b"vehc");
+            tag.payload = TagPayload::Built(root);
+        }
+        Ok(())
+    }
+
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+
+        self.add_collections(base, &mut set)?;
 
         let name = map_name(&self.h1_name);
         set.name = name.clone();

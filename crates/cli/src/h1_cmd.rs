@@ -653,7 +653,16 @@ fn convert(args: &[String]) -> Result<()> {
         p.applied.removed, p.trigger_volumes
     );
     for (h1s, (_, b)) in p.materials.iter().zip(&p.material_shaders) {
-        println!("  shader {h1s} -> {b}");
+        println!("  shader {h1s} -> {b} (the base's, a stand-in)");
+    }
+    for c in &p.applied.collections {
+        println!(
+            "  built vehicle collection {}{} in the unused slot of {}",
+            c.name,
+            c.variant
+                .map_or_else(String::new, |v| format!(" (variant {v})")),
+            c.replaces
+        );
     }
     for u in p.applied.unresolved.iter().chain(&p.dropped) {
         println!("  not placed: {u}");

@@ -366,6 +366,12 @@ pub struct Templates {
 }
 
 impl Templates {
+    /// The shader datum of the collision material template (`+0x10`).
+    pub fn collision_shader(&self) -> map::TagId {
+        let m = &self.collision_material;
+        map::TagId(u32::from_le_bytes(m[0x10..0x14].try_into().expect("4")))
+    }
+
     /// The shader datum of base material `i`.
     pub fn shader(&self, i: usize) -> map::TagId {
         let h = &self.material_heads[i];
