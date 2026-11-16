@@ -90,7 +90,7 @@ send none of them; draw what is there):
 | `vehicle` | the vehicle's object datum (hex) when riding one |
 | `species` | `"spartan"` or `"elite"`, from the biped's tag; another biped passes through as its short id, and readers fall back to spartan |
 | `aim` | the unit's aim direction in game coordinates (z up), unit length |
-| `weapon` | the held weapon's tag file stem, lower case: `battle_rifle`, `smg`, `energy_sword`, ... |
+| `weapon` | the held weapon's tag file stem, lower case: `battle_rifle`, `smg`, `energy_blade` (the sword), `brute_shot`, ... Exactly the stem lower-cased, as the art manifest names weapon models |
 | `shots` | shots the held weapon fired since the player's previous frame; `0` is sent as absent, at most 64 |
 
 The server refuses a frame whose `aim` is not finite or is zero, whose

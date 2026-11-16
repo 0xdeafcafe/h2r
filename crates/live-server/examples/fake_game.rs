@@ -298,7 +298,7 @@ fn main() {
                         species: Some(if i % 2 == 0 { "spartan" } else { "elite" }.into()),
                         aim: Some([yaw.cos(), yaw.sin(), 0.0]),
                         weapon: Some(
-                            ["battle_rifle", "smg", "energy_sword", "rocket_launcher"][i as usize]
+                            ["battle_rifle", "smg", "energy_blade", "rocket_launcher"][i as usize]
                                 .into(),
                         ),
                         // A short burst every two seconds.
