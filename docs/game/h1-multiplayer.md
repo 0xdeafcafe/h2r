@@ -226,7 +226,9 @@ The base's old BSP region stays in the file, unused.
 - **Lightmap.** One group, the structure checksum (FNV-1a of the
   positions), no bitmap, a render info entry `{-1, -1}` per cluster.
   Levels render unlit (the default texture path) until Halo 1's lightmap
-  pages are converted.
+  pages are converted. The pages now convert (`h1bitmaps::lightmap_pages`
+  and `convert_bitmap`, byte-identical on a30); what this writer must add
+  to use them is in [h1-bitmaps.md](../formats/h1-bitmaps.md#lightmaps-for-the-structure-writer).
 
 **Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
 and a 30,000-triangle one into an invented map and reads them back with
