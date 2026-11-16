@@ -250,12 +250,15 @@ of that gamertag on another server lends its key, so the player keeps one
 key everywhere. If the gamertag is new to the server it is made there
 (on an invite-only server with `--invite CODE`, or an invite asked for on
 the terminal; long and 25-character codes both work). If the server has
-it already (made from the web or another device), `h2 play` asks on the
-terminal for the current recovery code (Account on the server's `/dash`,
-or an authenticator app) and adds this machine's key
-([live-security.md](live-security.md) §1, Recovery); without a terminal
-it stops and prints the `h2 live account recover <tag> --server URL`
-command. On the embedded server (`--live-local`) a taken default name is
+it already (made from the web or another device), `h2 play` does not ask
+on the terminal: it hands the game that gamertag marked `needs_code`, and
+the game asks for the current recovery code (Account on the server's
+`/dash`, or an authenticator app) when the player signs in to Xbox Live
+([In-game sign-in](#in-game-sign-in)), then adds this machine's key
+([live-security.md](live-security.md) §1, Recovery). `--signin-terminal`
+asks on the terminal before the game starts instead, as before (and
+without a terminal stops with the `h2 live account recover <tag> --server
+URL` command); `h2 live account recover` still works on its own. On the embedded server (`--live-local`) a taken default name is
 numbered instead. It prints the gamertag and, for the embedded server, the web app's
 URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
@@ -1210,9 +1213,9 @@ Either of these would do:
 
 The game also has to choose which file to save into. It only knows
 `LiveConfig.accounts_path`, which under `h2 play` with Live on is the session's
-`play-accounts.json`, rewritten on every start. So the glue should save to
-both that file and `shared_accounts_path(..)`, or `LiveConfig` should carry
-the shared path.
+`play-accounts.json`, rewritten on every start. The in-game sign-in (below)
+saves to that file and to `shared_accounts_path(..)`.
+
 
 Tests: `crates/live-hle/tests/account_setup.rs` covers create, recover with
 the code from the returned secret, a wrong code, a used code, an unknown
@@ -1222,6 +1225,111 @@ them run against the in-process memory server.
 `crates/live-hle/src/account_setup.rs` maps refusals to errors.
 `crates/boot/src/account_screen.rs` covers every transition and checks that
 every page fits.
+
+### In-game sign-in
+
+When the player signs in to Live in the game with an identity this machine
+has no key for on the server (made on the web, another device or another
+server), the game asks for the 6-digit recovery code itself.
+
+**The account list.** An accounts-file entry with `"needs_code": true` is
+listed by `XOnlineGetUsers` like any other (the same 112-byte record), so
+the player picks it in Halo 2's own sign-in. Its key, if any, is never
+used, and it is dropped when a ready account of the same gamertag is in
+the file (`live_hle::config`). `h2 play --live` writes such an entry into
+`play-accounts.json` when the gamertag is on the server already
+(`play_live::write_waiting`), with the server's xuid for it.
+
+**The logon** (`live_hle::signin`). `XOnlineLogon` with a `needs_code` user
+(one per logon, and only with a server; otherwise `INVALID_USER`) returns a
+task and makes no request: `XOnlineTaskContinue` returns `0` (pending), so
+the game stays on its signing-in step. The prompt answers through
+`Hle::signin_submit(code)`, `signin_create()`, `signin_cancel()` and
+`signin_dismiss()`, and reads `Hle::signin()`:
+
+| Phase | Shows | A | B |
+|---|---|---|---|
+| Code | the code being typed, the last error | check it | cancel |
+| Working | "Checking with HOST..." | | cancel |
+| Create | the gamertag isn't on the server | make it there (open servers) | cancel |
+| Created | the new account's recovery secret, once | close | close |
+| Done | signed in | close | close |
+
+A code that is not six digits is refused without a request. Each check runs
+`account_setup::recover` on its own thread; a wrong code says how many
+tries are left (the server's count), a lockout how long to wait, an
+unreachable server says so, and the code is asked again. No such gamertag
+offers Create, which runs `account_setup::create`; an invite-only server
+says to make it on `/dash` or pass `h2 play --invite CODE` (there is no
+in-game invite entry). On success the entry is saved to the session's file
+and the shared `accounts.json`, the accounts are read again, the user's
+record is replaced by the saved account's (the controller slot word kept),
+and the service logon starts as for any account, ending in `CONNECTED`.
+Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
+
+**The prompt** (`crates/boot/src/signin_screen.rs`) is our own list class
+(`list_class`) with one row and a description, on the Controls layout. The
+d-pad types the code (up and down change the digit, left and right move;
+buttons 8 to 11 in the event's button word), A on the row or Start checks
+it, B backs out and closes. The text is served from guest buffers under our
+string ids; each change goes into the other buffer of a pair, and the row
+text (`Rows::live_text`) writes it and sets the description again. The
+logon opens it: a wrapper around the HLE's `XOnlineTaskContinue`
+(`0x003a0620`) asks `Hle::take_signin_open()` after each call, and the
+first time a sign-in waits it writes the title and first page and calls
+`0x149f1e(1 << controller, loader)`, as the Skulls page opens. A finished
+page closes with `0x14800c` (the screen's `+0x78` slot and `+0x74` window).
+
+Static reading (retail 5849): the main menu's Xbox Live row (`0x002308e0`),
+not signed in and with transport, animates the menu out (`0x0022eeee`),
+reads the accounts (`0x0018fc44`) and opens the account picker with loader
+`0x0024b4a9`; the logon is the picker's. Not established without a run:
+that the picker polls `XOnlineTaskContinue` each frame while signing in,
+that a screen opened from inside that call draws on top and takes input,
+that the d-pad reaches a screen's event handler as buttons 8 to 11, that a
+list's row text runs every frame (so a finished check shows without a
+press), and what the game shows for `INVALID_USER` after a cancel.
+
+Switches: `H2_SIGNIN_PROMPT=0` leaves the screen out (a waiting sign-in is
+cancelled at once, with a line pointing at `--signin-terminal`);
+`H2_SIGNIN_TEXT_RECT=top,left,bottom,right` moves the description;
+`features.signin-code=off` turns the class off (the sign-in is cancelled).
+Every step logs a `live:` or `signin prompt:` line on stderr.
+
+The app builds (iOS, tvOS) run the same HLE and boot glue, so an entry
+marked `needs_code` in `live/accounts.json` asks in game the same way.
+Nothing writes such an entry there yet: a gamertag new to the device has to
+be typed, which needs the keyboard (above).
+
+**Checklist for a game run** (`h2 play --live-server URL` with an account
+made on that server's web dashboard and none on this machine):
+
+1. `h2 play` prints `... needs a code from Account on URL/dash; the game
+   asks for it when you sign in to Xbox Live` and starts without a terminal
+   prompt.
+2. Xbox Live on the main menu lists the gamertag; pick it. Stderr:
+   `live: <tag> needs a code to sign in on <url>; asking in game`, then
+   `signin prompt: opening for controller 0`.
+3. The prompt is drawn over the signing-in step, titled "Xbox Live
+   sign-in", the row reading "Sign in as <tag>", the description the code
+   page. If the description is off-screen, move it with
+   `H2_SIGNIN_TEXT_RECT`.
+4. D-pad: each press logs `signin prompt: button N (Some(Up))` and so on,
+   and the digits change. Note the numbers if they are not 8 to 11.
+5. A wrong code: "Wrong code. 4 tries left." appears without another press.
+6. The right code: "Signed in. A: done"; A closes the prompt and the game
+   finishes signing in; `play-accounts.json` and `accounts.json` hold the
+   key. The next `h2 play --live` signs straight in.
+7. Again, with B on the prompt: note the game's sign-in error and that it
+   returns to the menu.
+
+Tests: `crates/live-hle/tests/signin_code.rs` (the logon pending through a
+wrong code, the right code against the embedded server's real TOTP, both
+files saved, the countdown to a lockout, cancel, create, unreachable, no
+server); `crates/live-hle/src/config.rs` (the list);
+`crates/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
+five lines of 40); `crates/boot/src/list_class.rs` (a class's own buttons,
+live text); `crates/cli/src/play_live.rs` (the hand-off).
 
 ## Client HLE: outgoing messages
 

@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use live_proto::{Gamertag, ServerOverride};
+use live_proto::{Gamertag, ServerOverride, Xuid};
 
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
@@ -60,6 +60,11 @@ pub struct LiveOpts {
     /// The cloudflared to run; `None`: `$H2_CLOUDFLARED`, else PATH (tests
     /// set a fake).
     pub cloudflared: Option<PathBuf>,
+    /// `--signin-terminal`: a code (or invite) the account needs is asked
+    /// for on the terminal before the game starts, as before; without it
+    /// the game asks for the code when the player signs in
+    /// (docs/live/live.md, "In-game sign-in").
+    pub signin_terminal: bool,
 }
 
 impl LiveOpts {
@@ -95,6 +100,7 @@ impl LiveOpts {
             "--hostname" => self.hostname = Some(value()?),
             "--no-tunnel-setup" => self.no_tunnel_setup = true,
             "--invite" => self.invite = Some(value()?),
+            "--signin-terminal" => self.signin_terminal = true,
             "--gamertag" => {
                 let v = value()?;
                 Gamertag::new(&v).map_err(|e| anyhow::anyhow!("--gamertag {v:?}: {e}"))?;
@@ -225,7 +231,11 @@ pub fn choose(opts: &LiveOpts, env: Option<&str>, default: &str) -> Choice {
 /// server (stopped on drop) if there is one.
 pub struct Session {
     pub config: boot::LiveConfig,
-    pub account: LocalAccount,
+    /// The account the game signs in as; `None` while it waits for the
+    /// code the game asks for (`waiting`).
+    pub account: Option<LocalAccount>,
+    /// The gamertag handed to the game as needing a code.
+    pub waiting: Option<String>,
     pub server: String,
     /// The service's API base and id, from its discovery document.
     pub api: String,
@@ -301,12 +311,14 @@ pub fn start(
     };
     let client = Client::at(&url)?;
     let mut terminal = terminal_ask;
-    let ask: Ask = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    // The terminal asks only when told to; otherwise a code is the game's
+    // to ask for (docs/live/live.md, "In-game sign-in").
+    let ask: Ask = if opts.signin_terminal && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         Some(&mut terminal)
     } else {
         None
     };
-    let (account, created) = bootstrap(
+    let (account, created) = match bootstrap(
         &client,
         &places.accounts,
         opts.gamertag.as_deref(),
@@ -314,7 +326,34 @@ pub fn start(
         opts.invite.as_deref(),
         embedded.is_some(),
         ask,
-    )?;
+    ) {
+        Ok(found) => found,
+        Err(e) if !opts.signin_terminal && e.downcast_ref::<NeedsCode>().is_some() => {
+            let need = e.downcast::<NeedsCode>().expect("checked");
+            eprintln!(
+                "live: {} is on {} already and this machine has no key for it; the game asks for its code",
+                need.gamertag, client.discovery.id
+            );
+            write_waiting(&places.session_accounts, &need, &client.base)?;
+            return Ok(Session {
+                config: boot::LiveConfig {
+                    enabled: true,
+                    accounts_path: Some(places.session_accounts.clone()),
+                    server_url: Some(client.base.clone()),
+                },
+                account: None,
+                waiting: Some(need.gamertag),
+                api: client.api,
+                server_id: client.discovery.id,
+                server: client.base,
+                signin: None,
+                tunnel: None,
+                tunnel_notices: Vec::new(),
+                embedded,
+            });
+        }
+        Err(e) => return Err(e),
+    };
     if created {
         eprintln!(
             "live: created {} ({}) on {}",
@@ -379,7 +418,8 @@ pub fn start(
             accounts_path: Some(places.session_accounts.clone()),
             server_url: Some(client.base.clone()),
         },
-        account,
+        account: Some(account),
+        waiting: None,
         api: client.api,
         server_id: client.discovery.id,
         server: client.base,
@@ -388,6 +428,52 @@ pub fn start(
         tunnel_notices,
         embedded,
     })
+}
+
+/// The account is on the server already and this machine has no key for
+/// it, with no terminal to ask for the code: the game asks instead
+/// ([`write_waiting`]). Its text is the command that recovers it by hand.
+#[derive(Debug, Clone)]
+pub struct NeedsCode {
+    pub gamertag: String,
+    /// The account's xuid on the server, when it said.
+    pub xuid: Option<Xuid>,
+    message: String,
+}
+
+impl std::fmt::Display for NeedsCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NeedsCode {}
+
+/// Hands the game `need` as its one account, marked `needs_code`: picking
+/// it at the game's Xbox Live sign-in asks for the code. No key is in it.
+pub fn write_waiting(path: &Path, need: &NeedsCode, server: &str) -> Result<()> {
+    let xuid = need.xuid.unwrap_or_else(|| stand_in_xuid(&need.gamertag));
+    let entry = serde_json::json!([{
+        "xuid": xuid,
+        "gamertag": need.gamertag,
+        "server": server,
+        "needs_code": true,
+    }]);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{entry:#}\n"))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// A stable nonzero xuid for a gamertag the server gave none for: the game
+/// lists the identity by it until the real one replaces it.
+fn stand_in_xuid(gamertag: &str) -> Xuid {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in gamertag.to_ascii_lowercase().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    Xuid(0x0009_0000_0000_0000 | (h & 0xffff_ffff) | 1)
 }
 
 /// Asks the player a question on the terminal; `None` when stdin is not one.
@@ -502,25 +588,35 @@ pub fn bootstrap(
         );
     }
 
-    let exists = match client.get::<serde_json::Value>(
+    let (exists, there) = match client.get::<serde_json::Value>(
         &format!("/accounts/{}", crate::live_query::path_part(tag.as_str())),
         &[],
     ) {
-        Ok(_) => true,
-        Err(e) if status_of(&e) == Some(404) => false,
+        Ok(v) => (
+            true,
+            v.get("xuid")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|x| Xuid::parse(x).ok()),
+        ),
+        Err(e) if status_of(&e) == Some(404) => (false, None),
         Err(e) => return Err(e),
     };
     let host = &client.discovery.id;
     let account = if exists {
         let Some(ask) = ask.as_mut() else {
-            bail!(
-                "{tag} is already an account on {host} and this machine has no key for it. \
-                 Recover it here with a code from Account on {}/dash or your authenticator app:\n  \
-                 h2 live account recover {} --server {}",
-                client.base,
-                shell_word(tag.as_str()),
-                client.base
-            );
+            return Err(NeedsCode {
+                gamertag: tag.as_str().to_string(),
+                xuid: there,
+                message: format!(
+                    "{tag} is already an account on {host} and this machine has no key for it. \
+                     Recover it here with a code from Account on {}/dash or your authenticator app:\n  \
+                     h2 live account recover {} --server {}",
+                    client.base,
+                    shell_word(tag.as_str()),
+                    client.base
+                ),
+            }
+            .into());
         };
         let mut key = reuse.unwrap_or_else(KeyPair::generate);
         let mut tries = 0;
@@ -778,8 +874,11 @@ mod tests {
             live_proto::recovery::TotpSecret::from_base32(&web.recovery.expect("recovery").secret)
                 .unwrap();
 
-        // Not a terminal: the command to run.
+        // Not a terminal: the command to run, as a NeedsCode the game can
+        // take over.
         let err = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap_err();
+        let need = err.downcast_ref::<NeedsCode>().expect("a code is needed");
+        assert_eq!((need.gamertag.as_str(), need.xuid), ("afr", Some(web.xuid)));
         let msg = format!("{err:#}");
         assert!(
             msg.contains(&format!(
@@ -818,6 +917,78 @@ mod tests {
         let (again, added) = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap();
         assert!(!added);
         assert_eq!(again.xuid, web.xuid);
+    }
+
+    /// `h2 play --live` with an account the server has and this machine
+    /// has no key for: no terminal prompt, the game is handed the identity
+    /// marked needs_code (and asks for the code itself). With
+    /// `--signin-terminal` and no terminal it stops with the command.
+    #[test]
+    fn a_code_the_account_needs_is_left_to_the_game() {
+        let dir = temp("handoff");
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (web, _) = new.create_account("afr", None).unwrap();
+        let opts = parse(&["--live-server", &new.base, "--gamertag", "afr"]).unwrap();
+        let places = Places::under(&dir);
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "x",
+        )
+        .unwrap();
+        assert!(session.account.is_none());
+        assert_eq!(session.waiting.as_deref(), Some("afr"));
+        assert_eq!(
+            session.config.accounts_path.as_ref(),
+            Some(&places.session_accounts)
+        );
+        assert_eq!(
+            session.config.server_url.as_deref(),
+            Some(new.base.as_str())
+        );
+        let handed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&places.session_accounts).unwrap()).unwrap();
+        let handed = handed.as_array().unwrap();
+        assert_eq!(handed.len(), 1);
+        assert_eq!(handed[0]["gamertag"], "afr");
+        assert_eq!(handed[0]["needs_code"], true);
+        assert_eq!(handed[0]["xuid"], serde_json::to_value(web.xuid).unwrap());
+        assert!(handed[0].get("key").is_none(), "no key handed");
+        drop(session);
+
+        let terminal = parse(&[
+            "--live-server",
+            &new.base,
+            "--gamertag",
+            "afr",
+            "--signin-terminal",
+        ])
+        .unwrap();
+        let err = match start(
+            &terminal,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "x",
+        ) {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("no terminal to ask on"),
+        };
+        assert!(err.contains("h2 live account recover afr"), "{err}");
+        assert!(
+            parse(&["--live", "--signin-terminal"])
+                .unwrap()
+                .signin_terminal
+        );
+    }
+
+    #[test]
+    fn a_stand_in_xuid_is_stable_and_nonzero() {
+        assert_eq!(stand_in_xuid("Pete"), stand_in_xuid("pete"));
+        assert_ne!(stand_in_xuid("Pete"), stand_in_xuid("Bob"));
+        assert_ne!(stand_in_xuid("Pete").0, 0);
     }
 
     #[test]
@@ -1015,7 +1186,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(session.store(), Some("memory"));
-        assert_eq!(session.account.gamertag, "test user");
+        assert_eq!(session.account.as_ref().unwrap().gamertag, "test user");
         assert_eq!(
             session.config.server_url.as_deref(),
             Some(session.server.as_str())
@@ -1026,7 +1197,7 @@ mod tests {
         );
         let handed = live_accounts::load(&places.session_accounts).unwrap();
         assert_eq!(handed.len(), 1);
-        assert_eq!(handed[0].xuid, session.account.xuid);
+        assert_eq!(handed[0].xuid, session.account.as_ref().unwrap().xuid);
 
         // The same server again: the account is found, not made.
         let client = Client::at(&session.server).unwrap();
@@ -1041,7 +1212,7 @@ mod tests {
         )
         .unwrap();
         assert!(!created);
-        assert_eq!(again.xuid, session.account.xuid);
+        assert_eq!(again.xuid, session.account.as_ref().unwrap().xuid);
         // Another name is made beside it; a taken default is numbered.
         let (other, created) = bootstrap(
             &client,
@@ -1078,7 +1249,7 @@ mod tests {
             "test.user",
         )
         .unwrap();
-        assert_eq!(session.account.gamertag, "test user");
+        assert_eq!(session.account.as_ref().unwrap().gamertag, "test user");
         let accounts = live_accounts::load(&places.accounts).unwrap();
         assert_eq!(
             accounts
@@ -1124,11 +1295,11 @@ mod tests {
         };
         let entry: serde_json::Value = redeem().unwrap().into_json().unwrap();
         let client = Client::at(&session.server).unwrap();
-        let key = session.account.key_pair().unwrap();
+        let key = session.account.as_ref().unwrap().key_pair().unwrap();
         assert_eq!(
             entry,
             crate::live_admin::export_entry(
-                &session.account,
+                session.account.as_ref().unwrap(),
                 &client.base,
                 &client.discovery.id,
                 &key
