@@ -1,7 +1,8 @@
 # The tvOS app (docs/runtime/tvos.md). H2TV.xcodeproj is generated from this with
 # `xcodegen generate` (in platform/tvos); both are committed, so Xcode alone
 # is enough to build. build.sh fills build/ first: the Rust static library,
-# the game module framework, the trimmed disc and the boot cache.
+# the game module framework, the trimmed disc and the boot cache. The C API
+# and the keyboard view are shared with the iOS app (platform/apple).
 name: H2TV
 options:
   bundleIdPrefix: red.forbes.h2recomp
@@ -18,7 +19,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: H2TV
-      - path: include/h2tv.h
+      - path: ../apple/GameKeyInput.swift
+      - path: ../apple/h2host.h
         buildPhase: none
       # Folder references: copied into the bundle as directories.
       - path: build/disc
@@ -28,7 +30,7 @@ targets:
         type: folder
         buildPhase: resources
     dependencies:
-      - framework: build/libtvos.a
+      - framework: build/libh2host.a
         embed: false
       # Embedded and signed, not linked: crates/boot dlopens it, after
       # checking its stamp.

@@ -1,0 +1,73 @@
+# The iOS and iPadOS app (docs/runtime/ios.md). H2iOS.xcodeproj is generated from
+# this with `xcodegen generate` (in platform/ios); both are committed, so
+# Xcode alone is enough to build. build.sh fills build/ first: the Rust
+# static library, the game module framework, the trimmed disc and the boot
+# cache. The C API and the keyboard view are shared with the tvOS app
+# (platform/apple).
+name: H2iOS
+options:
+  bundleIdPrefix: red.forbes.h2recomp
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+targets:
+  H2iOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: H2iOS
+      - path: ../apple/GameKeyInput.swift
+      - path: ../apple/h2host.h
+        buildPhase: none
+      # Folder references: copied into the bundle as directories.
+      - path: build/disc
+        type: folder
+        buildPhase: resources
+      - path: build/bootcache
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: build/libh2host.a
+        embed: false
+      # Embedded and signed, not linked: crates/boot dlopens it, after
+      # checking its stamp.
+      - framework: build/h2game.framework
+        embed: true
+        codeSign: true
+        link: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+      - sdk: GameController.framework
+      - sdk: CoreHaptics.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreAudio.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: libc++.tbd
+      - sdk: libiconv.tbd
+    settings:
+      base:
+        INFOPLIST_FILE: H2iOS/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: H2iOS/H2iOS-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        # iPhone and iPad.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: iphoneos
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SDKROOT: iphoneos
+        ARCHS: arm64
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/build
+        FRAMEWORK_SEARCH_PATHS: $(PROJECT_DIR)/build
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_BITCODE: NO
+        DEAD_CODE_STRIPPING: YES
+        # The Rust library carries no Swift module; keep its symbols.
+        OTHER_LDFLAGS: "$(inherited) -ObjC"

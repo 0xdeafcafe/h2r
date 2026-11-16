@@ -262,6 +262,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "apple-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "audio",
+ "boot",
+ "d3d",
+ "input",
+ "kernel",
+ "settings",
+ "vfs",
+ "xiso",
+]
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5624,22 +5640,6 @@ dependencies = [
  "rand 0.9.5",
  "sha1",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "tvos"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app",
- "audio",
- "boot",
- "d3d",
- "input",
- "kernel",
- "settings",
- "vfs",
- "xiso",
 ]
 
 [[package]]

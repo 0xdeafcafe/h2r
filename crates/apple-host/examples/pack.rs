@@ -1,14 +1,19 @@
-//! Packs what the tvOS app bundles, on the Mac (platform/tvos/build.sh):
+//! Packs what the tvOS or iOS app bundles, on the Mac (platform/tvos/build.sh,
+//! platform/ios/build.sh):
 //!
-//!     cargo run --release -p tvos --example pack -- <halo2.iso> <out-dir> [--gen DIR] [--no-module]
+//!     cargo run --release -p apple-host --example pack -- <halo2.iso> <out-dir> \
+//!         [--platform tvos|ios] [--gen DIR] [--no-module]
 //!
-//! * `<out>/disc/`: the disc files in `tvos::layout::DISC_FILES`, copied
+//! * `<out>/disc/`: the disc files in `h2host::layout::DISC_FILES`, copied
 //!   with their tree (files already the right size are kept);
 //! * `<out>/h2game.framework/`: the generated module, lifted, emitted and
-//!   compiled for tvOS (`H2_EMIT_TARGET=tvos`, `boot::build`) in `--gen`
-//!   (default `$TMPDIR/h2tvos-gen`), with its stamp and an Info.plist;
+//!   compiled for the platform (`H2_EMIT_TARGET=tvos` or `ios`,
+//!   `boot::build`) in `--gen` (default `$TMPDIR/h2<platform>-gen`), with
+//!   its stamp and an Info.plist;
 //! * `<out>/bootcache/`: the image's analysis, so the first launch on the
-//!   Apple TV need not analyse the XBE.
+//!   device need not analyse the XBE.
+//!
+//! `--platform` defaults to tvos.
 //!
 //! The module build is the full-image emit and clang build (about 400 MB
 //! of C): run it under the emit gate on a shared machine. `--no-module`
@@ -20,27 +25,34 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-const FRAMEWORK_PLIST: &str = include_str!("../../../platform/tvos/h2game-Info.plist");
+use h2host::layout::Platform;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut pos = Vec::new();
-    let mut gen_dir = std::env::temp_dir().join("h2tvos-gen");
+    let mut gen_dir = None;
     let mut module = true;
+    let mut platform = Platform::Tvos;
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--gen" => gen_dir = PathBuf::from(args.next().context("--gen needs a directory")?),
+            "--gen" => gen_dir = Some(PathBuf::from(args.next().context("--gen needs a directory")?)),
+            "--platform" => {
+                let p = args.next().context("--platform needs tvos or ios")?;
+                platform = Platform::parse(&p).with_context(|| format!("--platform {p}: expected tvos or ios"))?;
+            }
             "--no-module" => module = false,
             _ => pos.push(PathBuf::from(a)),
         }
     }
     let [iso, out] = pos.as_slice() else {
-        bail!("usage: pack <halo2.iso> <out-dir> [--gen DIR] [--no-module]");
+        bail!("usage: pack <halo2.iso> <out-dir> [--platform tvos|ios] [--gen DIR] [--no-module]");
     };
+    let gen_dir = gen_dir
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("h2{}-gen", platform.emit_target())));
     std::fs::create_dir_all(out)?;
     disc(iso, &out.join("disc"))?;
     if module {
-        build_module(iso, out, &gen_dir)?;
+        build_module(iso, out, &gen_dir, platform)?;
     }
     Ok(())
 }
@@ -53,7 +65,7 @@ fn disc(iso: &Path, dest: &Path) -> Result<()> {
     for e in x
         .entries()?
         .iter()
-        .filter(|e| xiso::subset_matches(&e.path, e.is_dir, tvos::layout::DISC_FILES))
+        .filter(|e| xiso::subset_matches(&e.path, e.is_dir, h2host::layout::DISC_FILES))
     {
         let to = dest.join(e.path.trim_start_matches('/'));
         if e.is_dir {
@@ -78,11 +90,11 @@ fn disc(iso: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn build_module(iso: &Path, out: &Path, gen_dir: &Path) -> Result<()> {
+fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> Result<()> {
     let cache = out.join("bootcache");
     std::fs::create_dir_all(&cache)?;
     // The generator's switches change the module and its stamp; the app on
-    // the Apple TV computes the stamp with them unset, so they must be here.
+    // the device computes the stamp with them unset, so they must be here.
     for k in [
         "H2_FASTMEM",
         "H2_PERF",
@@ -101,7 +113,7 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path) -> Result<()> {
     }
     // SAFETY: set before any thread starts.
     unsafe {
-        std::env::set_var("H2_EMIT_TARGET", "tvos");
+        std::env::set_var("H2_EMIT_TARGET", platform.emit_target());
         std::env::set_var("H2_BOOT_CACHE", &cache);
     }
     let xbe = boot::read_xbe(iso)?;
@@ -113,11 +125,13 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path) -> Result<()> {
     let mut stamp = lib.as_os_str().to_owned();
     stamp.push(".stamp");
     std::fs::copy(&stamp, fw.join("h2game.stamp"))?;
-    std::fs::write(fw.join("Info.plist"), FRAMEWORK_PLIST)?;
-    // Nothing else in the cache is for the app (the unread-target sets are
-    // written on the device).
+    std::fs::write(fw.join("Info.plist"), platform.framework_plist())?;
+    // Only this build's analysis is for the app: the unread-target sets are
+    // written on the device, and an older analysis (another analyzer or
+    // Cargo.lock) would only be copied over and never match.
+    let current = boot::analysis_cache(&xbe).and_then(|p| p.file_name().map(|n| n.to_owned()));
     for e in std::fs::read_dir(&cache)?.flatten() {
-        if !e.file_name().to_string_lossy().starts_with("analysis-") {
+        if Some(e.file_name()) != current {
             let _ = std::fs::remove_file(e.path());
         }
     }

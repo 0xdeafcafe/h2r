@@ -302,6 +302,24 @@ impl KeyboardMouse {
             .is_some()
     }
 
+    /// Holds or releases `control` as if its first bound key were pressed,
+    /// for a host's own on-screen buttons (iOS's Start and Back, which the
+    /// system's touch controls cannot provide). False when no key is bound
+    /// to it.
+    pub fn press_control(&self, control: Control, down: bool) -> bool {
+        let key = self.lock().bindings.bind.get(&control).and_then(|inputs| {
+            inputs.iter().find_map(|i| match i {
+                Input::Key(k) => Some(k.clone()),
+                Input::Mouse(_) => None,
+            })
+        });
+        match key {
+            Some(k) if down => self.key_down(&k),
+            Some(k) => self.key_up(&k),
+            None => false,
+        }
+    }
+
     pub fn mouse_button(&self, b: MouseButton, down: bool) {
         let mut i = self.lock();
         if down {
@@ -474,6 +492,22 @@ mod tests {
         assert!(g.thumb_ly > 0 && g.thumb_lx > 0);
         k.key_up("space");
         assert_eq!(gp(&k).analog(AnalogButton::A), 0);
+    }
+
+    #[test]
+    fn press_control_holds_the_bound_key() {
+        use crate::gamepad::Buttons;
+        let k = KeyboardMouse::new(Bindings::default());
+        assert!(k.press_control(Control::Start, true));
+        assert!(gp(&k).buttons.0 & Buttons::START.0 != 0);
+        assert!(k.press_control(Control::Back, true));
+        assert!(gp(&k).buttons.0 & Buttons::BACK.0 != 0);
+        assert!(k.press_control(Control::Start, false));
+        assert!(k.press_control(Control::Back, false));
+        assert_eq!(gp(&k).buttons.0 & (Buttons::START.0 | Buttons::BACK.0), 0);
+        let mut none = Bindings::default();
+        none.bind.remove(&Control::Start);
+        assert!(!KeyboardMouse::new(none).press_control(Control::Start, true));
     }
 
     #[test]

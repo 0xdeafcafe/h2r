@@ -9,14 +9,14 @@ is no simulator build.
 
 | Piece | What it is | Built by |
 | --- | --- | --- |
-| `crates/tvos` | the runtime as a static library (`libtvos.a`): `boot::run_hosted` as `h2 play` runs it, inside `app::embedded::Embedded`, the shell for a host that owns the window | `cargo build -Zbuild-std --target aarch64-apple-tvos` |
-| `h2game.framework` | the generated module (`libh2game.dylib` built for `arm64-apple-tvos17.0`), embedded and signed by Xcode, loaded with `dlopen` as on the Mac | `boot::build` with `H2_EMIT_TARGET=tvos` (`crates/tvos/examples/pack.rs`) |
-| `disc/` | the disc files the app needs, as a directory (`vfs::DirDiscBackend` serves it as D:) | `pack` (`tvos::layout::DISC_FILES`) |
+| `crates/apple-host` | the runtime as a static library (`libh2host.a`), shared with the iOS app ([ios.md](ios.md)): `boot::run_hosted` as `h2 play` runs it, inside `app::embedded::Embedded`, the shell for a host that owns the window | `cargo build -Zbuild-std --target aarch64-apple-tvos` |
+| `h2game.framework` | the generated module (`libh2game.dylib` built for `arm64-apple-tvos17.0`), embedded and signed by Xcode, loaded with `dlopen` as on the Mac | `boot::build` with `H2_EMIT_TARGET=tvos` (`crates/apple-host/examples/pack.rs --platform tvos`) |
+| `disc/` | the disc files the app needs, as a directory (`vfs::DirDiscBackend` serves it as D:) | `pack` (`h2host::layout::DISC_FILES`) |
 | `bootcache/` | the XBE's analysis, copied to Caches on first launch so the fallback interpreter need not redo it | `pack` |
-| `platform/tvos/H2TV` | a UIKit host: a `GCEventViewController` whose view is a `CAMetalLayer`; a 30 Hz `CADisplayLink` calls `h2tv_redraw` | Xcode |
+| `platform/tvos/H2TV` | a UIKit host: a `GCEventViewController` whose view is a `CAMetalLayer`; a 30 Hz `CADisplayLink` calls `h2host_redraw` | Xcode |
 
 winit has no tvOS backend, so the Swift host owns the window and hands the
-layer to Rust (`include/h2tv.h`); wgpu renders into it through Metal. On tvOS
+layer to Rust (`platform/apple/h2host.h`, shared with iOS); wgpu renders into it through Metal. On tvOS
 `app::run` and the winit shell are compiled out; the frame handoff, compositor,
 pacing and guest thread are the same as `h2 play`'s.
 
@@ -30,7 +30,7 @@ space, so saves can disappear. The pipeline cache goes to
 You need Xcode with the tvOS SDK, the Rust toolchain the repository pins with
 its `rust-src` component (`rustup component add rust-src`; Homebrew's `rust`
 ships it), and the disc image. `aarch64-apple-tvos` is a tier 3 Rust target:
-`build.sh` builds `std` from source with `-Zbuild-std` and
+`build.sh` (a wrapper for `platform/apple/build.sh tvos`) builds `std` from source with `-Zbuild-std` and
 `RUSTC_BOOTSTRAP=1`, on the pinned compiler. The Mac build is unaffected.
 
 ```sh
@@ -39,7 +39,7 @@ platform/tvos/build.sh /abs/path/to/disc/halo2.iso
 
 This fills `platform/tvos/build/` (not committed):
 
-- `libtvos.a` (about 70 MB);
+- `libh2host.a` (about 70 MB);
 - `h2game.framework`, about 345 MB (the lift, emit and clang of the whole
   XBE for tvOS, like `h2 build`: about 560 MB of C and 600 MB of objects, 15
   minutes of clang on a busy 10-core Mac; the C and objects stay in
@@ -47,9 +47,10 @@ This fills `platform/tvos/build/` (not committed):
 - `disc/` (about 920 MB) and `bootcache/` (20 MB).
 
 `build.sh --no-module` keeps an existing framework. Rebuild it whenever the
-generator or the runtime ABI changes: the app compares the module's stamp
+generator, the runtime ABI or `Cargo.lock` changes (the boot cache's analysis
+is keyed by `Cargo.lock` too): the app compares the module's stamp
 (`h2game.stamp`, which for tvOS names the `arm64-apple-tvos17.0` target) and
-refuses a stale one with a message on screen. Leave `H2_FASTMEM`,
+refuses a stale one at start-up, with a message on screen. Leave `H2_FASTMEM`,
 `H2_X87_NATIVE`, `H2_PASSES` and the other generator switches unset; the app
 computes the stamp with their defaults, and `pack` refuses to run with any set.
 
@@ -125,12 +126,24 @@ button still goes home. With `H2_ICONS=auto` (the default here) the prompts
 show the remote's buttons after it was last used, and the pad's after the pad
 was (`--icons remote` / `H2_ICONS=remote` fixes it; docs/input/button-icons.md).
 
+## Typing
+
+When the game's virtual keyboard has a field open (a gamertag, a variant
+name), the app makes an invisible `UIKeyInput` view
+(`platform/apple/GameKeyInput.swift`) first responder, which brings up the
+system keyboard, and turns controller interaction on so the remote drives
+it. What is typed goes into the game's field through the same path as the
+Mac's typing (docs/input/host-keyboard.md); Done submits, Back on the game's own
+keyboard still cancels. Not yet tried on the Apple TV.
+
 ## Known gaps
 
-- Not run on a device by the agent that built it: everything above the
-  `h2tv_start` call is unverified on hardware (Metal on the A15, the 30 Hz
-  display link, cpal's audio unit on tvOS, GameController's remote profile).
-- Only the files in `tvos::layout::DISC_FILES` are bundled: `mainmenu`,
+- Run on an Apple TV 4K (3rd generation, A15): it boots to the menu with the
+  remote, its icons and sound working. Levels and their frame rate have not
+  been measured yet.
+- The system keyboard for the game's text fields is unverified on tvOS
+  (`UIKeyInput` may not bring up the tvOS keyboard).
+- Only the files in `h2host::layout::DISC_FILES` are bundled: `mainmenu`,
   `shared`, `single_player_shared`, `00a_introduction` and `zanzibar`, the
   fonts, `media/` and the intro movie. Choosing another level or map makes the
   game fail to open it (it may stop or hang on the loading screen). The map

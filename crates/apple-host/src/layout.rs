@@ -1,11 +1,13 @@
-//! Where the tvOS app finds and keeps things.
+//! Where the tvOS and iOS apps find and keep things.
 //!
 //! The bundle is read-only: the trimmed disc (`disc/`, a directory of the
 //! disc's files, served by `vfs::DirDiscBackend`), the generated module (an
 //! embedded framework, with its build stamp beside the binary) and the
 //! boot cache's analysis, so the first launch need not analyse the XBE.
-//! Everything written goes under the app's Caches directory, which tvOS
-//! may purge when it needs space: saves and settings included (docs/runtime/tvos.md).
+//! Caches (the boot cache, built pipelines) go under the app's Caches
+//! directory. The hard disk, saves and settings go under Documents where
+//! the platform has one that lasts (iOS, docs/runtime/ios.md); tvOS has none, so
+//! there they go in Caches too, which tvOS may purge (docs/runtime/tvos.md).
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +32,71 @@ pub const DISC_FILES: &[&str] = &[
     "bink/intro_60.bik",
 ];
 
+/// The device an app bundle is packed for (`examples/pack.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Tvos,
+    Ios,
+}
+
+impl Platform {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "tvos" => Some(Platform::Tvos),
+            "ios" => Some(Platform::Ios),
+            _ => None,
+        }
+    }
+
+    /// `H2_EMIT_TARGET` for the module (emit::compile::Arch::target_from).
+    pub fn emit_target(self) -> &'static str {
+        match self {
+            Platform::Tvos => "tvos",
+            Platform::Ios => "ios",
+        }
+    }
+
+    /// The module framework's `Info.plist`. Its minimum OS matches
+    /// emit's `TVOS_DEPLOYMENT_TARGET` / `IOS_DEPLOYMENT_TARGET`.
+    pub fn framework_plist(self) -> String {
+        let (platform, min) = match self {
+            Platform::Tvos => ("AppleTVOS", "17.0"),
+            Platform::Ios => ("iPhoneOS", "17.0"),
+        };
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>h2game</string>
+	<key>CFBundleIdentifier</key>
+	<string>red.forbes.h2recomp.h2game</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>h2game</string>
+	<key>CFBundlePackageType</key>
+	<string>FMWK</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>{platform}</string>
+	</array>
+	<key>MinimumOSVersion</key>
+	<string>{min}</string>
+</dict>
+</plist>
+"#
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     /// The trimmed disc, mounted as D:.
@@ -46,13 +113,14 @@ pub struct Layout {
 
 impl Layout {
     /// `bundle` is the app bundle (`Bundle.main.bundlePath`), `caches` the
-    /// app's Caches directory.
-    pub fn new(bundle: &Path, caches: &Path) -> Self {
+    /// app's Caches directory and `documents` its Documents directory, when
+    /// that persists (iOS; `None` on tvOS, where saves live in Caches).
+    pub fn new(bundle: &Path, caches: &Path, documents: Option<&Path>) -> Self {
         Self {
             disc: bundle.join("disc"),
             module: bundle.join(FRAMEWORK),
             bundled_cache: bundle.join("bootcache"),
-            data: caches.join("h2data"),
+            data: documents.unwrap_or(caches).join("h2data"),
             boot_cache: caches.join("h2boot-cache"),
         }
     }
@@ -106,7 +174,7 @@ mod tests {
         let base = std::env::var_os("TMPDIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let p = base.join(format!("h2-tvos-layout-{name}-{}", std::process::id()));
+        let p = base.join(format!("h2-host-layout-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -139,8 +207,25 @@ mod tests {
     }
 
     #[test]
+    fn each_platform_packs_its_own_target_and_framework_plist() {
+        assert_eq!(Platform::parse("tvos"), Some(Platform::Tvos));
+        assert_eq!(Platform::parse("ios"), Some(Platform::Ios));
+        assert_eq!(Platform::parse("macos"), None);
+        assert_eq!(Platform::Tvos.emit_target(), "tvos");
+        assert_eq!(Platform::Ios.emit_target(), "ios");
+        let tv = Platform::Tvos.framework_plist();
+        let ios = Platform::Ios.framework_plist();
+        assert!(tv.contains("<string>AppleTVOS</string>") && !tv.contains("iPhoneOS"));
+        assert!(ios.contains("<string>iPhoneOS</string>") && !ios.contains("AppleTVOS"));
+        for p in [&tv, &ios] {
+            assert!(p.contains("<string>FMWK</string>") && p.contains("<string>h2game</string>"));
+            assert!(p.contains("<key>MinimumOSVersion</key>\n\t<string>17.0</string>"));
+        }
+    }
+
+    #[test]
     fn paths_are_bundle_relative_and_writes_go_to_caches() {
-        let l = Layout::new(Path::new("/b/H2.app"), Path::new("/c/Caches"));
+        let l = Layout::new(Path::new("/b/H2.app"), Path::new("/c/Caches"), None);
         assert_eq!(l.disc, Path::new("/b/H2.app/disc"));
         assert_eq!(
             l.module,
@@ -152,9 +237,21 @@ mod tests {
     }
 
     #[test]
+    fn with_documents_the_hard_disk_persists_and_caches_stay_in_caches() {
+        let l = Layout::new(
+            Path::new("/b/H2.app"),
+            Path::new("/c/Caches"),
+            Some(Path::new("/d/Documents")),
+        );
+        assert_eq!(l.data, Path::new("/d/Documents/h2data"));
+        assert_eq!(l.boot_cache, Path::new("/c/Caches/h2boot-cache"));
+        assert_eq!(l.disc, Path::new("/b/H2.app/disc"));
+    }
+
+    #[test]
     fn a_whole_bundle_has_nothing_missing() {
         let b = temp("bundle");
-        let l = Layout::new(&b, &b.join("caches"));
+        let l = Layout::new(&b, &b.join("caches"), None);
         assert_eq!(l.missing().len(), 3);
         std::fs::create_dir_all(b.join("disc")).unwrap();
         std::fs::create_dir_all(b.join("Frameworks/h2game.framework")).unwrap();
@@ -171,7 +268,7 @@ mod tests {
     #[test]
     fn prepare_seeds_the_boot_cache_once_and_keeps_newer_files() {
         let b = temp("seed");
-        let l = Layout::new(&b, &b.join("caches"));
+        let l = Layout::new(&b, &b.join("caches"), None);
         assert_eq!(l.prepare().unwrap(), 0, "no bundled cache is fine");
         assert!(l.data.is_dir() && l.boot_cache.is_dir());
         std::fs::create_dir_all(&l.bundled_cache).unwrap();

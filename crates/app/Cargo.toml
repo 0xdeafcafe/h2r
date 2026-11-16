@@ -27,7 +27,7 @@ anyhow.workspace = true
 
 # winit has no tvOS backend; the tvOS app hosts the shell itself
 # (src/embedded.rs, platform/tvos).
-[target.'cfg(not(target_os = "tvos"))'.dependencies]
+[target.'cfg(not(any(target_os = "tvos", target_os = "ios")))'.dependencies]
 winit = "0.30"
 
 [[bin]]

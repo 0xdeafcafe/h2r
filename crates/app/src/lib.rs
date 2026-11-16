@@ -22,14 +22,14 @@ pub mod embedded;
 pub mod fps;
 pub mod frame;
 pub mod input_pump;
-#[cfg(not(target_os = "tvos"))]
+#[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
 pub mod overlay;
 pub mod pacing;
 pub mod scale;
-#[cfg(not(target_os = "tvos"))]
+#[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 mod shell;
 mod surface;
 pub mod watermark;
@@ -193,7 +193,7 @@ impl Closer {
 
     /// Connects the shell: `life` is the guest's lifecycle, `wake` asks the
     /// event loop to close.
-    #[cfg_attr(target_os = "tvos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "tvos", target_os = "ios"), allow(dead_code))]
     pub(crate) fn attach(&self, life: Lifecycle, wake: Wake) {
         let mut s = self.state();
         if s.requested {
@@ -455,7 +455,7 @@ fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
 /// an error otherwise). Returns after the window has closed and the guest
 /// thread has stopped or timed out. Not on tvOS, where the app owns the
 /// window: see [`embedded::Embedded`].
-#[cfg(not(target_os = "tvos"))]
+#[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 pub fn run<F>(config: AppConfig, guest: F) -> anyhow::Result<ExitReport>
 where
     F: FnOnce(GuestHost) -> anyhow::Result<()> + Send + 'static,
