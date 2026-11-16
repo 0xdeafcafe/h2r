@@ -1,9 +1,11 @@
 # Scenario editor (`crates/scenario-edit`)
 
 A Sapien-style placement editor for Halo 2 cache files. It reads the
-scenario's placement blocks, lets you move, rotate and retarget entries,
-and writes a new `.map`: the source byte for byte, except the edited
-fields and the header checksum. It never writes the source, and nothing
+scenario's placement blocks, lets you move, rotate, retarget, delete and
+add entries, and writes a new `.map`: the source byte for byte, except the
+edited fields, the counts and pointers of changed blocks, any block that
+grew (appended to the metadata), the header sizes that grow with it, and
+the header checksum. It never writes the source, and nothing
 from the disc goes into the repository.
 
 Evidence labels are those of [forge.md](forge.md): **E** read from the
@@ -23,8 +25,9 @@ Addresses are guest virtual addresses of the 1.0 XBE.
 ## 1. Blocks
 
 The `scnr` root holds each block as a `(count, address)` pair. Every block
-this editor reads lies inside the scenario tag's own payload; a block that
-does not, or two placement blocks that share bytes, make the read fail.
+this editor reads lies inside the scenario tag's own payload, or (a block
+it grew, §6) in the ordinary metadata past every tag; a block anywhere
+else, or two placement blocks that share bytes, make the read fail.
 
 | Block | `scnr` | Stride | Stride evidence |
 |---|---|---|---|
@@ -98,28 +101,48 @@ rolls each with `collection_select`. Shown, not editable: the other bytes
 ## 3. Edit model
 
 - `Scenario::read` keeps each block's elements as raw bytes, plus a copy
-  of the source bytes.
+  of the source bytes, and the scenario object names block (`scnr+0x48`,
+  §6). A block may lie in the scenario's payload or, when this editor grew
+  it, in the ordinary metadata past every tag; anywhere else the read
+  fails.
 - `Scenario::set(block, index, field, value)` validates and writes one
   field: editable only, finite floats, nonnegative scale, integers in
   range for the type, palette index -1 or inside the palette, tag
   references to tags that exist with the stated, accepted group.
-- `History` applies `Command`s (one or more sets) with undo and redo. A
-  command that fails part-way is rolled back. Commands with the same
-  merge key in a row (one drag, or typing into one field) are one undo
-  step; `seal` ends a merge. Undo restores source values without
-  validation, so a damaged source value comes back exactly.
-- `Scenario::patches` compares current and source bytes and returns one
-  `(payload offset, bytes)` per contiguous run of changed bytes. Undoing
-  everything gives no patches.
-- `save::write_patched` queues those through `MapEditor::patch_tag` and
-  streams the map; `MapEditor::write_to` recomputes the checksum at
-  `+0x2d0`. `save::save_as` writes a sibling `.partial` file, syncs it and
-  renames it over the destination, and refuses to write the source path.
+- `Scenario::remove(block, index)` swap-removes an entry and repoints the
+  object names (§6); `unremove` puts the count, both slots and the names
+  back exactly. `Scenario::add(block, bytes)` appends one element;
+  `new_entry(block, like, position)` makes one (a copy of `like`, or
+  zeroed with the palette's first entry and name index -1) with its
+  position set.
+- `History` applies `Command`s (one or more `Op`s: set, remove, add) with
+  undo and redo. A command that fails part-way is rolled back. Commands
+  of field sets with the same merge key in a row (one drag, or typing
+  into one field) are one undo step; `seal` ends a merge. Undo restores
+  source values without validation, so a damaged source value comes back
+  exactly.
+- `Scenario::changes` compares current and source and returns `Changes`:
+  - `patches`: one `(virtual address, bytes)` per contiguous run of
+    changed bytes in blocks that still fit their source space, plus the
+    root count of a block whose length changed. A removal leaves the old
+    tail element's bytes in place as dead data.
+  - `grown`: each block with more entries than its source, as a whole new
+    copy.
+  Undoing everything gives no changes.
+- `save::write_patched` queues the patches through
+  `MapEditor::patch_metadata`, appends each grown block with
+  `MapEditor::append_metadata` and points its root `(count, address)`
+  there, and streams the map; `MapEditor::write_to` grows the header sizes
+  and recomputes the checksum at `+0x2d0`. `save::save_as` writes a
+  sibling `.partial` file, syncs it and renames it over the destination,
+  and refuses to write the source path.
 
 Tests on an invented cache check that an unedited save is byte-identical,
 that each editable field changes only its own bytes and the checksum, that
-the result validates and reads back, and the undo, merge and rollback
-rules.
+the result validates and reads back, the undo, merge and rollback rules,
+that a removal writes only the slot, the count and the names, and that a
+grown block changes only its root pair and the header sizes and lands
+after the old end of the metadata.
 
 ## 4. The panel
 
@@ -135,12 +158,27 @@ pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<u64>
 pub fn undo(&mut self) -> bool
 pub fn redo(&mut self) -> bool
 pub fn apply(&mut self, command: Command) -> Result<()>
+pub fn remove_entry(&mut self, kind: BlockKind, index: usize) -> Result<()>
+pub fn add_entry(&mut self, kind: BlockKind, like: Option<usize>) -> Result<usize>
+pub fn remove_refusal(&self, kind: BlockKind) -> Option<&'static str>
+pub fn add_refusal(&self, kind: BlockKind) -> Option<&'static str>
+pub fn set_allow_growth(&mut self, allow: bool)
 ```
 
 - **Toolbar:** a path box (a `.map`, or an `.iso` to list its maps), undo,
   redo, save-as path. Cmd/Ctrl+Z undoes, Cmd+Shift+Z or Cmd+Y redoes.
 - **Outliner:** blocks, then entries labelled with the base name of their
   palette tag or item, read from the map's own tag names at run time.
+  **Delete** and **Duplicate** buttons act on the selection; right-click
+  an entry for Duplicate / Delete / Add new, or a block header for Add
+  new. A new entry is a copy of the selected one (or zeroed with the
+  palette's first item) placed at the camera focus. Each is one undo
+  step. A refused action is greyed out with its reason on hover.
+- **Growth:** adding to a block that is full (as many entries as the
+  source) would grow it. That is off in the panel: the engine's limit is
+  not established (§6), so add works only in the room a removal made.
+  `ScenarioEditor::set_allow_growth(true)` turns growth on for a shell
+  that wants it.
 - **Inspector:** each typed field with its offset and evidence (hover);
   vectors and numbers as drag values, palette index and item as pickers.
 - **Viewport:** the structure BSPs (clusters and instanced geometry,
@@ -190,45 +228,90 @@ bytes; that is the variant-hash problem of forge.md §2.4.
 
 ## 6. Adding and removing entries
 
-`MapEditor` only queues fixed-size patches inside a tag's payload; it
-cannot move or grow a block. What each operation needs:
+### What refers to entries by index
 
-- **Remove, in place (no writer change):** swap the last element into the
-  removed slot and decrement the block's count in the `scnr` root (two
-  patches). The tail element's old bytes stay as dead data. Safe for the
-  netgame and spawn blocks, whose readers only walk `count` entries (E:
-  the loops above). For object placements, check first that nothing
-  refers to placements by index (scenario object names at `+0x02` point
-  the other way, from name to placement; HaloScript and AI may hold
-  indices; S). A cheaper "disabled" convention (palette index -1 for
-  objects) is plausible for object placements, since the loader skips a
-  -1 type (S, to confirm in the placement loader before relying on it).
-- **Add, using slack (no writer change):** only if the block happens to
-  be followed by bytes no other structure uses, which cannot be known
-  without decoding every block of the tag. Not offered.
-- **Add, in general (writer change):** `MapEditor` needs an operation
-  that appends bytes to a tag and returns their virtual address, so a
-  block can be copied to the end of the tag with room to spare and its
-  `(count, address)` rewritten. Concretely:
-  - grow the tag payload: write the new bytes after the tag's last byte,
-    update the tag entry size in the index, and shift every later byte of
-    the metadata region (or append at the end of the metadata region and
-    move the scenario tag there);
-  - fix every metadata pointer into the shifted range. That requires
-    knowing every pointer in every later tag, which is the full tag-graph
-    relocator `writer.rs` says it is not. Appending at the end of the
-    metadata region and relocating only the one scenario block avoids
-    shifting others, but the region's declared size (`+0x18`), the cache
-    size limits and what the engine maps after the metadata (S) all need
-    checking;
-  - `scnr` is the first tag the engine reads after load
-    (`load_requested_scenario_cache` `0x0018eaa0`), and the engine's
-    metadata region is a fixed-size guest allocation, so growth must stay
-    within it (S, to measure).
+Read in the XBE (**E**) unless marked:
 
-  The runtime alternative from forge.md §2.2 (patch blocks in guest memory
-  after load, with new blocks in a guest range the runtime reserves) avoids
-  rewriting the file at all, and may be the cheaper route to "add".
+- **Scenario object names** (`scnr+0x48`, stride `0x24`, at most 640:
+  `cmp ax,280h` at `0x000bb765` and five other lookups). `object_create`
+  by name (`0x000bb670`, stride from `lea ecx,[eax+eax*8]` at
+  `0x000bb702`) reads the object type (i16 `+0x20`, an index into the
+  type table `0x00468630`) and the placement index (i16 `+0x22`); -1
+  creates nothing (`0x000bb716`). So names point at placements by index.
+  The placement's own `+0x02` points the other way, at its name, and
+  moves with the element. HaloScript and the runtime keep name indices,
+  not placement indices (`0x0011c380`, `0x0029fd80`, `0x0020a130`).
+- The placement's object ID (`+0x28`) is matched by value
+  (`0x000bf760`), not by index.
+- Runtime objects keep their placement index (`+0x1a`); the BSP-switch
+  re-create pass `0x000d5640` rebuilds its bitmask from them each load.
+  Network object creation sends a placement index (`0x000a73b0`), bounds
+  checked against the client's own count. Both are fine when every peer
+  loads the same map.
+- Player starting locations (`0x0014ef90`, `0x0014bcb0`), netgame flags
+  (`0x0019ec40`, results cached per game at `[0x4e9ae8]+0xafc`), netgame
+  equipment (`0x0015aad0`, `0x0015ae70`) and starting equipment
+  (`0x0019ef64`) are walked from 0 to count; no tag field stores an
+  index into them. The netgame equipment index travels as an i8 on the
+  spawned object (`0x0015ac15`), rebuilt per game. Ties between starting
+  locations go to the lower index, and the first matching starting
+  equipment entry wins, so order can matter (S).
+- Not disassembled: the AI, device-group and trigger-volume readers. In
+  the public layout they hold name or palette indices, or the reference
+  runs from the placement to them (S).
+
+### Remove
+
+Every block allows removal. The last element moves into the removed slot
+and the count drops (two fixed-size patches; the old tail stays as dead
+data). For object placements the names are repointed in the same edit:
+the name that named the last placement (same type) now names the slot it
+moved to, and a name that named the removed placement now names nothing
+(-1, which `object_create` skips). The inspector says when a placement is
+named. Undo restores the count, both slots and the names byte for byte.
+
+### Add
+
+New entries are appended. While a block has no more entries than its
+source (after a removal), they are written in place. Past that the block
+grows: the save appends a full copy of the block to the ordinary
+metadata (`MapEditor::append_metadata`, [map-format.md](map-format.md)
+"Growing the metadata") and points the root `(count, address)` at it.
+The old elements stay where they were, unreferenced.
+
+Entry limits, enforced on add: object placements use the per-type maximums
+at `0x0044074c` (scenery 2000, vehicles 256, equipment 256, weapons 128,
+machines 400, sound scenery 256, crates 1024). `0x000d5640` sums them into
+one bitmask without checking the index, so more entries would spill into
+the next type's bits. Netgame equipment allows 100: its runtime array is
+cleared for 100 entries (`0x0015acf4`) and its loops do not check. No
+limit was found for starting locations, netgame flags or starting
+equipment.
+
+**Why growth is off in the panel.** The loader (`0x1228f0`) places the
+metadata at `base + (+0x1c) - (+0x18)`, so growing both by the same amount
+keeps every tag where it was. It allocates `+0x1c` from the low end of the
+physical arena (`0x30e4000` bytes at `0x61000`, `0x12b400`) and fails only
+when that crosses the arena's high cursor (`0x12296c`). After the load,
+`0x12c1e0` gives every page still free to one pool (handed to `0x13d8b0`,
+probably the texture and geometry cache, S). So growth comes out of that
+pool, and the real limit is how much headroom the high side leaves. That
+was not measured statically. The writer bounds `+0x1c` by the largest
+value any retail map of the same cache type has (multiplayer `0x62c000`),
+which that pool is known to tolerate; on the owner's disc that leaves
+waterworks no room and the other multiplayer maps about 0.1 to 1.5 MiB. Whether
+`0x13d8b0` degrades with a smaller pool is open. Measuring
+`[0x4e6440] - [0x4e642c]` after a load in the runtime would settle it.
+
+The disc test `disc_add_and_remove_round_trip` (ignored by default) adds
+a netgame equipment entry and removes a weapon on every multiplayer map,
+saves to memory, and re-reads the result with `map` (checksum valid),
+`tags::DecodedTag` (scenario) and this crate; only the header sizes, the
+checksum, the patches and the block pair differ from the source. On the
+owner's disc 11 maps grew and waterworks was refused at the bound.
+
+The runtime alternative from forge.md §2.2 (patch blocks in guest memory
+after load) avoids rewriting the file and has the same memory question.
 
 ## 7. Open questions
 
@@ -239,5 +322,9 @@ cannot move or grow a block. What each operation needs:
   not typed.
 - The netgame equipment game-type bytes at `+0x04` and the meaning of
   respawn mode 0 and 1 are not decoded.
-- Whether any engine code indexes object placements in a way that a
-  swap-remove would break.
+- The AI, device-group and trigger-volume readers have not been checked
+  for placement indices (§6, S).
+- The engine's real headroom for a larger `+0x1c`, and whether the pool
+  that loses it degrades (§6). Until then growth is off in the panel.
+- A campaign checkpoint saved before an edit holds runtime placement
+  indices that a removal invalidates; only fresh loads are safe.

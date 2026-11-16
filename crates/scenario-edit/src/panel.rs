@@ -8,7 +8,7 @@ use crate::geometry::{self, Camera, Marker, Tri, Vec3};
 use crate::layout::{BlockKind, FieldType, Role};
 use crate::render::{self, Viewport};
 use crate::save::{self, MapSource};
-use crate::scenario::{Scenario, TagRef, Value};
+use crate::scenario::{Changes, Scenario, TagRef, Value};
 use crate::{Error, Result};
 use egui::{PointerButton, Sense};
 use map::ResourceFile;
@@ -19,8 +19,8 @@ struct Doc {
     source: MapSource,
     scenario: Scenario,
     history: History,
-    /// Patches at the last save (or the source's, empty), for `is_dirty`.
-    saved: Vec<(u32, Vec<u8>)>,
+    /// Changes at the last save (or the source's, empty), for `is_dirty`.
+    saved: Changes,
     world: Vec<Tri>,
 }
 
@@ -51,7 +51,15 @@ pub struct ScenarioEditor {
     drag: Option<Drag>,
     next_key: u64,
     filter: String,
+    /// Whether adding may grow a block past its source size (appending it
+    /// to the map's metadata). Off: the engine's headroom for more tag
+    /// memory is not established (docs/scenario-editor.md §6).
+    allow_growth: bool,
 }
+
+/// Why the panel refuses to grow a block while growth is off.
+pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag memory, and the \
+     engine's headroom for that is not established (docs/scenario-editor.md §6)";
 
 impl Default for ScenarioEditor {
     fn default() -> Self {
@@ -76,6 +84,7 @@ impl ScenarioEditor {
             drag: None,
             next_key: 1,
             filter: String::new(),
+            allow_growth: false,
         }
     }
 
@@ -117,7 +126,7 @@ impl ScenarioEditor {
             source,
             scenario,
             history: History::default(),
-            saved: Vec::new(),
+            saved: Changes::default(),
             world,
         });
         self.selected = None;
@@ -154,7 +163,7 @@ impl ScenarioEditor {
     pub fn is_dirty(&self) -> bool {
         self.doc
             .as_ref()
-            .is_some_and(|d| d.scenario.patches() != d.saved)
+            .is_some_and(|d| d.scenario.changes() != d.saved)
     }
 
     /// Write the edited map to `path`: the source with the changed fields
@@ -162,7 +171,7 @@ impl ScenarioEditor {
     pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<u64> {
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         let n = save::save_as(&doc.source, &doc.scenario, path.as_ref())?;
-        doc.saved = doc.scenario.patches();
+        doc.saved = doc.scenario.changes();
         doc.history.seal();
         self.status = format!("saved {} ({n} bytes)", path.as_ref().display());
         Ok(n)
@@ -209,6 +218,58 @@ impl ScenarioEditor {
     }
     pub fn can_redo(&self) -> bool {
         self.doc.as_ref().is_some_and(|d| d.history.can_redo())
+    }
+
+    /// Let adding grow a block past its source size. Off by default; see
+    /// [`GROWTH_REFUSAL`].
+    pub fn set_allow_growth(&mut self, allow: bool) {
+        self.allow_growth = allow;
+    }
+
+    /// Why entry removal is refused for a block, if it is.
+    pub fn remove_refusal(&self, kind: BlockKind) -> Option<&'static str> {
+        self.scenario()?.remove_refusal(kind)
+    }
+
+    /// Why adding to a block is refused, if it is.
+    pub fn add_refusal(&self, kind: BlockKind) -> Option<&'static str> {
+        let s = self.scenario()?;
+        if let Some(why) = s.add_refusal(kind) {
+            return Some(why);
+        }
+        let b = s.block(kind);
+        (!self.allow_growth && b.len() >= b.capacity()).then_some(GROWTH_REFUSAL)
+    }
+
+    /// Remove an entry (the block's last entry takes its slot), as one undo
+    /// step. The selection moves to the entry now in that slot, if any.
+    pub fn remove_entry(&mut self, kind: BlockKind, index: usize) -> Result<()> {
+        if let Some(why) = self.remove_refusal(kind) {
+            return Err(Error::Refused(why));
+        }
+        self.apply(Command::remove(kind, index))?;
+        let len = self.scenario().map_or(0, |s| s.block(kind).len());
+        self.select((index < len).then_some((kind, index)));
+        Ok(())
+    }
+
+    /// Add an entry as one undo step: a copy of entry `like`, or a zeroed
+    /// entry with the palette's first item, placed at the camera focus.
+    /// Selects and returns the new entry's index.
+    pub fn add_entry(&mut self, kind: BlockKind, like: Option<usize>) -> Result<usize> {
+        if let Some(why) = self.add_refusal(kind) {
+            return Err(Error::Refused(why));
+        }
+        let s = self.scenario().ok_or(Error::Save("no map is open"))?;
+        let entry = s.new_entry(kind, like, Some(self.camera.target))?;
+        let index = s.block(kind).len();
+        let mut command = Command::add(kind, entry);
+        if let Some(i) = like {
+            command.label = format!("duplicate {kind:?} {i}");
+        }
+        self.apply(command)?;
+        self.select(Some((kind, index)));
+        Ok(index)
     }
 
     /// Draw the panel.
@@ -318,10 +379,47 @@ impl ScenarioEditor {
         let Some(doc) = &self.doc else { return };
         let filter = self.filter.to_ascii_lowercase();
         let mut pick = None;
+        let mut action = None;
+        let refusals: Vec<_> = doc
+            .scenario
+            .blocks
+            .iter()
+            .map(|b| {
+                (
+                    self.remove_refusal(b.def.kind),
+                    self.add_refusal(b.def.kind),
+                )
+            })
+            .collect();
+        ui.horizontal(|ui| {
+            let sel = self.selected;
+            let (remove, add) = match sel {
+                Some((kind, _)) => (self.remove_refusal(kind), self.add_refusal(kind)),
+                None => (Some("select an entry"), Some("select an entry")),
+            };
+            let r = ui.add_enabled(remove.is_none(), egui::Button::new("Delete"));
+            if let Some(why) = remove {
+                r.clone().on_disabled_hover_text(why);
+            }
+            if r.clicked()
+                && let Some((kind, i)) = sel
+            {
+                action = Some(Action::Remove(kind, i));
+            }
+            let r = ui.add_enabled(add.is_none(), egui::Button::new("Duplicate"));
+            if let Some(why) = add {
+                r.clone().on_disabled_hover_text(why);
+            }
+            if r.clicked()
+                && let Some((kind, i)) = sel
+            {
+                action = Some(Action::Add(kind, Some(i)));
+            }
+        });
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for b in &doc.scenario.blocks {
+            for (b, (remove, add)) in doc.scenario.blocks.iter().zip(&refusals) {
                 let header = format!("{} ({})", b.def.label, b.len());
-                egui::CollapsingHeader::new(header)
+                let r = egui::CollapsingHeader::new(header)
                     .id_salt(b.def.kind)
                     .show(ui, |ui| {
                         for i in 0..b.len() {
@@ -330,11 +428,18 @@ impl ScenarioEditor {
                                 continue;
                             }
                             let on = self.selected == Some((b.def.kind, i));
-                            if ui.selectable_label(on, label).clicked() {
+                            let r = ui.selectable_label(on, label);
+                            if r.clicked() {
                                 pick = Some((b.def.kind, i));
                             }
+                            r.context_menu(|ui| {
+                                entry_menu(ui, b.def.kind, Some(i), *remove, *add, &mut action);
+                            });
                         }
                     });
+                r.header_response.context_menu(|ui| {
+                    entry_menu(ui, b.def.kind, None, *remove, *add, &mut action);
+                });
             }
         });
         if let Some(p) = pick {
@@ -342,6 +447,14 @@ impl ScenarioEditor {
             if let Some(m) = self.markers.iter().find(|m| (m.block, m.index) == p) {
                 self.camera.target = m.position;
             }
+        }
+        let r = match action {
+            Some(Action::Remove(kind, i)) => self.remove_entry(kind, i),
+            Some(Action::Add(kind, like)) => self.add_entry(kind, like).map(|_| ()),
+            None => Ok(()),
+        };
+        if let Err(e) = r {
+            self.status = e.to_string();
         }
     }
 
@@ -357,6 +470,13 @@ impl ScenarioEditor {
             "{} #{index}, stride {:#x} ({})",
             block.def.label, block.def.stride, block.def.stride_evidence
         ));
+        let named = doc.scenario.names_of(kind, index).len();
+        if named > 0 {
+            ui.label(format!(
+                "named by {named} scenario object name(s): scripts may create it by name; \
+                 deleting it leaves the name naming nothing"
+            ));
+        }
         ui.separator();
         let mut edits = Vec::new();
         for f in block.def.fields {
@@ -547,6 +667,45 @@ impl ScenarioEditor {
             }
         }
     }
+}
+
+/// An outliner action, applied after the outliner is drawn.
+#[derive(Clone, Copy, Debug)]
+enum Action {
+    Remove(BlockKind, usize),
+    /// Add to a block: a copy of an entry, or a new entry.
+    Add(BlockKind, Option<usize>),
+}
+
+/// The context menu of an outliner entry (`index`) or block header.
+fn entry_menu(
+    ui: &mut egui::Ui,
+    kind: BlockKind,
+    index: Option<usize>,
+    remove: Option<&'static str>,
+    add: Option<&'static str>,
+    action: &mut Option<Action>,
+) {
+    let mut item = |ui: &mut egui::Ui, text: &str, refusal: Option<&'static str>, a: Action| {
+        let r = ui.add_enabled(refusal.is_none(), egui::Button::new(text));
+        if let Some(why) = refusal {
+            r.clone().on_disabled_hover_text(why);
+        }
+        if r.clicked() {
+            *action = Some(a);
+            ui.close();
+        }
+    };
+    if let Some(i) = index {
+        item(ui, "Duplicate", add, Action::Add(kind, Some(i)));
+        item(ui, "Delete", remove, Action::Remove(kind, i));
+    }
+    item(
+        ui,
+        "Add new at the camera focus",
+        add,
+        Action::Add(kind, None),
+    );
 }
 
 fn hash_key(kind: BlockKind, index: usize, field: &str) -> u64 {

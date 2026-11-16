@@ -1,12 +1,13 @@
 //! Edits as commands with undo and redo.
 //!
-//! A command is a list of field sets applied together (moving a selection,
-//! say). The history keeps, for each applied command, the value every field
-//! had before, so undo restores exactly those bytes. Consecutive commands
-//! with the same merge key (one drag gesture) collapse into one undo step.
+//! A command is a list of operations applied together (moving a selection,
+//! say): field sets, swap-removals and appends. The history keeps, for each
+//! applied command, what every operation replaced, so undo restores exactly
+//! those bytes and counts. Consecutive commands with the same merge key (one
+//! drag gesture) collapse into one undo step.
 use crate::Result;
 use crate::layout::BlockKind;
-use crate::scenario::{Scenario, Value};
+use crate::scenario::{Removed, Scenario, Value};
 
 /// One field change.
 #[derive(Clone, Debug, PartialEq)]
@@ -17,25 +18,58 @@ pub struct SetField {
     pub value: Value,
 }
 
-/// A user action: one or more field sets, undone as one step.
+/// One operation of a command.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Op {
+    Set(SetField),
+    /// Swap-remove entry `index`: the last entry takes its slot.
+    Remove {
+        block: BlockKind,
+        index: usize,
+    },
+    /// Append one entry (exactly one stride of bytes).
+    Add {
+        block: BlockKind,
+        entry: Vec<u8>,
+    },
+}
+
+/// A user action: one or more operations, undone as one step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
     pub label: String,
-    pub sets: Vec<SetField>,
+    pub ops: Vec<Op>,
     /// Commands with equal merge keys in a row become one undo step (for
-    /// example every frame of one drag). `None` never merges.
+    /// example every frame of one drag). `None` never merges. Only commands
+    /// made of field sets merge.
     pub merge: Option<u64>,
 }
 impl Command {
     pub fn set(block: BlockKind, index: usize, field: &'static str, value: Value) -> Self {
         Self {
             label: format!("set {field}"),
-            sets: vec![SetField {
+            ops: vec![Op::Set(SetField {
                 block,
                 index,
                 field,
                 value,
-            }],
+            })],
+            merge: None,
+        }
+    }
+    /// Remove entry `index` of a block (the last entry moves into its slot).
+    pub fn remove(block: BlockKind, index: usize) -> Self {
+        Self {
+            label: format!("remove {block:?} {index}"),
+            ops: vec![Op::Remove { block, index }],
+            merge: None,
+        }
+    }
+    /// Append an entry to a block; it becomes the block's last entry.
+    pub fn add(block: BlockKind, entry: Vec<u8>) -> Self {
+        Self {
+            label: format!("add {block:?}"),
+            ops: vec![Op::Add { block, entry }],
             merge: None,
         }
     }
@@ -43,13 +77,24 @@ impl Command {
         self.merge = Some(key);
         self
     }
+    fn only_sets(&self) -> bool {
+        self.ops.iter().all(|o| matches!(o, Op::Set(_)))
+    }
+}
+
+/// What an applied operation replaced.
+#[derive(Clone, Debug, PartialEq)]
+enum Undo {
+    Set(SetField),
+    Removed(Removed),
+    Added { block: BlockKind, entry: Vec<u8> },
 }
 
 #[derive(Clone, Debug)]
 struct Applied {
     command: Command,
-    /// Field values before the command, in application order.
-    before: Vec<SetField>,
+    /// What each operation replaced, in application order.
+    before: Vec<Undo>,
 }
 
 /// Undo and redo stacks over a [`Scenario`].
@@ -60,33 +105,35 @@ pub struct History {
 }
 
 impl History {
-    /// Apply a command. If any set fails, the ones before it are rolled
-    /// back and the scenario is unchanged.
+    /// Apply a command. If any operation fails, the ones before it are
+    /// rolled back and the scenario is unchanged.
     pub fn apply(&mut self, scenario: &mut Scenario, command: Command) -> Result<()> {
-        let before = apply_all(scenario, &command.sets)?;
+        let before = apply_all(scenario, &command.ops)?;
         self.undone.clear();
         if let (Some(key), Some(last)) = (command.merge, self.done.last_mut())
             && last.command.merge == Some(key)
+            && command.only_sets()
+            && last.command.only_sets()
         {
             // Keep the oldest "before" for each field; take the new targets.
             for b in before {
+                let Undo::Set(b) = b else { continue };
                 if !last
                     .before
                     .iter()
-                    .any(|x| x.block == b.block && x.index == b.index && x.field == b.field)
+                    .any(|x| matches!(x, Undo::Set(x) if same_field(x, &b)))
                 {
-                    last.before.push(b);
+                    last.before.push(Undo::Set(b));
                 }
             }
-            for s in command.sets {
-                match last
-                    .command
-                    .sets
-                    .iter_mut()
-                    .find(|x| x.block == s.block && x.index == s.index && x.field == s.field)
-                {
+            for op in command.ops {
+                let Op::Set(s) = op else { continue };
+                match last.command.ops.iter_mut().find_map(|x| match x {
+                    Op::Set(x) if same_field(x, &s) => Some(x),
+                    _ => None,
+                }) {
                     Some(x) => x.value = s.value,
-                    None => last.command.sets.push(s),
+                    None => last.command.ops.push(Op::Set(s)),
                 }
             }
             return Ok(());
@@ -100,9 +147,7 @@ impl History {
         let Some(applied) = self.done.pop() else {
             return Ok(None);
         };
-        let mut restore = applied.before.clone();
-        restore.reverse();
-        if let Err(e) = apply_with(scenario, &restore, false) {
+        if let Err(e) = revert(scenario, &applied.before) {
             self.done.push(applied);
             return Err(e);
         }
@@ -118,7 +163,7 @@ impl History {
         let Some(command) = self.undone.pop() else {
             return Ok(None);
         };
-        match apply_all(scenario, &command.sets) {
+        match apply_all(scenario, &command.ops) {
             Ok(before) => {
                 let label = command.label.clone();
                 self.done.push(Applied { command, before });
@@ -145,31 +190,49 @@ impl History {
     }
 }
 
-fn apply_all(scenario: &mut Scenario, sets: &[SetField]) -> Result<Vec<SetField>> {
-    apply_with(scenario, sets, true)
+fn same_field(a: &SetField, b: &SetField) -> bool {
+    a.block == b.block && a.index == b.index && a.field == b.field
 }
 
-fn apply_with(scenario: &mut Scenario, sets: &[SetField], validate: bool) -> Result<Vec<SetField>> {
-    let mut before = Vec::with_capacity(sets.len());
-    for s in sets {
-        let r = if validate {
-            scenario.set(s.block, s.index, s.field, s.value)
-        } else {
-            scenario.write(s.block, s.index, s.field, s.value)
+fn apply_all(scenario: &mut Scenario, ops: &[Op]) -> Result<Vec<Undo>> {
+    let mut before = Vec::with_capacity(ops.len());
+    for op in ops {
+        let r = match op {
+            Op::Set(s) => scenario.set(s.block, s.index, s.field, s.value).map(|old| {
+                Undo::Set(SetField {
+                    value: old,
+                    ..s.clone()
+                })
+            }),
+            Op::Remove { block, index } => scenario.remove(*block, *index).map(Undo::Removed),
+            Op::Add { block, entry } => scenario.add(*block, entry.clone()).map(|_| Undo::Added {
+                block: *block,
+                entry: entry.clone(),
+            }),
         };
         match r {
-            Ok(old) => before.push(SetField {
-                value: old,
-                ..s.clone()
-            }),
+            Ok(u) => before.push(u),
             Err(e) => {
-                for b in before.iter().rev() {
-                    // Restores values just read back, so the types match.
-                    let _ = scenario.write(b.block, b.index, b.field, b.value);
-                }
+                // Restores what was just replaced, so it cannot fail.
+                let _ = revert(scenario, &before);
                 return Err(e);
             }
         }
     }
     Ok(before)
+}
+
+/// Undo operations newest first. Field values are written without
+/// validation, so a damaged source value comes back exactly.
+fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
+    for u in before.iter().rev() {
+        match u {
+            Undo::Set(s) => {
+                scenario.write(s.block, s.index, s.field, s.value)?;
+            }
+            Undo::Removed(r) => scenario.unremove(r)?,
+            Undo::Added { block, entry } => scenario.unadd(*block, entry)?,
+        }
+    }
+    Ok(())
 }
