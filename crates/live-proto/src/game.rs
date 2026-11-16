@@ -191,7 +191,7 @@ pub struct GameEnded {
 
 pub const END_REASONS: [&str; 3] = ["finished", "quit", "lost"];
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FramePlayer {
     pub index: u32,
     pub alive: bool,
@@ -199,6 +199,35 @@ pub struct FramePlayer {
     pub yaw: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<String>,
+    /// The player's biped, from its definition tag: `"spartan"` or
+    /// `"elite"`; other bipeds pass through as a short id (readers fall back
+    /// to spartan).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub species: Option<String>,
+    /// Where the unit aims, in game coordinates (z up), unit length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<[f64; 3]>,
+    /// The held weapon's tag file stem, lower case (`"battle_rifle"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    /// Shots the held weapon fired since this player's previous frame; zero
+    /// is sent as absent.
+    #[serde(default, skip_serializing_if = "no_shots")]
+    pub shots: Option<u32>,
+}
+
+fn no_shots(shots: &Option<u32>) -> bool {
+    shots.is_none_or(|n| n == 0)
+}
+
+/// Most shots one frame may report (frames are 15 Hz).
+pub const MAX_FRAME_SHOTS: u32 = 64;
+
+/// A frame's `species` or `weapon` id: `[a-z0-9_]{1,32}`.
+pub fn valid_model_id(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// One telemetry frame (`tick` is the game tick, 30 per second).
@@ -370,7 +399,64 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
     if !frame.players.iter().all(finite) {
         return Err("positions must be finite".into());
     }
+    for p in &frame.players {
+        if let Some(aim) = p.aim
+            && (!aim.iter().all(|c| c.is_finite()) || length(aim) < 1e-6)
+        {
+            return Err("aim must be a finite, non-zero vector".into());
+        }
+        let ids = [&p.species, &p.weapon];
+        if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
+            return Err("species and weapon must be [a-z0-9_]{1,32}".into());
+        }
+        if p.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
+            return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
+        }
+    }
     Ok(())
+}
+
+fn length(v: [f64; 3]) -> f64 {
+    v.iter().map(|c| c * c).sum::<f64>().sqrt()
+}
+
+impl Frame {
+    /// Each player's shot count, for carrying into a later frame when this
+    /// one is not delivered.
+    pub fn shots(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.players
+            .iter()
+            .filter_map(|p| Some((p.index, p.shots.filter(|n| *n > 0)?)))
+    }
+
+    /// Adds shots from frames that were dropped (coalesced or throttled) to
+    /// this one, so `shots` stays "since the previous delivered frame".
+    /// Players not in this frame lose theirs; counts cap at
+    /// [`MAX_FRAME_SHOTS`].
+    pub fn add_shots(&mut self, shots: impl IntoIterator<Item = (u32, u32)>) {
+        for (index, n) in shots {
+            if let Some(p) = self.players.iter_mut().find(|p| p.index == index) {
+                let total = p.shots.unwrap_or(0).saturating_add(n).min(MAX_FRAME_SHOTS);
+                p.shots = (total > 0).then_some(total);
+            }
+        }
+    }
+}
+
+/// Puts a validated frame in its stored form: every `aim` unit length and a
+/// zero `shots` absent.
+pub fn normalize_frame(frame: &mut Frame) {
+    for p in &mut frame.players {
+        if let Some(aim) = &mut p.aim {
+            let len = length(*aim);
+            if len > 0.0 {
+                aim.iter_mut().for_each(|c| *c /= len);
+            }
+        }
+        if p.shots == Some(0) {
+            p.shots = None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +592,130 @@ mod tests {
         assert_eq!(validate_frame(&f), Ok(()));
         assert!(valid_id("7f3c-a_B"));
         assert!(!valid_id("") && !valid_id("a b") && !valid_id(&"x".repeat(65)));
+    }
+
+    #[test]
+    fn frame_players_carry_species_aim_weapon_and_shots() {
+        let wire = json!({"game_id": "g1", "tick": 30, "players": [
+            {"index": 0, "alive": true, "pos": [1.0, 2.0, 3.0], "yaw": 1.5,
+             "species": "elite", "aim": [0.6, 0.8, 0.0], "weapon": "battle_rifle", "shots": 3},
+            {"index": 1, "alive": false, "pos": [0.0, 0.0, 0.0], "yaw": 0.0}
+        ]});
+        let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(frame.players[0].species.as_deref(), Some("elite"));
+        assert_eq!(frame.players[0].aim, Some([0.6, 0.8, 0.0]));
+        assert_eq!(frame.players[0].weapon.as_deref(), Some("battle_rifle"));
+        assert_eq!(frame.players[0].shots, Some(3));
+        assert_eq!(
+            frame.players[1],
+            FramePlayer {
+                index: 1,
+                ..FramePlayer::default()
+            }
+        );
+        assert_eq!(validate_frame(&frame), Ok(()));
+        // Round trip: absent fields stay absent, present ones keep their shape.
+        assert_eq!(serde_json::to_value(&frame).unwrap(), wire);
+
+        // Zero shots are sent as absent.
+        let quiet = FramePlayer {
+            shots: Some(0),
+            ..FramePlayer::default()
+        };
+        assert!(serde_json::to_value(&quiet).unwrap().get("shots").is_none());
+    }
+
+    #[test]
+    fn dropped_frames_carry_their_shots_forward() {
+        let player = |index, shots| FramePlayer {
+            index,
+            shots,
+            ..FramePlayer::default()
+        };
+        let dropped = Frame {
+            game_id: "g1".into(),
+            tick: 2,
+            players: vec![player(0, Some(2)), player(1, None), player(3, Some(5))],
+        };
+        let mut next = Frame {
+            game_id: "g1".into(),
+            tick: 4,
+            players: vec![
+                player(0, Some(1)),
+                player(1, None),
+                player(2, Some(MAX_FRAME_SHOTS)),
+            ],
+        };
+        assert_eq!(dropped.shots().collect::<Vec<_>>(), [(0, 2), (3, 5)]);
+        next.add_shots(dropped.shots().collect::<Vec<_>>());
+        next.add_shots([(2, 9)]);
+        assert_eq!(
+            next.players.iter().map(|p| p.shots).collect::<Vec<_>>(),
+            [Some(3), None, Some(MAX_FRAME_SHOTS)],
+            "player 3 left; counts cap"
+        );
+    }
+
+    #[test]
+    fn frame_validation_rejects_bad_aim_ids_and_shot_counts() {
+        let with = |p: FramePlayer| Frame {
+            game_id: "g1".into(),
+            tick: 2,
+            players: vec![p],
+        };
+        let ok = FramePlayer {
+            species: Some("spartan".into()),
+            aim: Some([0.0, 0.0, 2.0]),
+            weapon: Some("smg".into()),
+            shots: Some(MAX_FRAME_SHOTS),
+            ..FramePlayer::default()
+        };
+        assert_eq!(validate_frame(&with(ok.clone())), Ok(()));
+        for bad in [
+            FramePlayer {
+                aim: Some([f64::NAN, 0.0, 1.0]),
+                ..ok.clone()
+            },
+            FramePlayer {
+                aim: Some([f64::INFINITY, 0.0, 0.0]),
+                ..ok.clone()
+            },
+            FramePlayer {
+                aim: Some([0.0; 3]),
+                ..ok.clone()
+            },
+            FramePlayer {
+                species: Some("Elite".into()),
+                ..ok.clone()
+            },
+            FramePlayer {
+                weapon: Some("objects\\weapons\\smg".into()),
+                ..ok.clone()
+            },
+            FramePlayer {
+                weapon: Some(String::new()),
+                ..ok.clone()
+            },
+            FramePlayer {
+                weapon: Some("x".repeat(33)),
+                ..ok.clone()
+            },
+            FramePlayer {
+                shots: Some(MAX_FRAME_SHOTS + 1),
+                ..ok.clone()
+            },
+        ] {
+            assert!(validate_frame(&with(bad.clone())).is_err(), "{bad:?}");
+        }
+
+        // Stored frames have unit aim and no zero shot count.
+        let mut frame = with(FramePlayer {
+            shots: Some(0),
+            ..ok
+        });
+        normalize_frame(&mut frame);
+        assert_eq!(frame.players[0].aim, Some([0.0, 0.0, 1.0]));
+        assert_eq!(frame.players[0].shots, None);
     }
 
     #[test]

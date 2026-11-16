@@ -288,12 +288,21 @@ fn main() {
                 .map(|i| {
                     let a = t * 0.4 + i as f64 * TAU / 4.0;
                     let r = if i % 2 == 0 { 14.0 } else { 8.0 };
+                    let yaw = a + TAU / 4.0;
                     live_proto::game::FramePlayer {
                         index: i,
                         alive: true,
                         pos: [r * a.cos(), r * a.sin(), if i == 3 { 8.0 } else { 1.0 }],
-                        yaw: a + TAU / 4.0,
+                        yaw,
                         vehicle: None,
+                        species: Some(if i % 2 == 0 { "spartan" } else { "elite" }.into()),
+                        aim: Some([yaw.cos(), yaw.sin(), 0.0]),
+                        weapon: Some(
+                            ["battle_rifle", "smg", "energy_sword", "rocket_launcher"][i as usize]
+                                .into(),
+                        ),
+                        // A short burst every two seconds.
+                        shots: (tick % 60 < 9 && i != 2).then_some(1),
                     }
                 })
                 .collect(),

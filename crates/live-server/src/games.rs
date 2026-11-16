@@ -36,6 +36,9 @@ struct FrameClock {
     last_sent: Instant,
     /// Unix second of the last recorded `GameFrame`.
     last_recorded: i64,
+    /// Shots of throttled frames by player index, added to the next frame
+    /// sent so none are lost.
+    unsent_shots: Vec<(u32, u32)>,
 }
 
 /// What a frame turned into.
@@ -201,13 +204,14 @@ impl Live {
     pub async fn ingest_frame(
         &self,
         author: &Author,
-        frame: Frame,
+        mut frame: Frame,
     ) -> Result<FrameOutcome, ApiError> {
         if !game::valid_id(&frame.game_id) {
             return Err(invalid("bad game_id"));
         }
         self.writable_game(&frame.game_id, author)?;
         game::validate_frame(&frame).map_err(invalid)?;
+        game::normalize_frame(&mut frame);
         let now_s = now();
         self.model.touch_game(&frame.game_id, now_s);
         let record = {
@@ -215,11 +219,18 @@ impl Live {
             let clock = games.entry(frame.game_id.clone()).or_insert(FrameClock {
                 last_sent: Instant::now() - FRAME_INTERVAL,
                 last_recorded: 0,
+                unsent_shots: Vec::new(),
             });
             if clock.last_sent.elapsed() < FRAME_INTERVAL {
+                // Bounded: at most one entry per player per throttled frame,
+                // and frames arrive at about the interval.
+                if clock.unsent_shots.len() < 4 * game::MAX_PLAYERS {
+                    clock.unsent_shots.extend(frame.shots());
+                }
                 return Ok(FrameOutcome::Throttled);
             }
             clock.last_sent = Instant::now();
+            frame.add_shots(std::mem::take(&mut clock.unsent_shots));
             let record = clock.last_recorded < now_s;
             if record {
                 clock.last_recorded = now_s;
