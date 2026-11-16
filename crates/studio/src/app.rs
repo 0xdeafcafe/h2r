@@ -6,6 +6,12 @@
 //! it directly.
 use std::path::{Path, PathBuf};
 
+pub(crate) mod convert;
+mod library;
+pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
+pub use h1convert::convert::Sandbox as ConvertSandbox;
+pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
+
 use editor_core::{MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
@@ -48,6 +54,19 @@ pub enum Action {
     SavePackage(PackageForm),
     /// Open one of the open map's packages (by directory name).
     OpenPackage(String),
+    /// Open a package from the Maps list (by [`PackageEntry::key`]): a
+    /// disc map's edit, a new map, or a converted Halo 1 map's variant.
+    ///
+    /// [`PackageEntry::key`]: editor_core::packages::PackageEntry::key
+    OpenPackageEntry(String),
+    /// Show a map of the open Halo 1 source, read-only.
+    SelectHalo1Map(String),
+    /// Draw a converted map's Halo 1 source over it.
+    SetOverlay(bool),
+    /// Convert the Halo 1 map on show to Halo 2, in the background.
+    ConvertHalo1(ConvertSandbox),
+    /// The sandbox "Convert to Halo 2" uses.
+    SetConvertSandbox(ConvertSandbox),
     Undo,
     Redo,
     Select(Option<(BlockKind, usize)>),
@@ -119,9 +138,15 @@ impl Action {
         match self {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty(ToolKind::Scenario),
-            Action::SelectMap(name) if app.loaded.as_deref() != Some(name.as_str()) => {
+            Action::SelectMap(name)
+                if app.loaded.as_deref() != Some(name.as_str()) || app.opened_package.is_some() =>
+            {
                 dirty(ToolKind::Scenario)
             }
+            Action::OpenPackageEntry(key) if app.opened_package.as_deref() != Some(key) => {
+                dirty(ToolKind::Scenario)
+            }
+            Action::SelectHalo1Map(_) => dirty(ToolKind::Scenario),
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
             | Action::ImportVariantFile(_)
@@ -191,6 +216,27 @@ pub struct App {
     pub package_form: Option<PackageForm>,
     /// The image path typed into that form.
     pub package_image: String,
+    /// The packages under the data root.
+    packages: Vec<editor_core::packages::PackageEntry>,
+    /// The package entry open in the scenario tool.
+    opened_package: Option<String>,
+    /// The open Halo 1 source and its maps.
+    h1: Option<editor_core::halo1::H1Source>,
+    h1_maps: Vec<String>,
+    /// The Halo 1 map shown read-only, and its name.
+    h1_view: Option<editor_core::halo1::H1View>,
+    h1_loaded: Option<String>,
+    /// The open converted map's Halo 1 source.
+    compare: Option<Compare>,
+    show_overlay: bool,
+    overlay_rev: u64,
+    /// The conversion running, why the last one wrote nothing, and what
+    /// runs it.
+    convert: Option<Running>,
+    convert_error: Option<String>,
+    converter: Converter,
+    /// The sandbox "Convert to Halo 2" uses.
+    pub convert_sandbox: ConvertSandbox,
 }
 
 impl Default for App {
@@ -221,6 +267,19 @@ impl App {
             filter: String::new(),
             package_form: None,
             package_image: String::new(),
+            packages: Vec::new(),
+            opened_package: None,
+            h1: None,
+            h1_maps: Vec::new(),
+            h1_view: None,
+            h1_loaded: None,
+            compare: None,
+            show_overlay: true,
+            overlay_rev: 0,
+            convert: None,
+            convert_error: None,
+            converter: h1convert_convert,
+            convert_sandbox: ConvertSandbox::Halo2,
         }
     }
 
@@ -231,6 +290,7 @@ impl App {
         self.hoppers.set_data_root(root.clone());
         self.data_root = Some(root);
         self.variants_for = None;
+        self.refresh_packages();
     }
 
     pub fn source(&self) -> Option<&MapSource> {
@@ -404,6 +464,7 @@ impl App {
             ToolKind::Scenario => {
                 self.session.close();
                 self.loaded = None;
+                self.forget_library_state();
             }
             ToolKind::Variants => {
                 if let Some(e) = &mut self.variants {
@@ -418,7 +479,9 @@ impl App {
         match action {
             Action::OpenSource(path) => self.open_source(&path),
             // Re-picking the open map keeps it (and its edits).
-            Action::SelectMap(name) if self.loaded.as_deref() == Some(name.as_str()) => {}
+            Action::SelectMap(name)
+                if self.loaded.as_deref() == Some(name.as_str())
+                    && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
                 let r = self.session.save_as(&path);
@@ -430,7 +493,19 @@ impl App {
                 let r = self.session.save_package(&form);
                 if self.session_result(r).is_some() {
                     self.package_form = None;
+                    self.refresh_packages();
+                    if self.packages.iter().any(|e| e.key() == form.dir) {
+                        self.opened_package = Some(form.dir.clone());
+                    }
                 }
+            }
+            Action::OpenPackageEntry(key) => self.open_package_entry(&key),
+            Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
+            Action::SetOverlay(on) => self.set_overlay(on),
+            Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
+            Action::SetConvertSandbox(sandbox) => {
+                self.convert_sandbox = sandbox;
+                self.convert_error = None;
             }
             Action::OpenPackage(dir) => {
                 let r = self.session.open_package(&dir);
@@ -699,6 +774,9 @@ impl App {
     }
 
     fn open_source(&mut self, path: &Path) {
+        if self.try_open_halo1(path) {
+            return;
+        }
         match MapSource::open(path) {
             Ok(source) => {
                 self.maps = source.map_names();
@@ -710,6 +788,7 @@ impl App {
                 self.source = Some(source);
                 self.session.close();
                 self.loaded = None;
+                self.forget_library_state();
                 self.saved_path = None;
                 // A loose map has nothing to pick between.
                 if let (Some(MapSource::Loose(_)), [only]) = (&self.source, self.maps.as_slice()) {
@@ -739,6 +818,7 @@ impl App {
             .and_then(|s| self.session.open_named(s, name).map_err(|e| e.to_string()));
         match opened {
             Ok(()) => {
+                self.forget_library_state();
                 self.loaded = Some(name.to_owned());
                 self.saved_path = None;
                 self.tool = ToolKind::Scenario;

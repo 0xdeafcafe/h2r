@@ -29,6 +29,7 @@ import { gameSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
 import PlayerSocial from "./PlayerSocial";
+import CoopGames from "./CoopGames";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 
 function useAccount() {
@@ -339,7 +340,9 @@ export function HistoryPage() {
             <Tabs label="Game history" active={tab()} onPick={(id) => { setSearch({ tab: id === "all" ? undefined : id }, { replace: true, scroll: false }); setPage(0); }} tabs={[
               { id: "all", label: "Multiplayer" }, { id: "team", label: "Team Games" }, { id: "ffa", label: "Free for All" },
               { id: "campaign", label: `Campaign (${campaign().length})` },
+              { id: "coop", label: "Co-op" },
             ]} />
+            <Show when={tab() !== "coop"} fallback={<CoopGames player={() => a().gamertag} />}>
             <Show
               when={tab() === "campaign"}
               fallback={
@@ -361,6 +364,7 @@ export function HistoryPage() {
                 </div>
                 <Show when={cchosen()} keyed>{(r) => <CampaignPreview row={r} gamertag={a().gamertag} />}</Show>
               </div>
+            </Show>
             </Show>
           </div>
         );

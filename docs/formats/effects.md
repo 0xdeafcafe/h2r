@@ -363,17 +363,57 @@ instances); bytes are left to [function.rs](#function-curve-data).
 
 ### ligh (light), root 0xe4, three function blocks
 
-| Offset | Field | Evidence |
-|---|---|---|
-| +0 u32 | `flags` (0xa, 0x80a, 0x900a, 0x100a, 0x40008e ...) | V values only |
-| +0x78 | `bitmap` (`bitm`; null on 1,358 of 1,596) | V |
-| +0x90 | `lens_flare` (`lens`; null on 944) | V |
-| +0x9c | `mgs2` (`MGS2`; null on 1,566): the engine's part switch creates this class at `0x0017a8db` | V |
-| +0xdc | `shader` (`shad`; null on 1,593) | V |
-| +0xc4, +0xcc, +0xd4 | three blocks, stride 8, each element a data reference to function bytes | V (sizes match types, all instances) |
-| remaining scalars | opaque in `raw` | unreviewed |
+Evidence: **V** the disc (`h2 lights --all`, all 1,596 records), **E** the
+engine's light update and render path ([e3-lighting.md](../graphics/e3-lighting.md),
+"The light record"), **D** eight study copies of the Digsite E3 tag set's
+light tags ([pstencil.md](../graphics/pstencil.md)), read outside the
+repository. An editing-kit `.light` file holds the same fields in the same
+order after a 0x40-byte header and a 16-byte field-set header (file offset
+0x50 is `+0`), with 16-byte tag references and 12-byte blocks.
+
+| Offset | Field | Meaning | Evidence |
+|---|---|---|---|
+| +0 u32 | `flags` | bit 3 no shadow; others in e3-lighting.md "Definition flags" | E, D (the only difference in a shadow/no-shadow pair) |
+| +4 u16 | `kind` | 0 sphere (1,349 records), 1 orthogonal (2: one tag, `shq_panic`), 2 frustum, a projected cone (245); 3 (pyramid) not on the disc. Names of 1 and 3 S | V, D |
+| +0x08 f32[2] | | 1, 1 on most lights | unreviewed |
+| +0x18 f32 | `radius` | a sphere's radius, world units; zero on all but 8 cones, and on 125 spheres | V, D |
+| +0x1c f32 | `specular_radius` | a second radius, equal to the first on most spheres | V, D; meaning S |
+| +0x20 f32 | `near_width` | a cone's width at its apex | V, D |
+| +0x24 f32 | `height_stretch` | a cone's height over width (1 on most) | V, D |
+| +0x28 f32 | `field_of_view` | a cone's full angle: **radians in the cache, degrees in a kit tag file** (the cache build converts). Cones on the disc run 1 to 90 degrees; every sphere but one holds the kit's 1-degree default | V, D |
+| +0x2c f32 | `falloff_distance` | where a cone starts to fade | V, D |
+| +0x30 f32 | `cutoff_distance` | a cone's range; never below the falloff distance | V, D |
+| +0x34 u32 | `interpolation` | how the colours below follow intensity | E |
+| +0x40, +0x4c f32[3] | `specular_colour` | at the lower and upper intensity bound | E (record `+0xe0`), V, D |
+| +0x58, +0x64 f32[3] | `diffuse_colour` | at the lower and upper intensity bound | E (record `+0xd4`), V, D |
+| +0x70, +0x74 f32 | `brightness` | intensity bounds | E (record `+0xec`), D |
+| +0x78 | `bitmap` (`bitm`; null on 1,358 of 1,596) | the gel (projected texture, S) | V |
+| +0x90 | `lens_flare` (`lens`; null on 944) | | V |
+| +0x9c | `mgs2` (`MGS2`; null on 1,566) | a light volume; the engine's part switch creates this class at `0x0017a8db` | V |
+| +0xb0 f32 | `duration` | seconds; above zero makes the light timed | E |
+| +0xb6 u16 | `duration_falloff` | the fade curve over the duration | E |
+| +0xc4, +0xcc, +0xd4 | three blocks, stride 8, each element a data reference to function bytes | | V (sizes match types, all instances) |
+| +0xdc | `shader` (`shad`; null on 1,593) | | V |
+| remaining scalars | opaque in `raw` | | unreviewed |
 
 Blocks are mostly empty: of 1,590 distinct records, 115 use the first block, 32 the second, 1 the third.
+
+Every colour on the disc is within 0 to 1 and every scalar above is finite
+and non-negative. 1,275 of the 1,596 records have the no-shadow bit.
+
+**Where lights come from.** The scenario's light placements are at
+`scnr +0xe8`, 0x6c bytes each with the palette index (i16) first, and their
+palette at `scnr +0xf0`, 0x28 bytes each with the `ligh` reference first
+(**V**: on all 26 scenarios with both, the placements end exactly where the
+palette begins). Object attachments carry lights at markers (headlights,
+flashlights), and effect parts of class `ligh` carry the rest (muzzle
+flashes, explosions). Over the disc's 30 maps: 428 placements, 1,033
+attachments and 834 effect parts.
+
+`h2 lights <map>` lists each `ligh` tag of a map with its shape, shadow flag,
+colour, brightness, radius or cone, and those sources. `h2 lights --all`
+checks the invariants above over every disc light and prints the value
+distributions. Both write nothing.
 
 ### lens (lens flare), root 0x64
 

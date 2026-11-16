@@ -9,7 +9,7 @@ with a stick, so the game's aim assist should be able to help more. The
 
 | Value | Name in the file and variable | What it does |
 |---|---|---|
-| Auto (default) | `auto` | Strong while the touch controls show (`input::touch::controls_shown()`), else Default |
+| Auto (default) | `auto` | Strong while the touch controls show (`input::touch::controls_shown()`), else Default; in multiplayer, for the touch player only |
 | Default | `default` (alias `retail`) | the tags' own values |
 | Strong | `strong` | angles x1.5, ranges x1.25, friction and adhesion x1.25 |
 | Very Strong | `very_strong` (alias `very-strong`) | angles x2, ranges x1.5, friction and adhesion x1.5 |
@@ -112,15 +112,122 @@ Default writes the kept retail values back and forgets them. Tests:
 
 ## Multiplayer
 
-The weapon and globals tags feed the simulation (where shots go), so the
-setting is `Scope::Sim`. In a multiplayer game (game options mode 2,
-`[eax]` at activation) the hook uses Default whatever the setting says:
-every peer aims with the same values, a touch player is not given an edge
-over a controller player, and host and guest never disagree about where a
-shot went. Campaign, co-op and anything else follows the setting. Open: a
-"touch players get Strong in multiplayer too" option, if wanted, needs the
-host to decide and advertise it like the multiplayer skulls
-([skulls.md](skulls.md) "In multiplayer").
+Status: built and tested on synthetic memory; not yet seen in game.
+
+The weapon and globals tags are shared by every player a machine
+simulates, so in a multiplayer game (game options mode 2, `[eax]` at
+activation) the activation hook keeps them retail whatever the setting
+says. The touch player gets stronger aim assist per player instead, from
+that player's own machine, and every other player keeps retail values bit
+for bit.
+
+### Where each value is used
+
+Engine, read with `h2 disasm` and a scan of `.text` for calls:
+
+| Value | Read by | Side |
+|---|---|---|
+| autoaim angle and range, magnetism angle and range (`weap +0x208..+0x214`) | `0x1a50a0` builds the held weapons' cone (0x24 bytes at ESI, below). Its two callers: the aim-assist search `0x1a4900` (call at `0x1a49a1`), and the shot aim `0x1a4c00` (call at `0x1a4cbf`) | `0x1a4900`: input. `0x1a4c00`: simulation |
+| magnetism friction, adhesion (`matg +0xf0`, element `+0`, `+4`) | the player-control update `0x185be0`, at `0x18622b` | input |
+| inconsequential target scale (element `+8`) | the target search `0x1a5c00` (`0x1a5c88`), under `0x1a4900` | input; not changed |
+
+- **Input.** `0x1870a0` walks the four local users (`[0x4e8c20]+0xc`), and
+  for each bound one calls `0x186ab0` (`0x1870db`), which calls the
+  player-control update `0x185be0` (`0x186b16`; stdcall, five stack
+  words, the local user first, the player's controller index, player
+  `+0x24`, in EDX; `ret 0x14`). That builds the player's action, the
+  input handed to the simulation (`[0x4cf77c]`). Inside it, `0x1a4900`
+  (local user in EAX, per-user control `[0x4ed284]` stride `0x94`) asks
+  `0x1a50a0` for the cone, runs the target search (`0x1a5370`), and writes
+  the target and the autoaim levels into the action (`+0x28`); then
+  friction and adhesion slow and drag the look. None of this runs for a
+  remote player: a remote player's action arrives over the network.
+- **Simulation.** The barrel fire `0x104150` calls `0x1a4c00` (`0x104886`)
+  to aim the shot. With the simulation mode byte (`[[0x4e6948]+0xc]`) 4 or
+  5 (distributed client or server) and bit `0x2` of the aim data's `+0x18`,
+  it aims straight at the position at `+0xc` with no tag read
+  (`0x1a4c4b..0x1a4c95`). Otherwise it calls `0x1a50a0` for the shooter's
+  unit and bends the shot within that cone (`0x1a6a80`). Where bit `0x2`
+  and the position are written is not traced.
+
+`0x1a50a0`'s result: `+0` autoaim angle (divided by the zoom
+magnification), `+4` autoaim range (times it), `+8` magnetism angle, `+0xc`
+magnetism range (the larger of both hands' when dual wielding), `+0x10` the
+bend limit (the larger of deviation and autoaim angle, zoom applied),
+`+0x14` flags, `+0x18` and `+0x1c` the second weapon's autoaim angle and
+range, `+0x20` a copy of the autoaim range for some weapon classes
+(`0x1a51de`), else 0. Stores at `0x1a514f..0x1a5181`, `0x1a51a5`,
+`0x1a5292`, `0x1a52a2`. Stack word: the zoom level; `ret 4`.
+
+### What we change
+
+All of it is input side, around one local player's control update
+(`boot::aim_assist::player`):
+
+- `before` `0x185be0` (`PLAYER_CONTROL_UPDATE`): pick the player's level
+  (below). For anything but Default, open a window and set the globals'
+  friction and adhesion to retail times the level's factor (capped at 1.0).
+- `after` `0x1a50a0` (`AIM_ASSIST_PARAMS`), inside the window only: scale
+  the result as the tag path would (angles, capped at 0.5 rad; ranges;
+  the bend limit raised to the scaled autoaim angle when larger). Outside
+  a window (the shot aim, any other player) nothing is touched.
+- `after` `0x185be0`: put friction and adhesion back bit for bit (a field
+  that no longer holds what we wrote is left alone) and close the window.
+
+No weapon tag is written. The cap is on the angle after zoom, where the
+tag path caps the tag's own angle; the two differ only for a zoomed weapon
+whose scaled angle would pass 0.5 rad.
+
+**Who gets it.** In a multiplayer game only, the local player whose
+controller is port 0 (the touch controls drive port 0, `input::touch`)
+while the touch controls show:
+
+| Setting | Touch player | Everyone else |
+|---|---|---|
+| Auto | Strong | Default |
+| Default | Default | Default |
+| Strong | Strong | Default |
+| Very Strong | Very Strong | Default |
+
+Campaign and co-op keep the tag path above, and the per-player path never
+opens outside a multiplayer game, so the two never stack.
+
+### Why peers agree
+
+The boost only changes what the touch player's own machine computes as
+that player's input: where the crosshair drags, which target the search
+picks, and the autoaim levels in the action. Every machine then simulates
+from the actions it is sent. Everything the simulation reads itself (the
+shot aim's call of `0x1a50a0`, and the globals outside the window) is
+retail on every machine, so two peers given the same actions compute the
+same results. The test `two_peers_simulate_the_same_values` plays a host
+with the touch player and a guest with two pads and checks it.
+
+### Not done: the simulation side for remote touch players
+
+When `0x1a4c00` recomputes the cone (not the distributed fast path), the
+shot is bent within the retail cone, also for the touch player, on every
+machine. Giving the touch player the wider bend there needs every machine
+to know which players are on touch:
+
+- each guest would send its touch state to the host (nothing carries
+  guest-to-host data today: the multiplayer skulls go host to guests
+  only, through `NewSession.skulls` and `Update.skulls`, see
+  [skulls.md](skulls.md) "In multiplayer");
+- the host would advertise the set per player (XUID or player index) in
+  the session data, and each peer map it to a player datum at game start;
+- System Link, with no server, would have no path at all.
+
+It is also likely to matter little in Halo 2's distributed multiplayer,
+whose fast path aims at the target the shooter's own machine chose
+(above), when the shooter's machine sets bit `0x2`. Confirming that
+needs the writer of bit `0x2` found, or a look in a system link game.
+
+### Before this
+
+The first version kept multiplayer fully retail: the setting was
+`Scope::Sim` and the activation hook used Default in mode 2. That still
+holds for the tags.
 
 ## Testing
 
@@ -131,6 +238,12 @@ host to decide and advertise it like the multiplayer skulls
   following `input::touch::set_controls_shown`, and multiplayer staying
   retail. The offsets are checked against the `tags` layout
   (`the_offsets_are_the_tag_layouts`).
+- `cargo test -p boot aim_assist::player`: the per-player level (touch,
+  pad, remote, campaign, hidden controls), the result scaling against the
+  tag factors, friction and adhesion put back bit for bit, a pad player
+  and every shot seeing retail bytes, a reload inside the window, odd
+  globals, the two paths never stacking, two simulated peers, and the
+  two points' signatures.
 - `cargo test -p boot setting_defs`: `aim_assist_is_auto_unless_asked`
   (default Auto, the file's names, the variable's names and lock, a press
   stepping Auto, Default, Strong, Very Strong).

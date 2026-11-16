@@ -14,7 +14,10 @@ pub mod account_screen;
 pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
+pub mod coop_live;
 pub mod coop_probe;
+pub mod campaign_menu;
+pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -105,12 +108,19 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 
 /// What a module is built from: the image's hash, the generator sources'
 /// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
-/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags.
+/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags,
+/// with the optimisation tiers when `H2_OPT_COLD` asks for them.
 /// [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
-    match emit::compile::cflags() {
+    let flags = emit::compile::cflags().and_then(|mut flags| {
+        if let Some(t) = emit::compile::Tiers::from_env()? {
+            flags.push(format!("tiers {}", t.spec()));
+        }
+        Ok(flags)
+    });
+    match flags {
         Ok(flags) => stamp_with(
             xbe_bytes,
             &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
@@ -260,10 +270,11 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
-        "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
+        "clang ({}): {} compiled, {} reused{}, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
         arch.name(),
         b.compiled,
         b.reused,
+        if b.cold > 0 { format!(", {} sources in the cold tier", b.cold) } else { String::new() },
         b.cache_secs,
         b.compile_secs,
         b.archive_secs,
@@ -612,12 +623,16 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    // A second campaign (docs/game/multiple-campaigns.md): read before the
+    // VFS mounts, which serves its converted maps.
+    let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
+    let campaign_maps = campaigns.as_ref().map(|s| campaigns::host_maps(&opts.data_root, s)).unwrap_or_default();
     // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -708,7 +723,13 @@ pub fn run_hosted_with_live(
         )),
         None => None,
     };
+    // More than one campaign (docs/game/multiple-campaigns.md): campaigns
+    // installed under <data>/campaigns get their level lists and the
+    // picker in front of the level select. None installed: nothing is
+    // hooked and the disc is not read for it.
+    let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
+    campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).
@@ -851,7 +872,21 @@ pub fn run_hosted_with_live(
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    let probe_on = coop_probe.is_some();
     coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
+    // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
+    // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
+    // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
+    // probe holds those hooks and the screens only advertise and invite.
+    if _live.is_some() && std::env::var_os("H2_NO_COOP_ROW").is_none() {
+        let arm = if probe_on {
+            None
+        } else {
+            coop_probe::install_live(&loaded.runtime, &mut features, &opts.data_root)?
+        };
+        let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
+        custom_games::set_coop_row(on);
+    }
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

@@ -19,7 +19,7 @@ const USAGE: &str = "usage:
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
-          [--live | --live-server URL | --live-local | --offline] [--gamertag NAME]
+          [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
@@ -65,8 +65,12 @@ With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
 https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
 --live-server URL signs in to that service instead (docs/live/live.md).
-The account is --gamertag NAME, or one named after your user; either is
-made on the server and kept in accounts.json if needed. Signed in, the
+The account is one kept in accounts.json for that server; else --gamertag
+NAME, or the gamertag you last played as on another server (keeping its
+key), or one named after your user. A name new to the server is made
+there (--invite CODE, or asked for, if it is invite-only); one it already
+has is recovered with the code from Account on its dashboard or your
+authenticator app, asked for on the terminal. Signed in, the
 account's saves (profiles, variants, campaign saves, profile settings) are
 merged into the data root before the game starts and uploaded as it writes
 them; H2_CLOUD_SAVES=0 turns that off (docs/live/live-cloud-saves.md).

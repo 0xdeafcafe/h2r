@@ -9,7 +9,12 @@
 //! the model scale at +0x14 (docs/formats/lighting.md), the atmospheric fog block
 //! at +0x48 (0x18-byte elements: colour RGB, maximum density, start
 //! distance, opaque distance), the secondary fog block at +0x50 (the same
-//! layout) and the clear colour (RGB) at +0xa0.
+//! layout) and the clear colour (RGB) at +0xa0. The lights block at +0x78
+//! (0x34 bytes each: the light's direction as heading and pitch in
+//! radians at +0xc, a fog block at +0x2c whose element holds flags, then
+//! colour RGB at +4 and maximum density at +0x10) gives the glow of the
+//! sun-lit air, which stands in for the fog on levels without one
+//! (Zanzibar).
 
 use anyhow::{Context, Result};
 use assets::ResourceFiles;
@@ -32,6 +37,11 @@ pub const SKY_ATMOSPHERIC_FOG: usize = 0x48;
 pub const SKY_SECONDARY_FOG: usize = 0x50;
 pub const FOG_STRIDE: usize = 0x18;
 pub const SKY_CLEAR: usize = 0xa0;
+pub const SKY_LIGHTS: usize = 0x78;
+pub const LIGHT_STRIDE: usize = 0x34;
+pub const LIGHT_DIRECTION: usize = 0xc;
+pub const LIGHT_FOG: usize = 0x2c;
+pub const LIGHT_FOG_STRIDE: usize = 0x14;
 pub const SKY_HEADER: usize = 0xac;
 
 /// Most triangles a sky model is drawn with.
@@ -50,6 +60,17 @@ pub struct SkyFog {
     pub end: f32,
 }
 
+/// The sun-lit air of a sky light: its colour and how thick it is (0..1),
+/// and the light's heading and pitch (radians, game frame: heading about
+/// +z from +x, pitch up from the horizon).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkyGlow {
+    pub colour: [f32; 3],
+    pub density: f32,
+    pub heading: f32,
+    pub pitch: f32,
+}
+
 /// `asset.extras.sky` of `map.glb`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkyInfo {
@@ -64,6 +85,9 @@ pub struct SkyInfo {
     pub clear: Option<[f32; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fog: Option<SkyFog>,
+    /// The first sky light's glow, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glow: Option<SkyGlow>,
     /// The sky model's scale in the game (it is drawn around the camera at
     /// any size).
     pub scale: f32,
@@ -76,6 +100,7 @@ pub struct SkyFields {
     pub scale: f32,
     pub clear: Option<[f32; 3]>,
     pub fog: Option<SkyFog>,
+    pub glow: Option<SkyGlow>,
 }
 
 fn f32_at(b: &[u8], o: usize) -> Option<f32> {
@@ -129,11 +154,32 @@ pub fn sky_fields(view: &TagView<'_>, header: &[u8]) -> SkyFields {
                 .into_iter()
                 .find_map(fog_element)
         });
+    let glow = view
+        .block(header, SKY_LIGHTS, LIGHT_STRIDE)
+        .ok()
+        .into_iter()
+        .flatten()
+        .find_map(|light| {
+            let e = *view
+                .block(light, LIGHT_FOG, LIGHT_FOG_STRIDE)
+                .ok()?
+                .first()?;
+            let density = f32_at(e, 0x10).filter(|d| d.is_finite() && *d > 0.0)?;
+            let heading = f32_at(light, LIGHT_DIRECTION).filter(|v| v.is_finite())?;
+            let pitch = f32_at(light, LIGHT_DIRECTION + 4).filter(|v| v.is_finite())?;
+            Some(SkyGlow {
+                colour: colour(rgb(e, 4))?,
+                density: density.min(1.0),
+                heading,
+                pitch,
+            })
+        });
     SkyFields {
         model,
         scale,
         clear: colour(rgb(header, SKY_CLEAR)),
         fog,
+        glow,
     }
 }
 
@@ -263,6 +309,7 @@ pub fn read_level_sky(
         glb: glb.is_ok().then(|| "sky.glb".to_string()),
         clear: f.clear,
         fog: f.fog,
+        glow: f.glow,
         scale: f.scale,
     };
     Ok(Some((info, glb)))

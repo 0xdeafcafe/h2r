@@ -31,6 +31,20 @@ struct Doc {
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
+    /// A new map (no disc base): `source.bytes` is its whole unedited file,
+    /// and a package saved from it carries that file as its first layer.
+    derived: bool,
+}
+
+/// A map shown read-only: triangles and markers with no scenario to edit
+/// (a Halo 1 map, read through `h1map`).
+#[derive(Clone, Debug, Default)]
+pub struct Reference {
+    pub name: String,
+    pub world: Vec<Tri>,
+    pub markers: Vec<Marker>,
+    /// Its art, when the caller built one ([`crate::scene::reference_scene`]).
+    pub scene: Option<Arc<Scene>>,
 }
 
 /// Scenes kept for maps opened before (reopening one, or opening its
@@ -56,6 +70,8 @@ pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag m
 /// The editor state over one map.
 pub struct Session {
     doc: Option<Doc>,
+    /// The read-only map shown when no map is open for editing.
+    reference: Option<Reference>,
     disc_maps: Vec<(String, MapSource)>,
     status: String,
     selected: Option<(BlockKind, usize)>,
@@ -94,6 +110,7 @@ impl Session {
     pub fn new() -> Self {
         Self {
             doc: None,
+            reference: None,
             disc_maps: Vec::new(),
             status: "Open a .map file, or a disc image to pick a map from it.".into(),
             selected: None,
@@ -163,6 +180,7 @@ impl Session {
             &doc.scenario,
             form,
             doc.package.as_deref(),
+            doc.derived,
         )?;
         doc.saved = doc.scenario.changes();
         doc.package = Some(form.dir.clone());
@@ -263,6 +281,65 @@ impl Session {
     /// Open a map whose name (`maps\\<name>.map`) is `name`: read its
     /// scenario and its structure BSP (with the shared caches next to it).
     pub fn open_named(&mut self, source: MapSource, name: &str) -> Result<()> {
+        self.open_keyed(source, name, "")
+    }
+
+    /// Open a new map (a package with no disc base): `source.bytes` holds
+    /// its whole file, and `source`'s location is only where the shared
+    /// caches are found. `package` is the package directory it came from,
+    /// which a save then replaces; `None` saves as a new package.
+    pub fn open_derived(
+        &mut self,
+        source: MapSource,
+        name: &str,
+        package: Option<String>,
+        cache_key: &str,
+    ) -> Result<()> {
+        if source.bytes.is_none() {
+            return Err(Error::Save("a new map opens from its bytes"));
+        }
+        self.open_keyed(source, name, cache_key)?;
+        if let Some(doc) = self.doc.as_mut() {
+            doc.derived = true;
+            doc.package = package;
+        }
+        Ok(())
+    }
+
+    /// Whether the open map is a new map (no disc base).
+    pub fn is_derived(&self) -> bool {
+        self.doc.as_ref().is_some_and(|d| d.derived)
+    }
+
+    /// Show a map read-only (closing any open map).
+    pub fn open_reference(&mut self, reference: Reference) {
+        self.doc = None;
+        self.selected = None;
+        self.drag = None;
+        self.gesture = None;
+        self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
+        let art = reference.scene.as_ref().map_or(String::new(), |s| {
+            format!(
+                ", {} of {} shaders textured, {} lightmap pages",
+                s.stats.textured, s.stats.shaders, s.stats.lightmap_pages
+            )
+        });
+        self.status = format!(
+            "{} triangles, {} placements{art} (read only)",
+            reference.world.len(),
+            reference.markers.len()
+        );
+        self.reference = Some(reference);
+        self.world_rev += 1;
+        self.refresh_markers();
+    }
+
+    /// The map shown read-only, if any.
+    pub fn reference(&self) -> Option<&Reference> {
+        self.reference.as_ref()
+    }
+
+    fn open_keyed(&mut self, source: MapSource, name: &str, cache_key: &str) -> Result<()> {
         let mut map = source.open()?;
         let scenario = Scenario::read(&mut map)?;
         let mut files = vec![(ResourceFile::Local, map)];
@@ -280,7 +357,8 @@ impl Session {
         let markers = geometry::markers(&scenario);
         let scene = self.build_scenes.then(|| {
             self.scene_for(
-                &source, name, &scenario, &markers, &parts, &lightmaps, &mut map, &mut raw,
+                &source, name, cache_key, &scenario, &markers, &parts, &lightmaps, &mut map,
+                &mut raw,
             )
         });
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
@@ -316,7 +394,9 @@ impl Session {
             world,
             world_failed,
             scene,
+            derived: false,
         });
+        self.reference = None;
         self.selected = None;
         self.drag = None;
         self.gesture = None;
@@ -328,6 +408,7 @@ impl Session {
     /// Close the open map, dropping unsaved edits.
     pub fn close(&mut self) {
         self.doc = None;
+        self.reference = None;
         self.selected = None;
         self.drag = None;
         self.gesture = None;
@@ -351,14 +432,19 @@ impl Session {
     }
     /// The structure BSP's triangles, and how many sections failed to load.
     pub fn world(&self) -> (&[Tri], usize) {
-        match &self.doc {
-            Some(d) => (&d.world, d.world_failed),
-            None => (&[], 0),
+        match (&self.doc, &self.reference) {
+            (Some(d), _) => (&d.world, d.world_failed),
+            (None, Some(r)) => (&r.world, 0),
+            (None, None) => (&[], 0),
         }
     }
     /// The open map's textured world and object models, if built.
     pub fn scene(&self) -> Option<&Arc<Scene>> {
-        self.doc.as_ref().and_then(|d| d.scene.as_ref())
+        match (&self.doc, &self.reference) {
+            (Some(d), _) => d.scene.as_ref(),
+            (None, Some(r)) => r.scene.as_ref(),
+            (None, None) => None,
+        }
     }
 
     /// The cached scene of a map, else a new one (cached).
@@ -367,6 +453,7 @@ impl Session {
         &mut self,
         source: &MapSource,
         name: &str,
+        cache_key: &str,
         scenario: &Scenario,
         markers: &[Marker],
         parts: &[geometry::WorldPart],
@@ -374,7 +461,7 @@ impl Session {
         map: &mut map::Map<R>,
         raw: &mut dyn tags::geometry::RawSource,
     ) -> Arc<Scene> {
-        let key = format!("{:?}|{:?}|{name}", source.path, source.region);
+        let key = format!("{:?}|{:?}|{name}|{cache_key}", source.path, source.region);
         if let Some(i) = self.scenes.iter().position(|(k, _)| *k == key) {
             let hit = self.scenes.remove(i);
             let scene = hit.1.clone();
@@ -414,11 +501,11 @@ impl Session {
         self.markers_rev
     }
     fn refresh_markers(&mut self) {
-        self.markers = self
-            .doc
-            .as_ref()
-            .map(|d| geometry::markers(&d.scenario))
-            .unwrap_or_default();
+        self.markers = match (&self.doc, &self.reference) {
+            (Some(d), _) => geometry::markers(&d.scenario),
+            (None, Some(r)) => r.markers.clone(),
+            (None, None) => Vec::new(),
+        };
         self.markers_rev += 1;
     }
 
@@ -430,7 +517,7 @@ impl Session {
     }
     /// Frame the whole map (world and placements).
     pub fn frame_all(&mut self) {
-        let world = self.doc.as_ref().map(|d| d.world.as_slice()).unwrap_or(&[]);
+        let world = self.world().0;
         self.camera = Camera::frame(&frame_bounds(world, &self.markers));
     }
     /// Point the camera at the selected placement.

@@ -3,12 +3,12 @@
 //! profile has collected any, before the level starts.
 //!
 //! **The flow** is `crate::skulls_screen`'s: a press on a difficulty opens
-//! this page instead of starting, and the page's Start row (or the Start
-//! button) runs the difficulty's own press, which starts the level.
+//! this page instead of starting, and X or Start on the page runs the
+//! difficulty's own press, which starts the level.
 //!
 //! **The screen** is our own list class (`crate::list_class`, as the Video
-//! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: a Start
-//! row, then every skull, gold first, each its name and the profile's On,
+//! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: every
+//! skull, gold first, each its name and the profile's On,
 //! Off or Locked in one label; a description text widget of ours with the
 //! focused skull's effect and where it is found. A press on a collected
 //! skull flips it in the store at once ([`skulls::toggle`]); the next
@@ -63,9 +63,6 @@ pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
 pub const LOCKED_ID: u32 = SKULLS_ID_BASE + 0x11;
 /// The multiplayer screen's title.
 pub const MP_TITLE_ID: u32 = SKULLS_ID_BASE + 0x12;
-/// The campaign page's first row, and its description.
-pub const START_ID: u32 = SKULLS_ID_BASE + 0x13;
-pub const START_DESCRIPTION_ID: u32 = SKULLS_ID_BASE + 0x14;
 /// One description per multiplayer row (`skulls_mp::MP`).
 const MP_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x30..SKULLS_ID_BASE + 0x38;
 /// A label and a description per skull, ours included (room for 64).
@@ -82,9 +79,11 @@ const ROW_LABEL_BASE: u32 = ID_BASE + 0x0200_0000;
 pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
-pub const START: &str = "Start";
-pub const START_DESCRIPTION: &str = "Start with the skulls marked On. A turns a collected skull on or off; \
-     B goes back to the difficulty.";
+/// The campaign page's buttons, under every description: the font's
+/// button glyphs (U+E100 A, U+E101 B, U+E102 X, as retail's own button
+/// legends write them). X or Start starts the level
+/// (`skulls_screen::continue_level`).
+pub const PROMPT: &str = "\u{e100} Toggle   \u{e102} Start Level   \u{e101} Back";
 
 /// The reference layout: the campaign level select
 /// (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map,
@@ -232,16 +231,16 @@ pub fn description(i: usize) -> String {
 /// The campaign screen's rows: skull indices, gold first.
 static ORDER: LazyLock<Vec<usize>> = LazyLock::new(skulls::by_tier);
 
-/// The campaign page's first row: Start.
-pub const START_ROW: i16 = 0;
-
-/// The campaign page's row for skull `i` (after the Start row).
+/// The campaign page's row for skull `i`.
 pub fn row_of(i: usize) -> Option<i16> {
-    ORDER.iter().position(|s| *s == i).map(|r| r as i16 + 1)
+    ORDER.iter().position(|s| *s == i).map(|r| r as i16)
 }
 
-static DESCRIPTION_TEXTS: LazyLock<Vec<String>> =
-    LazyLock::new(|| (0..TOTAL).map(description).collect());
+static DESCRIPTION_TEXTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    (0..TOTAL)
+        .map(|i| format!("{}\n\n{PROMPT}", description(i)))
+        .collect()
+});
 
 static FOUND_TEXTS: LazyLock<Vec<(usize, String)>> =
     LazyLock::new(|| (COUNT..TOTAL).map(|i| (i, found_text(i))).collect());
@@ -280,8 +279,6 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     v.push((TITLE_ID, TITLE));
     v.push((LOCKED_ID, LOCKED));
     v.push((MP_TITLE_ID, MP_TITLE));
-    v.push((START_ID, START));
-    v.push((START_DESCRIPTION_ID, START_DESCRIPTION));
     v.extend(ROW_LABELS.iter().map(|(i, t)| (*i, t.as_str())));
     v.extend(
         DESCRIPTION_TEXTS
@@ -404,7 +401,7 @@ pub fn press(store: &Store, profile: &str, i: usize) -> Option<String> {
 /// Which skulls the screen lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// The Start row, then every skull, for the campaign about to start
+    /// Every skull, for the campaign about to start
     /// (the page after the difficulty).
     Campaign,
     /// Only those that work in multiplayer (`skulls_mp::MP`), for the games
@@ -459,12 +456,11 @@ impl SkullsScreen {
             .and_then(|p| crate::skulls_mp::state(&self.store, &p, row))
             .unwrap_or(State::Locked)
     }
-    /// Campaign row `row`'s skull: after the Start row, gold ones first,
+    /// Campaign row `row`'s skull: gold ones first,
     /// then silver ([`skulls::by_tier`]).
     fn skull(row: i16) -> Option<usize> {
         usize::try_from(row)
             .ok()
-            .and_then(|r| r.checked_sub(1))
             .and_then(|r| ORDER.get(r).copied())
     }
     /// Skull `i`'s state for the open profile; Locked with none.
@@ -485,9 +481,6 @@ impl SkullsScreen {
             crate::skulls_mp::changed(&profile);
             return line;
         }
-        if row == START_ROW {
-            return None;
-        }
         let i = Self::skull(row)?;
         let Some(profile) = self.profile() else {
             return Some("skulls menu: no profile for this screen; nothing changed".into());
@@ -499,7 +492,7 @@ impl SkullsScreen {
 impl Rows for SkullsScreen {
     fn count(&self) -> usize {
         match self.mode() {
-            Mode::Campaign => TOTAL + 1,
+            Mode::Campaign => TOTAL,
             Mode::Multiplayer => crate::skulls_mp::MP.len(),
         }
     }
@@ -522,18 +515,12 @@ impl Rows for SkullsScreen {
                 row_label_id(crate::skulls_mp::MP[r].index, self.mp_state(r)),
             )];
         }
-        if row == START_ROW {
-            return vec![(LABEL_SLOT, START_ID)];
-        }
         let Some(i) = Self::skull(row) else {
             return Vec::new();
         };
         vec![(LABEL_SLOT, row_label_id(i, self.state(i)))]
     }
     fn press(&self, row: i16) -> Chosen {
-        if self.mode() == Mode::Campaign && row == START_ROW {
-            return Chosen::Act;
-        }
         self.press_line(row)
             .map_or(Chosen::Nothing, Chosen::Stepped)
     }
@@ -543,9 +530,6 @@ impl Rows for SkullsScreen {
                 .ok()
                 .filter(|r| *r < crate::skulls_mp::MP.len())
                 .map(mp_description_id);
-        }
-        if row == START_ROW {
-            return Some(START_DESCRIPTION_ID);
         }
         Self::skull(row).map(description_id)
     }
@@ -612,11 +596,10 @@ mod tests {
             .map_or_else(|| format!("{id:#x}"), |(_, t)| t.to_string())
     }
 
-    /// Each skull row as drawn (after the campaign page's Start row): its
-    /// one label, split into the name and the state.
+    /// Each skull row as drawn: its one label, split into the name and the
+    /// state.
     fn drawn(s: &SkullsScreen) -> Vec<(String, String)> {
-        let first = i16::from(s.mode() == Mode::Campaign);
-        (first..s.count() as i16)
+        (0..s.count() as i16)
             .map(|r| {
                 let t = s.texts(r);
                 assert_eq!(t.len(), 1, "one text: the list skin has one");
@@ -632,8 +615,7 @@ mod tests {
     fn every_skull_is_listed_gold_first() {
         let s = SkullsScreen::new(store());
         s.open("Chief".into());
-        assert_eq!(s.count(), TOTAL + 1, "Start, then every skull");
-        assert_eq!(text(s.texts(START_ROW)[0].1), "Start");
+        assert_eq!(s.count(), TOTAL, "every skull and nothing else");
         let names: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
         assert_eq!(
             names,
@@ -729,8 +711,7 @@ mod tests {
             Some("skulls: Iron on for Chief")
         );
         assert_eq!(s.state(11), State::On);
-        assert_eq!(s.press_line(TOTAL as i16 + 1), None);
-        assert_eq!(s.press_line(START_ROW), None, "Start is the class's action");
+        assert_eq!(s.press_line(TOTAL as i16), None);
         assert_eq!(s.press_line(-1), None);
     }
 
@@ -774,7 +755,11 @@ mod tests {
         for (i, a) in ABOUT.iter().enumerate() {
             let id = s.description(row_of(i).unwrap()).unwrap();
             assert_eq!(id, description_id(i));
-            let d = text(id);
+            let shown = text(id);
+            // The buttons under every description, within a widget's 256.
+            assert!(shown.ends_with(&format!("\n\n{PROMPT}")), "{shown}");
+            assert!(shown.encode_utf16().count() <= 256, "{shown}");
+            let d = description(i);
             assert!(d.contains(a.effect), "{d}");
             assert!(d.contains(&format!("Found on {}", a.level)), "{d}");
             assert_eq!(d.contains("Legendary only"), a.legendary, "{d}");
@@ -797,7 +782,7 @@ mod tests {
             "Gold skull: A hard landing hurts: past a jump's speed, a fall drains your shields, then \
              your health. Found on Metropolis, any difficulty."
         );
-        assert_eq!(s.description(TOTAL as i16 + 1), None);
+        assert_eq!(s.description(TOTAL as i16), None);
     }
 
     #[test]
@@ -866,7 +851,7 @@ mod tests {
         // Labels and descriptions for all, a found message for each of ours.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 5 + 3 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 3 + 3 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
@@ -934,7 +919,7 @@ mod tests {
         // The campaign screen still lists all of them, its own states.
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
-        assert_eq!(s.count(), TOTAL + 1, "Start and every skull");
+        assert_eq!(s.count(), TOTAL, "every skull");
         assert_eq!(
             s.state(6),
             State::On,
@@ -956,14 +941,12 @@ mod tests {
         let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
-        // Row 0 is Start (the picture keeps its tint); row 1 is the first
-        // gold skull; the last row a silver one.
+        // Row 0 is the first gold skull; the last row a silver one.
         let last = (s.count() - 1) as i16;
-        assert_eq!(s.tint(START_ROW), None);
-        assert_eq!(s.tint(1), Some(tint(Gold, State::Locked)));
+        assert_eq!(s.tint(0), Some(tint(Gold, State::Locked)));
         assert_eq!(s.tint(last), Some(tint(Silver, State::Locked)));
         skulls::record_pickup(&st, &names(&["Chief"]), ORDER[0]);
-        assert_eq!(s.tint(1), Some(tint(Gold, State::On)), "collected and on");
+        assert_eq!(s.tint(0), Some(tint(Gold, State::On)), "collected and on");
         assert_eq!(s.tint(s.count() as i16), None);
         let mp = SkullsScreen::multiplayer(Arc::clone(&st));
         mp.open("Chief".into());

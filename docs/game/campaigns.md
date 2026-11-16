@@ -48,6 +48,12 @@ Pieces:
   slots. Today `MapEditor` only patches an existing map. The builder is the
   biggest missing piece, and Halo 1 needs it first. New maps made from
   scratch also need it ([maps.md](maps.md)).
+- **`crates/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
+  Halo 2 `mode` and `jmad` block trees for the builder
+  ([h1-models.md](../formats/h1-models.md)).
+- **`crates/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
+  with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
+  trees, pixels copied as they are ([h1-bitmaps.md](../formats/h1-bitmaps.md)).
 - **The converter** (`crates/h1convert`, planned) works one tag group at a
   time, in the order of §3.
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, runs the
@@ -62,7 +68,7 @@ Pieces:
 | `sbsp` structure BSP | `sbsp` + `ltmp` | collision BSP is close to Halo 2's shape. Render geometry becomes cluster sections. Halo 1 lightmap pages become Halo 2 lightmap bitmaps |
 | pathfinding | `sbsp` pathfinding data | Halo 1 maps don't contain the sectors, links and refs that Halo 2's AI needs, so we generate them from the collision BSP |
 | `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` on existing `stem` templates | each Halo 1 shader type maps to the closest Halo 2 template in the shared maps, with its parameters. The look will be close, not exact |
-| `bitm` | `bitm` | mostly the same Xbox texture formats |
+| `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [h1-bitmaps.md](../formats/h1-bitmaps.md)) |
 | `mod2` + `coll` + `phys` | `mode` + `coll` + `phmo` under an `hlmt` | physics uses Halo 2's (decision 1) |
 | `antr` | `jmad` | animation codecs differ: decode, then re-encode |
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |
@@ -97,17 +103,25 @@ Each step is proven with tests; the user plays the result.
 6. **Scripts.**
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
 8. **Menus.** The campaign picker and its level list (§4), and progress
-   saved per campaign.
+   saved per campaign. **Built** ([multiple-campaigns.md](multiple-campaigns.md)),
+   not yet seen running.
 
 ## 4. More than one campaign
 
-The engine already has a campaign ID: level boot asks for "campaign C,
-map M" ([level-boot.md](../runtime/level-boot.md)), and the level list is
-data in `mainmenu.map`'s globals. The plan is to make Halo 1 a second
-campaign in that list. The menu gets a campaign picker in front of the
-level list. Open: how 1.0's campaign UI reads the list, and whether a
-second campaign ID needs code changes beyond the data. Read this before
-step 8.
+**Built, not yet seen running:** [multiple-campaigns.md](multiple-campaigns.md).
+In short: the level lists in `mainmenu.map`'s globals (`+0x170` start
+levels, `+0x178` the level select's campaigns and levels) are keyed by
+campaign id and have free slots, and looking a level up, starting it and
+finding the next one work for any campaign id as data. Three things
+assume campaign 1 and are hooked: the level select's list is built for
+campaign 1, every writer of the menu's selected campaign writes 1, and the
+level select finds a level's record by map id alone (so map ids are
+unique across campaigns). Profiles keep progress as bare map ids, so other
+campaigns' progress is kept in `<data>/campaigns/progress.toml`. A
+campaign is `<data>/campaigns/<key>/campaign.toml`; Halo 1's lists a10,
+a30, a50, b30, b40, c10, c20, c40, d20 and d40. A picker screen comes
+before the main menu's level select. The VFS serves a converted level's
+map (`<data>/campaigns/halo1/<map>.map`) as `maps\<map>.map`.
 
 ## 5. The asset setting
 

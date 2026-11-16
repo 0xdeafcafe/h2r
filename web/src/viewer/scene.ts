@@ -36,6 +36,7 @@ import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
 import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
@@ -46,6 +47,7 @@ import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing,
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
+import { BOOST, FLY_KEYS, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, padInput, speedLabel, speedStep } from "./flycam";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
@@ -205,6 +207,7 @@ export class ViewerScene {
   };
   private patched = new WeakSet<THREE.Material>();
   private v0 = new THREE.Vector3();
+  private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
   private v2 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
@@ -221,6 +224,13 @@ export class ViewerScene {
   /** Which zone is in play (viewer/zones.ts). */
   private zone = new ZoneFollower();
   private dirty = true;
+  /** The flycam while it is on (see flycam.ts); what to go back to is `saved`. */
+  private fly: { yaw: number; pitch: number; vel: THREE.Vector3; keys: Set<string>; drag: boolean; moved: number; dist: number; saved: { pos: THREE.Vector3; target: THREE.Vector3 } } | null = null;
+  private flySpeed = 1;
+  private flyOff: (() => void) | null = null;
+  /** Told when the flycam goes on or off (it also ends by itself), and its speed when that changes. */
+  onFlyChange?: (on: boolean) => void;
+  onFlySpeed?: (label: string) => void;
   private slow = 0;
   private w = 1; private h = 1;
   private disposed = false;
@@ -288,6 +298,7 @@ export class ViewerScene {
     this.controls.maxPolarAngle = Math.PI * 0.495;
     this.controls.addEventListener("change", () => { this.fitNear(); this.dirty = true; });
     this.controls.addEventListener("start", () => { this.tween = null; });
+    this.flyOff = this.listenFly(renderer.domElement);
 
     this.geoBody = new THREE.CapsuleGeometry(0.22, 0.42, 6, 16).translate(0, 0.43, 0);
     this.geoArrow = arrowGeometry();
@@ -355,7 +366,7 @@ export class ViewerScene {
         if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          for (const m of mats) used.add(m);
+          for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
           let flat = Array.isArray(mesh.material) ? undefined : flats.get(mesh);
           if (flat && role === "machine") flat = own(flat);
           if (flat) pairs.push({ mesh, textured: mesh.material as THREE.Material, flat });
@@ -379,6 +390,7 @@ export class ViewerScene {
         for (const c of o.children) walk(c, path, aside);
       };
       const used = new Set<THREE.Material>();
+      let wet = false;
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
@@ -387,6 +399,7 @@ export class ViewerScene {
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
       this.look.adopt(root, assetExtras, url);
+      this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
       this.frameObjects.reset();
@@ -519,6 +532,8 @@ export class ViewerScene {
   setEffects(on: boolean) { this.look.setEffects(on); }
   setSky(on: boolean) { this.look.setSky(on); }
   setFog(on: boolean) { this.look.setFog(on); }
+  /** The level's rain, snow or motes, where they fall. */
+  setWeather(on: boolean) { this.look.setWeather(on); }
 
   /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
@@ -740,6 +755,7 @@ export class ViewerScene {
   }
 
   setMode(mode: ViewMode, follow: number | null = null) {
+    this.endFly(false);
     const was = this.mode;
     this.mode = mode;
     this.followIndex = mode === "follow" ? follow : null;
@@ -774,7 +790,122 @@ export class ViewerScene {
   }
 
   /** Back to the whole map, in the current mode. */
-  reset() { this.frameCamera(false); }
+  reset() { this.endFly(false); this.frameCamera(false); }
+
+  // ---- flycam ----
+
+  get flying() { return this.fly !== null; }
+
+  /** Flies free from where the camera is; off again goes back to the mode
+   *  and view it had (the mode itself is never touched, so a followed
+   *  player stays followed). */
+  setFly(on: boolean) {
+    if (on === (this.fly !== null) || this.disposed) return;
+    if (!on) { this.endFly(true); return; }
+    const saved = this.tween
+      ? { pos: this.tween.p1.clone(), target: this.tween.q1.clone() }
+      : { pos: this.camera.position.clone(), target: this.controls.target.clone() };
+    this.tween = null;
+    const dir = this.camera.getWorldDirection(this.v1);
+    const a = anglesOf(dir.x, dir.y, dir.z);
+    this.fly = { ...a, vel: new THREE.Vector3(), keys: new Set(), drag: false, moved: 0, dist: Math.max(1, this.camera.position.distanceTo(this.controls.target)), saved };
+    this.controls.enabled = false;
+    this.onFlyChange?.(true);
+    this.dirty = true;
+  }
+
+  /** Leaves the flycam; `back` returns the camera to where it was before. */
+  private endFly(back: boolean) {
+    const f = this.fly;
+    if (!f) return;
+    this.fly = null;
+    if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock();
+    this.controls.enabled = true;
+    if (back) this.moveCamera(f.saved.pos, f.saved.target, false);
+    this.onFlyChange?.(false);
+    this.dirty = true;
+  }
+
+  /** Keys for the flycam: true when one is its own (the page should not scroll for it). */
+  flyKey(e: KeyboardEvent, down: boolean): boolean {
+    const f = this.fly;
+    if (!f || !FLY_KEYS.has(e.code) || e.metaKey || e.altKey) return false;
+    if (down) f.keys.add(e.code); else f.keys.delete(e.code);
+    return true;
+  }
+
+  /** Lets go of every key (the view lost focus, so no key-up will come). */
+  flyRelease() { this.fly?.keys.clear(); }
+
+  private flyLook(dx: number, dy: number) {
+    const f = this.fly!;
+    Object.assign(f, lookStep(f.yaw, f.pitch, dx, dy));
+    this.dirty = true;
+  }
+
+  /** Mouse drag (or pointer lock) to look, the wheel for speed. */
+  private listenFly(el: HTMLElement): () => void {
+    const down = (e: PointerEvent) => {
+      const f = this.fly;
+      if (!f || e.button !== 0) return;
+      f.drag = true; f.moved = 0;
+      el.setPointerCapture(e.pointerId);
+    };
+    const move = (e: PointerEvent) => {
+      const f = this.fly;
+      if (!f || !(f.drag || document.pointerLockElement === el)) return;
+      f.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
+      this.flyLook(e.movementX * 0.0022, e.movementY * 0.0022);
+    };
+    const up = (e: PointerEvent) => {
+      const f = this.fly;
+      if (!f || !f.drag) return;
+      f.drag = false;
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      // A click rather than a drag takes the mouse (Esc gives it back).
+      if (f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
+    };
+    const wheel = (e: WheelEvent) => {
+      if (!this.fly) return;
+      e.preventDefault();
+      this.flySpeed = speedStep(this.flySpeed, e.deltaY);
+      this.onFlySpeed?.(speedLabel(this.flySpeed));
+    };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      el.removeEventListener("wheel", wheel);
+    };
+  }
+
+  /** One frame of flying: keys and the gamepad to a velocity (eased unless
+   *  motion is reduced), the velocity to a position. `dt` in ms. */
+  private flyStep(dt: number) {
+    const f = this.fly!;
+    const sec = dt / 1000;
+    const pad = padInput(Array.from(navigator.getGamepads?.() ?? []).find((g) => g?.connected));
+    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * 2.2 * sec, pad.lookY * 2.2 * sec);
+    const m = addMoves(keyMove(f.keys), pad.move);
+    const speed = this.scale * 6 * this.flySpeed * (keyBoost(f.keys) || pad.boost ? BOOST : 1);
+    this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
+    const fwd = this.camera.getWorldDirection(this.v1);
+    const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
+    const want = this.v0.set(0, m.up, 0).addScaledVector(fwd, m.forward).addScaledVector(right, m.right).multiplyScalar(speed);
+    const tau = this.opts.reducedMotion ? 0 : 0.12;
+    f.vel.set(approach(f.vel.x, want.x, sec, tau), approach(f.vel.y, want.y, sec, tau), approach(f.vel.z, want.z, sec, tau));
+    if (f.vel.lengthSq() > 1e-8) { this.camera.position.addScaledVector(f.vel, sec); this.dirty = true; }
+    else f.vel.set(0, 0, 0);
+    // The orbit target rides ahead of the camera, for the near plane and the fog.
+    this.controls.target.copy(this.camera.position).addScaledVector(fwd, f.dist);
+    this.fitNear();
+  }
 
   // ---- players ----
 
@@ -1303,8 +1434,10 @@ export class ViewerScene {
       this.marks[i]!.group.visible = false;
     }
 
-    // Camera: a running tween, then following.
-    if (this.tween) {
+    // Camera: flying, or a running tween, then following.
+    if (this.fly) {
+      this.flyStep(dt);
+    } else if (this.tween) {
       const tw = this.tween;
       const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = u * u * (3 - 2 * u);
       this.camera.position.lerpVectors(tw.p0, tw.p1, e);
@@ -1324,7 +1457,11 @@ export class ViewerScene {
         }
       }
     }
-    this.controls.update();
+    if (!this.fly) this.controls.update();
+    // The water's ripples and the weather move by themselves.
+    // (Held still when motion is reduced, but the weather still follows the view.)
+    const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
+    if (moving && !this.opts.reducedMotion) this.dirty = true;
     if (!this.dirty) return;
     this.dirty = false;
     this.draw(dt);
@@ -1398,6 +1535,8 @@ export class ViewerScene {
 
   dispose() {
     this.disposed = true;
+    this.endFly(false);
+    this.flyOff?.();
     this.clearMap();
     this.controls.dispose();
     for (const p of this.players.values()) this.removePlayer(p);

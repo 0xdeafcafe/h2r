@@ -111,6 +111,7 @@ impl Studio {
 
     /// Build one frame of UI and run the actions it produced.
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
+        app.poll_convert();
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
         self.menu_bar(ui, app, &mut actions);
@@ -370,6 +371,13 @@ impl Studio {
             ) {
                 self.viewport.local = !self.viewport.local;
             }
+            if ui.menu_item_enabled_selected_no_shortcut(
+                "Halo 1 overlay",
+                app.overlay_shown(),
+                app.compare().is_some_and(|c| c.view.is_ok()),
+            ) {
+                actions.push(Action::SetOverlay(!app.overlay_shown()));
+            }
             ui.separator();
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
@@ -562,7 +570,10 @@ impl Studio {
                     ui.text_wrapped("Open a disc image, a .map file or a folder of maps.");
                 }
             }
-            let loaded = app.loaded_map().map(str::to_owned);
+            let loaded = app
+                .loaded_map()
+                .filter(|_| app.opened_package().is_none())
+                .map(str::to_owned);
             for name in app.maps() {
                 let on = loaded.as_deref() == Some(name.as_str());
                 if ui
@@ -574,11 +585,82 @@ impl Studio {
                     actions.push(Action::SelectMap(name.clone()));
                 }
             }
+            self.library_lists(ui, app, actions);
         });
+    }
+
+    /// The Maps list's other groups: user packages, then Halo 1 (converted
+    /// packages, and the maps of an open Halo 1 source, read-only).
+    fn library_lists(&self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
+        let opened = app.opened_package().map(str::to_owned);
+        let entry = |e: &editor_core::packages::PackageEntry, actions: &mut Vec<Action>| {
+            let key = e.key();
+            let on = opened.as_deref() == Some(key.as_str());
+            if ui
+                .selectable_config(format!("{}  {}##pkg-{key}", icon::PACKAGE, e.label()))
+                .selected(on)
+                .build()
+                && !on
+            {
+                actions.push(Action::OpenPackageEntry(key.clone()));
+            }
+            ui.set_item_tooltip(format!(
+                "{}\nin <data>/maps/{}{}",
+                if e.derived {
+                    format!("a new map, loaded as {}", e.map)
+                } else {
+                    format!("an edit of {}", e.map)
+                },
+                e.dir,
+                match &e.halo1 {
+                    Some(o) => format!("\nconverted from Halo 1's {}", o.map),
+                    None => String::new(),
+                }
+            ));
+        };
+        let (h1, own): (Vec<_>, Vec<_>) = app.packages().iter().partition(|e| e.halo1.is_some());
+        if !own.is_empty() {
+            ui.spacing();
+            self.heading(ui, "Packages");
+            for e in own {
+                entry(e, actions);
+            }
+        }
+        if h1.is_empty() && app.halo1_source().is_none() {
+            return;
+        }
+        ui.spacing();
+        self.heading(ui, "Halo 1");
+        for e in h1 {
+            entry(e, actions);
+        }
+        if let Some(src) = app.halo1_source() {
+            ui.text_disabled(format!(
+                "{} {} (read only)",
+                icon::DISC,
+                src.path().display()
+            ));
+            let loaded = app.loaded_halo1();
+            for name in app.halo1_maps() {
+                let on = loaded == Some(name.as_str());
+                if ui
+                    .selectable_config(format!("{}  {name}##h1-{name}", icon::EYE))
+                    .selected(on)
+                    .build()
+                    && !on
+                {
+                    actions.push(Action::SelectHalo1Map(name.clone()));
+                }
+            }
+        }
     }
 
     fn outliner_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         ui.window(&self.keys.outliner).build(|| {
+            if let Some(view) = app.halo1_view() {
+                halo1_outliner(ui, app, view, actions);
+                return;
+            }
             if !app.session.is_open() {
                 ui.text_disabled("No map open.");
                 return;
@@ -675,7 +757,7 @@ impl Studio {
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
                 viewport_toolbar(ui, app, viewport, actions);
-                if app.session.is_open() {
+                if app.session.is_open() || app.session.reference().is_some() {
                     viewport.draw(ui, app, gpu, actions);
                 } else {
                     ui.text_disabled("  Pick a map to see it here.");
@@ -685,7 +767,15 @@ impl Studio {
     }
 
     fn inspector_window(&mut self, ui: &Ui, app: &mut App) {
+        let mut actions = Vec::new();
         ui.window(&self.keys.inspector).build(|| {
+            if let Some(view) = app.halo1_view() {
+                self.halo1_inspector(ui, app, view, &mut actions);
+                return;
+            }
+            if let Some(c) = app.compare() {
+                compare_banner(ui, c);
+            }
             let Some((kind, index)) = app.session.selected() else {
                 ui.text_disabled("Select a placement in the outliner or the viewport.");
                 return;
@@ -757,6 +847,9 @@ impl Studio {
                 app.session.seal();
             }
         });
+        for a in actions {
+            app.dispatch(a);
+        }
     }
 
     fn log_window(&mut self, ui: &Ui, app: &App) {
@@ -1049,7 +1142,16 @@ fn viewport_toolbar(ui: &Ui, app: &App, viewport: &mut ViewportView, actions: &m
     if ui.small_button(format!("{} Focus", icon::FOCUS)) {
         actions.push(Action::FocusSelected);
     }
-    if app.session.is_open() {
+    if app.compare().is_some_and(|c| c.view.is_ok()) {
+        ui.same_line();
+        if toggle(
+            format!("{} Halo 1 overlay", icon::LAYERS),
+            app.overlay_shown(),
+        ) {
+            actions.push(Action::SetOverlay(!app.overlay_shown()));
+        }
+    }
+    if app.session.is_open() || app.session.reference().is_some() {
         ui.same_line();
         ui.text_disabled("  RMB orbit + WASD/QE fly   MMB pan   wheel zoom   LMB pick");
     }
@@ -1199,5 +1301,172 @@ fn value_editor(
             }
             (chosen != r).then_some(Value::Tag(chosen))
         }
+    }
+}
+
+/// The outliner of a Halo 1 map shown read-only: its placements by kind.
+fn halo1_outliner(
+    ui: &Ui,
+    app: &App,
+    view: &editor_core::halo1::H1View,
+    actions: &mut Vec<Action>,
+) {
+    use crate::app::block_of;
+    ui.text_colored(theme::WARN, format!("{} Halo 1: read only", icon::EYE));
+    ui.separator();
+    let sel = app.session.selected();
+    ui.child_window("##h1-outliner-tree").build(ui, || {
+        for kind in editor_core::halo1::H1Kind::ALL {
+            let block = block_of(kind);
+            let n = view.of(kind).count();
+            let header = format!("{}  {}  ({n})", theme::block_icon(block), kind.label());
+            let Some(_node) = ui
+                .tree_node_config(format!("h1-{kind:?}"))
+                .label(header)
+                .span_avail_width(true)
+                .push()
+            else {
+                continue;
+            };
+            for p in view.of(kind) {
+                let on = sel == Some((block, p.index));
+                if ui
+                    .selectable_config(format!("{}##h1-{kind:?}-{}", p.label, p.index))
+                    .selected(on)
+                    .allow_double_click(true)
+                    .build()
+                {
+                    actions.push(Action::Select(Some((block, p.index))));
+                    if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
+                        actions.push(Action::FocusSelected);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Above a converted map's inspector: where it came from, and whether its
+/// Halo 1 source is at hand for the overlay.
+fn compare_banner(ui: &Ui, c: &crate::app::Compare) {
+    let sandbox = c
+        .origin
+        .sandbox
+        .map(|s| format!(", {} sandbox", s.short()))
+        .unwrap_or_default();
+    ui.text_colored(
+        theme::ACCENT,
+        format!(
+            "{} Converted from Halo 1's {}{sandbox}",
+            icon::LAYERS,
+            c.origin.map
+        ),
+    );
+    match &c.view {
+        Ok(_) => ui.text_disabled("Halo 1 overlay: View > Halo 1 overlay"),
+        Err(why) => {
+            ui.text_disabled("No Halo 1 overlay");
+            ui.set_item_tooltip(why);
+        }
+    }
+    ui.separator();
+}
+
+impl Studio {
+    fn halo1_inspector(
+        &self,
+        ui: &Ui,
+        app: &App,
+        view: &editor_core::halo1::H1View,
+        actions: &mut Vec<Action>,
+    ) {
+        ui.text_colored(
+            theme::WARN,
+            format!("{} Halo 1 map {}: read only", icon::EYE, view.name),
+        );
+        ui.text_wrapped(
+            "Halo 1 maps are shown as they are on the disc. Edit a converted copy \
+             (Maps > Halo 1) instead.",
+        );
+        convert_controls(ui, app, view, actions);
+        for n in &view.notes {
+            ui.text_colored(theme::ERROR, format!("{} {n}", icon::ALERT));
+        }
+        ui.separator();
+        let Some((block, index)) = app.session.selected() else {
+            ui.text_disabled("Select a placement in the outliner or the viewport.");
+            return;
+        };
+        let Some(p) = crate::app::kind_of(block).and_then(|k| view.get(k, index)) else {
+            return;
+        };
+        let f = ui.push_font(self.fonts.bold);
+        ui.text(format!("{}  {}", theme::block_icon(block), p.label));
+        f.pop();
+        ui.text_disabled(format!("{} #{}", p.kind.label(), p.index));
+        ui.separator();
+        for (name, value) in &p.fields {
+            ui.text_disabled(*name);
+            ui.same_line_with_pos(130.0);
+            ui.text(value);
+        }
+    }
+}
+
+/// "Convert to Halo 2" for the Halo 1 map on show: the sandbox, the base
+/// map h1convert picks, the button, and the running conversion or why the
+/// last one wrote nothing.
+fn convert_controls(
+    ui: &Ui,
+    app: &App,
+    view: &editor_core::halo1::H1View,
+    actions: &mut Vec<Action>,
+) {
+    use crate::app::ConvertSandbox;
+    let base = crate::app::base_for(&view.name);
+    ui.separator_with_text("Convert to Halo 2");
+    ui.text_disabled("Sandbox");
+    for (s, label) in [
+        (
+            ConvertSandbox::Halo2,
+            "Halo 2 (nearest weapons and vehicles)",
+        ),
+        (ConvertSandbox::Halo1, "Halo 1 (its own; not built yet)"),
+    ] {
+        if ui.radio_button_bool(label, app.convert_sandbox == s) && app.convert_sandbox != s {
+            actions.push(Action::SetConvertSandbox(s));
+        }
+    }
+    let has_base = app.maps().iter().any(|m| m.eq_ignore_ascii_case(base));
+    ui.text_disabled(format!("Onto {base}, from your Halo 2 disc"));
+    let running = app.converting();
+    let d = ui.begin_disabled_with_cond(running.is_some() || !has_base);
+    if ui.button(format!("{} Convert to Halo 2", icon::PACKAGE)) {
+        actions.push(Action::ConvertHalo1(app.convert_sandbox));
+    }
+    d.end();
+    if !has_base {
+        ui.set_item_tooltip(format!(
+            "Open your Halo 2 disc: the conversion starts from {base}."
+        ));
+    } else {
+        ui.set_item_tooltip(format!(
+            "Writes <data>/maps/h1_{}/ and opens the result.",
+            view.name.to_ascii_lowercase()
+        ));
+    }
+    if let Some(r) = running {
+        ui.text_colored(
+            theme::ACCENT,
+            format!(
+                "Converting {} ({} sandbox)... {:.0} s",
+                r.h1_map,
+                r.sandbox.name(),
+                r.started.elapsed().as_secs_f32()
+            ),
+        );
+    } else if let Some(e) = app.convert_error() {
+        ui.text_colored(theme::ERROR, format!("{} Not converted", icon::ALERT));
+        ui.text_wrapped(e);
     }
 }

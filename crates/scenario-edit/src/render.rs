@@ -232,6 +232,20 @@ pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
     out
 }
 
+/// The opacity of [`Viewport::set_overlay`]'s geometry.
+pub const OVERLAY_ALPHA: f64 = 0.35;
+
+/// Triangles in one flat colour, lit by slope, for the overlay (a
+/// conversion's source drawn over the converted map).
+pub fn overlay_vertices(tris: &[Tri], color: [f32; 3]) -> Vec<Vertex> {
+    let mut out = world_vertices(tris);
+    for v in &mut out {
+        let shade = 0.6 + 0.4 * v.normal[2].abs();
+        v.color = color.map(|c| c * shade);
+    }
+    out
+}
+
 /// Marker vertices; the selected marker is drawn white and larger.
 pub fn marker_vertices(
     markers: &[Marker],
@@ -431,6 +445,8 @@ impl MeshContext<'_> {
 /// Offscreen renderer for the viewport.
 pub struct Viewport {
     pipeline: wgpu::RenderPipeline,
+    /// [`Self::pipeline`] blended at [`OVERLAY_ALPHA`] over everything.
+    ghost: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
     opaque: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
@@ -445,6 +461,7 @@ pub struct Viewport {
     bind: wgpu::BindGroup,
     world: Option<(wgpu::Buffer, u32)>,
     markers: Option<(wgpu::Buffer, u32)>,
+    overlay: Option<(wgpu::Buffer, u32)>,
     scene: Option<GpuScene>,
     target: Option<Target>,
 }
@@ -505,6 +522,50 @@ impl Viewport {
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(COLOR_FORMAT.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let ghost = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("scenario viewport overlay"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            // Seen through everything: it is there to compare against.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Constant,
+                            dst_factor: wgpu::BlendFactor::OneMinusConstant,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             multiview_mask: None,
             cache: None,
@@ -684,6 +745,7 @@ impl Viewport {
         });
         Self {
             pipeline,
+            ghost,
             sky,
             opaque,
             mask,
@@ -696,6 +758,7 @@ impl Viewport {
             bind,
             world: None,
             markers: None,
+            overlay: None,
             scene: None,
             target: None,
         }
@@ -765,6 +828,10 @@ impl Viewport {
     }
     pub fn set_markers(&mut self, device: &wgpu::Device, v: &[Vertex]) {
         self.markers = Self::upload(device, v);
+    }
+    /// Geometry drawn see-through over everything (empty: none).
+    pub fn set_overlay(&mut self, device: &wgpu::Device, v: &[Vertex]) {
+        self.overlay = Self::upload(device, v);
     }
 
     /// Upload a map's textured world and models (replacing the grey world
@@ -951,6 +1018,18 @@ impl Viewport {
                 pass.draw(0..*count, 0..1);
             }
             self.draw_scene(&mut pass, true);
+            if let Some((buffer, count)) = &self.overlay {
+                pass.set_pipeline(&self.ghost);
+                let a = OVERLAY_ALPHA;
+                pass.set_blend_constant(wgpu::Color {
+                    r: a,
+                    g: a,
+                    b: a,
+                    a,
+                });
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
         }
         queue.submit([enc.finish()]);
         resized

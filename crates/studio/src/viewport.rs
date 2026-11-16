@@ -31,6 +31,7 @@ pub struct ViewportView {
     texture: Option<ExternalTextureId>,
     world_rev: Option<u64>,
     markers_rev: Option<u64>,
+    overlay_rev: Option<u64>,
     pub op: GizmoOp,
     /// Gizmo axes follow the placement (local) or the world.
     pub local: bool,
@@ -54,6 +55,7 @@ impl ViewportView {
             texture: None,
             world_rev: None,
             markers_rev: None,
+            overlay_rev: None,
             op: GizmoOp::Translate,
             local: false,
             looking: false,
@@ -99,6 +101,10 @@ impl ViewportView {
                 ),
             }
             self.markers_rev = Some(session.markers_rev());
+        }
+        if self.overlay_rev != Some(app.overlay_rev()) {
+            vp.set_overlay(gpu.device, &overlay_vertices(app));
+            self.overlay_rev = Some(app.overlay_rev());
         }
         let resized = vp.render(gpu.device, gpu.queue, session.camera(), size_px);
         let view = vp.ui_view()?;
@@ -247,4 +253,22 @@ fn selection_label(app: &App) -> String {
         (Some((kind, i)), Some(s)) => format!("{:?} {}", kind, s.label(kind, i)),
         _ => "the selection".into(),
     }
+}
+
+/// The colour of a converted map's Halo 1 source drawn over it.
+pub const OVERLAY_COLOR: [f32; 3] = [1.0, 0.55, 0.15];
+
+/// The overlay's vertices: the Halo 1 source's triangles and glyphs, in
+/// one colour (none when the overlay is off or has no source).
+pub fn overlay_vertices(app: &App) -> Vec<render::Vertex> {
+    let Some(v) = app.overlay() else {
+        return Vec::new();
+    };
+    let mut out = render::overlay_vertices(&crate::app::library_tris(v), OVERLAY_COLOR);
+    let mut glyphs = render::marker_vertices(&crate::app::library_markers(v), None);
+    for g in &mut glyphs {
+        g.color = OVERLAY_COLOR;
+    }
+    out.extend(glyphs);
+    out
 }

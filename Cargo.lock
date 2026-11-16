@@ -767,7 +767,10 @@ dependencies = [
  "flate2",
  "font",
  "gltf",
+ "h1bitmaps",
+ "h1convert",
  "h1map",
+ "h1models",
  "hs",
  "iced-x86",
  "image",
@@ -1405,8 +1408,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "content",
+ "h1bitmaps",
+ "h1map",
  "map",
  "tags",
+ "toml 0.9.12+spec-1.1.0",
  "variants",
  "xbe",
  "xiso",
@@ -2119,11 +2125,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1bitmaps"
+version = "0.1.0"
+dependencies = [
+ "assets",
+ "gfx",
+ "h1map",
+ "h1models",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "h1convert"
 version = "0.1.0"
 dependencies = [
+ "content",
  "h1map",
  "map",
+ "mopp",
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
@@ -2138,6 +2160,17 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "h1models"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
  "xiso",
 ]
 
@@ -3204,6 +3237,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mopp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "tags",
+ "xiso",
 ]
 
 [[package]]
@@ -5407,8 +5450,11 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "h1convert",
+ "h1map",
  "hopper-edit",
  "live-proto",
+ "map",
  "png",
  "pollster",
  "rfd",

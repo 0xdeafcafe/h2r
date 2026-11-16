@@ -398,7 +398,9 @@ fn load(dir: &Path) -> Result<Package, ResolveError> {
             file: MANIFEST_FILE.into(),
             why: e.to_string(),
         })?;
-    let manifest = Manifest::from_toml(&text)?;
+    // A converted map with one whole map per sandbox: load the default
+    // variant (docs/game/h1-multiplayer.md).
+    let manifest = Manifest::from_toml(&text)?.select_variant(None);
     manifest.validate_in(&dir)?;
     let id = manifest.map_id();
     Ok(Package { dir, manifest, id })
@@ -1187,6 +1189,45 @@ pub(crate) mod tests {
             .resolve("mymap", &mut &b""[..])
             .unwrap_err();
         assert!(e.to_string().contains("mymap.map does not match"), "{e}");
+    }
+
+    #[test]
+    fn a_converted_package_resolves_its_default_variant() {
+        let t = Temp::new();
+        let d = t.0.join("h1_gulch");
+        std::fs::create_dir_all(d.join("h1")).unwrap();
+        std::fs::create_dir_all(d.join("h2")).unwrap();
+        let (h1, h2) = (
+            synthetic_map(&payload(0x200, 1)),
+            synthetic_map(&payload(0x200, 2)),
+        );
+        std::fs::write(d.join("h1/h1_gulch.map"), &h1).unwrap();
+        std::fs::write(d.join("h2/h1_gulch.map"), &h2).unwrap();
+        let variant = |s: &str, bytes: &[u8]| {
+            format!(
+                "[[variant]]\nfile = \"{s}/h1_gulch.map\"\nsha256 = \"{}\"\n\
+                 origin = {{ game = \"halo1\", map = \"gulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
+                Sha256::of(bytes),
+                Sha256([7; 32])
+            )
+        };
+        let head =
+            "[package]\nformat = 1\nname = \"Gulch\"\n[base]\nmap = \"h1_gulch\"\nderived = true\n";
+        let write = |variants: &str| {
+            std::fs::write(d.join(MANIFEST_FILE), format!("{head}{variants}")).unwrap();
+        };
+        write(&format!("{}{}", variant("h2", &h2), variant("h1", &h1)));
+        let mut lib = Library::open(&t.0);
+        assert_eq!(lib.packages().len(), 1, "{:?}", lib.take_notices());
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h1, "Halo 1's sandbox by default");
+        let id_h1 = lib.packages()[0].id;
+        // Only the Halo 2 variant: that one, with its own MapId.
+        write(&variant("h2", &h2));
+        let mut lib = Library::open(&t.0);
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h2);
+        assert_ne!(lib.packages()[0].id, id_h1);
     }
 
     #[test]

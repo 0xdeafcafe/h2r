@@ -60,6 +60,8 @@ goals, the two-stage plan, the crate table and milestones.
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
 - [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phase 1 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
+- [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
+- [pstencil-history.md](graphics/pstencil-history.md): the history of the cut E3 2003 stencil lighting from public sources: how it worked, why it was cut, where to see it, and the look to tune against (§4)
 
 ## Audio and movies (`audio/`)
 
@@ -90,9 +92,11 @@ goals, the two-stage plan, the crate table and milestones.
 - [effects.md](formats/effects.md): the effects family (`effe`, `prt3`, `pmov` and more; `h2 effect`)
 - [fonts.md](formats/fonts.md): packed bitmap fonts and the text rasteriser (`crates/font`, `h2 font`)
 - [h1-map-format.md](formats/h1-map-format.md): Halo 1 Xbox cache files (v5, zlib) and the `h1map` reader (`h2 h1`, `h2 import halo1`)
+- [h1-bitmaps.md](formats/h1-bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/h1bitmaps`, `h2 h1 bitmap`)
 - [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`, `h2 hs`)
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
+- [mopp.md](formats/mopp.md): Havok MOPP code in structure BSPs: the engine's opcodes, a query model, and the writer (`crates/mopp`)
 - [objects.md](formats/objects.md): object tags (`obje` family, `hlmt`, `itmc`, `vehc`; `h2 object`)
 - [pathfinding.md](formats/pathfinding.md): AI pathfinding data in structure BSPs, and generating it from collision (`crates/pathfind`)
 - [shader-instances.md](formats/shader-instances.md): shader instance, template and pass tags (`shad`, `stem`, `spas`)
@@ -118,6 +122,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels converted to run in the Halo 2 engine
 - [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter, and the switch for Halo 1 maps
+- [multiple-campaigns.md](game/multiple-campaigns.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)

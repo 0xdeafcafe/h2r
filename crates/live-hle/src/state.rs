@@ -149,6 +149,7 @@ pub(crate) struct State {
     user_flags: [u32; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
+    activity: Option<String>,
 }
 impl State {
     pub fn new(accounts: Vec<Account>, address: SocketAddrV4, service: Option<Service>) -> Self {
@@ -175,6 +176,7 @@ impl State {
             user_flags: [0; 4],
             state_flags: [1; 4],
             game_id: None,
+            activity: None,
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -338,14 +340,19 @@ impl State {
             client::Presence {
                 state: "away",
                 game_id: None,
+                activity: None,
             }
         } else if let Some(id) = &self.game_id {
             client::Presence {
                 state: "playing",
                 game_id: Some(id.clone()),
+                activity: self.activity.clone(),
             }
         } else {
-            client::Presence::default()
+            client::Presence {
+                activity: self.activity.clone(),
+                ..client::Presence::default()
+            }
         }
     }
     fn presence(&self, controller: u32) -> std::result::Result<Option<Pending>, u32> {
@@ -362,6 +369,29 @@ impl State {
                 .map(Some),
             _ => Ok(None),
         }
+    }
+    /// What presence says the players are doing, in words ("Co-op:
+    /// Outskirts"), sent to the server for every signed-in player when it
+    /// changes. None clears it. A bad text is refused.
+    pub fn set_activity(&mut self, activity: Option<&str>) -> std::result::Result<(), u32> {
+        if activity.is_some_and(|a| !live_proto::valid_activity(a)) {
+            return Err(INVALID_ARGUMENT);
+        }
+        if self.activity.as_deref() == activity {
+            return Ok(());
+        }
+        self.activity = activity.map(str::to_owned);
+        if self.connected() {
+            for controller in 0..4 {
+                if self.user_ids[controller as usize] != 0 {
+                    self.presence(controller)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn activity(&self) -> Option<&str> {
+        self.activity.as_deref()
     }
     pub fn set_game_id(&mut self, id: Option<&str>) -> std::result::Result<(), u32> {
         if id.is_some_and(|id| !live_proto::game::valid_id(id)) {
@@ -407,6 +437,66 @@ impl State {
         let session = self.session();
         self.sessions
             .set_skulls(skulls, self.service.as_ref(), session.as_ref());
+    }
+    /// Arms (Some) or leaves (None) a co-op campaign for this console's
+    /// lobby advertisements, and says so in presence ("Co-op: <level>").
+    pub fn set_coop(
+        &mut self,
+        campaign: Option<live_proto::session::Campaign>,
+        skulls: Option<Vec<u8>>,
+    ) {
+        let session = self.session();
+        let activity = campaign.as_ref().map(|c| coop_activity(c.label()));
+        self.sessions
+            .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
+        let _ = self.set_activity(activity.as_deref());
+    }
+    pub fn coop(&self) -> Option<live_proto::session::Campaign> {
+        self.sessions.coop().cloned()
+    }
+    /// Controller `controller`'s friends, as last read; asks for a fresh
+    /// read (answered on a later call).
+    pub fn friend_list(&mut self, controller: usize) -> Vec<crate::Friend> {
+        if controller >= 4 {
+            return Vec::new();
+        }
+        let session = self.session();
+        self.invites.refresh(
+            controller,
+            self.user_ids[controller],
+            self.service.as_ref(),
+            session.as_ref(),
+        );
+        self.invites.friend_list(controller)
+    }
+    /// Invites `to` to this console's advertised lobby, from controller
+    /// `controller`'s player.
+    pub fn invite_to_lobby(
+        &mut self,
+        controller: usize,
+        to: live_proto::Xuid,
+    ) -> std::result::Result<String, u32> {
+        if controller >= 4 || self.user_ids[controller] == 0 {
+            return Err(INVALID_USER);
+        }
+        let Some(id) = self.sessions.own_ids().first().copied() else {
+            return Err(MATCH_INVALID_SESSION);
+        };
+        let session_id = live_proto::sign::hex(&id);
+        let session = self.session();
+        self.invites.send(
+            controller,
+            self.user_ids[controller],
+            to,
+            session_id.clone(),
+            self.service.as_ref(),
+            session.as_ref(),
+        )?;
+        Ok(session_id)
+    }
+    /// The signed-in player of controller `controller` (0 for none).
+    pub fn user(&self, controller: usize) -> u64 {
+        self.user_ids.get(controller).copied().unwrap_or(0)
     }
     /// The session this console joined: a registered key (`keys`, from
     /// `XNetRegisterKey`) that is not one of its own advertisements.
@@ -1359,4 +1449,13 @@ fn record(account: &Account) -> [u8; USER_SIZE] {
     r[..8].copy_from_slice(&account.xuid.to_le_bytes());
     r[12..12 + account.gamertag.len()].copy_from_slice(account.gamertag.as_bytes());
     r
+}
+
+/// Presence's words for a co-op campaign on `level` (cut to fit).
+pub fn coop_activity(level: &str) -> String {
+    let mut a = format!("Co-op: {level}");
+    if a.chars().count() > live_proto::PRESENCE_ACTIVITY_MAX {
+        a = a.chars().take(live_proto::PRESENCE_ACTIVITY_MAX).collect();
+    }
+    a
 }

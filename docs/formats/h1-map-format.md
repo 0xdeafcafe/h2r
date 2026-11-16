@@ -44,6 +44,11 @@ here or in tests. The tests build invented maps and discs in memory
 Field offsets inside tags (the scenario's BSP block) are not on c20's tag
 page; those are marked S with a note.
 
+Model and animation tag layouts (`mode`, `antr`) are in
+[h1-models.md](h1-models.md), checked on real maps.
+Bitmap tags (`bitm`) and where their pixels are in the file are in
+[h1-bitmaps.md](h1-bitmaps.md), checked on every map of the disc.
+
 ## Header and compression
 
 **S:** the header is `0x800` bytes and is stored uncompressed. `head`
@@ -328,6 +333,8 @@ needs every level and adds `ui`, `bitmaps` and `sounds` when present.
   structure BSPs and tag counts by group.
 - `h2 h1 tags <iso|map> [map] [--group G]`: ID, group, data range and name
   of every tag (or one group's).
+- `h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]`: one bitmap's
+  images as PNGs ([h1-bitmaps.md](h1-bitmaps.md)).
 - `h2 import halo1 [iso] [--data DIR] [--force] [--dry-run]`: checks the
   title and every campaign map's header, then copies the maps as stored
   (still compressed) into `<data>/campaigns/halo1/source/` and writes

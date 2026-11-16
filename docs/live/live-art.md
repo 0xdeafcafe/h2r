@@ -152,12 +152,22 @@ reflection tints and shaders whose compiled data another shader shares;
   sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
   model could be built), `clear` (the clear colour, RGB 0..1, when not
   black), `fog` (`colour`, `density` 0..1 reached at `end`, `start` and
-  `end` in game units from the eye) and `scale` (the model's scale in the
+  `end` in game units from the eye), `glow` (the first sky light's
+  sun-lit air: `colour`, `density` 0..1, and the light's `heading` and
+  `pitch` in radians, game frame) and `scale` (the model's scale in the
   game). `sky.glb` is the sky's render model at rest in model space (same
   axes), textured, every region's first permutation at the highest detail
   under 30,000 triangles; its `asset.extras.blend` says per material, in
   order, `opaque`, `alpha` or `additive` (from the template's words:
   `add`; `alpha`, `cloud(s)`).
+- **Weather.** `asset.extras.weather`, when a BSP has any: per weather
+  system (per BSP palette entry with a `weat` tag and clusters), `name`
+  (the palette entry's), `kind` (`rain`, `snow`, else `motes`, from words
+  in the entry's and the tag's names), `amount` (0.5 `light`/`misty`, 2
+  `heavy`/`monsoon`, else 1), `boxes` (the bounds of the clusters it is
+  set on, glTF frame: min x, y, z, max x, y, z) and `exclude` (its BSP's
+  weather polyhedra, the places it is kept out of: each a list of planes
+  `[nx, ny, nz, d]`, glTF frame, inside when `n·p <= d` for all).
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below). `bounds` covers the
@@ -207,6 +217,20 @@ reflection tints and shaders whose compiled data another shader shares;
   `EXTRACTOR_VERSION` 6 indices were u32.
 
 ### In the 3D viewer
+
+**Water, weather and haze.** The `water` class material ripples
+(`water3d.ts`: a few procedural travelling waves bend its normal, no
+pictures), is glassy, and at grazing angles reflects the sky's colour
+(its clear colour, else its fog's or glow's) and turns opaque (Schlick
+Fresnel). The weather (`weather3d.ts`) is GPU points in a box around what
+the camera looks at, fixed in the world and wrapping as it moves: rain
+falls as streaks, snow and motes drift; each point is drawn only inside
+one of its system's boxes and outside its kept-out volumes (tested in the
+vertex shader against float textures). The toolbar's Weather switch
+shows when a level has some. Both keep the view redrawing while shown,
+and hold still when motion is reduced. A level with no fog but a sky
+glow (Zanzibar, Colossus, Foundation) gets the viewer's exponential haze
+in the glow's colour, as thick as it says (`sky3d.ts` `glowHaze`).
 
 **Loading.** The viewer draws the level as soon as `map.glb` has loaded,
 untextured (each look shows its class material), then fetches the
@@ -438,8 +462,16 @@ view), the same for every view.
    +0x14, the atmospheric fog block at +0x48 (0x18-byte elements: colour,
    maximum density, start, opaque distance), the secondary fog block at
    +0x50 (the same; used when there is no atmospheric fog) and the clear
-   colour at +0xa0. A sky that cannot be read is listed under `skipped`
-   as `map/<stem>/sky`.
+   colour at +0xa0. The lights block at +0x78 (0x34 bytes each: heading
+   and pitch at +0xc, a fog block at +0x2c whose first element has
+   colour at +4 and maximum density at +0x10) gives the `glow`. A sky
+   that cannot be read is listed under `skipped` as `map/<stem>/sky`.
+   **Weather** (`live_weather.rs`): per BSP, the weather palette at
+   `sbsp+0x84` (0x88 bytes: a 32-byte name, the `weat` reference with its
+   ID at +0x24), the weather polyhedra at `sbsp+0x8c` (0x18 bytes: a
+   bounding sphere, then a block of 0x10-byte planes) and the clusters at
+   `sbsp+0x9c` (0xb0 bytes: bounds at +0x54, the weather palette index,
+   a short, at +0x76). A BSP whose weather cannot be read adds none.
    Each view's camera is then fitted to what it draws, not to the frame's
    box: the corners of every drawn triangle cut to the frame (plus 1%),
    projected, with a 3% margin. A level that fills only part of its frame

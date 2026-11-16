@@ -236,3 +236,159 @@ fn the_plan_applies_to_a_retail_base() {
     );
     assert_eq!(done.counts[2] + done.unresolved.len(), plan.items.len());
 }
+
+/// Test only: a MOPP block that loads but emits nothing. It never goes into
+/// a map for play (`convert` refuses without real MOPP code); it lets the
+/// rest of a converted map be read back.
+fn stand_in_mopp() -> Vec<u8> {
+    let mut m = vec![0u8; 0x31];
+    m[0x20] = 1;
+    m
+}
+
+#[test]
+#[ignore = "reads beavercreek from $H1_MAP_DIR and the Halo 2 disc ($H2_DISC)"]
+fn beavercreek_converts_onto_its_halo_2_base_and_reads_back() {
+    use h1convert::convert::{Sandbox, convert, prepare};
+    use tags::structure::{Lightmap, StructureRender};
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let h1_name = std::env::var("H1_MAP").unwrap_or("beavercreek".into());
+    let base_name = h1convert::convert::known(&h1_name).map_or("beavercreek", |k| k.1);
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(&disc).unwrap())).unwrap();
+    let entry = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.ends_with(&format!("{base_name}.map")))
+        .unwrap();
+    let base_bytes = iso.read(&entry).unwrap();
+    let dir = std::env::var("H1_MAP_DIR").expect("set H1_MAP_DIR");
+    let file = std::fs::read(std::path::Path::new(&dir).join(format!("{h1_name}.map"))).unwrap();
+    let sha = content::Sha256::of(&file);
+    let h1 = H1Map::from_reader(Cursor::new(file)).unwrap();
+    let mut base = map::Map::from_reader(Cursor::new(base_bytes)).unwrap();
+
+    // The real entry point writes a whole map, which reads back.
+    let done = convert(&h1, sha, &mut base, Sandbox::Halo2).unwrap();
+    let back = map::Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+    assert!(!back.tags().is_empty());
+    assert!(matches!(
+        prepare(&h1, sha, &mut base, Sandbox::Halo1).unwrap_err(),
+        h1convert::Error::Halo1Sandbox
+    ));
+
+    let p = prepare(&h1, sha, &mut base, Sandbox::Halo2).unwrap();
+    let vertices: usize = p.sections.iter().map(|s| s.vertices.len()).sum();
+    let triangles: usize = p.sections.iter().map(|s| s.indices.len() / 3).sum();
+    eprintln!(
+        "{h1_name}: {} clusters, {vertices} vertices, {triangles} triangles, {} materials, \
+         {} collision materials, flipped {}, placements {:?}, unresolved {:?}, dropped {:?}",
+        p.sections.len(),
+        p.materials.len(),
+        p.collision_materials,
+        p.flipped,
+        p.applied.counts,
+        p.applied.unresolved,
+        p.dropped
+    );
+    let done = p.build(&mut base, &stand_in_mopp()).unwrap();
+    assert_eq!(done.name, format!("h1_{h1_name}"));
+    eprintln!("{} bytes", done.bytes.len());
+
+    let mut m = map::Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+    m.validate_checksum().unwrap();
+    assert_eq!(m.header().name, done.name);
+    assert_eq!(
+        m.header().scenario_path,
+        format!("scenarios\\multi\\{0}\\{0}", done.name)
+    );
+    // The scenario's descriptor leads to the new BSP and lightmap.
+    let sbsp = m
+        .tags()
+        .iter()
+        .find(|t| t.group.0 == *b"sbsp")
+        .unwrap()
+        .clone();
+    let ltmp = m
+        .tags()
+        .iter()
+        .find(|t| t.group.0 == *b"ltmp")
+        .unwrap()
+        .clone();
+    let render = StructureRender::read(&mut m, sbsp.id).unwrap();
+    assert_eq!(render.clusters.len(), p.sections.len());
+    assert_eq!(render.material_count as usize, p.materials.len());
+    let file = done.bytes.clone();
+    struct Mem(Vec<u8>);
+    impl tags::geometry::RawSource for Mem {
+        fn read_raw(&mut self, p: map::RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+            let s = p.offset as usize;
+            self.0
+                .get(s..s + size as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or(tags::Error::Invalid("raw range"))
+        }
+    }
+    let mut raw = Mem(file);
+    let mut loaded = 0;
+    for c in &render.clusters {
+        let s = c
+            .geometry
+            .load(&mut raw, Some(render.material_count as usize))
+            .unwrap()
+            .unwrap();
+        loaded += s.indices.len() / 3;
+    }
+    assert_eq!(loaded, triangles);
+    let light = Lightmap::read(&mut m, ltmp.id).unwrap();
+    assert_eq!(light.groups[0].structure_checksum, render.checksum);
+    assert_eq!(
+        light.groups[0].cluster_render_info.len(),
+        render.clusters.len()
+    );
+    let bytes = m.read_tag_bytes(sbsp.id).unwrap();
+    let at = sbsp.location.unwrap().address;
+    let w = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    let col = tags::collision::Bsp::decode_blocks(&bytes, at, (w(0x18) - at) as usize).unwrap();
+    assert_eq!(col, p.collision);
+
+    // Every trigger volume of the base moved out of the level.
+    let scnr = m.scenario().unwrap().clone();
+    let sb = m.read_tag_bytes(scnr.id).unwrap();
+    let sa = scnr.location.unwrap().address;
+    let sw = |o: usize| u32::from_le_bytes(sb[o..o + 4].try_into().unwrap());
+    assert_eq!(sw(0x108) as usize, p.trigger_volumes);
+    let tv = (sw(0x10c).wrapping_sub(sa)) as usize;
+    for i in 0..p.trigger_volumes {
+        let z = f32::from_bits(sw(tv + 0x44 * i + 0x2c));
+        assert_eq!(z, -1.0e6);
+    }
+    eprintln!("{} trigger volumes parked", p.trigger_volumes);
+
+    // The placements survived the rebuild.
+    let back = scenario_edit::Scenario::read(&mut m).unwrap();
+    assert_eq!(
+        back.block(scenario_edit::BlockKind::StartingLocations)
+            .len(),
+        p.applied.counts[0]
+    );
+
+    // The manifest: a derived map with its origin.
+    let man = &done.manifest;
+    man.validate().unwrap();
+    assert!(man.base.derived);
+    assert_eq!(man.base.map, done.name);
+    assert!(man.patches.is_empty());
+    let v = &man.variants[0];
+    assert_eq!(v.file, format!("h2/{}.map", done.name));
+    assert_eq!(v.sha256, content::Sha256::of(&done.bytes));
+    assert_eq!(man.select_variant(None).patches[0].file, v.file);
+    let o = &v.origin;
+    assert_eq!(
+        (o.game.as_str(), o.map.as_str(), o.sandbox.as_str()),
+        ("halo1", h1_name.as_str(), "h2")
+    );
+    assert_eq!(o.source_sha256, sha);
+    eprintln!("{}", man.to_toml());
+}

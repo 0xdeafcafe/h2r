@@ -61,6 +61,7 @@ Options:
 | `--disc <file.iso>` | The disc image to read maps from. Without any source, the editor uses `H2_DISC`, then `disc/halo2.iso`. |
 | `--map <file.map>` | Open a single loose `.map` file instead of a disc. |
 | `--folder <dir>` | Open a folder of `.map` files. |
+| `--halo1 <file.iso or dir>` | A Halo 1 disc image or folder of Halo 1 maps, to look at (section 4). Without it, the editor uses `H1_ISO`, then `H1_MAP_DIR`, then `disc/halo1.iso`. |
 | `--hopper <file>` | Open this `multiplayer_hopper.dat` in the Playlists tool at startup. |
 | `--data <dir>` | The game's data folder: where saved variants and map packages go. It defaults to the same folder `h2 play` uses (`$TMPDIR/h2boot-data`). |
 
@@ -82,8 +83,10 @@ The window is made of panels that dock together:
   changes shows a `*` after its name. Switching tools never loses
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
-  folder of maps), the path of what is open, and its maps. Clicking a map
-  opens it in the Scenario tool.
+  folder of maps), the path of what is open, and its maps. Below them,
+  **Packages** lists the map packages you have saved, and **Halo 1** the
+  Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
+  tool.
 - **Outliner** (bottom left), **Viewport** (middle) and **Inspector**
   (right) show the tool you are in. In Game variants the outliner becomes
   **Variants** and the viewport **Settings**; in Playlists they become
@@ -262,6 +265,66 @@ from.
 Then start a game on that map: a custom game for a multiplayer map. In
 multiplayer, everyone in the game needs the same edited map.
 
+### Your packages in the Maps list
+
+Every package in the data folder is listed under **Packages** in **Maps**,
+by the name you gave it. Click one to keep working on it: the editor opens
+its map from your disc and the package over it, ready to edit. **File >
+Save as package...** then offers the same **Directory**, so saving updates
+that package. (The disc that has the package's map must be open.)
+
+### Halo 1 maps
+
+The editor can show Halo 1 maps too.
+
+**Converted maps.** Once you have imported Halo 1 multiplayer maps
+([h1-multiplayer.md](../game/h1-multiplayer.md)), each is listed under
+**Halo 1** twice, once per sandbox: for example **Blood Gulch (H1
+sandbox)** (Halo 1's weapons and vehicles) and **Blood Gulch (H2
+sandbox)** (Halo 2's). Click one to open it in the Scenario tool and
+edit it like any map. Saving it with **File > Save as package...** makes a
+new package (its **Directory** starts as `<map>-edit`), listed under
+**Packages**; the imported map is left as it was.
+
+**Comparing with the original.** If the editor can find the Halo 1 map a
+converted map was made from (on the Halo 1 disc or folder you opened, or
+in `H1_MAP_DIR`), the inspector says `Converted from Halo 1's <map>`,
+and **View > Halo 1 overlay** (also a button above the viewport) draws
+the original level and its spawns in orange over the converted one, so
+you can check that everything lines up. Click it again to hide it. The
+editor checks that the file is the very one the map was converted from;
+if it isn't, the inspector says `No Halo 1 overlay` (hover for why).
+
+**Looking at Halo 1 maps.** Open your Halo 1 disc image or a folder of
+Halo 1 maps with **Open...** (or start with `--halo1`), and its maps are
+listed under **Halo 1** with an eye. Click one to look at it: its level
+(textured and lit by its own lightmaps, without its sky or scenery) and its multiplayer
+spawn points, flags, weapon spawns and vehicles, which you can select to
+see their details. These maps are read only (the outliner says `Halo 1:
+read only`): nothing can be moved or saved.
+
+**Converting a Halo 1 map.** With a Halo 1 map on show and your Halo 2
+disc open, the inspector's **Convert to Halo 2** section turns it into a
+Halo 2 map:
+
+1. Pick the **Sandbox**: **Halo 2** (Halo 2's nearest weapons and
+   vehicles) or **Halo 1** (its own; not built yet, so it says so).
+2. The line under it says which Halo 2 map the conversion starts from
+   (`Onto beavercreek, from your Halo 2 disc`): it gives the sky, the
+   weapons and vehicles and everything else a Halo 2 level needs. The
+   editor picks it; your Halo 2 disc must be open.
+3. Click **Convert to Halo 2**. It runs in the background
+   (`Converting bloodgulch (h2 sandbox)...` with the seconds so far) and
+   writes the converted map into the data folder, as the importer does.
+   When it is done, the map appears under **Halo 1** in **Maps** (for
+   example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
+
+If it can't convert, the inspector says `Not converted` and why, and the
+log says the same: for example `This level has 70,000 surfaces; Halo 2
+holds at most 65,536, so it can't be converted.`
+
+![Halo 1's Blood Gulch, read only: the textured, lit canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
+
 ## 5. Game variants
 
 A game variant is a set of game settings: the game type (Slayer, CTF and
@@ -434,7 +497,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 | What | Where | How the game finds it |
 |---|---|---|
-| Map packages | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
+| Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
 | Edited `.map` files | Wherever you save them | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
@@ -511,6 +574,18 @@ not everything the game draws (no detail maps or the real sky, for
 example). The status bar says how many shaders and objects could be
 drawn; the rest show flat-shaded or as markers only. Editing works the
 same.
+
+**A package isn't in the Maps list.** The list shows the packages in the
+editor's data folder: check `--data`. A folder without a readable
+`manifest.toml` is left out.
+
+**"... edits <map>: open a disc that has that map first".** A package of
+an edited disc map is opened over that map: open your Halo 2 disc first.
+
+**No Halo 1 overlay.** Hover over `No Halo 1 overlay` in the inspector.
+Open your Halo 1 disc (or set `H1_MAP_DIR`) before opening the converted
+map; "has another SHA-256" means the Halo 1 map you have is not the file
+the map was converted from.
 
 **The panels are in a mess.** **View > Reset layout**.
 

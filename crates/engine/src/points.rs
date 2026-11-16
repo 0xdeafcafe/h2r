@@ -403,6 +403,46 @@ points! { ALL;
     CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-preflight.md";
     /// HaloScript `cinematic_stop`.
     CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-preflight.md";
+    /// The level select's list: one campaign's map ids from the start-level
+    /// list, sorted, into the data array (stdcall `(array, campaign id)`).
+    /// 1.0 asks for campaign 1 only (`0x19c190`).
+    CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    /// The menu's campaign start: options from the selection globals
+    /// `0x54e7c0`-`0x54e7c8`, the level looked up by `(campaign, map)`.
+    CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/game/multiple-campaigns.md";
+    /// The next level of a campaign: the smallest map id above `map` with
+    /// that campaign id in the start-level list (stdcall, EAX, -1 none).
+    /// The game-won path (`0x18e960`) and `0x163610` ask it.
+    NEXT_LEVEL @ 0x0019_c440: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    /// A finished level raises one slot's profile progress for a difficulty
+    /// to map id ESI (stdcall `(slot, difficulty)`).
+    PROGRESS_RAISE @ 0x0019_043f: [fn(map: esi, slot: stack 0, difficulty: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    /// The last level started (map id EAX) into every signed-in profile and
+    /// `0x510840`.
+    LAST_LEVEL_SET @ 0x0019_040d: [fn(map: eax) ret 0]; "docs/game/multiple-campaigns.md";
+    /// The level select screen's constructor (thiscall; the lobby's passes
+    /// 1 in its second argument). Sets `0x54e7c0` to 1.
+    LEVEL_SELECT_NEW @ 0x002c_4ea0: [fn(screen: ecx, a: stack 0, lobby: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    /// The highest map id the signed-in profiles finished, any difficulty
+    /// (EAX, -1 for none).
+    PROGRESS_MAX @ 0x0019_0565: [fn() -> eax ret 0]; "docs/game/multiple-campaigns.md";
+    /// Fill a screen request (ECX): the player mask, two words and the
+    /// loader; `OPEN_SCREEN` and the menus' own opens call it.
+    SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/game/multiple-campaigns.md";
+    /// One local player's control update (look input to the player's
+    /// action): stdcall, the local user index first of five stack words,
+    /// the player's local controller index (player `+0x24`) in EDX. Its
+    /// only caller is `0x186ab0` (`0x186b16`), which `0x1870a0` runs for
+    /// each bound local user. Reads magnetism friction and adhesion at
+    /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
+    PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
+    /// The aim-assist parameters of a unit's held weapons, from the weapon
+    /// tags (autoaim and magnetism angles and ranges, zoom applied):
+    /// unit in ECX, the 0x24-byte result at ESI (kept to the return), zoom
+    /// level on the stack, AL whether there is one. Callers: the local
+    /// aim-assist search `0x1a4900` (`0x1a49a1`) and the shot aim
+    /// `0x1a4c00` (`0x1a4cbf`, from the barrel fire `0x104150`).
+    AIM_ASSIST_PARAMS @ 0x001a_50a0: [fn(unit: ecx, out: esi, zoom: stack 0) -> al ret 4]; "docs/game/aim-assist.md";
 }
 
 globals! { GLOBALS;

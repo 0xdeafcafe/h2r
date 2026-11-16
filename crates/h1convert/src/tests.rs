@@ -9,7 +9,7 @@ use crate::query::{first_hit, leaf_at};
 use crate::sandbox::{H2Item, h2_equivalent, h2_name_matches};
 use crate::*;
 
-fn room() -> CollisionBsp {
+pub(crate) fn room() -> CollisionBsp {
     let base = 0x8190_0000;
     let (bytes, at) = collision_room(base);
     CollisionBsp::read(&Space::new(&bytes, base), &bytes[at..at + 0x60]).unwrap()

@@ -28,9 +28,11 @@
 //! retail back) and becomes the new retail value. So a reload, a revert or
 //! a change of level never compounds, and Default writes retail back.
 //!
-//! **Multiplayer.** The tag values feed the simulation, so a multiplayer
-//! game (options mode 2) keeps retail values whatever the setting says:
-//! every peer aims the same and nobody gets an edge from the setting.
+//! **Multiplayer.** The tag values are shared by every player a machine
+//! simulates, so a multiplayer game (options mode 2) keeps the tags retail
+//! whatever the setting says. The touch player's stronger aim assist there
+//! is per player instead, applied around that local player's own control
+//! update and never to a tag ([`player`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -38,6 +40,8 @@ use std::sync::{Arc, Mutex};
 use settings::{Setting, Store};
 
 use crate::layout_glue::Gm;
+
+pub mod player;
 
 /// The feature id in the plan and `H2_FEATURES`.
 pub const FEATURE: &str = "aim-assist";
@@ -281,7 +285,8 @@ impl Remembered {
     }
 }
 
-/// The level for this activation: retail in a multiplayer game, else the
+/// The level for this activation: retail tags in a multiplayer game (the
+/// touch player's boost there is per player, [`player`]), else the
 /// setting's (Auto looks at the touch controls now).
 pub fn level_now(setting: i64, mode: Option<u32>) -> Level {
     if mode == Some(MODE_MULTIPLAYER) {
@@ -296,6 +301,7 @@ pub fn level_now(setting: i64, mode: Option<u32>) -> Level {
 pub struct AimAssist {
     setting: Setting<i64>,
     remembered: Arc<Mutex<Remembered>>,
+    per_player: Arc<player::PerPlayer>,
 }
 
 impl AimAssist {
@@ -303,6 +309,7 @@ impl AimAssist {
         AimAssist {
             setting: store.handle::<i64>(crate::setting_defs::AIM_ASSIST.key),
             remembered: Arc::default(),
+            per_player: Arc::default(),
         }
     }
 }
@@ -336,6 +343,52 @@ impl feature::Feature for AimAssist {
                 }
                 Ok(Flow::Continue)
             });
+
+        // Multiplayer, per player: around one local player's control
+        // update, and only for the touch player (player.rs).
+        let setting = self.setting.clone();
+        let pp = Arc::clone(&self.per_player);
+        b.raw().before(
+            &player::PLAYER_CONTROL_UPDATE,
+            "touch player's aim assist (open)",
+            move |c| {
+                let controller = c.cpu.edx;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let mode = crate::level_boot::active_mode(&*mem);
+                let level = player::player_level(
+                    setting.get(),
+                    mode,
+                    controller,
+                    input::touch::controls_shown(),
+                );
+                pp.enter(&mut *mem, level);
+                Ok(Flow::Continue)
+            },
+        );
+        let pp = Arc::clone(&self.per_player);
+        b.raw().after(
+            &player::AIM_ASSIST_PARAMS,
+            "touch player's weapon cone",
+            move |c| {
+                let out = c.cpu.esi;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                pp.params(&mut *mem, out);
+                Ok(())
+            },
+        );
+        let pp = Arc::clone(&self.per_player);
+        b.raw().after(
+            &player::PLAYER_CONTROL_UPDATE,
+            "touch player's aim assist (close)",
+            move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                pp.leave(&mut *mem);
+                Ok(())
+            },
+        );
         Ok(())
     }
 }

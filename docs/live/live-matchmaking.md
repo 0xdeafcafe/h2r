@@ -395,6 +395,12 @@ crypto.
   the stream the way the games list does.
 - **Hopper populations** — players searching per hopper, matches proposed
   over time, from the `matchmaking-*`/`match-*` projections.
+- **Co-op campaign** — a `coop` session shows as "Co-op campaign" with
+  its level name, difficulty and players (host and who joined), in the
+  dashboard's find-a-game list and the stats home. Finished co-op games
+  come from `GET /v1/coop/games` and show on the games page's campaign tab
+  and a player's history (Co-op tab). Friends' presence shows its
+  `activity` line ("Co-op: Outskirts") when the game set one.
 - **Session detail** — players as they join, linking to profiles and (once
   the game starts) the existing game pages; presence's `game_id` already
   ties a playing account to a game, and `PresenceChanged` can grow an

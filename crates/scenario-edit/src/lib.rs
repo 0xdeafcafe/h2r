@@ -42,7 +42,7 @@ pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
 pub use scenario::{Changes, Grown, Removed, Scenario, TagRef, Value};
-pub use session::{GROWTH_REFUSAL, RotationField, Session, Transform};
+pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]

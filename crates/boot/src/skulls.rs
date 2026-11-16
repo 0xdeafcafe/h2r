@@ -772,6 +772,38 @@ pub fn at_start(
     ))
 }
 
+/// A co-op guest's campaign start: exactly the host's skulls (engine
+/// indices; ours, from [`COUNT`], are left out), whatever this console's
+/// profiles have.
+pub fn coop_start(mode: Option<u32>, host: &[u8]) -> Option<(Set, String)> {
+    if mode != Some(MODE_CAMPAIGN) {
+        return None;
+    }
+    let mut on = [false; COUNT];
+    for i in host {
+        if let Some(b) = on.get_mut(usize::from(*i)) {
+            *b = true;
+        }
+    }
+    let labels: Vec<&str> = SKULLS
+        .iter()
+        .zip(on)
+        .filter(|(_, o)| *o)
+        .map(|(d, _)| d.label)
+        .collect();
+    Some((
+        on,
+        format!(
+            "skulls: co-op campaign start with the host's skulls: {}",
+            if labels.is_empty() {
+                "none on".to_string()
+            } else {
+                labels.join(", ")
+            }
+        ),
+    ))
+}
+
 /// A pickup call in progress: skull ESI and its byte before.
 type Pending = (u32, Option<bool>);
 
@@ -849,7 +881,13 @@ impl feature::Feature for Skulls {
                         let mem = rt.memory();
                         (options_mode(&*mem, c.cpu.eax), profiles_or_default(&*mem))
                     };
-                    if let Some((on, line)) = at_start(&store, mode, &profiles) {
+                    // A co-op guest plays the host's skulls (docs/live/live-coop.md,
+                    // "Co-op over Live").
+                    let start = match crate::coop_live::guest_skulls() {
+                        Some(host) => coop_start(mode, &host),
+                        None => at_start(&store, mode, &profiles),
+                    };
+                    if let Some((on, line)) = start {
                         if apply(&mut *rt.memory(), &on) {
                             tracker.reset(on);
                             eprintln!("{line}");

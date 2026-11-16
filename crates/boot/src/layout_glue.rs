@@ -536,12 +536,16 @@ pub fn install(
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
+    // The campaign picker (docs/game/multiple-campaigns.md), when a second
+    // campaign is installed.
+    let with_campaigns = crate::campaign_menu::class().is_some();
     if !layouts
         && !with_speaker
         && !with_controls
         && !with_video
         && !with_custom_games
         && !with_skulls
+        && !with_campaigns
     {
         return Ok(());
     }
@@ -571,6 +575,7 @@ pub fn install(
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
+        served.extend(crate::campaign_menu::strings());
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
@@ -880,7 +885,8 @@ pub fn install(
                         match custom_games::extend_tag(&mut *mem, cpu.eax, live.0) {
                             Some(true) => {
                                 LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                eprintln!("custom games: xbox live menu tag has 5 panes and room for 5 rows");
+                                let panes = custom_games::extended_panes(custom_games::coop_row_enabled());
+                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for 5 rows");
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1105,6 +1111,13 @@ pub fn install(
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, custom_games::row_kind);
+                // Any other Live menu row ends hosting a co-op campaign
+                // (crate::coop_live); no guest memory is held here.
+                if kind != custom_games::Row::Coop
+                    && let Some(lobby) = crate::coop_live::lobby()
+                {
+                    lobby.leave();
+                }
                 if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
@@ -1116,6 +1129,19 @@ pub fn install(
                 if kind == custom_games::Row::Download {
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
+                }
+                if kind == custom_games::Row::Coop {
+                    let screen = crate::coop_live::lobby().map(|l| l.open_from_menu());
+                    let Some(loader) = screen.and_then(crate::list_class::loader_of) else {
+                        eprintln!("coop-live: the co-op screens are off; nothing opened");
+                        return ctx.runtime().memory().ret(cpu, 8);
+                    };
+                    let note = if screen == Some(crate::coop_live::JOIN) {
+                        "coop-live: opening the join screen"
+                    } else {
+                        "coop-live: opening the co-op screen"
+                    };
+                    return open_screen(cpu, ctx, mask, loader, note);
                 }
                 if !custom_games::remember_row(&mut *ctx.runtime().memory()) {
                     eprintln!("custom games: the live menu's cursor row could not be set");
@@ -1261,6 +1287,13 @@ pub fn install(
         registry
             .add(&crate::skulls_mp_row::VariantRow(mp))
             .map_err(|e| anyhow::anyhow!("skulls variant row: {e}"))?;
+    }
+    if let Some(class) = crate::campaign_menu::class() {
+        match registry.add(&class) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; the level select opens as retail"),
+            Err(e) => eprintln!("campaigns: {e}"),
+        }
     }
     // The Controls list's row text and row chosen, on the plan: our rows
     // there (the speaker row, the Steam Controller's) as data, and the
