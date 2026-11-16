@@ -14,6 +14,8 @@ pub mod account_screen;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_probe;
+pub mod campaign_menu;
+pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -610,12 +612,16 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    // A second campaign (docs/game/multiple-campaigns.md): read before the
+    // VFS mounts, which serves its converted maps.
+    let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
+    let campaign_maps = campaigns.as_ref().map(|s| campaigns::host_maps(&opts.data_root, s)).unwrap_or_default();
     // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -706,7 +712,13 @@ pub fn run_hosted_with_live(
         )),
         None => None,
     };
+    // More than one campaign (docs/game/multiple-campaigns.md): campaigns
+    // installed under <data>/campaigns get their level lists and the
+    // picker in front of the level select. None installed: nothing is
+    // hooked and the disc is not read for it.
+    let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
+    campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).

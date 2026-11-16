@@ -8,6 +8,8 @@
 //! - [`Library`]: the packages under `<data>/maps/`, and the resolver that
 //!   turns a map name into the bytes to serve.
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
+//! - [`campaign_list`]: campaigns past Halo 2's own, as 1.0's campaign level
+//!   list records (docs/game/multiple-campaigns.md).
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
 //!   read from the Map Pack and built for new maps.
 //!
@@ -16,6 +18,7 @@
 mod canonical;
 mod hash;
 mod id;
+pub mod campaign_list;
 pub mod manifest;
 pub mod map_list;
 pub mod patch;

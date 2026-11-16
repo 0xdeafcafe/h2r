@@ -97,17 +97,25 @@ Each step is proven with tests; the user plays the result.
 6. **Scripts.**
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
 8. **Menus.** The campaign picker and its level list (§4), and progress
-   saved per campaign.
+   saved per campaign. **Built** ([multiple-campaigns.md](multiple-campaigns.md)),
+   not yet seen running.
 
 ## 4. More than one campaign
 
-The engine already has a campaign ID: level boot asks for "campaign C,
-map M" ([level-boot.md](../runtime/level-boot.md)), and the level list is
-data in `mainmenu.map`'s globals. The plan is to make Halo 1 a second
-campaign in that list. The menu gets a campaign picker in front of the
-level list. Open: how 1.0's campaign UI reads the list, and whether a
-second campaign ID needs code changes beyond the data. Read this before
-step 8.
+**Built, not yet seen running:** [multiple-campaigns.md](multiple-campaigns.md).
+In short: the level lists in `mainmenu.map`'s globals (`+0x170` start
+levels, `+0x178` the level select's campaigns and levels) are keyed by
+campaign id and have free slots, and looking a level up, starting it and
+finding the next one work for any campaign id as data. Three things
+assume campaign 1 and are hooked: the level select's list is built for
+campaign 1, every writer of the menu's selected campaign writes 1, and the
+level select finds a level's record by map id alone (so map ids are
+unique across campaigns). Profiles keep progress as bare map ids, so other
+campaigns' progress is kept in `<data>/campaigns/progress.toml`. A
+campaign is `<data>/campaigns/<key>/campaign.toml`; Halo 1's lists a10,
+a30, a50, b30, b40, c10, c20, c40, d20 and d40. A picker screen comes
+before the main menu's level select. The VFS serves a converted level's
+map (`<data>/campaigns/halo1/<map>.map`) as `maps\<map>.map`.
 
 ## 5. The asset setting
 

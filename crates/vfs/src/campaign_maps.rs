@@ -1,0 +1,324 @@
+//! A read-only backend that adds campaign maps the disc doesn't have
+//! (docs/game/multiple-campaigns.md §3).
+//!
+//! 1.0 opens a campaign level's map as `d:\maps\<basename of its scenario
+//! path>.map` (`0x214db0`). A second campaign's converted maps live in
+//! `<data>/campaigns/<key>/<map>.map`; [`CampaignMapsBackend`] serves each
+//! named one as `maps\<map>.map` when the inner backend has no such file.
+//! A name the disc has is never shadowed: the disc (and the packages over
+//! it) win. Metadata is the disc's `maps\mainmenu.map`'s, resized, so times
+//! and attributes look like the disc's. Files are opened on first use and
+//! kept for the session; nothing is written.
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+};
+
+use crate::map_override::{is_map_path, override_id, resize};
+use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
+
+/// The disc map whose metadata ours borrow.
+const TEMPLATE: &str = "maps\\mainmenu.map";
+
+struct Open {
+    file: File,
+    len: u64,
+    id: Option<content::MapId>,
+}
+
+pub struct CampaignMapsBackend<B> {
+    inner: B,
+    /// By lower-case map name: its host file.
+    maps: BTreeMap<String, PathBuf>,
+    open: BTreeMap<String, Option<Open>>,
+}
+
+impl<B: Backend> CampaignMapsBackend<B> {
+    /// Serve `maps` (map name, host file) over `inner`.
+    pub fn new(inner: B, maps: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
+        Self {
+            inner,
+            maps: maps
+                .into_iter()
+                .map(|(n, p)| (n.to_ascii_lowercase(), p))
+                .collect(),
+            open: BTreeMap::new(),
+        }
+    }
+
+    pub fn into_inner(self) -> B {
+        self.inner
+    }
+
+    /// Our map for `path` (its lower-case name and open file), when it is
+    /// one and the inner backend lacks it.
+    fn ours(&mut self, path: &str) -> Option<(String, &mut Open)> {
+        let name = is_map_path(path)?;
+        let stem = name[..name.len() - 4].to_ascii_lowercase();
+        let host = self.maps.get(&stem)?.clone();
+        if !self.open.contains_key(&stem) {
+            let chosen = if self.inner.stat(path).is_ok() {
+                None
+            } else {
+                File::open(&host).ok().and_then(|file| {
+                    let len = file.metadata().ok().filter(|m| m.is_file())?.len();
+                    (len <= u64::from(u32::MAX)).then_some(Open {
+                        file,
+                        len,
+                        id: None,
+                    })
+                })
+            };
+            self.open.insert(stem.clone(), chosen);
+        }
+        let o = self.open.get_mut(&stem)?.as_mut()?;
+        Some((stem, o))
+    }
+
+    fn meta(&mut self, len: u64) -> Result<Metadata> {
+        let mut m = self.inner.stat(TEMPLATE)?;
+        resize(&mut m, len);
+        Ok(m)
+    }
+}
+
+impl<B: Backend> Backend for CampaignMapsBackend<B> {
+    fn opened(&mut self, path: &str) {
+        self.inner.opened(path)
+    }
+    fn closed(&mut self, path: &str) {
+        self.inner.closed(path)
+    }
+    fn rescan(&mut self) {
+        self.inner.rescan()
+    }
+    fn map_changed(&mut self, path: &str) -> bool {
+        self.ours(path).is_none() && self.inner.map_changed(path)
+    }
+    fn read_only(&self) -> bool {
+        true
+    }
+    fn stat(&mut self, path: &str) -> Result<Metadata> {
+        match self.ours(path).map(|(_, o)| o.len) {
+            Some(len) => self.meta(len),
+            None => self.inner.stat(path),
+        }
+    }
+    fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
+        let mut entries = self.inner.read_directory(path)?;
+        if !path.eq_ignore_ascii_case("maps") {
+            return Ok(entries);
+        }
+        let names: Vec<String> = self.maps.keys().cloned().collect();
+        for n in names {
+            let file = format!("{n}.map");
+            if entries.iter().any(|e| e.name.eq_ignore_ascii_case(&file)) {
+                continue;
+            }
+            if let Some(len) = self.ours(&format!("maps\\{file}")).map(|(_, o)| o.len) {
+                entries.push(DirectoryEntry {
+                    name: file,
+                    metadata: self.meta(len)?,
+                });
+            }
+        }
+        Ok(entries)
+    }
+    fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
+        let Some((_, o)) = self.ours(path) else {
+            return self.inner.read_at(path, offset, buffer);
+        };
+        let n = o.len.saturating_sub(offset).min(buffer.len() as u64) as usize;
+        if n == 0 {
+            return Ok(0);
+        }
+        o.file.seek(SeekFrom::Start(offset))?;
+        match o.file.read_exact(&mut buffer[..n]) {
+            Ok(()) => Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err(Error::FileCorrupt),
+            Err(e) => Err(e.into()),
+        }
+    }
+    fn volume_info(&mut self) -> Result<VolumeInfo> {
+        self.inner.volume_info()
+    }
+    /// A campaign map is a user map, identified by its whole file.
+    fn map_id(&mut self, path: &str) -> Option<content::MapId> {
+        let host = {
+            let (stem, o) = self.ours(path)?;
+            if let Some(id) = o.id {
+                return Some(id);
+            }
+            let file = self.maps.get(&stem)?.clone();
+            (stem, file)
+        };
+        let id = override_id(&host.0, &host.1).ok()?;
+        if let Some((_, o)) = self.ours(path) {
+            o.id = Some(id);
+        }
+        Some(id)
+    }
+    fn host_file(&mut self, path: &str) -> Option<HostFile> {
+        let Some((stem, o)) = self.ours(path) else {
+            return self.inner.host_file(path);
+        };
+        let len = o.len;
+        Some(HostFile {
+            path: self.maps.get(&stem)?.clone(),
+            offset: 0,
+            len,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ATTR_DIRECTORY, ATTR_READONLY, BasicInfo};
+
+    /// A disc holding `files` (path, bytes), with a `maps` folder.
+    struct Fake(Vec<(String, Vec<u8>)>);
+    impl Fake {
+        fn with(files: &[(&str, &[u8])]) -> Self {
+            Fake(
+                files
+                    .iter()
+                    .map(|(p, b)| (p.to_string(), b.to_vec()))
+                    .collect(),
+            )
+        }
+    }
+    fn meta(len: u64, dir: bool) -> Metadata {
+        Metadata {
+            basic: BasicInfo {
+                attributes: ATTR_READONLY | if dir { ATTR_DIRECTORY } else { 0 },
+                ..Default::default()
+            },
+            end_of_file: len,
+            allocation_size: len.div_ceil(2048) * 2048,
+        }
+    }
+    impl Backend for Fake {
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn stat(&mut self, path: &str) -> Result<Metadata> {
+            if path.eq_ignore_ascii_case("maps") {
+                return Ok(meta(0, true));
+            }
+            self.0
+                .iter()
+                .find(|f| f.0.eq_ignore_ascii_case(path))
+                .map(|f| meta(f.1.len() as u64, false))
+                .ok_or(Error::ObjectNameNotFound)
+        }
+        fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
+            Ok(self
+                .0
+                .iter()
+                .filter_map(|(p, d)| {
+                    let (dir, name) = p.rsplit_once('\\')?;
+                    dir.eq_ignore_ascii_case(path).then(|| DirectoryEntry {
+                        name: name.to_owned(),
+                        metadata: meta(d.len() as u64, false),
+                    })
+                })
+                .collect())
+        }
+        fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
+            let f = self
+                .0
+                .iter()
+                .find(|f| f.0.eq_ignore_ascii_case(path))
+                .ok_or(Error::ObjectNameNotFound)?;
+            let start = (offset as usize).min(f.1.len());
+            let n = (f.1.len() - start).min(buffer.len());
+            buffer[..n].copy_from_slice(&f.1[start..start + n]);
+            Ok(n)
+        }
+        fn volume_info(&mut self) -> Result<VolumeInfo> {
+            Err(Error::NotSupported)
+        }
+    }
+
+    fn dir(tag: &str) -> PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("h2-vfs-campaign-maps-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_map_the_disc_lacks_is_served_from_its_campaign_folder() {
+        let d = dir("serve");
+        std::fs::write(d.join("a10.map"), b"halo one level").unwrap();
+        std::fs::write(d.join("lockout.map"), b"not served").unwrap();
+        let mut b = CampaignMapsBackend::new(
+            Fake::with(&[
+                ("maps\\mainmenu.map", b"menu"),
+                ("maps\\lockout.map", b"disc"),
+            ]),
+            [
+                ("A10".to_string(), d.join("a10.map")),
+                ("lockout".to_string(), d.join("lockout.map")),
+            ],
+        );
+        assert_eq!(b.stat("maps\\a10.map").unwrap().end_of_file, 14);
+        assert_eq!(b.stat("maps\\A10.MAP").unwrap().allocation_size, 2048);
+        let mut buf = [0u8; 32];
+        assert_eq!(b.read_at("maps\\a10.map", 5, &mut buf).unwrap(), 9);
+        assert_eq!(&buf[..9], b"one level");
+        assert_eq!(b.read_at("maps\\a10.map", 14, &mut buf).unwrap(), 0);
+        // The disc's own map is never shadowed.
+        assert_eq!(b.read_at("maps\\lockout.map", 0, &mut buf).unwrap(), 4);
+        assert_eq!(&buf[..4], b"disc");
+        // Listed once each.
+        let names: Vec<String> = b
+            .read_directory("maps")
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.eq_ignore_ascii_case("a10.map"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.eq_ignore_ascii_case("lockout.map"))
+                .count(),
+            1
+        );
+        assert_eq!(b.host_file("maps\\a10.map").unwrap().len, 14);
+        assert!(b.map_id("maps\\a10.map").is_some());
+        assert!(b.map_id("maps\\a10.map") == b.map_id("maps\\A10.map"));
+        // Anything else is the inner backend's.
+        assert!(b.stat("maps\\a30.map").is_err());
+        assert!(b.stat("maps\\sub\\a10.map").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_missing_host_file_stays_missing() {
+        let d = dir("missing");
+        let mut b = CampaignMapsBackend::new(
+            Fake::with(&[("maps\\mainmenu.map", b"menu")]),
+            [("a30".to_string(), d.join("a30.map"))],
+        );
+        assert!(b.stat("maps\\a30.map").is_err());
+        assert!(
+            !b.read_directory("maps")
+                .unwrap()
+                .iter()
+                .any(|e| e.name == "a30.map")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

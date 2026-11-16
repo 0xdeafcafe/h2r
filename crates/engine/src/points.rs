@@ -403,6 +403,32 @@ points! { ALL;
     CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-preflight.md";
     /// HaloScript `cinematic_stop`.
     CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-preflight.md";
+    /// The level select's list: one campaign's map ids from the start-level
+    /// list, sorted, into the data array (stdcall `(array, campaign id)`).
+    /// 1.0 asks for campaign 1 only (`0x19c190`).
+    CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    /// The menu's campaign start: options from the selection globals
+    /// `0x54e7c0`-`0x54e7c8`, the level looked up by `(campaign, map)`.
+    CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/game/multiple-campaigns.md";
+    /// The next level of a campaign: the smallest map id above `map` with
+    /// that campaign id in the start-level list (stdcall, EAX, -1 none).
+    /// The game-won path (`0x18e960`) and `0x163610` ask it.
+    NEXT_LEVEL @ 0x0019_c440: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    /// A finished level raises one slot's profile progress for a difficulty
+    /// to map id ESI (stdcall `(slot, difficulty)`).
+    PROGRESS_RAISE @ 0x0019_043f: [fn(map: esi, slot: stack 0, difficulty: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    /// The last level started (map id EAX) into every signed-in profile and
+    /// `0x510840`.
+    LAST_LEVEL_SET @ 0x0019_040d: [fn(map: eax) ret 0]; "docs/game/multiple-campaigns.md";
+    /// The level select screen's constructor (thiscall; the lobby's passes
+    /// 1 in its second argument). Sets `0x54e7c0` to 1.
+    LEVEL_SELECT_NEW @ 0x002c_4ea0: [fn(screen: ecx, a: stack 0, lobby: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    /// The highest map id the signed-in profiles finished, any difficulty
+    /// (EAX, -1 for none).
+    PROGRESS_MAX @ 0x0019_0565: [fn() -> eax ret 0]; "docs/game/multiple-campaigns.md";
+    /// Fill a screen request (ECX): the player mask, two words and the
+    /// loader; `OPEN_SCREEN` and the menus' own opens call it.
+    SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/game/multiple-campaigns.md";
 }
 
 globals! { GLOBALS;
