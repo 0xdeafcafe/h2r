@@ -1,0 +1,23 @@
+[package]
+name = "editor"
+description = "h2-editor: a native editor suite (egui + wgpu) with a hopper (playlist) tool; other tools plug in through the Tool trait"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+default-run = "h2-editor"
+
+[[bin]]
+name = "h2-editor"
+path = "src/main.rs"
+
+[dependencies]
+egui.workspace = true
+egui-wgpu.workspace = true
+eframe.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+live-proto.workspace = true
+map.workspace = true
+tags.workspace = true
+xiso.workspace = true

@@ -218,6 +218,12 @@ browser account is an admin (the `admin` field above). Three sections:
   historical lineup (below).
 - **Import account** — below.
 
+The same playlist editing is available offline in the native editor's
+hopper tool (`h2-editor`, [editor.md](editor.md)): it opens and saves a
+`multiplayer_hopper.dat` file (raw image or envelope) with the same
+fields, validation and presets; publish the result with `h2 live hopper
+import`.
+
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
 signs its requests, and sends it as a bearer header.
