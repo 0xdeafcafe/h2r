@@ -204,13 +204,14 @@ impl<const N: usize> Wf<N> {
             (o, self)
         };
         let d = (big.exp as i64 - small.exp as i64).min(u32::MAX as i64) as u32;
-        // One guard limb below the significand.
-        let mut wb = [0u64; MAXN + 1];
-        let mut ws = [0u64; MAXN + 1];
+        // One guard limb below the significand. `[[u64; N]; 2]` holds the
+        // N + 1 limbs without zeroing MAXN-sized scratch on every call.
+        let mut wb = [[0u64; N]; 2];
+        let mut ws = [[0u64; N]; 2];
+        let wb = &mut wb.as_flattened_mut()[..=N];
+        let ws = &mut ws.as_flattened_mut()[..=N];
         wb[1..=N].copy_from_slice(&big.m);
         ws[1..=N].copy_from_slice(&small.m);
-        let wb = &mut wb[..=N];
-        let ws = &mut ws[..=N];
         shr(ws, d);
         let mut exp = big.exp - 64;
         if big.neg == small.neg {
@@ -244,7 +245,8 @@ impl<const N: usize> Wf<N> {
         if self.is_zero() || o.is_zero() {
             return Self::ZERO;
         }
-        let mut p = [0u64; 2 * MAXN];
+        let mut p = [[0u64; N]; 2];
+        let p = p.as_flattened_mut();
         for i in 0..N {
             let mut carry: u128 = 0;
             for j in 0..N {
@@ -254,7 +256,6 @@ impl<const N: usize> Wf<N> {
             }
             p[i + N] = carry as u64;
         }
-        let p = &mut p[..2 * N];
         let z = lz(p);
         shl(p, z);
         let mut m = [0u64; N];
@@ -270,26 +271,73 @@ impl<const N: usize> Wf<N> {
         self.mul(Self::from_u64(k))
     }
 
-    /// Restoring binary long division, `64N + 1` quotient bits.
+    /// Truncated division: the top `64N` bits of `floor(a * 2^(64N) / d)`
+    /// for significands `a`, `d` (Knuth's algorithm D on 32-bit digits, so
+    /// every step is a native 64/64 division). Bit-identical to the
+    /// restoring long division it replaced (`tests::div_restoring`).
     pub fn div(self, o: Self) -> Self {
         assert!(!o.is_zero(), "wide division by zero");
         if self.is_zero() {
             return Self::ZERO;
         }
-        let mut r = [0u64; MAXN + 1];
-        let mut d = [0u64; MAXN + 1];
-        let mut q = [0u64; MAXN + 1];
-        r[..N].copy_from_slice(&self.m);
-        d[..N].copy_from_slice(&o.m);
-        let (r, d, q) = (&mut r[..=N], &d[..=N], &mut q[..=N]);
-        for _ in 0..(64 * N + 1) {
-            shl(q, 1);
-            if cmp(r, d) != Ordering::Less {
-                sub_into(r, d);
-                q[0] |= 1;
-            }
-            shl(r, 1);
+        let n = 2 * N; // divisor digits; the dividend has 2n, plus a zero
+        let mut u = [[0u32; N]; 5];
+        let mut v = [[0u32; N]; 2];
+        let mut qd = [[0u32; N]; 3];
+        let (u, v, qd) = (
+            &mut u.as_flattened_mut()[..=2 * n],
+            v.as_flattened_mut(),
+            &mut qd.as_flattened_mut()[..=n],
+        );
+        for i in 0..N {
+            u[n + 2 * i] = self.m[i] as u32;
+            u[n + 2 * i + 1] = (self.m[i] >> 32) as u32;
+            v[2 * i] = o.m[i] as u32;
+            v[2 * i + 1] = (o.m[i] >> 32) as u32;
         }
+        // v is normalised (top bit set), so no shift is needed.
+        const B: u64 = 1 << 32;
+        let vt = v[n - 1] as u64;
+        let vs = v[n - 2] as u64;
+        for j in (0..=n).rev() {
+            let num = ((u[j + n] as u64) << 32) | u[j + n - 1] as u64;
+            let mut qhat = num / vt;
+            let mut rhat = num - qhat * vt;
+            while qhat >= B || qhat * vs > ((rhat << 32) | u[j + n - 2] as u64) {
+                qhat -= 1;
+                rhat += vt;
+                if rhat >= B {
+                    break;
+                }
+            }
+            let mut k: i64 = 0;
+            for i in 0..n {
+                let p = qhat * v[i] as u64;
+                let t = u[i + j] as i64 - k - (p & 0xffff_ffff) as i64;
+                u[i + j] = t as u32;
+                k = (p >> 32) as i64 - (t >> 32);
+            }
+            let t = u[j + n] as i64 - k;
+            u[j + n] = t as u32;
+            if t < 0 {
+                // qhat was one too large: add the divisor back.
+                qhat -= 1;
+                let mut c = 0u64;
+                for i in 0..n {
+                    let t = u[i + j] as u64 + v[i] as u64 + c;
+                    u[i + j] = t as u32;
+                    c = t >> 32;
+                }
+                u[j + n] = u[j + n].wrapping_add(c as u32);
+            }
+            qd[j] = qhat as u32;
+        }
+        let mut q = [[0u64; N]; 2];
+        let q = &mut q.as_flattened_mut()[..=N];
+        for i in 0..N {
+            q[i] = qd[2 * i] as u64 | (qd[2 * i + 1] as u64) << 32;
+        }
+        q[N] = qd[n] as u64;
         let z = lz(q);
         shl(q, z);
         let mut m = [0u64; N];
@@ -307,14 +355,27 @@ impl<const N: usize> Wf<N> {
         if self.is_zero() {
             return self;
         }
-        let mut w = [0u64; MAXN + 1];
+        let mut w = [[0u64; N]; 2];
+        let w = &mut w.as_flattened_mut()[..=N];
         w[1..=N].copy_from_slice(&self.m);
-        let w = &mut w[..=N];
-        let mut rem: u128 = 0;
-        for limb in w.iter_mut().rev() {
-            let cur = (rem << 64) | *limb as u128;
-            *limb = (cur / k as u128) as u64;
-            rem = cur % k as u128;
+        if k <= u32::MAX as u64 {
+            // Two native divisions per limb: rem < k < 2^32 keeps every
+            // partial dividend below 2^64. Same quotient as the u128 form.
+            let mut rem = 0u64;
+            for limb in w.iter_mut().rev() {
+                let hi = (rem << 32) | (*limb >> 32);
+                let (qh, r) = (hi / k, hi % k);
+                let lo = (r << 32) | (*limb & 0xffff_ffff);
+                *limb = (qh << 32) | (lo / k);
+                rem = lo % k;
+            }
+        } else {
+            let mut rem: u128 = 0;
+            for limb in w.iter_mut().rev() {
+                let cur = (rem << 64) | *limb as u128;
+                *limb = (cur / k as u128) as u64;
+                rem = cur % k as u128;
+            }
         }
         let z = lz(w);
         shl(w, z);
@@ -425,6 +486,180 @@ mod tests {
     use super::*;
 
     type W = Wf<4>;
+
+    /// The original restoring long division, `64N + 1` quotient bits.
+    pub(crate) fn div_restoring<const N: usize>(a: Wf<N>, o: Wf<N>) -> Wf<N> {
+        if a.is_zero() {
+            return Wf::ZERO;
+        }
+        let mut r = [0u64; MAXN + 1];
+        let mut d = [0u64; MAXN + 1];
+        let mut q = [0u64; MAXN + 1];
+        r[..N].copy_from_slice(&a.m);
+        d[..N].copy_from_slice(&o.m);
+        let (r, d, q) = (&mut r[..=N], &d[..=N], &mut q[..=N]);
+        for _ in 0..(64 * N + 1) {
+            shl(q, 1);
+            if cmp(r, d) != Ordering::Less {
+                sub_into(r, d);
+                q[0] |= 1;
+            }
+            shl(r, 1);
+        }
+        let z = lz(q);
+        shl(q, z);
+        let mut m = [0u64; N];
+        m.copy_from_slice(&q[1..]);
+        Wf {
+            neg: a.neg ^ o.neg,
+            exp: a.exp - o.exp - Wf::<N>::BITS - z as i32 + 64,
+            m,
+        }
+    }
+
+    /// The original u128 small-integer division.
+    pub(crate) fn div_u64_u128<const N: usize>(a: Wf<N>, k: u64) -> Wf<N> {
+        if a.is_zero() {
+            return a;
+        }
+        let mut w = [0u64; MAXN + 1];
+        w[1..=N].copy_from_slice(&a.m);
+        let w = &mut w[..=N];
+        let mut rem: u128 = 0;
+        for limb in w.iter_mut().rev() {
+            let cur = (rem << 64) | *limb as u128;
+            *limb = (cur / k as u128) as u64;
+            rem = cur % k as u128;
+        }
+        let z = lz(w);
+        shl(w, z);
+        let mut m = [0u64; N];
+        m.copy_from_slice(&w[1..]);
+        Wf {
+            neg: a.neg,
+            exp: a.exp - z as i32,
+            m,
+        }
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        /// A significand stressing Knuth D: random, sparse, saturated, or a
+        /// near neighbour of `like` (quotients near 1 and qhat corrections).
+        fn sig<const N: usize>(&mut self, like: Option<&Wf<N>>) -> [u64; N] {
+            let mut m = [0u64; N];
+            let kind = self.next() % 8;
+            for w in m.iter_mut() {
+                *w = match kind {
+                    0 => !0,
+                    1 => 0,
+                    2 => self.next() & self.next() & self.next(),
+                    3 => !(self.next() & self.next()),
+                    _ => self.next(),
+                };
+            }
+            if let (Some(l), true) = (like, kind >= 6) {
+                m = l.m;
+                let bit = self.next() % (64 * N as u64);
+                m[(bit / 64) as usize] ^= 1 << (bit % 64);
+                if kind == 7 {
+                    m[0] = m[0].wrapping_add(self.next() % 3).wrapping_sub(1);
+                }
+            }
+            m[N - 1] |= 1 << 63;
+            m
+        }
+        fn wf<const N: usize>(&mut self, like: Option<&Wf<N>>) -> Wf<N> {
+            Wf {
+                neg: self.next() & 1 == 1,
+                exp: (self.next() % 512) as i32 - 256,
+                m: self.sig(like),
+            }
+        }
+    }
+
+    fn ops_match<const N: usize>(cases: usize, seed: u64) {
+        let mut rng = Rng(seed);
+        for _ in 0..cases {
+            let a = rng.wf::<N>(None);
+            let b = rng.wf::<N>(Some(&a));
+            assert_eq!(a.div(b), div_restoring(a, b), "div {a:?} / {b:?}");
+            let k = match rng.next() % 4 {
+                0 => 1 + rng.next() % 300,
+                1 => 1 + (rng.next() & 0xffff_ffff),
+                2 => u32::MAX as u64 - rng.next() % 3,
+                _ => (1 << 32) + rng.next() % (1 << 40),
+            };
+            assert_eq!(a.div_u64(k), div_u64_u128(a, k), "div_u64 {a:?} / {k}");
+        }
+    }
+
+    fn bench_ops<const N: usize>() {
+        use std::{hint::black_box, time::Instant, vec::Vec};
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let xs: Vec<_> = (0..256).map(|_| rng.wf::<N>(None)).collect();
+        let time = |f: &dyn Fn(Wf<N>, Wf<N>) -> Wf<N>| {
+            let mut best = f64::MAX;
+            for _ in 0..400 {
+                let start = Instant::now();
+                for w in xs.windows(2) {
+                    black_box(f(black_box(w[0]), black_box(w[1])));
+                }
+                best = best.min(start.elapsed().as_nanos() as f64 / 255.0);
+            }
+            best
+        };
+        let rows: [(&str, f64, f64); 2] = [
+            (
+                "div",
+                time(&|a, b| div_restoring(a, b)),
+                time(&|a, b| a.div(b)),
+            ),
+            (
+                "div_u64",
+                time(&|a, b| div_u64_u128(a, 3 + (b.m[0] & 0xff))),
+                time(&|a, b| a.div_u64(3 + (b.m[0] & 0xff))),
+            ),
+        ];
+        for (name, old, new) in rows {
+            std::println!(
+                "WIDE_BENCH N={N} {name} old_ns={old:.1} new_ns={new:.1} speedup={:.1}x",
+                old / new
+            );
+        }
+    }
+
+    /// Per-op timing of the rewritten operations against the originals
+    /// (minimum of 400 passes over 255 random operand pairs).
+    #[test]
+    #[ignore = "timing experiment; run serially in release mode"]
+    fn benchmark_wide_ops() {
+        bench_ops::<2>();
+        bench_ops::<3>();
+        bench_ops::<8>();
+    }
+
+    /// Every rewritten operation against the original algorithm: random,
+    /// sparse, saturated and near-equal significands at several widths.
+    /// `H2_X87_WIDE_CASES` raises the count (default 200,000 per width).
+    #[test]
+    fn rewritten_division_matches_the_original_bit_for_bit() {
+        let cases = std::env::var("H2_X87_WIDE_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+        ops_match::<1>(cases, 0x9e37_79b9_7f4a_7c15);
+        ops_match::<2>(cases, 0xd1b5_4a32_d192_ed03);
+        ops_match::<3>(cases, 0x8cb9_2ba7_2f3d_8dd7);
+        ops_match::<8>(cases / 10, 0xa076_1d64_78bd_642f);
+        ops_match::<12>(cases / 50, 0xe703_7ed1_a0b4_28db);
+    }
 
     #[test]
     fn basic_ops() {
