@@ -34,6 +34,10 @@
 .v3 .v3-tools select.on { background-color: #2a5b86; border-color: #9ac6e6; }
 .v3-tools option { color: #fff; background: #1a1a1a; }
 .v3-tools > *:hover { border-color: #56aacd; }
+.v3 .v3-tools input.v3-cut { width: 110px; padding: 0 6px; accent-color: #9ac6e6; }
+.v3 .v3-tools input.v3-cut:disabled { opacity: .55; cursor: default; }
+.v3:focus { outline: none; }
+.v3:focus-visible { outline: 1px solid #56aacd; outline-offset: -1px; }
 .v3-tools > .on { background: #2a5b86; border-color: #9ac6e6; }
 .v3-note { position: absolute; left: 8px; right: 8px; bottom: 8px; margin: 0; padding: 3px 6px; font-size: 10px; line-height: 14px; color: #c6d0db; background: rgba(0, 0, 0, .8); pointer-events: none; }
 .v3-note--mid { position: absolute; inset: auto 0; top: 45%; text-align: center; background: none; font-size: 11px; }

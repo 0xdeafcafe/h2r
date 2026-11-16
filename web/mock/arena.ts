@@ -14,7 +14,7 @@ import { MAPS, type MockMap } from "./maps";
 type V3 = [number, number, number];
 type Rgb = [number, number, number]; // linear, 0..1
 
-type MaterialName = "floor" | "wall" | "metal" | "foliage" | "default";
+type MaterialName = "floor" | "wall" | "metal" | "foliage" | "default" | "shell";
 
 const MATERIALS: Record<MaterialName, { roughness: number; metallic: number }> = {
   floor: { roughness: 0.92, metallic: 0 },
@@ -22,14 +22,22 @@ const MATERIALS: Record<MaterialName, { roughness: number; metallic: number }> =
   metal: { roughness: 0.45, metallic: 0.7 },
   foliage: { roughness: 0.95, metallic: 0 },
   default: { roughness: 0.9, metallic: 0 },
+  // The indoor shell: written double-sided, the worst a glb could say of a
+  // level that is really single-sided.
+  shell: { roughness: 0.9, metallic: 0 },
 };
 
-interface Tri { a: V3; b: V3; c: V3; n: V3; colour: Rgb; material: MaterialName }
+interface Tri { a: V3; b: V3; c: V3; n: V3; colour: Rgb; material: MaterialName; /** The glb node it goes in; `structure` when not said. */ node?: string }
 
 export interface Arena {
   name: string;
   tris: Tri[];
   bounds: { min: V3; max: V3 };
+  /** Geometry that is only in the glb, not in the pre-drawn views (an
+   *  indoor level's shell would hide everything from above). */
+  extra?: Tri[];
+  /** The glb's bounds with `extra` counted in. */
+  outer?: { min: V3; max: V3 };
 }
 
 // ---- small vector helpers ----
@@ -242,6 +250,57 @@ export function buildArena(name: string): Arena | null {
   return m && m.outline && make ? make(m) : null;
 }
 
+// ---- an indoor level ----
+
+/** The arena shut inside a busy building, for trying the 3D view's ways of
+ *  seeing into a level (H2_MOCK_INDOOR=1): an outer shell of walls and a
+ *  ceiling that faces inwards like a real level's structure (and is written
+ *  double-sided, so only the viewer's culling opens it), partition walls
+ *  with doorways, an upper floor over half the rooms and rows of pillars,
+ *  split over two `bsp_<n>` nodes; and two outward-facing "device machines"
+ *  under a `machines` node. Only the glb has these: the pre-drawn views
+ *  stay the open arena. */
+export function enclose(a: Arena): Arena {
+  const { min, max } = a.bounds;
+  const x0 = min[0] - 4, x1 = max[0] + 4, y0 = min[1] - 4, y1 = max[1] + 4;
+  const floor = min[2], ground = Math.min(max[2], floor + 5), top = Math.max(max[2], ground) + 6.5, upper = ground + 3.4;
+  const WALL: Rgb = [0.62, 0.6, 0.56], DARK: Rgb = [0.4, 0.42, 0.47];
+  const extra: Tri[] = [];
+  const add = (node: string, build: (b: Builder) => void, flip = false) => {
+    const b = new Builder();
+    build(b);
+    for (const t of b.tris) extra.push(flip ? { ...t, b: t.c, c: t.b, n: [-t.n[0], -t.n[1], -t.n[2]], node } : { ...t, node });
+  };
+  // The shell: a box seen from inside.
+  add("bsp_0", (b) => b.box(x0, y0, floor - 0.5, x1, y1, top, WALL, "shell"), true);
+  const N = 5, cw = (x1 - x0) / N, ch = (y1 - y0) / N, T = 0.35;
+  add("bsp_1", (b) => {
+    for (let i = 1; i < N; i++) for (let j = 0; j < N; j++) {
+      // Partition walls along both axes, each with a doorway in the middle.
+      const x = x0 + i * cw, ya = y0 + j * ch, door = ch * 0.3;
+      b.box(x - T, ya, floor, x + T, ya + (ch - door) / 2, top, shade(WALL, 0.92), "wall");
+      b.box(x - T, ya + (ch + door) / 2, floor, x + T, ya + ch, top, shade(WALL, 0.92), "wall");
+      const y = y0 + i * ch, xa = x0 + j * cw, gap = cw * 0.3;
+      b.box(xa, y - T, floor, xa + (cw - gap) / 2, y + T, top, shade(WALL, 0.84), "wall");
+      b.box(xa + (cw + gap) / 2, y - T, floor, xa + cw, y + T, top, shade(WALL, 0.84), "wall");
+    }
+    // An upper floor over every other room.
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      if ((i + j) % 2) b.box(x0 + i * cw, y0 + j * ch, upper, x0 + (i + 1) * cw, y0 + (j + 1) * ch, upper + 0.3, DARK, "floor");
+    }
+  });
+  add("bsp_0", (b) => {
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const cx = x0 + (i + 0.5) * cw, cy = y0 + (j + 0.5) * ch;
+      for (const [dx, dy] of [[-0.3, -0.3], [0.3, 0.3]] as const) b.column(cx + dx * cw, cy + dy * ch, 0.45, 0.45, floor, top, 8, STEEL, "metal");
+    }
+  });
+  // Machines: ordinary closed models, facing outwards.
+  add("machines/wheel", (b) => b.column((x0 + x1) / 2, (y0 + y1) / 2, 3.2, 3.2, upper + 1, upper + 2.2, 20, [0.75, 0.42, 0.2], "metal"));
+  add("machines/dish", (b) => b.column(x0 + cw * 0.5, y0 + ch * 0.5, 0.4, 2.4, ground, ground + 2.6, 14, [0.3, 0.55, 0.7], "metal"));
+  return { ...a, extra, outer: { min: [x0, y0, floor - 0.5], max: [x1, y1, top] } };
+}
+
 // ---- glb ----
 
 const round4 = (v: number) => Math.round(v * 1e4) / 1e4;
@@ -251,10 +310,13 @@ const round4 = (v: number) => Math.round(v * 1e4) / 1e4;
  *  axes (game (x, y, z) → (x, z, -y)). */
 export function encodeGlb(a: Arena): Uint8Array {
   const gl = (v: V3): V3 => [v[0], v[2], -v[1]];
-  const names = [...new Set(a.tris.map((t) => t.material))];
+  const all = a.extra ? [...a.tris, ...a.extra] : a.tris;
+  const names = [...new Set(all.map((t) => t.material))];
+  const nodeNames = [...new Set(all.map((t) => t.node ?? "structure"))];
   const chunks: Uint8Array[] = [];
   let offset = 0;
-  const bufferViews: unknown[] = [], accessors: unknown[] = [], primitives: unknown[] = [];
+  const bufferViews: unknown[] = [], accessors: unknown[] = [];
+  const meshes: Array<{ name: string; primitives: unknown[] }> = [];
   const push = (data: Float32Array | Uint32Array, target: number) => {
     const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: bytes.length, target });
@@ -262,8 +324,12 @@ export function encodeGlb(a: Arena): Uint8Array {
     offset += bytes.length; // multiples of 4 already
     return bufferViews.length - 1;
   };
-  names.forEach((name, mi) => {
-    const tris = a.tris.filter((t) => t.material === name);
+  for (const nodeName of nodeNames) {
+   const primitives: unknown[] = [];
+   meshes.push({ name: nodeName.split("/").pop()!, primitives });
+   names.forEach((name, mi) => {
+    const tris = all.filter((t) => t.material === name && (t.node ?? "structure") === nodeName);
+    if (!tris.length) return;
     const n = tris.length * 3;
     const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3), idx = new Uint32Array(n);
     const min: V3 = [Infinity, Infinity, Infinity], max: V3 = [-Infinity, -Infinity, -Infinity];
@@ -287,18 +353,31 @@ export function encodeGlb(a: Arena): Uint8Array {
       { bufferView: push(idx, 34963), componentType: 5125, count: n, type: "SCALAR" },
     );
     primitives.push({ attributes: { POSITION: first, NORMAL: first + 1, COLOR_0: first + 2 }, indices: first + 3, material: mi, mode: 4 });
+   });
+  }
+  // A node per mesh; `machines/<name>` ones hang under one `machines` node.
+  const nodes: Array<{ name: string; mesh?: number; children?: number[] }> = [];
+  const roots: number[] = [];
+  let machines: { name: string; children: number[] } | null = null;
+  nodeNames.forEach((nodeName, i) => {
+    nodes.push({ name: meshes[i]!.name, mesh: i });
+    if (!nodeName.startsWith("machines/")) { roots.push(nodes.length - 1); return; }
+    if (!machines) { machines = { name: "machines", children: [] }; }
+    machines.children.push(nodes.length - 1);
   });
+  if (machines) { nodes.push(machines); roots.push(nodes.length - 1); }
   const json = {
     asset: {
       version: "2.0", generator: "h2 live mock",
-      extras: { generator: "h2 live mock", geometry_version: 1, bounds: { min: a.bounds.min.map(round4), max: a.bounds.max.map(round4) } },
+      extras: { generator: "h2 live mock", geometry_version: 1, bounds: { min: (a.outer ?? a.bounds).min.map(round4), max: (a.outer ?? a.bounds).max.map(round4) } },
     },
     scene: 0,
-    scenes: [{ nodes: [0] }],
-    nodes: [{ name: "structure", mesh: 0 }],
-    meshes: [{ name: "structure", primitives }],
+    scenes: [{ nodes: roots }],
+    nodes,
+    meshes,
     materials: names.map((name) => ({
       name,
+      ...(name === "shell" ? { doubleSided: true } : {}),
       pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: MATERIALS[name].metallic, roughnessFactor: MATERIALS[name].roughness },
     })),
     buffers: [{ byteLength: offset }],
@@ -454,7 +533,7 @@ export interface MockMapGeometry {
 
 /** The geometry files for every mock map that has an arena. Each file is
  *  made on first request and kept. */
-export function mockMapGeometry(): MockMapGeometry {
+export function mockMapGeometry(opts: { indoor?: boolean } = {}): MockMapGeometry {
   const maps: MockMapGeometry["maps"] = {};
   const arenas = new Map<string, Arena>();
   for (const m of MAPS) {
@@ -463,7 +542,7 @@ export function mockMapGeometry(): MockMapGeometry {
   }
   const arena = (name: string) => {
     let a = arenas.get(name);
-    if (!a && maps[name]) { a = buildArena(name)!; arenas.set(name, a); }
+    if (!a && maps[name]) { a = buildArena(name)!; if (opts.indoor) a = enclose(a); arenas.set(name, a); }
     return a ?? null;
   };
   const done = new Map<string, { bytes: Uint8Array; type: string }>();

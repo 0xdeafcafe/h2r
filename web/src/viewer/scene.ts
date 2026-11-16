@@ -25,6 +25,7 @@ import { bipedFile, modelScale, modelUrl, weaponFile, weaponLabel, type PlayerMo
 import { ModelLibrary, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, type SmoothPlayer } from "./sync";
 import { cameraFit, markerScale, type Box3 } from "./camera";
+import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
 
 export type ViewMode = "orbit" | "top" | "follow";
 
@@ -67,6 +68,8 @@ interface PlayerObj {
 interface TracerObj { group: THREE.Group; beam: THREE.Mesh; flash: THREE.Mesh; beamMat: THREE.MeshBasicMaterial; flashMat: THREE.MeshBasicMaterial }
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
+/** The cut plane's height when the cut is off: above anything. */
+const CUT_OFF = 1e9;
 const FIRING = new THREE.Color(0xfff0b8);
 
 interface MarkObj { group: THREE.Group; mat: THREE.MeshBasicMaterial }
@@ -93,6 +96,16 @@ export class ViewerScene {
   private shots = new ShotQueue();
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
+  // Seeing into the level: a clipping plane that drops everything above a
+  // height, and a cone from the camera to the player in focus that level
+  // geometry is cut out of. Both live in the map's materials (one plane and
+  // one set of uniforms shared by all of them), so they cost nothing per mesh.
+  private cutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), CUT_OFF);
+  private cut = { on: false, height: 0 };
+  private cutShown: number | null = null;
+  private seeOn = true;
+  private see = { uSeeTarget: { value: new THREE.Vector3() }, uSeeRadius: { value: 0 }, uSeeFloor: { value: 0 } };
+  private patched = new WeakSet<THREE.Material>();
   private v0 = new THREE.Vector3();
   private v1 = new THREE.Vector3();
   private bounds: Box3 | null = null;
@@ -125,6 +138,7 @@ export class ViewerScene {
     renderer.toneMappingExposure = 1.0;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.localClippingEnabled = true;
     renderer.domElement.className = "v3-canvas";
     host.appendChild(renderer.domElement);
 
@@ -193,21 +207,34 @@ export class ViewerScene {
       const gltf = await new GLTFLoader().loadAsync(url);
       if (this.disposed) return false;
       const root = gltf.scene;
-      root.traverse((o) => {
-        if (/^collision/i.test(o.name)) { o.visible = false; return; }
+      // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
+      // `machines` and its children), every mesh is found by walking it once.
+      const walk = (o: THREE.Object3D, names: string[]) => {
+        const path = o.name ? [...names, o.name] : names;
+        const role = meshRole(path);
+        if (role === "hidden") { o.visible = false; return; }
         const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        let solid = true;
-        for (const m of mats) {
-          // Only faces turned to the sun cast: a level seen from above has its
-          // ceilings culled, so they shouldn't black out the rooms below either.
-          m.shadowSide = THREE.FrontSide;
-          if (m.transparent) solid = false;
+        if (mesh.isMesh) {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          let solid = true;
+          for (const m of mats) {
+            // Only faces turned to the sun cast: a level seen from above has its
+            // ceilings culled, so they shouldn't black out the rooms below either.
+            m.shadowSide = THREE.FrontSide;
+            if (m.transparent) solid = false;
+            // The structure faces into the playable space: with its back faces
+            // culled it can be seen into from outside, whatever the glb says.
+            // Machines are ordinary models and keep the side they came with,
+            // and so does anything cut out by alpha (a grate reads from both sides).
+            if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
+            this.cutaway(m);
+          }
+          mesh.castShadow = solid;
+          mesh.receiveShadow = true;
         }
-        mesh.castShadow = solid;
-        mesh.receiveShadow = true;
-      });
+        for (const c of o.children) walk(c, path);
+      };
+      walk(root, []);
       const box = new THREE.Box3().setFromObject(root);
       if (box.isEmpty()) return false;
       this.clearMap();
@@ -221,6 +248,79 @@ export class ViewerScene {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Gives a level material the height cut and the see-through. */
+  private cutaway(m: THREE.Material) {
+    if (this.patched.has(m)) return;
+    this.patched.add(m);
+    m.clippingPlanes = [this.cutPlane];
+    m.clipShadows = true;
+    const before = m.onBeforeCompile, key = m.customProgramCacheKey;
+    m.onBeforeCompile = (shader, renderer) => {
+      before.call(m, shader, renderer);
+      const out = patchSeeThrough(shader.vertexShader, shader.fragmentShader);
+      if (!out) return;
+      shader.vertexShader = out.vertex;
+      shader.fragmentShader = out.fragment;
+      Object.assign(shader.uniforms, this.see);
+    };
+    m.customProgramCacheKey = () => key.call(m) + "|see";
+    m.needsUpdate = true;
+  }
+
+  /** The height cut: nothing of the level above `height` (game z) is
+   *  drawn. While following a player it keeps to just above them instead. */
+  setCut(on: boolean, height: number) {
+    this.cut = { on, height };
+    this.dirty = true;
+  }
+
+  /** The heights the cut can be put at (game z), for the slider. */
+  cutRange(): [number, number] {
+    const b = this.bounds;
+    return b ? cutRange(b.min[2], b.max[2]) : [0, 1];
+  }
+
+  /** The see-through: level geometry between the camera and the player in
+   *  focus (followed, else highlighted) is cut away. */
+  setSeeThrough(on: boolean) {
+    this.seeOn = on;
+    this.dirty = true;
+  }
+
+  /** Where the cut is drawn now, or null: for the UI. */
+  cutNow(): number | null { return this.cutShown; }
+
+  private updateCutaway(dt: number, highlight: number | null) {
+    const followed = this.followIndex !== null ? this.shown.get(this.followIndex) : undefined;
+    const want = cutHeight(this.cut, this.mode === "follow" && followed?.alive ? followed.z : null);
+    // Following, the cut eases after the player, so a jump doesn't flicker the ceiling.
+    let h = want;
+    if (h !== null && this.cutShown !== null && this.mode === "follow" && !this.opts.reducedMotion) {
+      h = this.cutShown + (h - this.cutShown) * (1 - Math.exp(-5 * dt / 1000));
+      if (Math.abs(h - want!) < 0.005) h = want;
+    }
+    if (h !== this.cutShown) this.dirty = true;
+    this.cutShown = h;
+    this.cutPlane.constant = h === null ? CUT_OFF : h;
+
+    const focus = this.followIndex ?? highlight;
+    const s = this.seeOn && focus !== null ? this.shown.get(focus) : undefined;
+    const p = s?.alive ? this.players.get(focus!) : undefined;
+    const u = this.see;
+    if (s && p) {
+      const k = p.turn.scale.x, tall = p.biped ? p.biped.height * k : 0.86 * k;
+      const [x, y, z] = gameToGl(s.x, s.y, s.z);
+      const r = SEE_RADIUS * Math.max(1, k);
+      if (u.uSeeRadius.value !== r || u.uSeeTarget.value.x !== x || u.uSeeTarget.value.y !== y + tall * 0.6 || u.uSeeTarget.value.z !== z) this.dirty = true;
+      u.uSeeTarget.value.set(x, y + tall * 0.6, z);
+      u.uSeeRadius.value = r;
+      u.uSeeFloor.value = y + 0.06 * k;
+    } else {
+      if (u.uSeeRadius.value !== 0) this.dirty = true;
+      u.uSeeRadius.value = 0;
     }
   }
 
@@ -588,6 +688,7 @@ export class ViewerScene {
       this.dirty = true;
     }
     this.drawShots(now);
+    this.updateCutaway(dt, highlight);
 
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
@@ -663,6 +764,9 @@ export class ViewerScene {
         composer.addPass(new OutputPass());
         composer.setPixelRatio(this.renderer.getPixelRatio());
         composer.setSize(this.w, this.h);
+        // The occlusion pass draws the scene again with one material of its
+        // own: it takes the cuts too, or the cut-away walls would still shade.
+        this.cutaway(gtao.normalMaterial);
         this.composer = composer;
         this.gtao = gtao;
         gtao.updateGtaoMaterial({ radius: this.scale * 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.15, samples: 12 });

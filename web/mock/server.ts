@@ -10,6 +10,8 @@
 // H2_MOCK_MAP_GEOMETRY=0 turns it off, and then /art/game answers 404.
 // H2_MOCK_MODELS=1 adds stand-in player and weapon models (mock/models.ts:
 // block figures) to the manifest; without it players are capsules.
+// H2_MOCK_INDOOR=1 shuts each arena's glb inside a busy building (walls, a
+// ceiling, an upper floor, pillars, machines), for the 3D view's cutaways.
 
 import type { ServerWebSocket } from "bun";
 import type { Frame, WireEvent } from "../src/api/types";
@@ -41,7 +43,8 @@ world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
-const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry();
+const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
+const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor });
 const models = process.env.H2_MOCK_MODELS && process.env.H2_MOCK_MODELS !== "0" ? mockModels() : null;
 
 interface StreamData {

@@ -39,7 +39,10 @@ like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
-`H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
+`H2_MOCK_INDOOR=1` shuts each arena's glb inside a busy building (an
+inward-facing shell, partition walls, an upper floor, pillars and two
+"machines", over `bsp_<n>` and `machines` nodes), for trying the 3D view's
+cutaways. `H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
 `mock/models.ts`) to the art manifest, so the 3D view's model path runs;
 without it players are capsules, as on a server with no models.
 
@@ -195,6 +198,21 @@ and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
+
+**Seeing into a level.** A level's structure is single-sided and faces
+into the playable space, so the 3D view culls its back faces whatever the
+glb says and it can be looked into from outside; meshes under a `machines`
+node are ordinary models and keep the side they came with. Every mesh is
+found by walking the glb, so one `structure` node or many `bsp_<n>` ones
+are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
+`c`, `[` and `]` or the slider) hides the level above a height, and while
+following a player keeps to just over their head; **See-through** (key `x`,
+on by default) cuts away whatever of the level lies between the camera and
+the player being followed (or pointed at in the scoreboard), a cone with a
+dithered rim, leaving the floor they stand on. Both are a clipping plane
+and a few lines in the map materials' shaders, shared by all of them, so a
+big level costs no more. `?cut=<height>` and `?see=0` on the pop-out page
+set them from a link.
 
 **Players, aim and shots.** Frames may say each player's `species`, `aim`
 (a unit direction), held `weapon` and `shots` fired since their last frame;
