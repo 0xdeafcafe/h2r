@@ -109,6 +109,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
+- [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels converted to run in the Halo 2 engine
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)
