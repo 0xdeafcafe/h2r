@@ -1,0 +1,401 @@
+//! The pictures on a level's surfaces in `map.glb`: each solid shader's
+//! base map (the BSP's and the placed objects'), decoded from the disc at
+//! run time, one image per bitmap however many shaders and surfaces use it,
+//! and the level's pictures kept within a byte budget (docs/live-art.md,
+//! "Textures").
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use assets::ResourceFiles;
+use map::TagId;
+
+use crate::live_geometry::MapReader;
+use crate::live_layers::Texture;
+use crate::live_models::{self, BitmapRole, Image};
+
+/// The largest side of a surface picture in `map.glb`.
+pub const MAX_SURFACE_TEXTURE: u32 = 512;
+/// The smallest side the budget may shrink pictures to.
+pub const MIN_SURFACE_TEXTURE: u32 = 64;
+/// The most bytes of surface pictures one level's `map.glb` holds: past
+/// it, every picture of the level is halved until they fit (or reach
+/// [`MIN_SURFACE_TEXTURE`]).
+pub const TEXTURE_BUDGET: usize = 6 << 20;
+/// JPEG quality of opaque pictures.
+pub const JPEG_QUALITY: u8 = 80;
+
+/// How a surface's picture is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Cutout {
+    /// Solid: the picture's alpha (often a specular mask) is not used.
+    Opaque,
+    /// Cut out where the picture's alpha is under a half (grates, leaves).
+    Mask,
+}
+
+/// One textured surface material: a shader with a picture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// The shader's tag ID: one look per shader in a level.
+    pub shader: u32,
+    /// The shader's own name (last path component).
+    pub name: String,
+    pub cutout: Cutout,
+    pub texture: Arc<Texture>,
+}
+
+/// A picture ready for the glb.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Encoded {
+    pub bytes: Vec<u8>,
+    /// `image/jpeg` or `image/png`.
+    pub mime: &'static str,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A level's looks, read once per shader and decoded once per bitmap.
+#[derive(Default)]
+pub struct Looks {
+    pub looks: Vec<Look>,
+    of: HashMap<u32, Option<u32>>,
+    decoded: HashMap<(u32, Cutout), Option<Arc<Texture>>>,
+}
+
+/// How a shader template draws its picture: cut out when its name says
+/// `alpha_test`, else solid. `None` for templates that are not solid
+/// surfaces (transparent, additive, overlays; those are glass, water or
+/// layers and keep their own look).
+pub fn template_cutout(template: &str) -> Option<Cutout> {
+    let lower = template.to_ascii_lowercase();
+    let stem = lower.rsplit('\\').next().unwrap_or(&lower);
+    if lower.split('\\').any(|c| c == "transparent") || stem.contains("overlay") {
+        return None;
+    }
+    Some(if stem.contains("alpha_test") {
+        Cutout::Mask
+    } else {
+        Cutout::Opaque
+    })
+}
+
+/// The base map among a shader's bitmaps (by the words of their tag names,
+/// [`live_models::bitmap_role`]): the first diffuse one.
+pub fn pick_base(names: &[(u32, String)]) -> Option<u32> {
+    names
+        .iter()
+        .find(|(_, n)| live_models::bitmap_role(n) == BitmapRole::Diffuse)
+        .map(|(id, _)| *id)
+}
+
+/// A decoded picture as a surface draws it: at most [`MAX_SURFACE_TEXTURE`]
+/// a side; opaque unless cut out (a solid shader's alpha is a specular or
+/// blend mask, not coverage).
+pub fn surface_image(image: Image, cutout: Cutout) -> Image {
+    let mut image = image.fit(MAX_SURFACE_TEXTURE);
+    match cutout {
+        Cutout::Opaque => {
+            for px in image.rgba.as_chunks_mut::<4>().0.iter_mut() {
+                px[3] = 255;
+            }
+        }
+        Cutout::Mask => cut_at_a_quarter(&mut image),
+    }
+    image
+}
+
+/// A cut-out picture's alpha stretched so its strongest alpha is opaque,
+/// then doubled: a reader cutting at a half (glTF's default) keeps what is
+/// at least a quarter of the strongest. On the disc the leaves of trees
+/// and bushes keep 0.5 % to 3 % of their pixels at a half but 10 % to 30 %
+/// at a quarter, and one never reaches a third: cut at a half they vanish.
+pub fn cut_at_a_quarter(image: &mut Image) {
+    let max = image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[3])
+        .max()
+        .unwrap_or(0);
+    if max == 0 {
+        return;
+    }
+    for px in image.rgba.as_chunks_mut::<4>().0.iter_mut() {
+        px[3] = (u32::from(px[3]) * 510 / u32::from(max)).min(255) as u8;
+    }
+}
+
+impl Looks {
+    /// The look of a shader, read the first time it is asked for: `None`
+    /// when it has no base map that decodes or is not a solid surface.
+    pub fn look_of(
+        &mut self,
+        map: &mut MapReader,
+        files: &mut ResourceFiles,
+        shader: TagId,
+    ) -> Option<u32> {
+        if shader == TagId::NULL {
+            return None;
+        }
+        if let Some(&k) = self.of.get(&shader.0) {
+            return k;
+        }
+        let k = self.read(map, files, shader);
+        self.of.insert(shader.0, k);
+        k
+    }
+
+    fn read(
+        &mut self,
+        map: &mut MapReader,
+        files: &mut ResourceFiles,
+        shader: TagId,
+    ) -> Option<u32> {
+        let (template, bitmaps) = live_models::shader_bitmaps(map, shader).ok()?;
+        let cutout = template_cutout(&template)?;
+        let names: Vec<(u32, String)> = bitmaps
+            .iter()
+            .filter_map(|&id| Some((id.0, map.tag(id).ok()?.name.clone()?)))
+            .collect();
+        let bitmap = pick_base(&names)?;
+        let texture = self
+            .decoded
+            .entry((bitmap, cutout))
+            .or_insert_with(|| {
+                live_models::decode_bitmap(map, files, TagId(bitmap))
+                    .ok()
+                    .map(|image| {
+                        Arc::new(Texture {
+                            bitmap,
+                            image: surface_image(image, cutout),
+                        })
+                    })
+            })
+            .clone()?;
+        let name = map
+            .tag(shader)
+            .ok()
+            .and_then(|t| t.name.clone())
+            .unwrap_or_default();
+        Some(self.add(Look {
+            shader: shader.0,
+            name: name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string(),
+            cutout,
+            texture,
+        }))
+    }
+
+    /// Adds a look (tests build them by hand).
+    pub fn add(&mut self, look: Look) -> u32 {
+        self.of.insert(look.shader, Some(self.looks.len() as u32));
+        self.looks.push(look);
+        (self.looks.len() - 1) as u32
+    }
+
+    /// Every distinct picture, encoded, keyed by `(bitmap, cutout)`: at the
+    /// largest size whose total fits `budget`.
+    pub fn encode(&self, budget: usize) -> HashMap<(u32, Cutout), Encoded> {
+        let mut distinct: Vec<((u32, Cutout), &Image)> = Vec::new();
+        for l in &self.looks {
+            let key = (l.texture.bitmap, l.cutout);
+            if !distinct.iter().any(|(k, _)| *k == key) {
+                distinct.push((key, &l.texture.image));
+            }
+        }
+        let mut cap = MAX_SURFACE_TEXTURE;
+        loop {
+            let out: HashMap<(u32, Cutout), Encoded> = distinct
+                .iter()
+                .map(|(k, img)| (*k, encode_image(&(*img).clone().fit(cap))))
+                .collect();
+            let total: usize = out.values().map(|e| e.bytes.len()).sum();
+            if total <= budget || cap <= MIN_SURFACE_TEXTURE {
+                return out;
+            }
+            cap /= 2;
+        }
+    }
+}
+
+/// A picture as JPEG when every pixel is opaque, else PNG.
+pub fn encode_image(image: &Image) -> Encoded {
+    let opaque = image.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
+    if opaque {
+        let rgb: Vec<u8> = image
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect();
+        let mut bytes = Vec::new();
+        let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY)
+            .encode(
+                &rgb,
+                image.width,
+                image.height,
+                image::ExtendedColorType::Rgb8,
+            );
+        if encoded.is_ok() {
+            return Encoded {
+                bytes,
+                mime: "image/jpeg",
+                width: image.width,
+                height: image.height,
+            };
+        }
+    }
+    let mut bytes = Vec::new();
+    assets::png::write_rgba_fast(&mut bytes, image.width, image.height, &image.rgba)
+        .expect("PNG into memory");
+    Encoded {
+        bytes,
+        mime: "image/png",
+        width: image.width,
+        height: image.height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image(w: u32, h: u32, alpha: u8) -> Image {
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend([(x * 7) as u8, (y * 5) as u8, ((x ^ y) * 3) as u8, alpha]);
+            }
+        }
+        Image {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+
+    fn look(shader: u32, bitmap: u32, cutout: Cutout, img: Image) -> Look {
+        Look {
+            shader,
+            name: format!("s{shader}"),
+            cutout,
+            texture: Arc::new(Texture { bitmap, image: img }),
+        }
+    }
+
+    #[test]
+    fn templates_say_solid_cut_out_or_not_a_surface() {
+        let t = |s: &str| template_cutout(s);
+        assert_eq!(
+            t(r"shaders\shader_templates\opaque\tex_bump"),
+            Some(Cutout::Opaque)
+        );
+        assert_eq!(
+            t(r"shaders\shader_templates\opaque\tex_bump_env"),
+            Some(Cutout::Opaque)
+        );
+        assert_eq!(
+            t(r"shaders\shader_templates\opaque\tex_bump_alpha_test"),
+            Some(Cutout::Mask)
+        );
+        assert_eq!(t(r"shaders\shader_templates\transparent\glass"), None);
+        assert_eq!(t(r"shaders\shader_templates\opaque\overlay"), None);
+    }
+
+    #[test]
+    fn the_base_map_is_the_first_diffuse_bitmap() {
+        let names = vec![
+            (
+                1,
+                r"scenarios\bitmaps\shared\detail_maps\metal_detail".to_string(),
+            ),
+            (2, r"scenarios\bitmaps\x\wall_bump".to_string()),
+            (3, r"scenarios\bitmaps\x\wall_plate".to_string()),
+            (4, r"scenarios\bitmaps\x\wall_trim".to_string()),
+        ];
+        assert_eq!(pick_base(&names), Some(3));
+        assert_eq!(pick_base(&names[..2]), None);
+    }
+
+    #[test]
+    fn solid_pictures_lose_their_alpha_and_shrink_to_the_cap() {
+        let big = image(2048, 1024, 40);
+        let solid = surface_image(big.clone(), Cutout::Opaque);
+        assert_eq!(
+            (solid.width, solid.height),
+            (MAX_SURFACE_TEXTURE, MAX_SURFACE_TEXTURE / 2)
+        );
+        assert!(solid.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+        let cut = surface_image(big, Cutout::Mask);
+        assert!(
+            cut.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
+            "the strongest alpha is opaque"
+        );
+    }
+
+    #[test]
+    fn cut_outs_keep_what_is_a_quarter_of_their_strongest_alpha() {
+        let mut im = Image {
+            width: 4,
+            height: 1,
+            rgba: [0u8, 20, 21, 80]
+                .iter()
+                .flat_map(|&a| [9, 9, 9, a])
+                .collect(),
+        };
+        cut_at_a_quarter(&mut im);
+        let kept: Vec<bool> = im
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3] >= 128)
+            .collect();
+        assert_eq!(kept, [false, false, true, true]);
+        assert_eq!(im.rgba[15], 255);
+        let mut clear = Image {
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 0],
+        };
+        cut_at_a_quarter(&mut clear);
+        assert_eq!(clear.rgba[3], 0);
+    }
+
+    #[test]
+    fn opaque_pictures_are_jpeg_and_cut_outs_png() {
+        let j = encode_image(&image(64, 32, 255));
+        assert_eq!(j.mime, "image/jpeg");
+        assert_eq!(&j.bytes[..2], &[0xff, 0xd8]);
+        assert_eq!((j.width, j.height), (64, 32));
+        let p = encode_image(&image(64, 32, 0));
+        assert_eq!(p.mime, "image/png");
+        assert_eq!(&p.bytes[1..4], b"PNG");
+    }
+
+    #[test]
+    fn a_bitmap_is_encoded_once_and_shrunk_to_fit_the_budget() {
+        let mut looks = Looks::default();
+        let a = looks.add(look(10, 7, Cutout::Opaque, image(512, 512, 255)));
+        let b = looks.add(look(11, 7, Cutout::Opaque, image(512, 512, 255)));
+        let c = looks.add(look(12, 8, Cutout::Mask, image(256, 256, 0)));
+        assert_eq!((a, b, c), (0, 1, 2));
+        let all = looks.encode(usize::MAX);
+        assert_eq!(all.len(), 2, "two bitmaps");
+        assert_eq!(all[&(7, Cutout::Opaque)].width, 512);
+        // A budget too small for full size halves every picture.
+        let full: usize = all.values().map(|e| e.bytes.len()).sum();
+        let small = looks.encode(full - 1);
+        assert_eq!(small[&(7, Cutout::Opaque)].width, 256);
+        assert_eq!(
+            small[&(8, Cutout::Mask)].width,
+            256,
+            "already within the cap"
+        );
+        // Never below the floor.
+        let tiny = looks.encode(0);
+        assert_eq!(tiny[&(7, Cutout::Opaque)].width, MIN_SURFACE_TEXTURE);
+    }
+}

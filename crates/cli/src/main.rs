@@ -22,6 +22,8 @@ mod live_catalog;
 mod live_features;
 mod live_geometry;
 mod live_layers;
+mod live_looks;
+mod live_scenario;
 mod live_models;
 mod live_weapons;
 mod live_render;

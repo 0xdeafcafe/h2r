@@ -294,7 +294,7 @@ pub fn read_features(
                         Ok(tags::object::ObjectHeader::from_record(obje)?)
                     })
                     .map_err(|e| format!("{e:#}"))?;
-                match object_model(map, &ctx, files, *id) {
+                match object_model(map, &ctx, files, *id, None) {
                     Ok(Some(m)) if m.mesh.bounds.max[2] - m.mesh.bounds.min[2] >= MIN_COLUMN => {
                         Ok((m.mesh.bounds, "render model bounds"))
                     }

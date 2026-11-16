@@ -8,9 +8,11 @@ model. Everything comes from the owner's disc at run time and is served
 loopback-only under `/art/game/` like the other art. Nothing derived from the
 disc is in the repository: the tests build invented tag data.
 
-Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files) and
+Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
+`crates/cli/src/live_looks.rs` (surface pictures),
+`crates/cli/src/live_scenario.rs` (placed objects) and
 `crates/cli/src/live_render.rs` (the software renderer). Tests:
-`crates/cli/src/live_geometry_tests.rs`.
+`crates/cli/src/live_geometry_tests.rs` and the modules' own.
 
 ## Files
 
@@ -40,8 +42,9 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 10, so a disc extracted by an older build is extracted again
-(10 added the layers, the sky and `extras.name`).
+key) is 12, so a disc extracted by an older build is extracted again
+(10 added the layers, the sky and `extras.name`; 12 the surface
+pictures, texture coordinates and the `scenario` node).
 
 ### `map.glb`
 
@@ -63,15 +66,32 @@ key) is 10, so a disc extracted by an older build is extracted again
   `backdrop_<index>` (`backdrop` on a single-BSP level) with
   `extras.backdrop: true`, same space and classes. A BSP without any
   has no such child. Every retail multiplayer map has none. Each mesh has
-  one triangle primitive per surface class present: `POSITION`, `NORMAL`
-  (both float VEC3) and u16 indices. A class with more than 65,536 vertices
-  in one mesh is split into several primitives so every index fits in 16
-  bits. No `COLOR_0` and no texture coordinates: the colour
-  is the material's.
-- Materials are named by class (one material per class, shared by every
-  mesh): `floor`, `wall`, `metal`, `glass`, `water`, `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
-  `glass` and `water` are `alphaMode: BLEND`. Single-sided: the level's
-  triangles face into the playable space, so back faces should be culled.
+  one triangle primitive per surface class and look present: `POSITION`,
+  `NORMAL` (both float VEC3), u16 indices and, when textured,
+  `TEXCOORD_0` (float VEC2, as the game stores them: they tile). A
+  primitive with more than 65,536 vertices is split into several so every
+  index fits in 16 bits. No `COLOR_0`.
+- Class materials are named by class (one material per class, shared by
+  every mesh): `floor`, `wall`, `metal`, `glass`, `water`, `foliage`,
+  `default`. Metallic-roughness PBR with base colour factors only; `glass`
+  and `water` are `alphaMode: BLEND`. Single-sided: the level's triangles
+  face into the playable space, so back faces should be culled.
+- **Textures.** A surface whose shader has a base map that decodes gets
+  its shader's *look*: a material named after the shader (its last path
+  component), `extras.look: true`, `baseColorTexture` (sRGB, the shared
+  sampler: linear, mipmapped, repeating), metallic 0, roughness 0.85;
+  cut-out shaders (`alpha_test` templates) are `alphaMode: MASK` at 0.5 and
+  double-sided. The primitive then has `TEXCOORD_0` and `extras`
+  `{"class": "<class>", "flat": <class material index>}`, so a reader can
+  draw it untextured with the class material instead (the viewer's
+  Textures switch). A class material is written even when only `flat`
+  names it. Glass and water keep their class material and are not
+  textured. Each picture is stored once per bitmap however many shaders
+  use it: JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
+  side, every picture of a level halved until they total at most 6 MiB
+  (no retail level needs it). Machines and placed objects get looks the
+  same way. Detail maps, bump maps, lightmaps and the shaders' colour
+  parameters are not used.
 - **Machines.** When the scenario places machines (`mach` objects: doors,
   lifts, the turning wheel and the like), a root node `machines` (no mesh)
   follows the BSP nodes with a child per placement, named
@@ -86,6 +106,19 @@ key) is 10, so a disc extracted by an older build is extracted again
   `metal`, unless their shader names them glass, water or foliage. The
   model is drawn at rest (no animation): each region's first permutation
   at the highest detail level up to 3 of 5 it has.
+- **Scenario objects.** When the scenario places any other objects, a
+  root node `scenario` (no mesh) follows `machines`, with a child per
+  placement named `<kind>_<placement index>`: a mesh shared by every
+  placement of the same object (named after the first) and a `matrix`,
+  as machines have them. `extras`: `kind` (the block: `scen` scenery,
+  `bloc` crates, `vehi` vehicles, `weap` weapons, `eqip` equipment, `ctrl`
+  controls, `lifi` light fixtures, `ssce` sound scenery; or `netgame` for
+  a multiplayer spawn), `index` (the placement's index in its kind's
+  block), `tag` (the object tag's file name), `pos`, `forward`, `up` and
+  `scale` (game coordinates, as for machines), `bsp` (the zone the
+  placement says it belongs to, when it names one) and, for `netgame`,
+  `item` (the drawn object's group: `weap`, `vehi`, `eqip`). The views do
+  not draw these objects, and they are not in `bounds` or the frame.
 - **Layers.** Decals and effect surfaces (pipeline steps 4 and 7) are in a
   BSP's child nodes `decals_<index>` (`extras.decals: true`) and
   `effects_<index>` (`extras.effects: true`), `decals` and `effects` on a
@@ -144,12 +177,45 @@ key) is 10, so a disc extracted by an older build is extracted again
   when the model is at least 1 unit tall; else the `obje` bounding sphere
   (radius `+0x4`, offset `+0x8`) when that is; else a nominal 4 × 1
   column. `source` names the block, tag stem, placement index and which.
-- Retail multiplayer maps come out at 11k to 31k triangles of level and
-  0.3 to 1.1 MB (0 to 6 machines). Campaign levels (1 to 8 BSPs) come out
-  at 38k to 412k triangles of level, 6 to 206 machines, and 1.2 to 15.9 MB;
-  the level is not simplified. The largest (356k triangles and 538k
-  vertices of level, 108 machines) is about the most a browser should be
-  asked to fetch. Before `EXTRACTOR_VERSION` 6 indices were u32.
+- **Size.** Retail multiplayer maps come out at 11k to 31k triangles of
+  level and 1.2 to 4.1 MB (0.3 to 1.1 MB before textures and objects):
+  0.4 to 1.8 MB of it pictures (45 to 150 looks), 40 to 176 objects. Campaign
+  levels (1 to 8 BSPs) come out at 38k to 412k triangles of level and 2.1
+  to 24 MB (1.2 to 16.6 MB before): 0.4 to 3.4 MB pictures, texture
+  coordinates a fifth of the rest, 17 to 854 objects of 2 to 95 models. The
+  largest, 04b_floodlab (356k triangles and 566k vertices of level, 108
+  machines), is about the most a browser should be asked to fetch; the
+  server is loopback-only and does not compress. The level is not
+  simplified. Before `EXTRACTOR_VERSION` 6 indices were u32.
+
+### In the 3D viewer
+
+`web/src/viewer/textures3d.ts` keeps both materials of every textured
+mesh (the look and the class material its primitive's `flat` names), so
+the toolbar's **Textures** button swaps them at once; the choice is kept
+in `localStorage` under `h2.viewer.textures` (`on` unless `off`).
+
+`web/src/viewer/scenario3d.ts` draws the `scenario` node: placements of the
+same model, kind and zone become one `InstancedMesh`; the placement nodes
+stay in the tree, hidden. The Show menu has **Objects** and a switch per
+kind present; an object is hidden with its zone (`extras.bsp`). For frames
+that move objects (`Frame.objects`: `{k, i, p, f, u, gone?}`, kind and
+index as in `extras`, game coordinates), `ViewerScene.scenarioObjects` is:
+
+```ts
+// The placement's node, taken out of its batch and shown (unless its kind,
+// the layer or its zone is hidden), or undefined when the level has no
+// such placement. The caller then owns its position, quaternion and
+// visibility; its scale is the placement's.
+scenarioObjects.find(kind: string, index: number): THREE.Object3D | undefined
+// The same from frame entries: moves each (game axes, as machines), hides
+// the `gone`, shows them again when they come back. Returns whether
+// anything changed (the scene redraws itself).
+scenarioObjects.apply(list: readonly ObjectPose[]): boolean
+// Every handed-out object back where the scenario placed it, in its batch
+// (after a seek, or when the frames stop sending objects).
+scenarioObjects.restAll(): void
+```
 
 ### `views.json`
 
@@ -331,7 +397,42 @@ view), the same for every view.
    keep their top. Walls have no ceiling inside them, so they keep their
    tops and read as rims around opened rooms. The iso views and `map.glb`
    are not cut.
-9. **Write.** `map.glb` as soon as a map is built, then every (map, view)
+10. **Looks.** For each BSP material whose surface is solid level (not
+   glass or water), and each machine's and object's model material: the
+   shader's template (`shad +0`) must not be in a `transparent` folder or
+   be an `overlay`; its base map is the first of its bitmaps
+   (`shad +0x20` postprocess, as for the player models) whose name says
+   diffuse (`live_models::bitmap_role`). Decoded once per bitmap (the
+   largest stored level, DXT and swizzle as `assets::decode_image` does),
+   box-filtered down to 512 pixels; solid looks are made opaque (their
+   alpha is a specular or blend mask); cut-out looks (`alpha_test`) have
+   their alpha stretched so its strongest value is opaque, then doubled,
+   so cutting at a half keeps what is at least a quarter: the leaves of
+   the campaign's trees and bushes keep only 0.5 % to 3 % of their pixels
+   at a half. Triangles keep their stored texture coordinates and weld
+   on them too (1/4096).
+11. **Scenario objects.** The placement blocks of the object type table
+   (docs/objects.md) other than machines: scenery `+0x50`, vehicles
+   `+0x70`, equipment `+0x80`, weapons `+0x90`, controls `+0xb8`, light
+   fixtures `+0xc8`, sound scenery `+0xd8` and crates `+0x328` (strides
+   0x5c, 0x54, 0x38, 0x54, 0x44, 0x54, 0x50, 0x4c; palette 8 bytes on,
+   0x28-byte entries), read like machine placements, plus the zone at
+   `+0x2c` (i16, kept when it is one of the scenario's BSPs). A placement
+   whose flags (`+4`) have bit 0 set is created by a script, not at the
+   start, and is left out: on the disc these are the cutscenes' props
+   (capital ships, a ring world, drop pods stacked under a level), the
+   weapons a cutscene hands out and vehicles brought in later. Then the
+   netgame equipment (`scnr+0x120`, 0x90-byte entries; docs/forge.md):
+   position `+0x40`, yaw, pitch and roll `+0x4c`, the item at `+0x58`; an
+   item or vehicle collection (`itmc`, `vehc`) is drawn as its heaviest
+   entry. Every object's model is read once per level (`obje` model,
+   `hlmt` render model, as machines). Objects with no render model or no
+   drawn triangles (anchors, invisible helpers), and objects whose own
+   tag name has the word `invisible`, are left out quietly; others that
+   fail are listed under `skipped` as `map/<stem>/object_<kind>_<index>`.
+   On the retail disc: Lockout 50 objects (30 spawns), Zanzibar 165,
+   campaign levels 17 to 854.
+12. **Write.** `map.glb` as soon as a map is built, then every (map, view)
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
 
@@ -378,10 +479,18 @@ teleporters, links and lifts. Do not commit anything they write.
   not read: a lift's size comes from its render model or bounding sphere,
   or is nominal. Campaign lifts (lift platforms, gravity fields, lift
   effects) are not listed.
-- No textures or lightmaps, and no object geometry but machines
-  (scenery, crates and vehicles are not drawn). Machines are at rest: a
-  door is drawn as its model's default pose has it, and the wheel does not
-  turn.
+- Textures are each shader's base map alone: no lightmaps, detail or bump
+  maps, and none of the shader's tints, so surfaces read flatter and
+  sometimes paler than in the game, and terrain that blends several maps
+  shows one. Cut-outs are kept where alpha is at least a quarter of the
+  picture's strongest (step 10).
+- Machines and objects are at rest: a door is drawn as its model's default
+  pose has it, the wheel does not turn, and a vehicle sits in its model's
+  rest pose. Each object is drawn as its regions' first permutations, not
+  the variant the placement names. Objects a script creates later are not
+  drawn, nor bipeds (AI come from the frames). A multiplayer spawn shows
+  the heaviest entry of its collection: the game rolls it, and gametype
+  settings can swap it.
 - Campaign levels sit in large backdrop planes (sea or ground around the
   playable strip). The biggest planes go to the backdrop nodes, but
   smaller backdrop terrain stays in the level and the frame keeps some of

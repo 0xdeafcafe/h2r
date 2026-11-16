@@ -34,6 +34,7 @@ use crate::live_art::{Disc, MapFile};
 use crate::live_features::{Features, read_features};
 pub use crate::live_layers::{Blend, Layer};
 use crate::live_layers::{LayerMaterial, LayerPrim, LayerTri};
+use crate::live_looks::Looks;
 use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 
 /// The geometry files' format (contract `GEOMETRY_VERSION`).
@@ -298,6 +299,11 @@ pub struct Tri {
     pub p: [[f32; 3]; 3],
     pub n: [[f32; 3]; 3],
     pub surface: Surface,
+    /// Texture coordinates, as stored (used when `look` is set).
+    pub uv: [[f32; 2]; 3],
+    /// The level's textured look for its shader ([`crate::live_looks`]),
+    /// if it has one.
+    pub look: Option<u32>,
 }
 
 /// Every drawn triangle of a BSP: clusters as stored, instances placed. A
@@ -308,16 +314,18 @@ pub fn bsp_triangles(
     raw: &mut dyn RawSource,
     surfaces: &[Surface],
 ) -> (Vec<Tri>, usize) {
-    let (tris, _, failed) = bsp_geometry(bsp, raw, surfaces);
+    let (tris, _, failed) = bsp_geometry(bsp, raw, surfaces, &[]);
     (tris, failed)
 }
 
 /// [`bsp_triangles`], and the triangles of its layers (decals and effects,
 /// [`Surface::Layer`]) with their texture coordinates and BSP material.
+/// `looks[m]` is BSP material `m`'s textured look, if any.
 pub fn bsp_geometry(
     bsp: &StructureRender,
     raw: &mut dyn RawSource,
     surfaces: &[Surface],
+    looks: &[Option<u32>],
 ) -> (Vec<Tri>, Vec<LayerTri>, usize) {
     let materials = Some(bsp.material_count as usize);
     let mut out = Vec::new();
@@ -359,12 +367,15 @@ pub fn bsp_geometry(
             if !surface.is_level() {
                 continue;
             }
+            let look = looks.get(usize::from(part.material)).copied().flatten();
             for t in s.part_triangles(part) {
                 let i = t.map(usize::from);
                 out.push(Tri {
                     p: i.map(|i| placed[i]),
                     n: i.map(|i| normals[i]),
                     surface,
+                    uv: i.map(|i| v.texcoords.get(i).copied().unwrap_or([0.0; 2])),
+                    look,
                 });
             }
         }
@@ -451,12 +462,17 @@ impl Bounds {
     }
 }
 
-/// One glTF primitive: the welded triangles of one class (game coordinates).
+/// One glTF primitive: the welded triangles of one class and look (game
+/// coordinates).
 #[derive(Clone, Debug, Default)]
 pub struct Primitive {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    /// Texture coordinates per vertex when `look` is set, else empty.
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    /// The textured look its triangles share ([`crate::live_looks`]).
+    pub look: Option<u32>,
 }
 
 /// The level, welded, one primitive per class present.
@@ -506,15 +522,19 @@ const MIN_DOUBLE_AREA: f32 = 1e-6;
 const WELD: f32 = 1024.0;
 
 /// Classify, drop degenerate and duplicate triangles, and weld vertices that
-/// share a position and normal within a class. A vertex normal that is
-/// missing or points against its triangle is replaced by the face normal.
+/// share a position and normal (and texture coordinate, 1/4096, when
+/// textured) within a class and look. A vertex normal that is missing or
+/// points against its triangle is replaced by the face normal. Glass and
+/// water keep their class's look: they are never textured.
 pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
+    /// Grid position, normal and texture coordinate.
+    type WeldKey = ([i32; 3], [i8; 3], [i32; 2]);
     struct Builder {
         prim: Primitive,
-        index: HashMap<([i32; 3], [i8; 3]), u32>,
+        index: HashMap<WeldKey, u32>,
         seen: HashSet<[u32; 3]>,
     }
-    let mut builders: BTreeMap<Class, Builder> = BTreeMap::new();
+    let mut builders: BTreeMap<(Class, Option<u32>), Builder> = BTreeMap::new();
     let mut bounds = Bounds::EMPTY;
     for t in tris {
         if !t.p.iter().flatten().all(|v| v.is_finite()) {
@@ -527,8 +547,13 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
         }
         let face = face.map(|v| v / len);
         let class = classify(t.surface, face);
-        let b = builders.entry(class).or_insert_with(|| Builder {
-            prim: Primitive::default(),
+        let look = t.look.filter(|_| !class.transparent());
+        let uv_ok = t.uv.iter().flatten().all(|v| v.is_finite());
+        let b = builders.entry((class, look)).or_insert_with(|| Builder {
+            prim: Primitive {
+                look,
+                ..Primitive::default()
+            },
             index: HashMap::new(),
             seen: HashSet::new(),
         });
@@ -542,13 +567,22 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
                 face
             };
             let p = t.p[k];
+            let uv = if look.is_some() && uv_ok {
+                t.uv[k]
+            } else {
+                [0.0; 2]
+            };
             let key = (
                 p.map(|v| (v * WELD).round() as i32),
                 n.map(|v| (v * 64.0).round() as i8),
+                uv.map(|v| (v * 4096.0).round() as i32),
             );
             *slot = *b.index.entry(key).or_insert_with(|| {
                 b.prim.positions.push(p);
                 b.prim.normals.push(n);
+                if look.is_some() {
+                    b.prim.uvs.push(uv);
+                }
                 (b.prim.positions.len() - 1) as u32
             });
         }
@@ -570,7 +604,7 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
         primitives: builders
             .into_iter()
             .filter(|(_, b)| !b.prim.indices.is_empty())
-            .map(|(c, b)| (c, b.prim))
+            .map(|((c, _), b)| (c, b.prim))
             .collect(),
         bounds,
         objects: Vec::new(),
@@ -720,18 +754,25 @@ pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
         return vec![p.clone()];
     }
     let mut out = Vec::new();
-    let mut cur = Primitive::default();
+    let empty = Primitive {
+        look: p.look,
+        ..Primitive::default()
+    };
+    let mut cur = empty.clone();
     let mut remap: HashMap<u32, u32> = HashMap::new();
     for t in p.indices.as_chunks::<3>().0 {
         let new = t.iter().filter(|i| !remap.contains_key(i)).count();
         if cur.positions.len() + new > MAX_PRIMITIVE_VERTICES {
-            out.push(std::mem::take(&mut cur));
+            out.push(std::mem::replace(&mut cur, empty.clone()));
             remap.clear();
         }
         for &i in t {
             let j = *remap.entry(i).or_insert_with(|| {
                 cur.positions.push(p.positions[i as usize]);
                 cur.normals.push(p.normals[i as usize]);
+                if let Some(uv) = p.uvs.get(i as usize) {
+                    cur.uvs.push(*uv);
+                }
                 (cur.positions.len() - 1) as u32
             });
             cur.indices.push(j);
@@ -817,23 +858,52 @@ pub fn write_nodes(
     frame: Bounds,
     more: serde_json::Map<String, serde_json::Value>,
 ) -> Vec<u8> {
-    write_nodes_with(roots, bounds, frame, more, &[])
+    write_nodes_with(roots, bounds, frame, more, &[], &Pictures::default())
+}
+
+/// The level's textured looks and their pictures, encoded
+/// ([`Looks::encode`]), for [`write_nodes_with`].
+#[derive(Default)]
+pub struct Pictures<'a> {
+    pub looks: &'a [crate::live_looks::Look],
+    pub encoded: HashMap<(u32, crate::live_looks::Cutout), crate::live_looks::Encoded>,
+}
+
+impl<'a> Pictures<'a> {
+    pub fn new(looks: &'a Looks, budget: usize) -> Self {
+        Pictures {
+            looks: &looks.looks,
+            encoded: looks.encode(budget),
+        }
+    }
+
+    /// Bytes of pictures.
+    pub fn bytes(&self) -> usize {
+        self.encoded.values().map(|e| e.bytes.len()).sum()
+    }
 }
 
 /// [`write_nodes`] with the materials the nodes' layer primitives use: a
 /// glTF material each (written once, when first used), their textures as
 /// embedded PNGs (one per bitmap), TEXCOORD_0 and u32 indices on layer
-/// primitives.
+/// primitives. A primitive with a look in `pictures` gets that look's
+/// material (one per shader, its picture embedded once per bitmap) and
+/// TEXCOORD_0, and `extras` naming its class and its class material
+/// (`class`, `flat`), so a reader can draw it untextured.
 pub fn write_nodes_with(
     roots: &[GlbNode],
     bounds: Bounds,
     frame: Bounds,
     more: serde_json::Map<String, serde_json::Value>,
     layer_materials: &[LayerMaterial],
+    pictures: &Pictures,
 ) -> Vec<u8> {
     use serde_json::{Value, json};
     struct Out<'m> {
         layer_materials: &'m [LayerMaterial],
+        pictures: &'m Pictures<'m>,
+        look_material_of: HashMap<u32, usize>,
+        picture_of: HashMap<(u32, crate::live_looks::Cutout), usize>,
         layer_material_of: HashMap<usize, usize>,
         images: Vec<Value>,
         textures: Vec<Value>,
@@ -936,6 +1006,50 @@ pub fn write_nodes_with(
                 "mode": 4
             })
         }
+        /// The material of look `k`, written the first time.
+        fn look_material(&mut self, k: u32) -> Option<usize> {
+            if let Some(&m) = self.look_material_of.get(&k) {
+                return Some(m);
+            }
+            let look = self.pictures.looks.get(k as usize)?;
+            let key = (look.texture.bitmap, look.cutout);
+            let texture = match self.picture_of.get(&key) {
+                Some(&t) => t,
+                None => {
+                    let e = self.pictures.encoded.get(&key)?;
+                    while !self.bin.len().is_multiple_of(4) {
+                        self.bin.push(0);
+                    }
+                    self.views.push(json!({
+                        "buffer": 0, "byteOffset": self.bin.len(), "byteLength": e.bytes.len()
+                    }));
+                    self.bin.extend_from_slice(&e.bytes);
+                    self.images
+                        .push(json!({"bufferView": self.views.len() - 1, "mimeType": e.mime}));
+                    self.textures
+                        .push(json!({"sampler": 0, "source": self.images.len() - 1}));
+                    self.picture_of.insert(key, self.textures.len() - 1);
+                    self.textures.len() - 1
+                }
+            };
+            let mut m = json!({
+                "name": look.name,
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": {"index": texture},
+                    "metallicFactor": 0.0,
+                    "roughnessFactor": 0.85
+                },
+                "extras": {"look": true}
+            });
+            if look.cutout == crate::live_looks::Cutout::Mask {
+                m["alphaMode"] = json!("MASK");
+                m["alphaCutoff"] = json!(0.5);
+                m["doubleSided"] = json!(true);
+            }
+            self.materials.push(m);
+            self.look_material_of.insert(k, self.materials.len() - 1);
+            Some(self.materials.len() - 1)
+        }
         fn material(&mut self, class: Class) -> usize {
             if let Some(&m) = self.material_of.get(&class) {
                 return m;
@@ -973,6 +1087,20 @@ pub fn write_nodes_with(
             };
             let pv = self.view(&floats(&pos), 34962);
             let nv = self.view(&floats(&nrm), 34962);
+            let flat = self.material(class);
+            let look = p
+                .look
+                .filter(|_| p.uvs.len() == p.positions.len())
+                .and_then(|k| self.look_material(k));
+            let tv = look.map(|_| {
+                let uvs: Vec<u8> = p
+                    .uvs
+                    .iter()
+                    .flatten()
+                    .flat_map(|f| f.to_le_bytes())
+                    .collect();
+                self.view(&uvs, 34962)
+            });
             let indices: Vec<u8> = p
                 .indices
                 .iter()
@@ -990,12 +1118,21 @@ pub fn write_nodes_with(
             self.accessors.push(json!({
                 "bufferView": iv, "componentType": 5123, "count": p.indices.len(), "type": "SCALAR"
             }));
-            json!({
+            let mut out = json!({
                 "attributes": {"POSITION": base, "NORMAL": base + 1},
                 "indices": base + 2,
-                "material": self.material(class),
+                "material": flat,
                 "mode": 4
-            })
+            });
+            if let (Some(m), Some(tv)) = (look, tv) {
+                self.accessors.push(json!({
+                    "bufferView": tv, "componentType": 5126, "count": p.uvs.len(), "type": "VEC2"
+                }));
+                out["attributes"]["TEXCOORD_0"] = json!(base + 3);
+                out["material"] = json!(m);
+                out["extras"] = json!({"class": class.name(), "flat": flat});
+            }
+            out
         }
         /// Adds a node and its children; returns its index.
         fn node(&mut self, n: &GlbNode) -> usize {
@@ -1049,6 +1186,9 @@ pub fn write_nodes_with(
     }
     let mut o = Out {
         layer_materials,
+        pictures,
+        look_material_of: HashMap::new(),
+        picture_of: HashMap::new(),
         layer_material_of: HashMap::new(),
         images: Vec::new(),
         textures: Vec::new(),
@@ -1216,6 +1356,15 @@ pub struct MapStats {
     pub layers_dropped: usize,
     /// `sky.glb`'s size, when written.
     pub sky_bytes: usize,
+    /// Textured looks (shaders with a picture) and the bytes of their
+    /// pictures in `map.glb`.
+    pub looks: usize,
+    pub texture_bytes: usize,
+    /// Scenario objects placed (not machines), their distinct models, and
+    /// the models' triangles.
+    pub objects: usize,
+    pub object_models: usize,
+    pub object_model_triangles: usize,
     pub classes: BTreeMap<&'static str, usize>,
     pub shaders_named: usize,
     pub materials: usize,
@@ -1433,13 +1582,13 @@ pub struct MachineModel {
 pub fn object_mesh(tris: &[Tri]) -> LevelMesh {
     let mesh = build_mesh(tris);
     let bounds = mesh.bounds;
-    let mut by: BTreeMap<Class, Vec<LevelMesh>> = BTreeMap::new();
+    let mut by: BTreeMap<(Class, Option<u32>), Vec<LevelMesh>> = BTreeMap::new();
     for (c, p) in mesh.primitives {
         let c = match c {
             Class::Glass | Class::Water | Class::Foliage => c,
             _ => Class::Metal,
         };
-        by.entry(c).or_default().push(LevelMesh {
+        by.entry((c, p.look)).or_default().push(LevelMesh {
             primitives: vec![(c, p)],
             bounds,
             objects: Vec::new(),
@@ -1462,7 +1611,9 @@ pub fn place_mesh(mesh: &LevelMesh, at: &Placement) -> Vec<(Class, Primitive)> {
                 Primitive {
                     positions: p.positions.iter().map(|&v| at.transform(v)).collect(),
                     normals: p.normals.iter().map(|&n| at.rotate(n)).collect(),
+                    uvs: p.uvs.clone(),
                     indices: p.indices.clone(),
+                    look: p.look,
                 },
             )
         })
@@ -1516,8 +1667,12 @@ pub fn object_sections(model: &tags::model::RenderModelGeometry) -> Vec<usize> {
 }
 
 /// The drawn triangles of a render model's [`object_sections`], in model
-/// space.
-pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Surface]) -> Vec<Tri> {
+/// space; `looks[m]` is material `m`'s textured look, if any.
+pub fn model_triangles(
+    model: &tags::model::RenderModelGeometry,
+    surfaces: &[Surface],
+    looks: &[Option<u32>],
+) -> Vec<Tri> {
     let mut out = Vec::new();
     for si in object_sections(model) {
         let Some(s) = model.sections.get(si) else {
@@ -1533,6 +1688,7 @@ pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Sur
             if !surface.is_level() {
                 continue;
             }
+            let look = looks.get(usize::from(part.material)).copied().flatten();
             for t in s.geometry.part_triangles(part) {
                 let i = t.map(usize::from);
                 let Some(p) = i
@@ -1546,6 +1702,8 @@ pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Sur
                     p: [p[0], p[1], p[2]],
                     n: i.map(|i| v.normals.get(i).copied().unwrap_or([0.0; 3])),
                     surface,
+                    uv: i.map(|i| v.texcoords.get(i).copied().unwrap_or([0.0; 2])),
+                    look,
                 });
             }
         }
@@ -1561,20 +1719,39 @@ fn machine_model(
     ctx: &tags::object::Context,
     files: &mut ResourceFiles,
     mach: TagId,
+    looks: &mut Looks,
 ) -> Result<Option<MachineModel>> {
     if ctx.decode(mach)?.group != MACH {
         return Err(anyhow!("palette entry is not a machine"));
     }
-    object_model(map, ctx, files, mach)
+    object_model(map, ctx, files, mach, Some(looks))
 }
 
-/// Any object's model, as [`machine_model`] reads a machine's.
+/// Why [`object_model`] has nothing to draw for an object that has a model
+/// (no render model, or none of its triangles drawn): invisible helpers,
+/// cinematic anchors. Machines list these as skipped; scenario objects are
+/// left out quietly.
+#[derive(Debug)]
+pub(crate) struct NothingDrawn(pub String);
+
+impl std::fmt::Display for NothingDrawn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NothingDrawn {}
+
+/// Any object's model, as [`machine_model`] reads a machine's: textured
+/// from `looks` when given.
 pub(crate) fn object_model(
     map: &mut MapReader,
     ctx: &tags::object::Context,
     files: &mut ResourceFiles,
     object: TagId,
+    looks: Option<&mut Looks>,
 ) -> Result<Option<MachineModel>> {
+    let mut looks = looks;
     let tag = ctx.decode(object)?;
     let obje = tag.layer("obje").context("no object header")?;
     let header = tags::object::ObjectHeader::from_record(obje)?;
@@ -1589,7 +1766,7 @@ pub(crate) fn object_model(
         .layer("hlmt")
         .and_then(|r| r.tag_ref("render_model"))
         .filter(|r| r.id != TagId::NULL)
-        .context("no render model")?;
+        .ok_or_else(|| anyhow::Error::new(NothingDrawn("no render model".into())))?;
     let model = tags::model::RenderModelGeometry::read(map, mode.id, &mut Raw(files))
         .with_context(|| format!("{name}: render model"))?;
     let surfaces: Vec<Surface> = model
@@ -1601,14 +1778,22 @@ pub(crate) fn object_model(
             machine_surface(name.as_deref(), template.as_deref())
         })
         .collect();
+    let material_looks: Vec<Option<u32>> = match &mut looks {
+        Some(l) => model
+            .materials
+            .iter()
+            .map(|m| l.look_of(map, files, m.shader.id))
+            .collect(),
+        None => Vec::new(),
+    };
     let stem = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string();
-    let tris = model_triangles(&model, &surfaces);
+    let tris = model_triangles(&model, &surfaces, &material_looks);
     if tris.is_empty() {
-        return Err(anyhow!(
+        return Err(anyhow::Error::new(NothingDrawn(format!(
             "{name}: no drawn triangles in {} sections ({} regions)",
             model.sections.len(),
             model.regions.len()
-        ));
+        ))));
     }
     Ok(Some(MachineModel {
         stem,
@@ -1625,6 +1810,7 @@ fn load_machines(
     files: &mut ResourceFiles,
     stem: &str,
     skipped: &mut BTreeMap<String, String>,
+    looks: &mut Looks,
 ) -> Result<(Vec<MachineModel>, Vec<PlacedMachine>)> {
     let scenario = map.scenario().context("no scenario")?.clone();
     let location = scenario.location.context("scenario has no payload")?;
@@ -1673,7 +1859,7 @@ fn load_machines(
         let model =
             loaded
                 .entry(at.palette)
-                .or_insert_with(|| match machine_model(map, &ctx, files, id) {
+                .or_insert_with(|| match machine_model(map, &ctx, files, id, looks) {
                     Ok(Some(m)) => {
                         models.push(m);
                         Ok(Some(models.len() - 1))
@@ -1731,6 +1917,12 @@ pub struct Level {
     /// model's glb (`sky.glb`).
     pub sky: Option<crate::live_sky::SkyInfo>,
     pub sky_glb: Option<Vec<u8>>,
+    /// The textured looks of the level's and its objects' surfaces.
+    pub looks: Looks,
+    /// The scenario's other objects (scenery, crates, weapons, ...): their
+    /// models (model space) and placements, for the `scenario` node.
+    pub object_models: Vec<MachineModel>,
+    pub objects: Vec<crate::live_scenario::PlacedObject>,
 }
 
 impl Level {
@@ -1786,6 +1978,9 @@ impl Level {
             bsp_names: BTreeMap::new(),
             sky: None,
             sky_glb: None,
+            looks: Looks::default(),
+            object_models: Vec::new(),
+            objects: Vec::new(),
         })
     }
 
@@ -1930,10 +2125,39 @@ impl Level {
                     .collect(),
             });
         }
+        if !self.objects.is_empty() {
+            nodes.push(GlbNode {
+                name: "scenario".into(),
+                mesh: None,
+                layers: &[],
+                extras: None,
+                matrix: None,
+                children: self
+                    .objects
+                    .iter()
+                    .map(|o| {
+                        let model = &self.object_models[o.model];
+                        GlbNode {
+                            matrix: Some(o.at.gltf_matrix()),
+                            extras: Some(o.extras(&model.stem)),
+                            ..GlbNode::mesh(model.stem.clone(), &model.mesh)
+                        }
+                        .named(o.name())
+                    })
+                    .collect(),
+            });
+        }
         nodes
     }
 
+    #[cfg(test)]
     pub fn glb(&self) -> Vec<u8> {
+        self.glb_and_picture_bytes().0
+    }
+
+    /// [`Level::glb`], and how many of its bytes are surface pictures.
+    pub fn glb_and_picture_bytes(&self) -> (Vec<u8>, usize) {
+        let pictures = Pictures::new(&self.looks, crate::live_looks::TEXTURE_BUDGET);
         let mut more = serde_json::Map::new();
         if !self.features.is_empty() {
             more.insert(
@@ -1944,13 +2168,15 @@ impl Level {
         if let Some(sky) = &self.sky {
             more.insert("sky".into(), serde_json::to_value(sky).expect("plain data"));
         }
-        write_nodes_with(
+        let glb = write_nodes_with(
             &self.nodes(),
             self.mesh.bounds,
             self.frame,
             more,
             &self.layer_materials,
-        )
+            &pictures,
+        );
+        (glb, pictures.bytes())
     }
 
     /// Adds a BSP's layer triangles: materials by shader (`shaders[m]` is
@@ -2006,24 +2232,30 @@ impl Level {
     }
 }
 
-/// Meshes concatenated, a primitive per class.
+/// Meshes concatenated, a primitive per class and look.
 pub fn merge<'a>(meshes: impl IntoIterator<Item = &'a LevelMesh>) -> LevelMesh {
-    let mut by: BTreeMap<Class, Primitive> = BTreeMap::new();
+    let mut by: BTreeMap<(Class, Option<u32>), Primitive> = BTreeMap::new();
     let mut bounds = Bounds::EMPTY;
     for m in meshes {
         for k in [m.bounds.min, m.bounds.max] {
             bounds.add(k);
         }
         for (c, p) in &m.primitives {
-            let out = by.entry(*c).or_default();
+            let out = by.entry((*c, p.look)).or_insert_with(|| Primitive {
+                look: p.look,
+                ..Primitive::default()
+            });
             let base = out.positions.len() as u32;
             out.positions.extend(&p.positions);
             out.normals.extend(&p.normals);
+            if p.look.is_some() {
+                out.uvs.extend(&p.uvs);
+            }
             out.indices.extend(p.indices.iter().map(|i| i + base));
         }
     }
     LevelMesh {
-        primitives: by.into_iter().collect(),
+        primitives: by.into_iter().map(|((c, _), p)| (c, p)).collect(),
         bounds,
         objects: Vec::new(),
     }
@@ -2163,6 +2395,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
     type BspLayers = (Vec<LayerTri>, Vec<(TagId, String)>, Vec<Surface>);
     let mut bsp_layers: BTreeMap<usize, BspLayers> = BTreeMap::new();
     let mut bsp_names = BTreeMap::new();
+    let mut looks = Looks::default();
     for (i, bsp_id) in scenario_bsps(&mut map)?.into_iter().enumerate() {
         if let Some(n) = map.tag(bsp_id).ok().and_then(|t| t.name.clone()) {
             bsp_names.insert(i, n.rsplit(['\\', '/']).next().unwrap_or(&n).to_string());
@@ -2176,7 +2409,19 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             stats.materials += surfaces.len();
             let bsp = StructureRender::read(&mut map, bsp_id)
                 .with_context(|| format!("reading BSP {bsp_id}"))?;
-            let (t, layers, failed) = bsp_geometry(&bsp, &mut Raw(&mut files), &surfaces);
+            // Solid surfaces' pictures (glass and water keep their colour).
+            let material_looks: Vec<Option<u32>> = material_shader_ids(&mut map, bsp_id)
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .map(|(m, id)| match surfaces.get(m) {
+                    Some(Surface::Class(Class::Glass | Class::Water)) => None,
+                    Some(s) if !s.is_level() => None,
+                    _ => looks.look_of(&mut map, &mut files, id),
+                })
+                .collect();
+            let (t, layers, failed) =
+                bsp_geometry(&bsp, &mut Raw(&mut files), &surfaces, &material_looks);
             stats.failed_sections += failed;
             stats.source_triangles += t.len();
             if !layers.is_empty() {
@@ -2211,6 +2456,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         })
         .collect();
     let mut level = Level::build(m.name(), kind, bsps)?;
+    level.looks = looks;
     level.backdrops = backdrops;
     level.bsp_names = bsp_names;
     // Layers of the BSPs that made it in, their pictures read once per bitmap.
@@ -2271,7 +2517,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             skipped.insert(format!("map/{}/features", m.name()), format!("{e:#}"));
         }
     }
-    match load_machines(&mut map, &mut files, m.name(), &mut skipped) {
+    match load_machines(&mut map, &mut files, m.name(), &mut skipped, &mut level.looks) {
         Ok((models, placed)) => {
             stats.machines = placed.len();
             stats.machine_triangles = placed
@@ -2282,6 +2528,25 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         }
         Err(e) => {
             skipped.insert(format!("map/{}/machines", m.name()), format!("{e:#}"));
+        }
+    }
+    match crate::live_scenario::load_objects(
+        &mut map,
+        &mut files,
+        m.name(),
+        level.bsp_count,
+        &mut skipped,
+        &mut level.looks,
+    ) {
+        Ok((models, placed)) => {
+            stats.objects = placed.len();
+            stats.object_models = models.len();
+            stats.object_model_triangles = models.iter().map(|m| m.mesh.triangles()).sum();
+            level.object_models = models;
+            level.objects = placed;
+        }
+        Err(e) => {
+            skipped.insert(format!("map/{}/objects", m.name()), format!("{e:#}"));
         }
     }
     level.skipped.extend(skipped);
@@ -2352,8 +2617,10 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
                     };
                     let key = format!("map/{}/geometry", m.name());
                     let done = load_level(disc, m, kind, &mut stats).and_then(|mut level| {
-                        let glb = level.glb();
+                        let (glb, pictures) = level.glb_and_picture_bytes();
                         stats.glb_bytes = glb.len();
+                        stats.texture_bytes = pictures;
+                        stats.looks = level.looks.looks.len();
                         let dir = out.join("map").join(&level.stem);
                         fs::create_dir_all(dir.join("views"))?;
                         fs::write(dir.join("map.glb"), glb)?;

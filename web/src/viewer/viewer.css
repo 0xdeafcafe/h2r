@@ -66,3 +66,4 @@
 .v3-menu-list { position: absolute; top: 20px; left: -1px; z-index: 2; display: grid; gap: 2px; min-width: 130px; padding: 5px 8px; background: rgba(10, 10, 10, .92); border: 1px solid #6c6c6c; }
 .v3-menu-list label { display: flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; }
 .v3-menu-list input { margin: 0; accent-color: #9ac6e6; }
+.v3-menu-list label.v3-menu-sub { padding-left: 14px; }
