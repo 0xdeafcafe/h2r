@@ -2,6 +2,7 @@
 // page (/stats/teams/:id) with its roster, combined numbers from games its
 // members played together, and the signed-in member's actions.
 
+import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -18,7 +19,6 @@ import { PresenceBadge } from "../components/bits";
 import { Crumbs, Derived, Panel, Strip, Title, playerHref } from "./Layout";
 import { PeopleFinder, Pills, gameTitle } from "./Side";
 import { TeamEmblem } from "./teamBits";
-import { titleCase } from "../lib/format";
 import { num, ratio, usDate } from "./fmt";
 import "../styles/social.css";
 
@@ -284,7 +284,7 @@ function TeamBody(props: { team: Team }) {
                   <For each={rec().games.slice(0, 15)} fallback={<tr><td colspan="6" class="s-dim">No games with two members on the same side yet.</td></tr>}>
                     {(g) => (
                       <tr>
-                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {titleCase(g.game.map)}</A></td>
+                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {mapTitle(g.game.map)}</A></td>
                         <td class="hide-s">{g.game.status === "live" ? "playing now" : usDate(g.game.started_at)}</td>
                         <td>{g.slots.map((i) => g.game.players[i]?.name).filter(Boolean).join(", ")}</td>
                         <td class="num">{g.kills}</td>

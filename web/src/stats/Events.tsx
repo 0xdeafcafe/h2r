@@ -1,3 +1,4 @@
+import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { live } from "../state/live";
 import type { WireEvent } from "../api/types";
@@ -140,7 +141,7 @@ function summary(e: WireEvent): string {
     case "SignedOut": return "signed out";
     case "PresenceExpired": return "went quiet";
     case "PresenceChanged": return `${d.state ?? ""}${d.game_id ? " in a game" : ""}`;
-    case "GameStarted": return `${d.map} · ${d.variant ?? d.mode} · ${(d.players as unknown[])?.length ?? 0} players`;
+    case "GameStarted": return `${mapTitle(d.map as string)} · ${d.variant ?? d.mode} · ${(d.players as unknown[])?.length ?? 0} players`;
     case "PlayerKilled": return `${d.killer ?? "world"} → ${d.victim} (${d.kind}${d.weapon ? ", " + d.weapon : ""})`;
     case "ScoreChanged": return `tick ${d.tick}`;
     case "GameFrame": return `tick ${d.tick}, ${(d.players as unknown[])?.length ?? 0} players`;

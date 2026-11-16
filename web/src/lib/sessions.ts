@@ -83,10 +83,15 @@ export function kind(s: Pick<Session, "flags">): string {
   return s.flags === "ranked" ? "ranked match" : s.flags === "hopper" ? "matchmaking" : "custom game";
 }
 
-/** The map's name for display: the file name without path or `.map`. */
-export function mapName(s: Pick<Session, "map">): string {
-  const m = s.map?.split(/[\\/]/).pop()?.replace(/\.map$/i, "").replace(/[_-]+/g, " ").trim();
-  return m || "unknown map";
+/** The map's name for display. `title` turns a file stem into a name (the
+ *  app passes the disc catalog's lookup); by default the stem title-cased. */
+export function mapName(s: Pick<Session, "map">, title: (stem: string) => string = stemTitle): string {
+  const m = s.map?.split(/[\\/]/).pop()?.replace(/\.map$/i, "").trim();
+  return m ? title(m) : "unknown map";
+}
+
+function stemTitle(stem: string): string {
+  return stem.replace(/[_-]+/g, " ").trim();
 }
 
 /** Sessions in list order: ones with room first, fuller ones before emptier
@@ -100,9 +105,9 @@ export function sortSessions(list: readonly Session[]): Session[] {
 }
 
 /** A list row: the host, then the map and players against the most. */
-export function sessionRow(s: Session): { key: string; label: string; meta: string } {
+export function sessionRow(s: Session, title?: (stem: string) => string): { key: string; label: string; meta: string } {
   const n = seats(s);
-  return { key: s.session_id, label: s.host_gamertag, meta: `${mapName(s)} ${n.filled}/${n.max}` };
+  return { key: s.session_id, label: s.host_gamertag, meta: `${mapName(s, title)} ${n.filled}/${n.max}` };
 }
 
 /** "3 open", "full", or "closed" for a session no longer open. */

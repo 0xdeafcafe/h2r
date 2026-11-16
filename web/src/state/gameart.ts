@@ -5,9 +5,32 @@
 import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
 import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, normaliseMask, loadGameArt, type EmblemSpec, type GameArt, type GameArtRef } from "../lib/gameart";
 import { live } from "./live";
+import { loadCatalog } from "../admin/catalog";
+import { titleCase } from "../lib/format";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
 export const gameArt = art;
+
+// Map names from the owner's disc (catalog.json, by map file stem), so labels
+// read "Ivory Tower" rather than the file's "cyclotron".
+const [mapNames, setMapNames] = createSignal<ReadonlyMap<string, string>>(new Map());
+
+/** A map file stem (or path) as the stem catalog keys use. */
+export function mapStem(map: string | null | undefined): string {
+  return (map ?? "").split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim().toLowerCase();
+}
+
+/** A map's display name: the disc's own name when the server has the
+ *  catalog, else the file stem title-cased. Reactive. */
+export function mapTitle(map: string | null | undefined): string {
+  const stem = mapStem(map);
+  return mapNames().get(stem) ?? titleCase(stem);
+}
+
+/** Test hook: set the stem-to-name table directly. */
+export function setMapTitles(names: Record<string, string>) {
+  setMapNames(new Map(Object.entries(names).map(([k, v]) => [mapStem(k), v])));
+}
 
 // A server without game art answers 404 and the browser logs each one, so a
 // miss is remembered for a minute rather than asked again on every reload.
@@ -26,11 +49,19 @@ export function startGameArt() {
     createEffect(() => {
       const base = live.server().base;
       setArt(null);
+      setMapNames(new Map());
       if (missed(base)) return;
       void loadGameArt(base).then((a) => {
         if (live.server().base !== base) return;
         if (!a) { try { sessionStorage.setItem(missKey(base), String(Date.now())); } catch { /* private mode */ } }
         setArt(a);
+        if (!a) return;
+        void loadCatalog(base).then((c) => {
+          if (live.server().base !== base || !c) return;
+          const m = new Map<string, string>();
+          for (const e of c.maps) if (e.key && e.name) m.set(mapStem(e.key), e.name);
+          setMapNames(m);
+        });
       });
     });
   });

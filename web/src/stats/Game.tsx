@@ -1,3 +1,4 @@
+import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js";
 import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -12,7 +13,7 @@ import { MapThumb, gameTitle, hostName, playlist } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
 import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
-import { clock, titleCase } from "../lib/format";
+import { clock } from "../lib/format";
 import { now } from "../lib/now";
 import { TICKS_PER_SECOND } from "../state/frames";
 import TacticalMap from "../viewer/TacticalMap";
@@ -70,7 +71,7 @@ function Header(props: { game: GameState }) {
       <div class="s-overview">
         <MapThumb game={g()} top />
         <ul class="s-summary">
-          <li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {titleCase(g().map)}</small></span></li>
+          <li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {mapTitle(g().map)}</small></span></li>
           <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>
           <li class="styled">Playlist - {playlist(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>
           <li title={g().ended_at ? `Ended ${agoWords(g().ended_at, now())}` : undefined}>{usDateTime(g().started_at)}</li>
@@ -123,8 +124,8 @@ function GameView(props: { game: GameState }) {
       <Header game={props.game} />
       <Title right={<span class="s-viewer-status"><i />Live coverage</span>}>Game Viewer</Title>
       <div class="s-viewer">
-        <Block title="Tactical Map" right={`${titleCase(props.game.map)}`} class="s-sec">
-          <TacticalMap game={props.game} frame={liveFrameSource(props.game.game_id, roster)} roster={roster} highlight={hover} label={`Live map of ${props.game.map}`} />
+        <Block title="Tactical Map" right={`${mapTitle(props.game.map)}`} class="s-sec">
+          <TacticalMap game={props.game} frame={liveFrameSource(props.game.game_id, roster)} roster={roster} highlight={hover} label={`Live map of ${mapTitle(props.game.map)}`} />
           <Legend game={props.game} />
           <div class="s-live-clock"><span>Match in progress</span><b>{hms(elapsedSeconds(props.game, now()))}</b></div>
         </Block>
@@ -169,13 +170,13 @@ function Replay(props: { game: GameState }) {
       <Header game={props.game} />
       <Title right={<span class="s-viewer-status">Recorded replay</span>}>Game Viewer</Title>
       <div class="s-viewer">
-        <Block title="Tactical Map" right={titleCase(props.game.map)} class="s-sec">
+        <Block title="Tactical Map" right={mapTitle(props.game.map)} class="s-sec">
           <Show when={!error()} fallback={<p class="s-pad s-bad">Couldn't load the replay: {error()}</p>}>
             <Show when={timeline()} fallback={<div class="s-loading">Loading recorded frames…</div>}>
               {(tl) => (
                 <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
                   <TacticalMap
-                    game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${props.game.map}`}
+                    game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${mapTitle(props.game.map)}`}
                     onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds."
                     soughtAt={session.soughtAt}
                     transport={() => <Transport session={session} killColour={killColour} />}
