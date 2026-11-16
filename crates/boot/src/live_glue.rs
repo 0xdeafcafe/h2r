@@ -36,3 +36,61 @@ pub fn install_with_network(
     k.set_console_config(console);
     Ok(Some(hle))
 }
+
+/// The HLE visibility for a `live.visibility` value.
+pub fn visibility(v: i64) -> live_hle::Visibility {
+    use crate::setting_defs::{VISIBILITY_FRIENDS, VISIBILITY_INVITE};
+    match v {
+        VISIBILITY_FRIENDS => live_hle::Visibility::Friends,
+        VISIBILITY_INVITE => live_hle::Visibility::Invite,
+        _ => live_hle::Visibility::Public,
+    }
+}
+
+/// Keep the HLE's hosted-session visibility on the `live.visibility`
+/// setting: now, and on every change (a row press, `h2 settings set`), which
+/// also updates an open lobby (docs/live-custom-games.md).
+pub fn bind_visibility(hle: &Arc<Hle>, store: &settings::Store) {
+    let key = crate::setting_defs::LIVE_VISIBILITY.key;
+    if store.def(key).is_none() {
+        return;
+    }
+    let setting = store.handle::<i64>(key);
+    hle.set_session_visibility(visibility(setting.get()));
+    let weak = Arc::downgrade(hle);
+    store.on_change(key, move |v| {
+        if let (Some(hle), Some(v)) = (weak.upgrade(), v.as_int()) {
+            hle.set_session_visibility(visibility(v));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::setting_defs::{ALL, LIVE_VISIBILITY};
+    use settings::{Store, Value};
+
+    #[test]
+    fn the_visibility_setting_reaches_the_hle_now_and_on_every_change() {
+        let config = LiveConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let hle = Hle::with_address(config, "127.0.0.1:3074".parse().unwrap()).unwrap();
+        let env = |k: &str| (k == "H2_LIVE_VISIBILITY").then(|| "friends".to_string());
+        let store = Store::load(ALL, None, &env, &[]).0;
+        bind_visibility(&hle, &store);
+        assert_eq!(hle.session_visibility(), live_hle::Visibility::Friends);
+        let store = Store::defaults(ALL);
+        bind_visibility(&hle, &store);
+        assert_eq!(hle.session_visibility(), live_hle::Visibility::Public);
+        store.step(LIVE_VISIBILITY.key).unwrap();
+        assert_eq!(hle.session_visibility(), live_hle::Visibility::Friends);
+        store.step(LIVE_VISIBILITY.key).unwrap();
+        assert_eq!(hle.session_visibility(), live_hle::Visibility::Invite);
+        assert_eq!(store.get(LIVE_VISIBILITY.key), Some(Value::Int(2)));
+        store.step(LIVE_VISIBILITY.key).unwrap();
+        assert_eq!(hle.session_visibility(), live_hle::Visibility::Public);
+    }
+}
