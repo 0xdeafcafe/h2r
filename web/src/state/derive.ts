@@ -7,6 +7,7 @@
 import type { GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
 import { gamesFor, isWinner, standings, teamStandings } from "./reducer";
 import { gameSeconds } from "./length";
+import { mapGroupKey } from "../lib/maps";
 import type { Xuid } from "../api/types";
 
 /** Ticks per second, and the window that chains kills into a multi-kill. */
@@ -386,7 +387,10 @@ export function campaignHistory(s: LiveState, xuid: Xuid, now: number): Campaign
 }
 
 export interface LevelRow {
+  /** The level's base map; with `map_id` set, a modded copy of it. */
   map: string;
+  /** The map package played, kept apart from the retail level (mapGroupKey). */
+  map_id: string | null;
   plays: number;
   completions: number;
   deaths: number;
@@ -437,7 +441,8 @@ export function campaignRecord(s: LiveState, xuid: Xuid, now: number): CampaignR
     rec.seconds += r.seconds;
     if (!rec.firstPlayed || g.started_at < rec.firstPlayed) rec.firstPlayed = g.started_at;
     if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
-    const l = levels.get(g.map) ?? { map: g.map, plays: 0, completions: 0, deaths: 0, seconds: 0, fastest: null, lastPlayed: g.started_at };
+    const key = mapGroupKey(g);
+    const l = levels.get(key) ?? { map: g.map, map_id: g.map_id ?? null, plays: 0, completions: 0, deaths: 0, seconds: 0, fastest: null, lastPlayed: g.started_at };
     l.plays++;
     l.deaths += r.deaths;
     l.seconds += r.seconds;
@@ -446,7 +451,7 @@ export function campaignRecord(s: LiveState, xuid: Xuid, now: number): CampaignR
       l.fastest = l.fastest === null ? r.seconds : Math.min(l.fastest, r.seconds);
     }
     if (g.started_at > l.lastPlayed) l.lastPlayed = g.started_at;
-    levels.set(g.map, l);
+    levels.set(key, l);
   }
   rec.levels = [...levels.values()].sort((a, b) => b.lastPlayed.localeCompare(a.lastPlayed));
   return rec;

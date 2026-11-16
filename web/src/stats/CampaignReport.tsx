@@ -7,7 +7,7 @@ import { A } from "@solidjs/router";
 import type { GameState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, deathsOf } from "../state/derive";
 import { difficultyName } from "../state/gametype";
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle } from "../state/maps";
 import Emblem from "../components/Emblem";
 import { gameSeconds } from "../lib/game";
 import { now } from "../lib/now";
@@ -63,7 +63,7 @@ export default function CampaignReport(props: { game: GameState }) {
       </Title>
       <div class="s-carnage">
         <p class="s-report-note">
-          {gameTitle(props.game)} on {mapTitle(props.game.map)}
+          {gameTitle(props.game)} on {gameMapTitle(props.game)}
           <span>{[difficultyName(props.game.difficulty), OUTCOME_WORDS[campaignOutcome(props.game)], hms(gameSeconds(props.game, now()))].filter(Boolean).join(" · ")}</span>
         </p>
         <table class="s-stats s-campaign-table" aria-label="Players">
