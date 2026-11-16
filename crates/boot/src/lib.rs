@@ -913,7 +913,7 @@ pub fn run_hosted_with_live(
         }
         // Only a guest thread running refills the audio-only budget, not a
         // slice that just delivered vblank.
-        if dsound_glue::guest_slices(&m) != ran_before {
+        if dsound_glue::ran_guest_thread(&m, ran_before) {
             audio_idle = 0;
         }
         if let Some(x) = &xa

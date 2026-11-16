@@ -1367,6 +1367,7 @@ dependencies = [
  "asf",
  "audio",
  "iced-x86",
+ "kernel",
  "runtime",
  "serde",
  "thiserror 2.0.21",

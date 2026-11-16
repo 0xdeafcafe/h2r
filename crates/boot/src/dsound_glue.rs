@@ -42,6 +42,10 @@ impl dsound::Events for KernelEvents {
 pub struct Audio {
     pub hle: Arc<Hle>,
     pub output: dsound::Output,
+    /// The kernel periodic source that runs stream callbacks at DPC level
+    /// every audio quantum ([`COMPLETION_RATE`]). Removing it brings back
+    /// callbacks that wait for the game's next DirectSound call.
+    pub completion_dpc: u32,
     mixer: Arc<Mutex<audio::Mixer>>,
     /// The controller-speaker sound index, while one runs.
     _pad_index: Option<crate::pad_speaker::PadIndex>,
@@ -59,6 +63,10 @@ pub struct PadSpeaker {
 const RATE: u64 = 48_000;
 /// Logical ticks (100 ns) in which one more `dsound::output::QUANTUM` falls due.
 pub const QUANTUM_TICKS: u64 = (dsound::output::QUANTUM * 10_000_000).div_ceil(RATE);
+/// One audio quantum per period: the rate of the completion DPC, whose
+/// deadlines fall on the output's grid (`Rate::ticks(n)` rounds up, so
+/// quantum `n` is due at deadline `n`).
+pub const COMPLETION_RATE: kernel::periodic::Rate = kernel::periodic::Rate { num: RATE, den: dsound::output::QUANTUM };
 /// How much logical time [`wake_idle`] may add with no thread running in
 /// between before the run is a deadlock after all: a looping buffer plays
 /// for ever, and must not hide a real one.
@@ -78,6 +86,14 @@ impl Audio {
 /// the budget while every thread stays blocked.
 pub fn guest_slices(m: &kernel::Machine) -> u64 {
     m.schedule().len() as u64 + m.dropped_schedule()
+}
+
+/// After `m.run(1)`: whether it ran a guest thread's slice, given
+/// [`guest_slices`] from before it. A DPC (vblank, or the completion DPC
+/// running a stream callback) is not one: a stream that refills itself from
+/// its callback must not keep a deadlocked game looking alive.
+pub fn ran_guest_thread(m: &kernel::Machine, before: u64) -> bool {
+    guest_slices(m) != before && m.schedule().last() != Some(&kernel::threads::DPC_THREAD_ID)
 }
 
 /// The scheduler found no runnable thread and no timed wake. If audio is
@@ -155,15 +171,34 @@ pub fn install_with_sinks(
     open: SinkOpener,
     pad: Option<PadSpeaker>,
 ) -> anyhow::Result<Audio> {
+    install_parts(rt, k, Some(xbe), open, pad)
+}
+
+/// [`install_with_sink`] without the native WMA codec (it needs the retail
+/// image's tables): the game's own codec would run. For tests of the audio
+/// path that have no image.
+pub fn install_without_wma(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, open: SinkOpener) -> anyhow::Result<Audio> {
+    install_parts(rt, k, None, open, None)
+}
+
+fn install_parts(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    xbe: Option<&[u8]>,
+    open: SinkOpener,
+    pad: Option<PadSpeaker>,
+) -> anyhow::Result<Audio> {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE as u32)));
     let hle = Hle::new(DirectSound::new(Arc::clone(&mixer), Layout::default()), Box::new(KernelEvents(Arc::clone(k))));
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(dsound::register(d, &hle)));
     r.unwrap().map_err(|e| anyhow::anyhow!("dsound::register: {e:?}"))?;
-    let wma = dsound::xwma::WmaHle::from_xbe(xbe).map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
-    let mut r = None;
-    rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
-    r.unwrap().map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
+    if let Some(xbe) = xbe {
+        let wma = dsound::xwma::WmaHle::from_xbe(xbe).map_err(|e| anyhow::anyhow!("dsound::xwma: {e:?}"))?;
+        let mut r = None;
+        rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
+        r.unwrap().map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
+    }
     let (config, side, setting) = match pad {
         Some(p) => (Some(p.config), Some(p.side), Some(p.setting)),
         None => (None, None, None),
@@ -172,6 +207,7 @@ pub fn install_with_sinks(
         let hle = Arc::clone(&hle);
         s.attach_router_sink(move |router| hle.direct_sound().set_pad_router(router));
     }
+    let origin = k.clock().counter();
     let output = hle
         .spawn_output(
             Arc::clone(rt),
@@ -179,7 +215,7 @@ pub fn install_with_sinks(
             dsound::OutputConfig {
                 period: std::time::Duration::from_millis(5),
                 pacing: dsound::Pacing::Logical {
-                    origin: k.clock().counter(),
+                    origin,
                     max_queued: std::time::Duration::from_millis(250),
                     playout: Some(playout_from_env()),
                 },
@@ -188,8 +224,22 @@ pub fn install_with_sinks(
             },
         )
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
+    // Stream callbacks at DPC level, on the output's grid: the completion
+    // DPC's deadlines also stop the idle advance at every quantum, so a
+    // callback runs within two quanta of its packet (docs/dsound.md, "The
+    // completion DPC").
+    anyhow::ensure!(k.clock().counter() == origin, "logical time moved while the audio output started");
+    let completion_dpc = k
+        .add_periodic(kernel::periodic::Source {
+            name: "dsound completions",
+            rate: COMPLETION_RATE,
+            // One drain clears a debt: a period with nothing queued calls nothing.
+            max_catch_up: 64,
+            handler: Box::new(hle.completion_dpc()),
+        })
+        .map_err(|e| anyhow::anyhow!("dsound completion DPC: {e:?}"))?;
     let _pad_index = config.zip(setting).and_then(|(c, s)| crate::pad_speaker::install(k, &c, s));
-    Ok(Audio { hle, output, mixer, _pad_index })
+    Ok(Audio { hle, output, completion_dpc, mixer, _pad_index })
 }
 
 /// The jitter buffer a device plays through: `dsound::Playout::default()`,
@@ -347,6 +397,18 @@ mod tests {
             line,
             "audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev underruns +2 (512 frames) | dropped +0 | late wakes +1 (max gap 21.5ms) | stream starves +2 (900 frames) unrouted +0 frames | callbacks waiting max 3 | rendered 100% of real time"
         );
+    }
+
+    #[test]
+    fn completion_dpc_deadlines_fall_on_the_output_grid() {
+        // kernel::periodic's deadline n: ceil(n * 1e7 * den / num) ticks
+        // after the origin; the grid's due frames: floor(ticks * rate / 1e7).
+        let r = super::COMPLETION_RATE;
+        let q = dsound::output::QUANTUM;
+        for n in [1u64, 2, 3, 187, 188, 1_000_003] {
+            let ticks = (n * 10_000_000 * r.den).div_ceil(r.num);
+            assert_eq!(ticks * super::RATE / 10_000_000 / q, n, "deadline {n} makes exactly quantum {n} due");
+        }
     }
 
     #[test]
