@@ -36,9 +36,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::fov_row;
+use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::speaker_row;
+use crate::ui::{Chosen, List, Model, RowKind};
 use crate::video_screen;
-use crate::speaker_setting::SpeakerSetting;
 
 use input::layouts::{Action, Button, Layout};
 use runtime::dispatch::Dispatch;
@@ -160,7 +161,6 @@ pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, layouts: bool, speaker: boo
         n = list_count(name, n);
     }
     if speaker {
-        n = speaker_row::list_count(name, n);
         n = speaker_row::small_list_count(name, n);
     }
     n
@@ -259,7 +259,6 @@ pub fn strings() -> Vec<(u32, &'static str)> {
 pub fn served_strings(layouts: bool, speaker: bool) -> Vec<(u32, &'static str)> {
     let mut v = if layouts { strings() } else { Vec::new() };
     if speaker {
-        v.push((speaker_row::LABEL_ID, speaker_row::LABEL_TEXT));
         v.push((speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT));
         v.push((speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT));
     }
@@ -407,8 +406,8 @@ const VIDEO_LIST_NAME_ID: u32 = ID_BASE + 0xff;
 /// The text hook's call (string id at `[esp+4]`) while a Video screen's
 /// header is built: our title for the Controls tag's header id, `None` for
 /// any other text.
-pub fn video_header_id<M: Gm>(m: &M, esp: u32) -> Option<u32> {
-    (m.u32(esp.wrapping_add(4))? == video_screen::CONTROLS_HEADER).then_some(video_screen::TITLE_ID)
+pub fn video_header_id<M: Gm>(m: &M, esp: u32, title: u32) -> Option<u32> {
+    (m.u32(esp.wrapping_add(4))? == video_screen::CONTROLS_HEADER).then_some(title)
 }
 
 /// In place of the Controls row-chosen call (`ret 8`) for the Video row:
@@ -473,36 +472,30 @@ fn announce(seen: &AtomicBool, name: &str) {
 }
 
 /// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
-/// the Controller Speaker row when `speaker` is given and
-/// `H2_NO_SPEAKER_ROW` is not set, and the Video row with its screen
-/// (`crate::video_screen`) when `video` has a setting and
-/// `H2_NO_VIDEO_SCREEN` is not set. `H2_NO_FOV_ROW` takes the Field of View
-/// row and its camera hook out. A missing original (an image with other
-/// entries) skips that hook and says so.
-pub fn install(
-    rt: &runtime::Runtime,
-    speaker: Option<Arc<SpeakerSetting>>,
-    video: video_screen::Settings,
-) -> anyhow::Result<()> {
+/// and the rows of `model` (`crate::video_screen::model`): the Controller
+/// Speaker row and the Video row on Controls, the Video screen they open,
+/// and the camera hook when the Video screen has the Field of View row.
+/// Every row's count, text and press come from the model. A missing
+/// original (an image with other entries) skips that hook and says so.
+pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Result<()> {
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
-    let speaker = speaker.filter(|_| std::env::var_os("H2_NO_SPEAKER_ROW").is_none());
-    let mut video = video;
-    if std::env::var_os("H2_NO_FOV_ROW").is_some() {
-        video.fov = None;
-    }
-    if std::env::var_os("H2_NO_VIDEO_SCREEN").is_some() {
-        video = video_screen::Settings::default();
-    }
-    let video_rows = video.rows();
-    let with_video = !video_rows.is_empty();
-    if !layouts && speaker.is_none() && !with_video {
+    let has = |list, kind| model.as_ref().is_some_and(|m| m.index_of(list, &kind).is_some());
+    let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
+    let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
+    let video_index = model.as_ref().and_then(|m| m.index_of(List::Controls, &RowKind::Open(video_screen::SCREEN)));
+    let with_video = video_index.is_some();
+    let video_index = video_index.unwrap_or(-1);
+    if !layouts && !with_speaker && !with_video {
         return Ok(());
     }
-    let with_speaker = speaker.is_some();
-    let fov = video.fov.clone();
-    let with_fov = fov.is_some();
-    let video_index = video_screen::controls_row(with_speaker);
-    let extra_rows = speaker_row::extra_rows(with_speaker, with_video);
+    let model = model.unwrap_or_else(|| {
+        let store = Arc::new(settings::Store::defaults(&[]));
+        Arc::new(Model::new(store, Vec::new(), Vec::new(), 0..0).expect("an empty model"))
+    });
+    let store = Arc::clone(model.store());
+    let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
+    let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
+    let extra_rows = model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
@@ -511,10 +504,7 @@ pub fn install(
             mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
         }
         let mut served = served_strings(layouts, with_speaker);
-        let fov_strings = if with_fov { fov_row::strings() } else { Vec::new() };
-        served.extend(fov_strings.iter().map(|(i, t)| (*i, t.as_str())));
-        let video_strings = if with_video { video_screen::strings() } else { Vec::new() };
-        served.extend(video_strings.iter().map(|(i, t)| (*i, t.as_str())));
+        served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
         if with_video {
             served.push((VIDEO_LIST_NAME_ID, video_screen::LIST_NAME_TEXT));
         }
@@ -577,7 +567,8 @@ pub fn install(
             let seen = AtomicBool::new(false);
             let grew_layouts = AtomicBool::new(false);
             let grew_controls = AtomicBool::new(false);
-            let rows = video_rows.len();
+            let rows = model.rows(video_screen::LIST).len();
+            let model = Arc::clone(&model);
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 announce(&seen, "layouts: list constructor");
                 let (n, name) = {
@@ -596,7 +587,7 @@ pub fn install(
                         return Ok(o.invoke(cpu, ctx, LIST_DATA_NEW));
                     }
                 }
-                let n = video_screen::list_count(name, cpu.eax, n, with_video);
+                let n = video_screen::list_count(&model, name, n);
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -765,12 +756,13 @@ pub fn install(
         // game gives a layout byte it does not know the empty id 0.
         if let Some(o) = originals.remove(&TEXT_SET) {
             let seen = AtomicBool::new(false);
+            let title = model.title_id(video_screen::SCREEN).unwrap_or(0);
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
                 announce(&seen, "layouts: text set");
                 // The Video screen's header: the Controls tag's title, ours.
                 if VIDEO_HEADER.load(Ordering::Relaxed) {
                     let mut mem = ctx.runtime().memory();
-                    if let Some(id) = video_header_id(&*mem, cpu.esp) {
+                    if let Some(id) = video_header_id(&*mem, cpu.esp, title) {
                         mem.set_u32(cpu.esp + 4, id)?;
                     }
                 }
@@ -804,45 +796,35 @@ pub fn install(
         // else the original.
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
-            let speaker = speaker.clone();
-            let video = video.clone();
-            let rows = video_rows.clone();
+            let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
             let video_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
-                if with_video {
-                    let (is_video, row) = {
-                        let mem = ctx.runtime().memory();
-                        (video_screen::is_video_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp, &rows))
-                    };
-                    if is_video {
-                        // Settings' locks are never taken with guest memory held.
-                        let texts = row.and_then(|r| video.texts(r));
-                        let rt = Arc::clone(ctx.runtime());
-                        let mut mem = rt.memory();
-                        let item = mem.u32(cpu.esp + 4)?;
-                        announce(&video_drawn, "video screen: row text");
-                        return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
-                    }
+                let (is_video, row) = {
+                    let mem = ctx.runtime().memory();
+                    (with_video && video_screen::is_video_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp))
+                };
+                // The model reads the settings store: never with guest
+                // memory held.
+                let list = if is_video { video_screen::LIST } else { List::Controls };
+                let texts = row.and_then(|r| model.row(list, r)).map(|r| model.texts(r));
+                if is_video {
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    if let Some(texts) = video_screen::controls_row_texts(&*mem, cpu.esp, video_index) {
-                        let item = mem.u32(cpu.esp + 4)?;
-                        return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
-                    }
+                    let item = mem.u32(cpu.esp + 4)?;
+                    announce(&video_drawn, "video screen: row text");
+                    return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
                 }
-                if let Some(s) = &speaker {
-                    // The setting's lock is never taken with guest memory held.
-                    let on = s.enabled();
+                if let Some(texts) = texts {
+                    if row != Some(video_index) {
+                        announce(&drawn, "speaker row: row text");
+                    }
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    if let Some(texts) = speaker_row::row_texts(&*mem, cpu.esp, on) {
-                        announce(&drawn, "speaker row: row text");
-                        let item = mem.u32(cpu.esp + 4)?;
-                        return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
-                    }
+                    let item = mem.u32(cpu.esp + 4)?;
+                    return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
                 }
                 if !layouts {
                     return Ok(o.invoke(cpu, ctx, CONTROLS_ROW_TEXT));
@@ -859,9 +841,7 @@ pub fn install(
         // and the Video row opens the Video screen. The original would open
         // the vibration dialog for any of them.
         if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
-            let speaker = speaker.clone();
-            let video = video.clone();
-            let rows = video_rows.clone();
+            let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: row chosen");
@@ -876,24 +856,23 @@ pub fn install(
                 // Guest memory is not held while a setting changes: the
                 // speaker toggle takes DirectSound's lock, which the audio
                 // output takes with guest memory.
-                if is_video {
-                    if let Some(msg) = video_screen::chosen(row, &rows).and_then(|r| video.press(r)) {
+                let list = if is_video { video_screen::LIST } else { List::Controls };
+                let chosen = row.and_then(|r| model.row(list, r)).map_or(Chosen::Nothing, |r| model.press(r));
+                match chosen {
+                    Chosen::Stepped(msg) => {
                         eprintln!("{msg}");
-                    }
-                    return ctx.runtime().memory().ret(cpu, 8);
-                }
-                if let Some(s) = &speaker
-                    && speaker_row::chosen(row, s)
-                {
-                    eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
-                    return ctx.runtime().memory().ret(cpu, 8);
-                }
-                if with_video && row == Some(video_index) {
-                    let Some(mask) = mask else {
-                        eprintln!("video screen: no local player for the press; not opened");
                         return ctx.runtime().memory().ret(cpu, 8);
-                    };
-                    return open_video(cpu, ctx, mask);
+                    }
+                    Chosen::Open(_) => {
+                        let Some(mask) = mask else {
+                            eprintln!("video screen: no local player for the press; not opened");
+                            return ctx.runtime().memory().ret(cpu, 8);
+                        };
+                        return open_video(cpu, ctx, mask);
+                    }
+                    // Every row of a Video list is ours.
+                    Chosen::Nothing if is_video => return ctx.runtime().memory().ret(cpu, 8),
+                    Chosen::Nothing => {}
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
             });
@@ -982,10 +961,10 @@ pub fn install(
                 })
             });
         }
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), speaker.clone()) {
+        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), speaker_on.clone()) {
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::SMALL_ROW_TEXT, "speaker:small-row-text", move |cpu, ctx, _| {
-                let on = s.enabled();
+                let on = s.get();
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 if let Some(text) = speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on) {
@@ -997,14 +976,19 @@ pub fn install(
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_TEXT))
             });
         }
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), speaker.clone()) {
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), with_speaker) {
+            let store = Arc::clone(&store);
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::SMALL_ROW_CHOSEN, "speaker:small-row-chosen", move |cpu, ctx, _| {
                 let ours = speaker_row::small_is_ours(&*ctx.runtime().memory(), cpu.ecx, cpu.esp);
                 if ours {
                     announce(&seen, "speaker row: small row chosen");
-                    s.toggle();
-                    eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
+                    // Through the store: its change callback applies the
+                    // speaker (guest memory is not held here).
+                    match store.step(PAD_SPEAKER.key) {
+                        Ok(o) => eprintln!("{}", o.describe(&PAD_SPEAKER)),
+                        Err(e) => eprintln!("pad speaker: {e}"),
+                    }
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
@@ -1017,7 +1001,8 @@ pub fn install(
             d.register_override(fov_row::PLAYER_FOV, "fov:camera", move |cpu, ctx, _| {
                 announce(&seen, "fov: camera");
                 let user = cpu.eax;
-                let target = s.target();
+                // One atomic load: safe with guest memory held.
+                let target = fov_row::target(s.get());
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
                     let lo: [u8; 4] = cpu.xmm[0][..4].try_into().unwrap_or_default();
                     let result = f32::from_bits(u32::from_le_bytes(lo));
@@ -1381,7 +1366,6 @@ mod tests {
         assert_eq!(
             served_strings(false, true),
             [
-                (speaker_row::LABEL_ID, speaker_row::LABEL_TEXT),
                 (speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT),
                 (speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT),
             ]
@@ -1389,7 +1373,7 @@ mod tests {
         let mut ids: Vec<u32> = served_strings(true, true).iter().map(|(i, _)| *i).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 9);
+        assert_eq!(ids.len(), 8);
     }
 
     /// A datum array constructor call: name at [esp+4], element size 4 at
@@ -1408,10 +1392,10 @@ mod tests {
         let f = list_call(LIST_NAME);
         assert_eq!(grown_count(&f, 0x1000, 4, true, true), 7);
         assert_eq!(f.u32(0x1008), Some(4));
-        // The Controls list: count 6, one more for the speaker row.
+        // The Controls list: count 6; the model adds its rows after
+        // (`video_screen::list_count`).
         let f = list_call(speaker_row::LIST_NAME);
-        assert_eq!(grown_count(&f, 0x1000, 6, true, true), 7);
-        assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
+        assert_eq!(grown_count(&f, 0x1000, 6, true, true), 6);
         // The smaller Controls screen's list: count 6, one more too.
         let f = list_call(speaker_row::SMALL_LIST_NAME);
         assert_eq!(grown_count(&f, 0x1000, 6, false, true), 7);
@@ -1540,47 +1524,42 @@ mod tests {
 
     #[test]
     fn choosing_the_rows_saves_settings_toml_under_the_data_root() {
-        use crate::fov_setting::{self, FovSetting};
-        use crate::speaker_setting;
-        use crate::video_setting::{self, Kind, LaunchSetting};
+        use crate::setting_defs::{ALL, FPS, RENDER_SCALE};
+        use crate::speaker_setting::SpeakerSetting;
+        use settings::{Store, Value};
         // `h2 play`'s data root (`$TMPDIR/h2boot-data` by default) is where
         // the settings land, as `<data>/settings.toml`.
         let data = std::env::temp_dir().join(format!("h2-rows-data-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
         std::fs::create_dir_all(&data).unwrap();
-        let path = speaker_setting::settings_path(&data);
+        let path = settings::path_in(&data);
         assert_eq!(path, data.join("settings.toml"));
         assert!(!path.exists());
+        let load = || Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
 
-        let speaker = SpeakerSetting::new(None, Some(path.clone()));
+        let store = load();
+        let speaker = SpeakerSetting::new(Arc::clone(&store));
+        let model = video_screen::model(Arc::clone(&store), video_screen::Switches::ALL).unwrap();
         // Choosing the speaker row (row 6) on Controls toggles and saves.
-        assert!(speaker_row::chosen(Some(speaker_row::ROW), &speaker));
-        assert_eq!(speaker_setting::load(&path), Ok(Some(false)));
+        let row = model.row(List::Controls, speaker_row::ROW).unwrap();
+        assert!(matches!(model.press(row), Chosen::Stepped(_)));
+        assert!(!speaker.enabled());
         // On the Video screen each row steps and saves, keeping the rest.
-        let video = video_screen::Settings {
-            fov: Some(Arc::new(FovSetting::new(None, Some(path.clone())))),
-            fps: Some(Arc::new(LaunchSetting::new(Kind::Fps, None, Some(path.clone())))),
-            scale: Some(Arc::new(LaunchSetting::new(Kind::RenderScale, None, Some(path.clone())))),
-        };
-        let rows = video.rows();
         for r in 0..3 {
-            let row = video_screen::chosen(Some(r), &rows).unwrap();
-            assert!(video.press(row).is_some());
+            let row = model.row(video_screen::LIST, r).unwrap();
+            assert!(matches!(model.press(row), Chosen::Stepped(_)));
         }
-        assert_eq!(fov_setting::load(&path), Ok(Some(75)));
-        assert_eq!(video_setting::load(&path, Kind::Fps), Ok(Some(60)));
-        assert_eq!(video_setting::load(&path, Kind::RenderScale), Ok(Some(2)));
-        assert_eq!(speaker_setting::load(&path), Ok(Some(false)));
         // A retail Controls row saves nothing new.
         let before = std::fs::read_to_string(&path).unwrap();
-        assert!(!speaker_row::chosen(Some(5), &speaker));
-        assert_eq!(video_screen::chosen(Some(5), &rows), None);
+        assert_eq!(model.row(List::Controls, 5), None);
+        assert_eq!(model.row(video_screen::LIST, 5), None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         // The next run reads them all back.
-        assert!(!SpeakerSetting::new(None, Some(path.clone())).enabled());
-        assert_eq!(FovSetting::new(None, Some(path.clone())).degrees(), 75);
-        assert_eq!(LaunchSetting::new(Kind::Fps, None, Some(path.clone())).running(), 60);
-        assert_eq!(LaunchSetting::new(Kind::RenderScale, None, Some(path.clone())).running(), 2);
+        let next = load();
+        assert_eq!(next.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(next.get(FOV.key), Some(Value::Int(75)));
+        assert_eq!(next.get(FPS.key), Some(Value::Int(60)));
+        assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -1588,10 +1567,10 @@ mod tests {
     fn the_video_header_swaps_only_the_controls_title() {
         let mut f = Fake::default();
         put(&mut f, 0x1004, &video_screen::CONTROLS_HEADER.to_le_bytes());
-        assert_eq!(video_header_id(&f, 0x1000), Some(video_screen::TITLE_ID));
+        assert_eq!(video_header_id(&f, 0x1000, 0x77), Some(0x77));
         put(&mut f, 0x1004, &0x0600_0234u32.to_le_bytes());
-        assert_eq!(video_header_id(&f, 0x1000), None);
-        assert_eq!(video_header_id(&Fake::default(), 0x1000), None);
+        assert_eq!(video_header_id(&f, 0x1000, 0x77), None);
+        assert_eq!(video_header_id(&Fake::default(), 0x1000, 0x77), None);
     }
 
     #[test]
@@ -1603,13 +1582,9 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let r = Arc::clone(&rt);
         std::thread::spawn(move || {
-            let s = Arc::new(SpeakerSetting::new(None, None));
-            let video = video_screen::Settings {
-                fov: Some(Arc::new(crate::fov_setting::FovSetting::new(None, None))),
-                fps: Some(Arc::new(crate::video_setting::LaunchSetting::new(crate::video_setting::Kind::Fps, None, None))),
-                scale: None,
-            };
-            tx.send(install(&r, Some(s), video).is_ok()).ok();
+            let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+            let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
+            tx.send(install(&r, Some(Arc::new(model))).is_ok()).ok();
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
         // Nothing generated, so every hook was skipped and ours own no entry.

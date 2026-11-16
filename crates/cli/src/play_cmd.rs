@@ -131,21 +131,6 @@ fn audio_sink(audio: bool) -> boot::dsound_glue::SinkOpener {
     })
 }
 
-/// The first-person field of view behind the Controls screen's Field of
-/// View row, saved in `<data>/settings.toml` (`[graphics] fov`).
-/// `H2_FOV=<degrees>` locks it for the run; `H2_FOV=0` locks the retail
-/// camera. A bad value is reported and ignored (docs/settings-menu.md).
-fn fov_setting(data: &std::path::Path) -> Arc<boot::fov_setting::FovSetting> {
-    let forced = boot::fov_setting::forced_by_env(std::env::var("H2_FOV").ok().as_deref())
-        .map_err(|e| eprintln!("play: {e}; ignored"))
-        .unwrap_or(None);
-    let setting = boot::fov_setting::FovSetting::new(forced, Some(boot::speaker_setting::settings_path(data)));
-    if setting.target().is_some() {
-        eprintln!("play: field of view {} degrees", setting.shown());
-    }
-    Arc::new(setting)
-}
-
 /// What [`pad_speaker`] sets up: the output, the HID thread and the switch.
 type PadParts = (
     Option<boot::dsound_glue::PadSpeaker>,
@@ -155,20 +140,21 @@ type PadParts = (
 
 /// The DualSense HID thread (mute button and LED, `H2_PAD_MUTE`, on by
 /// default; the speaker path), the on/off switch behind the Controls
-/// screen's Controller Speaker row (saved in `<data>/settings.toml`;
+/// screen's Controller Speaker row (`pad_speaker.enabled` in `store`;
 /// `H2_PAD_SPEAKER`, when set, wins) and, unless `H2_PAD_SPEAKER=0` or audio
 /// is off, the controller-speaker output (docs/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
-fn pad_speaker(audio: bool, data: &std::path::Path) -> PadParts {
+fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     let env = |k: &str| std::env::var(k).ok();
     let config = dsound::padroute::PadSpeakerConfig::from_env(env)
         .map_err(|e| eprintln!("play: controller speaker off: {e}"))
         .ok();
-    let forced = boot::speaker_setting::forced_by_env(env("H2_PAD_SPEAKER").as_deref(), config.as_ref(), audio);
-    let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(
-        forced,
-        Some(boot::speaker_setting::settings_path(data)),
-    ));
+    // No audio, or bad controller-speaker settings: off, and the row locked.
+    let why = if !audio { Some("audio is off") } else { config.is_none().then_some("its settings are bad") };
+    if let Some(why) = why {
+        let _ = store.force(boot::setting_defs::PAD_SPEAKER.key, settings::Value::Bool(false), why);
+    }
+    let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(Arc::clone(store)));
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
@@ -218,13 +204,6 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, speaker: bool) -> Option<input:
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
-/// Where the host settings live (`<data>/settings.toml`) and the display
-/// rate already read from them for the window.
-struct Saved<'a> {
-    data: &'a std::path::Path,
-    fps: Arc<boot::video_setting::LaunchSetting>,
-}
-
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,
@@ -232,9 +211,8 @@ fn hosted(
     timeline: Option<ScriptedInput>,
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
-    saved: Saved<'_>,
+    store: Arc<settings::Store>,
 ) -> boot::Host {
-    let Saved { data, fps: fps_setting } = saved;
     let configure = |mut gfx: d3d::GfxBackend| {
         // As for `h2 run`: passes are merged by default (the fast rule;
         // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
@@ -254,12 +232,10 @@ fn hosted(
     // times 640x480 and presents; the backend the guest talks to stays at
     // 1x (docs/high-resolution.md). Unset: the Video screen's saved scale
     // (`[graphics] render_scale`), else 1, one backend as before.
-    let scale_setting = Arc::new(boot::video_setting::LaunchSetting::from_var(
-        boot::video_setting::Kind::RenderScale,
-        std::env::var("H2_RENDER_SCALE").ok().as_deref(),
-        Some(boot::speaker_setting::settings_path(data)),
-    ));
-    let scale = scale_setting.running().clamp(1, d3d::scaled::MAX_SCALE);
+    let scale = store
+        .handle::<u32>(boot::setting_defs::RENDER_SCALE.key)
+        .get()
+        .clamp(1, d3d::scaled::MAX_SCALE);
     let view = d3d::scaled::view_for(scale, || {
         (
             configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
@@ -274,7 +250,11 @@ fn hosted(
     });
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
-    let (pad_speaker, pad_hid, speaker_setting) = pad_speaker(audio, data);
+    let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store);
+    let fov = store.handle::<u32>(boot::setting_defs::FOV.key).get();
+    if fov != boot::setting_defs::FOV_RETAIL as u32 {
+        eprintln!("play: field of view {fov} degrees");
+    }
     boot::Host {
         gfx: Some(gfx),
         gfx_view: view,
@@ -283,10 +263,7 @@ fn hosted(
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
         pad_speaker,
-        speaker_setting: Some(speaker_setting),
-        fov_setting: Some(fov_setting(data)),
-        fps_setting: Some(fps_setting),
-        scale_setting: Some(scale_setting),
+        settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
         // `run` sets it from --level or H2_LEVEL, resolved before the window.
         level: None,
@@ -412,7 +389,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
     let mut no_watermark = false;
-    let mut fps_flag: Option<String> = None;
+    let mut flags: Vec<settings::Flag> = Vec::new();
     let mut live = crate::play_live::LiveOpts::default();
     let mut level_flag: Option<String> = None;
     let mut difficulty_flag: Option<String> = None;
@@ -464,7 +441,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--fps" => {
                 let v = val()?;
                 config.fps = app::fps::FpsTarget::parse(&v).map_err(anyhow::Error::msg)?;
-                fps_flag = Some(v);
+                flags.push(settings::Flag { key: boot::setting_defs::FPS.key.into(), value: v, flag: "--fps" });
             }
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
@@ -508,14 +485,19 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
     }
     live.check()?;
+    // Our settings: flags (--fps, --set), then the environment, then
+    // <data>/settings.toml, then each default. A bad value is reported and
+    // the next source used.
+    let (store, problems) = boot::setting_defs::load(&data, &flags);
+    for p in problems {
+        eprintln!("play: {p}");
+    }
+    let store = Arc::new(store);
     // --fps, then H2_FPS (both checked above), then the Video screen's
     // saved rate, then 30.
-    let fps_setting = Arc::new(boot::video_setting::LaunchSetting::from_var(
-        boot::video_setting::Kind::Fps,
-        fps_flag.or_else(|| std::env::var(app::fps::ENV).ok()).as_deref(),
-        Some(boot::speaker_setting::settings_path(&data)),
-    ));
-    config.fps = app::fps::FpsTarget::parse(&fps_setting.running_name()).map_err(anyhow::Error::msg)?;
+    let fps = &boot::setting_defs::FPS;
+    let rate = store.get(fps.key).unwrap_or(fps.default);
+    config.fps = app::fps::FpsTarget::parse(&fps.name(rate)).map_err(anyhow::Error::msg)?;
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -610,10 +592,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             timeline,
             Arc::clone(&interrupted),
             icons,
-            Saved {
-                data: &opts.data_root,
-                fps: fps_setting,
-            },
+            store,
         );
         host.level = level;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);

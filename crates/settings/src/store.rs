@@ -105,10 +105,10 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// What the log says after a row press: `fps: 60 from the next launch`,
-    /// `fov: set by H2_FOV; row locked`.
+    /// What the log says after a row press: `graphics.fps: 60 from the
+    /// next launch`, `graphics.fov: set by H2_FOV; row locked`.
     pub fn describe(&self, def: &Def) -> String {
-        let name = def.table_key().1;
+        let name = def.key;
         let s = &self.state;
         match (s.locked, s.pending) {
             (true, _) => format!("{name}: set by {}; row locked", s.source),
@@ -292,12 +292,16 @@ impl Store {
                     .ok()
                     .map(|v| (v, Source::Env(name)))
             });
-            let from_flag = flags.iter().rev().find(|f| f.key == def.key).and_then(|f| {
-                def.parse(&f.value)
-                    .map_err(|e| report(format!("{} {}: {e}; ignored", f.flag, def.key)))
-                    .ok()
-                    .map(|v| (v, Source::Flag(f.flag)))
-            });
+            let from_flag = flags
+                .iter()
+                .rev()
+                .find(|f| f.key == def.key && !f.value.trim().is_empty())
+                .and_then(|f| {
+                    def.parse(&f.value)
+                        .map_err(|e| report(format!("{} {}: {e}; ignored", f.flag, def.key)))
+                        .ok()
+                        .map(|v| (v, Source::Flag(f.flag)))
+                });
             let saved = from_file.unwrap_or(def.default);
             let (running, source) = from_flag.or(from_env).unwrap_or(match from_file {
                 Some(v) => (v, Source::File),
@@ -666,7 +670,7 @@ mod tests {
             (Value::Int(75), false, true)
         );
         assert_eq!(fov.get(), 75);
-        assert_eq!(o.describe(&FOV), "fov: 75");
+        assert_eq!(o.describe(&FOV), "graphics.fov: 75");
         s.set("graphics.fov", Value::Int(75)).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "no change, no call");
     }
@@ -683,7 +687,7 @@ mod tests {
             (Value::Int(30), Value::Int(60), Value::Int(60))
         );
         assert!(o.state.pending);
-        assert_eq!(o.describe(&FPS), "fps: 60 from the next launch");
+        assert_eq!(o.describe(&FPS), "graphics.fps: 60 from the next launch");
         // Stepping back round to the running value clears the pending mark.
         for _ in 0..3 {
             s.step("graphics.fps").unwrap();
@@ -709,7 +713,7 @@ mod tests {
         let o = s.step("graphics.fov").unwrap();
         assert!(!o.changed);
         assert_eq!(o.state.shown, Value::Int(70));
-        assert_eq!(o.describe(&FOV), "fov: set by H2_FOV; row locked");
+        assert_eq!(o.describe(&FOV), "graphics.fov: set by H2_FOV; row locked");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "[graphics]\nfov = 100\n"

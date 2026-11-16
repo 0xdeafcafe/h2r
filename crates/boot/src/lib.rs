@@ -16,7 +16,6 @@ pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
 pub mod fov_row;
-pub mod fov_setting;
 pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
@@ -30,9 +29,10 @@ pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
 pub mod speaker_row;
+pub mod setting_defs;
 pub mod speaker_setting;
+pub mod ui;
 pub mod video_screen;
-pub mod video_setting;
 pub mod sse;
 pub mod sweep_diag;
 pub mod stopgaps;
@@ -413,20 +413,11 @@ pub struct Host {
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
     /// without DirectSound.
     pub pad_speaker: Option<dsound_glue::PadSpeaker>,
-    /// The controller-speaker on/off switch behind the Controls screen's
-    /// "Controller Speaker" row (`speaker_row`). `None` (headless runs)
-    /// leaves the Controls screen as retail.
-    pub speaker_setting: Option<Arc<speaker_setting::SpeakerSetting>>,
-    /// The first-person field of view behind the Video screen's "Field of
-    /// View" row (`fov_row`). `None` (headless runs) leaves the camera as
-    /// retail.
-    pub fov_setting: Option<Arc<fov_setting::FovSetting>>,
-    /// The display rate and render scale behind the Video screen's "Frame
-    /// Rate" and "Resolution" rows (`video_setting`; read at launch, so a
-    /// press applies from the next one). With none of the three settings
-    /// the Controls screen has no Video row.
-    pub fps_setting: Option<Arc<video_setting::LaunchSetting>>,
-    pub scale_setting: Option<Arc<video_setting::LaunchSetting>>,
+    /// Our settings (`setting_defs`), behind the Controller Speaker row on
+    /// Controls and the Video screen's rows (`video_screen::model`), and
+    /// read by the camera hook (`fov_row`). `None` (headless runs) leaves
+    /// the Controls screen and the camera as retail.
+    pub settings: Option<Arc<settings::Store>>,
     /// XAPI's input manager (`xapi_glue::register_with`).
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
@@ -580,12 +571,13 @@ pub fn run_hosted_with_live(
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/controller-layouts.md, docs/playstation-audio.md).
     // The Video row opens our Video screen (docs/settings-menu.md).
-    let video = video_screen::Settings {
-        fov: host.fov_setting.clone(),
-        fps: host.fps_setting.clone(),
-        scale: host.scale_setting.clone(),
+    let model = match host.settings.clone() {
+        Some(store) => Some(Arc::new(
+            video_screen::model(store, video_screen::Switches::from_env()).map_err(anyhow::Error::msg)?,
+        )),
+        None => None,
     };
-    layout_glue::install(&loaded.runtime, host.speaker_setting.clone(), video).context("installing the button layouts")?;
+    layout_glue::install(&loaded.runtime, model).context("installing the button layouts")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/level-boot.md).

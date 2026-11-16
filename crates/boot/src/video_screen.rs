@@ -31,13 +31,15 @@
 //! The hooks are registered by `layout_glue::install`; the logic is here,
 //! over [`Gm`].
 
+use std::ops::Range;
 use std::sync::Arc;
 
-use crate::fov_row;
-use crate::fov_setting::FovSetting;
+use settings::Store;
+
 use crate::layout_glue::{Gm, ID_BASE};
+use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::speaker_row;
-use crate::video_setting::{Kind, LaunchSetting};
+use crate::ui::{self, List, Model, Row, Screen};
 
 /// The Controls screen loader (stdcall, the request pointer, `ret 4`).
 pub const CONTROLS_LOADER: u32 = 0x002b_7714;
@@ -54,101 +56,70 @@ pub const SCREEN_LIST: u32 = 0x614;
 /// bytes, NUL included).
 pub const LIST_NAME_TEXT: &str = "h2r video settings";
 
-/// Our strings, in `layout_glue::is_ours`'s range.
-pub const ROW_LABEL_ID: u32 = ID_BASE + 0xc0;
-pub const TITLE_ID: u32 = ID_BASE + 0xc1;
-pub const FPS_LABEL_ID: u32 = ID_BASE + 0xc2;
-pub const SCALE_LABEL_ID: u32 = ID_BASE + 0xc3;
-pub const EMPTY_ID: u32 = ID_BASE + 0xc4;
-const FPS_VALUE_BASE: u32 = ID_BASE + 0xd0;
-const SCALE_VALUE_BASE: u32 = ID_BASE + 0xe0;
+/// Our screen's id, and its list in the model.
+pub const SCREEN: &str = "video";
+pub const LIST: List = List::Screen(SCREEN);
+/// The string ids the model's texts take: past the layouts' (`0x00` to
+/// `0x1f`) and the small Controls list's (`0x30`, `0x31`), short of the list
+/// name (`0xff`).
+pub const MODEL_IDS: Range<u32> = ID_BASE + 0x40..ID_BASE + 0xff;
 
-/// A row of the Video screen.
+/// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_FOV_ROW` and
+/// `H2_NO_VIDEO_SCREEN` take theirs out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Row {
-    Fov,
-    Fps,
-    Scale,
+pub struct Switches {
+    pub speaker_row: bool,
+    pub fov_row: bool,
+    pub video_screen: bool,
 }
 
-/// What the Video screen shows: each setting that is on.
-#[derive(Clone, Default)]
-pub struct Settings {
-    pub fov: Option<Arc<FovSetting>>,
-    pub fps: Option<Arc<LaunchSetting>>,
-    pub scale: Option<Arc<LaunchSetting>>,
-}
+impl Switches {
+    pub const ALL: Switches = Switches {
+        speaker_row: true,
+        fov_row: true,
+        video_screen: true,
+    };
 
-impl Settings {
-    /// The rows, in order: Field of View, Frame Rate, Resolution, each when
-    /// its setting is given.
-    pub fn rows(&self) -> Vec<Row> {
-        let mut v = Vec::new();
-        if self.fov.is_some() {
-            v.push(Row::Fov);
-        }
-        if self.fps.is_some() {
-            v.push(Row::Fps);
-        }
-        if self.scale.is_some() {
-            v.push(Row::Scale);
-        }
-        v
-    }
-
-    /// No rows: no Video row on Controls either.
-    pub fn is_empty(&self) -> bool {
-        self.rows().is_empty()
-    }
-
-    /// The label and value string ids of `row`.
-    pub fn texts(&self, row: Row) -> Option<[(u32, u32); 2]> {
-        let (label, value) = match row {
-            Row::Fov => (fov_row::LABEL_ID, fov_row::value_id(self.fov.as_ref()?.shown())),
-            Row::Fps => {
-                let s = self.fps.as_ref()?;
-                (FPS_LABEL_ID, value_id(Kind::Fps, s.shown(), s.pending())?)
-            }
-            Row::Scale => {
-                let s = self.scale.as_ref()?;
-                (SCALE_LABEL_ID, value_id(Kind::RenderScale, s.shown(), s.pending())?)
-            }
-        };
-        Some([(speaker_row::LABEL_TEXT_INDEX, label), (speaker_row::VALUE_TEXT_INDEX, value)])
-    }
-
-    /// `row` was pressed: step its setting. Returns what to say on stderr.
-    pub fn press(&self, row: Row) -> Option<String> {
-        match row {
-            Row::Fov => {
-                let s = self.fov.as_ref()?;
-                s.step();
-                Some(format!("fov: {} degrees", s.shown()))
-            }
-            Row::Fps | Row::Scale => {
-                let s = if row == Row::Fps { self.fps.as_ref()? } else { self.scale.as_ref()? };
-                let v = s.step();
-                let k = s.kind();
-                Some(match (s.locked(), s.pending()) {
-                    (true, _) => format!("{}: set by {}; row locked", k.key(), k.env()),
-                    (false, true) => format!("{}: {} from the next launch", k.key(), k.name(v)),
-                    (false, false) => format!("{}: {}", k.key(), k.name(v)),
-                })
-            }
+    pub fn from_env() -> Switches {
+        let off = |k: &str| std::env::var_os(k).is_some();
+        Switches {
+            speaker_row: !off("H2_NO_SPEAKER_ROW"),
+            fov_row: !off("H2_NO_FOV_ROW"),
+            video_screen: !off("H2_NO_VIDEO_SCREEN"),
         }
     }
 }
 
-/// The Video row on the Controls screen: after the retail six and the
-/// Controller Speaker row when that row is there.
-pub fn controls_row(with_speaker: bool) -> i16 {
-    speaker_row::VANILLA_ROWS as i16 + i16::from(with_speaker)
+/// The model of our rows: the Video screen from the settings that name it,
+/// and on the Controls list the Controller Speaker row (with the game's
+/// own On and Off) and the Video row that opens the screen (left out when
+/// the screen has no rows).
+pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
+    let mut video = Screen::new(SCREEN).title("Video");
+    if on.video_screen {
+        video = video.rows_from_settings(&store.defs());
+    }
+    if !on.fov_row {
+        video = video.without(FOV.key);
+    }
+    let mut controls = ui::extend(List::Controls, speaker_row::VANILLA_ROWS);
+    if on.speaker_row {
+        controls = controls
+            .row(Row::setting(PAD_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID));
+    }
+    controls = controls.row(Row::open(SCREEN));
+    Model::new(store, vec![video], vec![controls], MODEL_IDS)
 }
 
-/// The Controls list's item count after the other rows grew it to `n`: one
-/// more for the Video row (`retail` is the count the game asked for).
-pub fn list_count(name: u32, retail: u32, n: u32, video_row: bool) -> u32 {
-    if video_row && name == speaker_row::LIST_NAME && retail == speaker_row::VANILLA_ROWS { n + 1 } else { n }
+/// The Controls list's item count when the game builds the array named
+/// `name` with `retail` rows: ours added for the Controls list, else
+/// unchanged.
+pub fn list_count(m: &Model, name: u32, retail: u32) -> u32 {
+    if name == speaker_row::LIST_NAME {
+        m.count(List::Controls, retail)
+    } else {
+        retail
+    }
 }
 
 /// The datum array constructor with name `name` and count `retail` while
@@ -162,7 +133,9 @@ pub fn video_count(name: u32, retail: u32, opening: bool, rows: usize) -> Option
 /// Whether the list `handler` is a Video list: its datum array
 /// (`[handler+0x70]`) is named [`LIST_NAME_TEXT`].
 pub fn is_video_list<M: Gm>(m: &M, handler: u32) -> bool {
-    let Some(array) = m.u32(handler.wrapping_add(0x70)) else { return false };
+    let Some(array) = m.u32(handler.wrapping_add(0x70)) else {
+        return false;
+    };
     let want = LIST_NAME_TEXT.as_bytes();
     let mut got = vec![0; want.len() + 1];
     m.rd(array, &mut got) && got[..want.len()] == *want && got[want.len()] == 0
@@ -184,64 +157,19 @@ pub fn player_mask<M: Gm>(m: &M, esp: u32) -> Option<u32> {
     (index < 4).then(|| 1 << index)
 }
 
-/// The row a Video list's row text call (item at `[esp+4]`) is for.
-pub fn text_row<M: Gm>(m: &M, esp: u32, rows: &[Row]) -> Option<Row> {
+/// The row index a row text call (item at `[esp+4]`) draws.
+pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
     let item = m.u32(esp.wrapping_add(4))?;
-    let r = usize::try_from(speaker_row::item_row(m, item)?).ok()?;
-    rows.get(r).copied()
-}
-
-/// The row of a Video list's row-chosen `chosen` (from
-/// `layout_glue::chosen_row`).
-pub fn chosen(chosen: Option<i16>, rows: &[Row]) -> Option<Row> {
-    rows.get(usize::try_from(chosen?).ok()?).copied()
-}
-
-/// The Video row's texts on the Controls list (item at `[esp+4]`): our
-/// label and an empty value, or `None` for any other row.
-pub fn controls_row_texts<M: Gm>(m: &M, esp: u32, row: i16) -> Option<[(u32, u32); 2]> {
-    let item = m.u32(esp.wrapping_add(4))?;
-    (speaker_row::item_row(m, item)? == row).then_some([
-        (speaker_row::LABEL_TEXT_INDEX, ROW_LABEL_ID),
-        (speaker_row::VALUE_TEXT_INDEX, EMPTY_ID),
-    ])
-}
-
-/// The string id that shows value `v` of `kind`, `pending` adding
-/// "(restart)".
-pub fn value_id(kind: Kind, v: u32, pending: bool) -> Option<u32> {
-    let (base, i) = match kind {
-        Kind::Fps => (FPS_VALUE_BASE, kind.all().iter().position(|x| *x == v)? as u32),
-        Kind::RenderScale => (SCALE_VALUE_BASE, kind.all().iter().position(|x| *x == v)? as u32),
-    };
-    Some(base + i * 2 + u32::from(pending))
-}
-
-/// Every string the screen needs (the FOV row's come from `fov_row`).
-pub fn strings() -> Vec<(u32, String)> {
-    let mut v = vec![
-        (ROW_LABEL_ID, "Video".to_string()),
-        (TITLE_ID, "Video".to_string()),
-        (FPS_LABEL_ID, "Frame Rate".to_string()),
-        (SCALE_LABEL_ID, "Resolution".to_string()),
-        (EMPTY_ID, String::new()),
-    ];
-    for kind in [Kind::Fps, Kind::RenderScale] {
-        for x in kind.all() {
-            for pending in [false, true] {
-                let text = if pending { format!("{} (restart)", kind.label(x)) } else { kind.label(x) };
-                v.push((value_id(kind, x, pending).expect("a listed value"), text));
-            }
-        }
-    }
-    v
+    speaker_row::item_row(m, item)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::video_setting::UNCAPPED;
+    use crate::setting_defs::{ALL, FPS, RENDER_SCALE};
+    use crate::ui::{Chosen, RowKind};
+    use settings::Value;
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -269,12 +197,8 @@ mod tests {
     const HANDLER: u32 = 0x3000;
     const ARRAY: u32 = 0x4000;
 
-    fn all() -> Settings {
-        Settings {
-            fov: Some(Arc::new(FovSetting::new(None, None))),
-            fps: Some(Arc::new(LaunchSetting::new(Kind::Fps, None, None))),
-            scale: Some(Arc::new(LaunchSetting::new(Kind::RenderScale, None, None))),
-        }
+    fn all() -> Model {
+        model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap()
     }
 
     fn list(name: &[u8]) -> Fake {
@@ -293,42 +217,133 @@ mod tests {
         f
     }
 
+    fn chosen_call(row: i16) -> Fake {
+        let mut f = Fake::default();
+        f.set_u32(ESP + 8, 0x7000);
+        f.set_u16(0x7000, row as u16);
+        f
+    }
+
+    /// The label and value texts a row text call for `row` of `list` draws.
+    fn drawn(m: &Model, list: List, row: i16) -> Option<(String, String)> {
+        let row = m.row(list, text_row(&text_call(row), ESP)?)?;
+        let [(0, l), (1, v)] = m.texts(row) else {
+            panic!("slots")
+        };
+        let text = |id| {
+            m.strings()
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, t)| t.clone())
+        };
+        Some((text(l)?, text(v).unwrap_or_else(|| format!("{v:#x}"))))
+    }
+
+    /// A press on `row` of `list`, as the row-chosen hook reads it.
+    fn press(m: &Model, list: List, row: i16) -> Chosen {
+        match chosen_row(&chosen_call(row), ESP).and_then(|r| m.row(list, r)) {
+            Some(r) => m.press(r),
+            None => Chosen::Nothing,
+        }
+    }
+
+    fn s(a: &str, b: &str) -> Option<(String, String)> {
+        Some((a.into(), b.into()))
+    }
+
     #[test]
-    fn rows_follow_the_settings_given() {
-        assert_eq!(all().rows(), [Row::Fov, Row::Fps, Row::Scale]);
-        let s = Settings { fov: None, ..all() };
-        assert_eq!(s.rows(), [Row::Fps, Row::Scale]);
-        assert!(Settings::default().is_empty());
-        assert!(!all().is_empty());
+    fn rows_follow_the_settings_and_switches() {
+        let m = all();
+        let kinds: Vec<_> = m.rows(LIST).iter().map(|r| r.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::Setting(FOV.key),
+                RowKind::Setting(FPS.key),
+                RowKind::Setting(RENDER_SCALE.key)
+            ]
+        );
+        let store = || Arc::new(Store::defaults(ALL));
+        let no_fov = model(
+            store(),
+            Switches {
+                fov_row: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(no_fov.rows(LIST).len(), 2);
+        // No Video screen: no Video row on Controls either.
+        let none = model(
+            store(),
+            Switches {
+                video_screen: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert!(none.rows(LIST).is_empty());
+        assert_eq!(none.count(List::Controls, 6), 7);
+        let bare = model(
+            store(),
+            Switches {
+                video_screen: false,
+                speaker_row: false,
+                fov_row: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(bare.count(List::Controls, 6), 6);
     }
 
     #[test]
     fn the_video_row_sits_after_the_speaker_row() {
-        assert_eq!(controls_row(true), 7);
-        assert_eq!(controls_row(true), speaker_row::ROW + 1);
-        assert_eq!(controls_row(false), 6);
-        let t = text_call(7);
-        assert_eq!(controls_row_texts(&t, ESP, 7), Some([(0, ROW_LABEL_ID), (1, EMPTY_ID)]));
-        for r in [0i16, 5, 6, 8, -1] {
-            assert_eq!(controls_row_texts(&text_call(r), ESP, 7), None, "{r}");
+        let m = all();
+        assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), Some(7));
+        assert_eq!(
+            drawn(&m, List::Controls, 6),
+            s("Controller Speaker", "0x2000181")
+        );
+        assert_eq!(drawn(&m, List::Controls, 7), s("Video", ""));
+        for r in [0i16, 5, 8, -1] {
+            assert_eq!(drawn(&m, List::Controls, r), None, "{r}");
         }
+        let no_speaker = model(
+            Arc::new(Store::defaults(ALL)),
+            Switches {
+                speaker_row: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            no_speaker.index_of(List::Controls, &RowKind::Open(SCREEN)),
+            Some(6)
+        );
     }
 
     #[test]
-    fn the_controls_list_grows_by_the_video_row() {
-        let speaker = speaker_row::list_count(speaker_row::LIST_NAME, 6);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 6, speaker, true), 8);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 6, speaker, false), 7);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 6, 6, true), 7);
-        assert_eq!(list_count(crate::layout_glue::LIST_NAME, 4, 7, true), 7);
-        assert_eq!(list_count(0x1234, 6, 6, true), 6);
+    fn the_controls_list_grows_by_our_rows() {
+        let m = all();
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 8);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
+        assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
+        assert_eq!(list_count(&m, 0x1234, 6), 6);
     }
 
     #[test]
     fn only_the_list_built_by_our_open_call_becomes_the_video_list() {
         assert_eq!(video_count(speaker_row::LIST_NAME, 6, true, 3), Some(3));
-        assert_eq!(video_count(speaker_row::LIST_NAME, 6, false, 3), None, "a plain Controls screen");
-        assert_eq!(video_count(crate::layout_glue::LIST_NAME, 4, true, 3), None, "another list");
+        assert_eq!(
+            video_count(speaker_row::LIST_NAME, 6, false, 3),
+            None,
+            "a plain Controls screen"
+        );
+        assert_eq!(
+            video_count(crate::layout_glue::LIST_NAME, 4, true, 3),
+            None,
+            "another list"
+        );
         assert_eq!(video_count(speaker_row::SMALL_LIST_NAME, 6, true, 3), None);
         assert_eq!(video_count(speaker_row::LIST_NAME, 6, true, 0), None);
     }
@@ -364,76 +379,112 @@ mod tests {
     }
 
     #[test]
-    fn every_row_draws_its_label_and_value() {
-        let s = all();
-        let rows = s.rows();
-        assert_eq!(text_row(&text_call(0), ESP, &rows), Some(Row::Fov));
-        assert_eq!(text_row(&text_call(2), ESP, &rows), Some(Row::Scale));
-        assert_eq!(text_row(&text_call(3), ESP, &rows), None);
-        assert_eq!(text_row(&text_call(-1), ESP, &rows), None);
-        assert_eq!(s.texts(Row::Fov), Some([(0, fov_row::LABEL_ID), (1, fov_row::value_id(70))]));
-        assert_eq!(s.texts(Row::Fps), Some([(0, FPS_LABEL_ID), (1, value_id(Kind::Fps, 30, false).unwrap())]));
-        assert_eq!(
-            s.texts(Row::Scale),
-            Some([(0, SCALE_LABEL_ID), (1, value_id(Kind::RenderScale, 1, false).unwrap())])
-        );
-        // A row whose setting is off has no text.
-        assert_eq!(Settings::default().texts(Row::Fps), None);
+    fn every_row_draws_its_label_and_value_as_before() {
+        let m = all();
+        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1x"));
+        assert_eq!(drawn(&m, LIST, 3), None);
+        assert_eq!(drawn(&m, LIST, -1), None);
     }
 
     #[test]
-    fn pressing_steps_the_row_and_the_text_says_restart() {
-        let s = all();
-        let rows = s.rows();
-        let mut f = Fake::default();
-        f.set_u32(ESP + 8, 0x7000);
-        f.set_u16(0x7000, 1);
-        let row = chosen(chosen_row(&f, ESP), &rows).unwrap();
-        assert_eq!(row, Row::Fps);
-        assert_eq!(s.press(row).unwrap(), "fps: 60 from the next launch");
-        assert_eq!(s.texts(Row::Fps).unwrap()[1].1, value_id(Kind::Fps, 60, true).unwrap());
-        s.press(Row::Fps);
-        s.press(Row::Fps);
-        assert_eq!(s.fps.as_ref().unwrap().shown(), UNCAPPED);
-        s.press(Row::Fps);
-        assert_eq!(s.texts(Row::Fps).unwrap()[1].1, value_id(Kind::Fps, 30, false).unwrap(), "back to this run's");
-        assert_eq!(s.press(Row::Fov).unwrap(), "fov: 75 degrees");
-        assert_eq!(s.texts(Row::Fov).unwrap()[1].1, fov_row::value_id(75));
-        s.press(Row::Scale);
-        assert_eq!(s.texts(Row::Scale).unwrap()[1].1, value_id(Kind::RenderScale, 2, true).unwrap());
+    fn pressing_steps_the_row_saves_it_and_the_text_says_restart() {
+        let dir = std::env::temp_dir().join(format!("h2-video-{}-press", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings::path_in(&dir);
+        std::fs::write(&path, "[pad_speaker]\nenabled = false\n").unwrap();
+        let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
+        let fov = store.handle::<u32>(FOV.key);
+        let fps = store.handle::<u32>(FPS.key);
+        let m = model(Arc::clone(&store), Switches::ALL).unwrap();
+        assert_eq!(
+            press(&m, LIST, 1),
+            Chosen::Stepped("graphics.fps: 60 from the next launch".into())
+        );
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "60 (restart)"));
+        press(&m, LIST, 1);
+        press(&m, LIST, 1);
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "Uncapped (restart)"));
+        assert_eq!(fps.get(), 30, "this run keeps its rate");
+        press(&m, LIST, 1);
+        assert_eq!(
+            drawn(&m, LIST, 1),
+            s("Frame Rate", "30"),
+            "back to this run's"
+        );
+        assert_eq!(
+            press(&m, LIST, 0),
+            Chosen::Stepped("graphics.fov: 75".into())
+        );
+        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
+        assert_eq!(fov.get(), 75, "applies at once");
+        press(&m, LIST, 2);
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "2x (restart)"));
+        assert_eq!(press(&m, List::Controls, 7), Chosen::Open(SCREEN));
+        assert_eq!(
+            drawn(&m, List::Controls, 6),
+            s("Controller Speaker", "0x3000182")
+        );
+        press(&m, List::Controls, 6);
+        assert_eq!(
+            drawn(&m, List::Controls, 6),
+            s("Controller Speaker", "0x2000181")
+        );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(chosen(Some(3), &rows), None);
-        assert_eq!(chosen(Some(-1), &rows), None);
-        assert_eq!(chosen(None, &rows), None);
+        assert_eq!(press(&m, LIST, 3), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
+        // Saved as the old code saved them; other keys kept.
+        let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
+        assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
+        assert_eq!(t["graphics"]["render_scale"].as_integer(), Some(2));
+        assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
+        let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
+        assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
     }
 
     #[test]
     fn locked_rows_say_so_and_do_not_move() {
-        let s = Settings {
-            fps: Some(Arc::new(LaunchSetting::new(Kind::Fps, Some(120), None))),
-            ..Settings::default()
-        };
-        assert_eq!(s.press(Row::Fps).unwrap(), "fps: set by H2_FPS; row locked");
-        assert_eq!(s.texts(Row::Fps).unwrap()[1].1, value_id(Kind::Fps, 120, false).unwrap());
+        let env = |k: &str| (k == "H2_FPS").then(|| "120".to_string());
+        let store = Arc::new(Store::load(ALL, None, &env, &[]).0);
+        let m = model(store, Switches::ALL).unwrap();
+        assert_eq!(
+            press(&m, LIST, 1),
+            Chosen::Stepped("graphics.fps: set by H2_FPS; row locked".into())
+        );
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "120"));
     }
 
     #[test]
     fn strings_are_ours_distinct_and_say_what_they_show() {
-        let all = strings();
-        let text = |id| all.iter().find(|(i, _)| *i == id).map(|(_, t)| t.as_str());
-        assert_eq!(text(TITLE_ID), Some("Video"));
-        assert_eq!(text(value_id(Kind::Fps, UNCAPPED, false).unwrap()), Some("Uncapped"));
-        assert_eq!(text(value_id(Kind::Fps, 60, true).unwrap()), Some("60 (restart)"));
-        assert_eq!(text(value_id(Kind::RenderScale, 6, false).unwrap()), Some("6x"));
-        assert_eq!(text(EMPTY_ID), Some(""));
+        let m = all();
+        let all = m.strings();
+        let text = |t: &str| all.iter().any(|(_, s)| s == t);
+        for t in [
+            "Video",
+            "Uncapped",
+            "60 (restart)",
+            "6x",
+            "6x (restart)",
+            "150",
+            "30",
+            "",
+        ] {
+            assert!(text(t), "{t:?}");
+        }
+        assert!(!text("75 (restart)"), "the field of view applies at once");
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
-        assert!(ids.iter().all(|i| is_ours(*i)));
-        ids.extend(fov_row::strings().iter().map(|(i, _)| *i));
-        ids.extend(crate::layout_glue::served_strings(true, true).iter().map(|(i, _)| *i));
+        assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
+        ids.extend(
+            crate::layout_glue::served_strings(true, true)
+                .iter()
+                .map(|(i, _)| *i),
+        );
         let n = ids.len();
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), n, "no id is used twice");
-        assert_eq!(value_id(Kind::Fps, 45, false), None);
     }
 }

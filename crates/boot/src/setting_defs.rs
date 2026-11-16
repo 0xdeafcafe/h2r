@@ -1,0 +1,241 @@
+//! Our settings, one [`Def`] each (docs/settings-menu.md, docs/feature-engine.md
+//! "Settings"). The file keys and environment variables are the ones the
+//! hand-written settings used before the `settings` crate, so an existing
+//! `settings.toml` and existing launch scripts keep working.
+
+use std::path::Path;
+
+use settings::{Apply, Choice, Def, Flag, Kind, Menu, Problem, Scope, Store, Tier, Unit, Value};
+
+/// The retail first-person field of view, in degrees.
+pub const FOV_RETAIL: i64 = 70;
+
+pub static FOV: Def = Def {
+    key: "graphics.fov",
+    label: "Field of View",
+    help: "First-person horizontal field of view in degrees. 70 is the game's own; \
+           0 means 70. The row steps 70 to 120 by 5; the file and H2_FOV take 30 to 150.",
+    kind: Kind::Int {
+        valid: 30..=150,
+        steps: &[70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120],
+        unit: Unit::Degrees,
+    },
+    default: Value::Int(FOV_RETAIL),
+    env: Some("H2_FOV"),
+    flag: None,
+    aliases: &[("0", Value::Int(FOV_RETAIL))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 10,
+    }),
+};
+
+pub static FPS: Def = Def {
+    key: "graphics.fps",
+    label: "Frame Rate",
+    help: "How often the window presents: 30 (the game's own), 60, 120 or uncapped.",
+    kind: Kind::Choice(&[
+        Choice {
+            value: 30,
+            name: "30",
+            label: "30",
+        },
+        Choice {
+            value: 60,
+            name: "60",
+            label: "60",
+        },
+        Choice {
+            value: 120,
+            name: "120",
+            label: "120",
+        },
+        Choice {
+            value: 0,
+            name: "uncapped",
+            label: "Uncapped",
+        },
+    ]),
+    default: Value::Int(30),
+    env: Some("H2_FPS"),
+    flag: Some("--fps"),
+    aliases: &[("unlimited", Value::Int(0)), ("max", Value::Int(0))],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 20,
+    }),
+};
+
+pub static RENDER_SCALE: Def = Def {
+    key: "graphics.render_scale",
+    label: "Resolution",
+    help: "Internal resolution as a multiple of 640x480. The row steps 1x to 4x; \
+           the file and H2_RENDER_SCALE take up to 6x.",
+    kind: Kind::Int {
+        valid: 1..=d3d::scaled::MAX_SCALE as i64,
+        steps: &[1, 2, 3, 4],
+        unit: Unit::Times,
+    },
+    default: Value::Int(1),
+    env: Some("H2_RENDER_SCALE"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 30,
+    }),
+};
+
+pub static PAD_SPEAKER: Def = Def {
+    key: "pad_speaker.enabled",
+    label: "Controller Speaker",
+    help: "Play the sounds the controller-speaker routes pick on a DualSense's \
+           speaker (docs/playstation-audio.md). H2_PAD_SPEAKER may also name a \
+           routes file; its `enabled` decides.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_PAD_SPEAKER"),
+    flag: None,
+    aliases: &[],
+    parse_env: Some(pad_speaker_env),
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
+};
+
+/// Every setting, in the order `h2 settings list` shows them.
+pub static ALL: &[&Def] = &[&FOV, &FPS, &RENDER_SCALE, &PAD_SPEAKER];
+
+/// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
+/// or a routes file whose `enabled` decides.
+fn pad_speaker_env(text: &str) -> Result<Value, String> {
+    dsound::padroute::PadSpeakerConfig::from_env(|k| {
+        (k == "H2_PAD_SPEAKER").then(|| text.to_string())
+    })
+    .map(|c| Value::Bool(c.enabled))
+    .map_err(|e| e.to_string())
+}
+
+/// The store of a run with data root `data`: `<data>/settings.toml`, the
+/// process environment and `flags`.
+pub fn load(data: &Path, flags: &[Flag]) -> (Store, Vec<Problem>) {
+    Store::load(
+        ALL,
+        Some(&settings::path_in(data)),
+        &|k| std::env::var(k).ok(),
+        flags,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("h2-defs-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn with_env(
+        data: &Path,
+        vars: &'static [(&'static str, &'static str)],
+    ) -> (Store, Vec<Problem>) {
+        let env = move |k: &str| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        };
+        Store::load(ALL, Some(&settings::path_in(data)), &env, &[])
+    }
+
+    #[test]
+    fn keys_and_variables_are_unique_and_every_default_is_valid() {
+        let mut keys: Vec<_> = ALL.iter().map(|d| d.key).collect();
+        let mut envs: Vec<_> = ALL.iter().filter_map(|d| d.env).collect();
+        keys.sort();
+        keys.dedup();
+        envs.sort();
+        envs.dedup();
+        assert_eq!(keys.len(), ALL.len());
+        assert_eq!(envs.len(), ALL.len());
+        for d in ALL {
+            assert!(d.key.contains('.'), "{}", d.key);
+            assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
+        }
+    }
+
+    #[test]
+    fn a_settings_toml_written_by_the_old_code_loads() {
+        // As speaker_setting, fov_setting and video_setting wrote it.
+        let data = tmp("old");
+        std::fs::write(
+            settings::path_in(&data),
+            "[pad_speaker]\nenabled = false\n\n[graphics]\nfov = 95\nfps = \"uncapped\"\nrender_scale = 2\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(FOV.key), Some(Value::Int(95)));
+        assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
+        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        // `fov = 0` was retail.
+        std::fs::write(settings::path_in(&data), "[graphics]\nfov = 0\n").unwrap();
+        assert_eq!(with_env(&data, &[]).0.get(FOV.key), Some(Value::Int(70)));
+    }
+
+    #[test]
+    fn the_variables_read_as_before() {
+        let data = tmp("env");
+        let (s, p) = with_env(
+            &data,
+            &[
+                ("H2_FOV", "0"),
+                ("H2_FPS", "Uncapped"),
+                ("H2_RENDER_SCALE", "6"),
+                ("H2_PAD_SPEAKER", "0"),
+            ],
+        );
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
+        assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
+        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
+        assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        assert!(ALL.iter().all(|d| s.state(d.key).unwrap().locked));
+        // Bad ones are reported and ignored.
+        let (s, p) = with_env(
+            &data,
+            &[
+                ("H2_FOV", "20"),
+                ("H2_FPS", "45"),
+                ("H2_RENDER_SCALE", "2x"),
+            ],
+        );
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert!(p[1].message.contains("H2_FPS=\"45\""), "{}", p[1]);
+        assert!(ALL.iter().all(|d| !s.state(d.key).unwrap().locked));
+        // H2_PAD_SPEAKER may name a routes file.
+        let routes = data.join("routes.toml");
+        std::fs::write(&routes, "enabled = false\n").unwrap();
+        let text = routes.display().to_string();
+        assert_eq!(pad_speaker_env(&text), Ok(Value::Bool(false)));
+        assert_eq!(pad_speaker_env("1"), Ok(Value::Bool(true)));
+        assert!(pad_speaker_env(&data.join("missing.toml").display().to_string()).is_err());
+    }
+}

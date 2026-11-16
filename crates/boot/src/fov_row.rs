@@ -4,10 +4,8 @@
 //! docs/settings-menu.md "Field of view" for the addresses, the evidence
 //! and why this stays out of the simulation.
 //!
-//! **The row** is one of the Video screen's rows: the Controls row text
-//! function, on the Video screen's list, fills our label and the value (the
-//! degrees, as our own strings), and the row-chosen handler steps the value
-//! and returns without running the original.
+//! **The row** is one of the Video screen's rows, drawn and pressed by the
+//! `ui` model from the `graphics.fov` setting (`crate::setting_defs::FOV`).
 //!
 //! **The camera.** `0x187130` is the game's per-local-player field of view
 //! (eax = the player-control index, result in xmm0, plain `ret`): the
@@ -23,13 +21,10 @@
 //! upper clamp is raised to the setting when the setting is above it, and
 //! put back otherwise.
 //!
-//! The hooks are registered by `layout_glue::install` (the row shares the
-//! list constructor, the row text function, the row-chosen handler and the
-//! string lookup with the other rows); the logic is here, over [`Gm`].
+//! The camera hook is registered by `layout_glue::install`; the logic is
+//! here, over [`Gm`].
 
-use crate::fov_setting::{self, FovSetting};
-use crate::layout_glue::{Gm, ID_BASE};
-use crate::speaker_row;
+use crate::layout_glue::Gm;
 
 /// `player_control_get_field_of_view`: our camera hook.
 pub const PLAYER_FOV: u32 = 0x0018_7130;
@@ -51,44 +46,11 @@ const TAG_INSTANCES: u32 = 0x004e_3b44;
 /// The unit definition's camera field of view (radians).
 const UNIT_CAMERA_FOV: u32 = 0xcc;
 
-/// Our label and value strings, in `layout_glue::is_ours`'s range.
-pub const LABEL_ID: u32 = ID_BASE + 0x21;
-pub const LABEL_TEXT: &str = "Field of View";
-const VALUE_ID_BASE: u32 = ID_BASE + 0x40;
-
-/// The string id that shows `degrees`.
-pub fn value_id(degrees: u32) -> u32 {
-    let d = degrees.clamp(fov_setting::ANY_MIN, fov_setting::ANY_MAX);
-    VALUE_ID_BASE + (d - fov_setting::ANY_MIN)
-}
-
-/// Every string this row needs: the label and each value it can show.
-pub fn strings() -> Vec<(u32, String)> {
-    let mut v = vec![(LABEL_ID, LABEL_TEXT.to_string())];
-    v.extend((fov_setting::ANY_MIN..=fov_setting::ANY_MAX).map(|d| (value_id(d), d.to_string())));
-    v
-}
-
-/// The texts to set for the Controls row text call with the stack at `esp`:
-/// `(text widget index, string id)` for the label and the value, or `None`
-/// for any row but ours.
-pub fn row_texts<M: Gm>(m: &M, esp: u32, row: i16, shown: u32) -> Option<[(u32, u32); 2]> {
-    let item = m.u32(esp.wrapping_add(4))?;
-    (speaker_row::item_row(m, item)? == row).then_some([
-        (speaker_row::LABEL_TEXT_INDEX, LABEL_ID),
-        (speaker_row::VALUE_TEXT_INDEX, value_id(shown)),
-    ])
-}
-
-/// A row-chosen call for `chosen` (read with `layout_glue::chosen_row`):
-/// for our row, step the value and return true (the original must not
-/// run); false otherwise.
-pub fn chosen(chosen: Option<i16>, row: i16, setting: &FovSetting) -> bool {
-    if chosen != Some(row) {
-        return false;
-    }
-    setting.step();
-    true
+/// The camera's unzoomed field of view in radians for `degrees` (the
+/// `graphics.fov` setting), or `None` for retail (70): the hook then
+/// changes nothing.
+pub fn target(degrees: u32) -> Option<f32> {
+    (degrees != crate::setting_defs::FOV_RETAIL as u32).then(|| (degrees as f32).to_radians())
 }
 
 fn f32_at<M: Gm>(m: &M, a: u32) -> Option<f32> {
@@ -156,7 +118,6 @@ pub fn apply<M: Gm>(m: &mut M, user: u32, result: f32, target: Option<f32>) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout_glue::{chosen_row, is_ours};
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -177,26 +138,6 @@ mod tests {
             }
             true
         }
-    }
-
-    const ESP: u32 = 0x1000;
-    const ITEM: u32 = 0x2000;
-    const ROW_PTR: u32 = 0x3000;
-    const ROW: i16 = 7;
-
-    fn text_call(row: i16) -> Fake {
-        let mut f = Fake::default();
-        f.set_u32(ESP + 4, ITEM);
-        f.set_u16(ITEM + 0x70, row as u16);
-        f
-    }
-
-    fn chosen_call(row: i16) -> Fake {
-        let mut f = Fake::default();
-        f.set_u32(ESP + 4, 0xdead_0000);
-        f.set_u32(ESP + 8, ROW_PTR);
-        f.set_u16(ROW_PTR, row as u16);
-        f
     }
 
     fn deg(d: f32) -> f32 {
@@ -225,78 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn the_row_shows_our_label_and_the_degrees() {
-        let f = text_call(ROW);
-        assert_eq!(
-            row_texts(&f, ESP, ROW, 70),
-            Some([(0, LABEL_ID), (1, value_id(70))])
-        );
-        assert_eq!(
-            row_texts(&f, ESP, ROW, 95),
-            Some([(0, LABEL_ID), (1, value_id(95))])
-        );
-        let all = strings();
-        let text = |id| all.iter().find(|(i, _)| *i == id).map(|(_, t)| t.as_str());
-        assert_eq!(text(LABEL_ID), Some("Field of View"));
-        assert_eq!(text(value_id(70)), Some("70"));
-        assert_eq!(text(value_id(120)), Some("120"));
-        assert_eq!(text(value_id(93)), Some("93"));
-        assert_eq!(text(value_id(150)), Some("150"));
-        // Every id is ours, distinct, and clear of the other rows' ids.
-        let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
-        assert!(ids.iter().all(|i| is_ours(*i)));
-        ids.extend(
-            crate::layout_glue::served_strings(true, true)
-                .iter()
-                .map(|(i, _)| *i),
-        );
-        let n = ids.len();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), n);
-    }
-
-    #[test]
-    fn vanilla_rows_and_the_speaker_row_go_elsewhere() {
-        for r in [0i16, 1, 2, 3, 4, 5, 6, 8, -1] {
-            assert_eq!(row_texts(&text_call(r), ESP, ROW, 90), None, "{r}");
-            let s = FovSetting::new(None, None);
-            assert!(!chosen(chosen_row(&chosen_call(r), ESP), ROW, &s), "{r}");
-            assert_eq!(s.shown(), 70, "row {r} must not step");
-        }
-        assert_eq!(row_texts(&Fake::default(), ESP, ROW, 90), None);
-        assert!(!chosen(
-            chosen_row(&Fake::default(), ESP),
-            ROW,
-            &FovSetting::new(None, None)
-        ));
-    }
-
-    #[test]
-    fn choosing_the_row_steps_and_the_text_follows() {
-        let s = FovSetting::new(None, None);
-        let press = chosen_call(ROW);
-        let text = text_call(ROW);
-        let value = |s: &FovSetting| row_texts(&text, ESP, ROW, s.shown()).unwrap()[1].1;
-        assert_eq!(value(&s), value_id(70));
-        assert!(chosen(chosen_row(&press, ESP), ROW, &s));
-        assert_eq!(value(&s), value_id(75));
-        for _ in 0..9 {
-            chosen(chosen_row(&press, ESP), ROW, &s);
-        }
-        assert_eq!(value(&s), value_id(120));
-        assert!(chosen(chosen_row(&press, ESP), ROW, &s));
-        assert_eq!(value(&s), value_id(70));
-    }
-
-    #[test]
-    fn a_locked_row_is_handled_but_changes_nothing() {
-        let s = FovSetting::new(Some(100), None);
-        assert!(chosen(chosen_row(&chosen_call(ROW), ESP), ROW, &s));
-        assert_eq!(s.shown(), 100);
-    }
-
-    #[test]
     fn retail_returns_the_games_value_bit_for_bit() {
         for v in [deg(70.0), deg(35.0), deg(8.75), 0.0, f32::NAN, 1.0e-30] {
             assert_eq!(camera_fov(v, Some(deg(70.0)), None).to_bits(), v.to_bits());
@@ -305,9 +174,9 @@ mod tests {
             assert_eq!(apply(&mut f, 0, v, None).to_bits(), v.to_bits());
             assert_eq!(f.0, before, "retail writes nothing");
         }
-        // 70 (or 0) from the setting is retail.
-        assert_eq!(FovSetting::new(Some(70), None).target(), None);
-        assert_eq!(FovSetting::new(Some(0), None).target(), None);
+        // 70 from the setting (0 in the file or H2_FOV reads as 70) is retail.
+        assert_eq!(target(70), None);
+        assert_eq!(target(75), Some(deg(75.0)));
     }
 
     #[test]
