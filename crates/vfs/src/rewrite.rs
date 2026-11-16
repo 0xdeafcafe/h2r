@@ -87,6 +87,9 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
 }
 
 impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
+    fn map_id(&mut self, path: &str) -> Option<content::MapId> {
+        self.inner.map_id(path)
+    }
     fn read_only(&self) -> bool {
         true
     }

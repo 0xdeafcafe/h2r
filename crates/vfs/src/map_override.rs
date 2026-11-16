@@ -34,6 +34,8 @@ struct Override {
     file: File,
     path: PathBuf,
     len: u64,
+    /// Its identity, hashed on first ask.
+    id: Option<content::MapId>,
 }
 
 pub struct MapOverrideBackend<B> {
@@ -206,7 +208,43 @@ fn find(dir: &Path, name: &str) -> std::result::Result<Option<Override>, String>
         file,
         path: target,
         len: meta.len(),
+        id: None,
     }))
+}
+
+/// The `MapId` of a whole-file override of map `map`.
+pub(crate) fn override_id(map: &str, file: &Path) -> std::io::Result<content::MapId> {
+    let mut f = File::open(file)?;
+    let mut h = content::Hasher::default();
+    let mut buf = vec![0; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    let manifest = content::Manifest {
+        package: content::manifest::Package {
+            format: content::manifest::FORMAT,
+            name: map.to_owned(),
+            author: None,
+            description: None,
+            image: None,
+        },
+        base: content::manifest::Base {
+            map: map.to_owned(),
+            sha256: None,
+            derived: true,
+        },
+        patches: vec![content::manifest::Layer {
+            file: format!("{map}.map"),
+            sha256: h.finish(),
+        }],
+        packs: Vec::new(),
+        result: None,
+    };
+    Ok(content::MapId::of(&manifest))
 }
 
 impl<B: Backend> Backend for MapOverrideBackend<B> {
@@ -255,6 +293,22 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
+    }
+    /// An overridden map is a user map: the identity of a derived manifest
+    /// whose one layer is the whole file, so a local edit is never taken
+    /// for retail. Hashed once, on first ask.
+    fn map_id(&mut self, path: &str) -> Option<content::MapId> {
+        let Some(name) = is_map_path(path) else {
+            return self.inner.map_id(path);
+        };
+        let map = name[..name.len() - 4].to_ascii_lowercase();
+        let Some(o) = self.chosen(path) else {
+            return self.inner.map_id(path);
+        };
+        if o.id.is_none() {
+            o.id = Some(override_id(&map, &o.path).ok()?);
+        }
+        o.id
     }
     /// An overridden map is all of its host file.
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
@@ -381,6 +435,22 @@ mod tests {
                 n => out.extend_from_slice(&buf[..n]),
             }
         }
+    }
+
+    #[test]
+    fn an_override_has_a_derived_id_and_other_paths_have_none() {
+        let t = Temp::new("id");
+        std::fs::write(t.maps().join("a.map"), b"edited map bytes").unwrap();
+        let (mut b, _) = backend(&t.maps());
+        let id = b.map_id("maps\\A.MAP").unwrap();
+        assert_eq!(b.map_id("maps\\a.map"), Some(id));
+        assert_eq!(id, override_id("a", &t.maps().join("a.map")).unwrap());
+        // Not overridden, or not a map: the disc's, which says nothing.
+        assert_eq!(b.map_id("maps\\b.map"), None);
+        assert_eq!(b.map_id("default.xbe"), None);
+        // Derived, so never a retail id for the same bytes' hash.
+        let retail = content::MapId::retail("a", content::Sha256::of(b"edited map bytes"));
+        assert_ne!(id, retail);
     }
 
     #[test]

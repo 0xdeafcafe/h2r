@@ -443,6 +443,50 @@ On the menu the render thread saw no reads in a frame at all. This needs
 dependency tracking between surfaces, so it is an optimisation for later, not
 part of the first design.
 
+### Lazy reference (built)
+
+`ScaledBackend::set_lazy_reference`, off by default (`H2_LAZY_REFERENCE=1`
+turns it on; see the measurements below for why it is not on yet). The reference's draws and whole clears into scaled surfaces
+(the frame buffers, the depth buffer and frame-sized targets: everything
+the view draws itself) are queued instead of run:
+
+- Anything that needs the reference's scaled surfaces runs the queue
+  first, in order: a read-back, a write, copy or snapshot of a surface, a
+  depth texture, the mirror, a view repair or fill, a present with a hook
+  on the reference (`H2_BOOT_GFX`'s 1x frames), a scale change, and any
+  reference draw or clear that is not queued and draws into or with a
+  scaled surface, samples one in place, or changes a surface a queued
+  draw samples in place. Draws into guest-size targets whose textures are
+  copies (uploads, snapshots, depth textures) do not depend on the queue
+  and run at once.
+- A whole clear of a target drops the queued work whose every effect it
+  overwrites and that no work kept after it depends on (nothing is
+  dropped while a queued draw samples a surface in place). A frame whose
+  back buffer and depth nobody reads is never drawn at 1x.
+- Counted draws (visibility tests) are never queued, so pixel counts do
+  not wait for the queue.
+- A queued draw's outcome is the reference's judge's (`Backend::judge`),
+  what the render thread answers the guest with anyway; when the draw runs
+  its real outcome is compared and a difference counted
+  (`ScaleStats::lazy_mismatches`).
+- Off when the reference has no judge, or the view cannot keep the
+  reference's textures alive (`ScaleView::retain_reference_texture`).
+
+Counters: `ScaleStats::reference_deferred`, `reference_replayed` (run
+late) and `reference_dropped` (never run). Tests in
+`crates/d3d/tests/render_scale.rs`: the guest's answers (count, written-back
+level, skipped draws, device memory) and the reference's frame are the
+same with it on and off at 2x and 4x; every phase-2 scene gives the same
+reference and view images on and off; unread frames are never drawn by
+the reference (only the last two, on the flipping pair, run when read);
+a queued draw that samples a level in place sees the level as it was when
+a later draw changes it (the test fails without that dependency).
+
+How much it saves in the game depends on how often a frame reads its
+frame buffers back through the reference. Snapshots of the back buffer
+(the crossfade, bloom sources) and the depth textures run the queue each
+time; `ScaleStats` in the run report shows the split.
+
 ## Test plan
 
 No test here needs a game build or a game run in CI. Tests invent their data.

@@ -308,6 +308,13 @@ impl Vfs {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.host_file(&path)
     }
+    /// Which map exactly `name` serves, when it isn't the retail disc map:
+    /// a map package's `MapId`, or a whole-file override's. `None` means
+    /// retail (or not a map). See [`Backend::map_id`].
+    pub fn map_id(&mut self, name: &str) -> Option<content::MapId> {
+        let (mount, path) = self.resolve(name).ok()?;
+        self.mounts[mount].backend.map_id(&path)
+    }
     /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
     /// It reserves logical volume capacity without changing the initial EOF.
     pub fn open_allocated(
