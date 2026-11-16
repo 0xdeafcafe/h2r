@@ -1091,7 +1091,7 @@ fn motd_set(mut args: Args) -> Result<()> {
             let raw = fs::read(&path).with_context(|| format!("reading {path}"))?;
             // A file the game would reject is refused; one with the zero
             // header of early builds gets the real header.
-            Motd::parse_legacy(&raw).with_context(|| format!("{path}"))?;
+            Motd::parse_legacy(&raw).with_context(|| path.to_string())?;
             if live_proto::title_file::is_legacy(&raw) {
                 live_proto::title_file::seal(
                     live_proto::motd::VERSION,

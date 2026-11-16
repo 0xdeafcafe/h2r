@@ -507,6 +507,7 @@ mod tests {
             .strip_prefix(&format!("{}/signin#once=", session.server))
             .expect("the token rides in the fragment");
         assert_eq!(token.len(), 44);
+        #[allow(clippy::result_large_err)] // ureq's own error type
         let redeem = || {
             ureq::post(&format!("{}/v1/local/signin", session.server))
                 .set("content-type", "application/json")

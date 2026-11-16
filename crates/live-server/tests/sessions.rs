@@ -125,7 +125,7 @@ async fn host_lifecycle_filters_noops_authority_and_atomic_batches() {
     let pos = h.live.position();
     let no_op = body(&a, id, session::UPDATED, update);
     assert_eq!(
-        batch(&h, &a, id, &[no_op.clone()]).await.status,
+        batch(&h, &a, id, std::slice::from_ref(&no_op)).await.status,
         StatusCode::CREATED
     );
     assert_eq!(

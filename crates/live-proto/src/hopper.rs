@@ -509,8 +509,10 @@ impl HopperFile {
     pub fn variant(&self, i: usize, j: usize) -> Result<Variant, HopperError> {
         let at = self.slot_at(i, j)? + R_VARIANT;
         let name: Vec<u16> = self.image[at + V_NAME..][..0x40]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .take_while(|u| *u != 0)
             .collect();
         Ok(Variant {

@@ -125,7 +125,9 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
 fn utf16(b: &[u8], at: usize, units: usize) -> String {
     let raw = b.get(at..at + units * 2).unwrap_or_default();
     let units: Vec<u16> = raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|u| *u != 0)
         .collect();
@@ -166,7 +168,9 @@ pub fn levels(
     }
     let all = block(&data, LEVEL_DATA_MP, LEVEL_SIZE, MAX_LEVELS, read)?;
     Ok(all
-        .chunks_exact(LEVEL_SIZE)
+        .as_chunks::<LEVEL_SIZE>()
+        .0
+        .iter()
         .filter_map(|e| {
             let id = le32(e, 0)?;
             let name = utf16(e, LEVEL_NAME, 32);
@@ -224,7 +228,9 @@ pub fn builtins(
 ) -> Result<Vec<VariantEntry>> {
     let all = block(goof, GOOF_BUILTINS, BUILTIN_SIZE, MAX_BUILTINS, read)?;
     Ok(all
-        .chunks_exact(BUILTIN_SIZE)
+        .as_chunks::<BUILTIN_SIZE>()
+        .0
+        .iter()
         .filter_map(|e| {
             let (game_type, engine) = game_type(le32(e, 4)?)?;
             let name = name(le32(e, 0)?)?;

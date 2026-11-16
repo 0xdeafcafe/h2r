@@ -94,7 +94,9 @@ fn focused_screen_requires_the_retail_identity_a_writable_terminated_buffer_and_
     assert!(k::detect(&m).is_none());
     assert!(k::detect(&Guest::new()).is_none());
 }
-fn world() -> (Arc<Runtime>, KeyboardMouse, Arc<Mutex<Vec<(u32, u32)>>>) {
+type Calls = Arc<Mutex<Vec<(u32, u32)>>>;
+
+fn world() -> (Arc<Runtime>, KeyboardMouse, Calls) {
     let mut d = Dispatch::default();
     unsafe {
         d.register_generated_module(
