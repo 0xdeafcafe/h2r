@@ -1,6 +1,7 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 import type { MapOutline } from "../api/types";
-import type { SampledHit, SampledPlayer, SampledVehicle } from "../state/frames";
+import type { SampledHit, SampledMachine, SampledPlayer, SampledVehicle } from "../state/frames";
+import type { MapFeatures } from "../map/features";
 import { onAnimationFrame } from "../map/scheduler";
 import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type RosterEntry } from "../map/render";
 import { readPalette, type MapPalette } from "../map/palette";
@@ -19,6 +20,8 @@ export interface MapFrame {
   hits?: { tick: number; hits: SampledHit[] } | null;
   /** The level zone (structure BSP) loaded now, when the frames say. */
   bsp?: number | null;
+  /** Machines that move (lift platforms, doors, big scripted things), when the frames have them. */
+  machines?: SampledMachine[];
 }
 
 export default function MapCanvas(props: {
@@ -30,6 +33,8 @@ export default function MapCanvas(props: {
   /** A picture that rarely changes (a finished game): redraw twice a second. */
   still?: boolean;
   highlight?: () => number | null;
+  /** The map's teleporters and lifts, to draw under the players. */
+  features?: () => MapFeatures | null;
   class?: string;
   label?: string;
 }) {
@@ -111,6 +116,7 @@ export default function MapCanvas(props: {
         hits: props.mini ? undefined : feed.liveHits(now),
         grenades: props.mini || still ? undefined : feed.liveGrenades(now),
         still,
+        features: props.mini ? null : props.features?.() ?? null,
         players: f.players,
         actors: f.actors,
         vehicles: f.vehicles,

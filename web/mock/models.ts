@@ -393,6 +393,20 @@ export const MOCK_VEHICLES: Record<string, () => ModelSpec> = {
   warthog: () => car(2.3, 1.3, 0.9, { driver: [0.1, 0.3, 0.6], passenger: [0.1, -0.3, 0.6], gunner: [-0.7, 0, 0.9] }),
 };
 
+/** Stand-in models for big moving things the map's glb has no node for (`models.objects`). */
+export const MOCK_OBJECTS: Record<string, () => ModelSpec> = {
+  walker: () => {
+    const legs: ModelBox[] = [];
+    for (const fx of [-1.6, 1.6]) for (const fy of [-1.3, 1.3]) legs.push({ min: [fx - 0.3, fy - 0.3, 0], max: [fx + 0.3, fy + 0.3, 2.2], material: 1 });
+    return {
+      boxes: [{ min: [-2.4, -1.7, 2.2], max: [2.4, 1.7, 3.6], material: 0 }, { min: [2.4, -0.6, 2.6], max: [3.4, 0.6, 3.3], material: 1 }, ...legs],
+      colours: false,
+      materials: [{ name: "hull", colour: [0.42, 0.3, 0.5], metallic: 0.5, roughness: 0.45 }, { name: "leg", colour: [0.2, 0.18, 0.24], metallic: 0.6, roughness: 0.5 }],
+      nodes: {}, extras: {},
+    };
+  },
+};
+
 /** Stand-in AI bipeds: a short one and a plain one. The other species the
  *  mock's campaign sends have none, so the fallbacks run. */
 export const MOCK_ACTOR_BIPEDS: Record<string, (rigged?: boolean) => ModelSpec> = {
@@ -404,7 +418,7 @@ type Entry = { glb: string; clips?: string[]; class?: string };
 
 export interface MockModels {
   /** The manifest's `models` table. */
-  models: { version: 1 | 2; bipeds: Record<string, Entry>; weapons: Record<string, Entry>; vehicles: Record<string, Entry> };
+  models: { version: 1 | 2; bipeds: Record<string, Entry>; weapons: Record<string, Entry>; vehicles: Record<string, Entry>; objects: Record<string, Entry> };
   file(name: string): { bytes: Uint8Array; type: string } | null;
 }
 
@@ -421,10 +435,11 @@ export function mockModels(rigged = true): MockModels {
       bipeds: table("biped", bipedSet, (k) => (rigged ? { clips: bipedSet[k]!(true).rig!.clips.map((c) => c.name) } : {})),
       weapons: table("weapon", MOCK_WEAPONS, (k) => (rigged && MOCK_WEAPON_CLASSES[k] ? { class: MOCK_WEAPON_CLASSES[k] } : {})),
       vehicles: table("vehicle", MOCK_VEHICLES),
+      objects: table("object", MOCK_OBJECTS),
     },
     file(name) {
-      const m = /^models\/(biped|weapon|vehicle)\/([a-z0-9_]+)\.glb$/.exec(name);
-      const sets: Record<string, Record<string, (rigged?: boolean) => ModelSpec>> = { biped: bipedSet, weapon: MOCK_WEAPONS, vehicle: MOCK_VEHICLES };
+      const m = /^models\/(biped|weapon|vehicle|object)\/([a-z0-9_]+)\.glb$/.exec(name);
+      const sets: Record<string, Record<string, (rigged?: boolean) => ModelSpec>> = { biped: bipedSet, weapon: MOCK_WEAPONS, vehicle: MOCK_VEHICLES, object: MOCK_OBJECTS };
       const make = m ? sets[m[1]!]![m[2]!] : undefined;
       if (!make) return null;
       let bytes = done.get(name);

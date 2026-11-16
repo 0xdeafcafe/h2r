@@ -1,7 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
-import type { Frame, FrameHit, FramePlayer, FrameVehicle } from "../api/types";
+import type { Frame, FrameHit, FrameMachine, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -361,6 +361,66 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
   return out;
 }
 
+// ---- machines ----
+
+export const MAX_MACHINES = 128;
+
+export interface SampledMachine {
+  id: string;
+  /** The map glb's `machines` child it moves, when it is one. */
+  node: string | null;
+  kind: string;
+  x: number; y: number; z: number;
+  forward: Aim;
+  up: Aim;
+  /** A device's travel, 0 to 1, when it says. */
+  position: number | null;
+}
+
+export function fromFrameMachine(m: FrameMachine): SampledMachine | null {
+  const id = cleanId(m?.id);
+  if (!id || !isPos(m.pos)) return null;
+  // A node name is a tag stem and a number; anything else can't name a glb node.
+  const node = typeof m.node === "string" && /^[a-z0-9_ .-]{1,64}$/i.test(m.node) ? m.node : null;
+  const position = typeof m.position === "number" && Number.isFinite(m.position) ? Math.min(1, Math.max(0, m.position)) : null;
+  return { id, node, kind: cleanId(m.kind) ?? "machine", x: m.pos[0], y: m.pos[1], z: m.pos[2], forward: cleanAim(m.forward) ?? [1, 0, 0], up: cleanAim(m.up) ?? [0, 0, 1], position };
+}
+
+/** How many frames back a machine's last word is looked for: recorded
+ *  frames carry every machine, live ones only those that moved. */
+const MACHINE_LOOKBACK = 4;
+
+/** The machines at a (fractional) tick: each one's latest state in the
+ *  frames at or just behind it, eased towards the next frame's when that
+ *  has it too. One that hasn't been sent lately isn't here: a live view
+ *  keeps the last it heard (FrameBuffer). */
+export function sampleMachines(frames: readonly Frame[], tick: number): SampledMachine[] {
+  const i = findFrame(frames, tick);
+  if (i < 0) return [];
+  const at = new Map<string, { m: SampledMachine; tick: number }>();
+  for (let j = i; j >= 0 && j > i - MACHINE_LOOKBACK; j--) {
+    const list = frames[j]!.machines;
+    if (!list) continue;
+    for (const raw of list.slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m && !at.has(m.id)) at.set(m.id, { m, tick: frames[j]!.tick }); }
+  }
+  const fb = frames[i + 1];
+  const next = new Map<string, SampledMachine>();
+  if (fb && fb.tick > frames[i]!.tick) for (const raw of (fb.machines ?? []).slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) next.set(m.id, m); }
+  const out: SampledMachine[] = [];
+  for (const { m: a, tick: ta } of at.values()) {
+    const b = next.get(a.id);
+    if (!b || (b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(a); continue; }
+    // It was last heard of at `ta`, but it only started for where `b` has it after the frame behind `tick`.
+    const from = Math.max(ta, frames[i]!.tick), t = Math.min(1, Math.max(0, (tick - from) / (fb!.tick - from)));
+    out.push({
+      ...a, x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
+      forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
+      position: a.position !== null && b.position !== null ? lerp(a.position, b.position, t) : a.position,
+    });
+  }
+  return out;
+}
+
 export interface DeathMarker { index: number; x: number; y: number; z: number; tick: number; bornAt: number }
 
 /** A live game's recent frames plus a clock mapping wall time to ticks.
@@ -372,6 +432,9 @@ export class FrameBuffer {
   /** Wall time (ms) at which tick 0 would have arrived; smoothed. */
   private offset: number | null = null;
   readonly bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
+
+  /** Every machine heard of, as last sent. */
+  private machines = new Map<string, SampledMachine>();
 
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
 
@@ -385,10 +448,16 @@ export class FrameBuffer {
       if (frame.tick < last.tick - TICKS_PER_SECOND * 5) {
         // The game restarted its tick counter: start over.
         this.frames = [];
+        this.machines.clear();
         this.offset = null;
       } else return;
     }
     this.frames.push(frame);
+    // Machines are only sent when they move: keep the last word on each.
+    for (const raw of (frame.machines ?? []).slice(0, MAX_MACHINES)) {
+      const m = fromFrameMachine(raw);
+      if (m && (this.machines.has(m.id) || this.machines.size < MAX_MACHINES)) this.machines.set(m.id, m);
+    }
     if (this.frames.length > this.capacity) this.frames.splice(0, this.frames.length - this.capacity);
     for (const p of frame.players) {
       const [x, y, z] = p.pos;
@@ -428,6 +497,14 @@ export class FrameBuffer {
 
   sampleBsp(now: number): number | null {
     return sampleBsp(this.frames, this.renderTick(now));
+  }
+
+  /** Every machine: the ones moving now where the render tick has them, the rest where they were last sent. */
+  sampleMachines(now: number): SampledMachine[] {
+    if (!this.machines.size) return [];
+    const out = new Map(this.machines);
+    for (const m of sampleMachines(this.frames, this.renderTick(now))) out.set(m.id, m);
+    return [...out.values()];
   }
 
   /** Records where a victim died: the kill's `pos` when given, else the

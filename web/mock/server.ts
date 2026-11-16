@@ -12,6 +12,9 @@
 // block figures, skinned, with a few animation clips) to the manifest;
 // H2_MOCK_MODELS=static makes them the static version 1 kind; without it
 // players are capsules.
+// H2_MOCK_FURNITURE=0 leaves out the map furniture (mock/fixtures.ts: a
+// moving lift platform and a walker in the frames' `machines`, teleporters
+// with links and a gravity lift in each glb's extras).
 // H2_MOCK_ACTION=0 leaves stances, actions and damage (mock/action.ts) out
 // of the frames, like a sender from before they existed.
 // H2_MOCK_ACTORS=1 puts the campaign's AI and vehicles (mock/campaign.ts)
@@ -31,6 +34,7 @@ import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
 import { campaignHook } from "./campaign";
 import { actionHooks } from "./action";
+import { machineHooks } from "./fixtures";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -56,12 +60,19 @@ if (process.env.H2_MOCK_ACTION !== "0") {
   world.frameHooks.push(action.frame);
   world.recordHooks.push(action.record);
 }
+// Map furniture (mock/fixtures.ts): a lift platform and a walker in the frames' `machines`, teleporters and a lift in the glb; H2_MOCK_FURNITURE=0 for none.
+const furniture = process.env.H2_MOCK_FURNITURE !== "0";
+if (furniture) {
+  const machines = machineHooks();
+  world.frameHooks.push(machines.frame);
+  world.recordHooks.push(machines.record);
+}
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
 const indoor = !!process.env.H2_MOCK_INDOOR && process.env.H2_MOCK_INDOOR !== "0";
-const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor });
+const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry({ indoor, furniture });
 const models = process.env.H2_MOCK_MODELS && process.env.H2_MOCK_MODELS !== "0" ? mockModels(process.env.H2_MOCK_MODELS !== "static") : null;
 
 interface StreamData {

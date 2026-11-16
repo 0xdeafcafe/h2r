@@ -8,10 +8,11 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawActor, drawGrenade, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
+import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawFeatures, drawActor, drawGrenade, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
 import { actorColour, vehicleBox } from "../viewer/models";
 import { ShotQueue } from "./shots";
 import { EventFeed, grenadeTrail } from "./events";
+import type { MapFeatures } from "./features";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
   type MapViewDef, type MapViews, type PanZoom,
@@ -41,6 +42,8 @@ export default function ViewMap(props: {
   view: string;
   image: (id: string) => string;
   highlight?: () => number | null;
+  /** The map's teleporters and lifts, to draw under the players. */
+  features?: () => MapFeatures | null;
   label?: string;
   /** A thumbnail: small dots, no names, and no panning or zooming. */
   mini?: boolean;
@@ -229,7 +232,10 @@ export default function ViewMap(props: {
           strokeTracer(ctx, x0 + (dx / len) * r, y0 + (dy / len) * r, x0 + dx * k, y0 + dy * k, shot.alpha);
         }
       }
-      // Vehicles in use, then the AI (small squares, never named), under the players.
+      // The map's own furniture, plotted in the world so an iso view stands a lift up.
+      const feats = props.mini ? null : props.features?.();
+      if (feats) drawFeatures(ctx, feats, (x, y, z) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)]; }, Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k);
+      // Vehicles, then the AI (small squares, never named), under the players.
       if (!props.mini) for (const veh of f.vehicles ?? []) {
         const [px, py] = worldToPixel(m, veh.x, veh.y, veh.z), [fx, fy] = worldToPixel(m, veh.x + veh.forward[0], veh.y + veh.forward[1], veh.z + veh.forward[2]);
         const [len, wid] = vehicleBox(veh.kind), unit = Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k, k = Math.max(unit, 9 / wid);

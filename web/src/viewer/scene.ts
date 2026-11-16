@@ -33,6 +33,10 @@ import { BipedAnim, SpeedMeter, actionShot, clipFor, paceScale, weaponClass, typ
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "./zones";
+import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
+import { buildFeatures } from "./features3d";
+import { parseFeatures, type MapFeatures } from "../map/features";
+import type { SampledMachine } from "../state/frames";
 import { cameraFit, markerScale, type Box3 } from "./camera";
 import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
 
@@ -135,6 +139,14 @@ export class ViewerScene {
   private zones: Array<{ obj: THREE.Object3D; name: string; cinematic: boolean }> = [];
   private bsp: number | null = null;
   private allZones = false;
+  // The level's machines by node name, the frames' machines eased, and
+  // stand-ins for the ones the glb has no node for.
+  private machineNodes = new Map<string, MachineNode>();
+  private shownMachines = new Map<string, SampledMachine>();
+  private looseMachines = new Map<string, VehicleObj>();
+  private features: MapFeatures | null = null;
+  private featureGroup: THREE.Group | null = null;
+  private featuresOn = true;
   private backdrop = false;
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
@@ -151,6 +163,7 @@ export class ViewerScene {
   private v0 = new THREE.Vector3();
   private v1 = new THREE.Vector3();
   private v2 = new THREE.Vector3();
+  private q0 = new THREE.Quaternion();
   private bounds: Box3 | null = null;
   private hasMap = false;
   private scale = 1;
@@ -295,16 +308,98 @@ export class ViewerScene {
         this.zones.push({ obj: o, name: o.name, cinematic: isCinematic(o.userData, o.name, assetExtras) });
       });
       this.applyZones();
+      // The level's machines: each child of `machines` can be moved by the frames.
+      root.traverse((o) => {
+        if (o.name !== "machines") return;
+        for (const c of o.children) if (c.name && !this.machineNodes.has(c.name)) this.machineNodes.set(c.name, machineNode(c));
+      });
+      this.features = parseFeatures(assetExtras);
       this.map = root;
       this.scene.add(root);
       this.hasMap = true;
       if (this.grid) { this.scene.remove(this.grid); this.grid = null; this.gridKey = ""; }
       // glTF (x, y, z) is game (x, -z, y).
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
+      this.showFeatures();
       this.frameCamera(true);
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** Builds (or drops) the level's teleporters, links and lifts. */
+  private showFeatures() {
+    if (this.featureGroup) { this.scene.remove(this.featureGroup); disposeTree(this.featureGroup); this.featureGroup = null; }
+    if (this.features && this.featuresOn) {
+      this.featureGroup = buildFeatures(this.features, Math.max(1, this.scale * 0.8));
+      this.scene.add(this.featureGroup);
+    }
+    this.dirty = true;
+  }
+
+  /** Whether the level has teleporters or lifts to show. */
+  hasFeatures(): boolean { return !!this.features; }
+
+  setFeatures(on: boolean) {
+    this.featuresOn = on;
+    this.showFeatures();
+  }
+
+  /** A machine the level's glb has no node for: its kind's model when the
+   *  server has one, else a box. */
+  private looseMachine(m: SampledMachine): VehicleObj {
+    let o = this.looseMachines.get(m.id);
+    if (!o) {
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0x9a7b4f, roughness: 0.7, metalness: 0.2 });
+      const box = new THREE.Mesh(this.geoBox, boxMat);
+      box.castShadow = true;
+      box.scale.set(2.4, 1.2, 2.4);
+      const group = new THREE.Group();
+      group.add(box);
+      this.scene.add(group);
+      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind };
+      this.looseMachines.set(m.id, o);
+    }
+    const mod = this.models, file = mod?.table.objects[m.kind];
+    const url = mod && file ? modelUrl(mod.root, file) : null;
+    const template = url ? this.library.vehicle(url) : null;
+    const key = template ? url! : "box";
+    if (key !== o.key) {
+      if (o.model) o.group.remove(o.model);
+      o.model = template ? this.library.instantiateVehicle(template, null) : null;
+      if (o.model) o.group.add(o.model);
+      o.box.visible = !o.model;
+      o.key = key;
+      this.dirty = true;
+    }
+    return o;
+  }
+
+  /** Moves the level's machines to where the frames have them. */
+  private updateMachines(list: readonly SampledMachine[], dt: number, snap: boolean) {
+    smoothVehicles(this.shownMachines, list, dt, { snap });
+    for (const m of this.shownMachines.values()) {
+      machineMatrix(m, this.m4);
+      const node = m.node ? this.machineNodes.get(m.node) ?? this.machineNodes.get(THREE.PropertyBinding.sanitizeNodeName(m.node)) : undefined;
+      if (node) {
+        if (placeMachine(node, this.m4)) this.dirty = true;
+        continue;
+      }
+      // (A node the glb doesn't have yet, while the map loads, is a stand-in for now.)
+      const o = this.looseMachine(m), g = o.group;
+      this.m4.decompose(this.v0, this.q0, this.v1);
+      if (!g.position.equals(this.v0) || !g.quaternion.equals(this.q0)) this.dirty = true;
+      g.position.copy(this.v0);
+      g.quaternion.copy(this.q0);
+    }
+    for (const [id, o] of this.looseMachines) {
+      const m = this.shownMachines.get(id);
+      if (m && !(m.node && (this.machineNodes.has(m.node) || this.machineNodes.has(THREE.PropertyBinding.sanitizeNodeName(m.node))))) continue;
+      this.scene.remove(o.group);
+      o.boxMat.dispose();
+      this.looseMachines.delete(id);
+      this.dirty = true;
     }
   }
 
@@ -412,6 +507,9 @@ export class ViewerScene {
     });
     this.map = null;
     this.zones = [];
+    this.machineNodes.clear();
+    this.features = null;
+    this.showFeatures();
     this.hasMap = false;
   }
 
@@ -813,6 +911,8 @@ export class ViewerScene {
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
+    this.updateMachines(frame.machines ?? [], dt, snap);
+
     // Vehicles first: whoever is in one is drawn as the vehicle.
     smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });
     for (const [id, v] of this.shownVehicles) {
@@ -1028,6 +1128,8 @@ export class ViewerScene {
     this.players.clear();
     for (const o of this.vehicles.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
     this.vehicles.clear();
+    for (const o of this.looseMachines.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
+    this.looseMachines.clear();
     this.geoBox.dispose();
     this.effects.dispose();
     this.library.dispose();

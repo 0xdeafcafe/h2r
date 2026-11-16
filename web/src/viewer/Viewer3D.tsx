@@ -64,6 +64,9 @@ export default function Viewer3D(props: Viewer3DProps) {
   const [zones, setZones] = createSignal({ zones: 0, backdrop: false });
   const [allZones, setAllZones] = createSignal(false);
   const [backdrop, setBackdrop] = createSignal(false);
+  // Teleporters, their links and lifts, when the level's glb lists any.
+  const [hasFeatures, setHasFeatures] = createSignal(false);
+  const [features, setFeatures] = createSignal(true);
   const [mapState, setMapState] = createSignal<"loading" | "map" | "grid">("grid");
   // The server's art manifest takes a moment: only say "no geometry" once it has had one.
   const [late, setLate] = createSignal(false);
@@ -130,7 +133,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (props.glb() !== url) return;
       setMapState(ok ? "map" : "grid");
       // The map's own heights are the cut's range now.
-      if (scene) { setRange(scene.cutRange()); applyCut(); setZones(scene.zoneInfo()); scene.setAllZones(allZones()); scene.setBackdrop(backdrop()); }
+      if (scene) { setRange(scene.cutRange()); applyCut(); setZones(scene.zoneInfo()); scene.setAllZones(allZones()); scene.setBackdrop(backdrop()); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
     });
   }));
 
@@ -162,6 +165,9 @@ export default function Viewer3D(props: Viewer3DProps) {
           </Show>
           <Show when={zones().backdrop}>
             <button classList={{ on: backdrop() }} aria-pressed={backdrop()} onClick={() => { setBackdrop(!backdrop()); scene?.setBackdrop(backdrop()); }} title="The far scenery around the playable space">Backdrop</button>
+          </Show>
+          <Show when={hasFeatures()}>
+            <button classList={{ on: features() }} aria-pressed={features()} onClick={() => { setFeatures(!features()); scene?.setFeatures(features()); }} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>
           </Show>
           <Show when={cut()}>
             <input

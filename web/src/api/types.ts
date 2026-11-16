@@ -80,6 +80,22 @@ export interface FrameVehicle {
   occupied?: boolean | null;
 }
 
+/** A device machine or other big scripted mover (a lift platform, a door,
+ *  a walking tank). Sent when its transform or device position changed,
+ *  and all of them in a game's first frame and every recorded frame. */
+export interface FrameMachine {
+  /** The map glb's `machines` child this object is: `<tag stem>_<placement index>`. Absent for one the scenario didn't place. */
+  node?: string | null;
+  id: string;
+  /** The tag's stem. */
+  kind: string;
+  pos: [number, number, number];
+  forward: [number, number, number];
+  up: [number, number, number];
+  /** A device's position, 0 to 1 (how far a door or a lift has travelled). */
+  position?: number | null;
+}
+
 /** An AI-controlled biped (campaign); only living ones are sent. */
 export interface FrameActor {
   id: string;
@@ -106,6 +122,7 @@ export interface Frame {
   vehicles?: FrameVehicle[];
   actors?: FrameActor[];
   hits?: FrameHit[];
+  machines?: FrameMachine[];
   /** The structure BSP the game has loaded (a campaign level's current zone). */
   bsp?: number | null;
 }

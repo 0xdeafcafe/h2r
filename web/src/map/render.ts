@@ -7,6 +7,7 @@ import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
 import type { LiveShot } from "./shots";
 import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "./events";
+import { LIFT_COLOUR, TELEPORTER_COLOUR, linkEnds, type MapFeatures, type TeleporterRole } from "./features";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -39,6 +40,8 @@ export interface Scene {
   /** Players to show as firing with a steady, brighter aim line (reduced
    *  motion, where nothing flashes). */
   firing?: ReadonlySet<number>;
+  /** The map's teleporters, their links and its lifts. */
+  features?: MapFeatures | null;
   /** Reduced motion: nothing floats or flashes. */
   still?: boolean;
   /** Damage on screen now: a line from attacker to victim, a marker and a number. */
@@ -104,6 +107,81 @@ export function drawGrenade(ctx: CanvasRenderingContext2D, pts: readonly Px[], a
   ctx.fillStyle = colour; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.globalAlpha = 1;
+}
+
+/** A teleporter on a 2D map: a ring; a sender has a dot in it, a receiver is open, a two-way has both rings. */
+export function drawTeleporter(ctx: CanvasRenderingContext2D, x: number, y: number, role: TeleporterRole, r = 7) {
+  const colour = TELEPORTER_COLOUR[role];
+  for (const [style, w] of [["rgba(0, 0, 0, 0.7)", 4.5], [colour, 2]] as const) {
+    ctx.strokeStyle = style; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    if (role === "two_way") { ctx.lineWidth = w * 0.6; ctx.beginPath(); ctx.arc(x, y, r * 0.5, 0, Math.PI * 2); ctx.stroke(); }
+  }
+  if (role === "sender") { ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(x, y, r * 0.3, 0, Math.PI * 2); ctx.fill(); }
+}
+
+/** A teleporter link on a 2D map: a dashed curve from one ring to the
+ *  other, bowed to one side so a there-and-back pair doesn't hide the
+ *  floor between them, with an arrowhead where it arrives (both ends for
+ *  a two-way link). */
+export function drawLink(ctx: CanvasRenderingContext2D, from: Px, to: Px, both: boolean, r = 7) {
+  const dx = to[0] - from[0], dy = to[1] - from[1], len = Math.hypot(dx, dy);
+  if (len < r * 2.5) return;
+  const cx = (from[0] + to[0]) / 2 - dy * 0.18, cy = (from[1] + to[1]) / 2 + dx * 0.18;
+  // Start and end on the rings, not under them.
+  const edge = (p: Px): Px => { const ex = cx - p[0], ey = cy - p[1], el = Math.hypot(ex, ey) || 1; return [p[0] + (ex / el) * (r + 2), p[1] + (ey / el) * (r + 2)]; };
+  const a = edge(from), b = edge(to);
+  ctx.lineCap = "round";
+  for (const [style, w] of [["rgba(0, 0, 0, 0.55)", 3.5], ["rgba(214, 238, 255, 0.9)", 1.5]] as const) {
+    ctx.strokeStyle = style; ctx.lineWidth = w;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.quadraticCurveTo(cx, cy, b[0], b[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    for (const tip of both ? [b, a] : [b]) {
+      const ang = Math.atan2(tip[1] - cy, tip[0] - cx);
+      ctx.beginPath();
+      ctx.moveTo(tip[0] - Math.cos(ang - 0.5) * 7, tip[1] - Math.sin(ang - 0.5) * 7);
+      ctx.lineTo(tip[0], tip[1]);
+      ctx.lineTo(tip[0] - Math.cos(ang + 0.5) * 7, tip[1] - Math.sin(ang + 0.5) * 7);
+      ctx.stroke();
+    }
+  }
+}
+
+/** A gravity lift on a 2D map: a translucent disc `r` pixels across its
+ *  radius with chevrons pointing where it sends you. `to` is where it lets
+ *  go, on the canvas; a lift going straight up from above has its chevrons
+ *  pointing up the page. */
+export function drawLift(ctx: CanvasRenderingContext2D, at: Px, to: Px, r: number) {
+  const [x, y] = at;
+  r = Math.max(6, r);
+  ctx.fillStyle = "rgba(156, 140, 255, 0.28)";
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  let dx = to[0] - x, dy = to[1] - y;
+  const len = Math.hypot(dx, dy), across = len > r * 0.75;
+  if (!across) { dx = 0; dy = -1; } else { dx /= len; dy /= len; }
+  for (const [style, w] of [["rgba(0, 0, 0, 0.7)", 4], [LIFT_COLOUR, 1.75]] as const) {
+    ctx.strokeStyle = style; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    if (across) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(to[0], to[1]); ctx.stroke(); }
+    // Two chevrons, one behind the other, along the push.
+    const s = Math.min(r * 0.55, 6);
+    for (const k of across ? [len] : [-s * 0.6, s * 0.6]) {
+      const px = x + dx * (across ? k : -k), py = y + dy * (across ? k : -k);
+      ctx.beginPath();
+      ctx.moveTo(px - dx * s - dy * s, py - dy * s + dx * s);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px - dx * s + dy * s, py - dy * s - dx * s);
+      ctx.stroke();
+    }
+  }
+}
+
+/** All of a map's features, given how to put a game position on the canvas and how many pixels a game unit is. */
+export function drawFeatures(ctx: CanvasRenderingContext2D, f: MapFeatures, at: (x: number, y: number, z: number) => Px, unit: number) {
+  for (const l of f.lifts) drawLift(ctx, at(l.x, l.y, l.z), at(l.x + l.dir[0] * l.length, l.y + l.dir[1] * l.length, l.z + l.dir[2] * l.length), l.radius * unit);
+  for (const l of linkEnds(f)) drawLink(ctx, at(l.from.x, l.from.y, l.from.z), at(l.to.x, l.to.y, l.to.z), l.both);
+  for (const t of f.teleporters) { const [x, y] = at(t.x, t.y, t.z); drawTeleporter(ctx, x, y, t.role); }
 }
 
 /** The colour and look of a vehicle nobody is in: grey and faint. */
@@ -288,6 +366,9 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   ctx.globalAlpha = 1;
 
   const r = s.flat ? (s.mini ? 3 : 5) : s.mini ? 3.5 : 8;
+
+  // The map's own furniture, under everything that moves.
+  if (!s.mini && s.features) drawFeatures(ctx, s.features, (x, y) => [sx(x), sy(y)], v.scale);
 
   // Shots: a fading line from the player along their aim (not on thumbnails).
   if (!s.mini) {

@@ -10,6 +10,7 @@
 
 import { encodePng } from "./gameart";
 import { MAPS, type MockMap } from "./maps";
+import { mockFixtures, type MockFixtures } from "./fixtures";
 
 type V3 = [number, number, number];
 type Rgb = [number, number, number]; // linear, 0..1
@@ -40,6 +41,8 @@ export interface Arena {
   outer?: { min: V3; max: V3 };
   /** Extras for the glb's nodes, by node name. */
   nodeExtras?: Record<string, Record<string, unknown>>;
+  /** The glb's `asset.extras.features`: teleporters, links and lifts. */
+  features?: unknown;
 }
 
 // ---- small vector helpers ----
@@ -252,6 +255,20 @@ export function buildArena(name: string): Arena | null {
   return m && m.outline && make ? make(m) : null;
 }
 
+// ---- furniture ----
+
+/** The arena with the mock's furniture (mock/fixtures.ts): the lift
+ *  platform as a `machines` child, where the scenario has it at rest (its
+ *  mesh in world space, the node untransformed), and the features in the
+ *  glb's extras. Only the glb has them, like the indoor shell. */
+export function furnish(a: Arena, fx: MockFixtures | null): Arena {
+  if (!fx) return a;
+  const b = new Builder(), { base, size } = fx.platform;
+  b.box(base[0] - size[0] / 2, base[1] - size[1] / 2, base[2], base[0] + size[0] / 2, base[1] + size[1] / 2, base[2] + size[2], [0.85, 0.6, 0.2], "metal");
+  const extra: Tri[] = b.tris.map((t) => ({ ...t, node: "machines/" + fx.platform.node }));
+  return { ...a, extra: [...(a.extra ?? []), ...extra], features: fx.features };
+}
+
 // ---- an indoor level ----
 
 /** The arena shut inside a busy building, for trying the 3D view's ways of
@@ -311,7 +328,7 @@ export function enclose(a: Arena): Arena {
       b.column(cx + Math.cos(t) * far, cy + Math.sin(t) * far, 12, 2, floor - 0.5, floor + tall, 7, [0.36, 0.42, 0.34], "default");
     }
   });
-  return { ...a, extra, outer: { min: [x0, y0, floor - 0.5], max: [x1, y1, top] }, nodeExtras: { bsp_2: { cinematic: true } } };
+  return { ...a, extra: [...(a.extra ?? []), ...extra], outer: { min: [x0, y0, floor - 0.5], max: [x1, y1, top] }, nodeExtras: { bsp_2: { cinematic: true } } };
 }
 
 // ---- glb ----
@@ -382,7 +399,10 @@ export function encodeGlb(a: Arena): Uint8Array {
   const json = {
     asset: {
       version: "2.0", generator: "h2 live mock",
-      extras: { generator: "h2 live mock", geometry_version: 1, bounds: { min: (a.outer ?? a.bounds).min.map(round4), max: (a.outer ?? a.bounds).max.map(round4) } },
+      extras: {
+        generator: "h2 live mock", geometry_version: 1, bounds: { min: (a.outer ?? a.bounds).min.map(round4), max: (a.outer ?? a.bounds).max.map(round4) },
+        ...(a.features ? { features: a.features } : {}),
+      },
     },
     scene: 0,
     scenes: [{ nodes: roots }],
@@ -546,7 +566,7 @@ export interface MockMapGeometry {
 
 /** The geometry files for every mock map that has an arena. Each file is
  *  made on first request and kept. */
-export function mockMapGeometry(opts: { indoor?: boolean } = {}): MockMapGeometry {
+export function mockMapGeometry(opts: { indoor?: boolean; furniture?: boolean } = {}): MockMapGeometry {
   const maps: MockMapGeometry["maps"] = {};
   const arenas = new Map<string, Arena>();
   for (const m of MAPS) {
@@ -555,7 +575,12 @@ export function mockMapGeometry(opts: { indoor?: boolean } = {}): MockMapGeometr
   }
   const arena = (name: string) => {
     let a = arenas.get(name);
-    if (!a && maps[name]) { a = buildArena(name)!; if (opts.indoor) a = enclose(a); arenas.set(name, a); }
+    if (!a && maps[name]) {
+      a = buildArena(name)!;
+      if (opts.furniture !== false) a = furnish(a, mockFixtures(MAPS.find((m) => m.name === name)!));
+      if (opts.indoor) a = enclose(a);
+      arenas.set(name, a);
+    }
     return a ?? null;
   };
   const done = new Map<string, { bytes: Uint8Array; type: string }>();
