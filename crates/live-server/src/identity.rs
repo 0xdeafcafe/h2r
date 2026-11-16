@@ -75,6 +75,19 @@ impl ServerIdentity {
     pub fn author(&self) -> String {
         live_proto::Author::Server(self.id.clone()).to_string()
     }
+
+    /// A 32-byte key for `label`, derived from the server key (SHA-256 of
+    /// `label`, a zero byte and the key's seed as base64url, as
+    /// `server.key` holds it): the sealing key for recovery secrets, the
+    /// invite-code MAC key. It lives and dies with `server.key`.
+    pub fn derive(&self, label: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(label.as_bytes());
+        h.update([0]);
+        h.update(self.key.secret_b64().as_bytes());
+        h.finalize().into()
+    }
 }
 
 /// The `--id` to start a server in `dir` with: as given; else, on a first

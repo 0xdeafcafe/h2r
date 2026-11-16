@@ -16,6 +16,8 @@ use crate::jcs;
 pub const TYP_EVENT: &str = "h2live-event";
 /// JWS `typ` of an account-creation request.
 pub const TYP_ACCOUNT: &str = "h2live-account";
+/// JWS `typ` of an account-recovery request ([`crate::recovery`]).
+pub const TYP_RECOVER: &str = "h2live-recover";
 /// JWS `typ` of a server-signed invite code.
 pub const TYP_INVITE: &str = "h2live-invite";
 /// JWS `typ` of a request token.
