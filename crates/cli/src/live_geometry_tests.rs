@@ -766,6 +766,31 @@ fn cinematic_bsps_are_flagged_and_left_out_of_the_views_and_backdrops_are_childr
         serde_json::json!([10.0, 10.0, 3.0])
     );
 
+    // Features go in `asset.extras` when there are any.
+    let mut level = level;
+    level.features = crate::live_features::Features {
+        teleporters: Vec::new(),
+        links: Vec::new(),
+        lifts: vec![crate::live_features::Lift {
+            id: "l0".into(),
+            pos: [1.0, 2.0, 3.0],
+            dir: [0.0, 0.0, 1.0],
+            length: 4.0,
+            radius: 1.0,
+            source: "test".into(),
+        }],
+    };
+    let (doc, _) = parse_glb(&level.glb());
+    assert_eq!(
+        doc["asset"]["extras"]["features"]["lifts"][0]["pos"],
+        serde_json::json!([1.0, 2.0, 3.0])
+    );
+    assert_eq!(
+        doc["asset"]["extras"]["features"]["teleporters"],
+        serde_json::json!([])
+    );
+    assert_eq!(doc["asset"]["extras"]["geometry_version"], GEOMETRY_VERSION);
+
     // A single BSP: the backdrop hangs off `structure`; marking every BSP
     // cinematic leaves the views alone.
     let mut one = Level::build(
@@ -1597,6 +1622,15 @@ fn machines_are_metal_shared_meshes_under_a_machines_node() {
     assert_eq!(doc["nodes"][2]["mesh"], doc["nodes"][3]["mesh"]);
     let tx = |n: usize| doc["nodes"][n]["matrix"][12].as_f64().unwrap();
     assert_eq!((tx(2), tx(3)), (-5.0, 5.0));
+    // The placement in game coordinates too, as frames give a machine.
+    assert_eq!(
+        doc["nodes"][3]["extras"],
+        serde_json::json!({
+            "pos": [5.0, 0.0, 0.0], "forward": [1.0, 0.0, 0.0],
+            "up": [0.0, 0.0, 1.0], "scale": 1.0
+        })
+    );
+    assert!(doc["asset"]["extras"].get("features").is_none());
     let names: Vec<&str> = doc["materials"]
         .as_array()
         .unwrap()

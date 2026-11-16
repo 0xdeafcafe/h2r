@@ -76,7 +76,10 @@ key) is 9, so a disc extracted by an older build is extracted again.
   model in model space (same axes conversion), shared by every placement
   of that machine and named after the first, and the child has a
   `matrix`: the placement's rotation, uniform scale and position in glTF
-  axes. These are the only nodes with a transform. Machines are all class
+  axes. These are the only nodes with a transform. The child's `extras`
+  repeat the placement in game coordinates as telemetry frames give a
+  moving machine: `pos`, unit `forward` and `up`, and `scale`. The node
+  names are stable: a frame's machine names the node it moves. Machines are all class
   `metal`, unless their shader names them glass, water or foliage. The
   model is drawn at rest (no animation): each region's first permutation
   at the highest detail level up to 3 of 5 it has.
@@ -84,6 +87,37 @@ key) is 9, so a disc extracted by an older build is extracted again.
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below). `bounds` covers the
   gameplay BSPs without their backdrops: what the views draw.
+- **Features.** When a level has any, `asset.extras.features` lists its
+  teleporters, their links and its lifts (players contract section 13;
+  game coordinates):
+
+  ```json
+  "features": {
+    "teleporters": [ { "id": "t0", "pos": [x, y, z], "facing": yaw,
+                       "role": "two_way", "channel": 0 } ],
+    "links": [ { "from": "t0", "to": "t1" } ],
+    "lifts": [ { "id": "l0", "pos": [x, y, z], "dir": [x, y, z],
+                 "length": 6.0, "radius": 3.0,
+                 "source": "mach <stem> <index>: bounding sphere" } ]
+  }
+  ```
+
+  Teleporters come from the scenario's netgame flags (`scnr+0x118`,
+  0x20-byte entries: position, facing in radians at `+0xc`, type at
+  `+0x10`, team at `+0x12`, identifier at `+0x14`, all i16 after the
+  floats). Type 7 is a teleporter's entry and 8 its exit; flags within
+  0.5 units are one pad, `two_way` when it has both. A pad's `channel` is
+  its entry's identifier, else its exit's; `facing` is its exit's (the way
+  an arriving player faces), else its entry's. A link goes from each pad
+  with an entry to each other pad with an exit of the same identifier.
+  Lifts (multiplayer maps only) are the placed scenery, machines, controls
+  and crates (`scnr+0x50`, `+0xa8`, `+0xb8`, `+0x328`, each palette 8
+  bytes on) whose tag's own name has the word `lift`, `grav` or `jumppad`.
+  A lift stands on the middle of its render model's base, along the
+  placement's up axis, as tall as the model and as wide as its wider side,
+  when the model is at least 1 unit tall; else the `obje` bounding sphere
+  (radius `+0x4`, offset `+0x8`) when that is; else a nominal 4 × 1
+  column. `source` names the block, tag stem, placement index and which.
 - Retail multiplayer maps come out at 11k to 31k triangles of level and
   0.3 to 1.1 MB (0 to 6 machines). Campaign levels (1 to 8 BSPs) come out
   at 38k to 412k triangles of level, 6 to 206 machines, and 1.2 to 15.9 MB;
@@ -279,7 +313,8 @@ outside the repository (the path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR`
 in the test). `shader_templates_on_the_disc` (same flags) writes every BSP
 material's template, shader, triangle count and surface by name alone and
 with the template there, and the materials whose surface the template
-changed. Do not commit anything they write.
+changed; `features_from_the_disc` writes `features.txt`, every level's
+teleporters, links and lifts. Do not commit anything they write.
 
 ## Limits
 
@@ -294,6 +329,10 @@ changed. Do not commit anything they write.
 - The frame is a heuristic too. It keeps every retail map's playable area on
   the disc this was checked against, but a map with a dense, detailed
   backdrop could be framed wider than its play space.
+- Lift volumes are in the objects' physics models (phantoms), which are
+  not read: a lift's size comes from its render model or bounding sphere,
+  or is nominal. Campaign lifts (lift platforms, gravity fields, lift
+  effects) are not listed.
 - No textures or lightmaps, and no object geometry but machines
   (scenery, crates and vehicles are not drawn). Machines are at rest: a
   door is drawn as its model's default pose has it, and the wheel does not

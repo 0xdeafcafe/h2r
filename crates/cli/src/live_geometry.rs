@@ -31,6 +31,7 @@ use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::StructureRender;
 
 use crate::live_art::{Disc, MapFile};
+use crate::live_features::{Features, read_features};
 use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 
 /// The geometry files' format (contract `GEOMETRY_VERSION`).
@@ -729,6 +730,7 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
         &[GlbNode::mesh("structure", mesh)],
         mesh.bounds,
         frame(mesh),
+        serde_json::Map::new(),
     )
 }
 
@@ -736,8 +738,14 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
 /// its node, with a primitive per class (POSITION, NORMAL, u16 indices; a
 /// class over [`MAX_PRIMITIVE_VERTICES`] vertices gets several) and
 /// one material per class shared by every mesh. `asset.extras` carries
-/// `bounds` and the views' `frame` (game coordinates).
-pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> {
+/// `bounds` and the views' `frame` (game coordinates), then the keys in
+/// `more`.
+pub fn write_nodes(
+    roots: &[GlbNode],
+    bounds: Bounds,
+    frame: Bounds,
+    more: serde_json::Map<String, serde_json::Value>,
+) -> Vec<u8> {
     use serde_json::{Value, json};
     struct Out {
         bin: Vec<u8>,
@@ -888,6 +896,9 @@ pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> 
         "scenes": [{"nodes": top}],
         "nodes": o.nodes,
     });
+    for (k, v) in more {
+        doc["asset"]["extras"][k] = v;
+    }
     // A file with no geometry has no meshes and no buffer.
     if !o.meshes.is_empty() {
         doc["meshes"] = json!(o.meshes);
@@ -1030,7 +1041,7 @@ impl RawSource for Raw<'_> {
     }
 }
 
-type MapReader = Map<BufReader<File>>;
+pub(crate) type MapReader = Map<BufReader<File>>;
 
 /// The scenario's BSP tags: block at +0x210, stride 0x44, BSP tag ID at
 /// +0x14 (as `viewer/src/bin/bsp.rs` reads it).
@@ -1347,10 +1358,20 @@ fn machine_model(
     files: &mut ResourceFiles,
     mach: TagId,
 ) -> Result<Option<MachineModel>> {
-    let tag = ctx.decode(mach)?;
-    if tag.group != MACH {
+    if ctx.decode(mach)?.group != MACH {
         return Err(anyhow!("palette entry is not a machine"));
     }
+    object_model(map, ctx, files, mach)
+}
+
+/// Any object's model, as [`machine_model`] reads a machine's.
+pub(crate) fn object_model(
+    map: &mut MapReader,
+    ctx: &tags::object::Context,
+    files: &mut ResourceFiles,
+    object: TagId,
+) -> Result<Option<MachineModel>> {
+    let tag = ctx.decode(object)?;
     let obje = tag.layer("obje").context("no object header")?;
     let header = tags::object::ObjectHeader::from_record(obje)?;
     if header.model.id == TagId::NULL {
@@ -1485,6 +1506,8 @@ pub struct Level {
     /// BSPs only cinematics use ([`gameplay_bsps`]); empty when unknown or
     /// for a single-BSP scenario.
     pub cinematic: BTreeSet<usize>,
+    /// Teleporters and lifts (`asset.extras.features` when not empty).
+    pub features: Features,
     /// The scenario's machine models (model space) and placements.
     pub machine_models: Vec<MachineModel>,
     pub machines: Vec<PlacedMachine>,
@@ -1537,6 +1560,7 @@ impl Level {
             bsps: kept,
             backdrops: BTreeMap::new(),
             cinematic: BTreeSet::new(),
+            features: Features::default(),
             machine_models: Vec::new(),
             machines: Vec::new(),
             mesh,
@@ -1634,8 +1658,15 @@ impl Level {
                     .iter()
                     .map(|m| {
                         let model = &self.machine_models[m.model];
+                        let [forward, _, up] = m.at.axes();
                         GlbNode {
                             matrix: Some(m.at.gltf_matrix()),
+                            extras: Some(serde_json::json!({
+                                "pos": m.at.position,
+                                "forward": forward,
+                                "up": up,
+                                "scale": m.at.scale(),
+                            })),
                             ..GlbNode::mesh(model.stem.clone(), &model.mesh)
                         }
                         .named(m.name.clone())
@@ -1647,7 +1678,14 @@ impl Level {
     }
 
     pub fn glb(&self) -> Vec<u8> {
-        write_nodes(&self.nodes(), self.mesh.bounds, self.frame)
+        let mut more = serde_json::Map::new();
+        if !self.features.is_empty() {
+            more.insert(
+                "features".into(),
+                serde_json::to_value(&self.features).expect("plain data"),
+            );
+        }
+        write_nodes(&self.nodes(), self.mesh.bounds, self.frame, more)
     }
 }
 
@@ -1854,6 +1892,13 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         }
     }
     let mut skipped = BTreeMap::new();
+    let lifts = kind == MapKind::Multiplayer;
+    match read_features(&mut map, &mut files, m.name(), lifts, &mut skipped) {
+        Ok(f) => level.features = f,
+        Err(e) => {
+            skipped.insert(format!("map/{}/features", m.name()), format!("{e:#}"));
+        }
+    }
     match load_machines(&mut map, &mut files, m.name(), &mut skipped) {
         Ok((models, placed)) => {
             stats.machines = placed.len();
