@@ -368,7 +368,7 @@ fn default_disc() -> Result<PathBuf> {
         return Ok(p.into());
     }
     let dir = repo_root().join("disc");
-    let mut isos: Vec<PathBuf> = fs::read_dir(&dir)
+    let isos: Vec<PathBuf> = fs::read_dir(&dir)
         .into_iter()
         .flatten()
         .flatten()
