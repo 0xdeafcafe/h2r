@@ -267,6 +267,22 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/e3-lighting.md";
     /// `render_light_passes`: draws one dynamic light's passes.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/e3-lighting.md";
+    /// Draws the current layer (`[0x00467130]`) of the current list: layer
+    /// setup, then `LAYER_ENTRIES` for the layers in its mask.
+    LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/layer-draw.md";
+    /// The layer draw's setup call (ESI = `0x00485b48`).
+    LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/layer-draw.md";
+    /// Draws a list's entries for a layer: builds them, then calls each
+    /// entry type's handler. EDI the list, EBX the layer, stack 0 an
+    /// argument (`[0x00467134]`), `ret 4`.
+    LAYER_ENTRIES @ 0x0003_bc30: [fn(list: edi, layer: ebx, arg: stack 0) ret 4]; "docs/layer-draw.md";
+    /// Builds a layer's entries (0x18 bytes each) into the caller's buffer;
+    /// the count in EAX. Stdcall `(list, arg, layer, buffer)`.
+    LAYER_BUILD @ 0x0003_bab0: [fn(list: stack 0, arg: stack 1, layer: stack 2, buffer: stack 3) -> eax ret 16]; "docs/layer-draw.md";
+    /// Shader draw begin: per draw.
+    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/shader-instances.md";
+    /// `submit_structure_or_model_geometry`: per draw.
+    GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/structure-bsp.md";
     /// The top-level Settings list's row text (thiscall on the list, the
     /// item and a word).
     SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
