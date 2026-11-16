@@ -16,7 +16,7 @@ mod types;
 mod write_behind;
 
 pub use backend::Backend;
-pub use dir_disc::{DirDiscBackend, open_disc};
+pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};

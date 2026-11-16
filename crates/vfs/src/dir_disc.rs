@@ -202,40 +202,63 @@ impl Backend for DirDiscBackend {
     }
 }
 
-/// The DVD at `path`: a disc image ([`crate::DiscBackend`]) or a directory
-/// holding a copy of the disc's files ([`DirDiscBackend`]).
-pub fn open_disc(path: impl AsRef<Path>) -> Result<Box<dyn Backend>> {
+/// The DVD: a disc image ([`crate::DiscBackend`]) or a directory holding a
+/// copy of the disc's files ([`DirDiscBackend`]), from [`open_disc`].
+///
+/// A concrete enum, not `Box<dyn Backend>`: mounts are stored boxed, so an
+/// `impl Backend for Box<dyn Backend>` would be picked for every mount and
+/// shadow each backend's own write methods with the read-only defaults
+/// (every hard-disk write failed with MediaWriteProtected).
+pub enum AnyDisc {
+    Image(crate::DiscBackend<std::fs::File>),
+    Dir(DirDiscBackend),
+}
+
+/// The DVD at `path`: a disc image or a directory of the disc's files.
+pub fn open_disc(path: impl AsRef<Path>) -> Result<AnyDisc> {
     let path = path.as_ref();
     if std::fs::metadata(path)?.is_dir() {
-        Ok(Box::new(DirDiscBackend::open(path)?))
+        Ok(AnyDisc::Dir(DirDiscBackend::open(path)?))
     } else {
-        Ok(Box::new(crate::DiscBackend::open(path)?))
+        Ok(AnyDisc::Image(crate::DiscBackend::open(path)?))
     }
 }
 
-impl Backend for Box<dyn Backend> {
+macro_rules! either {
+    ($self:ident, $d:ident => $e:expr) => {
+        match $self {
+            AnyDisc::Image($d) => $e,
+            AnyDisc::Dir($d) => $e,
+        }
+    };
+}
+
+impl Backend for AnyDisc {
     fn read_only(&self) -> bool {
-        (**self).read_only()
+        either!(self, d => d.read_only())
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
-        (**self).stat(path)
+        either!(self, d => d.stat(path))
     }
     fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        (**self).read_directory(path)
+        either!(self, d => d.read_directory(path))
     }
     fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
-        (**self).read_at(path, offset, buffer)
+        either!(self, d => d.read_at(path, offset, buffer))
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
-        (**self).volume_info()
+        either!(self, d => d.volume_info())
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
-        (**self).host_file(path)
+        either!(self, d => d.host_file(path))
     }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
-        (**self).map_id(path)
+        either!(self, d => d.map_id(path))
     }
-    // The DVD is read-only: the mutation defaults stand for both kinds.
+    fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
+        either!(self, d => d.cleanup(path, write_access))
+    }
+    // Both kinds are read-only: the mutation defaults stand.
 }
 
 #[cfg(test)]
