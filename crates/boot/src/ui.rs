@@ -166,8 +166,8 @@ pub enum Chosen {
     Stepped(String),
     /// Open this screen.
     Open(&'static str),
-    /// Run the screen's own action (`list_class::ListClass::action`): the
-    /// Skulls page's Start row.
+    /// Run the screen's own action (`list_class::ListClass::action`), as X
+    /// and Start do on a class with one.
     Act,
     /// Make these guest calls, in order, then open a retail screen by its
     /// loader; log the line first.
