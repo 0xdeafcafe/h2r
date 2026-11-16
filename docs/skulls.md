@@ -203,7 +203,7 @@ The parts:
   screen"). Row text asks the list for its focused row (`0x24c447`) and,
   when that changed, sets the widget to the row's description. The
   Controls list spans the screen's width, so the text sits right of the
-  title, above the list (`[222 80 150 312]`, top, left, bottom, right);
+  the list, across its width (`[-25 -225 -140 245]`, top, left, bottom, right; Y up from the screen centre);
   `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 - **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
 
@@ -285,7 +285,7 @@ The menu:
    IWHBYD, Blind, Ghost, Black Eye, Catch, Sputnik, Iron, Mythic, Angry,
    Bandana; each value On, Off or Locked. Scroll to the end and back: all
    fifteen are reachable.
-10. The description: right of the title, the focused skull's effect and
+10. The description: under the list, the focused skull's effect and
     "Found on <level>, Legendary only" (Blind: "any difficulty"); it
     changes as the cursor moves. If it is missing, clipped or over the
     list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
