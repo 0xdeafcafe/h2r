@@ -151,6 +151,10 @@ pub struct Snapshot {
     /// The last action's outcome worth showing (an error, or "Invite
     /// copied").
     pub message: Option<String>,
+    /// Updates, when `[update]` is configured.
+    pub update: Option<crate::update::UpdateView>,
+    /// Unix seconds when this was taken (for "5 min ago").
+    pub now: i64,
 }
 
 impl Snapshot {
@@ -165,6 +169,8 @@ impl Snapshot {
             menubar_at_login: false,
             busy: Some("Checking".into()),
             message: None,
+            update: None,
+            now: unix_now(),
         }
     }
 }
@@ -200,7 +206,15 @@ pub fn collect(cfg: &Config, services: &dyn Services, backend: &dyn Backend) -> 
         menubar_at_login: cfg.menubar.plist.exists(),
         busy: None,
         message: None,
+        update: None,
+        now: unix_now(),
     }
+}
+
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn first_line(e: &anyhow::Error) -> String {

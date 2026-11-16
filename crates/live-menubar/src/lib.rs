@@ -19,6 +19,7 @@ pub mod icon;
 pub mod launchd;
 pub mod menu;
 pub mod status;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,6 +53,12 @@ pub const USAGE: &str = "usage: h2 live menubar [--config FILE] [command]
   --public-url URL | --data DIR | --local-url URL
                           set these in menubar.toml (with any command, or
                           alone)
+  --update-repo DIR|none  turn updates on from a dedicated clone at DIR
+                          (or off); [update] in menubar.toml has the rest
+  --update-disc ISO [--update-mappack ISO]
+                          the disc to re-extract game art from when the
+                          extractor changes
+  --update-now            run one update check now, in this terminal
 
 menubar.toml defaults to ~/Library/Application Support/h2recomp/live/
 menubar.toml.";
@@ -65,6 +72,9 @@ pub struct Env {
     pub desktop: Arc<dyn Desktop>,
     /// This program (`h2`).
     pub exe: PathBuf,
+    /// Git and builds for `--update-now`; None builds the real ones from
+    /// `[update]`.
+    pub update_tools: Option<(Arc<dyn update::Git>, Arc<dyn update::Builder>)>,
 }
 
 impl Env {
@@ -77,6 +87,7 @@ impl Env {
             backend,
             desktop: Arc::new(SystemDesktop),
             exe: std::env::current_exe().context("finding this program")?,
+            update_tools: None,
         })
     }
 }
@@ -179,6 +190,11 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
     let adopting = adopt.is_some();
     let token_file = take("--token-file", 1)?.map(|v| PathBuf::from(&v[0]));
     let cloudflared = take("--cloudflared", 1)?.map(|v| PathBuf::from(&v[0]));
+    let update_repo = take("--update-repo", 1)?.map(|v| v[0].clone());
+    let update_disc = take("--update-disc", 1)?.map(|v| PathBuf::from(&v[0]));
+    let update_mappack = take("--update-mappack", 1)?.map(|v| PathBuf::from(&v[0]));
+    let update_settings =
+        update_repo.is_some() || update_disc.is_some() || update_mappack.is_some();
     let mut flag = |name: &str| match args.iter().position(|a| a == name) {
         Some(i) => {
             args.remove(i);
@@ -191,6 +207,7 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
     let uninstall = flag("--uninstall");
     let install_server = flag("--install-server");
     let install_tunnel = flag("--install-tunnel");
+    let update_now = flag("--update-now");
     if args.iter().any(|a| a == "--help" || a == "-h") {
         bail!("{USAGE}");
     }
@@ -244,6 +261,40 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
     }
     if let Some(u) = local_url {
         cfg.local_url = u;
+    }
+    match update_repo.as_deref() {
+        None => {}
+        Some("none" | "") => cfg.update = None,
+        Some(repo) => {
+            let repo = PathBuf::from(repo);
+            if !repo.join(".git").exists() {
+                bail!("{} is not a git checkout", repo.display());
+            }
+            let u = cfg.update.get_or_insert_with(|| config::UpdateConfig {
+                repo: repo.clone(),
+                branch: "master".into(),
+                remote: "origin".into(),
+                interval_minutes: config::DEFAULT_UPDATE_INTERVAL_MINUTES,
+                install_dir: env.paths.live_dir.clone(),
+                disc: None,
+                mappack: None,
+                cargo: None,
+                bun: None,
+            });
+            u.repo = repo;
+        }
+    }
+    if update_disc.is_some() || update_mappack.is_some() {
+        let u = cfg
+            .update
+            .as_mut()
+            .context("turn updates on first: --update-repo DIR")?;
+        if update_disc.is_some() {
+            u.disc = update_disc;
+        }
+        if update_mappack.is_some() {
+            u.mappack = update_mappack;
+        }
     }
     if cfg != before || !path.exists() {
         cfg.save(&path)?;
@@ -320,8 +371,64 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
         services.uninstall(&cfg.menubar, false)?;
         println!("removed {}", cfg.menubar.plist.display());
     }
+    if update_now {
+        let u = cfg
+            .update
+            .clone()
+            .context("updates are off; turn them on with --update-repo DIR")?;
+        let log = cfg.logs_dir.join("update.log");
+        let (git, builder): (Arc<dyn update::Git>, Arc<dyn update::Builder>) =
+            match &env.update_tools {
+                Some((g, b)) => (g.clone(), b.clone()),
+                None => (
+                    Arc::new(update::SystemGit {
+                        repo: u.repo.clone(),
+                        log: log.clone(),
+                    }),
+                    Arc::new(update::SystemBuilder {
+                        repo: u.repo.clone(),
+                        target_dir: u.target_dir(),
+                        log: log.clone(),
+                        cargo: u.cargo.clone(),
+                        bun: u.bun.clone(),
+                    }),
+                ),
+            };
+        let progress = |what: &str| {
+            println!("{what}...");
+            update::log_line(&log, &format!("-- {what}"));
+        };
+        let report = update::Updater {
+            cfg: &u,
+            git: git.as_ref(),
+            builder: builder.as_ref(),
+            services,
+            server: &cfg.server,
+            data_dir: &cfg.data_dir,
+            progress: &progress,
+            now: status::unix_now(),
+        }
+        .check(true);
+        match report.outcome {
+            update::Outcome::Updated { built } if built.is_empty() => {
+                println!("up to date (nothing to build)")
+            }
+            update::Outcome::Updated { built } => println!("installed: {}", built.join(", ")),
+            update::Outcome::UpToDate => println!("up to date"),
+            update::Outcome::Paused => println!("paused"),
+            update::Outcome::Blocked(why) => bail!("not updating: {why}"),
+            update::Outcome::Failed(e) => bail!("update failed: {e} (log: {})", log.display()),
+        }
+        if update::State::load(&u.state_file()).art_stale {
+            println!("game art needs re-extracting: h2 live assets extract, or --update-disc ISO");
+        }
+    }
     if status {
-        let snap = status::collect(&cfg, services, env.backend.as_ref());
+        let mut snap = status::collect(&cfg, services, env.backend.as_ref());
+        snap.update = cfg
+            .update
+            .as_ref()
+            .map(|u| update::UpdateView::from_state(&update::State::load(&u.state_file())));
         for e in menu::model(&snap, &cfg) {
             if let menu::Entry::Item(i) = e
                 && !i.enabled
@@ -332,6 +439,9 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
                         | menu::ItemId::Numbers
                         | menu::ItemId::Tunnel
                         | menu::ItemId::Message
+                        | menu::ItemId::UpdateStatus
+                        | menu::ItemId::UpdateError
+                        | menu::ItemId::ArtStale
                 )
             {
                 println!("{}", i.label);
@@ -353,7 +463,9 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
         || install_server
         || install_tunnel
         || adopting
-        || settings_given;
+        || settings_given
+        || update_settings
+        || update_now;
     if command {
         return Ok(());
     }
@@ -466,6 +578,7 @@ mod tests {
             backend: Arc::new(FakeBackend::default()),
             desktop: Arc::new(FakeDesktop::default()),
             exe: "/Users/me/bin/h2".into(),
+            update_tools: None,
         };
         World { root, fake, env }
     }
@@ -667,6 +780,60 @@ mod tests {
         assert_eq!(cfg.public_url.as_deref(), Some("https://p.example"));
         assert_eq!(cfg.data_dir, PathBuf::from("/d"));
         main(s(&["--status"]), &w.env).unwrap();
+        fs::remove_dir_all(&w.root).unwrap();
+    }
+
+    #[test]
+    fn update_flags_and_update_now() {
+        use crate::update::tests::{FakeBuilder, FakeGit};
+        let mut w = world("update");
+        assert!(main(s(&["--update-now"]), &w.env).is_err(), "off");
+        assert!(
+            main(s(&["--update-disc", "/d.iso"]), &w.env).is_err(),
+            "off"
+        );
+        let repo = w.root.join("src");
+        assert!(
+            main(s(&["--update-repo", &repo.to_string_lossy()]), &w.env).is_err(),
+            "not a checkout"
+        );
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        main(
+            s(&[
+                "--update-repo",
+                &repo.to_string_lossy(),
+                "--update-disc",
+                "/d.iso",
+            ]),
+            &w.env,
+        )
+        .unwrap();
+        let cfg = Config::load(&w.env.paths.config_file(), &w.env.paths).unwrap();
+        let u = cfg.update.clone().unwrap();
+        assert_eq!(u.repo, repo);
+        assert_eq!(u.install_dir, w.env.paths.live_dir);
+        assert_eq!(u.disc, Some("/d.iso".into()));
+
+        let git = FakeGit::new("a1");
+        let builder = FakeBuilder::new(w.root.join("build"));
+        w.env.update_tools = Some((git.clone(), builder.clone()));
+        main(s(&["--update-now"]), &w.env).unwrap();
+        assert!(u.bin_dir().join("h2-live-server").exists());
+        assert!(u.bin_dir().join("h2").exists());
+        assert!(u.web_dir().join("index.html").exists());
+        main(s(&["--status"]), &w.env).unwrap();
+
+        git.dirty.lock().unwrap().push("?? x".into());
+        let err = main(s(&["--update-now"]), &w.env).unwrap_err();
+        assert!(format!("{err}").contains("uncommitted"), "{err}");
+
+        main(s(&["--update-repo", "none"]), &w.env).unwrap();
+        assert_eq!(
+            Config::load(&w.env.paths.config_file(), &w.env.paths)
+                .unwrap()
+                .update,
+            None
+        );
         fs::remove_dir_all(&w.root).unwrap();
     }
 }
