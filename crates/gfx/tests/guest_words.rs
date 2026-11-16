@@ -285,6 +285,83 @@ fn depth_levels_store_into_the_mirror_as_the_readback_encodes_them() {
     }
 }
 
+#[test]
+fn depth_levels_load_from_the_mirror_as_the_fill_decodes_them() {
+    let Some(ctx) = depth_ctx() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let mut words = GuestWords::new(&ctx);
+    for (i, &(format, w, h, pitch)) in [
+        (D3DFormat::D24S8, 32, 32, None),
+        (D3DFormat::LinD24S8, 24, 10, Some(112)),
+        // A width whose stencil rows are not 256-byte aligned.
+        (D3DFormat::LinD24S8, 37, 9, Some(160)),
+        (D3DFormat::LinD24S8, 512, 512, Some(2048)),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let make = |store: &mut SurfaceStore| {
+            store
+                .create(
+                    &ctx,
+                    SurfaceDesc::new(format, w, h).with_layout(layout_of(pitch)),
+                    SurfaceKind::DepthStencil,
+                )
+                .unwrap()
+        };
+        let (cpu, gpu) = (make(&mut store), make(&mut store));
+        let base = 13u32;
+        let mut bytes = random(
+            41 + i as u32,
+            base as usize * 4 + guest_len(w, h, pitch) + 24,
+        );
+        // The ends of the range and each power of two (and one below it).
+        let mut edges = vec![0u32, 1, 0xFF_FFFF, 0xFF_FFFE];
+        for b in 1..24 {
+            edges.extend([1 << b, (1 << b) - 1, (1 << b) + 1]);
+        }
+        for (k, z) in edges.iter().enumerate().take((w * h) as usize) {
+            let (x, y) = (k as u32 % w, k as u32 / w);
+            let at = base as usize * 4 + texel_at(x, y, w, h, pitch);
+            bytes[at..at + 4].copy_from_slice(&((z << 8) | (k as u32 & 0xFF)).to_le_bytes());
+        }
+        store
+            .write_depth(
+                &ctx,
+                cpu,
+                &desc(format, w, h, pitch),
+                &bytes[base as usize * 4..],
+            )
+            .unwrap();
+        let m = mirror(&ctx, &bytes);
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        let tex = store.get(gpu).unwrap().texture().clone();
+        let layout = WordLayout {
+            base,
+            pitch_words: pitch.map_or(0, |p| p / 4),
+        };
+        words
+            .load_depth(&ctx, &mut enc, &tex, (w, h), &m, layout)
+            .unwrap();
+        ctx.queue.submit([enc.finish()]);
+        let (got, want) = (
+            store.read_depth(&ctx, gpu).unwrap(),
+            store.read_depth(&ctx, cpu).unwrap(),
+        );
+        let bits = |d: &[f32]| d.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&got.depth),
+            bits(&want.depth),
+            "{format:?} {w}x{h} pitch {pitch:?} depth"
+        );
+        assert_eq!(
+            got.stencil, want.stencil,
+            "{format:?} {w}x{h} pitch {pitch:?} stencil"
+        );
+        assert!(want.stencil.is_some());
+    }
+}
+
 /// Decoded host texels as logical RGBA.
 fn logical(host: HostFormat, data: &[u8]) -> Vec<u8> {
     match host {

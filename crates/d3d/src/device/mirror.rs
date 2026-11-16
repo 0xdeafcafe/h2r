@@ -31,9 +31,21 @@
 //!   a destroy, `PersistDisplay`, teardown), the newer bytes are read back
 //!   ([`Backend::mirror_read`]) and stored into guest memory, guest stores
 //!   excepted.
-//! * A level the mirror cannot fill on the GPU (a depth level) takes the
-//!   bytes through guest memory: the overlap is flushed, then it is filled
-//!   as before.
+//! * A `D24S8` depth level is filled from the mirror on the GPU too
+//!   ([`Device::set_alias_mirror_depth`], `H2_D3D_MIRROR_DEPTH=0` turns it
+//!   off): the depth `z / 16777215` with the CPU decode's rounding, the
+//!   stencil the word's low byte. Before, binding the shadow map after the
+//!   colour levels over it were drawn into read the mirror back (the
+//!   render thread waited), stored it into guest memory and uploaded it
+//!   again, every time. A level the mirror cannot fill on the GPU (with
+//!   that off) takes the bytes through guest memory: the overlap is
+//!   flushed, then it is filled as before.
+//!
+//! The per-byte state is kept as bytes, so the scans on every binding
+//! (anything newer over a level, where memory is newer) run eight bytes at
+//! a time, and guest memory is compared with what the mirror took only on
+//! pages the write tracker saw written since (tracked uploads; every page
+//! otherwise), and byte by byte only where a page differs.
 //!
 //! Anything the mirror does not cover (formats other than the 32-bit word
 //! formats and `D24S8`, unaligned levels, a level drawn into that overlaps
@@ -50,12 +62,15 @@ const MAX_MIRROR: u64 = 64 << 20;
 pub(crate) struct AliasMirror {
     /// Guest virtual address of mirror byte 0.
     base: u32,
-    /// The mirror holds this byte newer than guest memory.
-    newer: Vec<bool>,
+    /// 1: the mirror holds this byte newer than guest memory (bytes, so
+    /// scans are `memchr` and eight at a time).
+    newer: Vec<u8>,
     /// Guest memory's byte when the mirror took it.
     synced: Vec<u8>,
-    /// An exact guest store reached this byte since the mirror took it.
-    stored: Vec<bool>,
+    /// 1: an exact guest store reached this byte since the mirror took it.
+    stored: Vec<u8>,
+    /// Some byte of `stored` may be 1 (else nothing need scan it).
+    stored_any: bool,
     /// Write-tracker generation of the oldest take still holding newer
     /// bytes (pages written after it may hold guest stores).
     since: u64,
@@ -79,7 +94,7 @@ impl AliasMirror {
 
     fn any_newer(&self, lo: u64, hi: u64) -> bool {
         self.span(lo, hi)
-            .is_some_and(|(a, b)| self.newer[a..b].contains(&true))
+            .is_some_and(|(a, b)| self.newer[a..b].contains(&1))
     }
 }
 
@@ -92,23 +107,47 @@ fn overlap(a: (u64, u64), b: (u64, u64)) -> bool {
     a.0 < b.1 && b.0 < a.1
 }
 
-/// Runs of `true` in `mask` as `(start, end)`.
-fn runs(mask: &[bool]) -> Vec<(usize, usize)> {
+/// The first index in `from..to` where `mask` (bytes 0 or 1) is `v`,
+/// skipping eight bytes at a time.
+fn find(mask: &[u8], from: usize, to: usize, v: u8) -> Option<usize> {
+    let s = &mask[from..to];
+    let other = if v == 1 {
+        0
+    } else {
+        u64::from_ne_bytes([1; 8])
+    };
+    let (chunks, _) = s.as_chunks::<8>();
+    let skip = chunks
+        .iter()
+        .position(|c| u64::from_ne_bytes(*c) != other)
+        .unwrap_or(chunks.len())
+        * 8;
+    s[skip..]
+        .iter()
+        .position(|&b| b == v)
+        .map(|k| from + skip + k)
+}
+
+/// Runs of `v` in `mask[from..to]` as `(start, end)` indices into `mask`.
+fn runs(mask: &[u8], from: usize, to: usize, v: u8) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < mask.len() {
-        if mask[i] {
-            let s = i;
-            while i < mask.len() && mask[i] {
-                i += 1;
-            }
-            out.push((s, i));
-        } else {
-            i += 1;
-        }
+    let mut i = from;
+    while let Some(s) = find(mask, i, to, v) {
+        let e = find(mask, s, to, v ^ 1).unwrap_or(to);
+        out.push((s, e));
+        i = e;
     }
     out
 }
+
+/// Whether index `x` is in one of the sorted, disjoint `runs`.
+fn in_runs(runs: &[(usize, usize)], x: usize) -> bool {
+    let k = runs.partition_point(|&(_, e)| e <= x);
+    runs.get(k).is_some_and(|&(s, _)| s <= x)
+}
+
+/// Guest memory is compared with what the mirror took a page at a time.
+const PAGE: usize = 0x1000;
 
 impl<B: Backend> Device<B> {
     /// Overlapping render-to-texture levels move through the backend's
@@ -119,6 +158,14 @@ impl<B: Backend> Device<B> {
     /// set it before the first draw.
     pub fn set_alias_mirror(&mut self, on: bool) {
         self.alias_mirror = on;
+    }
+
+    /// Depth levels over bytes the mirror holds are filled from it on the
+    /// GPU (on by default; `H2_D3D_MIRROR_DEPTH=0` turns it off): binding
+    /// the shadow map after the colour levels over it were drawn into no
+    /// longer reads the mirror back and uploads it again.
+    pub fn set_alias_mirror_depth(&mut self, on: bool) {
+        self.mirror_depth = on;
     }
 
     fn mirror_on(&self) -> bool {
@@ -141,9 +188,10 @@ impl<B: Backend> Device<B> {
         aligned && format
     }
 
-    /// Word-aligned colour level in a format the mirror decodes.
+    /// Word-aligned level in a format the mirror decodes: colour, or
+    /// `D24S8` depth ([`Device::set_alias_mirror_depth`]).
     fn mirror_loadable(&self, t: &RttTarget<B::Surface>) -> bool {
-        !t.depth && self.mirror_storable(t)
+        (!t.depth || self.mirror_depth) && self.mirror_storable(t)
     }
 
     /// Makes the mirror cover `lo..hi`: the first time, or after flushing
@@ -177,9 +225,10 @@ impl<B: Backend> Device<B> {
         let n = (b - a) as usize;
         self.mirror = Some(AliasMirror {
             base: a as u32,
-            newer: vec![false; n],
+            newer: vec![0; n],
             synced: vec![0; n],
-            stored: vec![false; n],
+            stored: vec![0; n],
+            stored_any: false,
             since: self.tracker.generation(),
         });
         Ok(true)
@@ -262,11 +311,11 @@ impl<B: Backend> Device<B> {
             let generation = self.tracker.generation();
             let m = self.mirror.as_mut().expect("made");
             let (i, j) = m.span(a, z).expect("covered");
-            if !m.newer.contains(&true) {
+            if !m.newer.contains(&1) {
                 m.since = generation;
             }
-            m.newer[i..j].fill(true);
-            m.stored[i..j].fill(false);
+            m.newer[i..j].fill(1);
+            m.stored[i..j].fill(0);
             m.synced[i..j].copy_from_slice(&bytes);
             let hash = if self.cfg.upload == UploadPolicy::Verify {
                 hash_bytes(&bytes)
@@ -293,39 +342,63 @@ impl<B: Backend> Device<B> {
     }
 
     /// The bytes of `lo..hi` the mirror holds newer that the guest stored
-    /// into since (memory wins there), per byte of the mirror's span; `None`
-    /// if nothing is newer there.
+    /// into since (memory wins there), as sorted runs of mirror indices;
+    /// `None` if nothing is newer there. Only pages the guest may have
+    /// written (with tracked uploads, those the tracker saw written since
+    /// the oldest take; else every page) are read and compared, and only
+    /// where they differ from what the mirror took, byte by byte.
     fn mirror_guest_bytes(
         &self,
         mem: &dyn GuestMemory,
         lo: u64,
         hi: u64,
-    ) -> Result<Option<(usize, Vec<bool>)>, D3dError> {
+    ) -> Result<Option<Vec<(usize, usize)>>, D3dError> {
         let Some(m) = &self.mirror else {
             return Ok(None);
         };
         let Some((i, j)) = m.span(lo, hi) else {
             return Ok(None);
         };
-        if !m.newer[i..j].contains(&true) {
+        if !m.newer[i..j].contains(&1) {
             return Ok(None);
         }
-        let mut cpu = vec![false; j - i];
-        let addr = m.base + i as u32;
-        // Only tracked uploads trust the tracker to see every store.
-        let paged = self.cfg.upload != UploadPolicy::Tracked
-            || self.tracker.dirty_since(addr, (j - i) as u32, m.since);
-        let bytes = if paged {
-            Some(mem.read_vec(addr, j - i)?)
-        } else {
-            None
+        let mut owned: Vec<(usize, usize)> = Vec::new();
+        let mut own = |n: usize| match owned.last_mut() {
+            Some((_, e)) if *e == n => *e += 1,
+            _ => owned.push((n, n + 1)),
         };
-        for k in 0..j - i {
-            let n = i + k;
-            cpu[k] =
-                m.newer[n] && (m.stored[n] || bytes.as_ref().is_some_and(|b| b[k] != m.synced[n]));
+        // `base` is page-aligned: mirror pages are guest pages.
+        let mut p = i;
+        while p < j {
+            let q = ((p / PAGE + 1) * PAGE).min(j);
+            let (a, z) = (p, q);
+            p = q;
+            if !m.newer[a..z].contains(&1) {
+                continue;
+            }
+            let addr = m.base + a as u32;
+            // Only tracked uploads trust the tracker to see every store.
+            let paged = self.cfg.upload != UploadPolicy::Tracked
+                || self.tracker.dirty_since(addr, (z - a) as u32, m.since);
+            let stored = m.stored_any && m.stored[a..z].contains(&1);
+            let bytes = if paged {
+                Some(mem.read_vec(addr, z - a)?)
+            } else {
+                None
+            };
+            let changed = bytes.as_ref().is_some_and(|b| b[..] != m.synced[a..z]);
+            if !changed && !stored {
+                continue;
+            }
+            for n in a..z {
+                if m.newer[n] == 1
+                    && (m.stored[n] == 1 || bytes.as_ref().is_some_and(|b| b[n - a] != m.synced[n]))
+                {
+                    own(n);
+                }
+            }
         }
-        Ok(Some((i, cpu)))
+        Ok(Some(owned))
     }
 
     /// Guest stores into bytes the mirror holds newer win: memory is newer
@@ -337,30 +410,28 @@ impl<B: Backend> Device<B> {
         lo: u64,
         hi: u64,
     ) -> Result<(), D3dError> {
-        let Some((i, cpu)) = self.mirror_guest_bytes(mem, lo, hi)? else {
+        let Some(owned) = self.mirror_guest_bytes(mem, lo, hi)? else {
             return Ok(());
         };
-        if !cpu.contains(&true) {
+        if owned.is_empty() {
             return Ok(());
         }
         let m = self.mirror.as_ref().expect("checked");
-        let mixed = (0..cpu.len()).any(|k| {
-            let n = i + k;
-            let w = n & !3;
-            cpu[k]
-                && (w..w + 4).any(|x| {
-                    x < m.newer.len() && m.newer[x] && !(x >= i && x - i < cpu.len() && cpu[x - i])
-                })
+        // Within a run every byte is the guest's: only the words at its
+        // ends can hold a newer byte the guest did not store.
+        let mixed = owned.iter().any(|&(s, e)| {
+            let (ws, we) = (s & !3, e.next_multiple_of(4).min(m.newer.len()));
+            (ws..s)
+                .chain(e..we)
+                .any(|x| m.newer[x] == 1 && !in_runs(&owned, x))
         });
         if mixed {
             return self.mirror_flush_range(mem, lo, hi);
         }
         let m = self.mirror.as_mut().expect("checked");
-        for (k, c) in cpu.iter().enumerate() {
-            if *c {
-                m.newer[i + k] = false;
-                m.stored[i + k] = false;
-            }
+        for (s, e) in owned {
+            m.newer[s..e].fill(0);
+            m.stored[s..e].fill(0);
         }
         Ok(())
     }
@@ -373,35 +444,32 @@ impl<B: Backend> Device<B> {
         lo: u64,
         hi: u64,
     ) -> Result<(), D3dError> {
-        let Some((i, cpu)) = self.mirror_guest_bytes(mem, lo, hi)? else {
+        let Some(owned) = self.mirror_guest_bytes(mem, lo, hi)? else {
             return Ok(());
         };
-        let m = self.mirror.as_ref().expect("checked");
-        let want: Vec<bool> = cpu
-            .iter()
-            .enumerate()
-            .map(|(k, c)| m.newer[i + k] && !c)
-            .collect();
+        let m = self.mirror.as_mut().expect("checked");
+        let (i, j) = m.span(lo, hi).expect("newer bytes there");
+        // The guest's bytes stay; the rest of what is newer goes to memory.
+        for &(s, e) in &owned {
+            m.newer[s..e].fill(0);
+        }
+        let want = runs(&m.newer, i, j, 1);
         let base = m.base;
-        let n = cpu.len();
-        if let (Some(first), Some(last)) =
-            (want.iter().position(|w| *w), want.iter().rposition(|w| *w))
-        {
-            let (a, z) = ((i + first) & !3, (i + last + 1).next_multiple_of(4));
+        if let (Some(&(first, _)), Some(&(_, last))) = (want.first(), want.last()) {
+            let (a, z) = (first & !3, last.next_multiple_of(4));
             let bytes = self
                 .backend
                 .mirror_read(a as u32, (z - a) as u32)
                 .map_err(D3dError::Backend)?;
-            for (s, e) in runs(&want) {
-                let (s, e) = (i + s, i + e);
+            for (s, e) in want {
                 mem.write(base + s as u32, &bytes[s - a..e - a])?;
             }
             self.tracker.note_write(base + a as u32, (z - a) as u32);
             self.stats.mirror_flushes += 1;
         }
         let m = self.mirror.as_mut().expect("checked");
-        m.newer[i..i + n].fill(false);
-        m.stored[i..i + n].fill(false);
+        m.newer[i..j].fill(0);
+        m.stored[i..j].fill(0);
         Ok(())
     }
 
@@ -419,8 +487,8 @@ impl<B: Backend> Device<B> {
             return;
         };
         if let Some((i, j)) = m.span(range(t).0, range(t).1) {
-            m.newer[i..j].fill(false);
-            m.stored[i..j].fill(false);
+            m.newer[i..j].fill(0);
+            m.stored[i..j].fill(0);
         }
     }
 
@@ -431,8 +499,9 @@ impl<B: Backend> Device<B> {
         };
         if let Some((i, j)) = m.span(addr as u64, addr as u64 + len as u64) {
             for n in i..j {
-                if m.newer[n] {
-                    m.stored[n] = true;
+                if m.newer[n] == 1 {
+                    m.stored[n] = 1;
+                    m.stored_any = true;
                 }
             }
         }
@@ -457,7 +526,11 @@ impl<B: Backend> Device<B> {
             let covered = m.base as u64 <= lo && hi <= m.end();
             if covered && self.mirror_loadable(&t) {
                 let (i, j) = m.span(lo, hi).expect("covered");
-                let gaps = runs(&m.newer[i..j].iter().map(|n| !n).collect::<Vec<_>>());
+                // Where memory is newer, the mirror takes its bytes first.
+                let gaps: Vec<(usize, usize)> = runs(&m.newer, i, j, 0)
+                    .into_iter()
+                    .map(|(s, e)| (s - i, e - i))
+                    .collect();
                 let base = m.base;
                 let aligned = gaps
                     .iter()
@@ -493,5 +566,53 @@ impl<B: Backend> Device<B> {
         }
         let bytes = mem.read_vec(t.data, t.len() as usize)?;
         self.fill_rtt(header, bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn naive(mask: &[u8], from: usize, to: usize, v: u8) -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for (n, &b) in mask.iter().enumerate().take(to).skip(from) {
+            if b == v {
+                match out.last_mut() {
+                    Some((_, e)) if *e == n => *e += 1,
+                    _ => out.push((n, n + 1)),
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn runs_match_a_byte_by_byte_scan() {
+        let mut s = 0x1234_5678u32;
+        for len in [0usize, 1, 7, 8, 9, 63, 64, 65, 300, 4099] {
+            for density in [0u32, 1, 8, 128, 250, 256] {
+                let mask: Vec<u8> = (0..len)
+                    .map(|_| {
+                        s ^= s << 13;
+                        s ^= s >> 17;
+                        s ^= s << 5;
+                        u8::from(s % 256 < density)
+                    })
+                    .collect();
+                for (from, to) in [(0, len), (len / 3, len), (len / 5, len - len / 4)] {
+                    for v in [0, 1] {
+                        let want = naive(&mask, from, to, v);
+                        assert_eq!(
+                            runs(&mask, from, to, v),
+                            want,
+                            "{len} {density} {from}..{to} {v}"
+                        );
+                        for (x, &b) in mask.iter().enumerate().take(to).skip(from) {
+                            assert_eq!(in_runs(&want, x), b == v);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

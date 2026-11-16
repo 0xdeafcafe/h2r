@@ -639,3 +639,413 @@ fn bench_heretic_sized_pool() {
         );
     }
 }
+
+/// How [`shadow_frames`] moves bytes between the levels over the shadow
+/// map: write-backs, the mirror with the depth level filled through guest
+/// memory (a read-back each time it is bound), or the mirror throughout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Path {
+    WriteBacks,
+    MirrorDepthThroughMemory,
+    Mirror,
+}
+
+/// A shadow-map pool: depth level `depth` (bound with the free-standing
+/// colour target at `ct`) and colour levels `colors` over its bytes, as
+/// Halo's 512x512 `LIN_D24S8` shadow map and the 320x240 and 160x120
+/// levels share one allocation. Each frame: the shadow pass (part of the
+/// depth cleared, a quad depth-tested against the rest, which holds what
+/// the colour levels left there, then depth written), the colour levels in
+/// turn (part drawn, each sampling the one before), the back buffer
+/// sampling the last, `Swap`. Frame 1 also stores into the pool from the
+/// guest. Returns the back buffer after each frame and the time spent in
+/// the `SetRenderTarget` calls that bind the depth level.
+#[allow(clippy::too_many_arguments)]
+fn shadow_frames<B: Backend>(
+    backend: B,
+    path: Path,
+    upload: UploadPolicy,
+    frames: u32,
+    base: u32,
+    depth: Level,
+    colors: &[Level],
+    ct: (u32, u32, u32, u32),
+) -> (Device<B>, SparseMemory, Vec<Vec<u8>>, std::time::Duration) {
+    let (mut d, mut m) = create(backend, upload);
+    d.set_alias_mirror(path != Path::WriteBacks);
+    d.set_alias_mirror_depth(path == Path::Mirror);
+    set_states(&mut d, &mut m);
+    let pool_len = depth.pitch.unwrap() * depth.h;
+    m.map(0x8000_0000 | base, pool_len);
+    let fill: Vec<u8> = (0..pool_len).map(|i| (i * 13 + (i >> 9)) as u8).collect();
+    m.write(0x8000_0000 | base, &fill).unwrap();
+    let (ct_header, ct_data, ct_w, ct_h) = ct;
+    m.map(0x8000_0000 | ct_data, ct_w * ct_h * 4);
+    SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, ct_w, ct_h, ct_w * 4, ct_data)
+        .write(&mut m, ct_header)
+        .unwrap();
+    let rebased = |l: Level| Level {
+        at: l.at + base - POOL,
+        ..l
+    };
+    define(&mut m, rebased(depth));
+    for l in colors {
+        define(&mut m, rebased(*l));
+    }
+    let back_header = m
+        .read_u32(L.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    let mut shown = Vec::new();
+    let mut binding = std::time::Duration::ZERO;
+    for f in 0..frames {
+        let start = std::time::Instant::now();
+        d.set_render_target(&mut m, ct_header, depth.level).unwrap();
+        binding += start.elapsed();
+        m.write_u32(L.render_state_slot(RS_ZENABLE), 1).unwrap();
+        m.write_u32(L.render_state_slot(RS_ZWRITEENABLE), 1)
+            .unwrap();
+        m.write_u32(L.render_state_slot(RS_STENCILENABLE), 0)
+            .unwrap();
+        clear_rect(
+            &mut d,
+            &mut m,
+            [0, 0, depth.w, depth.h / 4],
+            0x03,
+            0,
+            0.25 + f as f32 / 64.0,
+            0x40 + f,
+        );
+        // LESSEQUAL: the depth the level was filled with decides.
+        m.write_u32(L.render_state_slot(RS_ZFUNC), 0x203).unwrap();
+        quad(
+            &mut d,
+            &mut m,
+            (0.0, 0.0, depth.w as f32, depth.h as f32),
+            None,
+            [0xFFFF_FFFF; 4],
+            0.5,
+        );
+        m.write_u32(L.render_state_slot(RS_ZFUNC), 0x207).unwrap();
+        m.write_u32(L.render_state_slot(RS_ZENABLE), 0).unwrap();
+        m.write_u32(L.render_state_slot(RS_ZWRITEENABLE), 0)
+            .unwrap();
+        let mut prev: Option<Level> = None;
+        for (i, l) in colors.iter().map(|l| rebased(*l)).enumerate() {
+            d.set_render_target(&mut m, l.level, 0).unwrap();
+            // The left half: the rest keeps what the pool held.
+            let rect = (0.0, 0.0, (l.w / 2) as f32, l.h as f32);
+            match prev {
+                Some(p) => sampled(&mut d, &mut m, rect, p, 0xFFFF_FFFF),
+                // Alpha is the depth's top byte where the shadow map
+                // reads these bytes: some below the quad's 0.5, some above.
+                None => quad(
+                    &mut d,
+                    &mut m,
+                    rect,
+                    None,
+                    [
+                        0x3020_4080 | f | (i as u32) << 8,
+                        0xFF20_4080,
+                        0x5080_2010,
+                        0xC0FF_FFFF,
+                    ],
+                    0.5,
+                ),
+            }
+            prev = Some(l);
+        }
+        d.set_render_target(&mut m, back_header, 0).unwrap();
+        sampled(
+            &mut d,
+            &mut m,
+            (0.0, 0.0, 64.0, 64.0),
+            prev.unwrap(),
+            0xFFFF_FFFF,
+        );
+        if f == 1 {
+            // A guest store into the colour levels' bytes, whole words and
+            // part of one, between frames.
+            let at = colors[0].at + 4 * colors[0].w + 8;
+            m.write(0x8000_0000 | (base + at), &[0x5A; 12]).unwrap();
+            d.note_write(0x8000_0000 | (base + at), 12);
+            m.write(0x8000_0000 | (base + at + 64), &[0x11]).unwrap();
+            d.note_write(0x8000_0000 | (base + at + 64), 1);
+        }
+        if frames <= 8 {
+            shown.push(back(&mut d));
+        }
+        call(&mut d, &mut m, 0x3f9d00, d3d::abi::Regs::default(), &[]).unwrap();
+    }
+    // A last shadow pass, so the pool's final bytes are the depth level's
+    // (filled from what the colour levels left).
+    d.set_render_target(&mut m, ct_header, depth.level).unwrap();
+    m.write_u32(L.render_state_slot(RS_ZENABLE), 1).unwrap();
+    m.write_u32(L.render_state_slot(RS_ZWRITEENABLE), 1)
+        .unwrap();
+    m.write_u32(L.render_state_slot(RS_ZFUNC), 0x203).unwrap();
+    quad(
+        &mut d,
+        &mut m,
+        (0.0, 0.0, depth.w as f32, depth.h as f32),
+        None,
+        [0xFFFF_FFFF; 4],
+        0.5,
+    );
+    m.write_u32(L.render_state_slot(RS_ZFUNC), 0x207).unwrap();
+    m.write_u32(L.render_state_slot(RS_ZENABLE), 0).unwrap();
+    m.write_u32(L.render_state_slot(RS_ZWRITEENABLE), 0)
+        .unwrap();
+    d.set_render_target(&mut m, back_header, 0).unwrap();
+    let events = d.take_events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::DrawSkipped { .. } | Event::BadState(_))),
+        "{events:?}"
+    );
+    (d, m, shown, binding)
+}
+
+const SM: Level = Level {
+    tex: MISC + 0x6000,
+    level: MISC + 0x6040,
+    format: D3DFormat::LinD24S8,
+    w: 32,
+    h: 32,
+    pitch: Some(128),
+    at: 0,
+};
+const SM_COLORS: [Level; 3] = [
+    Level {
+        tex: MISC + 0x6100,
+        level: MISC + 0x6140,
+        format: D3DFormat::LinA8R8G8B8,
+        w: 20,
+        h: 12,
+        pitch: Some(128),
+        at: 0,
+    },
+    Level {
+        tex: MISC + 0x6200,
+        level: MISC + 0x6240,
+        format: D3DFormat::LinA8R8G8B8,
+        w: 10,
+        h: 6,
+        pitch: Some(64),
+        at: 0,
+    },
+    Level {
+        tex: MISC + 0x6300,
+        level: MISC + 0x6340,
+        format: D3DFormat::LinA8R8G8B8,
+        w: 10,
+        h: 6,
+        pitch: Some(64),
+        at: 2048,
+    },
+];
+
+/// Back buffers and pool against the write-backs', reporting the first
+/// byte that differs.
+fn same(what: &str, shown: &[Vec<u8>], pool: &[u8], want_shown: &[Vec<u8>], want_pool: &[u8]) {
+    let named: Vec<(String, &[u8], &[u8])> = shown
+        .iter()
+        .zip(want_shown)
+        .enumerate()
+        .map(|(f, (g, w))| (format!("back after frame {f}"), &g[..], &w[..]))
+        .chain([("pool at the end".to_string(), pool, want_pool)])
+        .collect();
+    assert_eq!(shown.len(), want_shown.len(), "{what}");
+    for (name, g, w) in named {
+        if let Some(i) = g.iter().zip(w).position(|(a, b)| a != b) {
+            panic!(
+                "{what}: {name} differs first at byte {i}: {:#04x} vs {:#04x}",
+                g[i], w[i]
+            );
+        }
+        assert_eq!(g.len(), w.len(), "{what}: {name}");
+    }
+}
+
+/// The shadow map filled from the mirror on the GPU shows the guest what
+/// the write-backs and the read-back fill show: the same back buffer every
+/// frame, the same pool once written back; and binding it reads nothing
+/// back.
+#[test]
+fn a_depth_level_fills_from_the_mirror_as_from_memory() {
+    let Some(_) = gfx() else { return };
+    let pool_of = |m: &SparseMemory| {
+        m.read_vec(0x8070_0000, (SM.pitch.unwrap() * SM.h) as usize)
+            .unwrap()
+    };
+    let run = |path, upload| {
+        let (mut d, mut m, shown, _) = shadow_frames(
+            gfx().unwrap(),
+            path,
+            upload,
+            4,
+            0x0070_0000,
+            SM,
+            &SM_COLORS,
+            (CSURF, CDATA, 32, 32),
+        );
+        let stats = d.stats();
+        let readbacks = d.backend.readbacks();
+        d.flush_render_targets(&mut m).unwrap();
+        (shown, pool_of(&m), stats, readbacks)
+    };
+    for upload in [UploadPolicy::Tracked, UploadPolicy::Verify] {
+        let (want_shown, want_pool, sync, _) = run(Path::WriteBacks, upload);
+        let (old_shown, old_pool, old, _) = run(Path::MirrorDepthThroughMemory, upload);
+        let (shown, pool, new, readbacks) = run(Path::Mirror, upload);
+        same(
+            &format!("{upload:?}, depth through memory"),
+            &old_shown,
+            &old_pool,
+            &want_shown,
+            &want_pool,
+        );
+        same(
+            &format!("{upload:?}, mirror"),
+            &shown,
+            &pool,
+            &want_shown,
+            &want_pool,
+        );
+        assert!(sync.writeback_causes.overlap >= 4, "{sync:?}");
+        // The depth level took the mirror's bytes through guest memory
+        // every frame after the first; now on the GPU.
+        assert!(old.mirror_flushes >= 3, "{old:?}");
+        assert!(new.mirror_loads > old.mirror_loads, "{new:?}");
+        // Only frame 1's guest store sends the colour levels it hit
+        // through memory (a level with guest stores to merge is not
+        // moved into the mirror).
+        assert!(new.writeback_causes.overlap <= 2, "{new:?}");
+        if upload == UploadPolicy::Tracked {
+            assert_eq!(new.mirror_flushes, 0, "{new:?}");
+            // The per-frame back buffer reads and those write-backs only.
+            assert_eq!(readbacks, 4 + new.rtt_writebacks, "{new:?}");
+        }
+    }
+    // Through the render thread.
+    let (mut d, mut m, shown, _) = shadow_frames(
+        ThreadedBackend::new(gfx().unwrap()).unwrap(),
+        Path::Mirror,
+        UploadPolicy::Tracked,
+        4,
+        0x0070_0000,
+        SM,
+        &SM_COLORS,
+        (CSURF, CDATA, 32, 32),
+    );
+    d.flush_render_targets(&mut m).unwrap();
+    let (want_shown, want_pool, _, _) = run(Path::WriteBacks, UploadPolicy::Tracked);
+    same(
+        "render thread",
+        &shown,
+        &pool_of(&m),
+        &want_shown,
+        &want_pool,
+    );
+}
+
+/// Per-switch cost of binding the shadow map at the Heretic's sizes (a
+/// 512x512 `LIN_D24S8` level under a 320x240 and two 160x120
+/// `LIN_A8R8G8B8` levels), with the depth level filled through guest
+/// memory (a read-back and an upload each time, as on e9be08f) against
+/// from the mirror on the GPU. `H2_BENCH_FRAMES` frames (default 100).
+///
+/// ```sh
+/// cargo test --release -p d3d --test alias_mirror bench_shadow_map_binding -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn bench_shadow_map_binding() {
+    const BIG: u32 = 0x0080_0000;
+    const CT: u32 = MISC + 0x7A00;
+    const CT_DATA: u32 = 0x00C0_0000;
+    let depth = Level {
+        tex: MISC + 0x6800,
+        level: MISC + 0x6840,
+        format: D3DFormat::LinD24S8,
+        w: 512,
+        h: 512,
+        pitch: Some(2048),
+        at: 0,
+    };
+    let lv = |n: u32, w: u32, h: u32, at: u32| Level {
+        tex: MISC + 0x6900 + n * 0x100,
+        level: MISC + 0x6940 + n * 0x100,
+        format: D3DFormat::LinA8R8G8B8,
+        w,
+        h,
+        pitch: Some(w * 4),
+        at,
+    };
+    let colors = [
+        lv(0, 320, 240, 0),
+        lv(1, 160, 120, 0),
+        lv(2, 160, 120, 160 * 120 * 4),
+    ];
+    let frames: u32 = std::env::var("H2_BENCH_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    fn run<B: Backend>(name: &str, b: B, path: Path, frames: u32, depth: Level, colors: &[Level]) {
+        // `H2_BENCH_ONLY=render` and the like: only matching runs.
+        if std::env::var("H2_BENCH_ONLY").is_ok_and(|only| !name.contains(&only)) {
+            return;
+        }
+        let start = std::time::Instant::now();
+        let (mut d, _m, _, binding) = shadow_frames(
+            b,
+            path,
+            UploadPolicy::Tracked,
+            frames,
+            BIG,
+            depth,
+            colors,
+            (CT, CT_DATA, 512, 512),
+        );
+        let _ = back(&mut d);
+        let total = start.elapsed().as_secs_f64() * 1e3 / frames as f64;
+        let per = binding.as_secs_f64() * 1e3 / frames as f64;
+        let s = d.stats();
+        println!(
+            "{name:<40} {per:>7.3} ms/switch {total:>7.3} ms/frame  (flushes {}, loads {}, overlap write-backs {})",
+            s.mirror_flushes, s.mirror_loads, s.writeback_causes.overlap
+        );
+    }
+    let Some(_) = gfx() else { return };
+    for round in 0..2 {
+        println!("round {round}, {frames} frames");
+        for path in [
+            Path::WriteBacks,
+            Path::MirrorDepthThroughMemory,
+            Path::Mirror,
+        ] {
+            run(
+                &format!("sync, {path:?}"),
+                gfx().unwrap(),
+                path,
+                frames,
+                depth,
+                &colors,
+            );
+        }
+        for path in [
+            Path::WriteBacks,
+            Path::MirrorDepthThroughMemory,
+            Path::Mirror,
+        ] {
+            run(
+                &format!("render thread, {path:?}"),
+                ThreadedBackend::new(gfx().unwrap()).unwrap(),
+                path,
+                frames,
+                depth,
+                &colors,
+            );
+        }
+    }
+}

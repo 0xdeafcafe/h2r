@@ -541,7 +541,9 @@ pub trait Backend: Send {
         Err(format!("the backend has no alias mirror ({format:?})"))
     }
     /// Fills colour surface `surface` from the mirror's bytes at `offset`
-    /// as [`write_surface`](Self::write_surface) of those bytes would.
+    /// as [`write_surface`](Self::write_surface) of those bytes would; or a
+    /// depth/stencil surface from `D24S8` words, when the backend
+    /// [samples depth surfaces](Self::can_sample_depth_surfaces).
     fn mirror_load(
         &mut self,
         surface: Self::Surface,

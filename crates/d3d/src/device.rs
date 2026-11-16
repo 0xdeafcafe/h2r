@@ -714,6 +714,10 @@ pub struct Device<B: Backend> {
     /// Overlapping levels moved through the backend's alias mirror
     /// ([`Device::set_alias_mirror`]; `H2_D3D_ALIAS_MIRROR=0` turns it off).
     alias_mirror: bool,
+    /// Depth levels filled from the alias mirror on the GPU
+    /// ([`Device::set_alias_mirror_depth`]; `H2_D3D_MIRROR_DEPTH=0` turns
+    /// it off).
+    mirror_depth: bool,
     /// What the mirror holds newer than guest memory.
     mirror: Option<mirror::AliasMirror>,
     /// Clean levels whose memory the mirror took newer bytes over since
@@ -830,6 +834,7 @@ impl<B: Backend> Device<B> {
             rtt_synced: HashMap::new(),
             rtt_stores: HashMap::new(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
+            mirror_depth: std::env::var_os("H2_D3D_MIRROR_DEPTH").is_none_or(|v| v != "0"),
             mirror: None,
             mirror_stale: HashSet::new(),
             rtt_direct: true,

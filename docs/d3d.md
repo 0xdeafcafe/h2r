@@ -1716,8 +1716,16 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
     through guest memory, a destroy, `PersistDisplay`, teardown), the
     newer bytes over the same span are read back (`mirror_read`) and
     stored into guest memory, guest stores excepted;
-  - a level the mirror cannot fill on the GPU (a depth level) flushes the
-    overlap and is filled from memory as before.
+  - a `D24S8` depth level is filled from the mirror on the GPU as well
+    (`GuestWords::load_depth`: depth `z / 16777215` drawn as `frag_depth`
+    with the CPU division's rounding, computed without a division;
+    stencil packed by a compute pass and copied into the stencil aspect).
+    Until 2026-11-16 it flushed the overlap and was filled from memory:
+    in The Heretic that was a read-back, a 1 MiB guest copy and an upload
+    every time the shadow map was bound, with the game thread waiting on
+    the render thread (about 22% of it in a headless profile of e9be08f).
+    `H2_D3D_MIRROR_DEPTH=0` (`Device::set_alias_mirror_depth`) goes back
+    to that; a level the mirror cannot fill on the GPU still does.
   Formats other than the 32-bit word formats and `D24S8`, unaligned
   levels, a bound level that is itself dirty, overlapping dirty levels and
   guest stores waiting to be merged into the moved level take the
@@ -1730,7 +1738,19 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   and after the mirror took the bytes (whole words and part of one), a
   `BlockOnResource` and a final flush, with tracked and verified uploads,
   on the device's thread and through the render thread, and compares the
-  back buffer and guest memory with the write-back path byte for byte. A
+  back buffer and guest memory with the write-back path byte for byte.
+  `a_depth_level_fills_from_the_mirror_as_from_memory` does the same for
+  a shadow-map pool (a depth level under three colour levels, a
+  depth-tested pass that reads what the colour levels left, a guest store
+  between frames) with the depth level filled through memory and from the
+  mirror, and checks that the second reads nothing back;
+  `crates/gfx/tests/guest_words.rs` checks `load_depth` against
+  `write_depth` bit for bit. The per-byte state is bytes, scanned eight at
+  a time, and guest memory is compared with what the mirror took only on
+  pages written since. `bench_shadow_map_binding` (same file, ignored)
+  binds a 512x512 shadow map under the Heretic's 320x240 and 160x120
+  levels: through the render thread, 4.9 ms per binding with the depth
+  level through memory and the old per-byte scans, 0.37 ms now. A
   sampled level is now picked by matching format, size and layout first,
   then by being drawn into, then by header (it was the map's order: two
   headers over the same bytes could pick the wrong one and go through

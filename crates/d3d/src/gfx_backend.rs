@@ -1346,14 +1346,17 @@ impl Backend for GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         self.flush()?;
         let m = self.mirror.clone().ok_or("mirror_load before mirror_reserve")?;
-        let texture = self.store.get(surface).map_err(|e| e.to_string())?.texture().clone();
+        let s = self.store.get(surface).map_err(|e| e.to_string())?;
+        let (texture, kind) = (s.texture().clone(), s.kind());
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
         let layout = word_layout(layout, offset)?;
         let mut enc = ctx.device.create_command_encoder(&Default::default());
-        words
-            .load_color(ctx, &mut enc, &texture, format, (width, height), &m, layout)
-            .map_err(|e| format!("mirror_load: {e}"))?;
+        match kind {
+            SurfaceKind::Color => words.load_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
+            SurfaceKind::DepthStencil => words.load_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
+        }
+        .map_err(|e| format!("mirror_load: {e}"))?;
         self.submit(enc);
         Ok(())
     }

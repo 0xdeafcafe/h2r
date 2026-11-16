@@ -18,7 +18,11 @@
 //! * [`GuestWords::load_color`] decodes mirror words into a colour surface
 //!   (a render pass that writes every texel), as
 //!   [`SurfaceStore::write_color`](crate::surface::SurfaceStore::write_color)
-//!   does from CPU bytes.
+//!   does from CPU bytes. [`GuestWords::load_depth`] does the same for a
+//!   depth surface from `D24S8` words, as
+//!   [`SurfaceStore::write_depth`](crate::surface::SurfaceStore::write_depth)
+//!   does (depth drawn as `frag_depth`, with the CPU division's rounding;
+//!   stencil copied).
 //! * [`GuestWords::depth_alias`] makes the texture a 32-bit colour texture
 //!   over the depth buffer's memory decodes to: the depth buffer's `D24S8`
 //!   words (linear rows of the buffer's width) read from a byte offset as
@@ -147,6 +151,18 @@ fn depth_word(d: f32, s: u32) -> u32 {
     if (x - t >= 0.5) { z = z + 1u; }
     return (z << 8u) | (s & 0xffu);
 }
+
+// `decode_depth`'s depth for a `D24S8` word, `z / 16777215` rounded to
+// nearest exactly as the CPU's `f32` division does (WGSL division is not
+// correctly rounded). With `b` the bit length of `z` and `Z = z << (24 - b)`
+// in `[2^23, 2^24)`, `z / (2^24 - 1) * 2^(48 - b) = Z + Z / (2^24 - 1)`,
+// whose fraction is in `(0.5, 1]`: the 24-bit significand is `Z + 1`.
+fn depth_of_word(w: u32) -> f32 {
+    let z = w >> 8u;
+    if (z == 0u) { return 0.0; }
+    let b = firstLeadingBit(z) + 1u;
+    return ldexp(f32((z << (24u - b)) + 1u), i32(b) - 48);
+}
 "#;
 
 const STORE_COLOR: &str = r#"
@@ -193,6 +209,44 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let w = mirror[word_index(params, u32(p.x), u32(p.y))];
     return vec4<f32>(unpack(params, w)) / 255.0;
+}
+"#;
+
+const LOAD_DEPTH: &str = r#"
+@group(0) @binding(0) var<storage, read> mirror: array<u32>;
+@group(0) @binding(1) var<uniform> params: Params;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let x = f32(i32(i & 1u) * 4 - 1);
+    let y = f32(i32(i >> 1u) * 4 - 1);
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) p: vec4<f32>) -> @builtin(frag_depth) f32 {
+    return depth_of_word(mirror[word_index(params, u32(p.x), u32(p.y))]);
+}
+"#;
+
+// Stencil bytes of the level's words, packed four to a word in rows of
+// `src_width` words (a buffer the stencil aspect is copied from).
+const LOAD_STENCIL: &str = r#"
+@group(0) @binding(0) var<storage, read> mirror: array<u32>;
+@group(0) @binding(1) var<storage, read_write> out_words: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let x0 = id.x * 4u;
+    if (x0 >= params.width || id.y >= params.height) { return; }
+    var packed = 0u;
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        if (x0 + k < params.width) {
+            packed = packed | ((mirror[word_index(params, x0 + k, id.y)] & 0xffu) << (8u * k));
+        }
+    }
+    out_words[id.y * params.src_width + id.x] = packed;
 }
 "#;
 
@@ -301,6 +355,9 @@ pub struct GuestWords {
     store_depth: wgpu::ComputePipeline,
     load_color: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     load_module: wgpu::ShaderModule,
+    load_depth: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    load_depth_module: wgpu::ShaderModule,
+    load_stencil: wgpu::ComputePipeline,
     depth_alias: wgpu::ComputePipeline,
 }
 
@@ -350,6 +407,9 @@ impl GuestWords {
             store_depth: compute(device, "gfx guest words store depth", STORE_DEPTH),
             load_module: module(device, "gfx guest words load colour", LOAD_COLOR),
             load_color: std::collections::HashMap::new(),
+            load_depth_module: module(device, "gfx guest words load depth", LOAD_DEPTH),
+            load_depth: std::collections::HashMap::new(),
+            load_stencil: compute(device, "gfx guest words load stencil", LOAD_STENCIL),
             depth_alias: compute(device, "gfx guest words depth alias", DEPTH_ALIAS),
         }
     }
@@ -614,6 +674,173 @@ impl GuestWords {
         Ok(())
     }
 
+    /// Records the decoding of `D24S8` words at `layout` in `mirror` into
+    /// every texel of depth texture `dst` (single-sample
+    /// `Depth32FloatStencil8` or `Depth32Float` of `size`, with
+    /// `RENDER_ATTACHMENT` and `COPY_DST`), as
+    /// [`SurfaceStore::write_depth`](crate::surface::SurfaceStore::write_depth)
+    /// does from CPU bytes: depth `z / 16777215` rounded as the CPU's `f32`
+    /// division, drawn as `frag_depth`; stencil the word's low byte, packed
+    /// by a compute pass and copied into the stencil aspect.
+    pub fn load_depth(
+        &mut self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        dst: &wgpu::Texture,
+        size: (u32, u32),
+        mirror: &wgpu::Buffer,
+        layout: WordLayout,
+    ) -> Result<(), WordsError> {
+        check_layout(size, layout)?;
+        let have = mirror.size() / 4;
+        let need = words_end(size, layout);
+        if need > have {
+            return Err(WordsError::Bounds { need, have });
+        }
+        let target = dst.format();
+        if !matches!(
+            target,
+            wgpu::TextureFormat::Depth32FloatStencil8 | wgpu::TextureFormat::Depth32Float
+        ) || dst.sample_count() > 1
+        {
+            return Err(WordsError::Depth(target));
+        }
+        let (w, h) = (size.0.max(1), size.1.max(1));
+        let extent = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        if target.has_stencil_aspect() {
+            // Rows of stencil bytes, as a buffer-to-texture copy wants them.
+            let row = w.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let packed = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gfx guest words stencil"),
+                size: row as u64 * h as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let p = Params {
+                src_width: row / 4,
+                ..Params::level(size, layout)
+            };
+            let uniform = Self::uniform(ctx, &p);
+            let bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("gfx guest words load stencil"),
+                layout: &self.load_stencil.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: mirror.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: packed.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("gfx guest words load stencil"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.load_stencil);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.dispatch_workgroups(w.div_ceil(4).div_ceil(8), h.div_ceil(8), 1);
+            }
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &packed,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row),
+                        rows_per_image: Some(h),
+                    },
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: dst,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::StencilOnly,
+                },
+                extent,
+            );
+        }
+        let module = &self.load_depth_module;
+        let pipeline = self.load_depth.entry(target).or_insert_with(|| {
+            ctx.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("gfx guest words load depth"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: target,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        });
+        let uniform = Self::uniform(ctx, &Params::level(size, layout));
+        let bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gfx guest words load depth"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: mirror.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let view = dst.create_view(&Default::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gfx guest words load depth"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: target.has_stencil_aspect().then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
+        Ok(())
+    }
+
     /// Records the making of the texture a `format` texture of `size` over
     /// the depth buffer's memory decodes to: `depth` (single-sample
     /// `Depth32FloatStencil8` or `Depth32Float`) as `D24S8` words in rows
@@ -711,4 +938,27 @@ pub fn sign_flip(signed: [bool; 4]) -> u32 {
         .iter()
         .enumerate()
         .fold(0, |f, (i, &s)| if s { f | 0x80 << (8 * i) } else { f })
+}
+
+/// `depth_of_word` of the shaders on the CPU (the `D24S8` depth `z /
+/// 16777215` as an `f32`, without a division), for the exhaustive check
+/// against the division `decode_depth` does.
+#[cfg(test)]
+fn depth_of_z(z: u32) -> f32 {
+    if z == 0 {
+        return 0.0;
+    }
+    let b = 32 - z.leading_zeros();
+    ((z << (24 - b)) + 1) as f32 * 2f32.powi(b as i32 - 48)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn depth_of_word_is_the_division_for_every_24_bit_depth() {
+        for z in 0..1u32 << 24 {
+            let want = z as f32 / 16_777_215.0;
+            assert_eq!(super::depth_of_z(z).to_bits(), want.to_bits(), "z {z:#x}");
+        }
+    }
 }
