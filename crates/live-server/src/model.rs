@@ -133,6 +133,7 @@ pub struct State {
     pub friends: HashMap<Xuid, Relations>,
     pub teams: live_proto::team::Store,
     pub sessions: BTreeMap<String, live_proto::session::Session>,
+    pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
@@ -396,6 +397,10 @@ impl Model {
         self.nonces
             .insert_new(nonce_key(&b.author, &b.nonce), at + MAX_EVENT_SKEW_S, now);
         let mut s = self.state.write().unwrap();
+        if b.stream.starts_with("mailbox-") {
+            crate::mailbox::project(&mut s, e, at);
+            return;
+        }
         if b.stream.starts_with("session-") {
             crate::sessions::project(&mut s, e, at);
             return;

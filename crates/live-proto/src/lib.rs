@@ -9,9 +9,10 @@ pub mod audit;
 pub mod game;
 pub mod hopper;
 pub mod jcs;
+pub mod mailbox;
 pub mod motd;
-pub mod sign;
 pub mod session;
+pub mod sign;
 pub mod team;
 pub mod title_file;
 

@@ -58,6 +58,8 @@ pub(crate) enum Reply {
     Done,
     Teams(Vec<live_proto::team::Team>),
     Matches(Vec<live_proto::session::Session>),
+    Social(SocialSnapshot),
+    InviteAccepted(live_proto::mailbox::Invite),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -129,6 +131,19 @@ pub(crate) enum MatchRequest {
     },
     Find(String),
 }
+#[derive(Clone)]
+pub(crate) enum SocialRequest {
+    Refresh,
+    Send { to: Vec<Xuid>, session_id: String },
+    Answer(live_proto::mailbox::Answered),
+    Join { from: Xuid, session_id: String },
+}
+#[derive(Clone, PartialEq)]
+pub(crate) struct SocialSnapshot {
+    pub friends: live_proto::Friends,
+    pub invites: Vec<live_proto::mailbox::Invite>,
+    pub sessions: Vec<live_proto::session::Session>,
+}
 enum Work {
     Logon(Vec<Account>),
     Change(Vec<Account>),
@@ -136,6 +151,7 @@ enum Work {
     File(&'static str, u32),
     Teams { user: u64, request: TeamRequest },
     Match(MatchRequest),
+    Social { user: u64, request: SocialRequest },
     Wake,
 }
 struct Command {
@@ -234,6 +250,9 @@ impl Service {
     pub fn match_request(&self, s: &Session, request: MatchRequest) -> Result<Pending, u32> {
         self.submit(s, Work::Match(request))
     }
+    pub fn social(&self, s: &Session, user: u64, request: SocialRequest) -> Result<Pending, u32> {
+        self.submit(s, Work::Social { user, request })
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -252,6 +271,7 @@ struct Connection {
 #[derive(Clone)]
 struct Identity {
     xuid: u64,
+    gamertag: String,
     key: Arc<KeyPair>,
 }
 struct Active {
@@ -390,6 +410,7 @@ impl Worker {
             }
             let user = Identity {
                 xuid: a.xuid,
+                gamertag: a.gamertag.clone(),
                 key: a.key.clone().ok_or(Error::Status(401))?,
             };
             let keys: AccountKeys = self.json(
@@ -675,6 +696,131 @@ impl Worker {
         Ok(())
     }
 
+    fn social_event(
+        &self,
+        user: &Identity,
+        recipient: Xuid,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        let body = EventBody::new(
+            &user.key,
+            &self.author(user),
+            &live_proto::mailbox::stream(recipient),
+            kind,
+            data,
+            time::OffsetDateTime::now_utc(),
+        )
+        .sign(&user.key);
+        self.response(
+            self.request("POST", "/events", user, lxm::EVENTS_WRITE)
+                .set("content-type", "application/jose"),
+            Some(&body),
+            MAX_FILE,
+        )?;
+        Ok(())
+    }
+    fn mailbox(&self, user: &Identity) -> Result<Vec<live_proto::mailbox::Invite>, Error> {
+        let page: live_proto::Page<live_proto::mailbox::Invite> = self.team_json(
+            user,
+            &format!("/accounts/by-xuid/{}/mailbox", Xuid(user.xuid)),
+        )?;
+        if page.items.len() > 100
+            || page.items.iter().any(|v| {
+                v.to != Xuid(user.xuid)
+                    || !live_proto::session::valid_id(&v.session_id)
+                    || v.gamertag.len() > 15
+                    || !v.gamertag.is_ascii()
+            })
+        {
+            return Err(Error::Protocol);
+        }
+        Ok(page.items)
+    }
+    fn social_request(&self, user: &Identity, request: &SocialRequest) -> Result<Reply, Error> {
+        use live_proto::mailbox::{self, Answer, Invite};
+        match request {
+            SocialRequest::Refresh => {
+                let friends: live_proto::Friends = self.team_json(
+                    user,
+                    &format!(
+                        "/accounts/{}/friends",
+                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
+                            .collect::<String>()
+                    ),
+                )?;
+                let invites = self.mailbox(user)?;
+                let sessions = self.matches_request(
+                    user,
+                    MatchRequest::Search {
+                        limit: 1000,
+                        attributes: BTreeMap::new(),
+                    },
+                )?;
+                Ok(Reply::Social(SocialSnapshot {
+                    friends,
+                    invites,
+                    sessions,
+                }))
+            }
+            SocialRequest::Send { to, session_id } => {
+                for recipient in to {
+                    self.social_event(
+                        user,
+                        *recipient,
+                        mailbox::SENT,
+                        json!({"from":Xuid(user.xuid),"session_id":session_id}),
+                    )?;
+                }
+                Ok(Reply::Done)
+            }
+            SocialRequest::Answer(answer) => {
+                let invite = self
+                    .mailbox(user)?
+                    .into_iter()
+                    .find(|v| v.id == answer.invite_id && v.session_id == answer.session_id)
+                    .ok_or(Error::Status(404))?;
+                self.social_event(
+                    user,
+                    Xuid(user.xuid),
+                    mailbox::ANSWERED,
+                    serde_json::to_value(answer).map_err(|_| Error::Protocol)?,
+                )?;
+                Ok(if answer.answer == Answer::Accept {
+                    Reply::InviteAccepted(invite)
+                } else {
+                    Reply::Done
+                })
+            }
+            SocialRequest::Join { from, session_id } => {
+                let friends: live_proto::Friends = self.team_json(
+                    user,
+                    &format!(
+                        "/accounts/{}/friends",
+                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
+                            .collect::<String>()
+                    ),
+                )?;
+                if !friends.friends.iter().any(|f| f.xuid == *from) {
+                    return Err(Error::Status(403));
+                }
+                let row = self
+                    .fetch_match(user, session_id)?
+                    .into_iter()
+                    .find(|v| v.host_xuid == *from)
+                    .ok_or(Error::Status(404))?;
+                Ok(Reply::InviteAccepted(Invite {
+                    id: 0,
+                    from: *from,
+                    to: Xuid(user.xuid),
+                    gamertag: row.host_gamertag,
+                    session_id: session_id.clone(),
+                    sent_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+                    answer: None,
+                }))
+            }
+        }
+    }
     fn run(&mut self, c: &Command) -> Result<Reply, u32> {
         if matches!(c.work, Work::Wake) {
             self.cancelled();
@@ -856,6 +1002,19 @@ impl Worker {
                     _ => {}
                 }
                 Ok(Reply::Matches(rows))
+            }
+            Work::Social { user, request } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                self.social_request(user, request).map_err(|e| match e {
+                    Error::Status(404) => FRIEND_NOT_FOUND,
+                    Error::Status(400 | 403 | 409) => INVALID_ARGUMENT,
+                    _ => e.result(),
+                })
             }
             Work::Teams { user, request } => {
                 let active = self

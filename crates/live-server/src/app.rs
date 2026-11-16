@@ -181,6 +181,11 @@ fn parse_data<'a, T: Deserialize<'a>>(data: &'a Value) -> Result<T, ApiError> {
 /// writes through its own endpoints, and the friend events, which are the
 /// accounts' own. Games come with the game endpoints.
 fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
+    if stream.starts_with("mailbox-") || live_proto::mailbox::is_kind(kind) {
+        return matches!(author, Author::Account { .. })
+            && stream.starts_with("mailbox-")
+            && live_proto::mailbox::is_kind(kind);
+    }
     if stream.starts_with("session-") {
         return false;
     }
@@ -234,6 +239,9 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         xuid: Xuid,
         state: Option<String>,
         game_id: Option<String>,
+    }
+    if live_proto::mailbox::is_kind(&body.kind) {
+        return crate::mailbox::validate(state, body);
     }
     if live_proto::team::Action::is_kind(&body.kind) {
         return crate::teams::validate(state, body);
@@ -657,6 +665,13 @@ impl Live {
                 body.kind, body.stream
             )));
         }
+        // Serialize mailbox validation with host delete/expiry and other
+        // mailbox mutations so two concurrent answers cannot both commit.
+        let _mailbox_guard = if live_proto::mailbox::is_kind(&body.kind) {
+            Some(self.session_writes.lock().await)
+        } else {
+            None
+        };
         let _team_guard = if live_proto::team::Action::is_kind(&body.kind) {
             Some(self.team_writes.lock().await)
         } else {

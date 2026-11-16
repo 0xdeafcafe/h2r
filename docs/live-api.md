@@ -309,6 +309,45 @@ The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
 base through base+6. A Cloudflare HTTP tunnel alone provides no gameplay path.
 
+## Game-invite mailboxes
+
+These are gameplay invitations, separate from the operator's account-registration
+invite codes at `POST /v1/invites`. Both gameplay events use `POST /v1/events`,
+one compact JWS and an `events.write` bearer token, on `mailbox-<recipient xuid>`.
+
+| event | signed data | authority |
+|---|---|---|
+| `GameInviteSent` | `{from, session_id}` | A signed-in account inviting another existing account to its own open session |
+| `GameInviteAnswered` | `{by, session_id, invite_id, answer}` | The mailbox owner answering that exact pending invitation |
+
+`invite_id` is the sent event's global position. Answers are `accept`, `decline`,
+`remove`, or `block`. Accept requires the session still be open; the other
+answers may clear a stale invite. Block also refuses later invitations from
+that sender; no unblock endpoint is included here. Duplicate pending invitations
+to the same session are conflicts. At most 100 invitations to open sessions may
+be pending per recipient. Unknown fields, sender/recipient spoofing and foreign
+or closed sessions are refused. Timestamp/key/signature/nonces and rate limits
+follow the ordinary event rules. Validation and append share the session-write
+lock, preventing duplicate concurrent answers or a race with session deletion.
+
+`GET /v1/accounts/by-xuid/{xuid}/mailbox` always requires a `read` token signed
+by that recipient, including on a public server. It returns
+`{items, next: null, position}` with at most 100 pending invitations to open
+sessions, newest first. Each item is
+`{id, from, to, gamertag, session_id, sent_at, answer: null}`; `sent_at` is Unix
+seconds. Sender names come from the account projection. Answered or
+closed/expired-session invitations disappear from this list. The projection
+rebuilds from the log on restart. As with the rest of this service, raw events
+follow the server's general public/private log policy; mailbox authorization is
+not a promise of encrypted or secret event contents.
+
+The HLE fetches this mailbox with the current account's key. Successful delivery
+is not acceptance or a joined player: an accepted invite becomes a local launch
+record, and actual connection uses FindFromID and the guest's QoS/UDP path.
+`PlayerJoined` remains a host-reported session event, not an inferred side effect
+of answering an invitation. No message attachments, notification acknowledgments,
+ranked matcher or UDP relay are added by these endpoints.
+
 ## Streams (WebSocket)
 
 **`GET /v1/stream?from=<position>`** for readers. The server first replays

@@ -5,6 +5,7 @@
 
 mod client;
 mod config;
+mod invites;
 mod messages;
 pub use client::{ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
@@ -50,6 +51,7 @@ pub mod status {
     pub const STORAGE_ACCESS_DENIED: u32 = 0x8015_c002;
     pub const STORAGE_INVALID_PATH: u32 = 0x8015_c008;
     pub const STORAGE_INVALID_FACILITY: u32 = 0x8015_c009;
+    pub const FRIEND_NOT_FOUND: u32 = 0x8015_2008;
     pub const NO_ACCEPTED_INVITE: u32 = 0x8000_4005; // E_FAIL; S_FALSE would be an invite to Halo.
     pub const CANNOT_ACCESS_SERVICE: u32 = 0x8015_1001;
     pub const SERVERS_BUSY: u32 = 0x8015_1003;

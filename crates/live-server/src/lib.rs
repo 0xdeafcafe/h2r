@@ -25,12 +25,13 @@ pub mod http;
 pub mod identity;
 pub mod ingest;
 pub mod local_signin;
+mod mailbox;
 pub mod model;
 pub mod pg;
 pub mod public;
+mod sessions;
 pub mod store;
 mod teams;
-mod sessions;
 pub mod title_headers;
 
 use std::net::SocketAddr;

@@ -1,5 +1,5 @@
-//! Owned outgoing messages. A completed send means accepted locally, never
-//! delivered to a recipient. Captures survive builder/task destruction.
+//! Owned outgoing messages. Generic sends are accepted locally. Server-backed
+//! invitations attach a real asynchronous completion; captures survive destruction.
 use crate::{
     state::{Error, Storage},
     status::*,
@@ -100,6 +100,7 @@ impl Op {
 pub(crate) struct Outbox {
     builders: BTreeMap<u32, BuiltMessage>,
     tasks: BTreeSet<u32>,
+    remote: BTreeMap<u32, (Option<crate::client::Pending>, u32)>,
     captures: VecDeque<MessageSend>,
     bytes: usize,
     sequence: u64,
@@ -121,6 +122,9 @@ impl Outbox {
     pub fn accepts(&self, h: u32, ty: u8) -> bool {
         h == 0 || self.builders.get(&h).is_some_and(|b| b.message_type == ty)
     }
+    pub fn last(&self) -> Option<&MessageSend> {
+        self.captures.back()
+    }
     pub fn snapshot(&self) -> Vec<MessageSend> {
         self.captures.iter().cloned().collect()
     }
@@ -131,11 +135,33 @@ impl Outbox {
     pub fn clear_session(&mut self) {
         self.builders.clear();
         self.tasks.clear();
+        self.remote.clear();
     }
-    pub fn poll(&self, h: u32) -> Option<u32> {
+    pub fn attach(&mut self, h: u32, pending: std::result::Result<crate::client::Pending, u32>) {
+        self.remote.insert(
+            h,
+            match pending {
+                Ok(p) => (Some(p), 0),
+                Err(e) => (None, e),
+            },
+        );
+    }
+    pub fn poll(&mut self, h: u32) -> Option<u32> {
+        if let Some((pending, status)) = self.remote.get_mut(&h) {
+            if let Some(reply) = pending.as_ref().and_then(crate::client::Pending::take) {
+                *status = match reply {
+                    Ok(crate::client::Reply::Done) => TASK_SUCCESS,
+                    Err(e) => e,
+                    _ => INVALID_ARGUMENT,
+                };
+                *pending = None;
+            }
+            return Some(*status);
+        }
         self.tasks.contains(&h).then_some(TASK_SUCCESS)
     }
     pub fn close(&mut self, h: u32) -> bool {
+        self.remote.remove(&h);
         self.tasks.remove(&h)
     }
     pub fn invoke(

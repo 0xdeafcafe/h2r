@@ -1703,3 +1703,567 @@ fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
     });
     assert!(s.events().iter().any(|e| e.kind == "SessionDeleted"));
 }
+
+// Invitations are discovered over HTTP only; the transport proof uses no
+// broadcast peers or synthetic networking bypass.
+const INV_FRIEND: u32 = DATA + 0x11000;
+const INV_RECORD: u32 = DATA + 0x12000;
+const INV_ANSWER: u32 = DATA + 0x13000;
+fn friend_pair(server: &Server, a: &Account, b: &Account) {
+    for (signer, kind) in [(a, types::FRIEND_REQUESTED), (b, types::FRIEND_ACCEPTED)] {
+        let author = format!("acct:{}@{}", signer.xuid, server.discovery.id);
+        let event = live_proto::sign::EventBody::at_unix(
+            &signer.key,
+            &author,
+            &live_proto::streams::account(signer.xuid),
+            kind,
+            json!({"from":a.xuid,"to":b.xuid}),
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+        .sign(&signer.key);
+        let token = sign::issue_token(
+            &signer.key,
+            &author,
+            &server.discovery.id,
+            lxm::EVENTS_WRITE,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        server
+            .agent
+            .post(&server.url("/v1/events"))
+            .set("authorization", &format!("Bearer {token}"))
+            .set("content-type", "application/jose")
+            .send_string(&event)
+            .unwrap();
+    }
+}
+fn guest_until(w: &mut World, mut condition: impl FnMut(&mut World) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while !condition(w) {
+        assert!(Instant::now() < deadline, "guest invite refresh timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn invite_host(w: &mut World) -> (u32, u32) {
+    assert_eq!(
+        w.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 0, 0, 0, OUT]),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    (w.u32(MATCH_ID), w.u32(MATCH_ID + 4))
+}
+fn invited_friend(w: &mut World, from: Xuid) -> Vec<u8> {
+    guest_until(w, |w| {
+        let count = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        (0..count).any(|i| {
+            w.rt.memory().u64(INV_FRIEND + i * 86).unwrap() == from.0
+                && w.u32(INV_FRIEND + i * 86 + 28) & 0x08000000 != 0
+        })
+    });
+    let count = w.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+    let at = (0..count)
+        .find(|i| w.rt.memory().u64(INV_FRIEND + i * 86).unwrap() == from.0)
+        .unwrap();
+    w.bytes(INV_FRIEND + at * 86, 86)
+}
+fn game_answer_info(w: &World, f: &[u8]) {
+    w.put(INV_ANSWER, &f[..28]);
+    w.put(INV_ANSWER + 28, &f[48..52]);
+    w.put(INV_ANSWER + 32, &f[40..48]);
+    w.put(INV_ANSWER + 40, &f[32..40]);
+}
+fn game_port() -> u16 {
+    loop {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let p = socket.local_addr().unwrap().port();
+        if p <= 65529 {
+            return p;
+        }
+    }
+}
+fn address(ip: Ipv4Addr, port: u16) -> [u8; 16] {
+    let mut b = [0; 16];
+    b[..2].copy_from_slice(&2u16.to_le_bytes());
+    b[2..4].copy_from_slice(&port.to_be_bytes());
+    b[4..8].copy_from_slice(&ip.octets());
+    b
+}
+fn udp_socket(w: &mut World) -> u32 {
+    let socket = w.call("socket", &[2, 2, 17]);
+    assert_ne!(socket, u32::MAX);
+    w.put(BUFFER, &address(Ipv4Addr::LOCALHOST, 1000));
+    assert_eq!(w.call("bind", &[socket, BUFFER, 16]), 0);
+    w.word(OUT, 1000);
+    assert_eq!(w.call("setsockopt", &[socket, 0xffff, 0x1006, OUT, 4]), 0);
+    socket
+}
+#[test]
+fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Joiner");
+    friend_pair(&s, &a, &b);
+    let port = game_port();
+    let mut peer_port = game_port();
+    while peer_port.abs_diff(port) <= 6 {
+        peer_port = game_port();
+    }
+    let mut host = World::raw_network(
+        &s.embedded.url,
+        json!([a.json()]),
+        Duration::from_secs(30),
+        port,
+    );
+    let mut peer = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_secs(30),
+        peer_port,
+    );
+    host.logon();
+    peer.logon();
+    let (lo, hi) = invite_host(&mut host);
+    host.put(MATCH_ATTR, &b.xuid.0.to_le_bytes());
+    host.word(MATCH_ATTR + 8, 0);
+    assert_eq!(
+        host.call(
+            "XOnlineGameInviteSend",
+            &[0, 1, MATCH_ATTR, lo, hi, 0, 0, 0, OUT]
+        ),
+        0
+    );
+    let send = host.u32(OUT);
+    assert_eq!(host.wait(send), TASK_SUCCESS);
+    assert_eq!(peer.call("XOnlineFriendsStartup", &[0, OUT]), 0);
+    let background = peer.u32(OUT);
+    guest_until(&mut peer, |w| {
+        w.call("XOnlineTaskContinue", &[background]) == TASK_RESULTS_AVAILABLE
+    });
+    let f = invited_friend(&mut peer, a.xuid);
+    assert_eq!(
+        u64::from_le_bytes(f[40..48].try_into().unwrap()),
+        u64::from(lo) | (u64::from(hi) << 32)
+    );
+    assert_eq!(
+        peer.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        1
+    );
+    assert_eq!(peer.bytes(OUT, 1), vec![3]);
+    let message = peer.u32(OUT + 1);
+    assert_eq!(
+        peer.call("XOnlineGetNotificationEx", &[0, OUT, OUT + 16]),
+        0,
+        "one toast per invite"
+    );
+    assert_eq!(
+        peer.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+        0
+    );
+    assert_eq!(peer.u32(OUT), 1);
+    assert_eq!(peer.u32(INV_RECORD + 32), message);
+    assert_eq!(peer.bytes(INV_RECORD, 8), a.xuid.0.to_le_bytes());
+    assert_eq!(peer.bytes(INV_RECORD + 12, 1), vec![3]);
+    assert_eq!(
+        peer.call("XOnlineMessageDetails", &[0, message, 0, 0, 0, OUT]),
+        0
+    );
+    let details = peer.u32(OUT);
+    assert_eq!(peer.wait(details), TASK_SUCCESS);
+    assert_eq!(
+        peer.call(
+            "XOnlineMessageDetailsGetResultsProperty",
+            &[details, 0x581, 8, BUFFER, OUT, OUT + 4]
+        ),
+        0
+    );
+    assert_eq!(peer.bytes(BUFFER, 8), f[40..48]);
+    assert_eq!(peer.u32(OUT), 8);
+    assert_eq!(peer.call("XOnlinePresenceInit", &[0, 0, OUT]), 0);
+    let presence = peer.u32(OUT);
+    assert_eq!(peer.wait(presence), TASK_SUCCESS);
+    peer.put(INV_ANSWER, &a.xuid.0.to_le_bytes());
+    peer.word(INV_ANSWER + 8, 0);
+    assert_eq!(
+        peer.call("XOnlinePresenceAdd", &[presence, 9, 1, INV_ANSWER]),
+        0
+    );
+    assert_eq!(
+        peer.call("XOnlinePresenceGetLatest", &[presence, 9, 1, BUFFER]),
+        0
+    );
+    assert_eq!(peer.bytes(BUFFER, 8), a.xuid.0.to_le_bytes());
+    assert_ne!(peer.u32(BUFFER + 12) & 0x08000000, 0);
+    assert_eq!(peer.bytes(BUFFER + 16, 8), f[40..48]);
+    game_answer_info(&peer, &f);
+    assert_eq!(
+        peer.call("XOnlineGameInviteAnswer", &[0, INV_ANSWER, 1, 0, OUT]),
+        0
+    );
+    let accept = peer.u32(OUT);
+    assert_eq!(peer.wait(accept), TASK_SUCCESS);
+    peer.put(INV_RECORD, &[0xcc; 160]);
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        0
+    );
+    assert_eq!(peer.bytes(INV_RECORD, 86), f);
+    assert_eq!(peer.bytes(INV_RECORD + 86, 2), vec![0; 2]);
+    assert_eq!(peer.bytes(INV_RECORD + 88, 8), b.xuid.0.to_le_bytes());
+    assert!(peer.rt.memory().u64(INV_RECORD + 100).unwrap() > 0);
+    assert_eq!(peer.bytes(INV_RECORD + 108, 8), b.xuid.0.to_le_bytes());
+    assert_eq!(peer.bytes(INV_RECORD + 156, 4), vec![0xcc; 4]);
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE,
+        "accepted records are consumed"
+    );
+    assert_eq!(peer.bytes(INV_RECORD, 156), vec![0; 156]);
+    assert_eq!(
+        peer.call("XOnlineMessageDelete", &[0, message, 0]),
+        0,
+        "delete after acceptance acknowledges an already handled ID"
+    );
+    assert_eq!(
+        peer.call("XOnlineMatchSessionFindFromID", &[lo, hi, 0, OUT]),
+        0
+    );
+    let find = peer.u32(OUT);
+    assert_eq!(peer.wait(find), TASK_SUCCESS);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchGetResults", &[find, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(peer.u32(OUT + 4), 1);
+    let row = peer.u32(peer.u32(OUT));
+    assert_eq!(peer.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    assert_eq!(
+        peer.call("XNetXnAddrToInAddr", &[row + 12, row + 4, OUT]),
+        0
+    );
+    let ip = peer.u32(OUT);
+    assert_eq!(peer.call("XNetConnect", &[ip]), 0);
+    assert_eq!(peer.call("XNetGetConnectStatus", &[ip]), 2);
+    // The session's actual host key and zero remote HLE key still identify
+    // the same QoS listener; no exchange key is published by the server.
+    assert_eq!(host.call("XNetRegisterKey", &[MATCH_ID, MATCH_KEY]), 0);
+    host.put(BUFFER, b"synthetic-lobby");
+    assert_eq!(
+        host.call(
+            "XNetQosListen",
+            &[MATCH_ID, BUFFER, 15, 2_000_000, 1 | 4 | 8]
+        ),
+        0
+    );
+    peer.word(MATCH_ATTR, row + 12);
+    peer.word(MATCH_ATTR + 4, row + 4);
+    peer.word(MATCH_ATTR + 8, row + 0x30);
+    assert_eq!(
+        peer.call(
+            "XNetQosLookup",
+            &[
+                1,
+                MATCH_ATTR,
+                MATCH_ATTR + 4,
+                MATCH_ATTR + 8,
+                0,
+                0,
+                0,
+                3,
+                0,
+                0,
+                0,
+                OUT
+            ]
+        ),
+        0
+    );
+    let qos = peer.u32(OUT);
+    assert_eq!(peer.u32(qos + 4), 0);
+    assert_eq!(peer.bytes(qos + 8, 1), vec![0xb]);
+    assert_eq!(peer.bytes(peer.u32(qos + 16), 15), b"synthetic-lobby");
+    assert_eq!(peer.call("XNetQosRelease", &[qos]), 0);
+    let hs = udp_socket(&mut host);
+    let ps = udp_socket(&mut peer);
+    peer.put(BUFFER, b"join");
+    peer.put(
+        BUFFER + 100,
+        &address(Ipv4Addr::from(ip.to_le_bytes()), 1000),
+    );
+    assert_eq!(
+        peer.call("sendto", &[ps, BUFFER, 4, 0, BUFFER + 100, 16]),
+        4
+    );
+    host.word(OUT, 16);
+    assert_eq!(
+        host.call("recvfrom", &[hs, BUFFER, 64, 0, BUFFER + 100, OUT]),
+        4
+    );
+    assert_eq!(host.bytes(BUFFER, 4), b"join");
+    host.put(BUFFER, b"welcome");
+    assert_eq!(
+        host.call("sendto", &[hs, BUFFER, 7, 0, BUFFER + 100, 16]),
+        7
+    );
+    assert_eq!(peer.call("recv", &[ps, BUFFER, 64, 0]), 7);
+    assert_eq!(peer.bytes(BUFFER, 7), b"welcome");
+    assert_eq!(host.call("closesocket", &[hs]), 0);
+    assert_eq!(peer.call("closesocket", &[ps]), 0);
+    for task in [details, accept, find, background, presence] {
+        assert_eq!(peer.call("XOnlineTaskClose", &[task]), 0);
+    }
+    assert_eq!(host.call("XOnlineTaskClose", &[send]), 0);
+    assert_eq!(
+        peer.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+        0
+    );
+    assert_eq!(peer.u32(OUT), 0);
+    let events = s.events();
+    assert!(events.iter().any(|e| e.kind == live_proto::mailbox::SENT));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == live_proto::mailbox::ANSWERED && e.data["answer"] == "accept")
+    );
+}
+#[test]
+fn invites_friend_send_decline_remove_accept_and_join_are_asynchronous() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Joiner");
+    friend_pair(&s, &a, &b);
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::new(&s.embedded.url, &[&b]);
+    host.logon();
+    peer.logon();
+    let (lo, hi) = invite_host(&mut host);
+    // Two friends prove the retail 86-byte array stride, including the second recipient.
+    let c = s.account("Third");
+    friend_pair(&s, &a, &c);
+    let mut third = World::new(&s.embedded.url, &[&c]);
+    third.logon();
+    let mut f = [0; 86];
+    f[..8].copy_from_slice(&b.xuid.0.to_le_bytes());
+    host.put(INV_FRIEND, &f);
+    f[..8].copy_from_slice(&c.xuid.0.to_le_bytes());
+    host.put(INV_FRIEND + 86, &f);
+    assert_eq!(
+        host.call("XOnlineFriendsGameInvite", &[0, lo, hi, 2, INV_FRIEND]),
+        0
+    );
+    let _ = invited_friend(&mut third, a.xuid);
+    assert_eq!(
+        third.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+        0
+    );
+    assert_eq!(third.u32(OUT), 1);
+    let third_message = third.u32(INV_RECORD + 32);
+    assert_eq!(
+        third.call("XOnlineMessageDelete", &[0, third_message, 0]),
+        0
+    );
+    guest_until(&mut third, |w| {
+        assert_eq!(
+            w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+            NO_ACCEPTED_INVITE
+        );
+        s.events().iter().any(|e| {
+            e.kind == live_proto::mailbox::ANSWERED
+                && e.data["by"] == c.xuid.to_string()
+                && e.data["answer"] == "remove"
+        })
+    });
+
+    let f = invited_friend(&mut peer, a.xuid);
+    peer.put(INV_FRIEND, &f);
+    assert_eq!(
+        peer.call("XOnlineFriendsAnswerGameInvite", &[0, INV_FRIEND, 0]),
+        0
+    );
+    guest_until(&mut peer, |w| {
+        w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]);
+        s.events().iter().any(|e| {
+            e.kind == live_proto::mailbox::ANSWERED
+                && e.data["by"] == b.xuid.to_string()
+                && e.data["answer"] == "decline"
+        })
+    });
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    for answer in [2, 1] {
+        assert_eq!(
+            host.call("XOnlineFriendsGameInvite", &[0, lo, hi, 1, INV_FRIEND]),
+            0
+        );
+        let f = invited_friend(&mut peer, a.xuid);
+        peer.put(INV_FRIEND, &f);
+        assert_eq!(
+            peer.call("XOnlineFriendsAnswerGameInvite", &[0, INV_FRIEND, answer]),
+            0
+        );
+        if answer == 1 {
+            guest_until(&mut peer, |w| {
+                w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]) == 0
+            });
+        } else {
+            guest_until(&mut peer, |w| {
+                w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]);
+                s.events().iter().any(|e| {
+                    e.kind == live_proto::mailbox::ANSWERED
+                        && e.data["by"] == b.xuid.to_string()
+                        && e.data["answer"] == "remove"
+                })
+            });
+        }
+    }
+    // Joining an already playing friend needs no invitation: it resolves the
+    // signed-in user's actual friendship and the friend's open session first.
+    assert_eq!(peer.call("XOnlineFriendsJoinGame", &[0, INV_FRIEND]), 0);
+    guest_until(&mut peer, |w| {
+        w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]) == 0
+    });
+    assert_eq!(peer.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
+}
+
+#[test]
+fn invites_invalid_arguments_faults_and_unreachable_answers_never_launch_a_join() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Joiner");
+    let mut host = World::timed(&s.embedded.url, &[&a], Duration::from_secs(3600));
+    let mut peer = World::timed(&s.embedded.url, &[&b], Duration::from_secs(3600));
+    host.logon();
+    peer.logon();
+    let (lo, hi) = invite_host(&mut host);
+    host.put(INV_FRIEND, &b.xuid.0.to_le_bytes());
+    assert_eq!(
+        host.call("XOnlineFriendsGameInvite", &[0, lo, hi, 101, INV_FRIEND]),
+        INVALID_ARGUMENT
+    );
+    let event = host.raw_call("XOnlineFriendsGameInvite", &[0, lo, hi, 1, 0xfffffff0]);
+    assert!(matches!(
+        host.ctx.event(event.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert_eq!(
+        host.call("XOnlineFriendsGameInvite", &[0, lo, hi, 1, INV_FRIEND]),
+        0
+    );
+    let f = invited_friend(&mut peer, a.xuid);
+    peer.put(INV_FRIEND, &f);
+    game_answer_info(&peer, &f);
+    peer.word(OUT, 0xdeadbeef);
+    for args in [
+        [0, INV_ANSWER, 3, 0, OUT],
+        [0, INV_ANSWER, 1, 1, OUT],
+        [4, INV_ANSWER, 1, 0, OUT],
+    ] {
+        let code = peer.call("XOnlineGameInviteAnswer", &args);
+        assert!(matches!(code, INVALID_ARGUMENT | INVALID_USER));
+        assert_eq!(peer.u32(OUT), 0xdeadbeef);
+    }
+    let event = peer.raw_call(
+        "XOnlineGameInviteAnswer",
+        &[0, INV_ANSWER, 1, 0, 0xfffffff0],
+    );
+    assert!(matches!(
+        peer.ctx.event(event.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert_eq!(
+        peer.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+        0
+    );
+    assert_eq!(
+        peer.u32(OUT),
+        1,
+        "bad caller data did not consume the invite"
+    );
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    drop(s);
+    assert_eq!(
+        peer.call("XOnlineGameInviteAnswer", &[0, INV_ANSWER, 1, 0, OUT]),
+        0
+    );
+    let task = peer.u32(OUT);
+    assert_eq!(peer.wait(task), CANNOT_ACCESS_SERVICE);
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    assert_eq!(peer.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(peer.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+    assert_eq!(
+        peer.call("XOnlineMessageEnumerate", &[0, INV_RECORD, OUT]),
+        0
+    );
+    assert_eq!(
+        peer.u32(OUT),
+        1,
+        "failed answer restores the cached invitation"
+    );
+}
+#[test]
+fn invites_nonfriend_join_is_refused_and_peer_never_answer_blocks_future_invitations() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Joiner");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::new(&s.embedded.url, &[&b]);
+    host.logon();
+    peer.logon();
+    let (lo, hi) = invite_host(&mut host);
+    let mut friend = [0; 86];
+    friend[..8].copy_from_slice(&a.xuid.0.to_le_bytes());
+    friend[40..48].copy_from_slice(&host.bytes(MATCH_ID, 8));
+    peer.put(INV_FRIEND, &friend);
+    assert_eq!(peer.call("XOnlineFriendsJoinGame", &[0, INV_FRIEND]), 0);
+    guest_until(&mut peer, |w| {
+        assert_eq!(
+            w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+            NO_ACCEPTED_INVITE
+        );
+        w.hle.server_status().last_error != 0
+    });
+    host.put(INV_FRIEND, &b.xuid.0.to_le_bytes());
+    assert_eq!(
+        host.call("XOnlineFriendsGameInvite", &[0, lo, hi, 1, INV_FRIEND]),
+        0
+    );
+    let f = invited_friend(&mut peer, a.xuid);
+    game_answer_info(&peer, &f);
+    assert_eq!(
+        peer.call("XOnlineGameInviteAnswer", &[0, INV_ANSWER, 2, 0, OUT]),
+        0
+    );
+    let task = peer.u32(OUT);
+    assert_eq!(peer.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    host.put(MATCH_ATTR, &b.xuid.0.to_le_bytes());
+    assert_eq!(
+        host.call(
+            "XOnlineGameInviteSend",
+            &[0, 1, MATCH_ATTR, lo, hi, 0, 0, 0, OUT]
+        ),
+        0
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), INVALID_ARGUMENT);
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == live_proto::mailbox::ANSWERED && e.data["answer"] == "block")
+    );
+}

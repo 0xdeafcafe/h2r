@@ -1,15 +1,15 @@
 # Matchmaking and custom games over Live
 
-Status: design, nothing implemented. Every matchmaking entry on the Live
-boundary is still a named stop ([live.md](live.md), remaining-stop table),
-and the server has no session state. This page sets out, in order: what the
-retail game calls on the matchmaking and custom-game paths and in what
-order, how the hopper file drives it, a server design in the event-sourced
-style of [live.md](live.md) §4.3 and [live-api.md](live-api.md), and a
-phased plan. Sources: [live-boundary.md](live-boundary.md) (addresses,
-confidences), [live.md](live.md) (Client HLE sections), [live-motd.md](live-motd.md)
-and [live-motd-fetch.md](live-motd-fetch.md) (hoppers), [live-security.md](live-security.md)
-and [live-api.md](live-api.md) (service contracts).
+Status: phase 1 server sessions and HLE invitations are implemented. Tests use
+router memory stores and two synthetic guests against `start_embedded`, through
+HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. No game was
+built or run; the retail UI handoff and a complete custom match remain untested.
+Search also returns real sessions, with the anonymous procedure-1 filters still
+unmapped. The server matcher, ranked arbitration and NAT traversal remain design.
+Current contracts are in [live-api.md](live-api.md#sessions) and
+[live.md](live.md#client-hle-game-invitations-and-joining). The sections below
+retain the static call trace and phased design; implemented details there defer
+to those Client HLE/API sections.
 
 Retail context: session advertise/search/delete were three services behind
 the security gateway — `/xmatch/xmatchhost.srf`, `xmatchclient.srf`,
@@ -144,12 +144,12 @@ answers with `XOnlineFriendsAnswerGameInvite` (`0x003a0811`, wrapper
 `0x0008d0b0`); `XOnlineFriendsJoinGame` (`0x003a081c`, UI `0x002395dc`)
 joins the friend's session; and the menu polls
 `XOnlineFriendsGetAcceptedGameInvite` (`0x003a0827`, site `0x0006d211`).
-Today the HLE clears that call's 156-byte output and returns `E_FAIL`
-("no invite"); the poll's check at `0x0006d218` treats *every nonnegative*
+The HLE consumes a real 156-byte accepted record once; with none it clears the
+output and returns `E_FAIL` ("no invite"); the poll's check at `0x0006d218` treats *every nonnegative*
 HRESULT as an invite, so a real invite must fill the record, not just
-return success ([live.md](live.md), menu audit). *To confirm:* the invite
-message's property set and the 156-byte accepted-invite record layout
-(read `0x0008f7e0`, the `0x481`..`0x791` tag uses, and `0x0006d210`).
+return success ([live.md](live.md), menu audit). The session property is `0x0581`. The record layout is verified at
+`0x003b49ce`: friend86/padding2, accepted XUID12 at88, FILETIME at100,
+logged-on XUIDs48 at108. The full retail UI sequence remains unconfirmed.
 
 ### 1.4 Ranked results: arbitration and stats
 
@@ -187,13 +187,13 @@ To confirm in the retail code, with addresses:
 | Search result layout; which attributes the game reads back | `0x0008fb30`, `0x0008fc5c`, `0x00090160`, `0x00090282` |
 | Whether match results carry a TSADDR, or only query results do | `0x000b3a70` and its callers |
 | Order of key create/register versus session create; when QoS listening starts | `0x0007a8a0`, `0x0007a920`, `0x000731d0`, the `0x0005fb57`/`0x0005fb7c` sites |
-| Invite message properties; the 156-byte accepted-invite record | `0x0008f7e0`, `0x0008eda0` tag table (`0x0008ee44`), `0x0006d210` |
+| Optional invite voice/text playback and full retail UI handoff (accepted-record layout confirmed) | `0x0008f7e0`, `0x0008eda0` tag table (`0x0008ee44`), `0x0006d210` |
 | Hopper types 1–5 and the meaning of the descriptor ranges | `0x00065530` (playlist UI filter), `0x00192eb0` (session setup states 6/7/8), `0x00231066` (matchmaking start) |
 
 ## 2. How hoppers drive matchmaking
 
-`multiplayer_hopper.dat` is the playlist file, delivered after sign-in as a
-message attachment of file class 4 (envelope and delivery:
+`multiplayer_hopper.dat` is the playlist file, delivered after sign-in through
+per-title storage facility 4 (envelope and delivery:
 [live-motd.md](live-motd.md) §5, [live-motd-fetch.md](live-motd-fetch.md)).
 What matters for matchmaking:
 
@@ -287,26 +287,20 @@ retail code uses into filters.
 
 ### 3.3 Invitations as mailbox messages
 
-Retail invites are messages, so reuse the message path the HLE already
-serves (the title-file inbox). New stream `mailbox-<xuid>`:
+Implemented on `mailbox-<xuid>` streams with signed `GameInviteSent` and
+`GameInviteAnswered` through `POST /v1/events`. The host must be signed in and
+own the open session; only the recipient answers. The sent position is the
+invite ID. Answers select accept, decline, remove or block. The recipient reads
+pending items with its own `read` token at
+`GET /v1/accounts/by-xuid/{xuid}/mailbox`. See
+[live-api.md](live-api.md#game-invite-mailboxes) for payloads and limits.
 
-- `GameInviteSent` `{from, session_id}` — written by the sender's account
-  key through `POST /v1/events`. This needs one new stream-permission rule:
-  today an account writes only its own streams; allow any signed-in account
-  to append `GameInviteSent` to another account's mailbox when the session
-  exists and is open (checked against the projection, rate-limited per
-  author).
-- `GameInviteAnswered` `{by, session_id, answer}` — written by the
-  recipient, same route.
-
-The HLE surfaces invites through `XOnlineMessageEnumerate` /
-`XOnlineGetNotificationEx` (the title-file queue already drives both;
-extend it to mix mailbox events in, refreshing at enumeration time the way
-details/downloads re-fetch current bytes) and fills
-`XOnlineFriendsGetAcceptedGameInvite`'s 156-byte record once §1.5 pins its
-layout. The join is then the game's own flow: FindFromID → register key →
-connect. Friend requests (`XOnlineFriendsRequestEx`) can later ride the
-same mailbox; not needed here.
+The HLE refreshes friends, invitations and sessions on its HTTP worker.
+MessageEnumerate and GetNotificationEx expose only real player invitations;
+title files use storage. YES creates the consumed-on-read accepted record after
+the server acknowledges the answer. FriendsJoinGame resolves an existing friend
+and session before publishing the same join. Session resolution, key/address
+registration, QoS and guest sockets then use the existing transport.
 
 ### 3.4 Hopper matching
 
@@ -410,8 +404,8 @@ Presentation follows the web app's established Live-side style.
 **Phase 0 — confirm the retail contracts** (§1.5's table; parallel, no
 server work). The HLE result records can't be finalized before this.
 
-**Phase 1 — custom games listed and joinable by invite** (the smallest
-useful slice). Server: `session-*` streams, `POST /v1/sessions` and
+**Phase 1 — custom games listed and joinable by invite** (implemented and
+synthetically tested; retail play confirmation pending). Server: `session-*` streams, `POST /v1/sessions` and
 `/events`, `GET /v1/sessions{,/{id}}`, the sweeper, the `mailbox-*`
 invite pair, `sessions.write`, `q sessions`; web: the session list. HLE
 (replaces these stops): `XOnlineMatchSessionCreate`, `SessionUpdate`,
@@ -443,8 +437,9 @@ app.
 
 ## 5. Open questions
 
-- §1.5's confirmations, chiefly the session attribute list and the
-  accepted-invite record layout — both gate phase 1's HLE records.
+- The complete retail invite UI/confirmation transition remains untested.
+  Session records, seven-column parsing and accepted-invite packing are checked;
+  procedure-1 positional filter meanings still need identification.
 - The hopper record-template contents (§2) — the last format work before
   the server can author its own playlist file.
 - Whether the 30 s presence ping is the right session heartbeat, or

@@ -139,12 +139,14 @@ pub(crate) struct State {
     services: BTreeSet<u32>,
     service: Option<Service>,
     menu: crate::ui::Menu,
+    invites: crate::invites::Invites,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
     outbox: crate::outbox::Outbox,
     sessions: crate::sessions::Sessions,
     teams: crate::teams::Teams,
     user_ids: [u64; 4],
+    user_flags: [u32; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
 }
@@ -163,12 +165,14 @@ impl State {
             services: BTreeSet::new(),
             service,
             menu: crate::ui::Menu::default(),
+            invites: Default::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
             outbox: crate::outbox::Outbox::default(),
             sessions: crate::sessions::Sessions::default(),
             teams: crate::teams::Teams::default(),
             user_ids: [0; 4],
+            user_flags: [0; 4],
             state_flags: [1; 4],
             game_id: None,
         }
@@ -213,9 +217,11 @@ impl State {
             service.cancel(&session);
         }
         self.user_ids = [0; 4];
+        self.user_flags = [0; 4];
         self.state_flags = [1; 4];
         self.game_id = None;
         self.menu.clear();
+        self.invites.clear();
         self.files.clear();
         self.stats.clear_tasks();
         self.outbox.clear_session();
@@ -251,6 +257,14 @@ impl State {
         {
             *id = u64::from_le_bytes(user[..8].try_into().unwrap());
         }
+        for (flag, user) in self
+            .user_flags
+            .iter_mut()
+            .zip(users.as_chunks::<USER_SIZE>().0.iter())
+        {
+            *flag = u32::from_le_bytes(user[8..12].try_into().unwrap());
+        }
+        self.invites.users_changed(&self.user_ids);
         Ok(())
     }
     fn connected(&self) -> bool {
@@ -470,6 +484,27 @@ impl State {
                 },
             );
         }
+        self.invites.pump(&self.user_ids, &self.user_flags);
+        if let Invites(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let session = self.session();
+            return self.invites.invoke(
+                op,
+                m,
+                a,
+                crate::invites::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                    users: &self.user_ids,
+                },
+            );
+        }
         if let Outbox(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -487,7 +522,35 @@ impl State {
                     return Ok(NO_USER);
                 }
             }
-            return self.outbox.invoke(op, a, m, &mut self.storage, sender);
+            let result = self.outbox.invoke(op, a, m, &mut self.storage, sender)?;
+            if result == 0
+                && op == crate::outbox::Op::Invite
+                && let (Some(service), Some(session)) = (&self.service, self.session())
+            {
+                let capture = self.outbox.last().unwrap();
+                let crate::outbox::MessageSendKind::GameInvite { session_id, .. } = &capture.kind
+                else {
+                    unreachable!()
+                };
+                let to = capture
+                    .recipients
+                    .iter()
+                    .filter_map(|r| match r {
+                        crate::outbox::MessageRecipient::User(u) => Some(live_proto::Xuid(u.xuid)),
+                        _ => None,
+                    })
+                    .collect();
+                let pending = service.social(
+                    &session,
+                    sender,
+                    client::SocialRequest::Send {
+                        to,
+                        session_id: live_proto::sign::hex(&session_id.to_le_bytes()),
+                    },
+                );
+                self.outbox.attach(m.u32(a[8])?, pending);
+            }
+            return Ok(result);
         }
         if let Stats(op) = op {
             if self.online_refs == 0 {
@@ -526,6 +589,41 @@ impl State {
             );
         }
         if let Ui(op) = op {
+            if self.online_refs != 0
+                && matches!(
+                    op,
+                    crate::ui::Op::FriendsLatest | crate::ui::Op::Notification
+                )
+            {
+                if a[0] >= 4 {
+                    return Ok(0);
+                }
+                let session = self.session();
+                self.invites.refresh(
+                    a[0] as usize,
+                    self.user_ids[a[0] as usize],
+                    self.service.as_ref(),
+                    session.as_ref(),
+                );
+                if op == crate::ui::Op::Notification {
+                    return self.invites.notification(a[0] as usize, m, a);
+                }
+                if a[1] > 100 {
+                    return Ok(0);
+                }
+                let rows = self.invites.friends(a[0] as usize);
+                let count = rows.len().min(a[1] as usize);
+                m.check(
+                    a[2],
+                    count * crate::invites::FRIEND_SIZE,
+                    runtime::guest::Access::Write,
+                    1,
+                )?;
+                for (i, row) in rows.iter().take(count).enumerate() {
+                    m.write_bytes(a[2] + i as u32 * crate::invites::FRIEND_SIZE as u32, row, 1)?;
+                }
+                return Ok(count as u32);
+            }
             let connected = self.connected();
             return self.menu.invoke(
                 op,
@@ -645,13 +743,7 @@ impl State {
             return Ok(if op == LogonUsers { 0 } else { NOT_INITIALIZED });
         }
         match op {
-            AcceptedInvite => {
-                // Public XONLINE_ACCEPTED_GAMEINVITE is 156 bytes. Retail
-                // 0x003b49f7 zeroes it; the no-launch-invite path returns E_FAIL.
-                // Game 0x0006d218 accepts every nonnegative HRESULT as an invite.
-                m.write_bytes(a[0], &[0; 156], 1)?;
-                Ok(NO_ACCEPTED_INVITE)
-            }
+            AcceptedInvite => self.invites.accepted(m, a[0]),
             OnlineCleanup => {
                 self.online_refs -= 1;
                 if self.online_refs == 0 {
@@ -727,6 +819,13 @@ impl State {
                 Ok(OK)
             }
             Continue => {
+                if let Some(status) = self
+                    .invites
+                    .poll(a[0], &self.user_ids, &self.user_flags)
+                    .or_else(|| self.invites.details_status(a[0]))
+                {
+                    return Ok(status);
+                }
                 if let Some(status) = self.teams.poll(a[0]) {
                     return Ok(status);
                 }
@@ -835,7 +934,21 @@ impl State {
                         )
                     }
                     Task::Empty { kind, pumped } => {
+                        if kind == EmptyKind::Friends {
+                            let session = self.session();
+                            for i in 0..4 {
+                                self.invites.refresh(
+                                    i,
+                                    self.user_ids[i],
+                                    self.service.as_ref(),
+                                    session.as_ref(),
+                                );
+                            }
+                        }
                         let result = match kind {
+                            EmptyKind::Friends if self.invites.take_changed() => {
+                                TASK_RESULTS_AVAILABLE
+                            }
                             EmptyKind::Friends if pumped => RUNNING_IDLE,
                             EmptyKind::Offering => NO_NEW_CONTENT,
                             _ => TASK_SUCCESS,
@@ -869,6 +982,9 @@ impl State {
                 Ok(OK)
             }
             Close => {
+                if self.invites.close(a[0]) {
+                    return Ok(OK);
+                }
                 if self.teams.close(a[0], &mut self.outbox) {
                     return Ok(OK);
                 }
@@ -1093,7 +1209,23 @@ impl State {
                 Ok(OK)
             }
             PresenceClear => Ok(self.menu.presence_clear(a[0])),
-            PresenceLatest => self.menu.presence_latest(m, a),
+            PresenceLatest => {
+                let result = self.menu.presence_latest(m, a)?;
+                if result == 0
+                    && let Some(Task::Presence { controller, .. }) = self.tasks.get(&a[0])
+                {
+                    let controller = *controller as usize;
+                    let session = self.session();
+                    self.invites.refresh(
+                        controller,
+                        self.user_ids[controller],
+                        self.service.as_ref(),
+                        session.as_ref(),
+                    );
+                    self.invites.presence(controller, m, a)?;
+                }
+                Ok(result)
+            }
             SaveLogonState => {
                 if !self.connected() {
                     return Ok(NO_SESSION);
@@ -1127,7 +1259,28 @@ impl State {
                 {
                     return Ok(INVALID_USER);
                 }
-                crate::messages::invoke(op, a, m)
+                let session = self.session();
+                if matches!(op, MessageEnumerate | MessageDetails | MessageDelete) {
+                    self.invites.refresh(
+                        a[0] as usize,
+                        self.user_ids[a[0] as usize],
+                        self.service.as_ref(),
+                        session.as_ref(),
+                    );
+                }
+                match op {
+                    MessageEnumerate => self.invites.enumerate(a[0] as usize, m, a),
+                    MessageDetails => self.invites.details(m, a, &mut self.storage),
+                    MessageProperty => self.invites.property(m, a),
+                    MessageDelete => Ok(self.invites.delete(
+                        a[0] as usize,
+                        a[1],
+                        a[2] != 0,
+                        self.service.as_ref(),
+                        session.as_ref(),
+                    )),
+                    _ => crate::messages::invoke(op, a, m),
+                }
             }
             _ => unreachable!("registration routes only implemented operations here"),
         }

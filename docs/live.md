@@ -807,21 +807,21 @@ through synthetic guest stacks; browsing every screen has not been run here.
 
 | Game wrapper / call site | Menu-facing result |
 |---|---|
-| `0x0006d210` accepted invite poll | GetAcceptedGameInvite clears the 156-byte output and returns E_FAIL (`0x80004005`). The check at `0x0006d218` treats every nonnegative HRESULT as an invite, so S_FALSE would be wrong. |
-| `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles. FriendsEnumerate reports RESULTS_AVAIL (`0x001500f1`); GetLatest returns DWORD count 0. EnumerateFinish lets the final pump succeed before TaskClose. No friend records are invented. |
-| `0x0006d080` / `0x0006d0d3` | GetNotificationEx returns BOOL FALSE and zeroed packed info/state (always; title files are not notifications). It never returns an HRESULT in a BOOL slot. |
+| `0x0006d210` accepted invite poll | GetAcceptedGameInvite consumes a queued accepted invite into the 156-byte output; with none, it clears the output and returns E_FAIL (`0x80004005`). The check at `0x0006d218` treats every nonnegative HRESULT as an invite, so S_FALSE would be wrong. |
+| `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles, reporting RESULTS_AVAIL (`0x001500f1`) when its cached server snapshot changes. GetLatest returns 86-byte friend/request/invite records. EnumerateFinish lets the enumeration task finish before TaskClose. |
+| `0x0006d080` / `0x0006d0d3` | GetNotificationEx emits one packed type-3 notification per received game invite, then BOOL FALSE with cleared info/state. Title files are never notifications. No HRESULT is returned in this BOOL slot. |
 | `0x00058ab8`, `0x00058bd1` | MutelistStartup/Get complete; Get writes count 0. |
 | `0x0008d4d0` | OfferingIsNewContentAvailable reports NO_NEW_CONTENT. |
-| `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte offline records carrying the watched XUIDs. Remote presence is not fetched yet. |
+| `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte records carrying the watched XUIDs and overlays cached friend/invite presence when available. |
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
 | `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
 | `0x000abc70` through `0x000ac2f2` | Team and member enumerations return snapshots from the local store described below. Unknown teams fail with TEAM_NOT_FOUND (`0x8015210b`); a missing item in a successful snapshot returns E_FAIL, as retail does. |
 | `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
 | `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
-| `0x0008e750`, manager `0x002c7410` | Message polling returns count 0; title files use storage and never enter the player inbox. |
+| `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 14 entries still stop by API name because their backend behavior is not
+These 10 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -829,16 +829,16 @@ listed API name.
 | Prefix | Remaining suffixes |
 |---|---|
 | `XOnline` | `TitleUpdate` |
-| `XOnlineFriends` | `Remove`, `GameInvite`, `AnswerRequest`, `AnswerGameInvite`, `JoinGame` |
-| `XOnlineGameInvite` | `Answer` |
+| `XOnlineFriends` | `Remove`, `AnswerRequest` |
 | `XOnlineMutelist` | `Add`, `Remove` |
 | `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
 | `XNet` | `TsAddrToInAddr` |
 
-Server-backed session discovery, invitation delivery, clans, feedback storage
-and remote friend presence are future work. The HTTP worker does not turn these into fake
-successful operations. The current proof covers the API boundary and local host
-transport; it does not establish an end-to-end online match.
+Server-backed sessions, invitation delivery, clans and cached friend presence are
+implemented in the Client HLE sections below. Feedback storage, friend mutations
+outside the existing capture path, ranked arbitration and NAT traversal remain
+unfinished. Synthetic tests prove invitation discovery through bidirectional
+host UDP traffic; actual menu transitions and a full retail match are unconfirmed.
 
 ## Client HLE: title storage and profile fallback
 
@@ -1074,9 +1074,12 @@ TeamMemberRecruitByName (`0x003a8399`/`0x003a83d4`), and GameInviteSend
 (`0x003a8321`). These capture the same owned message with the recipient XUID or
 bounded ANSI gamertag, plus team/member properties or session ID as appropriate.
 A null optional message on a typed send becomes an empty message of that type.
-The sender must be signed in. No account lookup or delivery occurs yet.
+The sender must be signed in. With a server configured, GameInviteSend posts
+signed mailbox invitations and its task waits for acknowledgment. Other generic
+message/friend-request captures remain local; clan recruitment has its separate
+server-backed Teams path.
 
-Every accepted send returns a task whose Continue result is
+Every accepted local send returns a task whose Continue result is
 XONLINETASK_S_SUCCESS (`0x001500f0`), rather than the running value S_OK. The game
 pumps these tasks through `0x0006c450` and `0x0006c670`; the completion callback
 `0x0008f960` can finish and dispose its message. No SendGetResults or
@@ -1093,13 +1096,90 @@ operations invalidate live builders and tasks. The local journal holds up to
 256 sends and an 8 MiB value budget; builders have a separate 8 MiB budget and
 64-handle limit. Exhaustion returns OUT_OF_MEMORY without discarding earlier
 captures. Destroying builders and draining captures free the respective budgets.
-Captures are in memory only. A successful task means accepted locally; it does
-not establish delivery, friendship, clan membership or an accepted invitation.
+Captures are in memory only. Local capture success does not establish delivery
+or friendship. A server-backed game-invite task instead reports the real mailbox
+write result; invitation acceptance is a separate operation.
 
 Synthetic guest-stack tests cover all nine entries, the by-name composer flow,
 all property types, packed XUID/member layouts, successful tasks, copied
 ownership, validation/fault atomicity, destruction, cleanup and bounded journals.
 They use no XBE and do not run the title.
+
+## Client HLE: game invitations and joining
+
+GameInviteSend now posts `GameInviteSent` to each recipient's server mailbox.
+Its task stays running until the HTTP worker finishes, then reports success or
+the server/transport error. The original owned message capture remains available;
+text and voice attachments in that capture are not delivered in this slice.
+FriendsGameInvite is the older no-task API: it copies the supplied 86-byte friend
+array, queues the same writes and returns once queued. Backend failures on these
+no-task calls are visible through `Hle::server_status()`, without blocking a frame.
+Without a server URL, typed MessageSend captures retain their local behavior;
+the new friend-invite actions return NO_SESSION.
+
+FriendsStartup polling and the menu's GetLatest/notification/message reads queue
+cached refreshes, at most once per 250 ms per controller after a reply. The worker
+fetches actual friends/requests, open sessions and the caller's mailbox. No HTTP
+runs under a guest-memory or HLE lock. FriendsGetLatest returns a DWORD count,
+not an HRESULT. Its records include online/playing/joinable state and received
+invite flags. PresenceGetLatest overlays that cached view on watched users.
+These reads do not implement sending or accepting friend requests: establish the
+friendship through the existing CLI or web UI first.
+
+MessageEnumerate presents each pending invite as a type-3, 64-byte summary from
+the real inviter XUID/gamertag. GetNotificationEx returns one type-3 notification
+per invite; repeated polls return FALSE with cleared output. Details owns a
+snapshot task, and DetailsGetResultsProperty returns the required session-ID
+property `0x0581`. Other properties report PROPERTY_NOT_FOUND and no attachment
+is invented. MessageDelete queues a remove (or block-sender) answer and hides
+the item; an already handled known ID is acknowledged. Title resources remain
+on the storage path and never become inbox messages or notifications.
+
+FriendsAnswerGameInvite and GameInviteAnswer queue an authenticated recipient
+answer, using the actual cached invite ID. YES/accept publishes a pending join
+only after server acknowledgment; decline/remove never do. The newer peer
+answer enum's NEVER value blocks later game invitations from that sender.
+GameInviteAnswer owns a task; the older friend answer queues its work without a
+task. FriendsJoinGame resolves an existing friendship and the friend's open
+session before publishing the same pending join, even without an invitation.
+This keeps a same-title join inside the current process instead of using the
+retail cross-title dashboard launch path.
+
+GetAcceptedGameInvite returns S_OK once for an accepted join, then E_FAIL with
+a cleared output. Its 156-byte record is statically verified against
+`0x003b49ce` and the consumer `0x0022f3b5`: packed InvitingFriend at +0 (86
+bytes, padded to 88), accepted XUID/flags at +88, acceptance FILETIME at +100,
+and four 12-byte logged-on XUID/flag records at +108. The friend's session ID is
+at +40 and title ID at +48. The record expires after 15 minutes. Pointer faults
+cannot consume it. Sign-out clears tasks, caches and pending joins. Answers for
+a controller whose account changed cannot create a join for the new account.
+
+The game can then use its existing FindFromID, search-result parsing, key
+registration, XNADDR conversion, QoS and sockets. The host's exchange key is
+never published; the remote key is zero for the current unencrypted HLE
+transport. An embedded-server test follows this path through a successful QoS
+probe and a two-way guest UDP exchange, with no broadcast peers configured.
+The full retail invite menu/confirmation sequence, cancellation timing and a
+complete custom game still need owner play testing. No game was built or run.
+
+A two-instance recipe, using an already built `h2`, is:
+
+1. Run one persistent server, for example `h2 live serve --db file --listen
+   127.0.0.1:8074`. Both instances must use its URL.
+2. Create accounts Alpha and Bravo with `h2 live account create NAME --server
+   http://127.0.0.1:8074`. Establish friendship with `h2 live friend add Bravo
+   --as Alpha --server http://127.0.0.1:8074`, then `h2 live friend accept Alpha
+   --as Bravo --server http://127.0.0.1:8074` (or use the web UI).
+3. Start Alpha with `H2_XNET_ADDR=127.0.0.1:31000 h2 play --live-server
+   http://127.0.0.1:8074 --gamertag Alpha`. Wait for sign-in, then start Bravo
+   with `H2_XNET_ADDR=127.0.0.1:32000 h2 play --live-server
+   http://127.0.0.1:8074 --gamertag Bravo`. Sequential startup also avoids the
+   CLI's shared play-accounts file being rewritten before the first HLE reads it.
+4. Alpha hosts a custom lobby and invites Bravo from Friends; Bravo accepts.
+   `H2_XNET_LOOPBACK_PEERS` is unnecessary: HTTP supplies discovery. Bases on one
+   IP must differ by at least seven ports. Across a LAN use reachable LAN IPv4s;
+   across the internet forward UDP base through base+6. An HTTP tunnel alone
+   does not carry gameplay packets.
 
 ## Client HLE: sessions and server discovery
 
@@ -1107,7 +1187,7 @@ The host/search APIs in [live-matchmaking.md](live-matchmaking.md) sections
 1.1, 1.2 and 4 use the background HTTP worker when `LiveConfig.server_url` is
 configured. Without a server they retain the local host/empty-search behavior.
 These APIs advertise and discover lobbies. They do not implement a matchmaker,
-ranked arbitration, invitation delivery or NAT traversal.
+ranked arbitration or NAT traversal. Invitation delivery is described next.
 
 Create copies the four slot counts and the attribute list before returning a
 task. Update consumes only dirty attributes and replaces the slot counts;

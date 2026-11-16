@@ -189,6 +189,10 @@ fn api_router(live: Arc<Live>) -> Router {
         .route("/v1/accounts/{gamertag}", get(account))
         .route("/v1/accounts/{gamertag}/keys", get(keys_by_tag))
         .route("/v1/accounts/{gamertag}/friends", get(account_friends))
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/mailbox",
+            get(crate::mailbox::read),
+        )
         .route("/v1/presence", get(presence))
         .route("/v1/presence/ping", post(ping))
         .route("/v1/invites", post(create_invite))
