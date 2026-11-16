@@ -10,6 +10,9 @@ use std::sync::Arc;
 use assets::ResourceFiles;
 use map::TagId;
 
+use tags::material::ShaderLibrary;
+
+use crate::live_basemap;
 use crate::live_geometry::MapReader;
 use crate::live_layers::Texture;
 use crate::live_models::{self, BitmapRole, Image};
@@ -43,6 +46,9 @@ pub struct Look {
     pub name: String,
     pub cutout: Cutout,
     pub texture: Arc<Texture>,
+    /// How often the picture tiles per stored texture coordinate (u, v):
+    /// the shader's stage-0 scale ([`live_basemap::BaseMap`]).
+    pub scale: [f32; 2],
 }
 
 /// A picture ready for the glb.
@@ -61,6 +67,9 @@ pub struct Looks {
     pub looks: Vec<Look>,
     of: HashMap<u32, Option<u32>>,
     decoded: HashMap<(u32, Cutout), Option<Arc<Texture>>>,
+    /// The map's shaders, read the first time a look is (`None` inside
+    /// when they could not be: looks then go by bitmap names alone).
+    library: Option<Option<ShaderLibrary>>,
 }
 
 /// How a shader template draws its picture: cut out when its name says
@@ -80,8 +89,9 @@ pub fn template_cutout(template: &str) -> Option<Cutout> {
     })
 }
 
-/// The base map among a shader's bitmaps (by the words of their tag names,
-/// [`live_models::bitmap_role`]): the first diffuse one.
+/// The base map among a shader's bitmaps by the words of their tag names
+/// ([`live_models::bitmap_role`]): the first diffuse one. Only for shaders
+/// whose passes do not say ([`live_basemap::base_map`]).
 pub fn pick_base(names: &[(u32, String)]) -> Option<u32> {
     names
         .iter()
@@ -159,7 +169,14 @@ impl Looks {
             .iter()
             .filter_map(|&id| Some((id.0, map.tag(id).ok()?.name.clone()?)))
             .collect();
-        let bitmap = pick_base(&names)?;
+        let library = self
+            .library
+            .get_or_insert_with(|| ShaderLibrary::read(map).ok())
+            .as_mut();
+        let (bitmap, scale) = match library.and_then(|l| live_basemap::base_map(l, map, shader)) {
+            Some(b) => (b.bitmap.0, b.scale),
+            None => (pick_base(&names)?, [1.0, 1.0]),
+        };
         let texture = self
             .decoded
             .entry((bitmap, cutout))
@@ -184,6 +201,7 @@ impl Looks {
             name: name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string(),
             cutout,
             texture,
+            scale,
         }))
     }
 
@@ -282,6 +300,7 @@ mod tests {
             name: format!("s{shader}"),
             cutout,
             texture: Arc::new(Texture { bitmap, image: img }),
+            scale: [1.0, 1.0],
         }
     }
 

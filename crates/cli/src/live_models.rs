@@ -27,6 +27,7 @@ use assets::ResourceFiles;
 use map::{CacheType, FourCC, Map, RawPointer, TagId};
 use tags::anim::{Action, AnimationGraph};
 use tags::geometry::{RawSource, TagView};
+use tags::material::ShaderLibrary;
 use tags::model::RenderModelGeometry;
 use tags::sound::ResourceReader;
 use tags::wire::StringId;
@@ -439,10 +440,24 @@ pub const MAX_AUX_TEXTURE: u32 = 256;
 /// bump-env and shiny templates; it becomes metalness and smoothness here.
 /// Bump maps (8-bit palettized normals whose palette is the engine's, not
 /// the tag's) and detail maps are not used.
+#[cfg(test)]
 pub fn material_look(
     name: &str,
     template: &str,
     bitmaps: Vec<(String, Option<Image>)>,
+) -> (Material, Option<Image>) {
+    let roles = bitmaps
+        .into_iter()
+        .map(|(n, i)| (bitmap_role(&n), i))
+        .collect();
+    material_look_roles(name, template, roles)
+}
+
+/// [`material_look`] with each bitmap's role already decided.
+pub fn material_look_roles(
+    name: &str,
+    template: &str,
+    bitmaps: Vec<(BitmapRole, Option<Image>)>,
 ) -> (Material, Option<Image>) {
     let lower = template.to_ascii_lowercase();
     let stem = last_component(&lower).to_owned();
@@ -457,9 +472,9 @@ pub fn material_look(
         Blend::Opaque
     };
     let (mut diffuse, mut cc, mut illum) = (None, None, None);
-    for (bname, image) in bitmaps {
+    for (role, image) in bitmaps {
         let Some(image) = image else { continue };
-        match bitmap_role(&bname) {
+        match role {
             BitmapRole::Diffuse if diffuse.is_none() => diffuse = Some(image),
             BitmapRole::ChangeColour if cc.is_none() => cc = Some(image),
             BitmapRole::SelfIllum if illum.is_none() => illum = Some(image),
@@ -476,6 +491,15 @@ pub fn material_look(
     // looks like; a tinted, smooth see-through surface reads better.
     if blend == Blend::Alpha && transparent {
         base = None;
+    }
+    // An overlay decal (painted letters, stencils) whose picture has no
+    // alpha darkens or doubles what is under it in the game; blended by its
+    // missing alpha it would be a grey slab.
+    if blend == Blend::Alpha
+        && !transparent
+        && let Some(b) = base.as_mut()
+    {
+        overlay_as_alpha(b);
     }
     if blend == Blend::Opaque
         && let Some(b) = base.as_mut()
@@ -503,6 +527,30 @@ pub fn material_look(
         template: stem,
     };
     (material, cc)
+}
+
+/// An opaque overlay decal's picture as one blended by alpha that looks
+/// about the same over a surface. Centred on mid-grey (it doubles what is
+/// under it, `live_layers::Blend::Double`): darker than half is black at
+/// up to full strength, lighter is white at up to half. Otherwise it
+/// multiplies: black by how dark it is. A picture with alpha is left as
+/// it is.
+pub fn overlay_as_alpha(image: &mut Image) {
+    use crate::live_layers::{Blend as LayerBlend, Layer};
+    let blend = Layer::decal(LayerBlend::Alpha).with_picture(image).blend;
+    if !matches!(blend, LayerBlend::Double | LayerBlend::Multiply) {
+        return;
+    }
+    for px in image.rgba.as_chunks_mut::<4>().0 {
+        let l = (0.299 * f32::from(px[0]) + 0.587 * f32::from(px[1]) + 0.114 * f32::from(px[2]))
+            / 255.0;
+        let (c, a) = match blend {
+            LayerBlend::Double if l >= 0.5 => (255, (l - 0.5)),
+            LayerBlend::Double => (0, 1.0 - 2.0 * l),
+            _ => (0, 1.0 - l),
+        };
+        *px = [c, c, c, (a.clamp(0.0, 1.0) * 255.0).round() as u8];
+    }
 }
 
 /// The metallic-roughness texture for a base map whose alpha is the
@@ -1798,8 +1846,12 @@ pub fn bitmap_role(name: &str) -> BitmapRole {
         "specular",
         "mask",
     ];
+    // `_bmp` ends bump maps' names too: a sand bump map named so was taken
+    // for the base map of every beach and riverbed shader on the campaign's
+    // Outskirts (noise instead of sand).
     if folders.iter().any(|f| lower.split('\\').any(|c| c == *f))
         || words.iter().any(|w| last.contains(w))
+        || last.split('_').any(|t| t == "bmp")
     {
         return BitmapRole::Other;
     }
@@ -1955,6 +2007,7 @@ pub(crate) fn read_source(
         })
         .collect();
     let markers = markers(map, mode, bones.len())?;
+    let mut library: Option<Option<ShaderLibrary>> = None;
     let mut materials = Vec::new();
     let mut change_colour = Vec::new();
     let mut skip = Vec::new();
@@ -1968,25 +2021,41 @@ pub(crate) fn read_source(
         let (template, bitmaps) = shader_bitmaps(map, shader).unwrap_or_default();
         // Emblem decals sit on the armour and take the player's emblem.
         skip.push(last_component(&template).contains("emblem"));
-        let mut found = Vec::new();
+        // A solid surface's base map is what its passes draw on stage 0
+        // (crate::live_basemap); glass and glows go by names.
+        let opaque = !template
+            .to_ascii_lowercase()
+            .split('\\')
+            .any(|c| c == "transparent");
+        let base = if opaque {
+            let library = library.get_or_insert_with(|| ShaderLibrary::read(map).ok());
+            library
+                .as_mut()
+                .and_then(|l| crate::live_basemap::base_map(l, map, shader))
+        } else {
+            None
+        };
+        let mut found: Vec<(BitmapRole, Option<Image>)> = Vec::new();
         for id in bitmaps {
             let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
                 continue;
             };
+            let role = match (base, bitmap_role(&bname)) {
+                (Some(b), _) if b.bitmap == id => BitmapRole::Diffuse,
+                (Some(_), BitmapRole::Diffuse) => BitmapRole::Other,
+                (_, role) => role,
+            };
             // Only the roles a look uses are decoded, each once.
-            let role = bitmap_role(&bname);
-            let wanted = role != BitmapRole::Other
-                && !found
-                    .iter()
-                    .any(|(n, i): &(String, Option<Image>)| i.is_some() && bitmap_role(n) == role);
+            let wanted =
+                role != BitmapRole::Other && !found.iter().any(|(r, i)| i.is_some() && *r == role);
             let image = if wanted {
                 decode_bitmap(map, files, id).ok()
             } else {
                 None
             };
-            found.push((bname, image));
+            found.push((role, image));
         }
-        let (material, cc) = material_look(&name, &template, found);
+        let (material, cc) = material_look_roles(&name, &template, found);
         materials.push(material);
         change_colour.push(cc);
     }

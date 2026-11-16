@@ -867,19 +867,39 @@ pub fn write_nodes(
 pub struct Pictures<'a> {
     pub looks: &'a [crate::live_looks::Look],
     pub encoded: HashMap<(u32, crate::live_looks::Cutout), crate::live_looks::Encoded>,
+    /// Pictures are files beside the glb ([`Pictures::file`], under
+    /// [`TEXTURE_DIR`]) that its images name by `uri`, not part of its
+    /// binary chunk: a viewer can draw the level before they arrive.
+    pub external: bool,
 }
+
+/// The directory beside `map.glb` that holds its surface pictures.
+pub const TEXTURE_DIR: &str = "tex";
 
 impl<'a> Pictures<'a> {
     pub fn new(looks: &'a Looks, budget: usize) -> Self {
         Pictures {
             looks: &looks.looks,
             encoded: looks.encode(budget),
+            external: false,
         }
     }
 
     /// Bytes of pictures.
     pub fn bytes(&self) -> usize {
         self.encoded.values().map(|e| e.bytes.len()).sum()
+    }
+
+    /// A picture's file, relative to the glb: `tex/<bitmap>.jpg` (eight
+    /// hex digits; `<bitmap>m.png` for a cut-out picture).
+    pub fn file(key: (u32, crate::live_looks::Cutout), e: &crate::live_looks::Encoded) -> String {
+        let cut = if key.1 == crate::live_looks::Cutout::Mask {
+            "m"
+        } else {
+            ""
+        };
+        let ext = if e.mime == "image/jpeg" { "jpg" } else { "png" };
+        format!("{TEXTURE_DIR}/{:08x}{cut}.{ext}", key.0)
     }
 }
 
@@ -909,6 +929,7 @@ pub fn write_nodes_with(
         textures: Vec<Value>,
         texture_of: HashMap<u32, usize>,
         unlit: bool,
+        transform: bool,
         bin: Vec<u8>,
         views: Vec<Value>,
         accessors: Vec<Value>,
@@ -1017,25 +1038,37 @@ pub fn write_nodes_with(
                 Some(&t) => t,
                 None => {
                     let e = self.pictures.encoded.get(&key)?;
-                    while !self.bin.len().is_multiple_of(4) {
-                        self.bin.push(0);
+                    if self.pictures.external {
+                        self.images.push(json!({
+                            "uri": Pictures::file(key, e), "mimeType": e.mime,
+                            "extras": {"width": e.width, "height": e.height}
+                        }));
+                    } else {
+                        while !self.bin.len().is_multiple_of(4) {
+                            self.bin.push(0);
+                        }
+                        self.views.push(json!({
+                            "buffer": 0, "byteOffset": self.bin.len(), "byteLength": e.bytes.len()
+                        }));
+                        self.bin.extend_from_slice(&e.bytes);
+                        self.images
+                            .push(json!({"bufferView": self.views.len() - 1, "mimeType": e.mime}));
                     }
-                    self.views.push(json!({
-                        "buffer": 0, "byteOffset": self.bin.len(), "byteLength": e.bytes.len()
-                    }));
-                    self.bin.extend_from_slice(&e.bytes);
-                    self.images
-                        .push(json!({"bufferView": self.views.len() - 1, "mimeType": e.mime}));
                     self.textures
                         .push(json!({"sampler": 0, "source": self.images.len() - 1}));
                     self.picture_of.insert(key, self.textures.len() - 1);
                     self.textures.len() - 1
                 }
             };
+            let mut base = json!({"index": texture});
+            if look.scale != [1.0, 1.0] {
+                base["extensions"] = json!({"KHR_texture_transform": {"scale": look.scale}});
+                self.transform = true;
+            }
             let mut m = json!({
                 "name": look.name,
                 "pbrMetallicRoughness": {
-                    "baseColorTexture": {"index": texture},
+                    "baseColorTexture": base,
                     "metallicFactor": 0.0,
                     "roughnessFactor": 0.85
                 },
@@ -1194,6 +1227,7 @@ pub fn write_nodes_with(
         textures: Vec::new(),
         texture_of: HashMap::new(),
         unlit: false,
+        transform: false,
         bin: Vec::new(),
         views: Vec::new(),
         accessors: Vec::new(),
@@ -1239,8 +1273,15 @@ pub fn write_nodes_with(
             doc["samplers"] =
                 json!([{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}]);
         }
-        if o.unlit {
-            doc["extensionsUsed"] = json!(["KHR_materials_unlit"]);
+        let used: Vec<&str> = [
+            (o.unlit, "KHR_materials_unlit"),
+            (o.transform, "KHR_texture_transform"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if !used.is_empty() {
+            doc["extensionsUsed"] = json!(used);
         }
     } else {
         o.bin.clear();
@@ -1856,17 +1897,16 @@ fn load_machines(
             skipped.insert(key, "placement is not finite".into());
             continue;
         }
-        let model =
-            loaded
-                .entry(at.palette)
-                .or_insert_with(|| match machine_model(map, &ctx, files, id, looks) {
-                    Ok(Some(m)) => {
-                        models.push(m);
-                        Ok(Some(models.len() - 1))
-                    }
-                    Ok(None) => Ok(None),
-                    Err(e) => Err(format!("{e:#}")),
-                });
+        let model = loaded.entry(at.palette).or_insert_with(|| {
+            match machine_model(map, &ctx, files, id, looks) {
+                Ok(Some(m)) => {
+                    models.push(m);
+                    Ok(Some(models.len() - 1))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(format!("{e:#}")),
+            }
+        });
         match model {
             Ok(None) => {}
             Ok(Some(m)) => out.push(PlacedMachine {
@@ -2152,12 +2192,15 @@ impl Level {
 
     #[cfg(test)]
     pub fn glb(&self) -> Vec<u8> {
-        self.glb_and_picture_bytes().0
+        self.glb_and_pictures(false).0
     }
 
-    /// [`Level::glb`], and how many of its bytes are surface pictures.
-    pub fn glb_and_picture_bytes(&self) -> (Vec<u8>, usize) {
-        let pictures = Pictures::new(&self.looks, crate::live_looks::TEXTURE_BUDGET);
+    /// `map.glb` with its surface pictures embedded, or (`external`)
+    /// naming them as files beside it ([`Pictures::file`]), and the
+    /// pictures.
+    pub fn glb_and_pictures(&self, external: bool) -> (Vec<u8>, Pictures<'_>) {
+        let mut pictures = Pictures::new(&self.looks, crate::live_looks::TEXTURE_BUDGET);
+        pictures.external = external;
         let mut more = serde_json::Map::new();
         if !self.features.is_empty() {
             more.insert(
@@ -2176,7 +2219,26 @@ impl Level {
             &self.layer_materials,
             &pictures,
         );
-        (glb, pictures.bytes())
+        (glb, pictures)
+    }
+
+    /// Writes `map.glb` into `dir` and its surface pictures under
+    /// `dir/tex/`. Returns the glb's size and the pictures'.
+    pub fn write_glb(&self, dir: &Path) -> Result<(usize, usize)> {
+        let (glb, pictures) = self.glb_and_pictures(true);
+        let tex = dir.join(TEXTURE_DIR);
+        let _ = fs::remove_dir_all(&tex);
+        if !pictures.encoded.is_empty() {
+            fs::create_dir_all(&tex)?;
+        }
+        for (key, e) in &pictures.encoded {
+            fs::write(dir.join(Pictures::file(*key, e)), &e.bytes)?;
+        }
+        fs::write(dir.join("map.glb"), &glb)?;
+        // Geometry compresses to about a third; the art server sends this
+        // copy to browsers that take gzip (docs/live-art.md, "Loading").
+        fs::write(dir.join("map.glb.gz"), gzip(&glb)?)?;
+        Ok((glb.len(), pictures.bytes()))
     }
 
     /// Adds a BSP's layer triangles: materials by shader (`shaders[m]` is
@@ -2517,7 +2579,13 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             skipped.insert(format!("map/{}/features", m.name()), format!("{e:#}"));
         }
     }
-    match load_machines(&mut map, &mut files, m.name(), &mut skipped, &mut level.looks) {
+    match load_machines(
+        &mut map,
+        &mut files,
+        m.name(),
+        &mut skipped,
+        &mut level.looks,
+    ) {
         Ok((models, placed)) => {
             stats.machines = placed.len();
             stats.machine_triangles = placed
@@ -2617,13 +2685,10 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
                     };
                     let key = format!("map/{}/geometry", m.name());
                     let done = load_level(disc, m, kind, &mut stats).and_then(|mut level| {
-                        let (glb, pictures) = level.glb_and_picture_bytes();
-                        stats.glb_bytes = glb.len();
-                        stats.texture_bytes = pictures;
                         stats.looks = level.looks.looks.len();
                         let dir = out.join("map").join(&level.stem);
                         fs::create_dir_all(dir.join("views"))?;
-                        fs::write(dir.join("map.glb"), glb)?;
+                        (stats.glb_bytes, stats.texture_bytes) = level.write_glb(&dir)?;
                         if let Some(sky) = level.sky_glb.take() {
                             stats.sky_bytes = sky.len();
                             fs::write(dir.join("sky.glb"), sky)?;
@@ -2739,3 +2804,11 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
 #[cfg(test)]
 #[path = "live_geometry_tests.rs"]
 mod tests;
+
+/// `bytes` gzipped (level 6).
+pub fn gzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+    z.write_all(bytes)?;
+    Ok(z.finish()?)
+}

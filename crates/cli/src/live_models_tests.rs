@@ -498,6 +498,10 @@ fn bitmap_roles_come_from_their_names() {
         BitmapRole::SelfIllum
     );
     assert_eq!(role(r"objects\c\bitmaps\torso"), BitmapRole::Diffuse);
+    // Bump maps named `_bmp` (the Outskirts beaches' sand).
+    assert_eq!(role(r"scenarios\bitmaps\m\z\z_sand_bmp"), BitmapRole::Other);
+    assert_eq!(role(r"scenarios\bitmaps\m\z\bmp_sand"), BitmapRole::Other);
+    assert_eq!(role(r"scenarios\bitmaps\m\z\bmpfloor"), BitmapRole::Diffuse);
     assert_eq!(role(r"objects\c\bitmaps\torso_bump"), BitmapRole::Other);
     assert_eq!(
         role(r"objects\bitmaps\detail_maps\metal"),
@@ -2250,4 +2254,45 @@ fn shaders_from_the_disc() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("shaders.txt"), &out).unwrap();
     println!("{} lines", out.lines().count());
+}
+
+#[test]
+fn opaque_overlay_decals_blend_by_how_far_they_are_from_grey() {
+    let px = |v: u8| [v, v, v, 255];
+    // Mid-grey-centred stencil: grey vanishes, black darkens fully, a
+    // lighter stroke lightens by half its distance.
+    let mut img = Image {
+        width: 4,
+        height: 1,
+        rgba: [px(128), px(128), px(0), px(200)].concat(),
+    };
+    overlay_as_alpha(&mut img);
+    let a: Vec<u8> = img.rgba.chunks(4).map(|p| p[3]).collect();
+    assert!(a[0] <= 2 && a[1] <= 2, "{a:?}");
+    assert_eq!(&img.rgba[8..12], &[0, 0, 0, 255]);
+    assert_eq!(&img.rgba[12..15], &[255, 255, 255]);
+    assert!((70..=75).contains(&a[3]), "{a:?}");
+    // A picture with its own alpha keeps it.
+    let mut alpha = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![10, 20, 30, 40],
+    };
+    overlay_as_alpha(&mut alpha);
+    assert_eq!(alpha.rgba, [10, 20, 30, 40]);
+    // Through the look: an `overlay` template's picture is converted.
+    let (m, _) = material_look_roles(
+        "number_decal",
+        r"shaders\shader_templates\opaque\overlay",
+        vec![(
+            BitmapRole::Diffuse,
+            Some(Image {
+                width: 2,
+                height: 1,
+                rgba: [px(128), px(0)].concat(),
+            }),
+        )],
+    );
+    assert_eq!(m.blend, Blend::Alpha);
+    assert_eq!(m.texture.unwrap().rgba[7], 255);
 }

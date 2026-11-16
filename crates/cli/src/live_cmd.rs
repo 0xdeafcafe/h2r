@@ -95,7 +95,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
   invite create [--days N] [--server URL] [--data DIR]
                           print an invite code for an --invite-only server
                           (POST /v1/invites, signed with the server key)
-  assets extract [--disc PATH] [--out DIR]
+  assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
@@ -370,13 +370,19 @@ pub(crate) fn game_art_dir(data_dir: &Path) -> PathBuf {
 fn assets_extract(mut args: Args) -> Result<()> {
     let disc = args.take("--disc")?.map(PathBuf::from);
     let out = args.take("--out")?.map(PathBuf::from);
+    let mappack = args.take("--mappack")?.map(PathBuf::from);
+    // Map pack maps `h2 import-mappack` installed: under the runtime's
+    // data root (`h2 play --data`), its default unless named.
+    let installed = args
+        .take("--installed")?
+        .map_or_else(content::store::default_data_root, PathBuf::from);
     args.positional()?;
     let disc = disc.map_or_else(crate::default_disc, Ok)?;
     let out = out.map_or_else(
         || Ok(game_art_dir(&data_dir(None)?)),
         Ok::<_, anyhow::Error>,
     )?;
-    crate::live_art::run(disc, out)
+    crate::live_art::run(disc, out, mappack, Some(installed))
 }
 
 fn assets_check(mut args: Args) -> Result<()> {
@@ -1034,7 +1040,11 @@ pub(crate) fn team_run(
 
 /// The local account to act as on `client`'s server: the one named by
 /// `as_tag`, or the only one there.
-pub(crate) fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
+pub(crate) fn pick_account(
+    client: &Client,
+    accounts: &Path,
+    as_tag: Option<&str>,
+) -> Result<LocalAccount> {
     let mine: Vec<LocalAccount> = live_accounts::load(accounts)?
         .into_iter()
         .filter(|a| a.is_on(&client.base, &client.discovery.id))
