@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
+#[cfg(unix)]
+mod agent_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -64,6 +66,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
+  serve <disc>            run headless with the agent API on a socket; never builds
+                          (docs/runtime/agent-api.md)
+  agent <call>            call a running game's agent API: status, count, query,
+                          object, counters, wait, pause/step in a `-` script
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
@@ -258,7 +264,13 @@ fn main() -> Result<()> {
     if cmd == "coop-probe" {
         std::process::exit(coop_probe_cmd::run(args.collect())?);
     }
-    if matches!(cmd.as_str(), "build" | "run") {
+    if cmd == "agent" {
+        #[cfg(unix)]
+        return agent_cmd::run(args.collect());
+        #[cfg(not(unix))]
+        bail!("h2 agent needs Unix sockets");
+    }
+    if matches!(cmd.as_str(), "build" | "run" | "serve") {
         return boot_cmd::run(&cmd, args.collect());
     }
     if cmd == "bitmap" {

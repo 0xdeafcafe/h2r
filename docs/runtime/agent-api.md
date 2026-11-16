@@ -1,7 +1,9 @@
 # Agent API: driving the running game without pixels (design)
 
-Status: design. Nothing on this page is built unless it says so. Rust and
-JSON blocks are sketches of an interface, not code that compiles today.
+Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
+`session.*`, `world.count`/`query`/`object`, `profile.counters`,
+`features.list`, `h2 serve` and `h2 agent`. Everything else on this page is
+design; its Rust and JSON blocks are sketches, not code that compiles.
 
 This page designs one interface through which an agent (or a script, or a
 test) can see and drive a running Halo 2. That means: what is on screen,
@@ -488,18 +490,73 @@ synthetic guest memory and synthetic tags, as now.
    whole machine, `experiment.run`, `render.compare`. The full loop.
 6. **Map and intent.** `world.map` zones, overhead images, intent input.
 
+## Phase 1: what was built
+
+Crates `agent-proto` (wire types and a blocking client; no game
+dependencies) and `agent` (the executor, the socket, the `agent` feature).
+Boot wiring is `crates/boot/src/agent_glue.rs`; the CLI is
+`crates/cli/src/agent_cmd.rs` and `h2 serve` in `boot_cmd.rs`.
+
+```sh
+H2_OPT=2 h2 serve disc/halo2.iso --out <the image you built>   # never builds
+h2 agent status
+h2 agent count
+h2 agent query '{"kind":["actor"],"near":{"player":0,"radius":30},"fields":["pos","team"]}'
+h2 agent watch phase map
+printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
+```
+
+How it behaves (**Code**, with tests in `crates/agent`):
+
+- **Wire.** JSON-RPC 2.0, one object per line. The socket is `--socket`,
+  else `$H2_AGENT`, else `~/Library/Caches/h2recomp/agent.sock`
+  (`$XDG_CACHE_HOME` or `~/.cache` elsewhere), not `$TMPDIR`, which differs
+  between agent sessions. A socket file nobody answers on is replaced; a
+  live one is an error. Unix only; elsewhere listening fails and says so.
+- **Where answers are read.** The `agent` feature observes `GAME_TICK`
+  last, after telemetry and lockstep (`boot/tests/feature_plan.rs`), and
+  answers there with `boundary: "tick"`. Between slices it answers what
+  doesn't read the world at once; world reads wait for the next tick
+  while the game ticks, and are answered between slices
+  (`boundary: "slice"`) once no tick has come for 500 ms.
+- **Phase.** `loading` (no tick for 500 ms), `menu` (mode `main_menu`),
+  `gameplay` (campaign or multiplayer), `cinematic` (between HaloScript's
+  `cinematic_start` and `cinematic_stop`, observed; cleared when the map
+  changes). Fades to black aren't detected yet.
+- **World.** Players (their units), AI bipeds, vehicles, machines and dead
+  bodies, from `live-telemetry::memory`. Ids keep the datum's salt:
+  a slot reused by another object answers `gone` (code 3). `near` sorts
+  nearest first; `fields` trims; pages default to 50, at most 500.
+- **Control.** `pause`, `resume` and `step` need `session.claim`; one
+  connection holds it. A pause blocks the game thread inside the tick
+  observer, still answering requests, and resumes by itself after `max_ms`
+  (default 60 s, at most 600 s), when the controller releases or
+  disconnects, or when the game exits. `step N` runs N ticks and answers
+  once paused again. In `h2 play` a pause also stops the window's event
+  loop, so it is meant for `h2 serve`.
+- **Waits.** `session.wait` settles at tick boundaries (and between
+  slices for wall-clock timeouts and while loading). A condition already
+  true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,
+  at most 600 s) give `TIMEOUT` (code 2) with the stamp.
+- **Counters.** `profile.counters` is the frame-stats rolling window
+  (`timeline::phase`), the same numbers as `H2_FRAME_STATS`. When nothing
+  else collects them, the glue starts a quiet 5 s window.
+- **Features.** `features.list` returns the plan text the game printed at
+  start. Switches can't change while the game runs yet.
+- **Cost.** One more observer on the tick (dispatch transfers, as
+  lockstep's), so compare runs that all have the agent on, or all off.
+  `H2_FEATURES=-agent` removes the hooks; requests then get answers only
+  between slices.
+
+Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
+input, overrides, experiments, live switch changes, the MCP front end.
+
 ## Open decisions
 
-- **Who runs the game the API talks to.** Today agents never build or run
-  the game; the user does. The API keeps "never build" but needs a running
-  image. Options: (a) only the user's own `h2 play --agent` session, so
-  agents watch and drive what the user started; (b) one shared headless
-  `h2 serve` that the user starts from an image they built, which agents
-  queue on, one experiment at a time, never rebuilding; (c) agents may start
-  `h2 serve` themselves from an existing image. (b) is the design's
-  assumption.
-- **MCP versus CLI first.** MCP gives agents typed tools; the CLI is
-  easier to test and for the user to try. Both are thin; order only.
+- **Who runs the game the API talks to.** Decided (2026-11-17): one
+  shared headless `h2 serve` that the user starts from an image they
+  built. Agents connect to it, one controller at a time, and never build.
+- **MCP versus CLI first.** Decided: the `h2 agent` CLI first.
 - **Snapshot depth.** Full machine snapshots (phase 5) are a large
   runtime change; the checkpoint fallback may be enough for a long time.
 

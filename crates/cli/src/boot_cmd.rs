@@ -1,4 +1,6 @@
-//! `h2 build` and `h2 run`: the boot tracer (crates/boot, docs/runtime/BOOT.md).
+//! `h2 build`, `h2 run` and `h2 serve`: the boot tracer (crates/boot,
+//! docs/runtime/BOOT.md); `serve` is `run` with the agent API on and no
+//! building (docs/runtime/agent-api.md).
 
 use std::path::{Path, PathBuf};
 
@@ -7,6 +9,7 @@ use anyhow::{Context, Result, bail};
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
   h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack]
+  h2 serve <disc.iso> [--socket PATH] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
 --data defaults to $TMPDIR/h2boot-data (host root of the hard-disk partitions).
@@ -18,14 +21,22 @@ const USAGE: &str = "usage:
 never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
-when --out's dylib is current for this h2 and the image, 3 otherwise.";
+when --out's dylib is current for this h2 and the image, 3 otherwise.
+`serve` runs headless with the agent API listening on --socket (default
+$H2_AGENT, else the cache directory's h2recomp/agent.sock) until the game
+exits, for `h2 agent` and other clients (docs/runtime/agent-api.md). It never
+builds: when --out's dylib isn't current it stops and says so. Use the same
+H2_OPT the image was built with.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
     let mut data = content::store::default_data_root();
     let mut jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let mut slices = 100_000u64;
+    let serve = cmd == "serve";
+    // A server runs until the game exits.
+    let mut slices = if serve { u64::MAX } else { 100_000u64 };
+    let mut socket = None;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut stopgaps = true;
@@ -45,6 +56,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
             "--check" if cmd == "build" => check = true,
+            "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
@@ -71,6 +83,17 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             if current { "current" } else { "out of date" }
         );
         std::process::exit(if current { 0 } else { 3 });
+    }
+    if serve {
+        if !boot::dylib_current(&xbe, &lib) {
+            bail!(
+                "h2 serve: {} isn't built for this image and this h2; build it with `h2 build` first (serve never builds)",
+                lib.display()
+            );
+        }
+        let path = socket.unwrap_or_else(agent_proto::default_socket);
+        // SAFETY: set before the run starts any thread; boot reads it once.
+        unsafe { std::env::set_var(agent_proto::ENV, &path) };
     }
     if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
         if cmd != "build" && lib.exists() {

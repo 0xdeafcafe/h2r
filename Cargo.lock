@@ -47,6 +47,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "engine",
+ "feature",
+ "live-proto",
+ "live-telemetry",
+ "runtime",
+ "serde",
+ "serde_json",
+ "timeline",
+]
+
+[[package]]
+name = "agent-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -499,6 +522,8 @@ dependencies = [
 name = "boot"
 version = "0.1.0"
 dependencies = [
+ "agent",
+ "agent-proto",
  "analyze",
  "anyhow",
  "assets",
@@ -752,6 +777,7 @@ dependencies = [
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "analyze",
  "anyhow",
  "app",
