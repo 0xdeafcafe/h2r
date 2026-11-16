@@ -398,7 +398,16 @@ export function prepareWeapon(g: Loaded): WeaponTemplate | null {
 export function prepareVehicle(g: Loaded): VehicleTemplate | null {
   const all = meshes(g.scene);
   if (!all.length) return null;
-  for (const m of all) { m.castShadow = true; m.receiveShadow = true; }
+  for (const m of all) {
+    m.castShadow = true;
+    m.receiveShadow = true;
+    // COLOR_0 holds change-colour weights, not a colour: the loader would
+    // multiply the vehicle by them (a banshee green and red, its weightless
+    // parts black). Its tint comes from the change-colour map instead.
+    if (m.geometry.getAttribute("color")) {
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) (mat as THREE.MeshStandardMaterial).vertexColors = false;
+    }
+  }
   g.scene.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(g.scene);
   return box.isEmpty() ? null : { kind: "vehicle", root: g.scene, height: Math.max(0.1, box.max.y) };
