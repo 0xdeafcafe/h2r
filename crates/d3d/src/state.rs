@@ -398,8 +398,8 @@ impl TranslateMemo {
             bad.extend_from_slice(&p.bad);
         }
         DrawState {
-            render: render.state.clone(),
-            stages: stages.map(|p| p.state.clone()),
+            render: render.state,
+            stages: stages.map(|p| p.state),
             bad,
         }
     }
