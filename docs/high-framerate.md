@@ -627,7 +627,9 @@ whoever has the disc is the two-run control above on the Heretic script.
 ### The setting
 
 `H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets
-`AppConfig::fps` (`app::fps::FpsTarget`). It reaches only the window:
+`AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's
+Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`,
+applied from the next launch; docs/settings-menu.md "Video screen"). It reaches only the window:
 
 | setting | window |
 |---|---|

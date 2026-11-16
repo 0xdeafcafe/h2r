@@ -1,13 +1,13 @@
-//! The "Field of View" row on Halo 2's Settings, Controls screen, under the
-//! Controller Speaker row, and the camera hook that applies it. See
+//! The "Field of View" row on our Video screen (`crate::video_screen`, opened
+//! from Halo 2's Settings, Controls screen), and the camera hook that
+//! applies it. See
 //! docs/settings-menu.md "Field of view" for the addresses, the evidence
 //! and why this stays out of the simulation.
 //!
-//! **The row** reuses the speaker row's mechanism (`speaker_row`): the
-//! Controls list grows by one more item, the Controls row text function
-//! fills our label and the value (the degrees, as our own strings), and the
-//! row-chosen handler steps the value and returns without running the
-//! original (which would open the vibration dialog for any row past 4).
+//! **The row** is one of the Video screen's rows: the Controls row text
+//! function, on the Video screen's list, fills our label and the value (the
+//! degrees, as our own strings), and the row-chosen handler steps the value
+//! and returns without running the original.
 //!
 //! **The camera.** `0x187130` is the game's per-local-player field of view
 //! (eax = the player-control index, result in xmm0, plain `ret`): the
@@ -55,22 +55,6 @@ const UNIT_CAMERA_FOV: u32 = 0xcc;
 pub const LABEL_ID: u32 = ID_BASE + 0x21;
 pub const LABEL_TEXT: &str = "Field of View";
 const VALUE_ID_BASE: u32 = ID_BASE + 0x40;
-
-/// Our row: after the Controller Speaker row when that row is there, else
-/// right after the retail rows.
-pub fn row(with_speaker: bool) -> i16 {
-    speaker_row::VANILLA_ROWS as i16 + i16::from(with_speaker)
-}
-
-/// The list's item count after the other rows grew it to `n`: one more for
-/// the Controls list (`retail` is the count the game asked for).
-pub fn list_count(name: u32, retail: u32, n: u32) -> u32 {
-    if name == speaker_row::LIST_NAME && retail == speaker_row::VANILLA_ROWS {
-        n + 1
-    } else {
-        n
-    }
-}
 
 /// The string id that shows `degrees`.
 pub fn value_id(degrees: u32) -> u32 {
@@ -238,23 +222,6 @@ mod tests {
         f.set_u32(FOV_CLAMP_MAX_RETAIL, deg(110.0).to_bits());
         f.set_u32(FOV_CLAMP_MAX, deg(110.0).to_bits());
         f
-    }
-
-    #[test]
-    fn our_row_follows_the_speaker_row() {
-        assert_eq!(row(true), 7);
-        assert_eq!(row(true), speaker_row::ROW + 1);
-        assert_eq!(row(false), 6);
-    }
-
-    #[test]
-    fn the_controls_list_grows_by_one_more() {
-        let speaker = speaker_row::list_count(speaker_row::LIST_NAME, 6);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 6, speaker), 8);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 6, 6), 7);
-        assert_eq!(list_count(speaker_row::LIST_NAME, 4, 4), 4);
-        assert_eq!(list_count(crate::layout_glue::LIST_NAME, 4, 7), 7);
-        assert_eq!(list_count(0x1234, 6, 6), 6);
     }
 
     #[test]

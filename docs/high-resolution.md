@@ -487,6 +487,9 @@ with synthetic frames, not captures.
 - **Flag**: `H2_RENDER_SCALE=2..6` in `h2 play` builds the view
   (`boot::Host::gfx_view`); unset or 1 builds nothing extra. The presenter
   needed no change: it already fits any frame size into the window.
+  With the variable unset, the Video screen's Resolution row decides
+  (1x to 4x, saved as `[graphics] render_scale` in `<data>/settings.toml`,
+  applied from the next launch; docs/settings-menu.md "Video screen").
 
 The half-pixel offset is not harmless for geometry, as "Half-pixel and texel
 offsets" first said. D3D-convention geometry puts edges, and the texel corners

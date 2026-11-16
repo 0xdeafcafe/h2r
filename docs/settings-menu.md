@@ -1,13 +1,14 @@
 # Expanded settings menu (design)
 
-Status: design, with three exceptions built: the controller speaker's
-on/off and the field of view are rows on the game's own Controls screen
-(approach B below; see [playstation-audio.md](playstation-audio.md)
-"In-game setting" and "Field of view (built)" below), and the button
-layouts are rows on its Button Layout screen
-([controller-layouts.md](controller-layouts.md)). The rest says how an
-in-game menu for our opt-in enhancements should work, what we know about
-Halo 2's own settings screens, and in which order to build it.
+Status: design, with these exceptions built: the controller speaker's
+on/off is a row on the game's own Controls screen (approach B below; see
+[playstation-audio.md](playstation-audio.md) "In-game setting"); a
+"Video" row under it opens our Video screen with the field of view, the
+frame rate and the resolution scale ("Video screen" and "Field of view
+(built)" below); and the button layouts are rows on its Button Layout
+screen ([controller-layouts.md](controller-layouts.md)). The rest says how
+an in-game menu for our opt-in enhancements should work, what we know
+about Halo 2's own settings screens, and in which order to build it.
 
 The menu will hold, in the order the README lists them:
 
@@ -292,7 +293,9 @@ Not every flag belongs in a menu. They fall in four groups.
 | mouse capture, pause on blur | `AppConfig` | live |
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
 | controller speaker | **Built:** a "Controller Speaker" row on Settings, Controls, saved as `[pad_speaker] enabled` in `settings.toml` in `h2 play`'s data root. `H2_PAD_SPEAKER` (on, or a TOML file) locks it when set; `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | on/off live (the router and the HID speaker path, `boot::speaker_setting`); routes and exclusive could go live the same way; device needs the output reopened |
-| field of view | **Built:** a "Field of View" row on Settings, Controls, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
+| field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
+| frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | next launch: the row says "(restart)" until then |
+| resolution scale | **Built:** a "Resolution" row on the Video screen (1x to 4x), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | next launch, as above |
 | controller mute button | `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) | restart today; could go live through the HID thread |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
@@ -367,10 +370,89 @@ Notes on specific settings:
   show geometry the game culled. Built in the guest's own camera instead:
   see "Field of view (built)".
 
+## Video screen (built)
+
+Settings, a profile, Controls has a **Video** row after Controller Speaker
+(row 7; row 6 when `H2_NO_SPEAKER_ROW=1` removes the speaker row). A on it
+opens a screen titled "Video" with up to three rows:
+
+| Row | Values | Saved as | Applies | Locked by |
+|---|---|---|---|---|
+| Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
+| Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | next launch | `--fps`, `H2_FPS` |
+| Resolution | 1x to 4x | `[graphics] render_scale` | next launch | `H2_RENDER_SCALE` |
+
+A steps the row's value and saves it to `<data>/settings.toml` at once,
+keeping every other key. The frame rate and the scale are fixed for a run
+(the window's display clock and the view backend are made at launch), so a
+value that differs from the running one reads "60 (restart)" and `h2 play`
+starts with it next time. A locked row shows the variable's value and A
+does nothing. A bad variable is reported and ignored, so the saved value is
+used (before this, a bad `H2_RENDER_SCALE` meant 1x). Above 30, the frame
+rate only redraws the newest game frame more often until high-fps phase 2
+([high-framerate.md](high-framerate.md)). `H2_NO_VIDEO_SCREEN=1` removes
+the row and the screen; `H2_NO_FOV_ROW=1` removes the field of view row and
+the camera hook. Headless runs (`h2 run`) have none of it. Lighting gets a
+row once there is a lighting option to toggle.
+
+Code: `boot::video_screen` (logic over `Gm`), `boot::video_setting` (the
+two launch settings), registered by `layout_glue::install`; `h2 play`
+reads the saved frame rate and scale when no flag or variable sets them.
+
+### How the screen is made (Local, static reading of the retail XBE)
+
+The Video screen is a second Controls screen (screen 39) with our rows in
+its list. Nothing new is allocated by us and no tag is added.
+
+| Address | Role | Evidence and what we do |
+|---|---|---|
+| `0x2b79f9` | the per-profile Settings list's row chosen (thiscall, `ret 8`) | row 0 calls `0x149f1e(1 << player, 0x2b7714)`: this is how Controls opens |
+| `0x149f1e` | open a screen: build a 0x20-byte request (`0x149f49`) and call its loader with it (stdcall, `ret 8`) | request `+0` 0, `+2` the player mask, `+4` 5, `+8` 4, `+0xc` 0, `+0x10..+0x1b` -1, `+0x1c` the loader. Controls' own dialogs (`0x2c8719`) build the same request. Our Video row calls it with the Controls loader |
+| `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`) |
+| `0x2b7752` | Controls screen constructor (EDI = screen; request `+4`, `+8` and the `+2` word) | base screen `0x230451(39, ...)` with its list handler at `screen + 0x614`, vtable `0x45be30`, then the list handler constructor `0x2c84b8` |
+| `0x1a480d` → `0x16b650` | datum array constructor | copies the name it is given into the array (`+0`, 0x20 bytes). While our open call runs, the list hook gives the Controls list our name, "h2r video settings", and our row count. A list whose array has that name is a Video list; no table of screens to keep |
+| `0x2c8548`, `0x2c8719` | Controls row text and row chosen (thiscall on the list handler) | on a Video list every row is ours and the originals never run |
+| `0x24bb60` | "add items" | a Video list keeps the six retail item widgets (no extras) |
+| `0x22fda6` | build a screen's header (stdcall, the screen) | sets the tag's header string (`+0x2c`, `0x06000233` for Controls) through `0x253b1a`; for a Video screen the text hook swaps that id for our "Video" while it runs |
+
+**B returns to Controls.** The Video screen is opened by the same call,
+with the same request, that the Settings screen uses for Controls and that
+Controls uses for its own dialogs, so it is pushed on the same screen stack
+and closes the same way. The Controls class itself never touches the
+Controls edit buffer on close: only the Settings screen's back handler
+(`0x2b7abe` → `0x148bff`) and the generic `0x230b32` commit and clear it,
+so closing Video leaves Controls' pending edits alone.
+
+**Settings root vs Controls as the entry.** The Settings list (handler
+`0x2b79f9`, rows opening Controls `0x2b7714`, `0x2b77a8`, `0x2b2917`,
+`0x2b288c`, `0x2b2801`, `0x2b7887`) would make Video a sibling of
+Controls, which reads better. It is a different list class with its own
+row text and count, none of it hooked or traced yet, so Video sits on
+Controls for now; moving the row there is a later step that keeps the rest.
+
+### To check in game
+
+1. Settings, a profile, Controls: the last row is "Video". A opens a screen
+   titled "Video" with Field of View, Frame Rate, Resolution, and no
+   retail row. stderr: `video screen: opening`, `video screen: list built
+   with 3 rows`, `video screen: header active`, `video screen: row text
+   active`. If the title still says Controls, the header id differs from
+   `0x06000233` on this screen.
+2. The screen shows three rows; the three empty item widgets below them
+   must not draw anything (the list has six item widgets and three
+   datums; not seen yet).
+3. B returns to Controls, whose rows (and a pending vibration change) are
+   intact.
+4. Frame Rate: A steps 30, 60 (restart), 120 (restart), Uncapped (restart),
+   30. Quit and start `h2 play` again: the window runs at the saved rate.
+   With `H2_FPS=60` the row shows 60 and does not move.
+5. Resolution: the same, 1x to 4x; the next launch renders at the saved scale.
+6. Field of View: as below, now on this screen.
+
 ## Field of view (built)
 
-Settings, a profile, Controls has a **Field of View** row after Controller
-Speaker (row 7; row 6 when `H2_NO_SPEAKER_ROW=1` removes the speaker row).
+The Video screen's **Field of View** row (above; before this it was a row
+on Controls).
 Its value is the first-person camera's unzoomed horizontal field of view in
 degrees. Pressing A steps it 70, 75, ... 120 and wraps back to 70. 70 is
 retail: the hook then hands the game its own number back, bit for bit.
@@ -410,16 +492,10 @@ and structures differ.
   target is above retail's 110-degree clamp, `0x55e488` is raised to the
   target, and put back to the value of `0x45e098` when the setting drops
   below it or goes back to retail.
-- **Row**: the Controls list (`0x45d298`) grows by one more item through
-  the datum array constructor (`0x1a480d`: retail count plus the rows we
-  add); the row text (`0x2c8548`) fills our label and the degrees as our own
-  strings (English digits; ids in `layout_glue::is_ours`'s range); the
-  row-chosen handler (`0x2c8719`) steps the value and returns. The list
-  gets one item widget of ours per added row and the tag's visible count
-  goes from 6 to 6 plus those rows (`speaker_row::grow_visible`, the "add
-  items" hook `0x24bb60`; docs/playstation-audio.md), so with both rows all
-  eight show at once. The pause menu's smaller controller settings dialog
-  has no Field of View row.
+- **Row**: a row of the Video screen (above): the row text fills our
+  label and the degrees as our own strings (English digits; ids in
+  `layout_glue::is_ours`'s range); the row-chosen handler steps the value
+  and returns.
 - **Setting** (`boot::fov_setting`): `[graphics] fov = <degrees>` in
   `settings.toml` in `h2 play`'s data root, next to `[pad_speaker]`,
   written atomically and keeping every other key. 0 or 70 is retail; the
@@ -465,8 +541,8 @@ first-person camera changes.
 
 ### What to check in game
 
-1. Settings, a profile, Controls: the last row reads "Field of View" with
-   "70". A steps it 75, 80, ... 120, then 70.
+1. Settings, a profile, Controls, Video: the first row reads "Field of
+   View" with "70". A steps it 75, 80, ... 120, then 70.
 2. In a level, at 90 or more: the view is wider at once (no restart);
    nothing pops in or out at the screen edges while turning (culling uses
    the same camera).
