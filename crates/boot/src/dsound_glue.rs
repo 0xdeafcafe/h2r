@@ -211,6 +211,87 @@ fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
     p
 }
 
+/// `H2_AUDIO_STATS=1`: one line every [`AudioReport::EVERY`] on stderr with
+/// what the audio path did in that window (docs/dsound.md, "Audio stats").
+pub struct AudioReport {
+    last_at: std::time::Instant,
+    last: Option<(dsound::OutputStats, audio::StreamHealth)>,
+    max_callbacks: usize,
+}
+
+impl AudioReport {
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// A reporter if `H2_AUDIO_STATS` is set (and not `0`).
+    pub fn from_env() -> Option<Self> {
+        std::env::var("H2_AUDIO_STATS").is_ok_and(|v| v != "0" && !v.is_empty()).then(|| Self {
+            last_at: std::time::Instant::now(),
+            last: None,
+            max_callbacks: 0,
+        })
+    }
+
+    /// Between slices: notes what only shows at a moment, and prints the
+    /// line once a window is up.
+    pub fn tick(&mut self, a: &Audio) {
+        self.max_callbacks = self.max_callbacks.max(a.hle.pending_callbacks());
+        let now = std::time::Instant::now();
+        let secs = now.duration_since(self.last_at).as_secs_f64();
+        if secs < Self::EVERY.as_secs_f64() {
+            return;
+        }
+        self.last_at = now;
+        let out = a.output.take_window();
+        let health = a.mixer.lock().unwrap_or_else(|e| e.into_inner()).stream_health();
+        eprintln!("{}", audio_line(secs, &out, health, self.last.as_ref(), self.max_callbacks));
+        self.last = Some((out, health));
+        self.max_callbacks = 0;
+    }
+}
+
+/// One `H2_AUDIO_STATS` line: counters are what changed since `last`.
+fn audio_line(
+    secs: f64,
+    out: &dsound::OutputStats,
+    health: audio::StreamHealth,
+    last: Option<&(dsound::OutputStats, audio::StreamHealth)>,
+    max_callbacks: usize,
+) -> String {
+    let (po, ph) = last.copied().unwrap_or_default();
+    let d = |now: u64, then: u64| now.saturating_sub(then);
+    let p = out.playout.unwrap_or_default();
+    let mut line = format!(
+        "audio: {secs:.1}s fill {:.0}ms ({:.0}-{:.0}) target {:.0}ms trim {:+}ppm{} | dropouts +{} | dev underruns +{} ({} frames) | dropped +{} | late wakes +{} (max gap {:.1}ms) | stream starves +{} ({} frames) unrouted +{} frames | callbacks waiting max {} | rendered {:.0}% of real time",
+        p.fill_ms,
+        p.min_fill_ms,
+        p.max_fill_ms,
+        p.target_ms,
+        p.trim_ppm,
+        if p.primed { "" } else { " (buffering)" },
+        d(p.starves, po.playout.unwrap_or_default().starves),
+        d(out.sink.underruns, po.sink.underruns),
+        d(out.sink.underrun_frames, po.sink.underrun_frames),
+        d(out.dropped_frames, po.dropped_frames),
+        d(out.late_wakes, po.late_wakes),
+        out.max_wake_gap_us as f64 / 1000.0,
+        d(health.starves, ph.starves),
+        d(health.starve_frames, ph.starve_frames),
+        d(health.unrouted_frames, ph.unrouted_frames),
+        max_callbacks,
+        100.0 * d(out.rendered_frames, po.rendered_frames) as f64 / (secs * RATE as f64),
+    );
+    if let Some(side) = out.side {
+        let ps = po.side.unwrap_or_default();
+        line.push_str(&format!(
+            " | pad {} underruns +{} dropped +{}",
+            if side.live { "live" } else { "off" },
+            d(side.sink.underruns, ps.sink.underruns),
+            d(side.dropped_frames, ps.dropped_frames),
+        ));
+    }
+    line
+}
+
 /// Bring audio time up to the kernel's logical time. Between slices, with
 /// no guest memory guard held.
 pub fn advance(a: &Audio, k: &kernel::Kernel) -> Result<(), String> {
@@ -239,6 +320,33 @@ mod tests {
         assert!(p.max_target_ms > 200);
         assert_eq!(super::playout_from(Some("5")), d, "out of range");
         assert_eq!(super::playout_from(Some("x")), d);
+    }
+
+    #[test]
+    fn the_stats_line_reports_the_window() {
+        let mut then = dsound::OutputStats::default();
+        then.sink.underruns = 4;
+        let mut now = then;
+        now.rendered_frames = 240_000;
+        now.sink.underruns = 6;
+        now.sink.underrun_frames = 512;
+        now.late_wakes = 1;
+        now.max_wake_gap_us = 21_500;
+        now.playout = Some(dsound::PlayoutStats {
+            fill_ms: 48.0,
+            min_fill_ms: 30.0,
+            max_fill_ms: 70.0,
+            target_ms: 75.0,
+            primed: true,
+            starves: 1,
+            trim_ppm: -1200,
+        });
+        let health = audio::StreamHealth { starves: 2, starve_frames: 900, unrouted_frames: 0 };
+        let line = super::audio_line(5.0, &now, health, Some(&(then, Default::default())), 3);
+        assert_eq!(
+            line,
+            "audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev underruns +2 (512 frames) | dropped +0 | late wakes +1 (max gap 21.5ms) | stream starves +2 (900 frames) unrouted +0 frames | callbacks waiting max 3 | rendered 100% of real time"
+        );
     }
 
     #[test]

@@ -50,7 +50,28 @@ pub struct Mixer {
     /// renders (see [`Mixer::reserve_block`]).
     reverb_in: Vec<f32>,
     direct: Vec<f32>,
+    /// Frames rendered since creation: the clock [`StreamHealth`] uses.
+    clock: u64,
+    health: StreamHealth,
 }
+
+/// How streams fared, for diagnostics ([`Mixer::stream_health`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamHealth {
+    /// A stream ran out of packets mid-play and got more within
+    /// [`STARVE_WINDOW_MS`]: the game fed it late, and the gap was heard.
+    pub starves: u64,
+    /// The frames of silence those gaps added.
+    pub starve_frames: u64,
+    /// Frames streams consumed (and so completed packets for) whose mix
+    /// bins reached nothing: an empty bin list, or sends only to mix-ins
+    /// that are not playing. The game thinks those played.
+    pub unrouted_frames: u64,
+}
+
+/// A stream that runs dry and is fed again within this long counts as a
+/// [`StreamHealth::starves`]; a longer wait is a new sound.
+pub const STARVE_WINDOW_MS: u64 = 250;
 
 impl Mixer {
     /// `sample_rate` is the host output rate in Hz.
@@ -68,7 +89,14 @@ impl Mixer {
             reverb: None,
             reverb_in: Vec::new(),
             direct: Vec::new(),
+            clock: 0,
+            health: StreamHealth::default(),
         }
+    }
+
+    /// Stream starvation and routing counters since creation.
+    pub fn stream_health(&self) -> StreamHealth {
+        self.health
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -252,9 +280,17 @@ impl Mixer {
             }
         }
         let ids: Vec<StreamId> = self.streams.iter().filter(|(_, s)| s.is_audible()).map(|(&id, _)| id).collect();
+        let window = STARVE_WINDOW_MS * u64::from(rate) / 1000;
         for id in ids {
             scratch.fill(0.0);
             let s = self.streams.get_mut(&id).expect("listed above");
+            if let Some(at) = s.dry_at.take() {
+                let gap = self.clock.saturating_sub(at);
+                if gap > 0 && gap <= window {
+                    self.health.starves += 1;
+                    self.health.starve_frames += gap;
+                }
+            }
             let params = s.params().clone();
             s.set_doppler_pitch(params.spatial.as_ref().map_or(1.0, |sp| self.listener.spatial(sp).pitch));
             let c0 = s.fx_clock();
@@ -265,9 +301,15 @@ impl Mixer {
             // voice's own clock, so a block's padding never leaks a tail.
             let has_direct = s.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = s.format().channels() as usize;
+            if s.pending() == 0 {
+                // Ran out: dry from the first frame it did not fill.
+                s.dry_at = Some(self.clock + produced as u64);
+            }
             if !to_side(side.as_deref_mut(), &params, &scratch, master) {
                 let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
-                route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
+                if !route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out) {
+                    self.health.unrouted_frames += produced as u64;
+                }
             }
         }
         for i in 0..buses.len() {
@@ -295,6 +337,7 @@ impl Mixer {
         self.scratch = scratch;
         self.reverb_in = rin;
         self.direct = direct;
+        self.clock += frames as u64;
     }
 
     /// Playing mix-ins, each after every mix-in that sends to it (Kahn's
@@ -337,7 +380,8 @@ struct Route<'a> {
 
 /// Mixes one voice, rendered at unity gain into `src` (interleaved stereo; a
 /// mono voice is in both channels), into `out`, the mix-in buses and the
-/// reverb send.
+/// reverb send. False when its routing reaches nothing at all (no bins, or
+/// only sends to buses that are not there), whatever the volumes.
 fn route_voice(
     cx: &mut Route<'_>,
     p: &VoiceParams,
@@ -345,7 +389,7 @@ fn route_voice(
     src: &[f32],
     direct_src: Option<&[f32]>,
     out: &mut [f32],
-) {
+) -> bool {
     // The direct path (speakers and mix-in sends) may be shelved by an I3DL2
     // source's obstruction; the reverb send always takes `src`.
     let dsrc = direct_src.unwrap_or(src);
@@ -361,16 +405,24 @@ fn route_voice(
         let (l, r) = p.gains();
         add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
         add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
-        return;
+        return true;
     };
     let volume = mb_to_gain(p.volume_mb);
+    let mut reached = false;
     for (i, &(bin, mb)) in bins.iter().enumerate() {
+        let dest = route::dest(bin);
+        reached |= match dest {
+            Dest::Out { .. } | Dest::Crosstalk { .. } => true,
+            Dest::Send(bin) => cx.buses.iter().any(|b| b.bin == bin && !b.done),
+            Dest::Reverb => cx.reverb_in.is_some(),
+            Dest::Dropped => false,
+        };
         let g = volume * mb_to_gain(mb) * hr;
         if g == 0.0 {
             continue;
         }
         let ch = route::channel_of(i, channels);
-        match route::dest(bin) {
+        match dest {
             Dest::Out { left, right } => {
                 add(out, dsrc, ch, 0, g * left * master * direct);
                 add(out, dsrc, ch, 1, g * right * master * direct);
@@ -399,6 +451,7 @@ fn route_voice(
             Dest::Dropped => {}
         }
     }
+    reached
 }
 
 /// Adds a voice rendered at unity gain (`src`, interleaved stereo) to the
@@ -1221,6 +1274,49 @@ mod tests {
         // Head-relative sources have none.
         let hr = Source3d { mode: crate::dsound::Mode3d::HeadRelative, velocity: Vec3::new(0.0, 0.0, -100.0), ..src(Vec3::default()) };
         assert_eq!(l.spatial(&hr).pitch, 1.0);
+    }
+
+    #[test]
+    fn stream_health_counts_late_feeds_and_unrouted_play() {
+        let mut m = Mixer::new(8000);
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 8000).unwrap()).unwrap());
+        let pcm: Vec<u8> = [8192i16; 64].iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut block = vec![0.0; 2 * 100];
+        // 64 frames into a 100-frame block: dry 36 frames before its end.
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        // Fed again before the next block: a 36-frame gap, one starve.
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        let h = m.stream_health();
+        assert_eq!((h.starves, h.starve_frames, h.unrouted_frames), (1, 36, 0));
+        // Fed again a second later: a new sound, not a starve.
+        for _ in 0..80 {
+            m.render(&mut block);
+        }
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        assert_eq!(m.stream_health().starves, 1);
+        // A flush in between forgets it ran dry.
+        m.stream_mut(sid).unwrap().flush();
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        assert_eq!(m.stream_health().starves, 1);
+        // Routed only to a mix-in that is not playing: consumed, not heard.
+        m.stream_mut(sid).unwrap().set_mix_bins(Some(vec![(0x17, 0)]));
+        m.add_mix_in(MixIn::new(0x17));
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        assert_eq!(m.stream_health().unrouted_frames, 64);
+        // An empty bin list is the same; -10000 mB on a real bin is not
+        // (that is the game's own silence).
+        m.stream_mut(sid).unwrap().set_mix_bins(Some(Vec::new()));
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        m.stream_mut(sid).unwrap().set_mix_bins(Some(vec![(0, -10_000)]));
+        m.stream_mut(sid).unwrap().submit(&pcm).unwrap();
+        m.render(&mut block);
+        assert_eq!(m.stream_health().unrouted_frames, 128);
     }
 
     #[test]

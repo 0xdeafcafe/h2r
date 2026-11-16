@@ -761,6 +761,8 @@ pub fn run_hosted_with_live(
     let mut audio_errors: Vec<String> = Vec::new();
     // Logical time added for pending audio alone since a thread last ran.
     let mut audio_idle = 0u64;
+    // H2_AUDIO_STATS=1: a line of audio health every few seconds.
+    let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     // H2_FRAME_STATS=1: frame times split by phase (docs/frame-budget.md).
@@ -840,6 +842,9 @@ pub fn run_hosted_with_live(
             && audio_errors.len() < 8
         {
             audio_errors.push(format!("slice {slice}: {e}"));
+        }
+        if let (Some(a), Some(r)) = (&ds, &mut audio_report) {
+            r.tick(a);
         }
         if let Some(f) = &mut host.between_slices
             && !f(&k)
