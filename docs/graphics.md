@@ -205,14 +205,31 @@ Two hazards for the HLE layer:
 `vertex.rs` covers primitive types (including the Xbox-only line loop, quad
 list/strip and polygon, which `PrimitiveType::to_host` rewrites to wgpu
 topologies with index lists), FVF decoding, and `D3DVSD_*` declaration parsing
-into stream layouts. Vertex data types with no wgpu equivalent
-(`SHORT1/3`, `NORMSHORT1/3`, `PBYTE1/3`, `NORMPACKED3`, `FLOAT2H`) are handled
-by `repack.rs`: `RepackPlan::new(layout, strides)` plans a per-stream
-conversion and `StreamPlan::repack` returns a `Cow` (borrowed when the stream
-is an identity, otherwise compacted with 4-byte-aligned strides). Shorts are
-converted to Float32 because Xbox vertex shaders consume floats. The
-`NORMPACKED3` field order (x in the low bits) is verified. The register number is the wgpu
-shader location. Multi-stream draws are supported via `Draw::streams`.
+into stream layouts. Vertex data types with no float wgpu equivalent
+(`SHORT1..4`, `NORMSHORT1/3`, `PBYTE1/3`, `NORMPACKED3`, `FLOAT2H`) are
+handled by `repack.rs` in one of two modes (`FetchMode`, per draw in
+`Draw::vertex_fetch`):
+
+* GPU fetch (the default for translated programs; `H2_VERTEX_FETCH=cpu`
+  selects the old path). Every type maps to a wgpu format that reads the
+  guest bytes unconverted (`SHORT3` as `Sint16x4`, `NORMPACKED3` as
+  `Uint32`, `FLOAT2H` as `Float32x3`, ...) and the vertex program's entry
+  point finishes the decode (`shaders::vsh::InputFetch` in
+  `VertexOptions::input_fetch`, part of the program key). A stream whose
+  stride and offsets meet WebGPU's alignment rules is bound as is; any
+  other (a 6-byte `NORMSHORT3` stream, packed odd offsets) is *realigned*:
+  each attribute's bytes copied, still unconverted, into 4-aligned slots.
+* CPU repack (`RepackPlan::new`, and the built-in shader always): shorts,
+  bytes and packed normals converted to Float32 on the render thread.
+
+`RepackPlan::with_mode(layout, strides, mode)` is a pure function, so the
+program's `input_fetch` (computed by `Nv2aShaders`) and the pipeline's
+vertex formats (`PipelineKey::from_plan`) always agree.
+`crates/d3d/tests/vertex_fetch.rs` draws every type both ways and compares
+pixels; `cargo bench -p d3d --bench vertex_fetch` times a draw-heavy frame
+in each mode. The `NORMPACKED3` field order (x in the low bits) is
+verified. The register number is the wgpu shader location. Multi-stream
+draws are supported via `Draw::streams`.
 
 ### Render targets and surfaces (`surface.rs`, `encode.rs`, `blit.rs`, `readback.rs`)
 `SurfaceStore` owns colour and depth/stencil surfaces. Tiling is a recorded
@@ -298,8 +315,10 @@ and registers one program per distinct translation.
 records draws one at a time and encodes a whole pass later.
 `Renderer::record(ctx, target, draw)` validates a draw, fetches its pipeline
 and stages its vertices, indices and built-in uniforms in upload rings
-(`ring::UploadRing`: CPU-side staging packed into one buffer, written with
-one `queue.write_buffer` per flush) and returns a `RecordedDraw`.
+(`ring::UploadRing`: one buffer per ring, written through a few 2 MB
+`queue.write_buffer_with` staging views, so vertex bytes are copied once,
+straight into wgpu's staging memory; a ring that fills doubles, up to
+64 MB) and returns a `RecordedDraw`.
 `Renderer::encode_pass(ctx, encoder, target, clear, draws, counter)` encodes
 them into one render pass, or a new one at each draw marked with
 `RecordedDraw::start_pass` and at each counted draw (see `occlusion.rs`),

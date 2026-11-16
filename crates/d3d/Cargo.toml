@@ -56,3 +56,7 @@ harness = false
 [[bench]]
 name = "visibility_wait"
 harness = false
+
+[[bench]]
+name = "vertex_fetch"
+harness = false
