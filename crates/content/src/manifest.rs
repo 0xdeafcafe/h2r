@@ -31,6 +31,19 @@
 //! name.ja = "..."            # per-language name; others use [package] name
 //! description.ja = "..."     # likewise, from [package] description
 //! ```
+//!
+//! A map converted from Halo 1 (docs/game/h1-multiplayer.md) is a derived
+//! package holding one whole map per sandbox instead of `[[patch]]`:
+//!
+//! ```toml
+//! [[variant]]
+//! file = "h2/h1_bloodgulch.map"
+//! sha256 = "..."
+//! origin = { game = "halo1", map = "bloodgulch", sandbox = "h2", source_sha256 = "..." }
+//! ```
+//!
+//! [`Manifest::select_variant`] turns it into the plain derived manifest of
+//! one variant, which is what the resolver loads.
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -61,6 +74,42 @@ pub struct Manifest {
     /// disc doesn't have (docs/game/maps.md §4). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<ListInfo>,
+    /// A converted map's variants, one whole map per sandbox. A package
+    /// with variants has no `[[patch]]`; [`Manifest::select_variant`] picks
+    /// one. Each selected variant has its own `MapId`, from its file.
+    #[serde(default, rename = "variant", skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<Variant>,
+}
+
+/// The sandboxes a converted map's variants are for.
+pub const SANDBOXES: [&str; 2] = ["h1", "h2"];
+/// The variant chosen when nothing says otherwise: Halo 1's own sandbox
+/// (the setting's default), else the package's first.
+pub const DEFAULT_SANDBOX: &str = "h1";
+
+/// One `[[variant]]`: a whole map file and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variant {
+    /// The map file, relative to the package directory.
+    pub file: String,
+    pub sha256: Sha256,
+    pub origin: Origin,
+}
+
+/// A variant's `origin`: the source of a map converted from another game
+/// (docs/game/h1-multiplayer.md, "Package"). Not part of the `MapId`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    /// The source game, `halo1`.
+    pub game: String,
+    /// The source map's name in that game.
+    pub map: String,
+    /// Which sandbox this map's items and objects are from: `h1` or `h2`.
+    pub sandbox: String,
+    /// SHA-256 of the source map file.
+    pub source_sha256: Sha256,
 }
 
 /// The languages of the game's map list text, in the order its records hold
@@ -156,6 +205,8 @@ pub enum ManifestError {
     Image(String, String),
     #[error("[list] {0}")]
     List(String),
+    #[error("[[variant]] {0}")]
+    Variant(String),
 }
 
 impl Manifest {
@@ -178,6 +229,7 @@ impl Manifest {
             packs: Vec::new(),
             result: None,
             list: None,
+            variants: Vec::new(),
         }
     }
 
@@ -186,6 +238,57 @@ impl Manifest {
         let m: Self = toml::from_str(text)?;
         m.validate()?;
         Ok(m)
+    }
+
+    fn validate_variants(&self) -> Result<(), ManifestError> {
+        if self.variants.is_empty() {
+            return Ok(());
+        }
+        let bad = |m: String| Err(ManifestError::Variant(m));
+        if !self.base.derived || !self.patches.is_empty() {
+            return bad("variants are whole maps: derived = true and no [[patch]]".into());
+        }
+        let mut seen = Vec::new();
+        for v in &self.variants {
+            let o = &v.origin;
+            if o.game.trim().is_empty() || o.map.trim().is_empty() {
+                return bad("origin needs a game and a map".into());
+            }
+            if !SANDBOXES.contains(&o.sandbox.as_str()) {
+                return bad(format!("sandbox {:?} is not h1 or h2", o.sandbox));
+            }
+            if seen.contains(&o.sandbox) {
+                return bad(format!("two variants for sandbox {}", o.sandbox));
+            }
+            seen.push(o.sandbox.clone());
+        }
+        Ok(())
+    }
+
+    /// The variant for `sandbox`, if the package has one.
+    pub fn variant(&self, sandbox: &str) -> Option<&Variant> {
+        self.variants.iter().find(|v| v.origin.sandbox == sandbox)
+    }
+
+    /// The plain derived manifest of one variant: `sandbox`'s if there is
+    /// one, else [`DEFAULT_SANDBOX`]'s, else the first. Its one layer is
+    /// the variant's map, so each variant has its own `MapId`. A package
+    /// without variants is returned as it is.
+    pub fn select_variant(&self, sandbox: Option<&str>) -> Manifest {
+        let chosen = sandbox
+            .and_then(|s| self.variant(s))
+            .or_else(|| self.variant(DEFAULT_SANDBOX))
+            .or_else(|| self.variants.first());
+        let Some(v) = chosen else {
+            return self.clone();
+        };
+        let mut m = self.clone();
+        m.variants.clear();
+        m.patches = vec![Layer {
+            file: v.file.clone(),
+            sha256: v.sha256,
+        }];
+        m
     }
 
     pub fn to_toml(&self) -> String {
@@ -207,10 +310,12 @@ impl Manifest {
         if self.base.sha256.is_none() && !self.base.derived {
             return Err(ManifestError::BaseHash);
         }
-        if self.base.derived && self.patches.is_empty() {
+        if self.base.derived && self.patches.is_empty() && self.variants.is_empty() {
             return Err(ManifestError::DerivedWithoutLayer);
         }
+        self.validate_variants()?;
         let files = self.patches.iter().chain(&self.packs).map(|l| &l.file);
+        let files = files.chain(self.variants.iter().map(|v| &v.file));
         for f in files.chain(&self.package.image) {
             relative(f)?;
         }
@@ -364,6 +469,91 @@ geometry = "{H2}"
         assert!(!text.contains("derived"), "{text}");
         let bare = Manifest::retail("lockout", H1.parse().unwrap());
         assert_eq!(Manifest::from_toml(&bare.to_toml()).unwrap(), bare);
+    }
+
+    fn converted() -> String {
+        format!(
+            r#"
+[package]
+format = 1
+name = "Blood Gulch"
+
+[base]
+map = "h1_bloodgulch"
+derived = true
+
+[[variant]]
+file = "h1/h1_bloodgulch.map"
+sha256 = "{H1}"
+origin = {{ game = "halo1", map = "bloodgulch", sandbox = "h1", source_sha256 = "{H2}" }}
+
+[[variant]]
+file = "h2/h1_bloodgulch.map"
+sha256 = "{H2}"
+origin = {{ game = "halo1", map = "bloodgulch", sandbox = "h2", source_sha256 = "{H2}" }}
+"#
+        )
+    }
+
+    #[test]
+    fn variants_round_trip_select_and_each_has_its_own_identity() {
+        let m = Manifest::from_toml(&converted()).unwrap();
+        assert_eq!(m.variants.len(), 2);
+        assert_eq!(m.variants[0].origin.sandbox, "h1");
+        assert_eq!(m.variants[1].origin.source_sha256.to_string(), H2);
+        assert_eq!(Manifest::from_toml(&m.to_toml()).unwrap(), m);
+
+        let h2 = m.select_variant(Some("h2"));
+        assert!(h2.variants.is_empty());
+        assert_eq!(h2.patches.len(), 1);
+        assert_eq!(h2.patches[0].file, "h2/h1_bloodgulch.map");
+        h2.validate().unwrap();
+        // Default: Halo 1's sandbox; a missing one falls back likewise.
+        assert_eq!(m.select_variant(None), m.select_variant(Some("h1")));
+        assert_eq!(
+            m.select_variant(Some("h3")).patches[0].file,
+            "h1/h1_bloodgulch.map"
+        );
+        let h1 = m.select_variant(None);
+        assert_ne!(crate::MapId::of(&h1), crate::MapId::of(&h2));
+        // Origin isn't identity: the same file without it is the same map.
+        let plain = Manifest::from_toml(&h2.to_toml()).unwrap();
+        assert_eq!(crate::MapId::of(&plain), crate::MapId::of(&h2));
+        // Only one variant: it is chosen whatever is asked.
+        let mut only = m.clone();
+        only.variants.remove(0);
+        assert_eq!(
+            only.select_variant(None).patches[0].file,
+            "h2/h1_bloodgulch.map"
+        );
+        // A package without variants is unchanged.
+        let retail = Manifest::from_toml(&sample()).unwrap();
+        assert_eq!(retail.select_variant(Some("h2")), retail);
+    }
+
+    #[test]
+    fn variants_are_checked() {
+        let c = converted();
+        assert!(refused(&c.replacen("sandbox = \"h1\"", "sandbox = \"h3\"", 1)).contains("sandbox"));
+        assert!(refused(&c.replacen("sandbox = \"h1\"", "sandbox = \"h2\"", 1)).contains("two"));
+        assert!(
+            refused(
+                &c.replace(
+                    "derived = true",
+                    "derived = false\nsha256 = \"{H1}\""
+                        .replace("{H1}", H1)
+                        .as_str()
+                )
+            )
+            .contains("derived")
+        );
+        assert!(refused(&c.replacen("h1/h1_bloodgulch.map", "../x.map", 1)).contains("inside"));
+        assert!(refused(&c.replacen("game = \"halo1\"", "game = \" \"", 1)).contains("game"));
+        assert!(
+            refused(&c.replacen("origin = {", "origin = { kind = 1,", 1)).contains("unknown field")
+        );
+        let with_patch = format!("{c}\n[[patch]]\nfile = \"x.ppf\"\nsha256 = \"{H1}\"\n");
+        assert!(refused(&with_patch).contains("no [[patch]]"));
     }
 
     fn refused(text: &str) -> String {
