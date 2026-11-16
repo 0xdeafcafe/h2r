@@ -4,10 +4,10 @@
 // view in a window. Live games and replays both use it, each with its own
 // frame source, so whatever drives that source drives both views.
 
+import { mapTitle } from "../state/gameart";
 import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
-import { titleCase } from "../lib/format";
 import { geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import ViewMap, { ViewPicker } from "../map/ViewMap";
@@ -95,7 +95,7 @@ export default function TacticalMap(props: {
       </div>
       <Show when={open()}>
         <ViewerWindow
-          title={`3D view · ${titleCase(props.game.map)}`}
+          title={`3D view · ${mapTitle(props.game.map)}`}
           popout={`/stats/games/${encodeURIComponent(props.game.game_id)}/3d`}
           onClose={() => setOpen(false)}
           frame={props.frame}

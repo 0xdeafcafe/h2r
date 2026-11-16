@@ -1,6 +1,7 @@
 // Player pages: service record, game history and career stats (with
 // compare), all derived from the events the client has seen.
 
+import { mapTitle } from "../state/gameart";
 import { For, Show, createEffect, createMemo, createSignal, on, untrack, type JSX } from "solid-js";
 import { A, useParams, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -155,7 +156,7 @@ export function ServiceRecordPage() {
                 <Show when={latest()} fallback={<span class="s-dim">Latest game</span>}>
                   {(h) => (
                     <>
-                      <A href={`/stats/games/${h().game.game_id}`}>{gameTitle(h().game)} on {titleCase(h().game.map)}</A>
+                      <A href={`/stats/games/${h().game.game_id}`}>{gameTitle(h().game)} on {mapTitle(h().game.map)}</A>
                       <span class="s-capbar-right">{h().game.status === "live" ? "playing now" : usDate(h().game.started_at)}</span>
                     </>
                   )}
@@ -222,7 +223,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
               <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A></span></td>
               <td>{usDateTime(r.game.started_at)}</td>
-              <td><span class="s-who"><MapPreview map={r.game.map} />{titleCase(r.game.map)}</span></td>
+              <td><span class="s-who"><MapPreview map={r.game.map} />{mapTitle(r.game.map)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
               <td>{r.game.status === "live" ? <span class="s-live-tag">LIVE</span> : r.place ? ordinal(r.place) : "–"}</td>
               <td class="num"><button class="s-linkbtn" onClick={(e) => { e.stopPropagation(); props.onSelect(r.game.game_id); }}>preview</button></td>
@@ -281,7 +282,7 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
   return (
     <aside class="s-preview">
       <A href={`/stats/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
-      <div class="s-preview-title"><A href={`/stats/games/${g().game_id}`}>{gameTitle(g())}</A> on {titleCase(g().map)}</div>
+      <div class="s-preview-title"><A href={`/stats/games/${g().game_id}`}>{gameTitle(g())}</A> on {mapTitle(g().map)}</div>
       <p>
         Playlist: {playlist(g())}<br />
         {longDate(g().started_at)}<br />
@@ -487,7 +488,7 @@ export function CareerPage() {
                   <label for="s-f-map">Map</label>
                   <select id="s-f-map" value={map()} onChange={(e) => setMap(e.currentTarget.value)}>
                     <option value="">All Maps</option>
-                    <For each={maps()}>{([m]) => <option value={m}>{titleCase(m)}</option>}</For>
+                    <For each={maps()}>{([m]) => <option value={m}>{mapTitle(m)}</option>}</For>
                   </select>
                   <label for="s-f-var">Gametype</label>
                   <select id="s-f-var" value={variant()} onChange={(e) => setVariant(e.currentTarget.value)}>
@@ -497,7 +498,7 @@ export function CareerPage() {
                 </div>
                 <div class="s-filter-maps" aria-label="Maps">
                   <For each={maps()}>
-                    {([m, g]) => <button classList={{ on: map() === m }} onClick={() => setMap(map() === m ? "" : m)} title={titleCase(m)} aria-label={titleCase(m)}><MapThumb game={g} /></button>}
+                    {([m, g]) => <button classList={{ on: map() === m }} onClick={() => setMap(map() === m ? "" : m)} title={mapTitle(m)} aria-label={mapTitle(m)}><MapThumb game={g} /></button>}
                   </For>
                 </div>
               </div>

@@ -5,7 +5,7 @@
 // is nothing to join from here: joining happens in the game.
 
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { gameImage } from "../state/gameart";
+import { gameImage, mapTitle } from "../state/gameart";
 import { mapKey } from "../lib/gameart";
 import { live } from "../state/live";
 import { now } from "../lib/now";
@@ -62,7 +62,7 @@ function Facts(props: { session: Session }) {
   const s = () => props.session;
   return (
     <dl>
-      <dt>map</dt><dd>{mapName(s())}</dd>
+      <dt>map</dt><dd>{mapName(s(), mapTitle)}</dd>
       <dt>game</dt><dd>{gametype(s())}</dd>
       <dt>players</dt><dd>{seats(s()).filled} <span>of</span> {seats(s()).max} <span>{roomText(s())}</span></dd>
       <dt>type</dt><dd>{kind(s())}</dd>
@@ -74,7 +74,7 @@ function Facts(props: { session: Session }) {
 function SessionList(props: SessionsProps) {
   const feed = useSessions();
   const list = createMemo(() => sortSessions(feed.items()));
-  const rows = createMemo(() => list().map(sessionRow));
+  const rows = createMemo(() => list().map((s) => sessionRow(s, mapTitle)));
   const [sel, setSel] = createSignal(0);
   // The list reorders as it refreshes: stay on the session, not the row number.
   let key: string | null = null;

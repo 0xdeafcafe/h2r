@@ -4,7 +4,7 @@
 
 import GametypeIcon from "../components/GametypeIcon";
 import { mapKey } from "../lib/gameart";
-import { gameImage } from "../state/gameart";
+import { gameImage, mapTitle } from "../state/gameart";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
@@ -109,9 +109,9 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
       when={top()}
       fallback={
         <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
-          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${titleCase(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
+          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${mapTitle(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
           <Show when={!preview() || props.game.status === "live"}>
-            <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${titleCase(props.game.map)}`} />
+            <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${mapTitle(props.game.map)}`} />
           </Show>
           <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
         </span>
@@ -119,7 +119,7 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
     >
       {(v) => (
         <span class={`s-thumb s-thumb--top ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live" }}>
-          <ViewMap mini frame={frame} roster={roster} views={geometry()!.views!} view={v().id} image={geometry()!.image} label={`Map of ${titleCase(props.game.map)}`} onError={() => setBroken(true)} />
+          <ViewMap mini frame={frame} roster={roster} views={geometry()!.views!} view={v().id} image={geometry()!.image} label={`Map of ${mapTitle(props.game.map)}`} onError={() => setBroken(true)} />
           <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
         </span>
       )}
@@ -176,7 +176,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
               <MapThumb game={game} />
               <ul>
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>
-                <li>On {titleCase(game.map)}</li>
+                <li>On {mapTitle(game.map)}</li>
                 <li>Playlist: {playlist(game)}</li>
                 <li>{game.status === "live" ? "In progress now" : `Finished ${ago(game.ended_at, now())}`}</li>
                 <li>{game.status === "live" ? "Leader" : "MVP"}: <b>{standings(game)[0]?.name ?? "–"}</b></li>

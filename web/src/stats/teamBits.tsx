@@ -2,6 +2,7 @@
 // leader's emblem from their games when known, else one picked from the
 // team id, on a team-coloured field) and presence words for friends.
 
+import { mapTitle } from "../state/gameart";
 import { Show } from "solid-js";
 import Emblem from "../components/Emblem";
 import { live } from "../state/live";
@@ -40,7 +41,7 @@ export function presenceLine(f: Pick<FriendEntry, "xuid" | "presence">): string 
   const p = friendPresence(f);
   if (p.kind === "playing" && p.game_id) {
     const g = live.state.games[p.game_id];
-    if (g) return `playing ${g.map}`;
+    if (g) return `playing ${mapTitle(g.map)}`;
   }
   return PRESENCE_WORDS[p.kind];
 }

@@ -1,6 +1,7 @@
 // Stats home ("h2 live Online"): the featured live map, the games spotlight
 // with its tabs, and the menu column with the finder and server reports.
 
+import { mapTitle } from "../state/gameart";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import { live } from "../state/live";
@@ -8,7 +9,7 @@ import { identity } from "../state/identity";
 import { accountByGamertag, endedGames, liveGames, standings, teamStandings, type GameState } from "../state/reducer";
 import MapCanvas from "../components/MapCanvas";
 import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
-import { clock, titleCase } from "../lib/format";
+import { clock } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
@@ -45,10 +46,10 @@ function GameItem(props: { game: GameState }) {
   return (
     <article class="s-item" classList={{ "s-item--live": g().status === "live" }}>
       <div class="s-item-main">
-        <A href={href()} class="s-item-thumb" aria-label={`${gameTitle(g())} on ${titleCase(g().map)}`}><MapThumb game={g()} /></A>
+        <A href={href()} class="s-item-thumb" aria-label={`${gameTitle(g())} on ${mapTitle(g().map)}`}><MapThumb game={g()} /></A>
         <div class="s-item-text">
           <h4><GametypeIcon variant={g().variant} /><A href={href()}>{gameTitle(g())}</A></h4>
-          <p>{playlist(g())} on {titleCase(g().map)}, {usDate(g().started_at)}</p>
+          <p>{playlist(g())} on {mapTitle(g().map)}, {usDate(g().started_at)}</p>
           <p class="s-item-dim">{Object.keys(g().players).length} players{g().score_limit ? `, first to ${g().score_limit}` : ""}</p>
         </div>
         <div class="s-item-author">
@@ -87,7 +88,7 @@ function Featured(props: { game: GameState | undefined; online: number }) {
           {(g) => (
             <>
               <span class="s-live-tag">LIVE</span>
-              <A href={`/stats/games/${g().game_id}`}>{gameTitle(g())} on {titleCase(g().map)}</A>
+              <A href={`/stats/games/${g().game_id}`}>{gameTitle(g())} on {mapTitle(g().map)}</A>
               <span class="s-capbar-right"><ScoreLine game={g()} /></span>
             </>
           )}
@@ -99,8 +100,8 @@ function Featured(props: { game: GameState | undefined; online: number }) {
             const roster = createMemo(() => rosterFor(g));
             const outline = outlineFor(() => g.map);
             return (
-              <A href={`/stats/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${titleCase(g.map)} live`}>
-                <MapCanvas frame={liveFrameSource(g.game_id, roster)} roster={roster} outline={outline} label={`Live map of ${g.map}`} />
+              <A href={`/stats/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${mapTitle(g.map)} live`}>
+                <MapCanvas frame={liveFrameSource(g.game_id, roster)} roster={roster} outline={outline} label={`Live map of ${mapTitle(g.map)}`} />
               </A>
             );
           }}

@@ -9,6 +9,7 @@
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
 
+import { mapTitle } from "../state/gameart";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -20,7 +21,7 @@ import { defaultBase, fetchWellKnown, forget, normalizeBase, recentServers } fro
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Emblem from "../components/Emblem";
 import { presenceKind } from "../components/bits";
-import { ago, clock, titleCase } from "../lib/format";
+import { ago, clock } from "../lib/format";
 import { elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { outlineFor } from "../state/outlines";
 import { now } from "../lib/now";
@@ -83,7 +84,7 @@ function presenceText(a: AccountState | undefined): string {
   switch (presenceKind(a)) {
     case "playing": {
       const g = a?.presence?.game_id ? live.state.games[a.presence.game_id] : undefined;
-      return g ? `playing ${g.map}` : "in a game";
+      return g ? `playing ${mapTitle(g.map)}` : "in a game";
     }
     case "online": return "online";
     case "away": return "away";
@@ -163,7 +164,7 @@ export default function Dashboard() {
   const rows = createMemo((): Row[] => {
     switch (section()) {
       case "live":
-        return liveGames(live.state).map((g) => ({ key: g.game_id, label: titleCase(g.map), meta: `${g.variant ?? g.mode} ${clock(elapsedSeconds(g, now()))}` }));
+        return liveGames(live.state).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: `${g.variant ?? g.mode} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
         return friends().map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
       case "players":
@@ -171,7 +172,7 @@ export default function Dashboard() {
           .sort((a, b) => Number(b.online) - Number(a.online) || a.gamertag.localeCompare(b.gamertag))
           .map((a) => ({ key: a.xuid, label: a.gamertag, meta: presenceText(a) }));
       case "history":
-        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: titleCase(g.map), meta: `${g.variant ?? g.mode} ${ago(g.ended_at, now())}` }));
+        return endedGames(live.state, 50).map((g) => ({ key: g.game_id, label: mapTitle(g.map), meta: `${g.variant ?? g.mode} ${ago(g.ended_at, now())}` }));
       default:
         return [];
     }
@@ -627,13 +628,13 @@ function GameMap(props: { game: GameState }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
   const frame = props.game.status === "live" ? liveFrameSource(props.game.game_id, roster) : () => NO_FRAME;
-  return <div class="dx-map"><MapCanvas mini frame={frame} roster={roster} outline={outline} label={`map of ${props.game.map}`} /></div>;
+  return <div class="dx-map"><MapCanvas mini frame={frame} roster={roster} outline={outline} label={`map of ${mapTitle(props.game.map)}`} /></div>;
 }
 
 function GamePlate(props: { game: GameState }) {
   const g = () => props.game;
   return (
-    <Plate small={g().status === "live" ? "live" : "final"} title={g().map}>
+    <Plate small={g().status === "live" ? "live" : "final"} title={mapTitle(g().map)}>
       <dl>
         <dt>game</dt><dd>{g().variant ?? g().mode}</dd>
         <dt>players</dt><dd>{Object.keys(g().players).length}</dd>
