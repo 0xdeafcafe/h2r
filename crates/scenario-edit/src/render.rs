@@ -7,7 +7,7 @@
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
 //! toolkit is used here; the egui panel registers [`Viewport::color_view`]
 //! with `egui_wgpu`, `h2-studio` with `dear-imgui-wgpu`.
-use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles};
+use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
 use crate::scene::{Blend, Scene, SceneVertex};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
@@ -74,7 +74,45 @@ impl Instance {
 struct Uniforms {
     view_proj: [[f32; 4]; 4],
     eye: [f32; 4],
+    /// The camera's right, up and forward axes, and (tan of half the
+    /// vertical field of view, aspect, 0, 0): the sky's view rays.
+    right: [f32; 4],
+    up: [f32; 4],
+    forward: [f32; 4],
+    lens: [f32; 4],
 }
+
+/// A sky behind a map with art: a gradient from the zenith to a pale
+/// horizon, darker below it, along each pixel's view ray.
+const SKY_SHADER: &str = r#"
+struct U {
+    view_proj: mat4x4<f32>, eye: vec4<f32>,
+    right: vec4<f32>, up: vec4<f32>, forward: vec4<f32>, lens: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: U;
+struct V { @builtin(position) clip: vec4<f32>, @location(0) ndc: vec2<f32> };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
+    var o: V;
+    o.clip = vec4<f32>(p, 1.0, 1.0);
+    o.ndc = p;
+    return o;
+}
+@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+    let t = u.lens.x;
+    let d = normalize(u.forward.xyz + u.right.xyz * v.ndc.x * t * u.lens.y + u.up.xyz * v.ndc.y * t);
+    let zenith = vec3<f32>(0.10, 0.20, 0.42);
+    let horizon = vec3<f32>(0.52, 0.60, 0.70);
+    let ground = vec3<f32>(0.16, 0.17, 0.19);
+    var c: vec3<f32>;
+    if (d.z >= 0.0) {
+        c = mix(horizon, zenith, pow(d.z, 0.6));
+    } else {
+        c = mix(horizon, ground, pow(-d.z, 0.4));
+    }
+    return vec4<f32>(c, 1.0);
+}
+"#;
 
 const SHADER: &str = r#"
 struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
@@ -98,39 +136,56 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
 /// Textured meshes: placed per instance, lit by one sun and the sky.
 const SCENE_SHADER: &str = r#"
 struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
+struct P { lift: f32, lit: f32, pad0: f32, pad1: f32 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
+@group(1) @binding(2) var lm: texture_2d<f32>;
+@group(1) @binding(3) var<uniform> p: P;
 struct V {
     @builtin(position) clip: vec4<f32>,
     @location(0) n: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) tint: vec4<f32>,
+    @location(3) luv: vec2<f32>,
 };
 @vertex fn vs(
-    @location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>,
+    @location(0) pos: vec3<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>,
+    @location(8) luv: vec2<f32>,
     @location(3) x: vec4<f32>, @location(4) y: vec4<f32>, @location(5) z: vec4<f32>,
     @location(6) t: vec4<f32>, @location(7) tint: vec4<f32>,
 ) -> V {
     var o: V;
     let m = mat4x4<f32>(x, y, z, t);
-    o.clip = u.view_proj * m * vec4<f32>(p, 1.0);
+    o.clip = u.view_proj * m * vec4<f32>(pos, 1.0);
     o.n = (m * vec4<f32>(n, 0.0)).xyz;
     o.uv = uv;
+    o.luv = luv;
     o.tint = tint;
     return o;
 }
+// Roll off highlights (snow, sand) instead of clipping them.
+fn roll(lin: vec3<f32>) -> vec3<f32> {
+    return lin / (vec3<f32>(1.0) + max(lin - vec3<f32>(0.7), vec3<f32>(0.0)));
+}
 fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
-    let n = normalize(v.n + vec3<f32>(0.0, 0.0, 1e-5));
-    let sun = normalize(vec3<f32>(0.45, 0.3, 0.84));
-    let d = max(dot(n, sun), 0.0);
-    let sky = 0.5 + 0.5 * n.z;
-    // Base maps are drawn without their detail maps (which double in the
-    // game) and lightmaps: lift them so dark metals do not go black.
-    let light = 1.4 * (0.36 + 0.14 * sky + 0.5 * d);
-    let lin = albedo * light * v.tint.rgb;
-    // Roll off highlights (snow, sand) instead of clipping them.
-    let c = lin / (vec3<f32>(1.0) + max(lin - vec3<f32>(0.7), vec3<f32>(0.0)));
+    var light: vec3<f32>;
+    if (p.lit > 0.5) {
+        // The baked lightmap, as the game draws it: albedo × light × 2
+        // in gamma space (LIGHTMAP_SCALE).
+        // A fill light keeps surfaces whose lightmap is black (the
+        // outsides of Coagulation's bases and Midship's hull) readable.
+        light = textureSample(lm, samp, v.luv).rgb * LIGHTMAP_SCALE + vec3<f32>(LIGHTMAP_FILL);
+    } else {
+        // One sun and the sky; dark base maps are lifted (`p.lift`)
+        // because the game would draw them under detail maps and light.
+        let n = normalize(v.n + vec3<f32>(0.0, 0.0, 1e-5));
+        let sun = normalize(vec3<f32>(0.45, 0.3, 0.84));
+        let d = max(dot(n, sun), 0.0);
+        let sky = 0.5 + 0.5 * n.z;
+        light = vec3<f32>(1.4 * (0.36 + 0.14 * sky + 0.5 * d) * p.lift);
+    }
+    let c = roll(albedo * light * v.tint.rgb);
     return mix(c, vec3<f32>(1.0, 0.78, 0.25), v.tint.a);
 }
 @fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
@@ -146,6 +201,14 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
     return vec4<f32>(c.rgb * (0.6 + 0.4 * v.tint.rgb), 0.3);
 }
 "#;
+
+/// How much brighter than its stored value a lightmap texel lights. The
+/// game modulates the base map by the lightmap doubled, in gamma space
+/// (D3D8, no sRGB); in linear light that is a factor of 2^2.2.
+pub const LIGHTMAP_SCALE: f32 = 4.595;
+/// Light added to every lightmapped surface, so none is black in the
+/// editor.
+pub const LIGHTMAP_FILL: f32 = 0.22;
 
 /// BSP triangles as vertices, shaded by slope: floors light, walls darker.
 pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
@@ -250,29 +313,127 @@ struct Target {
 struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    /// Index range, texture bind group (`None`: the grey one), blend.
-    batches: Vec<(Range<u32>, Option<usize>, Blend)>,
+    /// Index range, its textures and parameters, blend.
+    batches: Vec<(Range<u32>, wgpu::BindGroup, Blend)>,
 }
 
-/// A [`Scene`] uploaded: textures, the world and the models.
+/// Per-batch shading parameters (`P` in the scene shader).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BatchParams {
+    lift: f32,
+    lit: f32,
+    pad: [f32; 2],
+}
+
+/// A [`Scene`] uploaded: the world and the models, each batch bound to its
+/// textures.
 struct GpuScene {
-    textures: Vec<wgpu::BindGroup>,
     world: Option<GpuMesh>,
     models: Vec<Option<GpuMesh>>,
     instances: Option<wgpu::Buffer>,
     ranges: Vec<(usize, Range<u32>)>,
 }
 
+/// What uploading a mesh needs: the scene's texture views and lifts.
+struct MeshContext<'a> {
+    device: &'a wgpu::Device,
+    layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    views: &'a [wgpu::TextureView],
+    lifts: &'a [f32],
+    grey: &'a wgpu::TextureView,
+    white: &'a wgpu::TextureView,
+}
+
+impl MeshContext<'_> {
+    fn bind(&self, b: &crate::scene::Batch) -> wgpu::BindGroup {
+        let base = b.texture.and_then(|t| self.views.get(t));
+        let lightmap = b.lightmap.and_then(|t| self.views.get(t));
+        let params = BatchParams {
+            lift: b
+                .texture
+                .and_then(|t| self.lifts.get(t).copied())
+                .unwrap_or(1.0),
+            lit: if lightmap.is_some() { 1.0 } else { 0.0 },
+            pad: [0.0; 2],
+        };
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scenario viewport batch"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(base.unwrap_or(self.grey)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(lightmap.unwrap_or(self.white)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buffer.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    fn mesh(&self, mesh: &crate::scene::Mesh) -> Option<GpuMesh> {
+        let mut vertices: Vec<SceneVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut batches = Vec::new();
+        // Solid first, then cut-outs, then see-through.
+        let mut order: Vec<&crate::scene::Batch> = mesh.batches.iter().collect();
+        order.sort_by_key(|b| b.blend);
+        for b in order {
+            let base = vertices.len() as u32;
+            let start = indices.len() as u32;
+            vertices.extend_from_slice(&b.vertices);
+            indices.extend(b.indices.iter().map(|i| i + base));
+            batches.push((start..indices.len() as u32, self.bind(b), b.blend));
+        }
+        if indices.is_empty() {
+            return None;
+        }
+        let buffer = |contents: &[u8], usage| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("scenario viewport mesh"),
+                    contents,
+                    usage,
+                })
+        };
+        Some(GpuMesh {
+            vertices: buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
+            indices: buffer(bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX),
+            batches,
+        })
+    }
+}
+
 /// Offscreen renderer for the viewport.
 pub struct Viewport {
     pipeline: wgpu::RenderPipeline,
+    sky: wgpu::RenderPipeline,
     opaque: wgpu::RenderPipeline,
     mask: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// The texture of untextured batches (made with the first scene).
-    grey: Option<wgpu::BindGroup>,
+    /// The texture of untextured batches and the lightmap of unlit ones
+    /// (made with the first scene).
+    grey: Option<(wgpu::TextureView, wgpu::TextureView)>,
     identity: wgpu::Buffer,
     uniforms: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -293,7 +454,7 @@ impl Viewport {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -346,7 +507,12 @@ impl Viewport {
         // Textured meshes.
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scenario viewport scene"),
-            source: wgpu::ShaderSource::Wgsl(SCENE_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                SCENE_SHADER
+                    .replace("LIGHTMAP_SCALE", &format!("{LIGHTMAP_SCALE:.3}"))
+                    .replace("LIGHTMAP_FILL", &format!("{LIGHTMAP_FILL:.3}"))
+                    .into(),
+            ),
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scenario viewport texture"),
@@ -367,6 +533,26 @@ impl Viewport {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -374,7 +560,7 @@ impl Viewport {
             bind_group_layouts: &[Some(&bgl), Some(&texture_layout)],
             immediate_size: 0,
         });
-        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
+        let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 8 => Float32x2];
         let instance_attrs = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
         // Solid surfaces are one-sided as in the game (front faces wind
         // counter-clockwise: their normals agree with the vertex normals),
@@ -422,6 +608,37 @@ impl Viewport {
                 cache: None,
             })
         };
+        let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scenario viewport sky"),
+            source: wgpu::ShaderSource::Wgsl(SKY_SHADER.into()),
+        });
+        let sky = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("scenario viewport sky"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &sky_module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_module,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(COLOR_FORMAT.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let opaque = scene_pipeline("fs_opaque", None, true);
         let mask = scene_pipeline("fs_mask", None, true);
         let translucent = scene_pipeline(
@@ -461,6 +678,7 @@ impl Viewport {
         });
         Self {
             pipeline,
+            sky,
             opaque,
             mask,
             translucent,
@@ -477,14 +695,12 @@ impl Viewport {
         }
     }
 
-    /// A texture with its mip chain, as a bind group.
+    /// A texture with its mip chain.
     fn texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
         image: crate::scene::Image,
-    ) -> wgpu::BindGroup {
+    ) -> wgpu::TextureView {
         let chain = image.mip_chain();
         let size = wgpu::Extent3d {
             width: chain[0].width,
@@ -523,21 +739,7 @@ impl Viewport {
                 },
             );
         }
-        let view = texture.create_view(&Default::default());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        })
+        texture.create_view(&Default::default())
     }
 
     fn upload(device: &wgpu::Device, v: &[Vertex]) -> Option<(wgpu::Buffer, u32)> {
@@ -563,38 +765,38 @@ impl Viewport {
     /// and any earlier scene). Placements are set with
     /// [`Self::set_placements`].
     pub fn set_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
-        let textures = scene
+        let views: Vec<wgpu::TextureView> = scene
             .textures
             .iter()
-            .map(|img| {
-                Self::texture(
-                    device,
-                    queue,
-                    &self.texture_layout,
-                    &self.sampler,
-                    img.clone(),
+            .map(|img| Self::texture(device, queue, img.clone()))
+            .collect();
+        let pixel = |rgba: [u8; 4]| crate::scene::Image {
+            width: 1,
+            height: 1,
+            rgba: rgba.to_vec(),
+        };
+        let (grey, white) = self
+            .grey
+            .get_or_insert_with(|| {
+                (
+                    Self::texture(device, queue, pixel([150, 152, 158, 255])),
+                    Self::texture(device, queue, pixel([255; 4])),
                 )
             })
-            .collect();
-        if self.grey.is_none() {
-            let grey = crate::scene::Image {
-                width: 1,
-                height: 1,
-                rgba: vec![150, 152, 158, 255],
-            };
-            self.grey = Some(Self::texture(
-                device,
-                queue,
-                &self.texture_layout,
-                &self.sampler,
-                grey,
-            ));
-        }
+            .clone();
+        let ctx = MeshContext {
+            device,
+            layout: &self.texture_layout,
+            sampler: &self.sampler,
+            views: &views,
+            lifts: &scene.lifts,
+            grey: &grey,
+            white: &white,
+        };
         self.world = None;
         self.scene = Some(GpuScene {
-            textures,
-            world: Self::mesh(device, &scene.world),
-            models: scene.models.iter().map(|m| Self::mesh(device, m)).collect(),
+            world: ctx.mesh(&scene.world),
+            models: scene.models.iter().map(|m| ctx.mesh(m)).collect(),
             instances: None,
             ranges: Vec::new(),
         });
@@ -623,37 +825,6 @@ impl Viewport {
             });
             gpu.ranges = ranges;
         }
-    }
-
-    fn mesh(device: &wgpu::Device, mesh: &crate::scene::Mesh) -> Option<GpuMesh> {
-        let mut vertices: Vec<SceneVertex> = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
-        let mut batches = Vec::new();
-        // Solid first, then cut-outs, then see-through.
-        let mut order: Vec<&crate::scene::Batch> = mesh.batches.iter().collect();
-        order.sort_by_key(|b| b.blend);
-        for b in order {
-            let base = vertices.len() as u32;
-            let start = indices.len() as u32;
-            vertices.extend_from_slice(&b.vertices);
-            indices.extend(b.indices.iter().map(|i| i + base));
-            batches.push((start..indices.len() as u32, b.texture, b.blend));
-        }
-        if indices.is_empty() {
-            return None;
-        }
-        let buffer = |contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("scenario viewport mesh"),
-                contents,
-                usage,
-            })
-        };
-        Some(GpuMesh {
-            vertices: buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
-            indices: buffer(bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX),
-            batches,
-        })
     }
 
     fn ensure_target(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
@@ -707,6 +878,9 @@ impl Viewport {
         let resized = self.ensure_target(device, size);
         let target = self.target.as_ref().expect("just ensured");
         let aspect = target.size[0] as f32 / target.size[1] as f32;
+        let f = camera.forward();
+        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
+        let w = |v: Vec3| [v[0], v[1], v[2], 0.0];
         queue.write_buffer(
             &self.uniforms,
             0,
@@ -716,6 +890,10 @@ impl Viewport {
                     let e = camera.eye();
                     [e[0], e[1], e[2], 1.0]
                 },
+                right: w(r),
+                up: w(cross(r, f)),
+                forward: w(f),
+                lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
             }),
         );
         let mut enc = device.create_command_encoder(&Default::default());
@@ -749,6 +927,10 @@ impl Viewport {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
+            if self.scene.is_some() {
+                pass.set_pipeline(&self.sky);
+                pass.draw(0..3, 0..1);
+            }
             // Solid and cut-out scene batches, then the glyphs, then the
             // see-through batches over them.
             self.draw_scene(&mut pass, false);
@@ -765,14 +947,14 @@ impl Viewport {
 
     /// The scene's batches: solid and cut-out ones, or the see-through ones.
     fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool) {
-        let (Some(scene), Some(grey)) = (&self.scene, &self.grey) else {
+        let Some(scene) = &self.scene else {
             return;
         };
         let mut draw = |mesh: &GpuMesh, instances: &wgpu::Buffer, range: Range<u32>| {
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            for (indices, texture, blend) in &mesh.batches {
+            for (indices, bind, blend) in &mesh.batches {
                 if (*blend == Blend::Translucent) != translucent {
                     continue;
                 }
@@ -781,7 +963,6 @@ impl Viewport {
                     Blend::Mask => &self.mask,
                     Blend::Translucent => &self.translucent,
                 });
-                let bind = texture.and_then(|t| scene.textures.get(t)).unwrap_or(grey);
                 pass.set_bind_group(1, bind, &[]);
                 pass.draw_indexed(indices.clone(), 0, range.clone());
             }

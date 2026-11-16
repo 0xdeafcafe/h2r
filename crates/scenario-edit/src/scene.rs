@@ -14,7 +14,10 @@
 //!   (`RenderModelGeometry::default_sections`), in model space; the
 //!   viewport places them by each placement's transform.
 //!
-//! Lightmaps are not applied: the scene is lit by one directional light.
+//! - The BSP's lightmap pages ([`geometry::world_parts_lit`]) are decoded
+//!   from `P8` through their group's palette ([`lightmap_page`]) and light
+//!   the parts that have them; the rest, and the models, are lit by one
+//!   directional light.
 use crate::geometry::{
     self, Bounds, Marker, Ray, Vec3, WorldPart, add, dot, normalize, scale, sub,
 };
@@ -29,9 +32,9 @@ use tags::model::RenderModelGeometry;
 
 /// The largest side of an uploaded texture.
 pub const MAX_TEXTURE: u32 = 512;
-/// The mean linear brightness [`Image::lift`] raises dark textures to.
+/// The mean linear brightness [`Image::lift_factor`] raises dark textures to.
 pub const LIFT_TARGET: f32 = 0.16;
-/// The most [`Image::lift`] multiplies a texture by.
+/// The most [`Image::lift_factor`] multiplies a texture by.
 pub const MAX_LIFT: f32 = 3.0;
 /// Placed models are skipped past this many triangles each (none on the
 /// disc comes close; it bounds a hostile map).
@@ -44,6 +47,8 @@ pub struct SceneVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    /// Coordinates in the batch's lightmap page.
+    pub lightmap_uv: [f32; 2],
 }
 
 /// How a batch is blended.
@@ -183,12 +188,12 @@ impl Image {
         out
     }
 
-    /// Brightened (by at most [`MAX_LIFT`]) so its mean is at least
-    /// [`LIFT_TARGET`] in linear light. The game draws base maps under
+    /// How much to brighten it (at most [`MAX_LIFT`]) for its mean to be at
+    /// least [`LIFT_TARGET`] in linear light, when it is not lightmapped. The game draws base maps under
     /// detail maps that double them and under bright lightmaps; drawn
     /// alone by one sun, dark metals (Ascension's Forerunner panels, a
     /// mean near 0.06) read as black.
-    pub fn lift(&mut self) {
+    pub fn lift_factor(&self) -> f32 {
         let linear: [f32; 256] = std::array::from_fn(|c| (c as f32 / 255.0).powf(2.2));
         let n = (self.rgba.len() / 4).max(1) as f32;
         let mean = self
@@ -200,17 +205,9 @@ impl Image {
             .sum::<f32>()
             / n;
         if mean <= 0.0 || mean >= LIFT_TARGET {
-            return;
+            return 1.0;
         }
-        let k = (LIFT_TARGET / mean).min(MAX_LIFT);
-        let out: [u8; 256] = std::array::from_fn(|c| {
-            ((linear[c] * k).min(1.0).powf(1.0 / 2.2) * 255.0).round() as u8
-        });
-        for px in self.rgba.as_chunks_mut::<4>().0 {
-            for c in &mut px[..3] {
-                *c = out[*c as usize];
-            }
-        }
+        (LIFT_TARGET / mean).min(MAX_LIFT)
     }
 
     /// Alpha stretched so the strongest is opaque, then doubled: a cut at
@@ -239,6 +236,9 @@ impl Image {
 pub struct Batch {
     /// Index into [`Scene::textures`]; `None` draws untextured grey.
     pub texture: Option<usize>,
+    /// The lightmap page lighting it, an index into [`Scene::textures`];
+    /// `None` is lit by the sun.
+    pub lightmap: Option<usize>,
     pub blend: Blend,
     pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
@@ -263,16 +263,25 @@ impl Default for Mesh {
 impl Mesh {
     /// Add one part's triangles under `(texture, blend)`, merged into the
     /// batch with that key. Triangles with out-of-range indices are dropped.
-    pub fn push(&mut self, texture: Option<usize>, blend: Blend, part: &WorldPart) {
+    pub fn push(
+        &mut self,
+        texture: Option<usize>,
+        lightmap: Option<usize>,
+        blend: Blend,
+        part: &WorldPart,
+    ) {
+        // Lightmap coordinates are only meaningful with the part's own page.
+        let lightmap = lightmap.filter(|_| part.lightmap_uvs.len() == part.positions.len());
         let i = match self
             .batches
             .iter()
-            .position(|b| b.texture == texture && b.blend == blend)
+            .position(|b| b.texture == texture && b.lightmap == lightmap && b.blend == blend)
         {
             Some(i) => i,
             None => {
                 self.batches.push(Batch {
                     texture,
+                    lightmap,
                     blend,
                     vertices: Vec::new(),
                     indices: Vec::new(),
@@ -290,6 +299,7 @@ impl Mesh {
                 position: p,
                 normal: part.normals.get(k).copied().unwrap_or([0.0, 0.0, 1.0]),
                 uv: part.uvs.get(k).copied().unwrap_or([0.0; 2]),
+                lightmap_uv: part.lightmap_uvs.get(k).copied().unwrap_or([0.0; 2]),
             });
         }
         let n = part.positions.len() as u32;
@@ -336,12 +346,18 @@ pub struct SceneStats {
     /// Objects drawn with a model.
     pub modelled: usize,
     pub models_failed: usize,
+    /// Lightmap pages decoded.
+    pub lightmap_pages: usize,
 }
 
 /// A map's drawable art.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
     pub textures: Vec<Image>,
+    /// Per texture, how much the sun-lit shading brightens it
+    /// ([`Image::lift_factor`]); 1 for lightmap pages. Lightmapped
+    /// surfaces are not lifted.
+    pub lifts: Vec<f32>,
     pub world: Mesh,
     pub models: Vec<Mesh>,
     /// Placed object tag → index into [`Self::models`].
@@ -453,14 +469,38 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         }
     }
 
-    /// The textured world from [`geometry::world_parts`].
-    pub fn world(&mut self, parts: &[WorldPart]) {
+    /// The textured world from [`geometry::world_parts_lit`], lit by its
+    /// lightmap pages where it has them.
+    pub fn world(&mut self, parts: &[WorldPart], lightmaps: &[geometry::LightmapPages]) {
+        let mut pages: HashMap<geometry::LightmapRef, Option<usize>> = HashMap::new();
+        let mut bitmaps: HashMap<TagId, Option<Box<tags::Bitmap>>> = HashMap::new();
         for part in parts {
             let (texture, mut blend) = self.look(part.shader);
             if part.transparent {
                 blend = Blend::Translucent;
             }
-            self.scene.world.push(texture, blend, part);
+            let lightmap = part.lightmap.and_then(|r| {
+                *pages.entry(r).or_insert_with(|| {
+                    let src = lightmaps.get(r.pages)?;
+                    let bitmap = bitmaps
+                        .entry(src.bitmap)
+                        .or_insert_with(|| {
+                            match tags::DecodedTag::read(self.map, src.bitmap).ok()?.data {
+                                tags::TagData::Bitmap(b) => Some(b),
+                                _ => None,
+                            }
+                        })
+                        .as_ref()?;
+                    let image = bitmap.images.get(usize::from(r.page))?;
+                    let palette = src.palettes.get(usize::from(r.palette))?;
+                    let page = lightmap_page(image, palette, &mut self.files)?;
+                    self.scene.stats.lightmap_pages += 1;
+                    self.scene.lifts.push(1.0);
+                    self.scene.textures.push(page);
+                    Some(self.scene.textures.len() - 1)
+                })
+            });
+            self.scene.world.push(texture, lightmap, blend, part);
         }
     }
 
@@ -554,7 +594,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 if out.transparent {
                     blend = Blend::Translucent;
                 }
-                mesh.push(texture, blend, &out);
+                mesh.push(texture, None, blend, &out);
             }
         }
         if mesh.batches.is_empty() {
@@ -604,8 +644,8 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 if cutout {
                     image.stretch_alpha();
                 }
-                let mut image = image.fit(MAX_TEXTURE);
-                image.lift();
+                let image = image.fit(MAX_TEXTURE);
+                self.scene.lifts.push(image.lift_factor());
                 self.scene.textures.push(image);
                 Some(self.scene.textures.len() - 1)
             }
@@ -617,6 +657,39 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         self.bitmaps.insert((bitmap, cutout), t);
         t
     }
+}
+
+/// A lightmap page as RGBA: its `P8` indices (which `assets` decodes as
+/// `L8`, the index in each channel) through the group's palette of
+/// `A8R8G8B8` entries.
+pub fn lightmap_page(
+    image: &tags::Image,
+    palette: &[u32; 256],
+    files: &mut ResourceFiles,
+) -> Option<Image> {
+    if image.format != tags::PixelFormat::P8 {
+        return None;
+    }
+    let decoded = assets::decode_image(image, files).ok()?;
+    let level = decoded.levels.into_iter().find(|l| l.face == 0)?;
+    Some(Image {
+        width: level.width,
+        height: level.height,
+        rgba: apply_palette(&level.rgba, palette),
+    })
+}
+
+/// Replace each texel (an index in its red channel) by its palette entry.
+pub fn apply_palette(indices: &[u8], palette: &[u32; 256]) -> Vec<u8> {
+    indices
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let c = palette[usize::from(p[0])];
+            [(c >> 16) as u8, (c >> 8) as u8, c as u8, 255]
+        })
+        .collect()
 }
 
 /// An object's render model: object → `hlmt` → `mode`. An item or vehicle
@@ -779,13 +852,20 @@ mod tests {
 
     #[test]
     fn dark_textures_are_lifted_and_bright_ones_kept() {
-        let mut dark = image(2, 1, |_, _| [40, 40, 40, 7]);
-        dark.lift();
-        // 40 is 0.017 linear: tripled (the cap), alpha untouched.
-        assert_eq!(&dark.rgba[..4], &[66, 66, 66, 7]);
-        let mut bright = image(1, 1, |_, _| [200, 180, 160, 255]);
-        bright.lift();
-        assert_eq!(&bright.rgba, &[200, 180, 160, 255]);
+        // 40 is 0.017 linear: tripled (the cap).
+        assert_eq!(image(2, 1, |_, _| [40, 40, 40, 7]).lift_factor(), MAX_LIFT);
+        let half = image(1, 1, |_, _| [97, 97, 97, 255]).lift_factor();
+        assert!((half - 1.36).abs() < 0.05, "{half}");
+        assert_eq!(image(1, 1, |_, _| [200, 180, 160, 255]).lift_factor(), 1.0);
+    }
+
+    #[test]
+    fn lightmap_indices_go_through_the_palette() {
+        let mut palette = [0u32; 256];
+        palette[3] = 0xff10_2030;
+        palette[255] = 0x80ff_eedd;
+        let out = apply_palette(&[3, 3, 3, 255, 255, 255, 255, 255], &palette);
+        assert_eq!(out, [0x10, 0x20, 0x30, 255, 0xff, 0xee, 0xdd, 255]);
     }
 
     #[test]
@@ -803,15 +883,16 @@ mod tests {
             normals: vec![[0.0, 0.0, 1.0]; 4],
             uvs: vec![[0.0; 2]; 4],
             tris: vec![[0, 1, 2], [1, 3, 2], [0, 1, 9]],
+            ..WorldPart::default()
         }
     }
 
     #[test]
     fn meshes_merge_by_texture_and_blend_and_drop_bad_triangles() {
         let mut m = Mesh::default();
-        m.push(Some(0), Blend::Opaque, &quad(false));
-        m.push(Some(0), Blend::Opaque, &quad(false));
-        m.push(None, Blend::Translucent, &quad(true));
+        m.push(Some(0), None, Blend::Opaque, &quad(false));
+        m.push(Some(0), None, Blend::Opaque, &quad(false));
+        m.push(None, None, Blend::Translucent, &quad(true));
         assert_eq!(m.batches.len(), 2);
         assert_eq!(m.batches[0].vertices.len(), 8);
         assert_eq!(m.batches[0].indices.len(), 12);
@@ -825,7 +906,7 @@ mod tests {
         };
         assert_eq!(m.hit(&down), Some(5.0));
         let mut glass = Mesh::default();
-        glass.push(None, Blend::Translucent, &quad(true));
+        glass.push(None, None, Blend::Translucent, &quad(true));
         assert_eq!(glass.hit(&down), None);
         assert!(glass.bounds.is_empty());
     }
@@ -833,7 +914,7 @@ mod tests {
     #[test]
     fn models_are_picked_through_their_placement() {
         let mut mesh = Mesh::default();
-        mesh.push(None, Blend::Opaque, &quad(false));
+        mesh.push(None, None, Blend::Opaque, &quad(false));
         let mut scene = Scene::default();
         scene.models.push(mesh);
         scene.objects.insert(TagId(7), 0);

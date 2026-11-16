@@ -185,7 +185,15 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   docs/live/live-art.md). Bitmaps are decoded once by
   `assets::decode_image`, shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
-  lightmaps). One sun and the sky light the scene. Solid surfaces are
+  lightmaps) where no lightmap lights them.
+- **Lightmaps.** Each cluster's and instance's lightmap page (its `ltmp`
+  group's render info: an image of the lightmap bitmap and a palette) is
+  decoded from `P8` through the group's palette, and its parts draw with
+  their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
+  plus a little fill light so no surface is black. Parts without a page,
+  and object models, keep one sun and the sky, with dark base maps lifted.
+- **Sky.** Behind a map with art, a gradient from the zenith to a pale
+  horizon (not the scenario's sky model). Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
@@ -204,7 +212,10 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   the eye glyphs grow with distance, so they stay readable when the whole
   map is framed, and their pick spheres grow with them.
 - **Framing.** Frame (Home) frames the placements, padded, when there are
-  a few: distant scenery and sky geometry no longer shrink the level.
+  a few, dropping the 4 % at each end of each axis (Lockout keeps a few
+  far outside the level): distant scenery and sky geometry no longer
+  shrink the level. `tests::disc_lockout_frames_its_level_not_its_outliers`
+  (ignored) holds it.
 
 Ascension used to draw only "its ground plane and rocks": its BSP has a
 700-unit transparent cloud deck (part kind 4,
@@ -213,8 +224,10 @@ drawn opaque and framed, which hid the lower half of the structure and
 made the rest a speck. `tests::disc_ascension_frames_its_structure_not_its_cloud_deck`
 (ignored; needs the disc) holds the fix.
 
-Not yet: lightmaps (the `ltmp` groups and their bitmaps are read by
-`tags::structure` but not applied), detail and bump maps, animated or
+Not yet: the outsides of some structures (Coagulation's bases, Midship's
+hull) have black lightmaps and show only the fill light; the scenario's
+sky model; the bucket streams (types `2f` and `30`: per-vertex colour and
+light direction, not interpreted); detail and bump maps, animated or
 self-illuminated shaders, model variants and permutations other than the
 first, and node transforms of skinned models (models are drawn in their
 bind pose). The egui `h2-editor` viewport still draws the grey world.
