@@ -296,14 +296,17 @@ fn sum_pipeline(
 impl PixelCounter {
     /// A counter at zero.
     pub fn new(ctx: &GfxContext) -> Self {
-        let total = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gfx pixel count"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let total = crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some("gfx pixel count"),
+                size: 4,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        );
         Self {
             total,
             single: sum_pipeline(&ctx.device, false),
@@ -322,12 +325,15 @@ impl PixelCounter {
     /// `GET_REPORT`: the samples counted since the last clear, as of this
     /// point in `encoder`. Read it after the encoder is submitted.
     pub fn report(&mut self, ctx: &GfxContext, encoder: &mut wgpu::CommandEncoder) -> PixelReport {
-        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gfx pixel count report"),
-            size: 4,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let buffer = crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some("gfx pixel count report"),
+                size: 4,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            },
+        );
         encoder.copy_buffer_to_buffer(&self.total, 0, &buffer, 0, 4);
         PixelReport {
             buffer: Arc::new(buffer),

@@ -17,7 +17,7 @@ pub fn read_texture(
     let (w, h) = size;
     let unpadded = w * bytes_per_pixel;
     let padded = unpadded.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+    let buffer = crate::churn::create_buffer(&ctx.device, &wgpu::BufferDescriptor {
         label: Some("gfx readback"),
         size: (padded * h) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

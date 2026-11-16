@@ -901,6 +901,7 @@ impl SurfaceStore {
             crate::convert::to_rgba8(texel, &tight, w * h, None)
         }
         .map_err(TextureError::from)?;
+        crate::churn::queue_write();
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &s.texture,

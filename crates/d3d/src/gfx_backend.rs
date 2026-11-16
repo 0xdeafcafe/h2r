@@ -167,6 +167,37 @@ pub struct GfxBackend {
     pub(crate) count_samples: bool,
     /// Fills of scaled surfaces from guest-size ones, made on first use.
     pub(crate) blitter: Option<gfx::blit::Blitter>,
+    /// The latest queue submission.
+    last_submit: Option<wgpu::SubmissionIndex>,
+    /// The latest submission when the previous frame was presented: what a
+    /// pipelined `D3DSWAP_FINISH` waits for.
+    prev_frame_end: Option<wgpu::SubmissionIndex>,
+    /// [`set_swap_finish`](Self::set_swap_finish).
+    swap_finish: SwapFinish,
+}
+
+/// What `Swap` with `D3DSWAP_FINISH` waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwapFinish {
+    /// The previous frame's work (the default): the GPU runs this frame
+    /// while the render thread encodes the next one, and at most about one
+    /// frame is queued ahead of the GPU. Nothing the guest reads depends
+    /// on the wait: every read back (surfaces, the alias mirror,
+    /// visibility counts) waits for its own copy.
+    Pipelined,
+    /// Everything submitted, this frame included (`H2_GFX_SWAP_FINISH=full`).
+    Full,
+}
+
+impl SwapFinish {
+    /// `H2_GFX_SWAP_FINISH`: `full` waits for everything; anything else is
+    /// [`SwapFinish::Pipelined`].
+    pub fn from_env() -> Self {
+        match std::env::var("H2_GFX_SWAP_FINISH").as_deref() {
+            Ok("full") => SwapFinish::Full,
+            _ => SwapFinish::Pipelined,
+        }
+    }
 }
 
 /// How draws were grouped into passes and submissions.
@@ -182,6 +213,8 @@ pub struct BatchStats {
     pub render_passes: u64,
     /// Queue submissions.
     pub submits: u64,
+    /// Blocking waits for the GPU at `Swap` (`D3DSWAP_FINISH`).
+    pub swap_waits: u64,
 }
 
 impl GfxBackend {
@@ -230,7 +263,16 @@ impl GfxBackend {
             scales: HashMap::new(),
             count_samples: true,
             blitter: None,
+            last_submit: None,
+            prev_frame_end: None,
+            swap_finish: SwapFinish::from_env(),
         }
+    }
+
+    /// What `Swap` with `D3DSWAP_FINISH` waits for (default
+    /// [`SwapFinish::from_env`]).
+    pub fn set_swap_finish(&mut self, mode: SwapFinish) {
+        self.swap_finish = mode;
     }
 
     /// Textures over the depth buffer's memory made on the GPU (on by
@@ -629,6 +671,7 @@ impl GfxBackend {
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
             self.ctx.queue.submit([enc.finish()])
         };
+        self.last_submit = Some(index.clone());
         self.renderer.submitted();
         if let Some(s) = self.shaders.as_mut() {
             s.submitted();
@@ -701,12 +744,29 @@ impl GfxBackend {
                 None => hook(&self.ctx, &self.store, surface, flags, gamma),
             }
         }
+        let frame_end = self.last_submit.clone();
         if flags & 4 != 0 {
-            // D3DSWAP_FINISH: wait for the GPU.
-            let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
-            let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
-            let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+            // D3DSWAP_FINISH: wait for the GPU (for the previous frame's
+            // work, unless `SwapFinish::Full`).
+            let wait = match self.swap_finish {
+                SwapFinish::Full => Some(wgpu::PollType::wait_indefinitely()),
+                SwapFinish::Pipelined => {
+                    self.prev_frame_end
+                        .take()
+                        .map(|index| wgpu::PollType::Wait {
+                            submission_index: Some(index),
+                            timeout: None,
+                        })
+                }
+            };
+            if let Some(wait) = wait {
+                let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+                let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
+                self.stats.swap_waits += 1;
+                let _ = self.ctx.device.poll(wait);
+            }
         }
+        self.prev_frame_end = frame_end;
         // Reports from this frame and before are read later (Halo reads a
         // visibility test two frames after it ends): start their reads now,
         // so the read finds the count mapped instead of waiting.
@@ -1323,7 +1383,7 @@ impl Backend for GfxBackend {
 
     fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
         self.flush()?;
-        self.mirror = Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        self.mirror = Some(gfx::churn::create_buffer(&self.ctx.device, &wgpu::BufferDescriptor {
             label: Some("d3d alias mirror"),
             size: (len.max(4) as u64).next_multiple_of(4),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
@@ -1341,6 +1401,7 @@ impl Backend for GfxBackend {
             return Err(format!("mirror_write of {} bytes at {offset:#x} into {}", bytes.len(), m.size()));
         }
         if !bytes.is_empty() {
+            gfx::churn::queue_write();
             self.ctx.queue.write_buffer(m, offset as u64, bytes);
         }
         Ok(())
@@ -1412,7 +1473,7 @@ impl Backend for GfxBackend {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging = gfx::churn::create_buffer(&self.ctx.device, &wgpu::BufferDescriptor {
             label: Some("d3d alias mirror read"),
             size: len as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

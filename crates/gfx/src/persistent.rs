@@ -118,13 +118,17 @@ impl PersistentVertices {
             return (s.buffer.clone(), bound);
         }
         let size = bound.next_multiple_of(4);
-        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("persistent vertices"),
-            size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some("persistent vertices"),
+                size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        );
         {
+            crate::churn::queue_write();
             let mut view = ctx
                 .queue
                 .write_buffer_with(&buffer, 0, wgpu::BufferSize::new(size).expect("non-empty"))
@@ -176,13 +180,17 @@ impl PersistentVertices {
         self.tick += 1;
         let bytes: &[u8] = bytemuck::cast_slice(list);
         let size = (bytes.len() as u64).max(4);
-        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("persistent indices"),
-            size,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = crate::churn::create_buffer(
+            &ctx.device,
+            &wgpu::BufferDescriptor {
+                label: Some("persistent indices"),
+                size,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        );
         if !bytes.is_empty() {
+            crate::churn::queue_write();
             ctx.queue.write_buffer(&buffer, 0, bytes);
         }
         self.stats.index_uploads += 1;
