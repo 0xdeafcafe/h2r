@@ -103,6 +103,11 @@ const R_DWORDS: [usize; 2] = [0x248, 0x2a4];
 /// index (+0x44) and the engine flags (+0x48, bit 0 team play;
 /// docs/live-gamestate.md).
 const R_VARIANT: usize = 0x24c;
+/// Where a record slot's game variant starts, and its size: the variant is
+/// the whole tail of the slot.
+pub const VARIANT_AT: usize = R_VARIANT;
+pub const VARIANT_SIZE: usize = 0x130;
+const _: () = assert!(VARIANT_AT + VARIANT_SIZE == RECORD);
 const V_NAME: usize = 0x04;
 const V_ENGINE: usize = 0x44;
 const V_FLAGS: usize = 0x48;
@@ -442,33 +447,13 @@ impl HopperFile {
     /// Slot `j`'s editable fields.
     pub fn record(&self, i: usize, j: usize) -> Result<Record, HopperError> {
         let at = self.slot_at(i, j)?;
-        let image = &self.image;
-        Ok(Record {
-            id: le32(image, at + R_ID),
-            string: get_ascii(&image[at + R_STRING..][..R_STRING_LEN]),
-            flags: le32(image, at + R_FLAGS),
-            dwords: [le32(image, at + R_DWORDS[0]), le32(image, at + R_DWORDS[1])],
-        })
+        Ok(slot_record(&self.image[at..at + RECORD]))
     }
 
     /// Writes slot `j`'s editable fields; the rest of the slot is untouched.
     pub fn set_record(&mut self, i: usize, j: usize, r: &Record) -> Result<(), HopperError> {
         let at = self.slot_at(i, j)?;
-        // Written only when it changes: the field lies inside the record's
-        // game variant, and rewriting an unchanged string zero-fills the
-        // variant's name and engine index.
-        if r.string != get_ascii(&self.image[at + R_STRING..][..R_STRING_LEN]) {
-            put_ascii(
-                &mut self.image[at + R_STRING..][..R_STRING_LEN],
-                &r.string,
-                MAX_STRING,
-            )?;
-        }
-        put_le32(&mut self.image, at + R_ID, r.id);
-        put_le32(&mut self.image, at + R_FLAGS, r.flags);
-        put_le32(&mut self.image, at + R_DWORDS[0], r.dwords[0]);
-        put_le32(&mut self.image, at + R_DWORDS[1], r.dwords[1]);
-        Ok(())
+        set_slot_record(&mut self.image[at..at + RECORD], r)
     }
 
     /// Hopper `i`'s title and description (the English slot).
@@ -507,19 +492,8 @@ impl HopperFile {
 
     /// What slot `j`'s game variant says about itself.
     pub fn variant(&self, i: usize, j: usize) -> Result<Variant, HopperError> {
-        let at = self.slot_at(i, j)? + R_VARIANT;
-        let name: Vec<u16> = self.image[at + V_NAME..][..0x40]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| u16::from_le_bytes(*c))
-            .take_while(|u| *u != 0)
-            .collect();
-        Ok(Variant {
-            name: String::from_utf16_lossy(&name),
-            engine: le32(&self.image, at + V_ENGINE),
-            team: le32(&self.image, at + V_FLAGS) & 1 != 0,
-        })
+        let at = self.slot_at(i, j)?;
+        Ok(slot_variant(&self.image[at..at + RECORD]))
     }
 
     /// The editable fields of hopper `i`'s first `record_count` records.
@@ -528,6 +502,60 @@ impl HopperFile {
         (0..count.min(MAX_RECORDS))
             .map(|j| self.record(i, j))
             .collect()
+    }
+}
+
+/// A record slot's editable fields, read from the slot's 0x37c bytes alone
+/// (as [`HopperFile::record`] reads them in place).
+///
+/// # Panics
+/// If `slot` is shorter than [`RECORD`].
+pub fn slot_record(slot: &[u8]) -> Record {
+    let slot = &slot[..RECORD];
+    Record {
+        id: le32(slot, R_ID),
+        string: get_ascii(&slot[R_STRING..][..R_STRING_LEN]),
+        flags: le32(slot, R_FLAGS),
+        dwords: [le32(slot, R_DWORDS[0]), le32(slot, R_DWORDS[1])],
+    }
+}
+
+/// Writes a record's editable fields into a slot's 0x37c bytes, the way
+/// [`HopperFile::set_record`] does in place; the rest is untouched.
+pub fn set_slot_record(slot: &mut [u8], r: &Record) -> Result<(), HopperError> {
+    if slot.len() != RECORD {
+        return Err(HopperError::SlotBytes(slot.len()));
+    }
+    // Written only when it changes: the field lies inside the record's
+    // game variant, and rewriting an unchanged string zero-fills the
+    // variant's name and engine index.
+    if r.string != get_ascii(&slot[R_STRING..][..R_STRING_LEN]) {
+        put_ascii(&mut slot[R_STRING..][..R_STRING_LEN], &r.string, MAX_STRING)?;
+    }
+    put_le32(slot, R_ID, r.id);
+    put_le32(slot, R_FLAGS, r.flags);
+    put_le32(slot, R_DWORDS[0], r.dwords[0]);
+    put_le32(slot, R_DWORDS[1], r.dwords[1]);
+    Ok(())
+}
+
+/// What a slot's game variant says about itself, from the slot's bytes.
+///
+/// # Panics
+/// If `slot` is shorter than [`RECORD`].
+pub fn slot_variant(slot: &[u8]) -> Variant {
+    let v = &slot[VARIANT_AT..RECORD];
+    let name: Vec<u16> = v[V_NAME..][..0x40]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .take_while(|u| *u != 0)
+        .collect();
+    Variant {
+        name: String::from_utf16_lossy(&name),
+        engine: le32(v, V_ENGINE),
+        team: le32(v, V_FLAGS) & 1 != 0,
     }
 }
 
@@ -625,6 +653,31 @@ mod tests {
             description: String::new(),
         };
         assert!(matches!(file.set_text(0, &nul), Err(HopperError::Nul(_))));
+    }
+
+    #[test]
+    fn slot_helpers_match_the_in_place_accessors() {
+        let mut file = HopperFile::blank();
+        for (k, b) in file.image_mut().iter_mut().enumerate() {
+            *b = (k.wrapping_mul(7) % 253) as u8;
+        }
+        let r = Record {
+            id: 33,
+            string: file.record(1, 4).unwrap().string,
+            flags: 0x1234,
+            dwords: [3, 4],
+        };
+        let mut slot = file.slot(1, 4).unwrap().to_vec();
+        set_slot_record(&mut slot, &r).unwrap();
+        file.set_record(1, 4, &r).unwrap();
+        assert_eq!(file.slot(1, 4).unwrap(), &slot[..]);
+        assert_eq!(slot_record(&slot), file.record(1, 4).unwrap());
+        assert_eq!(slot_variant(&slot), file.variant(1, 4).unwrap());
+        assert_eq!(
+            set_slot_record(&mut slot[1..], &r),
+            Err(HopperError::SlotBytes(RECORD - 1))
+        );
+        assert_eq!((VARIANT_AT, VARIANT_SIZE), (0x24c, 0x130));
     }
 
     #[test]

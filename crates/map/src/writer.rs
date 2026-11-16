@@ -1,7 +1,10 @@
 //! A pass-through plus patches, not a rebuild. Preserve all bytes, including unknown fields, resources and padding. Only
 //! explicitly queued edits and the resulting length/name-offset/checksum fields
 //! change. Variable-length tag names are appended; opaque metadata/raw pointers
-//! keep their original addresses. This is not a general tag-graph relocator.
+//! keep their original addresses. New metadata bytes may be appended after the
+//! last tag (growing the ordinary metadata region in place, see
+//! [`MapEditor::append_metadata`]); nothing that exists moves. This is not a
+//! general tag-graph relocator.
 use crate::{Error, Map, Result, TagId, checksum::XorChecksum};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -28,6 +31,7 @@ impl<R: Read + Seek> Map<R> {
             map: self,
             patches: BTreeMap::new(),
             names: BTreeMap::new(),
+            appended: Vec::new(),
         }
     }
 }
@@ -39,7 +43,14 @@ pub struct MapEditor<'a, R> {
     map: &'a mut Map<R>,
     patches: BTreeMap<u64, Vec<u8>>,
     names: BTreeMap<usize, String>,
+    /// Bytes appended after the ordinary metadata region, unpadded.
+    appended: Vec<u8>,
 }
+
+/// Growth granularity of the ordinary metadata region: every size the
+/// engine reads for it (`+0x18`, `+0x1c`) and the file length stay
+/// multiples of this when they were before (all retail maps are).
+pub const METADATA_GROWTH_ALIGN: u32 = 0x1000;
 impl<R: Read + Seek> MapEditor<'_, R> {
     /// Inspect the immutable source map (queued edits are not reflected).
     pub fn source(&self) -> &Map<R> {
@@ -75,11 +86,34 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         let size = u32::try_from(bytes.len()).map_err(|_| Error::Limit)?;
         let at = self.tag_range(id, offset, size)?;
+        self.queue(at, bytes)
+    }
+    /// Queue a fixed-length replacement at an ordinary metadata virtual
+    /// address (any tag's bytes, or bytes between tags). The range must lie
+    /// inside the source's ordinary metadata region; bytes queued with
+    /// [`Self::append_metadata`] are not patchable (pass their final value).
+    pub fn patch_metadata(&mut self, address: u32, bytes: &[u8]) -> Result<()> {
+        if bytes.len() > MAX_TABLE {
+            return Err(Error::Limit);
+        }
+        let size = u32::try_from(bytes.len()).map_err(|_| Error::Limit)?;
+        let space = self
+            .map
+            .metadata_space()
+            .ok_or(Error::Invalid("map has no metadata region"))?;
+        let at = space.translate(address, size)?;
+        if at < 0x800 {
+            return Err(Error::Invalid("tag edit overlaps header"));
+        }
+        self.queue(at, bytes)
+    }
+    fn queue(&mut self, at: u64, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
+        let size = bytes.len() as u64;
         // Patches must not corrupt structures the reader re-parses.
-        let end = at + u64::from(size);
+        let end = at + size;
         if self
             .protected_ranges()
             .iter()
@@ -87,13 +121,92 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         {
             return Err(Error::Invalid("tag edit overlaps index or string table"));
         }
-        if let Some((&start, data)) = self.patches.range(..at + u64::from(size)).next_back()
+        if let Some((&start, data)) = self.patches.range(..end).next_back()
             && start + data.len() as u64 > at
         {
             return Err(Error::Invalid("overlapping tag edits"));
         }
         self.patches.insert(at, bytes.to_vec());
         Ok(())
+    }
+
+    /// Append `bytes` to the ordinary metadata region, after every existing
+    /// tag, and return the virtual address of their first byte (aligned to
+    /// `align`, a power of two up to 0x1000). The caller then points a block
+    /// at them with [`Self::patch_metadata`]; no tag owns the new bytes.
+    ///
+    /// The region is the last thing in a retail cache file, and its virtual
+    /// base is the first tag's address, so growing it moves nothing: on
+    /// write the region size (`+0x18`), the total metadata size (`+0x1c`)
+    /// and the file length (`+8`) grow by the appended bytes rounded up to
+    /// [`METADATA_GROWTH_ALIGN`] (zero padded). Refused when the region does
+    /// not end the file, when the file has trailing bytes past its declared
+    /// length, or when the grown sizes exceed the engine's limits
+    /// ([`max_metadata_size`] for `+0x1c`, and the per-type cache size).
+    pub fn append_metadata(&mut self, bytes: &[u8], align: u32) -> Result<u32> {
+        if !align.is_power_of_two() || align > METADATA_GROWTH_ALIGN {
+            return Err(Error::Invalid("append alignment"));
+        }
+        let h = self.map.header();
+        let space = self
+            .map
+            .metadata_space()
+            .ok_or(Error::Invalid("map has no metadata region"))?;
+        let region_end =
+            u64::from(h.index_offset) + u64::from(h.index_size) + u64::from(h.tag_data_size);
+        if region_end != u64::from(h.file_size)
+            || self.map.storage_length() != u64::from(h.file_size)
+        {
+            return Err(Error::Invalid(
+                "metadata region does not end the file; cannot grow it",
+            ));
+        }
+        let pad = (align as usize - self.appended.len() % align as usize) % align as usize;
+        let start = self.appended.len() + pad;
+        let total = start.checked_add(bytes.len()).ok_or(Error::Limit)?;
+        let (growth, ..) = self.grown_sizes(total)?;
+        // Nothing else may already use the grown addresses (a BSP's own
+        // space; on retail maps those sit below the ordinary metadata).
+        let lo = u64::from(space.virtual_base) + u64::from(space.size);
+        let hi = lo + u64::from(growth);
+        if self.map.tags().iter().filter_map(|t| t.location).any(|l| {
+            let a = u64::from(l.space.virtual_base);
+            l.space != space && a < hi && lo < a + u64::from(l.space.size)
+        }) {
+            return Err(Error::Invalid("grown metadata would overlap a BSP"));
+        }
+        let address = space
+            .virtual_base
+            .checked_add(space.size)
+            .and_then(|a| a.checked_add(u32::try_from(start).ok()?))
+            .ok_or(Error::Limit)?;
+        self.appended.resize(start, 0);
+        self.appended.extend_from_slice(bytes);
+        Ok(address)
+    }
+    /// The bytes [`Self::append_metadata`] has queued, before padding.
+    pub fn appended_len(&self) -> usize {
+        self.appended.len()
+    }
+    /// Header sizes after appending `n` bytes: (growth, new `+0x18`, new
+    /// `+0x1c`, new file length), checked against the engine's limits.
+    fn grown_sizes(&self, n: usize) -> Result<(u32, u32, u32, u32)> {
+        let h = self.map.header();
+        let a = METADATA_GROWTH_ALIGN as usize;
+        let growth = n.div_ceil(a).checked_mul(a).ok_or(Error::Limit)?;
+        let growth = u32::try_from(growth).map_err(|_| Error::Limit)?;
+        let data = h.tag_data_size.checked_add(growth).ok_or(Error::Limit)?;
+        let total = h.meta_size.checked_add(growth).ok_or(Error::Limit)?;
+        let file = h.file_size.checked_add(growth).ok_or(Error::Limit)?;
+        if growth != 0 && total > max_metadata_size(h.cache_type)? {
+            return Err(Error::Invalid(
+                "grown metadata exceeds the engine's tag memory",
+            ));
+        }
+        if growth != 0 && u64::from(file) > cache_size_limit(h.cache_type)? {
+            return Err(Error::Invalid("edited map exceeds engine cache size limit"));
+        }
+        Ok((growth, data, total, file))
     }
     /// Byte ranges (start, end) of the tag index and the string/name tables.
     fn protected_ranges(&self) -> Vec<(u64, u64)> {
@@ -131,19 +244,10 @@ impl<R: Read + Seek> MapEditor<'_, R> {
     /// The caller handles truncation/atomic replacement and flush/sync policy.
     /// Returns the byte length written, leaving the cursor at the end.
     pub fn write_to(mut self, out: &mut (impl Write + Seek)) -> Result<u64> {
-        if self.patches.is_empty() && self.names.is_empty() {
+        if self.patches.is_empty() && self.names.is_empty() && self.appended.is_empty() {
             return self.map.write_to(out);
         }
-        // Header validator 0x122870 / per-cache limits at 0x214ed0.
-        let limit = match self.map.header().cache_type {
-            crate::CacheType::Campaign => 0x1180_0000,
-            crate::CacheType::Multiplayer | crate::CacheType::MainMenu => 0x0500_0000,
-            crate::CacheType::Shared => 0x0b40_0000,
-            crate::CacheType::SinglePlayerShared => 0x2080_0000,
-            crate::CacheType::Unknown(_) => {
-                return Err(Error::Invalid("unknown cache type for editing"));
-            }
-        };
+        let limit = cache_size_limit(self.map.header().cache_type)?;
         if self.map.storage_length() > limit {
             return Err(Error::Invalid("source exceeds engine cache size limit"));
         }
@@ -161,7 +265,18 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         let origin = out.stream_position()?;
         let mut header = self.map.read_file_range(0, 0x800)?;
-        let append = self.rebuild_names(&mut header)?;
+        let mut grown = Vec::new();
+        if !self.appended.is_empty() {
+            let (growth, data, total, file) = self.grown_sizes(self.appended.len())?;
+            grown = std::mem::take(&mut self.appended);
+            grown.resize(growth as usize, 0);
+            for (at, value) in [(8, file), (0x18, data), (0x1c, total)] {
+                header[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let names_base = self.map.storage_length() + grown.len() as u64;
+        let mut append = grown;
+        append.extend(self.rebuild_names(&mut header, names_base)?);
         let length = self.map.storage_length() + append.len() as u64;
         let end = origin.checked_add(length).ok_or(Error::Limit)?;
         if length > limit {
@@ -196,7 +311,9 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         out.seek(SeekFrom::Start(end))?;
         Ok(length)
     }
-    fn rebuild_names(&mut self, header: &mut [u8]) -> Result<Vec<u8>> {
+    /// The rebuilt name tables, placed from file offset `base` (the end of
+    /// everything written before them).
+    fn rebuild_names(&mut self, header: &mut [u8], base: u64) -> Result<Vec<u8>> {
         if self.names.is_empty() {
             return Ok(Vec::new());
         }
@@ -246,7 +363,6 @@ impl<R: Read + Seek> MapEditor<'_, R> {
             };
             offsets.extend_from_slice(&offset.to_le_bytes());
         }
-        let base = self.map.storage_length();
         let padding = (512 - base % 512) % 512;
         let data_offset = base + padding;
         let index_offset = (data_offset + names.len() as u64 + 511) & !511;
@@ -267,4 +383,42 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         Ok(append)
     }
+}
+
+/// Header validator `0x122870` / per-cache size limits at `0x214ed0`.
+fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
+    Ok(match cache_type {
+        crate::CacheType::Campaign => 0x1180_0000,
+        crate::CacheType::Multiplayer | crate::CacheType::MainMenu => 0x0500_0000,
+        crate::CacheType::Shared => 0x0b40_0000,
+        crate::CacheType::SinglePlayerShared => 0x2080_0000,
+        crate::CacheType::Unknown(_) => {
+            return Err(Error::Invalid("unknown cache type for editing"));
+        }
+    })
+}
+
+/// The largest total metadata size (header `+0x1c`: index, BSP space and
+/// ordinary metadata) an append may produce for a cache type.
+///
+/// The loader (`0x1228f0`) takes `+0x1c` rounded up to a page from the low
+/// end of the physical arena that `0x12b400` reserves (`0x30e4000` bytes at
+/// `0x61000`), and fails only when it would cross the arena's high cursor
+/// (`0x12296c`); no constant bounds it. After load, `0x12c1e0` gives every
+/// page left between the cursors to one pool, so growth is taken from that
+/// pool. How much headroom the high side leaves at load time is not
+/// measured, so this bound is empirical: the largest total of any retail
+/// map of the same type on the owner's disc (V), which that pool is known
+/// to tolerate. See docs/map-format.md, "Growing the metadata".
+pub fn max_metadata_size(cache_type: crate::CacheType) -> Result<u32> {
+    Ok(match cache_type {
+        crate::CacheType::Campaign => 0x00c2_4000,
+        crate::CacheType::Multiplayer => 0x0062_c000,
+        crate::CacheType::MainMenu => 0x001d_3000,
+        crate::CacheType::Shared => 0x0044_5000,
+        crate::CacheType::SinglePlayerShared => 0x0069_e000,
+        crate::CacheType::Unknown(_) => {
+            return Err(Error::Invalid("unknown cache type for editing"));
+        }
+    })
 }

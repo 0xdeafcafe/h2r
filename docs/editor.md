@@ -41,7 +41,11 @@ read-only.
 - **Top bar**: Open, Save, Save As (for the active tool's file), Undo,
   Redo, Open disc or map, and the active file's path (`*` when unsaved).
 - **Status line**: the last result or error.
-- **Prompts**: paths are typed into a small dialog. Opening a file over
+- **Prompts**: Open, Save As and Open disc or map use the system's file
+  dialog (the `rfd` crate; NSOpenPanel / NSSavePanel on macOS), filtered
+  to the active tool's `extensions()` (discs and maps: `.iso`, `.xiso`,
+  `.map`). With `H2_EDITOR_TYPED_PATHS=1`, or when no dialog can be
+  shown, paths are typed into a small dialog instead. Opening a file over
   unsaved changes, or closing the window with any, asks Save / Discard /
   Cancel. Save with no file yet asks where, then carries on.
 - **Shortcuts**: Cmd/Ctrl+O open, +S save, +Shift+S save as, +Z undo,
@@ -65,6 +69,8 @@ pub trait Tool {
     fn can_redo(&self) -> bool { false }
     fn undo(&mut self) -> bool { false }
     fn redo(&mut self) -> bool { false }
+    fn take_handoff(&mut self) -> Option<Handoff> { None }
+    fn receive(&mut self, work: Handoff, cx: &mut ToolContext<'_>) -> Result<(), Handoff>; // default: Err(work)
 }
 
 pub struct ToolContext<'a> {
@@ -80,6 +86,18 @@ shell then asks for a path and calls `save_as`. `ToolError::Invalid`
 carries a validation message for the status line. The shell owns the
 prompts; a tool never has to ask about unsaved changes itself, only report
 `is_dirty` honestly.
+
+A tool hands work to another through `Handoff` (today one kind,
+`EditVariant`): after drawing the active tool, the shell takes its
+`take_handoff()` and offers it to each other tool's `receive`; the first
+to accept becomes the active tool. A tool that refuses returns the work
+and may say why in the status line.
+
+Paths come from `editor::dialog::FileDialog` (`open_file`, `save_file`,
+answering `Picked::Path`, `Cancelled` or `Unavailable`). `main` gives the
+shell and the hopper tool `NativeDialog`; tests use `ScriptedDialog`,
+which answers from a queue and records each request. Without a dialog,
+or on `Unavailable`, the shell falls back to the typed-path prompt.
 
 `MapSource` (`crates/editor/src/source.rs`) gives `map_names()`,
 `open_map(name)` (a `map::Map` over the disc region or file) and
@@ -122,9 +140,24 @@ server's copy:
 - Pick one of the 16 playlists; edit its title (15 bytes) and description
   (127 bytes), and per entry its map (a picker of the disc's multiplayer
   maps, by name; numbers without a disc) and weight (1..1000, with each
-  entry's resulting chance). Each entry shows its game variant (name,
-  game type, teams). Reorder, copy, add (copies the last) and remove
-  entries; a playlist keeps 1..100.
+  entry's resulting chance). Reorder, copy, add (copies the last) and
+  remove entries; a playlist keeps 1..100.
+- **Game variants**: each entry shows its game variant (name, game type,
+  teams), decoded from the 0x130 bytes its slot will carry, with
+  "(picked)" once changed. Its menu offers the disc's built-in variants
+  (built the way the game builds them: the type's defaults, the name, the
+  description number, the variant's own settings, and the built-in flag
+  set, as the variant editor lists them), your saved variants (the
+  runtime's save storage, re-read with **Refresh saved variants**) and
+  `.h2variant` files loaded this session (typed path and **Load**, or
+  **Browse...**). Picking one copies its `GameVariant::to_bytes()` over
+  the slot's `+0x24c..+0x37c`; the map id, weight and every byte before
+  the variant stay as they were. A variant the game's clean-up would
+  change (`variants::record::check`) is greyed out with the reasons, and
+  is refused if picked another way. **Edit** opens a copy of the entry's
+  variant in the game variant editor, as a new unsaved variant there
+  (refused while that editor has unsaved changes); to use the edited
+  variant, save it there and pick it from **Saved**.
 - **Advanced: raw fields**: the raw name, type, status, the three range
   fields, and every record word as numbers.
 - **Start from preset**: the web builder's historical lineups, resolved
@@ -143,6 +176,16 @@ server: an unchanged playlist is not rewritten at all, and in a changed
 one the title and description (written to all nine language slots) are
 rewritten only if they changed. An unedited file saves to the identical
 image. Only changed playlists are validated, with the server's rules.
+
+A picked game variant is kept as the whole 0x130-byte record beside the
+entry's source slot; `model::slot_bytes` builds the slot (source bytes,
+then the picked variant over the tail, then the editable fields) both
+for the save and for what the table shows. The raw string, flags and
+second dword of **Advanced: raw fields** lie inside the variant (at its
+`+0x00`, `+0x48` and `+0x58`), so picking re-reads them from the new
+record, and editing them afterwards edits the picked variant: the save
+then checks the result with the clean-up rules again. Variants that came
+with the file are written back as they are, never judged.
 
 Map names come from the disc's main menu map (the globals' multiplayer
 level list, as `h2 live assets extract` reads it for `catalog.json`).

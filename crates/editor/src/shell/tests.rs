@@ -266,3 +266,110 @@ fn frames_draw_headless() {
     assert!(matches!(s.prompt(), Some(Prompt::Unsaved { .. })));
     assert!(!s.wants_quit());
 }
+
+// ---------- the file dialog ----------
+
+use crate::dialog::{Picked, ScriptedDialog};
+
+fn with_dialog(s: &mut Shell, answers: Vec<Picked>) -> Rc<RefCell<Vec<crate::dialog::Request>>> {
+    let d = ScriptedDialog::new(answers);
+    let asked = d.asked.clone();
+    s.set_file_dialog(Box::new(d));
+    asked
+}
+
+#[test]
+fn open_uses_the_dialog_with_the_tools_extensions() {
+    let log = Rc::default();
+    let mut f = Fake::new("a", &log);
+    f.path = Some("/somewhere/old.fake".into());
+    let mut s = shell_with(f);
+    let asked = with_dialog(&mut s, vec![Picked::Path("picked.fake".into())]);
+    s.ask_path(PathPurpose::Open);
+    assert!(s.prompt().is_none(), "no typed prompt");
+    assert_eq!(log.borrow().opened, [PathBuf::from("picked.fake")]);
+    let asked = asked.borrow();
+    assert!(!asked[0].save);
+    assert_eq!(asked[0].filters[0].extensions, ["fake"]);
+    assert_eq!(asked[0].start, Some("/somewhere/old.fake".into()));
+}
+
+#[test]
+fn a_cancelled_dialog_does_nothing() {
+    let log = Rc::default();
+    let mut s = shell_with(Fake::new("a", &log));
+    with_dialog(&mut s, vec![Picked::Cancelled, Picked::Cancelled]);
+    s.ask_path(PathPurpose::Open);
+    s.ask_save_as(None);
+    assert!(s.prompt().is_none());
+    assert!(log.borrow().opened.is_empty() && log.borrow().saved.is_empty());
+    assert!(s.status().is_none());
+}
+
+#[test]
+fn an_unavailable_dialog_falls_back_to_typing() {
+    let log = Rc::default();
+    let mut s = shell_with(Fake::new("a", &log));
+    with_dialog(&mut s, vec![]);
+    s.ask_save_as(None);
+    assert_eq!(
+        s.prompt(),
+        Some(&Prompt::Path {
+            purpose: PathPurpose::SaveAs,
+            text: "untitled.fake".into(),
+            then: None
+        })
+    );
+    s.cancel_prompt();
+    s.ask_path(PathPurpose::Open);
+    assert!(matches!(
+        s.prompt(),
+        Some(Prompt::Path {
+            purpose: PathPurpose::Open,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn save_without_a_path_asks_the_dialog_then_continues() {
+    let log = Rc::default();
+    let mut f = Fake::new("a", &log);
+    f.dirty = true;
+    let mut s = shell_with(f);
+    let asked = with_dialog(&mut s, vec![Picked::Path("/out/saved.fake".into())]);
+    s.request_open("next.fake".into());
+    s.answer(Answer::Save);
+    assert!(s.prompt().is_none());
+    assert_eq!(log.borrow().saved, [PathBuf::from("/out/saved.fake")]);
+    assert_eq!(log.borrow().opened, [PathBuf::from("next.fake")]);
+    let asked = asked.borrow();
+    assert!(asked[0].save);
+    assert_eq!(asked[0].start, Some("untitled.fake".into()));
+    assert_eq!(asked[0].filters[0].extensions, ["fake"]);
+}
+
+#[test]
+fn the_source_dialog_offers_discs_and_maps() {
+    let mut s = Shell::new();
+    let asked = with_dialog(&mut s, vec![Picked::Path("/nonexistent/disc.iso".into())]);
+    s.ask_path(PathPurpose::Source);
+    assert!(s.prompt().is_none());
+    assert!(s.source().is_none());
+    assert!(
+        matches!(s.status(), Some(Status::Error(_))),
+        "tried to open it"
+    );
+    let asked = asked.borrow();
+    assert_eq!(asked[0].filters[0].extensions, ["iso", "xiso", "map"]);
+    assert_eq!(asked[0].start, None);
+}
+
+#[test]
+fn a_tool_without_extensions_gets_no_filter() {
+    let mut s = Shell::new();
+    s.add_tool(Box::new(crate::variants::VariantTool::new()));
+    let asked = with_dialog(&mut s, vec![Picked::Cancelled]);
+    s.ask_path(PathPurpose::Open);
+    assert!(asked.borrow()[0].filters.is_empty());
+}

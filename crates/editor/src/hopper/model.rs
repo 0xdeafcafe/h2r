@@ -13,11 +13,20 @@
 //! changed parts (records, descriptor fields, text) are rewritten; the text
 //! in particular goes to all nine language slots, so it is written only
 //! when it changed.
+//!
+//! An entry can also be given another game variant ([`set_variant`]): the
+//! picked 0x130-byte record replaces the tail of the entry's slot
+//! (`+0x24c..+0x37c`), and every other byte of the slot still comes from
+//! its source. [`slot_bytes`] is the one place an entry's slot is built,
+//! for [`apply`] and for what the panel shows.
 
 use live_proto::hopper::{
     DWORDS, HOPPERS, HopperError, HopperFile, HopperText, MAX_DESCRIPTION, MAX_NAME, MAX_RECORDS,
-    MAX_STRING, MAX_TITLE, RECORD, Record, Variant,
+    MAX_STRING, MAX_TITLE, RECORD, Record, VARIANT_AT, VARIANT_SIZE, Variant, set_slot_record,
+    slot_record, slot_variant,
 };
+use variants::GameVariant;
+use variants::record::{self as vrecord, Problem};
 
 /// Session setup clamps a record's weight (`dwords[0]`) to 1..1000.
 pub const MAX_WEIGHT: u32 = 1000;
@@ -37,17 +46,101 @@ pub struct EditRecord {
     pub string: String,
     pub flags: u32,
     pub dwords: [u32; 2],
-    /// The game variant as its source slot carries it (read-only).
+    /// What the entry's game variant says about itself (name, engine,
+    /// team play): its source slot's, or the picked one's.
     pub variant: Option<Variant>,
     /// Where the record's whole slot comes from; `None` for a zero-filled
     /// slot (only for adding to a hopper with no records at all).
     pub src: Option<SlotRef>,
+    /// A game variant picked for this entry ([`set_variant`]): it replaces
+    /// the source slot's last 0x130 bytes. `None` keeps the source's.
+    pub picked: Option<Box<[u8; VARIANT_SIZE]>>,
 }
 
 impl EditRecord {
     pub fn weight(&self) -> u32 {
         self.dwords[0]
     }
+
+    fn fields(&self) -> Record {
+        Record {
+            id: self.id,
+            string: self.string.clone(),
+            flags: self.flags,
+            dwords: self.dwords,
+        }
+    }
+}
+
+/// The 0x37c bytes `r`'s slot gets when the working copy is written to
+/// `base`: its source slot (zeros without one), the picked game variant
+/// over the tail, then the editable fields, written the way
+/// [`HopperFile::set_record`] writes them (the raw string only if it
+/// changed).
+pub fn slot_bytes(base: &HopperFile, r: &EditRecord) -> Result<Vec<u8>, HopperError> {
+    let mut slot = match r.src {
+        Some(src) => base.slot(src.hopper, src.slot)?.to_vec(),
+        None => vec![0; RECORD],
+    };
+    if let Some(v) = &r.picked {
+        slot[VARIANT_AT..].copy_from_slice(&v[..]);
+    }
+    set_slot_record(&mut slot, &r.fields())?;
+    Ok(slot)
+}
+
+/// The game variant `r`'s slot will carry, decoded (name, game type and
+/// every setting), or `None` if the slot cannot be built.
+pub fn entry_variant(base: &HopperFile, r: &EditRecord) -> Option<GameVariant> {
+    let slot = slot_bytes(base, r).ok()?;
+    GameVariant::from_bytes(&slot[VARIANT_AT..]).ok()
+}
+
+/// Why [`set_variant`] refused a variant: the game's clean-up would
+/// replace it (docs/variants.md, "The clean-up").
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("the game would reject this variant: {}", describe(.0))]
+pub struct Rejected(pub Vec<Problem>);
+
+fn describe(problems: &[Problem]) -> String {
+    problems
+        .iter()
+        .map(|p| format!("+{:#x}: {}", p.offset, p.what))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Links `v` to entry `r`: its record (`GameVariant::to_bytes`) becomes the
+/// slot's last 0x130 bytes. Refuses a record the game's clean-up would
+/// change. The editable fields that lie inside the variant (the raw
+/// string, flags and second dword) are re-read from the new bytes, so
+/// writing them back leaves the variant exactly as picked; the map id and
+/// weight stay.
+pub fn set_variant(r: &mut EditRecord, v: &GameVariant) -> Result<(), Rejected> {
+    let problems = vrecord::check(v);
+    if !problems.is_empty() {
+        return Err(Rejected(problems));
+    }
+    let bytes = v.to_bytes();
+    let mut slot = vec![0; RECORD];
+    slot[VARIANT_AT..].copy_from_slice(&bytes);
+    let inside = slot_record(&slot);
+    r.string = inside.string;
+    r.flags = inside.flags;
+    r.dwords[1] = inside.dwords[1];
+    r.variant = Some(slot_variant(&slot));
+    r.picked = Some(Box::new(bytes));
+    Ok(())
+}
+
+/// The variant an entry with a picked variant will carry, once its raw
+/// fields are written over it (they lie inside the variant).
+fn picked_after_fields(r: &EditRecord) -> Option<GameVariant> {
+    let picked = r.picked.as_ref()?;
+    let mut slot = vec![0; RECORD];
+    slot[VARIANT_AT..].copy_from_slice(&picked[..]);
+    set_slot_record(&mut slot, &r.fields()).ok()?;
+    GameVariant::from_bytes(&slot[VARIANT_AT..]).ok()
 }
 
 /// One hopper's editable fields and its records.
@@ -82,6 +175,7 @@ pub fn load(file: &HopperFile) -> Vec<EditHopper> {
                         dwords: r.dwords,
                         variant: file.variant(i, j).ok(),
                         src: Some(SlotRef { hopper: i, slot: j }),
+                        picked: None,
                     }
                 })
                 .collect();
@@ -157,6 +251,22 @@ pub fn hopper_errors(h: &EditHopper) -> Vec<String> {
                 "entry {n}: the string is longer than {MAX_STRING} characters"
             ));
         }
+        // Only a picked variant is checked: a source slot's variant is
+        // written back as it came.
+        if r.picked.is_some() {
+            match picked_after_fields(r) {
+                Some(v) => {
+                    let problems = vrecord::check(&v);
+                    if !problems.is_empty() {
+                        errs.push(format!(
+                            "entry {n}: the game would reject its game variant ({})",
+                            describe(&problems)
+                        ));
+                    }
+                }
+                None => errs.push(format!("entry {n}: its game variant cannot be built")),
+            }
+        }
     }
     errs
 }
@@ -218,39 +328,23 @@ pub fn apply(base: &HopperFile, edited: &[EditHopper]) -> Result<HopperFile, App
         if h.records != was.records {
             let mut slots = Vec::with_capacity(h.records.len());
             for (j, r) in h.records.iter().enumerate() {
-                slots.push(match r.src {
-                    Some(src) => {
-                        let ok = baseline
-                            .get(src.hopper)
-                            .is_some_and(|b| src.slot < b.records.len());
-                        if !ok {
-                            return Err(ApplyError::Source {
-                                hopper: i + 1,
-                                entry: j + 1,
-                                src,
-                            });
-                        }
-                        base.slot(src.hopper, src.slot)?.to_vec()
-                    }
-                    None => vec![0; RECORD],
-                });
+                if let Some(src) = r.src
+                    && !baseline
+                        .get(src.hopper)
+                        .is_some_and(|b| src.slot < b.records.len())
+                {
+                    return Err(ApplyError::Source {
+                        hopper: i + 1,
+                        entry: j + 1,
+                        src,
+                    });
+                }
+                slots.push(slot_bytes(base, r)?);
             }
             for (j, bytes) in slots.iter().enumerate() {
                 out.set_slot(i, j, bytes)?;
             }
             out.set_record_count(i, h.records.len() as u32)?;
-            for (j, r) in h.records.iter().enumerate() {
-                out.set_record(
-                    i,
-                    j,
-                    &Record {
-                        id: r.id,
-                        string: r.string.clone(),
-                        flags: r.flags,
-                        dwords: r.dwords,
-                    },
-                )?;
-            }
         }
         let fields_changed = h.hopper_type != was.hopper_type
             || h.status != was.status
@@ -329,6 +423,7 @@ pub fn add_record(h: &mut EditHopper) -> bool {
         dwords: [1, 0],
         variant: None,
         src: None,
+        picked: None,
     });
     h.records.push(r);
     true
@@ -661,6 +756,155 @@ pub(crate) mod tests {
         assert!((c[0] - 0.2).abs() < 1e-9 && (c[3] - 0.1).abs() < 1e-9);
         m[2].records[0].dwords[0] = 0; // clamped to 1
         assert!((chances(&m[2])[0] - 1.0 / 9.0).abs() < 1e-9);
+    }
+
+    /// A variant the clean-up accepts, with every byte it allows set to
+    /// something recognisable.
+    pub(crate) fn good_variant(name: &str) -> GameVariant {
+        let mut v = GameVariant::blank(variants::GameType::Slayer);
+        v.set_name(name).unwrap();
+        v.set_builtin_flag(true);
+        v.set_description(7);
+        let mut b = v.to_bytes();
+        b[0x48] = 1; // team play
+        b[0x50] = 25; // score to win
+        b[0x58] = 2; // a 0..2 field: lands on the record's second dword
+        let v = GameVariant::from_bytes(&b).unwrap();
+        assert!(vrecord::check(&v).is_empty(), "{:?}", vrecord::check(&v));
+        v
+    }
+
+    fn slot_at(i: usize, j: usize) -> usize {
+        0x6140 + i * 0x15cb8 + 0x48 + j * RECORD
+    }
+
+    #[test]
+    fn a_picked_variant_replaces_only_the_slot_tail() {
+        let f = sample();
+        let mut m = load(&f);
+        let v = good_variant("Team Pick");
+        set_variant(&mut m[1].records[2], &v).unwrap();
+        let r = &m[1].records[2];
+        assert_eq!((r.id, r.weight()), (12, 3), "map and weight stay");
+        assert_eq!(r.variant.as_ref().unwrap().name, "Team Pick");
+        assert!(r.variant.as_ref().unwrap().team);
+        assert_eq!(r.dwords[1], 2, "the second dword is read from the variant");
+        let out = apply(&f, &m).unwrap();
+        let at = slot_at(1, 2);
+        let mut want = f.image().to_vec();
+        want[at + VARIANT_AT..at + RECORD].copy_from_slice(v.bytes());
+        assert_eq!(
+            out.image(),
+            &want[..],
+            "only the variant's 0x130 bytes change"
+        );
+        // Reloading reads it back, decoded.
+        let back = load(&out);
+        let got = entry_variant(&out, &back[1].records[2]).unwrap();
+        assert_eq!(got, v);
+        assert_eq!(got.game_type(), variants::GameType::Slayer);
+    }
+
+    #[test]
+    fn entry_variant_decodes_the_source_or_the_pick() {
+        let f = sample();
+        let mut m = load(&f);
+        let before = entry_variant(&f, &m[0].records[1]).unwrap();
+        assert_eq!(before.name(), "V01");
+        assert_eq!(before.game_type(), variants::GameType::Ctf);
+        assert_eq!(&before.to_bytes()[..], &f.slot(0, 1).unwrap()[VARIANT_AT..]);
+        let v = good_variant("Swapped");
+        set_variant(&mut m[0].records[1], &v).unwrap();
+        assert_eq!(entry_variant(&f, &m[0].records[1]).unwrap(), v);
+    }
+
+    #[test]
+    fn a_variant_the_game_rejects_is_refused() {
+        let f = sample();
+        let mut m = load(&f);
+        let was = m[0].records[0].clone();
+        let mut b = good_variant("Bad").to_bytes();
+        b[0x44] = 5; // engine 5 (Race): the clean-up resets it
+        let bad = GameVariant::from_bytes(&b).unwrap();
+        let err = set_variant(&mut m[0].records[0], &bad).unwrap_err();
+        assert!(err.0.iter().any(|p| p.offset == 0x44), "{err}");
+        assert_eq!(m[0].records[0], was, "nothing changed");
+        assert_eq!(apply(&f, &m).unwrap().image(), f.image());
+    }
+
+    #[test]
+    fn raw_edits_that_break_a_picked_variant_block_the_save() {
+        let f = sample();
+        let mut m = load(&f);
+        set_variant(&mut m[2].records[0], &good_variant("Raw")).unwrap();
+        // The flags dword is the variant's +0x48; bit 15 is out of range.
+        m[2].records[0].flags |= 1 << 15;
+        let errs = errors(&load(&f), &m);
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("Playlist 3: entry 1: the game would reject")),
+            "{errs:?}"
+        );
+        assert!(matches!(apply(&f, &m), Err(ApplyError::Invalid(_))));
+        // In range, the raw edit lands inside the picked variant.
+        m[2].records[0].flags = 1 | 2;
+        let out = apply(&f, &m).unwrap();
+        let got = entry_variant(&out, &load(&out)[2].records[0]).unwrap();
+        assert_eq!(got.name(), "Raw");
+        assert_eq!(&got.to_bytes()[0x48..0x4c], &3u32.to_le_bytes());
+    }
+
+    #[test]
+    fn source_variants_are_not_judged() {
+        // The salted sample's variants break the clean-up's rules, but they
+        // came from the file: edits elsewhere still save.
+        let f = sample();
+        let mut m = load(&f);
+        assert!(!vrecord::check(&entry_variant(&f, &m[0].records[0]).unwrap()).is_empty());
+        m[0].records[0].dwords[0] = 50;
+        apply(&f, &m).unwrap();
+    }
+
+    #[test]
+    fn picks_travel_with_copies_and_moves() {
+        let f = sample();
+        let mut m = load(&f);
+        let v = good_variant("Mover");
+        set_variant(&mut m[0].records[0], &v).unwrap();
+        assert!(duplicate_record(&mut m[0], 0));
+        assert!(move_record_to(&mut m[0], 0, 2));
+        let out = apply(&f, &m).unwrap();
+        let back = load(&out);
+        let names: Vec<_> = back[0]
+            .records
+            .iter()
+            .map(|r| entry_variant(&out, r).unwrap().name())
+            .collect();
+        assert_eq!(names, ["Mover", "V01", "Mover"]);
+        // Outside the variant, each slot is still its source's.
+        assert_eq!(
+            out.slot(0, 2).unwrap()[..VARIANT_AT],
+            f.slot(0, 0).unwrap()[..VARIANT_AT]
+        );
+        assert_eq!(out.slot(0, 1).unwrap(), f.slot(0, 1).unwrap());
+    }
+
+    #[test]
+    fn a_new_entry_in_a_blank_hopper_takes_a_variant() {
+        let f = HopperFile::blank();
+        let mut m = load(&f);
+        assert!(add_record(&mut m[6]));
+        m[6].hopper_type = 2;
+        m[6].title = "Fresh".into();
+        let v = good_variant("First");
+        set_variant(&mut m[6].records[0], &v).unwrap();
+        let out = apply(&f, &m).unwrap();
+        let slot = out.slot(6, 0).unwrap();
+        assert_eq!(&slot[VARIANT_AT..], v.bytes());
+        assert!(slot[..VARIANT_AT].iter().enumerate().all(|(k, b)| {
+            // Only the weight (+0x248) is set before the variant.
+            *b == 0 || (0x248..0x24c).contains(&k)
+        }));
     }
 
     #[test]
