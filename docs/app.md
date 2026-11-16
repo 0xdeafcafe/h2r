@@ -95,7 +95,8 @@ prompts; `auto`, the default, follows the device last used, see
 guest time in place of live input), `--status` (frame rates once a second,
 the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
 `--level MAP [--difficulty easy|normal|heroic|legendary]` (start that
-campaign level in place of the main menu, no title, profile or menus; a bad
+campaign level, or a local Slayer game on that multiplayer map, in place of
+the main menu, no title, profile or menus; a bad
 name lists the disc's levels before anything is built; `H2_LEVEL` and
 `H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
