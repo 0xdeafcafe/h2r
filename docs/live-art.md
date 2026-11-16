@@ -281,14 +281,20 @@ models/vehicle/<stem>.glb     one per vehicle tag
 extracted):
 
 ```json
-"models": { "version": 1,
-            "bipeds":  { "spartan": { "glb": "models/biped/spartan.glb" },
-                         "elite":   { "glb": "models/biped/elite.glb" } },
-            "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb" } },
+"models": { "version": 2,
+            "bipeds":  { "spartan": { "glb": "models/biped/spartan.glb",
+                                      "clips": ["rifle:idle", "rifle:run", ...] },
+                         "elite":   { "glb": "models/biped/elite.glb", "clips": [...] } },
+            "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb",
+                                           "class": "rifle" } },
             "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } } }
 ```
 
-`vehicles` is absent when there are none.
+`vehicles` is absent when there are none. `clips` (a biped's animations,
+in the glb's order) is absent when it has none; `class` (the weapon class a
+weapon is held with, picking the clip set) is absent when the tag names
+none. Version 1 had neither and unskinned bipeds; a version 1 reader that
+skips the version check still draws the version 2 files (below).
 
 A model that could not be built is listed under `skipped` as
 `models/biped/<species>`, `models/weapon/<stem>` or
@@ -320,8 +326,10 @@ Keys (what telemetry sends):
   units kept.
 - Nodes: `root`, whose children are the mesh node (`body` for a biped,
   `weapon` for a weapon) and empty nodes with `translation` and `rotation`
-  only. Bipeds have `weapon` (the right-hand marker: a weapon glb placed
-  under it sits in the hand) and `head` (the head marker); weapons have
+  only (on a biped, the skeleton's root joints too). Bipeds have `weapon`
+  (the right-hand marker: a weapon glb placed under it sits in the hand)
+  and `head` (the head marker), each the child of the joint it rides on
+  (`joint_r_hand`, `joint_head`, ...; the root's child when it has none); weapons have
   `muzzle` (the `primary_trigger` marker, or the front of the model at mid
   height when it has none); vehicles (mesh node `vehicle`) have a
   `seat_<name>` node per seat marker (`seat_driver`, `seat_gunner`,
@@ -339,20 +347,42 @@ Keys (what telemetry sends):
 - Materials: `baseColorTexture` (an embedded PNG, at most 512 pixels a side,
   shared by materials with the same map) when the diffuse map decoded, else
   a grey `baseColorFactor`. Metallic 0, roughness 0.8.
-- `asset.extras`: `generator`, `models_version` (1) and, for bipeds,
+- `asset.extras`: `generator`, `models_version` (2) and, for bipeds,
   `height` (game units, feet to the top of the head).
 - A biped stands with its feet on the origin plane (lowest vertex at
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
-  idle stance (or its own idle, below): the posed shape is baked into the
-  vertices; nothing is skinned or animated.
+  idle stance (or its own idle, below), and that posed shape is what the
+  vertices store, so a reader that ignores the skin draws it as it was in
+  version 1.
+- Bipeds are skinned (weapons and vehicles are not). One node per
+  render-model node, named `joint_<node>` (`joint_pelvis`, `joint_r_hand`,
+  ...), in the model's tree under `root`, their `translation` and
+  `rotation` the default (idle) pose. One skin over all of them; its
+  inverse bind matrices are the inverse of each joint's default frame, so
+  the default pose leaves every vertex where it is stored. Primitives add
+  `JOINTS_0` (u16 `VEC4`) and `WEIGHTS_0` (float `VEC4`, summing to 1; at
+  most four nodes per vertex, as the game's).
+- Biped animations, one per clip, named `<weapon_class>:<state>`: classes
+  `rifle`, `pistol`, `missile`, `support`, `sword`, `unarmed`, `flag`,
+  `ball` (what multiplayer weapons are held with; `dual`, vehicle seats and
+  AI-only classes are left out), states `idle`, `walk`, `run`, `crouch`,
+  `airborne`, `land`, `grenade`, `melee`, `reload`, `fire`, `switch`,
+  `die`, each only where the graph has it. Every joint has a `rotation`
+  channel (normalised i16 `VEC4`, the core glTF option) and a
+  `translation` channel (float `VEC3`), `LINEAR`, one key per frame at
+  30 fps; a channel that never changes in the clip has a single key at
+  time 0. The clip keeps the floor of the default pose (no root motion: the
+  game moves the biped, not the animation).
 - A vehicle is in its neutral pose (below), origin at the vehicle's object
   origin, facing glTF +x. `asset.extras.pose` names the frame used
   (`combat:any:any:closing, last frame`, or `rest pose`).
 
-On the retail disc: spartan 3,042 triangles and 0.8 MB, elite 2,744
-triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
-380 KB; 34 campaign characters of 330 to 4,800 triangles and 70 KB to
-1.9 MB; 38 vehicles of 26 to 4,750 triangles and 26 KB to 1.7 MB. The
+On the retail disc: spartan 3,042 triangles, 80 clips and 2.6 MB (0.8 MB
+of it mesh and textures), elite 2,744 triangles, 58 clips and 2.8 MB
+(`ball`, `flag` and `unarmed` dropped for size; the dervish and heretics
+likewise), 22 weapons of 430 to 1,400 triangles and 60 to
+380 KB; 34 campaign characters of 330 to 4,800 triangles, 0 to 56 clips
+and 0.2 to 2.8 MB; 38 vehicles of 26 to 4,750 triangles and 26 KB to 1.7 MB. The
 whole step takes about 0.6 s on 10 cores.
 
 ## Pipeline
@@ -397,7 +427,8 @@ whole step takes about 0.6 s on 10 cores.
 7. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
    of `posed_world × inverse(rest_world)` of its nodes (weights
    renormalised), normals likewise. Then the model is lifted so its lowest
-   vertex is at height 0.
+   vertex is at height 0. The same weights become `JOINTS_0`/`WEIGHTS_0`,
+   and the posed frames (lifted) the joints' defaults and bind matrices.
 8. **Markers.** Render-model header `+0x58` is a block of marker groups
    (0xc bytes: string-ID name, block of markers); a marker is 0x24 bytes,
    node index at `+2`, translation `+4`, quaternion `+0x10`, relative to its
@@ -409,7 +440,33 @@ whole step takes about 0.6 s on 10 cores.
    at the seat (`enter`, `camera`, `target`, `hand`, `foot`, `damage`, ...);
    the node is `seat_` plus the marker's words joined by `_`, first marker
    of a name. Phantoms, Pelicans and some turrets have no seat markers.
-9. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
+9. **Clips.** In the biped's graph and the graphs it inherits from (its
+   own first). The locomotion states are actions of type `any`: `idle`,
+   `walk_front` (walk), `move_front` (run), `airborne`, `land_soft`
+   (land) in mode `combat`, `idle` in mode `crouch` (crouch), and
+   `landing_dead` of class `any` (die, the same clip for every class).
+   These go through the action table, so `unarmed` plays what the graph
+   maps it to (the spartan's sword animations). The weapon states are
+   per weapon type in the game (their table is not decoded), so they are
+   found by animation name, `combat:<class>[:<type>]:<action>[:varN]`:
+   `throw_grenade` (grenade), `melee_strike_1` or `melee` (melee),
+   `reload_1` (reload), `fire_1` (fire), `ready` (switch). The class's own
+   animation comes first, then one of the types `br`, `hp`, `rl`, `bs`
+   (battle rifle, magnum, rocket launcher, brute shot), then the first type
+   by name. Aim grids (codec 8) are skipped. Every frame is sampled. A
+   channel a frame lacks (an upper-body replacement's legs) keeps the
+   default pose's value. An overlay (`fire_1`) adds its change since its
+   first frame to the default pose: rotation `default × first⁻¹ × frame`,
+   translation `default + frame − first`. Scale channels are dropped. A
+   biped glb over 3 MB loses whole classes, `ball`, then `flag`, then
+   `unarmed`, until it fits.
+10. **Weapon class.** The string ID at `weap +0x288` (D: every multiplayer
+    weapon names a class of the player graphs there: `rifle` for the
+    battle rifle, carbine, shotgun, SMG and the snipers, `pistol` for the
+    magnum, needler and plasma pistol, `missile` for the rocket launcher and
+    fuel rod, `support` for the brute shot, `sword`, `flag`, `ball`; vehicle
+    guns say `fixed`).
+11. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
    `+4` block, datum first; docs/shader-instances.md). A bitmap's role comes
    from generic words in its tag name read at run time: a name ending in
    `_cc` or saying `change_color` is the change-colour map; the first name
@@ -425,18 +482,33 @@ cargo test --release -p cli --bin h2 models_from_the_disc -- --ignored --nocaptu
 
 writes every model, `report.txt` (sources, pose, triangle counts, sizes),
 `models.json`, `seats.txt` (each vehicle's seat nodes),
-`check-<species>.png` and `check-vehicle-<stem>.png` to
+`check-<species>.png`, `check-vehicle-<stem>.png`, `animation.txt` (each
+biped's size and clips, each weapon's class, and the checks below) and
+`strip-spartan.png` (six frames each of `rifle:run`, `rifle:grenade` and
+`rifle:melee`, skinned from the glb as a viewer would) to
 `$RUSH_KEEP/players-models` (a directory outside the repository). Each
 picture shows the model from the front, the right side and three-quarter
 with its diffuse texture, then the change-colour weights (red primary, blue
 secondary over grey). Bipeds hold the battle rifle at their `weapon` node;
-vehicles have the spartan standing at `seat_driver`. Do not commit anything
-it writes.
+vehicles have the spartan standing at `seat_driver`. It also checks the
+spartan's file: the `gltf` crate reads its skin and clips, playing
+`rifle:idle` frame 0 moves no vertex (the default pose is that frame), and
+every `rifle:run` key at frames 0, 7, 13 and the last, back in game axes,
+is the rotation `tags::anim_sample` gives the node (to 6e-8). Do not commit
+anything it writes.
 
 ## Limits
 
-- One pose for everyone: the rifle idle, whatever the player holds. A
-  pistol or sword sits in a rifle grip. Characters without a rifle stance
+- The default pose is the rifle idle, whatever the player holds; a viewer
+  that does not play the class's clips shows a pistol or sword in a rifle
+  grip.
+- Clips are whole-body and one at a time: the game layers aim, overlays
+  and upper-body replacements over locomotion, a viewer playing these
+  clips does not. `fire` is the overlay applied over the default pose;
+  `reload`, `melee` and `fire` are one representative weapon type's for the
+  whole class (the battle rifle's for `rifle`, and so on), and `die` is
+  the graph's `landing_dead` (multiplayer deaths are ragdolls in the
+  game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
