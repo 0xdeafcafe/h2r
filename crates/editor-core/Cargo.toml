@@ -1,6 +1,6 @@
 [package]
 name = "editor-core"
-description = "UI-free parts of the editor suite shared by h2-editor (egui) and h2-studio (Dear ImGui): map sources, the snapshot undo stack, status messages"
+description = "UI-free parts of the editor suite shared by h2-editor (egui) and h2-studio (Dear ImGui): map sources, the snapshot undo stack, status messages, where game variants come from"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,3 +11,7 @@ anyhow.workspace = true
 map.workspace = true
 tags.workspace = true
 xiso.workspace = true
+xbe.workspace = true
+# The runtime's default data root (variant saves live under it).
+content.workspace = true
+variants = { path = "../variants", default-features = false }

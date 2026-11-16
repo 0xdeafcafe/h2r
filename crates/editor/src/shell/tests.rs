@@ -243,7 +243,7 @@ fn a_bad_source_path_is_reported_and_keeps_none() {
 fn frames_draw_headless() {
     let mut s = Shell::new();
     let mut hopper = crate::hopper::HopperTool::new();
-    let bytes = crate::hopper::model::tests::sample().build();
+    let bytes = hopper_edit::fixture::sample().build();
     hopper.open_bytes(&bytes, None).unwrap();
     s.add_tool(Box::new(hopper));
     let log = Rc::default();

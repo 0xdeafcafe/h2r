@@ -14,8 +14,8 @@
 
 use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};
 
-use super::catalog::{Catalog, engine_of, normalise};
-use super::model::{EditHopper, EditRecord, SlotRef, clip};
+use crate::catalog::{Catalog, engine_of, normalise};
+use crate::model::{EditHopper, EditRecord, SlotRef, clip};
 
 pub struct PresetGame {
     /// `slayer`, `ctf`, `oddball`, `king_of_the_hill`, `juggernaut`,
@@ -566,9 +566,10 @@ pub fn apply(h: &EditHopper, r: &Resolution) -> EditHopper {
 
 #[cfg(test)]
 mod tests {
-    use super::super::catalog::CatalogMap;
-    use super::super::model::{self, tests::put_variant};
     use super::*;
+    use crate::catalog::CatalogMap;
+    use crate::fixture::put_variant;
+    use crate::model;
 
     fn catalog() -> Catalog {
         let maps = [
@@ -607,7 +608,7 @@ mod tests {
 
     #[test]
     fn a_preset_resolves_against_maps_and_published_variants() {
-        let mut f = model::tests::sample();
+        let mut f = crate::fixture::sample();
         // Published: hopper 0 slot 0 a team Slayer named "Team Slayer",
         // slot 1 a free-for-all Slayer; hopper 1 slot 1 a CTF entry.
         put_variant(&mut f, 0, 0, "Team Slayer", 2, true);
@@ -654,7 +655,7 @@ mod tests {
 
     #[test]
     fn what_does_not_resolve_is_listed_and_written_nowhere() {
-        let f = model::tests::sample();
+        let f = crate::fixture::sample();
         let published = model::load(&f);
         let p = PRESETS
             .iter()

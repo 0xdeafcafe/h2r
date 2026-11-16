@@ -3,18 +3,18 @@
 //! Built the first time it is drawn, and again when the opened disc
 //! changes: the setting schema comes from the disc's `mainmenu` map (our
 //! own fallback model without one), and save names from the XBE
-//! (`H2_XBE`, else `default.xbe` beside the disc image). Saves go to the
+//! (`H2_XBE`, else `default.xbe` beside the disc image), through
+//! `editor_core::variant_sources`. Saves go to the
 //! runtime's save storage (docs/editor/variants.md); there is no file path.
 
 use std::path::{Path, PathBuf};
 
-use variants::save::{SaveStore, XbeNames};
+use editor_core::variant_sources;
+use variants::save::XbeNames;
 use variants::{Schema, VariantEditor};
 
 use crate::source::MapSource;
 use crate::tool::{Handoff, Tool, ToolContext, ToolError};
-
-const LANGUAGE: tags::Language = tags::Language::English;
 
 #[derive(Default)]
 pub struct VariantTool {
@@ -39,53 +39,30 @@ impl VariantTool {
 
     /// The save storage root: `U:` under the data root.
     pub fn save_root(data_root: Option<&Path>) -> PathBuf {
-        match data_root {
-            Some(d) => SaveStore::root_under(d),
-            None => SaveStore::root_under(&content::store::default_data_root()),
-        }
+        variant_sources::save_root(data_root)
     }
 
     /// The schema from the source's main menu map, else the fallback.
     /// The bool says whether it came from the disc.
     pub fn schema(source: Option<&MapSource>) -> (Schema, bool) {
-        let from_disc = source
-            .and_then(|s| s.open_map("mainmenu").ok())
-            .and_then(|mut m| Schema::from_map(&mut m, LANGUAGE).ok());
-        match from_disc {
-            Some(s) => (s, true),
-            None => (Schema::fallback(), false),
-        }
+        variant_sources::schema(source)
     }
 
     /// The XBE to read save names from.
     pub fn xbe_path(source: Option<&MapSource>) -> Option<PathBuf> {
-        if let Some(p) = std::env::var_os("H2_XBE") {
-            return Some(PathBuf::from(p));
-        }
-        let beside = source?.path().parent()?.join("default.xbe");
-        beside.is_file().then_some(beside)
+        variant_sources::xbe_path(source)
     }
 
     pub fn names(source: Option<&MapSource>) -> Option<XbeNames> {
-        let bytes = std::fs::read(Self::xbe_path(source)?).ok()?;
-        let xbe = xbe::Xbe::parse(&bytes).ok()?;
-        XbeNames::read(&xbe, LANGUAGE).ok()
+        variant_sources::names(source)
     }
 
     fn build(&mut self, cx: &mut ToolContext<'_>) {
-        let (schema, from_disc) = Self::schema(cx.source);
-        let names = Self::names(cx.source);
-        let have_names = names.is_some();
-        let store = Some(SaveStore::new(
-            Self::save_root(self.data_root.as_deref()),
-            names,
-        ));
-        self.editor = Some(VariantEditor::new(schema, store));
+        let (editor, note) = variant_sources::editor(cx.source, self.data_root.as_deref());
+        self.editor = Some(editor);
         self.built_for = Some(cx.source.map(|s| s.path().to_owned()));
-        if !from_disc {
-            cx.info("no disc: using the built-in setting model");
-        } else if !have_names {
-            cx.info("no XBE found (set H2_XBE): saved variants can be edited, but not created");
+        if let Some(note) = note {
+            cx.info(note);
         }
     }
 }

@@ -1,7 +1,8 @@
 //! The tool's file handling and undo, without a window.
 
-use super::model::tests::sample;
 use super::*;
+use hopper_edit::fixture::sample;
+use live_proto::hopper::INFLATED_SIZE;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("h2-editor-hopper-{}", std::process::id()));
@@ -194,8 +195,8 @@ fn the_panel_draws_without_changing_anything() {
 
 // ---------- game variants ----------
 
-use super::model::tests::good_variant;
 use crate::dialog::{Picked, ScriptedDialog};
+use hopper_edit::fixture::good_variant;
 use live_proto::hopper::{RECORD, VARIANT_AT};
 
 #[test]
@@ -247,7 +248,7 @@ fn variant_files_load_by_path_or_dialog() {
     let path = scratch("shared.h2variant");
     std::fs::write(&path, variants::portable::export(&v)).unwrap();
     let mut t = HopperTool::new();
-    t.set_variant_sources(&crate::hopper::choices::tests_schema(), None);
+    t.set_variant_sources(&hopper_edit::fixture::schema(), None);
     assert_eq!(t.variant_choices().unwrap().builtins.len(), 2);
 
     // Typed path.
@@ -314,7 +315,7 @@ fn a_handoff_nobody_takes_is_reported() {
 fn the_panel_draws_the_picker_without_changing_anything() {
     let mut t = HopperTool::new();
     t.open_bytes(sample().image(), None).unwrap();
-    t.set_variant_sources(&crate::hopper::choices::tests_schema(), None);
+    t.set_variant_sources(&hopper_edit::fixture::schema(), None);
     t.set_entry_variant(0, 0, &good_variant("Shown")).unwrap();
     t.set_file_dialog(Box::new(ScriptedDialog::default()));
     let ctx = egui::Context::default();

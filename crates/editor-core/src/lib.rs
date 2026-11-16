@@ -3,6 +3,8 @@
 //!
 //! - [`source`]: where maps come from (a disc image or loose `.map`s).
 //! - [`undo`]: a snapshot undo stack any tool can use.
+//! - [`variant_sources`]: the game-variant schema, save names and save
+//!   storage for a source, for the variant and playlist tools.
 //! - [`Status`]: a status-line message.
 //!
 //! Nothing here contains game data: map names and everything else come
@@ -10,6 +12,7 @@
 
 pub mod source;
 pub mod undo;
+pub mod variant_sources;
 
 pub use source::{Disc, MapSource, Resources, default_disc};
 pub use undo::UndoStack;
