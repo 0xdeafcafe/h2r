@@ -767,8 +767,10 @@ dependencies = [
  "flate2",
  "font",
  "gltf",
+ "h1bitmaps",
  "h1convert",
  "h1map",
+ "h1models",
  "hs",
  "iced-x86",
  "image",
@@ -2119,6 +2121,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "h1bitmaps"
+version = "0.1.0"
+dependencies = [
+ "assets",
+ "gfx",
+ "h1map",
+ "h1models",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
 ]
 
 [[package]]

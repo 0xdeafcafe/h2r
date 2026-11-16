@@ -100,6 +100,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
                           Halo 1 map's tags (docs/formats/h1-map-format.md)
+  h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]
+                          Halo 1 bitmap's images as PNGs (docs/formats/h1-bitmaps.md)
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
