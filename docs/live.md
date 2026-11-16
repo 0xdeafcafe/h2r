@@ -244,6 +244,11 @@ under a second. Keys and emblem colouring are in
 - **`h2 play --live`** extracts the art once per disc (on first run, or when
   the cache key changes) and serves it from the embedded server. Without
   art, `/art/game/manifest.json` is a 404 and the web app uses its own art.
+- **Map geometry.** The same run writes every multiplayer map's level
+  geometry (`map/<stem>/map.glb`) and five pre-drawn, lit views with exact
+  world-to-pixel matrices (`map/<stem>/views.json`, `views/*.png`), listed
+  under the manifest's `maps`. This adds 2 to 3 seconds. Format and
+  pipeline: [live-art.md](live-art.md).
 
 #### For agents: `h2 live q`
 
