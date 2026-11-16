@@ -55,12 +55,15 @@ pub struct ModelsEntry {
     pub bipeds: BTreeMap<String, GlbRef>,
     /// By weapon tag file stem (`battle_rifle`, ...).
     pub weapons: BTreeMap<String, GlbRef>,
+    /// By vehicle tag file stem (`warthog`, `ghost`, ...).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vehicles: BTreeMap<String, GlbRef>,
 }
 
 impl ModelsEntry {
     /// `None` when nothing was extracted (the manifest then has no `models`).
-    pub fn new(bipeds: &[String], weapons: &[String]) -> Option<Self> {
-        if bipeds.is_empty() && weapons.is_empty() {
+    pub fn new(bipeds: &[String], weapons: &[String], vehicles: &[String]) -> Option<Self> {
+        if bipeds.is_empty() && weapons.is_empty() && vehicles.is_empty() {
             return None;
         }
         let refs = |dir: &str, names: &[String]| {
@@ -76,6 +79,7 @@ impl ModelsEntry {
             version: MODELS_VERSION,
             bipeds: refs("biped", bipeds),
             weapons: refs("weapon", weapons),
+            vehicles: refs("vehicle", vehicles),
         })
     }
 }
@@ -764,13 +768,27 @@ pub fn biped(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model>
             _ => src.bone(bones).map(|b| posed[b]),
         }
     };
+    // Creatures without the usual markers fall back to a name with `hand`
+    // (right first), then the root; the head to the top of the mesh.
+    let (lo, hi) = model.bounds().expect("non-empty");
     let weapon = frame(WEAPON_MARKERS, WEAPON_BONES)
-        .ok_or_else(|| anyhow::anyhow!("no right-hand marker or node"))?;
-    let head =
-        frame(HEAD_MARKERS, HEAD_BONES).ok_or_else(|| anyhow::anyhow!("no head marker or node"))?;
+        .or_else(|| {
+            let hand = |right: bool| {
+                src.bones.iter().position(|b| {
+                    let n = b.name.to_ascii_lowercase();
+                    n.contains("hand") && (!right || n.starts_with('r') || n.contains("right"))
+                })
+            };
+            hand(true).or_else(|| hand(false)).map(|b| posed[b])
+        })
+        .unwrap_or_else(|| posed.first().copied().unwrap_or(IDENTITY));
+    let head = frame(HEAD_MARKERS, HEAD_BONES).unwrap_or_else(|| {
+        let mut m = IDENTITY;
+        m[3] = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, hi[2], 1.0];
+        m
+    });
     model.nodes.push(("weapon".into(), weapon));
     model.nodes.push(("head".into(), head));
-    let (lo, hi) = model.bounds().expect("non-empty");
     model.translate([0.0, 0.0, -lo[2]]);
     model.extras.insert("height".into(), json!(hi[2] - lo[2]));
     Ok(model)
@@ -806,12 +824,86 @@ pub fn weapon(src: &Source) -> Result<Model> {
     Ok(model)
 }
 
+/// Fewer drawn triangles than this: not a real vehicle model.
+pub const MIN_VEHICLE_TRIANGLES: usize = 8;
+
+/// Marker names that are seats: the first word is a seat word and no word
+/// says it is something else at the seat (entry point, camera, hand, ...).
+/// Generic words, matched at run time.
+const SEAT_WORDS: &[&str] = &["driver", "gunner", "passenger", "seat", "pilot", "rider"];
+const NOT_SEAT_WORDS: &[&str] = &[
+    "enter",
+    "entry",
+    "exit",
+    "camera",
+    "target",
+    "damage",
+    "damaged",
+    "destroyed",
+    "grenade",
+    "cinematic",
+    "effect",
+    "hand",
+    "foot",
+    "light",
+];
+
+/// The `seat_<name>` node name of a marker, if the marker is a seat.
+pub fn seat_node(marker: &str) -> Option<String> {
+    let lower = marker.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let first = words.first()?;
+    // `enter01` is `enter`.
+    let bare =
+        |w: &&str| NOT_SEAT_WORDS.contains(&w.trim_end_matches(|c: char| c.is_ascii_digit()));
+    if !SEAT_WORDS.contains(first) || words.iter().any(bare) {
+        return None;
+    }
+    let rest: Vec<&str> = if *first == "seat" && words.len() > 1 {
+        words[1..].to_vec()
+    } else {
+        words
+    };
+    let id = format!("seat_{}", rest.join("_"));
+    (id.len() <= 40).then_some(id)
+}
+
+/// A vehicle in its rest pose and own model space (its object origin),
+/// with a `seat_<name>` node per seat marker (first marker of a name).
+pub fn vehicle(src: &Source) -> Result<Model> {
+    let rest = rest_world(&src.bones);
+    let mut model = Model {
+        mesh_name: "vehicle".into(),
+        primitives: pose_mesh(src, &rest),
+        materials: src.materials.clone(),
+        ..Model::default()
+    };
+    // Some vehicle tags are placeholders around a single triangle.
+    if model.triangles() < MIN_VEHICLE_TRIANGLES {
+        anyhow::bail!("{} drawn triangles: a placeholder", model.triangles());
+    }
+    for m in &src.markers {
+        let Some(name) = seat_node(&m.name) else {
+            continue;
+        };
+        if m.node >= rest.len() || model.nodes.iter().any(|(n, _)| *n == name) {
+            continue;
+        }
+        model.nodes.push((name, marker_world(&rest[m.node], m)));
+    }
+    Ok(model)
+}
+
 // ---- files -----------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Biped,
     Weapon,
+    Vehicle,
 }
 
 impl Kind {
@@ -819,6 +911,7 @@ impl Kind {
         match self {
             Kind::Biped => "biped",
             Kind::Weapon => "weapon",
+            Kind::Vehicle => "vehicle",
         }
     }
 }
@@ -843,7 +936,7 @@ pub struct Written {
 /// one that was not under `skipped` as `models/<kind>/<name>`.
 pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Written {
     let mut out = Written::default();
-    let (mut bipeds, mut weapons) = (Vec::new(), Vec::new());
+    let (mut bipeds, mut weapons, mut vehicles) = (Vec::new(), Vec::new(), Vec::new());
     for (kind, name, model) in built {
         let key = format!("models/{}/{name}", kind.dir());
         let model = match model {
@@ -871,9 +964,10 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
         match kind {
             Kind::Biped => bipeds.push(name),
             Kind::Weapon => weapons.push(name),
+            Kind::Vehicle => vehicles.push(name),
         }
     }
-    out.entry = ModelsEntry::new(&bipeds, &weapons);
+    out.entry = ModelsEntry::new(&bipeds, &weapons, &vehicles);
     out
 }
 
@@ -1251,8 +1345,27 @@ fn read_source(
     })
 }
 
-/// The first frame of the graph's rifle idle (or the nearest stance), with
-/// the graph's node names. Returns the action's name too.
+/// One action of a graph, by name: mode, weapon class, weapon type, action.
+pub type Stance = [String; 4];
+
+/// The action to pose a biped with: the rifle idle of the combat mode (else
+/// the pistol or unarmed one); else any `idle` action, combat mode first;
+/// else any action whose name contains `idle`. `None`: keep the rest pose.
+pub fn pick_idle(stances: &[Stance]) -> Option<usize> {
+    let find = |f: &dyn Fn(&Stance) -> bool| stances.iter().position(f);
+    POSE_CLASSES
+        .iter()
+        .find_map(|c| {
+            find(&|s| s[0] == POSE_MODE && s[1] == *c && s[2] == POSE_TYPE && s[3] == POSE_ACTION)
+        })
+        .or_else(|| find(&|s| s[0] == POSE_MODE && s[3] == POSE_ACTION))
+        .or_else(|| find(&|s| s[3] == POSE_ACTION))
+        .or_else(|| find(&|s| s[3].contains(POSE_ACTION)))
+}
+
+/// The first frame of the graph's idle (see [`pick_idle`]) with the graph's
+/// node names, and the action's name; the rest pose (no names) when the
+/// graph has no idle.
 fn idle_pose(
     map: &mut MapReader,
     files: &mut ResourceFiles,
@@ -1260,21 +1373,25 @@ fn idle_pose(
 ) -> Result<(Vec<String>, Pose, String)> {
     let graph = AnimationGraph::read(map, jmad).context("reading the animation graph")?;
     let strings = map.strings().to_vec();
-    let is = |id: StringId, s: &str| id.resolve(&strings).ok().flatten() == Some(s);
-    let mode = graph
-        .modes
-        .iter()
-        .find(|m| is(m.name, POSE_MODE))
-        .context("no combat mode")?;
-    let (class, action) = POSE_CLASSES
-        .iter()
-        .find_map(|c| {
-            let class = mode.classes.iter().find(|k| is(k.name, c))?;
-            let ty = class.types.iter().find(|t| is(t.name, POSE_TYPE))?;
-            let a = ty.actions.iter().find(|a| is(a.name, POSE_ACTION))?;
-            Some((*c, *a))
-        })
-        .context("no idle action in a rifle, pistol or unarmed stance")?;
+    let name = |id: StringId| id.resolve(&strings).ok().flatten().unwrap_or("").to_owned();
+    let mut stances = Vec::new();
+    let mut actions = Vec::new();
+    for m in &graph.modes {
+        for c in &m.classes {
+            for t in &c.types {
+                for a in &t.actions {
+                    if a.animation_index >= 0 {
+                        stances.push([name(m.name), name(c.name), name(t.name), name(a.name)]);
+                        actions.push(*a);
+                    }
+                }
+            }
+        }
+    }
+    let Some(i) = pick_idle(&stances) else {
+        return Ok((Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()));
+    };
+    let action = actions[i];
     let target = if action.graph_index < 0 {
         graph
     } else {
@@ -1284,26 +1401,10 @@ fn idle_pose(
             .context("action graph index out of range")?;
         AnimationGraph::read(map, r.graph.id).context("reading the inherited graph")?
     };
-    let index = usize::try_from(action.animation_index).context("action has no animation")?;
-    let clip = target.load_clip(index, &mut Res(files))?;
+    let clip = target.load_clip(action.animation_index as usize, &mut Res(files))?;
     let pose = clip.sample_frame(0)?;
-    let names = target
-        .nodes
-        .iter()
-        .map(|n| {
-            n.name
-                .resolve(&strings)
-                .ok()
-                .flatten()
-                .unwrap_or("")
-                .to_owned()
-        })
-        .collect();
-    Ok((
-        names,
-        pose,
-        format!("{POSE_MODE}:{class}:{POSE_TYPE}:{POSE_ACTION}"),
-    ))
+    let names = target.nodes.iter().map(|n| name(n.name)).collect();
+    Ok((names, pose, stances[i].join(":")))
 }
 
 /// What the disc gave for one biped, for the report and the disc test.
@@ -1313,6 +1414,21 @@ pub struct BipedInfo {
     pub tag: String,
     pub map: String,
     pub animation: String,
+}
+
+/// One biped tag posed and built.
+fn biped_from(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    id: TagId,
+) -> Result<(Model, String)> {
+    let (mode, jmad) = object_model(map, id)?;
+    let src = read_source(map, files, mode, MAX_BIPED_TRIANGLES)?;
+    let (names, pose, animation) = match jmad {
+        Some(jmad) => idle_pose(map, files, jmad)?,
+        None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),
+    };
+    Ok((biped(&src, &names, &pose)?, animation))
 }
 
 fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
@@ -1331,11 +1447,7 @@ fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
                 })
                 .map(|t| (t.id, t.name.clone().unwrap_or_default()));
             let Some((id, tag)) = found else { continue };
-            let (mode, jmad) = object_model(&mut map, id)?;
-            let jmad = jmad.context("biped has no animation graph")?;
-            let src = read_source(&mut map, &mut files, mode, MAX_BIPED_TRIANGLES)?;
-            let (names, pose, animation) = idle_pose(&mut map, &mut files, jmad)?;
-            let model = biped(&src, &names, &pose)?;
+            let (model, animation) = biped_from(&mut map, &mut files, id)?;
             let info = BipedInfo {
                 species: String::new(),
                 tag,
@@ -1349,6 +1461,145 @@ fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
         "no biped named {} on a multiplayer map",
         stems.join(" or ")
     ))
+}
+
+/// The species key of a biped tag: its directory's name, lower case
+/// (`objects\\characters\\grunt\\grunt` -> `grunt`), as telemetry sends it.
+pub fn species_of(tag: &str) -> Option<String> {
+    let mut parts = tag.rsplit('\\');
+    parts.next()?;
+    let dir = parts.next()?.to_ascii_lowercase();
+    is_id(&dir).then_some(dir)
+}
+
+/// Per species, the biped tag to draw it with, from every biped tag name and
+/// the number of maps it is on: the one named like its directory, else the
+/// most common, else the shortest name (then the first alphabetically).
+pub fn choose_bipeds(tags: &BTreeMap<String, usize>) -> BTreeMap<String, String> {
+    let mut by_species: BTreeMap<String, Vec<(&String, usize)>> = BTreeMap::new();
+    for (name, &count) in tags {
+        if let Some(sp) = species_of(name) {
+            by_species.entry(sp).or_default().push((name, count));
+        }
+    }
+    by_species
+        .into_iter()
+        .map(|(sp, mut names)| {
+            names.sort_by(|a, b| {
+                let own = |n: &str| !last_component(n).eq_ignore_ascii_case(&sp);
+                own(a.0)
+                    .cmp(&own(b.0))
+                    .then(b.1.cmp(&a.1))
+                    .then(a.0.len().cmp(&b.0.len()))
+                    .then(a.0.cmp(b.0))
+            });
+            (sp, names[0].0.clone())
+        })
+        .collect()
+}
+
+/// Campaign characters: every biped tag on the campaign maps, one per
+/// species (see [`choose_bipeds`]), skipping species in `taken`.
+fn build_ai_bipeds(disc: &Disc, taken: &[&str]) -> Vec<(String, Result<(Model, BipedInfo)>)> {
+    let maps: Vec<_> = disc.maps_of(CacheType::Campaign).collect();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut first: BTreeMap<String, usize> = BTreeMap::new();
+    for (i, m) in maps.iter().enumerate() {
+        let Ok((map, _)) = disc.open(m) else { continue };
+        for t in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == BIPD && t.location.is_some())
+        {
+            if let Some(n) = &t.name {
+                *counts.entry(n.clone()).or_default() += 1;
+                first.entry(n.clone()).or_insert(i);
+            }
+        }
+    }
+    let chosen: Vec<(String, String)> = choose_bipeds(&counts)
+        .into_iter()
+        .filter(|(sp, _)| !taken.contains(&sp.as_str()))
+        .collect();
+    let build = |(species, tag): &(String, String)| -> (String, Result<(Model, BipedInfo)>) {
+        let m = maps[first[tag]];
+        let result = (|| {
+            let (mut map, mut files) = disc.open(m)?;
+            let id = map.tag(map::TagQuery::NameInGroup(tag, BIPD))?.id;
+            let (model, animation) = biped_from(&mut map, &mut files, id)?;
+            Ok((
+                model,
+                BipedInfo {
+                    species: species.clone(),
+                    tag: tag.clone(),
+                    map: m.name().to_owned(),
+                    animation,
+                },
+            ))
+        })();
+        (species.clone(), result)
+    };
+    parallel(&chosen, build)
+}
+
+/// `f` over `items` on all CPUs, results in order.
+fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = items.len().div_ceil(threads).max(1);
+    let f = &f;
+    std::thread::scope(|s| {
+        let workers: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<_>>()))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().expect("a model builder panicked"))
+            .collect()
+    })
+}
+
+/// Triangle budget per vehicle (the highest detail level under it).
+pub const MAX_VEHICLE_TRIANGLES: usize = 40_000;
+const VEHI: FourCC = FourCC(*b"vehi");
+
+/// Every vehicle tag of the shared, multiplayer and campaign maps, by file
+/// stem, first one found.
+fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
+    let maps: Vec<_> = disc
+        .maps_of(CacheType::Shared)
+        .chain(disc.maps_of(CacheType::Multiplayer))
+        .chain(disc.maps_of(CacheType::Campaign))
+        .collect();
+    let mut chosen: Vec<(String, usize, String)> = Vec::new();
+    for (i, m) in maps.iter().enumerate() {
+        let Ok((map, _)) = disc.open(m) else { continue };
+        for t in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == VEHI && t.location.is_some())
+        {
+            let Some(name) = &t.name else { continue };
+            let stem = last_component(name).to_ascii_lowercase();
+            if is_id(&stem) && !chosen.iter().any(|(s, ..)| *s == stem) {
+                chosen.push((stem, i, name.clone()));
+            }
+        }
+    }
+    parallel(&chosen, |(stem, i, tag)| {
+        let result = (|| {
+            let (mut map, mut files) = disc.open(maps[*i])?;
+            let id = map.tag(map::TagQuery::NameInGroup(tag, VEHI))?.id;
+            let (mode, _) = object_model(&mut map, id)?;
+            vehicle(&read_source(
+                &mut map,
+                &mut files,
+                mode,
+                MAX_VEHICLE_TRIANGLES,
+            )?)
+        })();
+        (stem.clone(), result)
+    })
 }
 
 /// Every multiplayer weapon: the `weap` tags under the weapons folder of the
@@ -1397,16 +1648,28 @@ pub fn is_id(s: &str) -> bool {
 pub fn extract(disc: &Disc, out: &Path) -> (Written, Vec<BipedInfo>) {
     let mut built = Vec::new();
     let mut infos = Vec::new();
-    for (species, stems) in SPECIES {
-        let model = build_biped(disc, stems).map(|(m, mut info)| {
-            info.species = species.to_string();
+    let mut add_biped = |built: &mut Vec<_>, species: String, r: Result<(Model, BipedInfo)>| {
+        let model = r.map(|(m, mut info)| {
+            info.species = species.clone();
             infos.push(info);
             m
         });
-        built.push((Kind::Biped, species.to_string(), model));
+        built.push((Kind::Biped, species, model));
+    };
+    for (species, stems) in SPECIES {
+        add_biped(&mut built, species.to_string(), build_biped(disc, stems));
+    }
+    // Campaign characters; the player species keep their multiplayer
+    // models (`elite` is both).
+    let taken: Vec<&str> = SPECIES.iter().map(|(s, _)| *s).collect();
+    for (species, r) in build_ai_bipeds(disc, &taken) {
+        add_biped(&mut built, species, r);
     }
     for (stem, model) in build_weapons(disc) {
         built.push((Kind::Weapon, stem, model));
+    }
+    for (stem, model) in build_vehicles(disc) {
+        built.push((Kind::Vehicle, stem, model));
     }
     (write_models(built, out), infos)
 }

@@ -204,9 +204,9 @@ path is `CHECK_DIR` in the test). Do not commit anything it writes.
 
 # Player and weapon models
 
-The same extraction writes a posed player model per species and a model per
-multiplayer weapon, for the 3D viewer's players (the players contract,
-section 2). Like the maps, everything comes from the owner's disc at run
+The same extraction writes a posed model per player species and campaign
+character, a model per multiplayer weapon and a model per vehicle, for the
+3D viewer's players and AI (the players contract, sections 2 and 5). Like the maps, everything comes from the owner's disc at run
 time; the tests build invented models.
 
 Code: `crates/cli/src/live_models.rs`. Tests:
@@ -217,7 +217,9 @@ Code: `crates/cli/src/live_models.rs`. Tests:
 ```
 models/biped/spartan.glb
 models/biped/elite.glb
+models/biped/<species>.glb    one per campaign character (grunt, jackal, ...)
 models/weapon/<stem>.glb      one per multiplayer weapon
+models/vehicle/<stem>.glb     one per vehicle tag
 ```
 
 `manifest.json` gains a `models` object (absent when nothing was
@@ -227,14 +229,35 @@ extracted):
 "models": { "version": 1,
             "bipeds":  { "spartan": { "glb": "models/biped/spartan.glb" },
                          "elite":   { "glb": "models/biped/elite.glb" } },
-            "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb" } } }
+            "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb" } },
+            "vehicles": { "warthog": { "glb": "models/vehicle/warthog.glb" } } }
 ```
 
+`vehicles` is absent when there are none.
+
 A model that could not be built is listed under `skipped` as
-`models/biped/<species>` or `models/weapon/<stem>` and has no entry.
-Weapon stems are the weapon tag's file name, lower case (`battle_rifle`,
-`energy_blade`, `brute_shot`, `flag`, `ball`, `assault_bomb`, ...), and only
-stems matching `[a-z0-9_]{1,32}` are written.
+`models/biped/<species>`, `models/weapon/<stem>` or
+`models/vehicle/<stem>` and has no entry. Only keys matching
+`[a-z0-9_]{1,32}` are written.
+
+Keys (what telemetry sends):
+
+- **Weapons and vehicles:** the tag's file name, lower case
+  (`battle_rifle`, `energy_blade`, `brute_shot`, `flag`, ...; `warthog`,
+  `ghost`, `banshee`, `scorpion`, `wraith`, `spectre`, `phantom`,
+  `pelican`, and the turrets as their own tags: `chaingun`, `gauss`,
+  `c_turret_ap`, ...).
+- **Player bipeds:** `spartan` and `elite`.
+- **Campaign characters:** the name of the biped tag's directory, lower
+  case: `objects\characters\grunt\grunt` is `grunt`,
+  `...\marine\marine_female\marine_female` is `marine_female`,
+  `...\prophet\prophet_minor` is `prophet`. Where several biped tags share
+  a directory, the one named like the directory is drawn, else the one on
+  the most campaign maps, else the shortest name. The retail directories are
+  not always the common names: drones are `bugger`, combat forms are
+  `floodcombat_human` and `floodcombat_elite`, Tartarus is `tartarus`. The
+  campaign `elite` directory is the player key `elite` and keeps the
+  multiplayer model; the campaign chief is `masterchief`.
 
 ### glb
 
@@ -245,9 +268,15 @@ stems matching `[a-z0-9_]{1,32}` are written.
   only. Bipeds have `weapon` (the right-hand marker: a weapon glb placed
   under it sits in the hand) and `head` (the head marker); weapons have
   `muzzle` (the `primary_trigger` marker, or the front of the model at mid
-  height when it has none).
+  height when it has none); vehicles (mesh node `vehicle`) have a
+  `seat_<name>` node per seat marker (`seat_driver`, `seat_gunner`,
+  `seat_passenger`, `seat_passenger_lf`, ...) where the model has them.
+  Creatures without the usual markers still get both biped nodes: `weapon`
+  at a node named with `hand` (right first), else the root; `head` at the
+  top centre of the mesh.
 - One primitive per material: `POSITION`, `NORMAL`, `TEXCOORD_0` (float),
-  u32 indices. Biped primitives also have `COLOR_0` (float `VEC4`): red is
+  u32 indices. Biped and vehicle primitives also have `COLOR_0` (float
+  `VEC4`) when any of the model's materials has a change-colour map: red is
   the primary change-colour weight, green the secondary (0..1), sampled
   bilinearly from the material's change-colour map at the vertex. A
   material without a change-colour map has zero weights; weapons have no
@@ -259,12 +288,16 @@ stems matching `[a-z0-9_]{1,32}` are written.
   `height` (game units, feet to the top of the head).
 - A biped stands with its feet on the origin plane (lowest vertex at
   glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
-  idle stance: the posed shape is baked into the vertices; nothing is skinned
-  or animated.
+  idle stance (or its own idle, below): the posed shape is baked into the
+  vertices; nothing is skinned or animated.
+- A vehicle is in its rest pose, origin at the vehicle's object origin,
+  facing glTF +x.
 
 On the retail disc: spartan 3,042 triangles and 0.8 MB, elite 2,744
 triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
-380 KB. The whole step takes about 0.1 s.
+380 KB; 34 campaign characters of 330 to 4,800 triangles and 70 KB to
+1.9 MB; 38 vehicles of 26 to 4,750 triangles and 26 KB to 1.7 MB. The
+whole step takes about 0.6 s on 10 cores.
 
 ## Pipeline
 
@@ -272,36 +305,49 @@ triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
    is `masterchief_mp` (else `masterchief`) is the spartan, `elite_mp` (else
    `elite`) the elite. Its object model (`obje +0x34`, docs/objects.md) gives
    the render model (`hlmt +0x00`) and the animation graph (`hlmt +0x10`).
-2. **Weapons.** The `weap` tags under `objects\weapons\` of the shared map
+   Campaign characters: every `bipd` tag on the campaign maps, one per
+   species key (above), built in parallel.
+2. **Vehicles.** Every `vehi` tag of the shared, multiplayer and campaign
+   maps, first one per stem. Per region the permutation named `base` (else
+   the first), the highest detail level under 40,000 triangles. Vehicle tags
+   with fewer than 8 drawn triangles are placeholders and are skipped
+   (two on the retail disc).
+3. **Weapons.** The `weap` tags under `objects\weapons\` of the shared map
    and the multiplayer maps, except fixed emplacements (`\fixed\`), first
    one per stem. Vehicle guns live elsewhere and are not included.
-3. **Geometry.** `tags::model::RenderModelGeometry`. Per region, the
+4. **Geometry.** `tags::model::RenderModelGeometry`. Per region, the
    permutation named `base` (else the first); for bipeds the highest detail
    level whose drawn triangles fit 15,000 (the retail bipeds fit at their
    highest), for weapons the highest. Section-local node indices go through
    the section's node map. Parts of materials whose shader template name
    says `emblem` (the emblem decal) are left out.
-4. **Skeleton.** Each render-model node's rest transform (translation at
+5. **Skeleton.** Each render-model node's rest transform (translation at
    `+0xc`, quaternion at `+0x18`, relative to its parent) composed up the
    tree. The disc test checks the result against the inverse rest frames the
    tag stores (`+0x2c`: three axes and a position): they agree to 4e-7 on
    the spartan, which fixes the quaternion convention.
-5. **Pose.** In the biped's graph: mode `combat`, class `rifle` (else
-   `pistol`, `unarmed`), type `any`, action `idle`; an inherited action is
-   read from its graph. Frame 0 is sampled (`tags::anim_sample`). Graph
+6. **Pose.** In the biped's graph: mode `combat`, class `rifle` (else
+   `pistol`, `unarmed`), type `any`, action `idle`; else any `idle` action
+   (the combat mode first); else any action with `idle` in its name; else
+   the rest pose. An inherited action is read from its graph. Frame 0 is sampled (`tags::anim_sample`). Graph
    nodes are matched to model nodes by name; a channel the frame does not
    supply keeps the rest value.
-6. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
+7. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
    of `posed_world × inverse(rest_world)` of its nodes (weights
    renormalised), normals likewise. Then the model is lifted so its lowest
    vertex is at height 0.
-7. **Markers.** Render-model header `+0x58` is a block of marker groups
+8. **Markers.** Render-model header `+0x58` is a block of marker groups
    (0xc bytes: string-ID name, block of markers); a marker is 0x24 bytes,
    node index at `+2`, translation `+4`, quaternion `+0x10`, relative to its
    node. On the retail models every name resolves and every node is in
    range. `weapon` is the posed `right_hand` marker (`right_hand_elite` on
-   the elite; else a node named `r_hand`), `head` the `head` marker.
-8. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
+   the elite; else a node named `r_hand`), `head` the `head` marker. A
+   vehicle marker is a seat when its first word is `driver`, `gunner`,
+   `passenger`, `seat`, `pilot` or `rider` and no word says it is something
+   at the seat (`enter`, `camera`, `target`, `hand`, `foot`, `damage`, ...);
+   the node is `seat_` plus the marker's words joined by `_`, first marker
+   of a name. Phantoms, Pelicans and some turrets have no seat markers.
+9. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
    `+4` block, datum first; docs/shader-instances.md). A bitmap's role comes
    from generic words in its tag name read at run time: a name ending in
    `_cc` or saying `change_color` is the change-colour map; the first name
@@ -316,16 +362,25 @@ cargo test --release -p cli --bin h2 models_from_the_disc -- --ignored --nocaptu
 ```
 
 writes every model, `report.txt` (sources, pose, triangle counts, sizes),
-`models.json` and `check-<species>.png` to `$RUSH_KEEP/players-models` (a
-directory outside the repository). Each picture shows the biped from the
-front, the right side and three-quarter with its diffuse texture, then the
-change-colour weights (red primary, blue secondary over grey), holding the
-battle rifle at its `weapon` node. Do not commit anything it writes.
+`models.json`, `seats.txt` (each vehicle's seat nodes),
+`check-<species>.png` and `check-vehicle-<stem>.png` to
+`$RUSH_KEEP/players-models` (a directory outside the repository). Each
+picture shows the model from the front, the right side and three-quarter
+with its diffuse texture, then the change-colour weights (red primary, blue
+secondary over grey). Bipeds hold the battle rifle at their `weapon` node;
+vehicles have the spartan standing at `seat_driver`. Do not commit anything
+it writes.
 
 ## Limits
 
 - One pose for everyone: the rifle idle, whatever the player holds. A
-  pistol or sword sits in a rifle grip.
+  pistol or sword sits in a rifle grip. Characters without a rifle stance
+  use their own idle (grunts the pistol one, hunters and flood forms the
+  unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
+  and stands in his rest pose.
+- Vehicles are in their rest pose: no turret aim, no wheel suspension. A
+  vehicle with no seat markers has no `seat_` nodes, and a seat node is the
+  marker's frame, not a seated pose.
 - Change-colour weights are per vertex, so their edges are as coarse as the
   mesh. The diffuse texture already carries the fine detail.
 - No bump, specular, reflection or self-illumination: base colour only. The
