@@ -234,16 +234,16 @@ export function ServiceRecordPage() {
 function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
-      <thead><tr><th /><th>Date</th><th>Map</th><th class="hide-s">Playlist</th><th>Place</th><th /></tr></thead>
+      <thead><tr><th /><th class="num">Date</th><th>Map</th><th class="hide-s">Playlist</th><th class="num">Place</th><th /></tr></thead>
       <tbody>
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">Your first chapter is still ahead.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
               <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
-              <td>{usDateTime(r.game.started_at)}</td>
+              <td class="num">{usDateTime(r.game.started_at)}</td>
               <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} />{gameMapTitle(r.game)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
-              <td>{r.game.status === "live" ? <span class="s-live-tag">LIVE</span> : r.place ? ordinal(r.place) : "–"}</td>
+              <td class="num">{r.game.status === "live" ? <span class="s-live-tag">LIVE</span> : r.place ? ordinal(r.place) : "–"}</td>
               <td class="num"><button class="s-linkbtn" onClick={(e) => { e.stopPropagation(); props.onSelect(r.game.game_id); }}>preview</button></td>
             </tr>
           )}
@@ -256,13 +256,13 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
 function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
-      <thead><tr><th>Level</th><th>Date</th><th class="hide-s">Type</th><th>Result</th><th class="num">Deaths</th><th /></tr></thead>
+      <thead><tr><th>Level</th><th class="num">Date</th><th class="hide-s">Type</th><th>Result</th><th class="num">Deaths</th><th /></tr></thead>
       <tbody>
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">No campaign games on record yet.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
               <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={`/stats/games/${r.game.game_id}`}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
-              <td>{usDateTime(r.game.started_at)}</td>
+              <td class="num">{usDateTime(r.game.started_at)}</td>
               <td class="hide-s">{gameTypeLine(r.game)}</td>
               <td>{r.outcome === "playing" ? <span class="s-live-tag">LIVE</span> : OUTCOME_WORDS[r.outcome]}</td>
               <td class="num">{r.deaths}</td>
