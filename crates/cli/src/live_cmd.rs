@@ -34,7 +34,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
-        [--tunnel | --tunnel-name NAME [--hostname HOST]
+        [--tunnel | --tunnel-name NAME [--hostname HOST] [--no-tunnel-setup]
          | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
                           postgres://localhost/h2live, --listen to
@@ -46,8 +46,11 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           only, unless --share-game-art. --tunnel publishes
                           the server through a cloudflared quick tunnel (a new
                           https://*.trycloudflare.com URL each run);
-                          --tunnel-name runs a named tunnel at https://HOST
-                          (docs/live-hosting.md). --public-url names the URL
+                          --tunnel-name runs a named tunnel at https://HOST,
+                          first logging in to Cloudflare, creating the tunnel
+                          and routing HOST to it if needed (not with
+                          --no-tunnel-setup; docs/live-hosting.md).
+                          --public-url names the URL
                           a proxy of your own serves it at; with
                           --behind-cloudflared that proxy is a cloudflared
                           you run (CF-Connecting-IP trusted from loopback,
@@ -225,6 +228,10 @@ fn serve(mut args: Args) -> Result<()> {
         args.take("--tunnel-name")?,
         args.take("--hostname")?,
     )?;
+    let no_tunnel_setup = args.flag("--no-tunnel-setup");
+    if no_tunnel_setup && !matches!(tunnel, Some(crate::tunnel::Mode::Named { .. })) {
+        bail!("--no-tunnel-setup goes with --tunnel-name");
+    }
     let public_url = args.take("--public-url")?;
     let behind_cloudflared = args.flag("--behind-cloudflared");
     if !args.positional()?.is_empty() {
@@ -272,6 +279,9 @@ fn serve(mut args: Args) -> Result<()> {
                 &origin,
                 policy.public.clone(),
                 "h2 live",
+                (!no_tunnel_setup)
+                    .then(crate::tunnel::OriginCert::from_env)
+                    .as_ref(),
             )?;
             for line in
                 crate::tunnel::notices(t.url.as_deref(), &mode, policy.invite_only, policy.private)

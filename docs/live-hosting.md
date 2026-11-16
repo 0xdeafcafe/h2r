@@ -5,17 +5,25 @@
 over the internet, with HTTPS and no port forwarding, is Cloudflare
 Tunnel: `cloudflared` runs on your machine, connects out to Cloudflare, and
 forwards each request (WebSockets included) to the server on loopback.
-`--tunnel` runs it for you.
+`--live-tunnel` (`h2 play`) and `--tunnel` (`h2 live serve`) run it for you.
 
 ```
 brew install cloudflared
 
 h2 live serve --tunnel                   # quick tunnel: https://<random>.trycloudflare.com
-h2 play disc.iso --live --tunnel         # the embedded server, published the same way
+h2 play disc.iso --live-tunnel           # the embedded server, published the same way
+
+# a lasting address, set up on first use (Cloudflare account and domain needed)
+h2 play disc.iso --live-tunnel --live-tunnel-name h2play --live-tunnel-url https://play.forbes.red
 
 # friends
 h2 play disc.iso --live-server https://<random>.trycloudflare.com
 ```
+
+On `h2 play`, `--live-tunnel` implies `--live`. The older spellings still
+work: `--live --tunnel`, `--tunnel-name NAME` for `--live-tunnel-name`,
+`--hostname HOST` for `--live-tunnel-url https://HOST`. The URL must be
+`https://HOST` with no port and no path beyond `/`.
 
 Implemented in `crates/cli/src/tunnel.rs` (flags in `live_cmd.rs`,
 `play_live.rs`); the server side is `crates/live-server/src/public.rs`.
@@ -62,17 +70,56 @@ What does change: friends need the new URL each time (`--live-server`, the
 web app's server switcher), and old links stop working. For a server that
 lasts, use a named tunnel.
 
-## Named tunnel (`--tunnel-name NAME --hostname HOST`)
+## Named tunnel (`--live-tunnel-name NAME --live-tunnel-url https://HOST`)
 
-One-time setup with a Cloudflare account and a domain on it:
+You need a Cloudflare account with a domain on it. Then one command does
+the rest:
 
 ```
-cloudflared tunnel login
-cloudflared tunnel create h2live
-cloudflared tunnel route dns h2live live.example.net
-
-h2 live serve --tunnel-name h2live --hostname live.example.net
+h2 play disc.iso --live-tunnel --live-tunnel-name h2play --live-tunnel-url https://play.forbes.red
+h2 live serve --tunnel-name h2live --hostname live.example.net      # the same for serve
 ```
+
+Before starting the tunnel it sets up whatever is missing, one line per
+step:
+
+```
+live: no Cloudflare login on this machine; running `cloudflared tunnel login`: open the link it prints and pick the domain for the tunnel
+live: logged in to Cloudflare (/Users/you/.cloudflared/cert.pem)
+live: creating tunnel h2play
+live: routing play.forbes.red to tunnel h2play
+live: starting cloudflared (/opt/homebrew/bin/cloudflared) for http://127.0.0.1:52811
+```
+
+1. **Login.** With no origin certificate, it runs `cloudflared tunnel
+   login` on your terminal and waits while you open the link and pick the
+   domain. The certificate is found as cloudflared finds it:
+   `$TUNNEL_ORIGIN_CERT` if set (then only that file, and a missing one is
+   an error rather than a login, since login writes elsewhere), else
+   `cert.pem` in `~/.cloudflared`, `~/.cloudflare-warp`,
+   `~/cloudflare-warp`, `/etc/cloudflared` or `/usr/local/etc/cloudflared`.
+2. **Tunnel.** If `cloudflared tunnel list --output json` has no tunnel of
+   that name (or id), `cloudflared tunnel create NAME`. Its credentials go
+   to `~/.cloudflared/<id>.json`; a tunnel made on another machine needs
+   that file copied here (`run` says "credentials file not found"
+   otherwise).
+3. **DNS.** `cloudflared tunnel route dns NAME HOST`, every time: it adds a
+   CNAME, or says the host already routes to this tunnel, which is fine.
+   If HOST already has another record (an A record, or a CNAME to another
+   tunnel), cloudflared will not replace it and neither will `h2`: the
+   error says so and asks you to delete the old record in the Cloudflare
+   dashboard (your domain → DNS → Records), then run again.
+
+`--no-tunnel-setup` skips all three and only runs the tunnel, for a tunnel
+you manage yourself. A name without a URL also skips them and just runs
+the tunnel; the server cannot know its URL then, so it is not printed or
+published.
+
+**Use a different tunnel and host name from the Docker deploy.** The
+Docker setup below serves `live.forbes.red` through its own tunnel
+(`h2live`, token-run). Pointing `h2 play` at the same tunnel name or host
+would put two servers with different ids behind one address. Pick another
+pair, such as `h2play` and `play.forbes.red`.
 
 `serve` runs `cloudflared tunnel --no-autoupdate --grace-period 1s run --url
 http://127.0.0.1:<port> h2live`, waits for a registered connection, and
@@ -346,10 +393,21 @@ UDP 3074-3080 reachable for internet play.
   lookup on `PATH`; lifecycle with a fake `cloudflared` shell script
   (URL reported, process stopped on drop, failure output shown, timeout
   kills it, a dead one restarted with its new URL).
+- `crates/cli/src/tunnel.rs`, named tunnel setup with a fake
+  `cloudflared` that logs its calls: no certificate → `tunnel login` runs
+  (and a login that writes nothing, or a missing `$TUNNEL_ORIGIN_CERT`, is
+  an error); an existing tunnel is not created again, a missing one is;
+  `route dns` "already configured" is success and an existing record is a
+  conflict naming the dashboard fix; `--no-tunnel-setup` (and a name
+  without a host) goes straight to `run`; `tunnel list` JSON (deleted
+  tunnels, `null`); `--live-tunnel-url` parsing; the origin certificate
+  search.
 - `crates/cli/src/play_live.rs`: `h2 play --live --tunnel` with a fake
   cloudflared: discovery shows the URL, the game and sign-in link stay on
   loopback, a tunnelled redeem is refused, cloudflared stops with the
-  session.
+  session. `--live-tunnel` flags and their aliases (`--live-tunnel`
+  implies `--live`); a named `--live-tunnel` session logs in, creates,
+  routes and then runs, and only runs with `--no-tunnel-setup`.
 - `crates/live-server/src/standalone.rs`: `h2-live-server`'s flags,
   including the command line `deploy/live/compose.yaml` runs (loopback,
   the id from `--public-url` on a first start only, `CF-Connecting-IP`

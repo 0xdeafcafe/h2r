@@ -66,3 +66,7 @@ harness = false
 [[bench]]
 name = "render_churn"
 harness = false
+
+[[bench]]
+name = "scale_bench"
+harness = false

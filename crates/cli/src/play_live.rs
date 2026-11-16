@@ -24,12 +24,19 @@ pub struct LiveOpts {
     pub listen: Option<SocketAddr>,
     /// `--gamertag`: the account to play as (made if missing).
     pub gamertag: Option<String>,
-    /// `--tunnel` / `--tunnel-name NAME` (with `--hostname HOST`): publish
-    /// the embedded server through cloudflared so friends can join it
-    /// (docs/live-hosting.md).
+    /// `--live-tunnel` (alias `--tunnel`), with `--live-tunnel-name NAME`
+    /// (`--tunnel-name`) and `--live-tunnel-url https://HOST` (or
+    /// `--hostname HOST`): publish the embedded server through cloudflared
+    /// so friends can join it (docs/live-hosting.md).
     pub tunnel: bool,
     pub tunnel_name: Option<String>,
     pub hostname: Option<String>,
+    /// `--no-tunnel-setup`: run a named tunnel as it is, without making it
+    /// or its DNS route first.
+    pub no_tunnel_setup: bool,
+    /// Where cloudflared's login certificate is looked for; `None`: as
+    /// cloudflared does (tests set a directory of their own).
+    pub origin_cert: Option<crate::tunnel::OriginCert>,
     /// The cloudflared to run; `None`: `$H2_CLOUDFLARED`, else PATH (tests
     /// set a fake).
     pub cloudflared: Option<PathBuf>,
@@ -52,9 +59,17 @@ impl LiveOpts {
                         .with_context(|| format!("bad --live-listen {v:?} (want ip:port)"))?,
                 );
             }
+            "--live-tunnel" => {
+                self.enabled = true;
+                self.tunnel = true;
+            }
             "--tunnel" => self.tunnel = true,
-            "--tunnel-name" => self.tunnel_name = Some(value()?),
+            "--live-tunnel-name" | "--tunnel-name" => self.tunnel_name = Some(value()?),
+            "--live-tunnel-url" => {
+                self.hostname = Some(crate::tunnel::hostname_from_url(&value()?)?);
+            }
             "--hostname" => self.hostname = Some(value()?),
+            "--no-tunnel-setup" => self.no_tunnel_setup = true,
             "--gamertag" => {
                 let v = value()?;
                 Gamertag::new(&v).map_err(|e| anyhow::anyhow!("--gamertag {v:?}: {e}"))?;
@@ -72,7 +87,17 @@ impl LiveOpts {
         if self.server.is_some() && self.listen.is_some() {
             bail!("--live-listen is for the embedded server; --live-server uses another");
         }
-        if self.tunnel_mode()?.is_some() {
+        if self.hostname.is_some() && self.tunnel_name.is_none() {
+            bail!(
+                "--live-tunnel-url (--hostname) goes with --live-tunnel-name: a quick tunnel's \
+                 host name is chosen by Cloudflare"
+            );
+        }
+        let mode = self.tunnel_mode()?;
+        if mode.is_none() && self.no_tunnel_setup {
+            bail!("--no-tunnel-setup goes with --live-tunnel-name");
+        }
+        if mode.is_some() {
             if !self.enabled || self.server.is_some() {
                 bail!(
                     "--tunnel publishes the embedded server: it goes with --live, not --live-server"
@@ -87,10 +112,11 @@ impl LiveOpts {
         Ok(())
     }
 
-    /// The tunnel the flags ask for, if any.
+    /// The tunnel the flags ask for, if any: `--live-tunnel` alone is a
+    /// quick tunnel; a name makes it a named one.
     pub fn tunnel_mode(&self) -> Result<Option<crate::tunnel::Mode>> {
         crate::tunnel::Mode::from_flags(
-            self.tunnel,
+            self.tunnel && self.tunnel_name.is_none(),
             self.tunnel_name.clone(),
             self.hostname.clone(),
         )
@@ -209,12 +235,17 @@ pub fn start(
     let (mut tunnel, mut tunnel_notices) = (None, Vec::new());
     if let (Some(mode), Some(server)) = (opts.tunnel_mode()?, embedded.as_ref()) {
         let public = server.live.policy().public.clone();
+        let cert = opts
+            .origin_cert
+            .clone()
+            .unwrap_or_else(crate::tunnel::OriginCert::from_env);
         let t = crate::tunnel::open(
             opts.cloudflared.clone(),
             mode.clone(),
             &server.url,
             public,
             "live",
+            (!opts.no_tunnel_setup).then_some(&cert),
         )?;
         let policy = server.live.policy();
         tunnel_notices =
@@ -558,8 +589,118 @@ mod tests {
             "only the embedded server is tunnelled"
         );
         assert!(parse(&["--live", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
-        assert!(parse(&["--live", "--tunnel", "--tunnel-name", "h2"]).is_err());
+        // --tunnel is --live-tunnel's alias, so a name makes it a named one.
+        assert_eq!(
+            parse(&["--live", "--tunnel", "--tunnel-name", "h2"])
+                .unwrap()
+                .tunnel_mode()
+                .unwrap(),
+            Some(crate::tunnel::Mode::Named {
+                name: "h2".into(),
+                hostname: None
+            })
+        );
         assert!(parse(&["--live", "--hostname", "a.example"]).is_err());
+    }
+
+    #[test]
+    fn live_tunnel_flags() {
+        // --live-tunnel is --live too.
+        let o = parse(&["--live-tunnel"]).unwrap();
+        assert!(o.enabled && o.tunnel && !o.no_tunnel_setup);
+        assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
+
+        let named = crate::tunnel::Mode::Named {
+            name: "h2play".into(),
+            hostname: Some("play.forbes.red".into()),
+        };
+        let o = parse(&[
+            "--live-tunnel",
+            "--live-tunnel-name",
+            "h2play",
+            "--live-tunnel-url",
+            "https://Play.Forbes.red/",
+        ])
+        .unwrap();
+        assert_eq!(o.tunnel_mode().unwrap(), Some(named.clone()));
+        assert_eq!(
+            named.fixed_url().as_deref(),
+            Some("https://play.forbes.red")
+        );
+        // The old names say the same.
+        let old = parse(&[
+            "--live",
+            "--tunnel",
+            "--tunnel-name",
+            "h2play",
+            "--hostname",
+            "play.forbes.red",
+        ])
+        .unwrap();
+        assert_eq!(old.tunnel_mode().unwrap(), Some(named.clone()));
+        let mixed = parse(&[
+            "--live-tunnel",
+            "--tunnel-name",
+            "h2play",
+            "--live-tunnel-url",
+            "https://play.forbes.red",
+            "--no-tunnel-setup",
+        ])
+        .unwrap();
+        assert_eq!(mixed.tunnel_mode().unwrap(), Some(named));
+        assert!(mixed.no_tunnel_setup);
+        // A name without a URL: runs, the URL unknown.
+        assert_eq!(
+            parse(&["--live-tunnel", "--live-tunnel-name", "h2play"])
+                .unwrap()
+                .tunnel_mode()
+                .unwrap(),
+            Some(crate::tunnel::Mode::Named {
+                name: "h2play".into(),
+                hostname: None
+            })
+        );
+
+        // The URL: https, a host, nothing more.
+        for bad in [
+            "http://play.forbes.red",
+            "play.forbes.red",
+            "https://play.forbes.red:8443",
+            "https://play.forbes.red/live",
+            "https://play.forbes.red?x",
+        ] {
+            let e = parse(&[
+                "--live-tunnel",
+                "--live-tunnel-name",
+                "h2play",
+                "--live-tunnel-url",
+                bad,
+            ])
+            .unwrap_err();
+            assert!(format!("{e}").contains("https://HOST"), "{bad}: {e}");
+        }
+        assert!(
+            parse(&[
+                "--live-tunnel",
+                "--live-tunnel-url",
+                "https://play.forbes.red"
+            ])
+            .is_err(),
+            "a quick tunnel has no URL of ours"
+        );
+        assert!(
+            parse(&["--live-tunnel", "--live-server", "https://h.example"]).is_err(),
+            "only the embedded server is tunnelled"
+        );
+        assert!(
+            parse(&["--live-tunnel-name", "h2play"]).is_err(),
+            "needs --live"
+        );
+        assert!(
+            parse(&["--live", "--no-tunnel-setup"]).is_err(),
+            "no tunnel to set up"
+        );
+        assert!(parse(&["--live-tunnel-url"]).is_err(), "needs a value");
     }
 
     /// A test-only cloudflared: prints a quick tunnel URL, records its
@@ -651,6 +792,96 @@ mod tests {
             .unwrap()
             .success();
         assert!(!alive, "cloudflared outlived the session");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_named_tunnel_is_set_up_before_the_session_publishes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("named-setup");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("cloudflared");
+        let certs = dir.join("cloudflared-home");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {d}/calls\n\
+                 case \"$1 $2\" in\n\
+                 'tunnel login') mkdir -p {c}; echo cert > {c}/cert.pem ;;\n\
+                 'tunnel list') echo '[]' ;;\n\
+                 'tunnel create') ;;\n\
+                 'tunnel route') echo 'INF Added CNAME play.example.net which will route to this tunnel' >&2 ;;\n\
+                 *) echo 'INF Registered tunnel connection connIndex=0' >&2; exec sleep 30 ;;\n\
+                 esac\n",
+                d = dir.display(),
+                c = certs.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut opts = parse(&[
+            "--live-tunnel",
+            "--live-tunnel-name",
+            "h2play",
+            "--live-tunnel-url",
+            "https://play.example.net",
+        ])
+        .unwrap();
+        opts.cloudflared = Some(fake);
+        opts.origin_cert = Some(crate::tunnel::OriginCert {
+            explicit: None,
+            dirs: vec![certs.clone()],
+        });
+        let calls = || -> Vec<String> {
+            std::fs::read_to_string(dir.join("calls"))
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        };
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &Places::under(&dir),
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
+        assert_eq!(session.public_url(), Some("https://play.example.net"));
+        let run = format!(
+            "tunnel --no-autoupdate --grace-period 1s run --url {} h2play",
+            session.server
+        );
+        drop(session);
+        assert_eq!(
+            calls(),
+            [
+                "tunnel login",
+                "tunnel list --output json",
+                "tunnel create h2play",
+                "tunnel route dns h2play play.example.net",
+                run.as_str()
+            ]
+        );
+
+        // --no-tunnel-setup: only the run.
+        std::fs::remove_file(dir.join("calls")).unwrap();
+        opts.no_tunnel_setup = true;
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &Places::under(&dir),
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
+        let run = format!(
+            "tunnel --no-autoupdate --grace-period 1s run --url {} h2play",
+            session.server
+        );
+        drop(session);
+        assert_eq!(calls(), [run]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
