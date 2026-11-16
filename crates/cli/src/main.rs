@@ -30,6 +30,7 @@ mod live_models;
 mod live_weapons;
 mod live_render;
 mod live_sky;
+mod live_weather;
 mod live_admin;
 mod live_cmd;
 mod live_maps;

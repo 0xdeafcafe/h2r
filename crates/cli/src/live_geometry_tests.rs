@@ -1325,6 +1325,16 @@ fn geometry_from_the_disc() {
         let glb = fs::read(out.join("map").join(stem).join("map.glb")).unwrap();
         let (doc, _) = parse_glb(&glb);
         report += &format!("{stem:<20} sky {}\n", doc["asset"]["extras"]["sky"]);
+        for w in doc["asset"]["extras"]["weather"].as_array().into_iter().flatten() {
+            report += &format!(
+                "{stem:<20} weather {} {} x{} in {} boxes, {} kept out\n",
+                w["name"],
+                w["kind"],
+                w["amount"],
+                w["boxes"].as_array().map_or(0, Vec::len),
+                w["exclude"].as_array().map_or(0, Vec::len)
+            );
+        }
         let mut blends: BTreeMap<String, usize> = BTreeMap::new();
         for m in doc["materials"].as_array().into_iter().flatten() {
             if let Some(l) = m["extras"]["layer"].as_str() {
@@ -2186,6 +2196,7 @@ fn sky_materials_blend_by_template_words_and_the_sky_is_in_the_extras() {
             start: 1.0,
             end: 40.0,
         }),
+        glow: None,
         scale: 1.0,
     });
     let (doc, _) = parse_glb(&level.glb());
@@ -2580,4 +2591,104 @@ fn base_maps_on_the_disc() {
         total - same - none
     );
     std::fs::write(Path::new(&dir).join("base_maps.txt"), head + &changed).unwrap();
+}
+
+#[test]
+fn a_sky_light_gives_the_glow_of_the_air() {
+    use crate::live_sky::*;
+    let mut b = sky_header();
+    // One light at 0x180 whose fog element is at 0x1c0.
+    put32(&mut b, SKY_LIGHTS, 1);
+    put32(&mut b, SKY_LIGHTS + 4, BASE + 0x180);
+    put32(&mut b, 0x180 + LIGHT_DIRECTION, 2.356f32.to_bits());
+    put32(&mut b, 0x180 + LIGHT_DIRECTION + 4, 0.611f32.to_bits());
+    put32(&mut b, 0x180 + LIGHT_FOG, 1);
+    put32(&mut b, 0x180 + LIGHT_FOG + 4, BASE + 0x1c0);
+    put32(&mut b, 0x1c0, 0xf);
+    for (k, v) in [0.9f32, 0.75, 0.6, 0.2].iter().enumerate() {
+        put32(&mut b, 0x1c4 + 4 * k, v.to_bits());
+    }
+    let view = TagView::new(&b, BASE);
+    let f = sky_fields(&view, &b[..SKY_HEADER]);
+    assert_eq!(
+        f.glow,
+        Some(SkyGlow {
+            colour: [0.9, 0.75, 0.6],
+            density: 0.2,
+            heading: 2.356,
+            pitch: 0.611
+        })
+    );
+    // A light whose fog has no density gives none.
+    put32(&mut b, 0x1d0, 0);
+    let view = TagView::new(&b, BASE);
+    assert_eq!(sky_fields(&view, &b[..SKY_HEADER]).glow, None);
+}
+
+#[test]
+fn weather_falls_in_its_clusters_and_not_in_its_polyhedra() {
+    use crate::live_weather::*;
+    let mut b = vec![0u8; 0x800];
+    // Palette: an empty entry, then "snow_falling" with a weat tag.
+    put32(&mut b, BSP_WEATHER_PALETTE, 2);
+    put32(&mut b, BSP_WEATHER_PALETTE + 4, BASE + 0x100);
+    put32(&mut b, 0x100 + PALETTE_WEATHER, u32::MAX);
+    let e = 0x100 + PALETTE_STRIDE;
+    b[e..e + 12].copy_from_slice(b"snow_falling");
+    put32(&mut b, e + PALETTE_WEATHER, 0xe77d_0608);
+    // Clusters: one with weather 1, one with none, one with weather 0.
+    put32(&mut b, BSP_CLUSTERS, 3);
+    put32(&mut b, BSP_CLUSTERS + 4, BASE + 0x300);
+    for (c, w) in [(0usize, 1u16), (1, 0xffff), (2, 0)] {
+        let at = 0x300 + c * CLUSTER_STRIDE;
+        for (k, v) in [-1.0f32, 2.0, -3.0, 4.0, 0.0, 10.0].iter().enumerate() {
+            put32(&mut b, at + CLUSTER_BOUNDS + 4 * k, v.to_bits());
+        }
+        put16(&mut b, at + CLUSTER_WEATHER, w);
+    }
+    // One polyhedron: the unit box at the origin (six planes).
+    put32(&mut b, BSP_WEATHER_POLYHEDRA, 1);
+    put32(&mut b, BSP_WEATHER_POLYHEDRA + 4, BASE + 0x600);
+    put32(&mut b, 0x600 + POLYHEDRON_PLANES, 6);
+    put32(&mut b, 0x600 + POLYHEDRON_PLANES + 4, BASE + 0x640);
+    let planes = [
+        [1.0f32, 0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [0.0, 0.0, -1.0, 1.0],
+    ];
+    for (i, p) in planes.iter().enumerate() {
+        for (k, v) in p.iter().enumerate() {
+            put32(&mut b, 0x640 + i * PLANE_STRIDE + 4 * k, v.to_bits());
+        }
+    }
+    let view = TagView::new(&b, BASE);
+    let w = bsp_weather(&view, &b[..BSP_HEADER], |id| {
+        (id == TagId(0xe77d_0608)).then(|| r"scenarios\multi\lockout\lockout".to_string())
+    })
+    .unwrap();
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].name, "snow_falling");
+    assert_eq!(w[0].kind, "snow");
+    assert_eq!(w[0].amount, 1.0);
+    // Game x -1..2, y -3..4, z 0..10 is glTF x -1..2, y 0..10, z -4..3.
+    assert_eq!(w[0].boxes, vec![[-1.0, 0.0, -4.0, 2.0, 10.0, 3.0]]);
+    assert_eq!(w[0].exclude.len(), 1);
+    // Game +y is glTF -z.
+    assert!(w[0].exclude[0].contains(&[0.0, 0.0, -1.0, 1.0]));
+    assert!(w[0].exclude[0].contains(&[0.0, 1.0, 0.0, 1.0]));
+}
+
+#[test]
+fn weather_kinds_and_amounts_come_from_names() {
+    use crate::live_weather::*;
+    assert_eq!(weather_kind(&["snow_heavy", r"scenarios\solo\06a\snow_heavy"]), "snow");
+    assert_eq!(weather_kind(&["", r"scenarios\solo\08a\dcr_rain_monsoon"]), "rain");
+    assert_eq!(weather_kind(&["", r"scenarios\skies\deltatemple\weather\misty_rain"]), "rain");
+    assert_eq!(weather_kind(&["", r"scenarios\solo\08b\flood_spores"]), "motes");
+    assert_eq!(weather_amount(&["dcr_rain_heavy"]), 2.0);
+    assert_eq!(weather_amount(&["snow_light"]), 0.5);
+    assert_eq!(weather_amount(&["snow_falling"]), 1.0);
 }

@@ -1438,7 +1438,7 @@ pub(crate) type MapReader = Map<BufReader<File>>;
 
 /// The scenario's BSP tags: block at +0x210, stride 0x44, BSP tag ID at
 /// +0x14 (as `viewer/src/bin/bsp.rs` reads it).
-fn scenario_bsps(map: &mut MapReader) -> Result<Vec<TagId>> {
+pub(crate) fn scenario_bsps(map: &mut MapReader) -> Result<Vec<TagId>> {
     let scenario = map.scenario().context("no scenario")?.clone();
     let location = scenario.location.context("scenario has no payload")?;
     let bytes = map.read_tag_bytes(scenario.id)?;
@@ -1957,6 +1957,8 @@ pub struct Level {
     /// model's glb (`sky.glb`).
     pub sky: Option<crate::live_sky::SkyInfo>,
     pub sky_glb: Option<Vec<u8>>,
+    /// Where it rains or snows (`asset.extras.weather`).
+    pub weather: Vec<crate::live_weather::Weather>,
     /// The textured looks of the level's and its objects' surfaces.
     pub looks: Looks,
     /// The scenario's other objects (scenery, crates, weapons, ...): their
@@ -2018,6 +2020,7 @@ impl Level {
             bsp_names: BTreeMap::new(),
             sky: None,
             sky_glb: None,
+            weather: Vec::new(),
             looks: Looks::default(),
             object_models: Vec::new(),
             objects: Vec::new(),
@@ -2210,6 +2213,12 @@ impl Level {
         }
         if let Some(sky) = &self.sky {
             more.insert("sky".into(), serde_json::to_value(sky).expect("plain data"));
+        }
+        if !self.weather.is_empty() {
+            more.insert(
+                "weather".into(),
+                serde_json::to_value(&self.weather).expect("plain data"),
+            );
         }
         let glb = write_nodes_with(
             &self.nodes(),
@@ -2538,6 +2547,14 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         .map(LayerPrim::triangles)
         .sum();
     stats.layer_materials = level.layer_materials.len();
+    match crate::live_weather::read_level_weather(&mut map) {
+        Ok(w) => level.weather = w,
+        Err(e) => {
+            level
+                .skipped
+                .insert(format!("map/{}/weather", m.name()), format!("{e:#}"));
+        }
+    }
     match crate::live_sky::read_level_sky(&mut map, &mut files) {
         Ok(Some((info, glb))) => {
             match glb {
