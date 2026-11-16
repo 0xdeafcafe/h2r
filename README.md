@@ -6,8 +6,9 @@ emitted as C11 and built by clang into a dylib. `crates/runtime` runs that
 dylib against high-level replacements for the Xbox kernel, xapi, Direct3D
 and DirectSound, rendering through wgpu on Metal.
 
-You need your own legally obtained copy of the disc. No game data, extracted
-assets or screenshots live in this repo.
+You need your own legally obtained copy of the disc. No game data or extracted
+assets live in this repo. The only screenshots are the docs' own, rendered by
+scripts and stored in Git LFS (see CONTRIBUTING.md).
 
 Public repo: <https://github.com/0xdeafcafe/h2r>.
 
