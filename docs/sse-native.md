@@ -16,11 +16,19 @@ RCP/RSQRT approximation tables and conversions, use the existing helpers.
 
 The native path requires guest round-to-nearest-even with all six exception
 masks set, and host nearest rounding with exceptions masked. It reads FPCR
-on arm64 or MXCSR on x86-64; it never changes host controls. Strict
-`FENV_ACCESS`, `-fno-fast-math` and `-ffp-contract=off` prevent speculative
-arithmetic before the guard and contraction of separate guest operations.
-Strict FP is switched off again at the end of the native helpers, so the
-generated handlers that include the header never inherit it.
+on arm64 or MXCSR on x86-64; it never changes host controls.
+`-fno-fast-math` and `-ffp-contract=off` prevent contraction of separate
+guest operations. The header does **not** use `FENV_ACCESS`: LLVM never
+inlines a strict-FP function into a non-strict caller, so every packed op
+used to cost several real calls (`h2sn_arith`, `h2sn_lane`,
+`h2sn_host_mode`, about 6% of the game thread). Instead each operand is
+passed through an empty volatile asm placed after all guards, so no FP
+operation can be evaluated before the checks pass. Past the guard the host
+is round-to-nearest with traps masked: exactly the environment a
+non-strict compiler assumes. The guarded path is `always_inline`; the
+integer authority sits in a `noinline, cold` function per instruction.
+On arm64 the packed forms check and compute all four lanes with NEON
+(`h2sn_arith4`), using the same per-lane guards and PE reconstruction.
 
 Each operand must be signed zero or a normal binary32 with unbiased exponent
 in [-60,60]. Division additionally requires a nonzero divisor; sqrt requires
@@ -73,6 +81,17 @@ compares results, MXCSR and exception delivery against Rust soft float:
   x86-64 under Rosetta cannot establish unmasked host exception behavior.
 - 426,968 arithmetic records from the committed SSE oracle, including its
   full edge matrix, random states, sticky flags and all eight RC/FTZ modes.
+- `inlined_fast_paths_match_the_authority` (`tests/c/sse_fast_equiv.c`):
+  4,000,000 random records at `-O1` with UBSan and again at `-O2`; with
+  `H2SSE_FAST_COUNT=20000000`, 15.1M of 40M records took the fast path.
+  Accepted results and MXCSR must equal `h2s_*`, the NEON and scalar
+  guards must accept exactly the same records, and every form must take
+  the fast path for at least a tenth of its records. Lanes mix the native
+  range, its exponent edges (66-68, 186-188), signed zeros, denormals,
+  infinities, NaNs, raw bits, cancellation and arbitrary MXCSR.
+- `fast_paths_inline_into_generated_handlers` checks that the guarded
+  path compiles into a non-strict caller with no calls except the cold
+  authority.
 
 A separate opt-in live harness assembles synthetic instructions and checks
 10,240 new cases against Rosetta SSE, the Rust authority and the native C:

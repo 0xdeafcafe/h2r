@@ -216,7 +216,14 @@ fn strict_fp_access_ends_with_the_header() {
     .unwrap();
     let ir = dir.join("after.ll");
     let out = Command::new("clang")
-        .args(["-std=c11", "-O1", "-fno-fast-math", "-ffp-contract=off", "-S", "-emit-llvm"])
+        .args([
+            "-std=c11",
+            "-O1",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+            "-S",
+            "-emit-llvm",
+        ])
         .arg("-DH2_SSE_NATIVE=1")
         .arg("-I")
         .arg(root.join("c"))
@@ -227,7 +234,11 @@ fn strict_fp_access_ends_with_the_header() {
         .arg(&ir)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let ir = std::fs::read_to_string(&ir).unwrap();
     let body = ir
         .split("@h2_after_header(")
@@ -235,7 +246,10 @@ fn strict_fp_access_ends_with_the_header() {
         .and_then(|rest| rest.split("\n}").next())
         .expect("h2_after_header in the IR");
     assert!(body.contains("fadd"), "{body}");
-    assert!(!body.contains("constrained"), "FENV_ACCESS leaked past h2sse_native.h:\n{body}");
+    assert!(
+        !body.contains("constrained"),
+        "FENV_ACCESS leaked past h2sse_native.h:\n{body}"
+    );
 }
 
 #[test]
@@ -338,4 +352,142 @@ fn live_synthetic_oracle_sweep() {
         "native SSE matches {} live synthetic oracle records",
         input.len()
     );
+}
+
+/// Build `tests/c/sse_fast_equiv.c` at `opt` and run `count` random cases.
+fn fast_equiv(opt: &str, sanitize: bool, count: u64, seed: u64) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let arch = std::env::var("H2SSE_TEST_ARCH").unwrap_or_default();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("native-sse-equiv-{opt}-{sanitize}-{arch}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("equiv");
+    let mut command = Command::new("clang");
+    if !arch.is_empty() {
+        command.args(["-arch", &arch]);
+    }
+    command.args([
+        "-std=c11",
+        opt,
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-DH2_SSE_NATIVE=1",
+    ]);
+    if sanitize {
+        command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);
+    }
+    let out = command
+        .arg("-I")
+        .arg(root.join("c"))
+        .arg("-I")
+        .arg(root.join("../simd/c"))
+        .arg(root.join("tests/c/sse_fast_equiv.c"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run = Command::new(&exe)
+        .arg(count.to_string())
+        .arg(seed.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    String::from_utf8(run.stdout).unwrap()
+}
+
+/// The inlined fast paths (NEON for packed ops on arm64) against the
+/// integer authority: millions of random lanes, edge exponents, signed
+/// zeros, denormals, infinities, NaNs, cancellation, every MXCSR mode.
+/// Each form must actually take the fast path for a real share of cases.
+#[test]
+fn inlined_fast_paths_match_the_authority() {
+    let count = std::env::var("H2SSE_FAST_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4_000_000u64);
+    for (opt, sanitize, seed) in [("-O1", true, 0x5eed_0001u64), ("-O2", false, 0x5eed_0002)] {
+        let report = fast_equiv(opt, sanitize, count, seed);
+        let mut forms = 0;
+        for line in report.lines() {
+            let f: Vec<&str> = line.split(' ').collect();
+            let (hit, total): (u64, u64) = (f[1].parse().unwrap(), f[2].parse().unwrap());
+            assert!(
+                hit * 10 > total,
+                "{opt} {}: only {hit} of {total} took the fast path",
+                f[0]
+            );
+            forms += 1;
+        }
+        assert_eq!(forms, 10, "{report}");
+        eprintln!("{opt}:\n{report}");
+    }
+}
+
+/// The guarded path must inline into a non-strict caller (strict-FP
+/// helpers cannot), leaving only the cold authority call out of line.
+#[test]
+fn fast_paths_inline_into_generated_handlers() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-sse-inline");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("caller.c");
+    std::fs::write(
+        &src,
+        "#include <stdint.h>\ntypedef unsigned __int128 h2u128;\n#include \"h2sse_native.h\"\n\
+         uint32_t h2_caller(uint32_t *mx, h2u128 a, h2u128 b, h2u128 *o) {\n\
+         uint32_t s = h2sn_mulps(mx, a, b, o); s |= h2sn_addps(mx, *o, b, o);\n\
+         s |= h2sn_divss(mx, *o, (uint32_t)b, o); return s | h2sn_sqrtps(mx, *o, o); }\n",
+    )
+    .unwrap();
+    let ir = dir.join("caller.ll");
+    let out = Command::new("clang")
+        .args([
+            "-std=c11",
+            "-O1",
+            "-fno-fast-math",
+            "-ffp-contract=off",
+            "-S",
+            "-emit-llvm",
+        ])
+        .arg("-DH2_SSE_NATIVE=1")
+        .arg("-I")
+        .arg(root.join("c"))
+        .arg("-I")
+        .arg(root.join("../simd/c"))
+        .arg(&src)
+        .arg("-o")
+        .arg(&ir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ir = std::fs::read_to_string(&ir).unwrap();
+    let body = ir
+        .split("@h2_caller(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("h2_caller in the IR");
+    for line in body.lines().filter(|l| l.contains(" call ")) {
+        assert!(
+            line.contains("_slow(") || line.contains("asm") || line.contains("@llvm."),
+            "unexpected call in the fast path: {line}"
+        );
+    }
+    assert!(body.contains("fmul") && body.contains("fadd"), "{body}");
+    assert!(!body.contains("constrained"), "{body}");
 }
