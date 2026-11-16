@@ -88,4 +88,28 @@ float h2host_touch_gyro(H2Host *host);
 // Whether crouch is held (a toggled crouch included), to light its button.
 bool h2host_touch_crouched(H2Host *host);
 
+// What the on-screen controls draw, from player one's state
+// (crates/input/src/touch_layout.rs): a layout, the buttons shown and
+// dimmed, and the move stick's radius.
+enum {
+    H2_TOUCH_LAYOUT_ON_FOOT = 0,
+    H2_TOUCH_LAYOUT_DRIVER = 1, // Fire, Boost (left trigger), Exit (hold X), Zoom
+    H2_TOUCH_LAYOUT_TURRET = 2, // passenger or gunner: Fire, Exit, Zoom
+};
+enum {
+    H2_TOUCH_FLAG_ZOOM_NEAR_FIRE = 1u << 0, // a scoped weapon: Zoom large, by Fire
+    H2_TOUCH_FLAG_DUAL = 1u << 1, // dual-wielding: left trigger is "FIRE L" on the left
+    H2_TOUCH_FLAG_ON_TARGET = 1u << 2, // the reticle is red
+};
+typedef struct H2TouchLayout {
+    uint32_t layout;     // H2_TOUCH_LAYOUT_*
+    uint32_t visible;    // H2_TOUCH_* bits drawn
+    uint32_t dimmed;     // of those, drawn faint
+    uint32_t flags;      // H2_TOUCH_FLAG_*
+    float stick_radius;  // points for a full move stick
+    uint32_t generation; // changes whenever anything above does
+} H2TouchLayout;
+// Fills `out` with the layout to draw now. False with no game running.
+bool h2host_touch_layout(H2Host *host, H2TouchLayout *out);
+
 #endif

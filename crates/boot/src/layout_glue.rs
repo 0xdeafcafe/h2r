@@ -145,7 +145,11 @@ pub fn layout_of_row(row: i16) -> Option<Layout> {
 
 /// The list's item count: ours for the layout list, unchanged otherwise.
 pub fn list_count(name: u32, count: u32) -> u32 {
-    if name == LIST_NAME && count == VANILLA_ROWS { count + ADDED.len() as u32 } else { count }
+    if name == LIST_NAME && count == VANILLA_ROWS {
+        count + ADDED.len() as u32
+    } else {
+        count
+    }
 }
 
 /// The datum array constructor (`0x1a480d`) with the stack at `esp` and the
@@ -156,7 +160,9 @@ pub fn list_count(name: u32, count: u32) -> u32 {
 /// be 4 as well, which is how an earlier version came to grow the element
 /// size instead and left the list at four rows.
 pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, layouts: bool, speaker: bool) -> u32 {
-    let Some(name) = m.u32(esp.wrapping_add(4)) else { return eax };
+    let Some(name) = m.u32(esp.wrapping_add(4)) else {
+        return eax;
+    };
     let mut n = eax;
     if layouts {
         n = list_count(name, n);
@@ -184,9 +190,14 @@ pub fn apply_action_table<M: Gm>(m: &mut M, player: u32) -> bool {
     if player >= MAX_PLAYERS {
         return false;
     }
-    let Some(byte) = m.u8(SETTINGS_BASE + SETTINGS_STRIDE.wrapping_mul(player) + 4) else { return false };
+    let Some(byte) = m.u8(SETTINGS_BASE + SETTINGS_STRIDE.wrapping_mul(player) + 4) else {
+        return false;
+    };
     match Layout::from_preset(byte) {
-        Some(l) if !l.is_retail() => m.wr(TABLE_BASE + TABLE_STRIDE.wrapping_mul(player) + TABLE_SLOTS, &l.action_map()),
+        Some(l) if !l.is_retail() => m.wr(
+            TABLE_BASE + TABLE_STRIDE.wrapping_mul(player) + TABLE_SLOTS,
+            &l.action_map(),
+        ),
         _ => false,
     }
 }
@@ -245,7 +256,9 @@ pub fn name_text(l: Layout) -> &'static str {
 }
 pub fn help_text(l: Layout) -> &'static str {
     match l {
-        Layout::BumperJumper => "Jump on the left bumper, melee on the right. Grenades on A, reload on B, flashlight on X.",
+        Layout::BumperJumper => {
+            "Jump on the left bumper, melee on the right. Grenades on A, reload on B, flashlight on X."
+        }
         Layout::Recon => "Reload and action on the right bumper. Switch grenades moves to X.",
         _ => "Melee on the right bumper, reload on B, switch grenades on X.",
     }
@@ -253,7 +266,10 @@ pub fn help_text(l: Layout) -> &'static str {
 
 /// The layout strings, as `(id, text)`.
 pub fn strings() -> Vec<(u32, &'static str)> {
-    ADDED.iter().flat_map(|l| [(name_id(*l), name_text(*l)), (help_id(*l), help_text(*l))]).collect()
+    ADDED
+        .iter()
+        .flat_map(|l| [(name_id(*l), name_text(*l)), (help_id(*l), help_text(*l))])
+        .collect()
 }
 
 /// Every string served with these features on.
@@ -268,7 +284,11 @@ pub fn served_strings(layouts: bool, speaker: bool) -> Vec<(u32, &'static str)> 
 
 /// Write `strings` (NUL-terminated UTF-8, as the locale blob stores them)
 /// at `base`; returns the address of each id and the first free address.
-pub fn write_strings<M: Gm>(m: &mut M, base: u32, strings: &[(u32, &str)]) -> Option<(Vec<(u32, u32)>, u32)> {
+pub fn write_strings<M: Gm>(
+    m: &mut M,
+    base: u32,
+    strings: &[(u32, &str)],
+) -> Option<(Vec<(u32, u32)>, u32)> {
     let mut at = base;
     let mut out = Vec::new();
     for (id, text) in strings {
@@ -305,7 +325,10 @@ const PANE_TEXT_ORDER: [Option<Action>; 13] = [
 /// whichever action `l` puts there.
 pub fn relabel(l: Layout, slot_action: Action) -> Action {
     let button: Button = Layout::Default.button(slot_action);
-    Action::GAMEPLAY.into_iter().find(|a| l.button(*a) == button).unwrap_or(slot_action)
+    Action::GAMEPLAY
+        .into_iter()
+        .find(|a| l.button(*a) == button)
+        .unwrap_or(slot_action)
 }
 
 fn text_block<M: Gm>(m: &M, pane: u32) -> Option<(u32, u32)> {
@@ -333,7 +356,8 @@ pub fn extend_panes<M: Gm>(m: &mut M, wgit: u32, alloc: &mut u32) -> Option<bool
             label.insert(*a, m.u32(t0 + i as u32 * TEXT_SIZE + 0x24)?);
         }
     }
-    let sid_action: std::collections::HashMap<u32, Action> = label.iter().map(|(a, s)| (*s, *a)).collect();
+    let sid_action: std::collections::HashMap<u32, Action> =
+        label.iter().map(|(a, s)| (*s, *a)).collect();
 
     let total = VANILLA_PANES + 2 * ADDED.len() as u32;
     let panes = *alloc;
@@ -403,7 +427,13 @@ const LIVE_ITEM_SLOTS: u32 = 8;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
-fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: &'static str) -> Result<TransferAbi, GuestFault> {
+fn open_screen(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mask: u32,
+    loader: u32,
+    note: &'static str,
+) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
@@ -411,14 +441,21 @@ fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note
     push(&mut mem, cpu, loader)?;
     push(&mut mem, cpu, mask)?;
     eprintln!("{note}");
-    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| Ok(TransferAbi::ret(ret_pc)))
+    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| {
+        Ok(TransferAbi::ret(ret_pc))
+    })
 }
 
 /// In place of a row-chosen call (`ret 8`): show the game's one-button
 /// dialog for `error` to the players in `mask`, as the game shows its own
 /// (`0x19b527(1, error, 4, mask, 0, 0)`: no press or update callback, so the
 /// button just closes it), then return to the caller.
-fn open_dialog(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, error: u32) -> Result<TransferAbi, GuestFault> {
+fn open_dialog(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mask: u32,
+    error: u32,
+) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
@@ -426,7 +463,9 @@ fn open_dialog(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, error: u32) -> Re
     for v in [0, 0, mask, 4, error, 1] {
         push(&mut mem, cpu, v)?;
     }
-    ctx.call_guest(cpu, &mut mem, custom_games::OK_DIALOG, move |_, _| Ok(TransferAbi::ret(ret_pc)))
+    ctx.call_guest(cpu, &mut mem, custom_games::OK_DIALOG, move |_, _| {
+        Ok(TransferAbi::ret(ret_pc))
+    })
 }
 
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<OriginalHandler>> {
@@ -474,20 +513,36 @@ fn announce(seen: &AtomicBool, name: &str) {
 /// and the camera hook when the Video screen has the Field of View row.
 /// Every row's count, text and press come from the model. A missing
 /// original (an image with other entries) skips that hook and says so.
-pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: Option<Arc<Model>>) -> anyhow::Result<()> {
+pub fn install(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    model: Option<Arc<Model>>,
+) -> anyhow::Result<()> {
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
-    let has = |list, kind| model.as_ref().is_some_and(|m| m.index_of(list, &kind).is_some());
+    let has = |list, kind| {
+        model
+            .as_ref()
+            .is_some_and(|m| m.index_of(list, &kind).is_some())
+    };
     let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
     // Any row of ours on the Controls list (the speaker's, the Steam
     // Controller's): its text and press hooks.
-    let with_controls = model
-        .as_ref()
-        .is_some_and(|m| m.count(List::Controls, speaker_row::VANILLA_ROWS) > speaker_row::VANILLA_ROWS);
+    let with_controls = model.as_ref().is_some_and(|m| {
+        m.count(List::Controls, speaker_row::VANILLA_ROWS) > speaker_row::VANILLA_ROWS
+    });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
     let with_custom_games = custom_games::row_enabled();
-    let with_skulls = model.as_ref().is_some_and(|m| skulls_menu::enabled(m.store()));
-    if !layouts && !with_speaker && !with_controls && !with_video && !with_custom_games && !with_skulls {
+    let with_skulls = model
+        .as_ref()
+        .is_some_and(|m| skulls_menu::enabled(m.store()));
+    if !layouts
+        && !with_speaker
+        && !with_controls
+        && !with_video
+        && !with_custom_games
+        && !with_skulls
+    {
         return Ok(());
     }
     let model = model.unwrap_or_else(|| {
@@ -497,7 +552,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
-    let extra_rows = model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
+    let extra_rows =
+        model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     // The Live menu's (tag copies, item widgets, pane word) in our data.
     let mut live = (0u32, 0u32, 0u32);
     {
@@ -521,7 +577,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         if with_custom_games {
             // The Live menu's tag copies, item widgets and pane word: fixed
             // places, reused each time a map load brings the tag back.
-            live = (alloc, alloc + custom_games::TAG_SPACE, alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE);
+            live = (
+                alloc,
+                alloc + custom_games::TAG_SPACE,
+                alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE,
+            );
             alloc = live.2 + 0x100;
         }
         ALLOC.store(alloc, Ordering::SeqCst);
@@ -532,7 +592,14 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         shadow += 4;
         shadow - 4
     };
-    let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
+    let layout_hooks = [
+        ACTION_TABLE_BUILD,
+        ROW_TEXT,
+        ROW_SELECTED,
+        INITIAL_ROW,
+        PANE_SET,
+        PROFILE_ROWS,
+    ];
     let shared_hooks = [LIST_DATA_NEW, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
     let video_hooks = [PANE_SET];
@@ -568,8 +635,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
-    let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
-        wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
+    let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = wanted
+        .into_iter()
+        .filter_map(|a| original(rt, a).map(|o| (a, o)))
+        .collect();
     rt.edit_dispatch(|d| {
         // Layout table: original, then ours for bytes 4 to 6.
         if let Some(o) = originals.remove(&ACTION_TABLE_BUILD) {
@@ -997,7 +1066,14 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
                     let lo: [u8; 4] = cpu.xmm[0][..4].try_into().unwrap_or_default();
                     let result = f32::from_bits(u32::from_le_bytes(lo));
-                    let out = fov_row::apply(&mut *ctx.runtime().memory(), user, result, target);
+                    let mut mem = ctx.runtime().memory();
+                    if user == 0 {
+                        // Player one's zoom, for direct touch look.
+                        let z = fov_row::magnification(result, fov_row::unzoomed_fov(&*mem, user));
+                        input::touch_look::set_zoom(z);
+                    }
+                    let out = fov_row::apply(&mut *mem, user, result, target);
+                    drop(mem);
                     cpu.xmm[0][..4].copy_from_slice(&out.to_bits().to_le_bytes());
                     Ok(())
                 })
@@ -1101,7 +1177,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     });
     // The Video screen: our own list class, opened by the Settings row.
     if with_video {
-        let class = crate::list_class::ListClass::new("video-screen", video_screen::SCREEN, Arc::clone(&model));
+        let class = crate::list_class::ListClass::new(
+            "video-screen",
+            video_screen::SCREEN,
+            Arc::clone(&model),
+        );
         match registry.add(&class) {
             Ok(true) => {}
             Ok(false) => eprintln!("video screen: features.video-screen is off"),
@@ -1117,14 +1197,17 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             label_only: true,
             model: Arc::clone(&model),
         };
-        registry.add(&rows).map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
+        registry
+            .add(&rows)
+            .map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
     // The Skulls page: our own list class, opened after the difficulty when
     // the pressing profile has a skull (a plan hook on the difficulty
     // press), with the level select's layout.
     if with_skulls {
         let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
-        let (block, line) = skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
+        let (block, line) =
+            skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
         if let Some(line) = line {
             eprintln!("{line}");
         }
@@ -1133,12 +1216,20 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             eprintln!("{line}");
         }
         let flow = Arc::new(crate::skulls_screen::PageFlow::default());
-        let class = crate::skulls_screen::class(Arc::clone(&screen), block, layout, picture, Arc::clone(&flow));
+        let class = crate::skulls_screen::class(
+            Arc::clone(&screen),
+            block,
+            layout,
+            picture,
+            Arc::clone(&flow),
+        );
         match registry.add(&class) {
             Ok(true) => {}
             Ok(false) => {
                 flow.set_on(false);
-                eprintln!("skulls menu: features.skulls-screen is off; the difficulty starts as retail")
+                eprintln!(
+                    "skulls menu: features.skulls-screen is off; the difficulty starts as retail"
+                )
             }
             Err(e) => {
                 flow.set_on(false);
@@ -1157,7 +1248,12 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(Arc::clone(
             model.store(),
         )));
-        match registry.add(&crate::skulls_mp_row::mp_class(Arc::clone(&mp), block, layout, picture)) {
+        match registry.add(&crate::skulls_mp_row::mp_class(
+            Arc::clone(&mp),
+            block,
+            layout,
+            picture,
+        )) {
             Ok(true) => {}
             Ok(false) => eprintln!("skulls menu: features.skulls-mp-screen is off"),
             Err(e) => eprintln!("skulls menu: {e}"),
@@ -1179,17 +1275,25 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             label_only: false,
             model: Arc::clone(&model),
         };
-        registry.add(&rows).map_err(|e| anyhow::anyhow!("controls rows: {e}"))?;
+        registry
+            .add(&rows)
+            .map_err(|e| anyhow::anyhow!("controls rows: {e}"))?;
     }
     if layouts {
-        registry.add(&LayoutValueText).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
+        registry
+            .add(&LayoutValueText)
+            .map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     }
     // The retail Controls row text, ported (crate::controls_text); our
     // rows' hooks and the layouts' value pair run around it.
-    registry.add(&crate::controls_text::ControlsText).map_err(|e| anyhow::anyhow!("controls text: {e}"))?;
+    registry
+        .add(&crate::controls_text::ControlsText)
+        .map_err(|e| anyhow::anyhow!("controls text: {e}"))?;
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
-    registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
+    registry
+        .add(&StringsFeature)
+        .map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     Ok(())
 }
 
@@ -1205,15 +1309,23 @@ impl feature::Feature for LayoutValueText {
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         b.raw()
-            .before(&feature::points::CONTROLS_ROW_TEXT, "layout value pending", |_| {
-                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
-                Ok(feature::Flow::Continue)
-            })
+            .before(
+                &feature::points::CONTROLS_ROW_TEXT,
+                "layout value pending",
+                |_| {
+                    PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
+                    Ok(feature::Flow::Continue)
+                },
+            )
             .after_feature("controls-rows");
-        b.raw().after(&feature::points::CONTROLS_ROW_TEXT, "layout value done", |_| {
-            PENDING_VALUE.store(0, Ordering::Relaxed);
-            Ok(())
-        });
+        b.raw().after(
+            &feature::points::CONTROLS_ROW_TEXT,
+            "layout value done",
+            |_| {
+                PENDING_VALUE.store(0, Ordering::Relaxed);
+                Ok(())
+            },
+        );
         Ok(())
     }
 }
@@ -1231,17 +1343,28 @@ impl feature::Feature for StringsFeature {
             if !is_ours(id) {
                 return None;
             }
-            STRING_ADDRS.get()?.iter().find(|(i, _)| *i == id).map(|(_, a)| *a)
+            STRING_ADDRS
+                .get()?
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, a)| *a)
         });
         Ok(())
     }
 }
 
 /// Register an override at a shadow address that runs the original at `addr`.
-fn alias(d: &mut Dispatch, next: &mut impl FnMut() -> u32, o: &Arc<OriginalHandler>, addr: u32) -> u32 {
+fn alias(
+    d: &mut Dispatch,
+    next: &mut impl FnMut() -> u32,
+    o: &Arc<OriginalHandler>,
+    addr: u32,
+) -> u32 {
     let sh = next();
     let o = Arc::clone(o);
-    d.register_override(sh, "layouts:original", move |cpu, ctx, _| Ok(o.invoke(cpu, ctx, addr)));
+    d.register_override(sh, "layouts:original", move |cpu, ctx, _| {
+        Ok(o.invoke(cpu, ctx, addr))
+    });
     sh
 }
 
@@ -1450,8 +1573,14 @@ mod tests {
         }
         // Standard diagram: panes 8, 9, 10. Legacy diagram: 11, 12, 13.
         for (k, row) in [4i16, 5, 6].into_iter().enumerate() {
-            assert_eq!(i16::from(0i8) + pane_row(row, 0, EXTENDED_PANES).unwrap(), 8 + k as i16);
-            assert_eq!(i16::from(4i8) + pane_row(row, 4, EXTENDED_PANES).unwrap(), 11 + k as i16);
+            assert_eq!(
+                i16::from(0i8) + pane_row(row, 0, EXTENDED_PANES).unwrap(),
+                8 + k as i16
+            );
+            assert_eq!(
+                i16::from(4i8) + pane_row(row, 4, EXTENDED_PANES).unwrap(),
+                11 + k as i16
+            );
         }
     }
 
@@ -1462,7 +1591,11 @@ mod tests {
         for panes in [0, 1, VANILLA_PANES, 13, 15, u32::MAX] {
             for base in [0i8, 4] {
                 for row in -1..10 {
-                    assert_eq!(pane_row(row, base, panes), None, "row {row} base {base} panes {panes}");
+                    assert_eq!(
+                        pane_row(row, base, panes),
+                        None,
+                        "row {row} base {base} panes {panes}"
+                    );
                 }
             }
         }
@@ -1530,7 +1663,11 @@ mod tests {
             let mut f = Fake::default();
             // Even with a layout byte of 4 readable where that player's
             // settings would be (wrapping included), nothing is written.
-            put(&mut f, SETTINGS_BASE.wrapping_add(SETTINGS_STRIDE.wrapping_mul(player)) + 4, &[4]);
+            put(
+                &mut f,
+                SETTINGS_BASE.wrapping_add(SETTINGS_STRIDE.wrapping_mul(player)) + 4,
+                &[4],
+            );
             let before = f.0.clone();
             assert!(!apply_action_table(&mut f, player), "player {player}");
             assert_eq!(f.0, before);
@@ -1538,7 +1675,11 @@ mod tests {
         for player in 0..MAX_PLAYERS {
             let mut f = Fake::default();
             put(&mut f, SETTINGS_BASE + SETTINGS_STRIDE * player + 4, &[4]);
-            put(&mut f, TABLE_BASE + TABLE_STRIDE * player + TABLE_SLOTS, &[0; 16]);
+            put(
+                &mut f,
+                TABLE_BASE + TABLE_STRIDE * player + TABLE_SLOTS,
+                &[0; 16],
+            );
             assert!(apply_action_table(&mut f, player), "player {player}");
         }
     }
@@ -1563,7 +1704,10 @@ mod tests {
             let all = served_strings(layouts, speaker);
             let (addrs, end) = write_strings(&mut f, 0x1000, &all).unwrap();
             assert_eq!(addrs.len(), all.len());
-            assert_eq!(end - 0x1000, all.iter().map(|(_, t)| t.len() as u32 + 1).sum::<u32>());
+            assert_eq!(
+                end - 0x1000,
+                all.iter().map(|(_, t)| t.len() as u32 + 1).sum::<u32>()
+            );
             for (id, a) in addrs {
                 assert!(is_ours(id));
                 let text = all.iter().find(|(i, _)| *i == id).unwrap().1;
@@ -1611,7 +1755,10 @@ mod tests {
         let f = list_call(speaker_row::SMALL_LIST_NAME);
         assert_eq!(grown_count(&f, 0x1000, 6, false, true), 7);
         assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
-        assert_eq!(grown_count(&list_call(LIST_NAME), 0x1000, 4, false, true), 4);
+        assert_eq!(
+            grown_count(&list_call(LIST_NAME), 0x1000, 4, false, true),
+            4
+        );
         // An element size that happens to match does not count.
         let f = list_call(speaker_row::LIST_NAME);
         assert_eq!(grown_count(&f, 0x1000, 4, true, true), 4);
@@ -1631,7 +1778,10 @@ mod tests {
         put(&mut f, 0x1008, &0x4000u32.to_le_bytes());
         put(&mut f, 0x4000, &5u16.to_le_bytes());
         assert_eq!(chosen_row(&f, 0x1000), Some(5));
-        assert_eq!(layout_of_row(chosen_row(&f, 0x1000).unwrap()), Some(Layout::Recon));
+        assert_eq!(
+            layout_of_row(chosen_row(&f, 0x1000).unwrap()),
+            Some(Layout::Recon)
+        );
         assert_eq!(chosen_row(&Fake::default(), 0x1000), None);
     }
 
@@ -1788,11 +1938,15 @@ mod tests {
             let mut features = feature::Registry::new(feature::Switches::defaults());
             let ok = install(&r, &mut features, Some(Arc::new(model))).is_ok();
             let installed = features.build(&feature::Base).unwrap().install(&r).unwrap();
-            tx.send((ok, installed.off_reason("locale").map(str::to_owned))).ok();
+            tx.send((ok, installed.off_reason("locale").map(str::to_owned)))
+                .ok();
         });
         let (ok, strings_off) = rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
         assert!(ok);
-        assert_eq!(strings_off.as_deref(), Some("LOCALE_FIND has no generated original"));
+        assert_eq!(
+            strings_off.as_deref(),
+            Some("LOCALE_FIND has no generated original")
+        );
         // Nothing generated, so every hook was skipped and ours own no entry.
         rt.edit_dispatch(|d| {
             assert!(d.override_name(ACTION_TABLE_BUILD).is_none());

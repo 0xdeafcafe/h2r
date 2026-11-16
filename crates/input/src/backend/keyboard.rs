@@ -371,6 +371,12 @@ impl KeyboardMouse {
         i.touch.clone().state(now)
     }
 
+    /// Player one's state for the touch controls' auto-fire
+    /// (`crate::touch_layout`).
+    pub fn set_touch_context(&self, context: crate::touch_layout::Context) {
+        self.lock().touch.set_context(context);
+    }
+
     /// The touch controls' tuning (from the settings).
     pub fn set_touch_tuning(&self, tuning: TouchTuning) {
         self.lock().touch.set_tuning(tuning);

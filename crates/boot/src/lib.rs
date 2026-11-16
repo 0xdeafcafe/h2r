@@ -54,6 +54,7 @@ pub mod ui;
 pub mod video_screen;
 pub mod sse;
 pub mod sweep_diag;
+pub mod touch_glue;
 pub mod stopgaps;
 pub mod trace;
 pub mod wrappers;
@@ -763,6 +764,10 @@ pub fn run_hosted_with_live(
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
+    // The iOS touch controls' game side (docs/runtime/ios.md): direct
+    // look into player one's facing, and the layout from player one's
+    // seat and weapon. Idle while no touch controls show.
+    touch_glue::install(&mut features).context("installing the touch glue")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));

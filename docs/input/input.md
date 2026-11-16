@@ -291,9 +291,13 @@ deflection yet.
 
 The iOS app's own touch overlay reports held buttons, the move thumb's
 offset and the look drag (`TouchFrame`); `TouchPad` turns them into a pad:
-a radial deadzone on the move stick, look through `look::LookMotion` (held
-until the guest reads it) with acceleration, sensitivity and a response
-curve, optional gyro, and a crouch toggle on the left-stick click.
+a radial deadzone on the move stick, a crouch toggle on the left-stick
+click and Touch Auto Fire (`touch_layout`). Look is direct when the boot's
+touch hook is installed (always in the game): a drag becomes yaw and pitch
+in radians (`touch_look`), added to player one's facing once a tick, with
+no stick in between. Without the hook it falls back to `look::LookMotion`
+(held until the guest reads it) with acceleration, sensitivity and a
+response curve, plus optional gyro.
 `KeyboardMouse::touch_update` merges it into the keyboard pad, so it joins
 player one on port 0 (buttons add, triggers and the move stick take the
 stronger, look adds to the mouse's). Using it marks the last-used device as

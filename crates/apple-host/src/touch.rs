@@ -5,6 +5,7 @@
 //! only the C layout and the settings lookup.
 
 use input::touch::{CrouchMode, TouchFrame, TouchTuning};
+use input::touch_layout::{self, Plan};
 
 /// `H2TouchFrame` in h2host.h: one report from the on-screen controls.
 #[repr(C)]
@@ -38,35 +39,119 @@ impl H2TouchFrame {
 }
 
 use boot::setting_defs::{
-    TOUCH_CROUCH, TOUCH_CROUCH_HOLD as CROUCH_HOLD, TOUCH_CROUCH_TOGGLE as CROUCH_TOGGLE,
-    TOUCH_GYRO, TOUCH_LOOK,
+    TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_CROUCH_HOLD as CROUCH_HOLD,
+    TOUCH_CROUCH_TOGGLE as CROUCH_TOGGLE, TOUCH_GYRO, TOUCH_LOOK,
 };
+
+/// The rows' values ([`tuning_from`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rows {
+    pub look: i64,
+    pub crouch: i64,
+    pub gyro: i64,
+    pub accel: i64,
+    pub auto_fire: bool,
+}
+
+impl Default for Rows {
+    fn default() -> Self {
+        Rows {
+            look: 5,
+            crouch: CROUCH_TOGGLE,
+            gyro: 0,
+            accel: 5,
+            auto_fire: false,
+        }
+    }
+}
 
 /// The tuning for the rows' values: look speed 1 to 10 (5 is the default
 /// speed, each step about 20% of it), crouch toggle or hold, gyro 0 (off)
-/// to 10 (5 is a 1x gain). Out-of-range values are clamped. `base` keeps
-/// what no row sets.
-pub fn tuning_from(base: TouchTuning, look: i64, crouch: i64, gyro: i64) -> TouchTuning {
+/// to 10 (5 is a 1x gain), look acceleration 0 (none) to 10 (5 is the
+/// default), auto-fire. Out-of-range values are clamped. `base` keeps what
+/// no row sets.
+pub fn tuning_from(base: TouchTuning, rows: Rows) -> TouchTuning {
     TouchTuning {
-        look_sensitivity: look.clamp(1, 10) as f64 / 5.0,
-        crouch: if crouch == CROUCH_HOLD {
+        look_sensitivity: rows.look.clamp(1, 10) as f64 / 5.0,
+        crouch: if rows.crouch == CROUCH_HOLD {
             CrouchMode::Hold
         } else {
             CrouchMode::Toggle
         },
-        gyro_sensitivity: gyro.clamp(0, 10) as f64 / 5.0,
+        gyro_sensitivity: rows.gyro.clamp(0, 10) as f64 / 5.0,
+        direct_acceleration: rows.accel.clamp(0, 10) as f64 / 5.0,
+        auto_fire: rows.auto_fire,
         ..base
     }
 }
 
 /// The tuning `store` gives now; rows it lacks keep their defaults.
 pub fn tuning(store: &settings::Store, base: TouchTuning) -> TouchTuning {
+    let d = Rows::default();
     let int = |k: &str, d: i64| store.get(k).and_then(|v| v.as_int()).unwrap_or(d);
     tuning_from(
         base,
-        int(TOUCH_LOOK.key, 5),
-        int(TOUCH_CROUCH.key, CROUCH_TOGGLE),
-        int(TOUCH_GYRO.key, 0),
+        Rows {
+            look: int(TOUCH_LOOK.key, d.look),
+            crouch: int(TOUCH_CROUCH.key, d.crouch),
+            gyro: int(TOUCH_GYRO.key, d.gyro),
+            accel: int(TOUCH_ACCEL.key, d.accel),
+            auto_fire: store
+                .get(TOUCH_AUTO_FIRE.key)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.auto_fire),
+        },
+    )
+}
+
+/// The tuning that follows the game's state: direct look while the boot's
+/// hook takes the turn, and the move stick's radius from the layout.
+pub fn live(tuning: TouchTuning, plan: &Plan, direct: bool) -> TouchTuning {
+    TouchTuning {
+        direct_look: direct,
+        stick_radius: plan.stick_radius,
+        ..tuning
+    }
+}
+
+/// `H2TouchLayout` in h2host.h: what the on-screen controls should draw
+/// (`input::touch_layout::Plan`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct H2TouchLayout {
+    /// `H2_TOUCH_LAYOUT_*`: 0 on foot, 1 driver, 2 turret (passenger or
+    /// gunner).
+    pub layout: u32,
+    /// `H2_TOUCH_*` bits of the buttons to draw.
+    pub visible: u32,
+    /// Of those, the ones drawn faint (they do nothing now).
+    pub dimmed: u32,
+    /// `H2_TOUCH_FLAG_*`.
+    pub flags: u32,
+    /// Thumb travel for a full move stick, points.
+    pub stick_radius: f32,
+    /// Changes whenever any of the above does.
+    pub generation: u32,
+}
+
+impl H2TouchLayout {
+    pub fn from_plan(plan: &Plan, generation: u32) -> Self {
+        H2TouchLayout {
+            layout: plan.layout as u32,
+            visible: plan.visible,
+            dimmed: plan.dimmed,
+            flags: plan.flags,
+            stick_radius: plan.stick_radius,
+            generation,
+        }
+    }
+}
+
+/// The plan for the context the boot last published.
+pub fn current_plan() -> (Plan, u32) {
+    (
+        touch_layout::plan(&touch_layout::context()),
+        touch_layout::generation(),
     )
 }
 
@@ -122,6 +207,9 @@ mod tests {
             let Some(rest) = line.trim().strip_prefix("H2_TOUCH_") else {
                 continue;
             };
+            if rest.starts_with("LAYOUT_") || rest.starts_with("FLAG_") {
+                continue;
+            }
             let (name, value) = rest.split_once(" = 1u << ").unwrap();
             let shift: u32 = value.split(',').next().unwrap().parse().unwrap();
             let want = match name {
@@ -147,6 +235,104 @@ mod tests {
             seen |= want;
         }
         assert_eq!(seen, bits::ALL, "every bit is declared");
+    }
+
+    fn tuning_from(base: TouchTuning, look: i64, crouch: i64, gyro: i64) -> TouchTuning {
+        super::tuning_from(
+            base,
+            Rows {
+                look,
+                crouch,
+                gyro,
+                ..Rows::default()
+            },
+        )
+    }
+
+    #[test]
+    fn rows_set_acceleration_and_auto_fire() {
+        let base = TouchTuning::default();
+        let d = super::tuning_from(base, Rows::default());
+        assert_eq!((d.direct_acceleration, d.auto_fire), (1.0, false));
+        let t = super::tuning_from(
+            base,
+            Rows {
+                accel: 0,
+                auto_fire: true,
+                ..Rows::default()
+            },
+        );
+        assert_eq!((t.direct_acceleration, t.auto_fire), (0.0, true));
+        let t = super::tuning_from(
+            base,
+            Rows {
+                accel: 99,
+                ..Rows::default()
+            },
+        );
+        assert_eq!(t.direct_acceleration, 2.0, "clamped to 10");
+        let store = settings::Store::defaults(boot::setting_defs::ALL);
+        store
+            .set(TOUCH_AUTO_FIRE.key, settings::Value::Bool(true))
+            .unwrap();
+        store
+            .set(TOUCH_ACCEL.key, settings::Value::Int(10))
+            .unwrap();
+        let t = tuning(&store, base);
+        assert_eq!((t.direct_acceleration, t.auto_fire), (2.0, true));
+    }
+
+    #[test]
+    fn the_layout_follows_the_plan() {
+        use input::touch_layout::{Context, Seat, flags};
+        let p = touch_layout::plan(&Context {
+            seat: Seat::Driver,
+            on_target: true,
+            ..Context::default()
+        });
+        let t = live(TouchTuning::default(), &p, true);
+        assert!(t.direct_look);
+        assert_eq!(t.stick_radius, touch_layout::DRIVE_STICK_RADIUS);
+        let c = H2TouchLayout::from_plan(&p, 7);
+        assert_eq!(c.layout, 1);
+        assert_eq!(c.visible, touch_layout::DRIVER);
+        assert_eq!(c.flags, flags::ON_TARGET);
+        assert_eq!(c.generation, 7);
+        // u32 x4, f32, u32.
+        assert_eq!(std::mem::size_of::<H2TouchLayout>(), 24);
+        assert_eq!(std::mem::offset_of!(H2TouchLayout, stick_radius), 16);
+    }
+
+    #[test]
+    fn the_header_layout_ids_and_flags_are_rusts() {
+        use input::touch_layout::{Layout, flags};
+        let h = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platform/apple/h2host.h"),
+        )
+        .unwrap();
+        let value = |name: &str| -> u32 {
+            let line = h
+                .lines()
+                .find(|l| l.trim().starts_with(&format!("{name} = ")))
+                .unwrap_or_else(|| panic!("{name} in h2host.h"));
+            let v = line
+                .split(" = ")
+                .nth(1)
+                .unwrap()
+                .trim_end_matches(',')
+                .trim();
+            let v = v.split("//").next().unwrap().trim().trim_end_matches(',');
+            match v.strip_prefix("1u << ") {
+                Some(shift) => 1 << shift.parse::<u32>().unwrap(),
+                None => v.parse().unwrap(),
+            }
+        };
+        assert_eq!(value("H2_TOUCH_LAYOUT_ON_FOOT"), Layout::OnFoot as u32);
+        assert_eq!(value("H2_TOUCH_LAYOUT_DRIVER"), Layout::Driver as u32);
+        assert_eq!(value("H2_TOUCH_LAYOUT_TURRET"), Layout::Turret as u32);
+        assert_eq!(value("H2_TOUCH_FLAG_ZOOM_NEAR_FIRE"), flags::ZOOM_NEAR_FIRE);
+        assert_eq!(value("H2_TOUCH_FLAG_DUAL"), flags::DUAL);
+        assert_eq!(value("H2_TOUCH_FLAG_ON_TARGET"), flags::ON_TARGET);
     }
 
     #[test]
