@@ -31,8 +31,8 @@ favours the parts that editing and modding touch:
 4. Physics and AI, last. Their floating-point behaviour needs the most care.
 
 Platform code (window, input, audio, file access) lives in its own layer,
-so a tvOS or Xbox port only swaps that layer (docs/runtime/tvos.md; Windows and the Xbox
-groundwork in docs/runtime/windows.md).
+so a tvOS or Xbox port only swaps that layer (docs/runtime/tvos.md; Windows in
+docs/runtime/windows.md, the Xbox app in docs/runtime/xbox.md).
 
 ## The path to good Rust
 
@@ -136,6 +136,7 @@ Every crate below is on master. "Done" means it does what its row says;
 | `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
 | `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
 | `tvos`    | The tvOS app's Rust half, a static library for the UIKit host in `platform/tvos` ([tvos.md](runtime/tvos.md)) | spike |
+| `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | untested on hardware |
 | `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
 
 ### Lifter checks

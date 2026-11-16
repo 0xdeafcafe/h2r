@@ -36,6 +36,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
+- [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan
 
 ## Input (`input/`)
