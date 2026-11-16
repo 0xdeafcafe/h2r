@@ -204,6 +204,7 @@ fn api_router(live: Arc<Live>) -> Router {
         )
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
+        .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
         .route("/v1/games", get(list_games).post(start_game))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))

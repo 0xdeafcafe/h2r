@@ -39,6 +39,12 @@ pub const HOOK: crate::TickHook = crate::TickHook {
     game_time: Some(GAME_TIME_PTR),
 };
 
+/// The toy's simulation state: its data page (game time, input, player).
+pub const SIM: crate::SimRegion = crate::SimRegion::Fixed {
+    base: DATA,
+    len: 0x1000,
+};
+
 /// Logical time per frame: two 60 Hz vblanks.
 pub const FRAME_TICKS: u64 = 333_333;
 

@@ -272,6 +272,8 @@ pub mod lxm {
     /// Game events, `POST /v1/games`, the ingest socket, map outlines.
     pub const GAMES_WRITE: &str = "games.write";
     pub const SESSIONS_WRITE: &str = "sessions.write";
+    /// The co-op relay socket of a session the token's account is in.
+    pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
     /// Every read on a `--private` server, the stream included.

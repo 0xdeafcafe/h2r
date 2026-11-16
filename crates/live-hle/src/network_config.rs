@@ -1,5 +1,8 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 
+/// The co-op channel's port, counted from the base (`coop::link::COOP_PORT_OFFSET`).
+pub const COOP_PORT_OFFSET: u16 = 4;
+
 /// Host endpoints for the title's four channels. Guest ports 1000, 1001, 1005
 /// and 1006 map to base+0, +1, +5 and +6. Base+2 is the HLE QoS responder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +73,14 @@ impl NetworkConfig {
         }
         Ok(())
     }
+    /// The host endpoint of the co-op channel (docs/live-coop.md): base+4,
+    /// which no title channel and not the QoS responder uses, inside the
+    /// base..base+6 range a System Link host already opens. The co-op
+    /// transport binds it itself (`coop::link::UdpLink`); the guest never
+    /// sees it.
+    pub fn coop_endpoint(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(*self.address.ip(), self.address.port() + COOP_PORT_OFFSET)
+    }
     pub(crate) fn local(&self, guest: SocketAddrV4) -> SocketAddrV4 {
         if (1000..=1006).contains(&guest.port()) {
             SocketAddrV4::new(
@@ -104,5 +115,24 @@ impl NetworkConfig {
                 .map(|p| SocketAddrV4::new(*p.ip(), Self::channel_port(p.port(), port)))
                 .collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_coop_channel_is_a_free_port_inside_the_xnet_range() {
+        let c = NetworkConfig::new("192.168.1.50:31000".parse().unwrap());
+        assert_eq!(c.coop_endpoint(), "192.168.1.50:31004".parse().unwrap());
+        // Guest ports 1000, 1001, 1005 and 1006 are the title's; +2 is QoS.
+        let used: Vec<u16> = [1000, 1001, 1005, 1006]
+            .into_iter()
+            .map(|g| NetworkConfig::channel_port(31000, g))
+            .chain([31002])
+            .collect();
+        assert!(!used.contains(&c.coop_endpoint().port()));
+        assert!(c.coop_endpoint().port() <= 31006);
     }
 }

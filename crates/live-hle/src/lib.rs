@@ -29,7 +29,7 @@ mod storage_api;
 mod teams;
 pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
-pub use network_config::NetworkConfig;
+pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};
 
 pub use config::{ConfigError, LiveConfig};
 use entries::{Entry, Operation};

@@ -140,6 +140,49 @@ pub fn hash_guest(guest: &Guest) -> RamHash {
     RamHash { total, chunks }
 }
 
+/// Where a guest keeps its simulation state: the block a hash of "the
+/// game" should cover, as opposed to all of RAM ([`hash_guest`]).
+///
+/// The whole-RAM hash is the strict test (two machines doing the same work
+/// have the same RAM). This one is the narrow test: it stays equal when
+/// only presentation differs, and it is small enough to send every tick
+/// (docs/live-coop.md, docs/theater.md "What the recorder adds").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimRegion {
+    /// `len` bytes at a fixed guest address.
+    Fixed { base: u32, len: u32 },
+    /// `len` bytes at the address held in the guest word `pointer`.
+    Indirect { pointer: u32, len: u32 },
+}
+
+impl SimRegion {
+    /// Halo 2's game-state arena: `0x3fe000` bytes, the block checkpoints
+    /// save, behind the base word at `0x004e6080` (docs/engine-map.md,
+    /// `game_state_arena_initialize` `0x00123b30`; docs/checkpoints.md).
+    /// The base word is from a static reading and has not been checked in
+    /// a running game.
+    pub const HALO2: SimRegion = SimRegion::Indirect {
+        pointer: 0x004e_6080,
+        len: 0x003f_e000,
+    };
+}
+
+/// The hash of `region`, or `None` while it is not there to read (before
+/// the guest has set the pointer, or with the range not mapped). Reads
+/// guest memory from Rust: uncharged, and it writes nothing.
+pub fn hash_sim(guest: &Guest, region: SimRegion) -> Option<u64> {
+    let (base, len) = match region {
+        SimRegion::Fixed { base, len } => (base, len),
+        SimRegion::Indirect { pointer, len } => (guest.u32(pointer).ok()?, len),
+    };
+    if base == 0 {
+        return None;
+    }
+    let mut bytes = vec![0u8; len as usize];
+    guest.read_bytes(base, &mut bytes, 1).ok()?;
+    Some(hash_bytes(u64::from(len), &bytes))
+}
+
 /// What a record marks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -682,5 +725,59 @@ mod tests {
             [(Kind::Present, 0), (Kind::Present, 1), (Kind::Present, 2)]
         );
         assert_eq!(t.records[0].game_tick, None);
+    }
+
+    #[test]
+    fn the_simulation_hash_covers_its_region_and_nothing_else() {
+        let mut g = guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]);
+        let fixed = SimRegion::Fixed {
+            base: 0x11000,
+            len: 0x2000,
+        };
+        let h = hash_sim(&g, fixed).unwrap();
+        // Outside the region, before and after: no change.
+        g.set_u32(0x10ffc, 1).unwrap();
+        g.set_u32(0x13000, 1).unwrap();
+        assert_eq!(hash_sim(&g, fixed), Some(h));
+        // The first and the last word of it: each changes the hash.
+        g.set_u32(0x11000, 1).unwrap();
+        let first = hash_sim(&g, fixed).unwrap();
+        assert_ne!(first, h);
+        g.set_u32(0x12ffc, 1).unwrap();
+        assert_ne!(hash_sim(&g, fixed), Some(first));
+        // The whole-RAM hash saw every one of those writes.
+        assert_ne!(
+            hash_guest(&g),
+            hash_guest(&guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]))
+        );
+    }
+
+    #[test]
+    fn an_indirect_region_follows_its_pointer_and_waits_for_it() {
+        let mut g = guest_with(&[(0x10000, 0x4000), (0x40000, 0x1000)]);
+        let region = SimRegion::Indirect {
+            pointer: 0x40000,
+            len: 0x1000,
+        };
+        assert_eq!(hash_sim(&g, region), None, "the pointer is not set yet");
+        g.set_u32(0x40000, 0x12000).unwrap();
+        let h = hash_sim(&g, region).unwrap();
+        assert_eq!(
+            Some(h),
+            hash_sim(
+                &g,
+                SimRegion::Fixed {
+                    base: 0x12000,
+                    len: 0x1000
+                }
+            )
+        );
+        g.set_u32(0x12800, 7).unwrap();
+        assert_ne!(hash_sim(&g, region), Some(h));
+        // Pointing outside mapped memory, or running off its end: no hash.
+        g.set_u32(0x40000, 0x9000_0000).unwrap();
+        assert_eq!(hash_sim(&g, region), None);
+        g.set_u32(0x40000, 0x13800).unwrap();
+        assert_eq!(hash_sim(&g, region), None);
     }
 }
