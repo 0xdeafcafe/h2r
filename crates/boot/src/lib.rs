@@ -21,6 +21,7 @@ pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
+pub mod retail_rows;
 pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;

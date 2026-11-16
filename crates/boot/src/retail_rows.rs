@@ -1,0 +1,175 @@
+//! Rows of ours on a retail list, as data (docs/feature-engine.md "UI step
+//! c"): the `ui` model's extension rows of that list, answered by `before`
+//! hooks on the plan at the list's row text and row chosen. A retail row
+//! goes on to the original; a row of ours never reaches it.
+//!
+//! The row count (the shared datum array constructor) and the pane hook are
+//! still `layout_glue`'s raw hooks: they serve every list at once.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use engine::entry::{EntryFuture, Ret};
+use engine::points::Point;
+use feature::{BuildError, Builder, Call, Flow, Manifest};
+use runtime::GuestFault;
+
+use crate::layout_glue::{Gm, chosen_row};
+use crate::list_class;
+use crate::ui::{Chosen, List, Model};
+
+/// One retail list's rows of ours.
+pub struct Extension {
+    /// The feature id.
+    pub id: &'static str,
+    pub title: &'static str,
+    pub list: List,
+    /// Its row text and row chosen (thiscall, two arguments, `ret 8`).
+    pub text: &'static Point,
+    pub chosen: &'static Point,
+    /// Draw the label only (a list whose items have one text).
+    pub label_only: bool,
+    pub model: Arc<Model>,
+}
+
+/// The texts row `row` of `list` draws: `None` for a retail row.
+pub fn texts(model: &Model, list: List, row: i16, label_only: bool) -> Option<Vec<(u32, u32)>> {
+    let r = model.row(list, row)?;
+    let t = model.texts(r);
+    Some(if label_only { vec![t[0]] } else { t.to_vec() })
+}
+
+/// The item a row text call draws (`[esp+4]`) and its row.
+fn text_call<M: Gm>(m: &M, esp: u32) -> Option<(u32, i16)> {
+    let item = m.u32(esp.wrapping_add(4))?;
+    Some((item, crate::speaker_row::item_row(m, item)?))
+}
+
+fn once(seen: &AtomicBool, what: &str) {
+    if !seen.swap(true, Ordering::Relaxed) {
+        eprintln!("{what}");
+    }
+}
+
+fn row_text(c: &mut Call, e: &Ext) -> Result<Flow, GuestFault> {
+    let call = text_call(&*c.ctx.runtime().memory(), c.cpu.esp);
+    // The model reads the store: never with guest memory held.
+    let Some((item, texts)) =
+        call.and_then(|(item, row)| Some((item, texts(&e.model, e.list, row, e.label_only)?)))
+    else {
+        return Ok(Flow::Continue);
+    };
+    once(&e.drawn, &format!("{}: row text", e.id));
+    c.answer_async(move |cx| -> EntryFuture {
+        Box::pin(async move {
+            list_class::draw_texts(&cx, item, texts).await?;
+            Ok(Ret::new(0, 8))
+        })
+    })
+}
+
+fn row_chosen(c: &mut Call, e: &Ext) -> Result<Flow, GuestFault> {
+    let row = chosen_row(&*c.ctx.runtime().memory(), c.cpu.esp);
+    // The store is written with no guest memory held.
+    let Some(chosen) = row
+        .and_then(|r| e.model.row(e.list, r))
+        .map(|r| e.model.press(r))
+    else {
+        return Ok(Flow::Continue);
+    };
+    match chosen {
+        Chosen::Open(id) => c.answer_async(move |cx| -> EntryFuture {
+            Box::pin(async move {
+                let chain = cx.arg(0)?;
+                list_class::open(&cx, chain, id).await?;
+                Ok(Ret::new(0, 8))
+            })
+        }),
+        Chosen::Stepped(msg) => {
+            eprintln!("{msg}");
+            c.ret(8).map(Flow::Return)
+        }
+        _ => c.ret(8).map(Flow::Return),
+    }
+}
+
+/// What the hooks share.
+struct Ext {
+    id: &'static str,
+    list: List,
+    label_only: bool,
+    model: Arc<Model>,
+    drawn: AtomicBool,
+}
+
+impl feature::Feature for Extension {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(self.id, self.title).doc("docs/settings-menu.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let e = Arc::new(Ext {
+            id: self.id,
+            list: self.list,
+            label_only: self.label_only,
+            model: Arc::clone(&self.model),
+            drawn: AtomicBool::new(false),
+        });
+        let t = Arc::clone(&e);
+        b.raw()
+            .before(self.text, "our rows' text", move |c| row_text(c, &t));
+        b.raw()
+            .before(self.chosen, "our rows' press", move |c| row_chosen(c, &e));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::setting_defs::ALL;
+    use crate::video_screen::{self, SETTINGS_ROWS, Switches};
+    use settings::Store;
+
+    fn model() -> Arc<Model> {
+        Arc::new(video_screen::model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap())
+    }
+
+    #[test]
+    fn only_our_rows_are_answered_and_the_settings_row_draws_its_label() {
+        let m = model();
+        let title = m.title_id(video_screen::SCREEN).unwrap();
+        assert_eq!(
+            texts(&m, List::Settings, SETTINGS_ROWS as i16, true),
+            Some(vec![(0, title)])
+        );
+        for r in [0i16, 1, 3, -1] {
+            assert_eq!(texts(&m, List::Settings, r, true), None, "{r}");
+        }
+        assert_eq!(
+            m.press(m.row(List::Settings, 2).unwrap()),
+            Chosen::Open(video_screen::SCREEN)
+        );
+    }
+
+    #[test]
+    fn the_extension_hooks_the_lists_two_points_before_the_original() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        r.add(&Extension {
+            id: "settings-rows",
+            title: "Our rows on the Settings list",
+            list: List::Settings,
+            text: &engine::points::SETTINGS_ROW_TEXT,
+            chosen: &engine::points::SETTINGS_ROW_CHOSEN,
+            label_only: true,
+            model: model(),
+        })
+        .unwrap();
+        let text = r.build(&feature::Base).unwrap().text();
+        assert!(text.contains(
+            "0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original\n"
+        ));
+        assert!(text.contains(
+            "0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original\n"
+        ));
+    }
+}

@@ -18,13 +18,26 @@ fn the_full_plan_builds_and_reads_as_expected() {
     assert!(boot::telemetry::install(&mut r, &config).unwrap().is_some());
     // The Video screen's list class, as `layout_glue::install` adds it.
     let store = std::sync::Arc::new(settings::Store::defaults(boot::setting_defs::ALL));
-    let model = boot::video_screen::model(store, boot::video_screen::Switches::ALL).unwrap();
+    let model = std::sync::Arc::new(
+        boot::video_screen::model(store, boot::video_screen::Switches::ALL).unwrap(),
+    );
     let video = boot::list_class::ListClass::new(
         "video-screen",
         boot::video_screen::SCREEN,
-        std::sync::Arc::new(model),
+        std::sync::Arc::clone(&model),
     );
     r.add(&video).unwrap();
+    // Its row on the Settings list, as data.
+    r.add(&boot::retail_rows::Extension {
+        id: "settings-rows",
+        title: "Our rows on the Settings list",
+        list: boot::ui::List::Settings,
+        text: &feature::points::SETTINGS_ROW_TEXT,
+        chosen: &feature::points::SETTINGS_ROW_CHOSEN,
+        label_only: true,
+        model: std::sync::Arc::clone(&model),
+    })
+    .unwrap();
     r.add(&boot::layout_glue::StringsFeature).unwrap();
     r.add(&boot::level_boot::LoadedMark(None)).unwrap();
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
@@ -37,6 +50,7 @@ fn the_full_plan_builds_and_reads_as_expected() {
         "\
 feature live-telemetry: on
 feature video-screen: on
+feature settings-rows: on
 feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
@@ -49,6 +63,8 @@ feature engine-leaves: on
 0x0018f000 GAME_ACTIVATE: original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
+0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original
+0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original
 0xa0f01000 entry video-screen:loader
 0xa0f01010 entry video-screen:row text
 0xa0f01020 entry video-screen:row chosen

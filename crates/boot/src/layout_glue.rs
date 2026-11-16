@@ -396,9 +396,6 @@ pub fn extend_panes<M: Gm>(m: &mut M, wgit: u32, alloc: &mut u32) -> Option<bool
 static PENDING_VALUE: AtomicU32 = AtomicU32::new(0);
 static ALLOC: AtomicU32 = AtomicU32::new(0);
 static STRING_ADDRS: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock::new();
-/// The Video screen's loader: our list class's (`crate::list_class`), 0
-/// until the class is built.
-static VIDEO_LOADER: AtomicU32 = AtomicU32::new(0);
 /// Set while our Skulls row's open call runs: the next Controls list built
 /// is the Skulls list, with this many rows.
 static OPENING_SKULLS: AtomicU32 = AtomicU32::new(0);
@@ -432,19 +429,6 @@ fn open_skulls(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, rows: u32) -> Res
 /// any other text.
 pub fn video_header_id<M: Gm>(m: &M, esp: u32, title: u32) -> Option<u32> {
     (m.u32(esp.wrapping_add(4))? == video_screen::CONTROLS_HEADER).then_some(title)
-}
-
-/// In place of the Settings row-chosen call (`ret 8`) for the Video row:
-/// open the Video screen with our list class's loader, the way the Settings
-/// screen opens Controls (`0x149f1e(mask, loader)`), then return to the
-/// caller.
-fn open_video(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32) -> Result<TransferAbi, GuestFault> {
-    let loader = VIDEO_LOADER.load(Ordering::SeqCst);
-    if loader == 0 {
-        eprintln!("video screen: its list class is off; not opened");
-        return ctx.runtime().memory().ret(cpu, 8);
-    }
-    open_screen(cpu, ctx, mask, loader, "video screen: opening")
 }
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
@@ -556,11 +540,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
     let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
-    let video_hooks = [
-        video_screen::SETTINGS_ROW_TEXT,
-        video_screen::SETTINGS_ROW_CHOSEN,
-        PANE_SET,
-    ];
+    let video_hooks = [PANE_SET];
     let speaker_hooks = [
         speaker_row::ROW_CHOSEN,
         speaker_row::SMALL_CTOR,
@@ -947,49 +927,15 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                             eprintln!("video screen: no local player for the press; not opened");
                             return ctx.runtime().memory().ret(cpu, 8);
                         };
-                        return open_video(cpu, ctx, mask);
+                        let Some(loader) = crate::list_class::loader_of(video_screen::SCREEN) else {
+                            eprintln!("video screen: its list class is off; not opened");
+                            return ctx.runtime().memory().ret(cpu, 8);
+                        };
+                        return open_screen(cpu, ctx, mask, loader, "video screen: opening");
                     }
                     Chosen::Nothing => {}
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
-            });
-        }
-        // The Settings list's row text: our Video row's label, else the
-        // original (Player Profiles, Game Variants).
-        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_TEXT) {
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            d.register_override(video_screen::SETTINGS_ROW_TEXT, "video:settings-row", move |cpu, ctx, _| {
-                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
-                // The model reads the store: never with guest memory held.
-                let Some(text) = video_screen::settings_text(&model, row) else {
-                    return Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_TEXT));
-                };
-                announce(&seen, "video screen: settings row text");
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                let item = mem.u32(cpu.esp + 4)?;
-                row_texts(cpu, ctx, &mut mem, item, vec![text])
-            });
-        }
-        // The Settings list's row chosen: our Video row opens the Video
-        // screen; the retail rows go to the original.
-        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_CHOSEN) {
-            let model = Arc::clone(&model);
-            d.register_override(video_screen::SETTINGS_ROW_CHOSEN, "video:settings-chosen", move |cpu, ctx, _| {
-                let (row, mask) = {
-                    let mem = ctx.runtime().memory();
-                    (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
-                };
-                let ours = row.and_then(|r| model.row(List::Settings, r)).map(|r| model.press(r));
-                match (ours, mask) {
-                    (Some(Chosen::Open(_)), Some(mask)) => open_video(cpu, ctx, mask),
-                    (Some(_), _) => {
-                        eprintln!("video screen: no local player for the press; not opened");
-                        ctx.runtime().memory().ret(cpu, 8)
-                    }
-                    (None, _) => Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_CHOSEN)),
-                }
             });
         }
         // The Skulls screen's header: while it is built, the text hook gives
@@ -1217,10 +1163,21 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     if with_video {
         let class = crate::list_class::ListClass::new("video-screen", video_screen::SCREEN, Arc::clone(&model));
         match registry.add(&class) {
-            Ok(true) => VIDEO_LOADER.store(class.loader(), Ordering::SeqCst),
+            Ok(true) => {}
             Ok(false) => eprintln!("video screen: features.video-screen is off"),
             Err(e) => eprintln!("video screen: {e}"),
         }
+        // Its row on the Settings list, as data on the plan.
+        let rows = crate::retail_rows::Extension {
+            id: "settings-rows",
+            title: "Our rows on the Settings list",
+            list: List::Settings,
+            text: &feature::points::SETTINGS_ROW_TEXT,
+            chosen: &feature::points::SETTINGS_ROW_CHOSEN,
+            label_only: true,
+            model: Arc::clone(&model),
+        };
+        registry.add(&rows).map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
