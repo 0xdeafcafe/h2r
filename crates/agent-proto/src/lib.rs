@@ -103,6 +103,9 @@ pub mod code {
     pub const UNAVAILABLE: i64 = 4;
     /// The server is shutting down.
     pub const SHUTDOWN: i64 = 5;
+    /// A `session.step` ended early: a resume, a new pause, or control
+    /// released before its ticks ran.
+    pub const INTERRUPTED: i64 = 6;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -276,6 +279,7 @@ pub struct Status {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PauseParams {
     /// Resume by itself after this long (default 60 s, at most 600 s), so
     /// a forgotten pause can't hang the game.
@@ -284,6 +288,7 @@ pub struct PauseParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepParams {
     /// Ticks to run before pausing again (1 to 1800).
     pub ticks: u64,
@@ -292,6 +297,7 @@ pub struct StepParams {
 /// What `session.wait` waits for. Every field given must hold at once;
 /// at least one must be given.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Until {
     /// The game's own tick is at least this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -318,6 +324,7 @@ impl Until {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WaitParams {
     pub until: Until,
     /// Give up after this many ticks (default: no tick limit).
@@ -345,6 +352,7 @@ pub enum EventKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubscribeParams {
     pub events: Vec<EventKind>,
 }
@@ -536,6 +544,7 @@ pub const OBJECT_FIELDS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Near {
     /// Measure from this point…
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -548,6 +557,7 @@ pub struct Near {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueryParams {
     /// Kinds to list (default: all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -591,6 +601,7 @@ pub enum GroupBy {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CountParams {
     #[serde(default)]
     pub group_by: GroupBy,
@@ -604,6 +615,7 @@ pub struct Counts {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObjectParams {
     pub id: String,
 }

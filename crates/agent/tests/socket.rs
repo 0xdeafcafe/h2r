@@ -121,3 +121,33 @@ fn a_bad_line_gets_a_parse_error_and_the_connection_stays() {
     stop.store(true, Ordering::Relaxed);
     h.join().unwrap();
 }
+
+#[test]
+fn a_half_closed_client_gets_its_answer() {
+    use std::io::{Read, Write};
+    let path = socket("half");
+    let a = Agent::new();
+    let _server = Server::listen(&path, a.clone()).unwrap();
+    let (stop, h) = game(&a);
+    let mut s = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(b"{\"id\":1,\"method\":\"session.status\"}\n")
+        .unwrap();
+    s.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut out = String::new();
+    // The server closes once it has answered.
+    s.read_to_string(&mut out).unwrap();
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["result"]["at"]["map"], "mainmenu");
+    stop.store(true, Ordering::Relaxed);
+    h.join().unwrap();
+}
+
+#[test]
+fn a_file_that_is_not_a_socket_is_left_alone() {
+    let path = socket("file");
+    std::fs::write(&path, "notes").unwrap();
+    assert!(Server::listen(&path, Agent::new()).is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "notes");
+    std::fs::remove_file(&path).unwrap();
+}

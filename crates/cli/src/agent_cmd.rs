@@ -51,7 +51,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     .context("--timeout needs seconds")?
                     .parse()
                     .context("--timeout needs seconds")?;
-                timeout = Some(Duration::from_secs_f64(s));
+                timeout = Some(
+                    Duration::try_from_secs_f64(s)
+                        .ok()
+                        .filter(|d| !d.is_zero())
+                        .context("--timeout needs a positive number of seconds")?,
+                );
             }
             "-h" | "--help" => bail!("{USAGE}"),
             _ => rest.push(a),

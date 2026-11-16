@@ -25,7 +25,17 @@ impl Server {
     /// Listens at `path`. A socket file left by a run that's gone is
     /// replaced; one that something still answers on is an error.
     pub fn listen(path: &Path, agent: Agent) -> std::io::Result<Server> {
-        if path.exists() {
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            use std::os::unix::fs::FileTypeExt;
+            if !meta.file_type().is_socket() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "{}: a file that isn't a socket is there; not replacing it",
+                        path.display()
+                    ),
+                ));
+            }
             if UnixStream::connect(path).is_ok() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,

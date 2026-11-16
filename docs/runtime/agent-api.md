@@ -530,10 +530,20 @@ How it behaves (**Code**, with tests in `crates/agent`):
 - **Control.** `pause`, `resume` and `step` need `session.claim`; one
   connection holds it. A pause blocks the game thread inside the tick
   observer, still answering requests, and resumes by itself after `max_ms`
-  (default 60 s, at most 600 s), when the controller releases or
-  disconnects, or when the game exits. `step N` runs N ticks and answers
-  once paused again. In `h2 play` a pause also stops the window's event
-  loop, so it is meant for `h2 serve`.
+  (default 60 s, at most 600 s; a second pause re-arms it), when the
+  controller releases or disconnects, or when the game exits. A pause
+  asked for while loading takes hold at the next tick; its limit runs
+  meanwhile. `step N` runs N ticks and answers once paused again; a resume,
+  a new pause or a release first answers it with `INTERRUPTED` (code 6).
+  With the tick observer off, pause and step are refused (`UNAVAILABLE`).
+  In `h2 play` a pause also stops the window's event loop, so it is meant
+  for `h2 serve`.
+- **Connections.** A client that half-closes (`nc -N`, `shutdown(SHUT_WR)`)
+  still gets answers to what it sent; the connection closes after the
+  last one. Closing releases control. Valid JSON that isn't a request
+  gets `-32600`; unknown params fields are refused; batches aren't
+  supported. Each connection's outgoing queue is unbounded, so a
+  subscriber that stops reading grows it (events are rare).
 - **Waits.** `session.wait` settles at tick boundaries (and between
   slices for wall-clock timeouts and while loading). A condition already
   true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,

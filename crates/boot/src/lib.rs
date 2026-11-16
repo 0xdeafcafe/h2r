@@ -912,7 +912,8 @@ pub fn run_hosted_with_live(
     if let Some(a) = &agent {
         a.set_plan(&plan, &installed);
         if let Some(why) = installed.off_reason("agent") {
-            eprintln!("agent: answering between slices only: {why}");
+            a.agent.set_no_tick_hook();
+            eprintln!("agent: answering between slices only, no pausing: {why}");
         }
     }
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {

@@ -552,3 +552,160 @@ fn methods_and_features_list() {
     );
     assert_eq!(next(&rx)["result"]["plan"][1], "agent: on");
 }
+
+// ---- review findings ----
+
+#[test]
+fn a_long_pause_then_step_never_reports_loading() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.on_tick(&mut g);
+    ask(&a, c, 1, method::SUBSCRIBE, json!({"events": ["phase"]}));
+    ask(&a, c, 2, method::CLAIM, Value::Null);
+    ask(&a, c, 3, method::PAUSE, Value::Null);
+    // The game: a tick, then a slice, as boot runs them.
+    let game = {
+        let a = a.clone();
+        thread::spawn(move || {
+            let mut g = level();
+            for _ in 0..3 {
+                a.on_tick(&mut g);
+                a.between_slices(&mut g, 0);
+            }
+        })
+    };
+    let mut events = Vec::new();
+    for id in 1..=3 {
+        reply(&rx, id, &mut events);
+    }
+    // Held longer than a tick may go missing before it counts as loading.
+    thread::sleep(TICK_STALE + Duration::from_millis(100));
+    ask(&a, c, 4, method::STEP, json!({"ticks": 1}));
+    assert_eq!(reply(&rx, 4, &mut events)["result"]["ticks"], 1);
+    ask(&a, c, 5, method::RESUME, Value::Null);
+    reply(&rx, 5, &mut events);
+    game.join().unwrap();
+    assert!(events.is_empty(), "no phase change: {events:?}");
+}
+
+#[test]
+fn a_pause_asked_while_loading_still_runs_out() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    ask(&a, c, 2, method::PAUSE, json!({"max_ms": 20}));
+    a.between_slices(&mut level(), 0);
+    next(&rx);
+    next(&rx);
+    assert!(a.is_paused());
+    thread::sleep(Duration::from_millis(30));
+    a.between_slices(&mut level(), 0);
+    assert!(!a.is_paused());
+}
+
+#[test]
+fn without_the_tick_hook_nothing_pauses_and_the_mode_gives_the_phase() {
+    let a = Agent::new();
+    a.set_no_tick_hook();
+    let (c, rx) = client(&a);
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    ask(&a, c, 2, method::PAUSE, Value::Null);
+    ask(&a, c, 3, method::STEP, json!({"ticks": 1}));
+    ask(&a, c, 4, method::WORLD_COUNT, Value::Null);
+    a.between_slices(&mut level(), 0);
+    next(&rx);
+    assert_eq!(next(&rx)["error"]["code"], code::UNAVAILABLE);
+    assert_eq!(next(&rx)["error"]["code"], code::UNAVAILABLE);
+    let v = next(&rx);
+    assert_eq!(v["result"]["total"], 5);
+    assert_eq!(v["result"]["at"]["phase"], "gameplay");
+    assert_eq!(v["result"]["at"]["boundary"], "slice");
+}
+
+#[test]
+fn a_resume_during_a_step_answers_the_step() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let (game, mut events) = paused_game(&a, c, &rx, Value::Null, 3);
+    ask(&a, c, 4, method::STEP, json!({"ticks": 10}));
+    // The game runs its last two ticks and ends, short of ten.
+    game.join().unwrap();
+    ask(&a, c, 5, method::RESUME, Value::Null);
+    a.between_slices(&mut level(), 0);
+    let v = reply(&rx, 4, &mut events);
+    assert_eq!(v["error"]["code"], code::INTERRUPTED);
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("after 2 ticks")
+    );
+    assert!(reply(&rx, 5, &mut events).get("result").is_some());
+}
+
+#[test]
+fn a_second_pause_during_a_step_answers_the_step() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let (game, mut events) = paused_game(&a, c, &rx, Value::Null, 2);
+    ask(&a, c, 4, method::STEP, json!({"ticks": 10}));
+    game.join().unwrap();
+    ask(&a, c, 5, method::PAUSE, Value::Null);
+    a.between_slices(&mut level(), 0);
+    assert_eq!(
+        reply(&rx, 4, &mut events)["error"]["code"],
+        code::INTERRUPTED
+    );
+    reply(&rx, 5, &mut events);
+    assert!(a.is_paused());
+}
+
+#[test]
+fn a_half_closed_connection_still_gets_its_answers_then_goes() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    ask(&a, c, 1, method::STATUS, Value::Null);
+    a.disconnect(c);
+    a.between_slices(&mut level(), 0);
+    assert_eq!(next(&rx)["id"], 1);
+    // Nothing left to answer: dropped, so its writer ends.
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[test]
+fn requests_after_shutdown_are_refused() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    a.shutdown();
+    ask(&a, c, 1, method::STATUS, Value::Null);
+    assert_eq!(next(&rx)["error"]["code"], code::SHUTDOWN);
+}
+
+#[test]
+fn non_requests_are_invalid_and_unknown_params_refused() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    a.submit(c, r#"{"id": 3}"#);
+    a.submit(c, "[1, 2]");
+    ask(
+        &a,
+        c,
+        4,
+        method::WAIT,
+        json!({"until": {"phase": "gameplay", "mapp": "x"}}),
+    );
+    a.between_slices(&mut level(), 0);
+    let v = next(&rx);
+    assert_eq!(
+        (v["id"].clone(), v["error"]["code"].clone()),
+        (json!(3), json!(code::INVALID_REQUEST))
+    );
+    assert_eq!(next(&rx)["error"]["code"], code::INVALID_REQUEST);
+    let v = next(&rx);
+    assert_eq!(v["error"]["code"], code::INVALID_PARAMS);
+    assert!(v["error"]["message"].as_str().unwrap().contains("mapp"));
+}

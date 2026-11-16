@@ -34,7 +34,10 @@ impl AgentGlue {
         match registry.add(&agent::AgentFeature(agent.clone())) {
             Ok(true) => {}
             Ok(false) => {
-                eprintln!("agent: switched off by H2_FEATURES; answering between slices only")
+                agent.set_no_tick_hook();
+                eprintln!(
+                    "agent: switched off by H2_FEATURES; answering between slices only, no pausing"
+                )
             }
             Err(e) => anyhow::bail!("agent: {e}"),
         }

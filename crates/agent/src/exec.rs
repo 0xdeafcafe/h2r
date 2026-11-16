@@ -75,11 +75,19 @@ struct State {
     boundary: Option<Boundary>,
     plan: Vec<String>,
     shutdown: bool,
+    /// The game thread is inside the pause loop, holding the tick.
+    holding: bool,
+    /// The tick observer isn't installed (switched off, or the plan left
+    /// it out): nothing can pause, and world reads come between slices.
+    no_tick_hook: bool,
 }
 
 struct Conn {
     tx: Sender<String>,
     events: BTreeSet<EventKind>,
+    /// Its client stopped sending (a half-close or a disconnect): answer
+    /// what it already asked, then drop it.
+    closing: bool,
 }
 
 struct Waiting {
@@ -89,6 +97,8 @@ struct Waiting {
     from_ticks: u64,
     tick_limit: Option<u64>,
     deadline: Instant,
+    /// A `session.step`'s answer: interrupted by a resume, pause or release.
+    step: bool,
 }
 
 /// Where the game thread calls from.
@@ -117,22 +127,25 @@ impl Agent {
             Conn {
                 tx,
                 events: BTreeSet::new(),
+                closing: false,
             },
         );
         id
     }
 
-    /// The connection is gone: drop its waits, and if it held control,
-    /// release it (a pause it left resumes).
+    /// The connection sent its last line (it closed, or half-closed): if
+    /// it held control, release it (a pause it left resumes). What it
+    /// already asked is still answered; then it is dropped.
     pub fn disconnect(&self, conn: ConnId) {
         let mut s = self.lock();
-        s.conns.remove(&conn);
-        s.waits.retain(|w| w.conn != conn);
-        s.pending.retain(|(c, _)| *c != conn);
+        if let Some(c) = s.conns.get_mut(&conn) {
+            c.closing = true;
+        }
         if s.controller == Some(conn) {
             s.controller = None;
             s.resume("released");
         }
+        s.prune();
         drop(s);
         self.shared.wake.notify_all();
     }
@@ -144,26 +157,52 @@ impl Agent {
         if line.is_empty() {
             return;
         }
-        let mut s = self.lock();
-        match serde_json::from_str::<Request>(line) {
-            Ok(r) if r.jsonrpc == "2.0" => s.pending.push_back((conn, r)),
-            Ok(r) => {
-                let id = r.id.unwrap_or(Value::Null);
-                s.send(
-                    conn,
-                    Response::err(
+        // Parsed before taking the lock, so a long line never holds up the
+        // game thread.
+        let parsed = match serde_json::from_str::<Value>(line) {
+            Err(e) => Err(Response::err(
+                Value::Null,
+                RpcError::new(code::PARSE, e.to_string()),
+            )),
+            Ok(v) => {
+                let id = v.get("id").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Request>(v) {
+                    Ok(r) if r.jsonrpc == "2.0" => Ok(r),
+                    Ok(_) => Err(Response::err(
                         id,
                         RpcError::new(code::INVALID_REQUEST, "jsonrpc must be \"2.0\""),
-                    ),
-                );
+                    )),
+                    Err(e) => Err(Response::err(
+                        id,
+                        RpcError::new(
+                            code::INVALID_REQUEST,
+                            format!("not a request (batches aren't supported): {e}"),
+                        ),
+                    )),
+                }
             }
-            Err(e) => s.send(
-                conn,
-                Response::err(Value::Null, RpcError::new(code::PARSE, e.to_string())),
-            ),
+        };
+        let mut s = self.lock();
+        match parsed {
+            Ok(r) if s.shutdown => {
+                if let Some(id) = r.id {
+                    s.send(
+                        conn,
+                        Response::err(id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
+                    );
+                }
+            }
+            Ok(r) => s.pending.push_back((conn, r)),
+            Err(resp) => s.send(conn, resp),
         }
         drop(s);
         self.shared.wake.notify_all();
+    }
+
+    /// The tick observer isn't installed: control methods are refused and
+    /// world reads are answered between slices.
+    pub fn set_no_tick_hook(&self) {
+        self.lock().no_tick_hook = true;
     }
 
     /// The feature plan's text, for `features.list`.
@@ -236,6 +275,7 @@ impl Agent {
                 s.resume("timeout");
                 break;
             }
+            s.holding = true;
             s = self
                 .shared
                 .wake
@@ -245,6 +285,12 @@ impl Agent {
             s.serve(reader, Where::Tick);
             s.settle_waits();
         }
+        if s.holding {
+            s.holding = false;
+            // The tick was held, not missing: the game is still ticking.
+            s.last_tick = Some(Instant::now());
+        }
+        s.prune();
     }
 
     /// Between scheduler slices, on the game's thread. Answers what doesn't
@@ -255,6 +301,11 @@ impl Agent {
             return;
         }
         s.presents = presents;
+        // A pause asked for while the game isn't ticking (loading) takes
+        // hold at the next tick; its limit still runs out here.
+        if s.paused.is_some_and(|until| Instant::now() >= until) {
+            s.resume("timeout");
+        }
         // While ticking, the tick boundary does the reading; between
         // slices only queued requests that don't need a tick, and wall
         // clock timeouts. Once ticks stop (loading), read here, at most
@@ -271,6 +322,7 @@ impl Agent {
         s.refresh(reader, Where::Slice);
         s.serve(reader, Where::Slice);
         s.settle_waits();
+        s.prune();
     }
 }
 
@@ -299,7 +351,8 @@ impl State {
     }
 
     fn phase_now(&self) -> Phase {
-        if !self.ticking() && self.paused.is_none() {
+        // Without the tick observer there are no ticks to go by.
+        if !self.no_tick_hook && !self.ticking() && !self.holding {
             return Phase::Loading;
         }
         if self.cinematic {
@@ -374,6 +427,38 @@ impl State {
                 why: why.into(),
             });
         }
+        self.interrupt_steps(why);
+    }
+
+    /// A step that won't finish as asked (the game resumed, or paused
+    /// again before its ticks ran) is answered now, not at its timeout.
+    fn interrupt_steps(&mut self, why: &str) {
+        let (steps, rest): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.waits)
+            .into_iter()
+            .partition(|w| w.step);
+        self.waits = rest;
+        for w in steps {
+            let mut e = RpcError::new(
+                code::INTERRUPTED,
+                format!(
+                    "the step was interrupted ({why}) after {} ticks",
+                    self.ticks - w.from_ticks
+                ),
+            );
+            e.data = Some(to_value(self.at()));
+            self.send(w.conn, Response::err(w.id, e));
+        }
+    }
+
+    /// Drops closed connections with nothing left to answer.
+    fn prune(&mut self) {
+        let busy: BTreeSet<ConnId> = self
+            .pending
+            .iter()
+            .map(|(c, _)| *c)
+            .chain(self.waits.iter().map(|w| w.conn))
+            .collect();
+        self.conns.retain(|id, c| !c.closing || busy.contains(id));
     }
 
     /// Answers queued requests. Between slices, world reads stay queued
@@ -446,6 +531,12 @@ impl State {
                 "session.claim first: only the controlling connection may pause or step",
             )));
         }
+        if self.no_tick_hook && (m == method::PAUSE || m == method::STEP) {
+            return Some(Err(RpcError::new(
+                code::UNAVAILABLE,
+                "the agent's tick observer isn't installed (H2_FEATURES=-agent?): nothing can pause",
+            )));
+        }
         let p = req.params;
         Some(match m {
             method::STATUS => Ok(to_value(Status {
@@ -478,10 +569,13 @@ impl State {
                     .max_ms
                     .map_or(PAUSE_DEFAULT, Duration::from_millis)
                     .min(PAUSE_MAX);
-                if self.paused.is_none() {
-                    self.pause_len = max;
-                    self.paused = Some(Instant::now() + max);
-                    self.stepping = None;
+                // A second pause re-arms the limit.
+                let was = self.paused.replace(Instant::now() + max);
+                self.pause_len = max;
+                if self.stepping.take().is_some() {
+                    self.interrupt_steps("paused again");
+                }
+                if was.is_none() {
                     let at = self.at();
                     self.emit(Event::Paused { at });
                 }
@@ -520,6 +614,9 @@ impl State {
                     None,
                     WAIT_MAX,
                 );
+                if let Some(w) = self.waits.last_mut() {
+                    w.step = true;
+                }
                 return None;
             }
             method::WAIT => {
@@ -584,6 +681,7 @@ impl State {
             from_ticks: self.ticks,
             tick_limit,
             deadline: Instant::now() + timeout,
+            step: false,
         });
     }
 
