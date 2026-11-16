@@ -134,7 +134,12 @@ This is a feature-engine subsystem ([feature-engine.md](../engine/feature-engine
 on only for Halo 1 levels. Open: where Halo 2 regenerates body vitality,
 and how its equipment pickup can carry a health powerup.
 
-## 7. Open questions
+## 7. Multiplayer
+
+Halo 1's multiplayer maps follow the same rules, with a sandbox setting:
+[h1-multiplayer.md](h1-multiplayer.md).
+
+## 8. Open questions
 
 - Memory: whether converted levels fit in Halo 2's tag memory
   (`max_metadata_size` for campaign maps is `0xc24000`). a30 has a big
