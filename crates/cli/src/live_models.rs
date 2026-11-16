@@ -23,7 +23,7 @@ use std::io::BufReader;
 use anyhow::{Context, Result, anyhow};
 use assets::ResourceFiles;
 use map::{CacheType, FourCC, Map, RawPointer, TagId};
-use tags::anim::AnimationGraph;
+use tags::anim::{Action, AnimationGraph};
 use tags::geometry::{RawSource, TagView};
 use tags::model::RenderModelGeometry;
 use tags::sound::ResourceReader;
@@ -871,10 +871,11 @@ pub fn seat_node(marker: &str) -> Option<String> {
     (id.len() <= 40).then_some(id)
 }
 
-/// A vehicle in its rest pose and own model space (its object origin),
-/// with a `seat_<name>` node per seat marker (first marker of a name).
-pub fn vehicle(src: &Source) -> Result<Model> {
-    let rest = rest_world(&src.bones);
+/// A vehicle in its own model space (its object origin), posed by `pose`
+/// (empty: the rest pose; see [`pick_vehicle_pose`]), with a `seat_<name>`
+/// node per seat marker (first marker of a name).
+pub fn vehicle(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model> {
+    let rest = posed_world(&src.bones, graph_names, pose);
     let mut model = Model {
         mesh_name: "vehicle".into(),
         primitives: pose_mesh(src, &rest),
@@ -1178,6 +1179,22 @@ fn decode_bitmap(map: &mut MapReader, files: &mut ResourceFiles, id: TagId) -> R
     })
 }
 
+/// A vertex's model nodes from its section-local indices through the
+/// section's node map. A vertex without indices (a section whose vertices
+/// carry no nodes) belongs to the section's first mapped node: such a
+/// section is a rigid piece moved by that one node (a banshee's cab, a
+/// wraith's hatch), not by the root.
+pub fn vertex_nodes(node_map: &[u8], local: Option<[u8; 4]>) -> [usize; 4] {
+    let node = |l: u8| -> usize {
+        if node_map.is_empty() {
+            usize::from(l)
+        } else {
+            node_map.get(usize::from(l)).map_or(0, |&m| usize::from(m))
+        }
+    };
+    local.unwrap_or([0; 4]).map(node)
+}
+
 /// The pieces of the chosen sections, with section-local node indices
 /// mapped to model nodes and unused vertices dropped.
 fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<Piece> {
@@ -1188,16 +1205,6 @@ fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<P
         };
         let v = &section.vertices;
         let n = v.positions.len();
-        let node = |local: u8| -> usize {
-            if section.node_map.is_empty() {
-                usize::from(local)
-            } else {
-                section
-                    .node_map
-                    .get(usize::from(local))
-                    .map_or(0, |&m| usize::from(m))
-            }
-        };
         for part in section.geometry.parts.iter().filter(|p| p.is_drawn()) {
             let material = usize::from(part.material);
             if skip.get(material).copied().unwrap_or(false) {
@@ -1226,9 +1233,10 @@ fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<P
                         piece
                             .uvs
                             .push(v.texcoords.get(i).copied().unwrap_or([0.0; 2]));
-                        piece
-                            .nodes
-                            .push(v.node_indices.get(i).map_or([0; 4], |k| k.map(node)));
+                        piece.nodes.push(vertex_nodes(
+                            &section.node_map,
+                            v.node_indices.get(i).copied(),
+                        ));
                         piece.weights.push(
                             v.node_weights
                                 .get(i)
@@ -1363,32 +1371,38 @@ pub fn pick_idle(stances: &[Stance]) -> Option<usize> {
         .or_else(|| find(&|s| s[3].contains(POSE_ACTION)))
 }
 
-/// The first frame of the graph's idle (see [`pick_idle`]) with the graph's
-/// node names, and the action's name; the rest pose (no names) when the
-/// graph has no idle.
-fn idle_pose(
-    map: &mut MapReader,
-    files: &mut ResourceFiles,
-    jmad: TagId,
-) -> Result<(Vec<String>, Pose, String)> {
-    let graph = AnimationGraph::read(map, jmad).context("reading the animation graph")?;
-    let strings = map.strings().to_vec();
-    let name = |id: StringId| id.resolve(&strings).ok().flatten().unwrap_or("").to_owned();
-    let mut stances = Vec::new();
-    let mut actions = Vec::new();
+/// Every action of a graph that has an animation, by name, with the action.
+fn graph_stances(graph: &AnimationGraph, strings: &[Option<String>]) -> Vec<(Stance, Action)> {
+    let name = |id: StringId| id.resolve(strings).ok().flatten().unwrap_or("").to_owned();
+    let mut out = Vec::new();
     for m in &graph.modes {
         for c in &m.classes {
             for t in &c.types {
                 for a in &t.actions {
                     if a.animation_index >= 0 {
-                        stances.push([name(m.name), name(c.name), name(t.name), name(a.name)]);
-                        actions.push(*a);
+                        out.push(([name(m.name), name(c.name), name(t.name), name(a.name)], *a));
                     }
                 }
             }
         }
     }
-    let Some(i) = pick_idle(&stances) else {
+    out
+}
+
+/// The first frame of the action `pick` chooses from the graph (see
+/// [`pick_idle`], [`pick_vehicle_pose`]) with the graph's node names, and
+/// the action's name; the rest pose (no names) when it chooses none.
+fn graph_pose(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    jmad: TagId,
+    pick: fn(&[Stance]) -> Option<(usize, Frame)>,
+) -> Result<(Vec<String>, Pose, String)> {
+    let graph = AnimationGraph::read(map, jmad).context("reading the animation graph")?;
+    let strings = map.strings().to_vec();
+    let (stances, actions): (Vec<Stance>, Vec<Action>) =
+        graph_stances(&graph, &strings).into_iter().unzip();
+    let Some((i, frame)) = pick(&stances) else {
         return Ok((Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()));
     };
     let action = actions[i];
@@ -1402,9 +1416,58 @@ fn idle_pose(
         AnimationGraph::read(map, r.graph.id).context("reading the inherited graph")?
     };
     let clip = target.load_clip(action.animation_index as usize, &mut Res(files))?;
-    let pose = clip.sample_frame(0)?;
-    let names = target.nodes.iter().map(|n| name(n.name)).collect();
-    Ok((names, pose, stances[i].join(":")))
+    let (n, label) = match frame {
+        Frame::First => (0, "first frame"),
+        Frame::Last => (clip.frame_count().saturating_sub(1), "last frame"),
+    };
+    let pose = clip.sample_frame(n)?;
+    let names = target
+        .nodes
+        .iter()
+        .map(|n| {
+            n.name
+                .resolve(&strings)
+                .ok()
+                .flatten()
+                .unwrap_or("")
+                .to_owned()
+        })
+        .collect();
+    Ok((names, pose, format!("{}, {label}", stances[i].join(":"))))
+}
+
+fn idle_pose(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    jmad: TagId,
+) -> Result<(Vec<String>, Pose, String)> {
+    graph_pose(map, files, jmad, |s| {
+        pick_idle(s).map(|i| (i, Frame::First))
+    })
+}
+
+/// Which frame of the chosen action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frame {
+    First,
+    Last,
+}
+
+/// A vehicle's neutral pose. Vehicles with a hatch or canopy rest with it
+/// open (a banshee's whole nose is tilted up), so the end of `closing` comes
+/// first, then the start of `opening`; then an `idle` (turrets, sentinels);
+/// `None` keeps the rest pose (most vehicles have no actions at all).
+pub fn pick_vehicle_pose(stances: &[Stance]) -> Option<(usize, Frame)> {
+    let find = |a: &str| {
+        stances
+            .iter()
+            .position(|s| s[3] == a && s[0] == POSE_MODE)
+            .or_else(|| stances.iter().position(|s| s[3] == a))
+    };
+    find("closing")
+        .map(|i| (i, Frame::Last))
+        .or_else(|| find("opening").map(|i| (i, Frame::First)))
+        .or_else(|| find(POSE_ACTION).map(|i| (i, Frame::First)))
 }
 
 /// What the disc gave for one biped, for the report and the disc test.
@@ -1590,13 +1653,15 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
         let result = (|| {
             let (mut map, mut files) = disc.open(maps[*i])?;
             let id = map.tag(map::TagQuery::NameInGroup(tag, VEHI))?.id;
-            let (mode, _) = object_model(&mut map, id)?;
-            vehicle(&read_source(
-                &mut map,
-                &mut files,
-                mode,
-                MAX_VEHICLE_TRIANGLES,
-            )?)
+            let (mode, jmad) = object_model(&mut map, id)?;
+            let src = read_source(&mut map, &mut files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let (names, pose, animation) = match jmad {
+                Some(jmad) => graph_pose(&mut map, &mut files, jmad, pick_vehicle_pose)?,
+                None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),
+            };
+            let mut model = vehicle(&src, &names, &pose)?;
+            model.extras.insert("pose".into(), json!(animation));
+            Ok(model)
         })();
         (stem.clone(), result)
     })
