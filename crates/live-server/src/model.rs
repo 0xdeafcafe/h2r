@@ -107,6 +107,7 @@ impl Game {
             players: self.players.clone(),
             teams: self.teams.clone(),
             map_id: g.map_id,
+            skulls: g.skulls.clone(),
         }
     }
 

@@ -4,7 +4,7 @@
 
 import { batch, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
-import type { WireEvent, PlayerKilled } from "../api/types";
+import type { WireEvent, PlayerKilled, GameSummary } from "../api/types";
 import { api, type Api } from "../api/http";
 import { fetchWellKnown, initialBase, remember, targetFor, wsUrl, type ServerTarget, type WellKnown } from "../api/server";
 import {
@@ -189,6 +189,12 @@ function createLive() {
     return p;
   }
 
+  /** Adds games read from `GET /v1/games` (a filtered list, say) to the store. */
+  function ingestGames(list: GameSummary[]) {
+    if (!list.length) return;
+    setState(produce((s) => { for (const g of list) applyGameSnapshot(s, g); }));
+  }
+
   /** Checks the signatures of a game's events read over REST (a replay
    *  loads the whole game stream), and counts them in its summary. Events
    *  the stream already queued are not checked twice. */
@@ -241,6 +247,7 @@ function createLive() {
     verifySummary,
     loadMode,
     ensureGame,
+    ingestGames,
     checkGameEvents,
     useServer,
     start,

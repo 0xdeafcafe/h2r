@@ -22,6 +22,7 @@ import WeaponIcon from "../components/WeaponIcon";
 import { PresenceBadge, VerifySummary } from "../components/bits";
 import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
+import { SkullBadges } from "../components/SkullIcon";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
 import { titleCase } from "../lib/format";
 import { gameSeconds, teamName } from "../lib/game";
@@ -238,7 +239,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">Your first chapter is still ahead.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A></span></td>
+              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td>{usDateTime(r.game.started_at)}</td>
               <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} />{gameMapTitle(r.game)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
@@ -260,7 +261,7 @@ function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">No campaign games on record yet.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={`/stats/games/${r.game.game_id}`}>{gameMapTitle(r.game)}</A></span></td>
+              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={`/stats/games/${r.game.game_id}`}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td>{usDateTime(r.game.started_at)}</td>
               <td class="hide-s">{gameTypeLine(r.game)}</td>
               <td>{r.outcome === "playing" ? <span class="s-live-tag">LIVE</span> : OUTCOME_WORDS[r.outcome]}</td>

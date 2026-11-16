@@ -146,6 +146,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         language: None,
         visibility: Default::default(),
         map_id,
+        skulls: None,
     }
 }
 

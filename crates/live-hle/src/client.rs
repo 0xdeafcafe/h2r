@@ -167,12 +167,19 @@ struct Command {
 pub(crate) struct Service {
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
+    /// Every session the worker has read, by id: the skulls its host
+    /// advertised (docs/skulls.md "In multiplayer").
+    pub seen: Seen,
 }
+/// Sessions' advertised skulls by session id, as last read from the server.
+pub(crate) type Seen = Arc<Mutex<BTreeMap<String, Option<Vec<u8>>>>>;
 impl Service {
     pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
         let metrics = Arc::new(Metrics::default());
         let counters = metrics.clone();
+        let seen = Seen::default();
+        let seen_by_worker = seen.clone();
         std::thread::Builder::new()
             .name("h2-live-http".into())
             .spawn(move || {
@@ -187,6 +194,7 @@ impl Service {
                     connection: None,
                     active: None,
                     metrics: counters,
+                    seen: seen_by_worker,
                 };
                 let mut next_ping = Instant::now() + options.heartbeat_interval;
                 loop {
@@ -225,7 +233,11 @@ impl Service {
                     }
                 }
             })?;
-        Ok(Self { sender, metrics })
+        Ok(Self {
+            sender,
+            metrics,
+            seen,
+        })
     }
     fn submit(&self, session: &Session, work: Work) -> Result<Pending, u32> {
         let result = Pending::new();
@@ -293,6 +305,7 @@ struct Worker {
     connection: Option<Connection>,
     active: Option<Active>,
     metrics: Arc<Metrics>,
+    seen: Seen,
 }
 #[derive(Clone, Copy)]
 enum Error {
@@ -665,7 +678,15 @@ impl Worker {
                 return Err(Error::Protocol);
             }
         }
+        self.saw(&items);
         Ok(items)
+    }
+    /// Keeps each session's advertised skulls for a guest's game start.
+    fn saw(&self, sessions: &[live_proto::session::Session]) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        for s in sessions {
+            seen.insert(s.session_id.clone(), s.advertisement.skulls.clone());
+        }
     }
     /// Whether a session's map can be had (docs/maps.md §5): checked for a
     /// search result, made ready (downloaded) for a join. A refusal is
@@ -715,6 +736,7 @@ impl Worker {
         if detail.session.session_id != id {
             return Err(Error::Protocol);
         }
+        self.saw(std::slice::from_ref(&detail.session));
         Ok(if detail.session.state == "open" {
             vec![detail.session]
         } else {

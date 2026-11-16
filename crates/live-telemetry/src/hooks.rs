@@ -72,6 +72,13 @@ impl Telemetry {
         self.session.lock().unwrap().set_playlist(playlist);
     }
 
+    /// The skulls the next multiplayer games run with (the host's set as
+    /// the boot applied it at the game's start; docs/skulls.md "In
+    /// multiplayer"). Campaign games read the skull array instead.
+    pub fn set_multiplayer_skulls(&self, skulls: Option<Vec<u8>>) {
+        self.session.lock().unwrap().set_multiplayer_skulls(skulls);
+    }
+
     /// The loaded map's names, if the host has its file and the file's
     /// scenario datum is the guest's.
     fn tag_names(&self, guest: &runtime::Guest, map: &str) -> Option<TagNames> {
@@ -718,6 +725,7 @@ mod tests {
             map: "lockout".into(),
             mode: "main_menu".into(),
             difficulty: None,
+            skulls: None,
             variant: None,
             team_play: false,
             score_limit: None,

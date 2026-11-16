@@ -23,8 +23,8 @@ mod qos;
 mod qos_memory;
 mod sessions;
 pub use sessions::{
-    LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility,
-    VisibilityProbe,
+    LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, SkullsProbe,
+    Visibility, VisibilityProbe,
 };
 mod state;
 mod stats;
@@ -101,6 +101,23 @@ pub mod status {
     pub const WSA_INVALID_ARGUMENT: u32 = 10022;
     pub const WSA_VERSION: u32 = 10092;
     pub const WSA_NO_BUFFERS: u32 = 10055;
+}
+
+/// What a guest knows of its host's skulls ([`Hle::host_skulls`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostSkulls {
+    /// No session joined: no key registered but this console's own.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read (a System Link
+    /// game, or no server).
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `skulls` (empty for none);
+    /// `refreshed` when read just now rather than at the join.
+    Known {
+        session: String,
+        skulls: Vec<u8>,
+        refreshed: bool,
+    },
 }
 
 pub struct Hle {
@@ -197,6 +214,67 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_map_probe(probe)
+    }
+    /// The host's multiplayer skulls (docs/skulls.md "In multiplayer"):
+    /// advertisements carry them from now, and open ones are updated at
+    /// once. No guest memory access.
+    pub fn set_session_skulls(&self, skulls: Option<Vec<u8>>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_skulls(skulls)
+    }
+    /// Lets each advertisement and update the game makes read the host's
+    /// skulls afresh (docs/skulls.md "In multiplayer"); called with guest
+    /// memory held, so it must take no lock guest memory may come after.
+    pub fn set_skulls_probe(&self, probe: Option<SkullsProbe>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_skulls_probe(probe)
+    }
+    /// What the host of the session this console joined advertised as its
+    /// skulls: asked of the server again (waiting at most `wait`), else as
+    /// last read (the search or find that led to the join). Call with no
+    /// guest memory held; it never takes guest memory.
+    pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
+        let keys = self.network.registered_keys();
+        let (id, pending, seen) = {
+            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(id) = s.joined_session(&keys) else {
+                return HostSkulls::NotJoined;
+            };
+            let (pending, seen) = s.refresh_session(&id);
+            (id, pending, seen)
+        };
+        let mut refreshed = false;
+        if let Some(p) = pending {
+            let until = std::time::Instant::now() + wait;
+            loop {
+                if let Some(r) = p.take() {
+                    refreshed = r.is_ok();
+                    break;
+                }
+                if std::time::Instant::now() >= until {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let known = seen.and_then(|m| {
+            m.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned()
+        });
+        match known {
+            Some(skulls) => HostSkulls::Known {
+                session: id,
+                skulls: skulls.unwrap_or_default(),
+                refreshed,
+            },
+            None => HostSkulls::Unknown { session: id },
+        }
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state

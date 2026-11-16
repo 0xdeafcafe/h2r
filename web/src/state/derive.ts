@@ -9,6 +9,7 @@ import { gamesFor, isWinner, standings, teamStandings } from "./reducer";
 import { gameSeconds } from "./length";
 import { mapGroupKey } from "../lib/maps";
 import type { Xuid } from "../api/types";
+import { countSkulls, type SkullCount } from "../lib/skulls";
 
 /** Ticks per second, and the window that chains kills into a multi-kill. */
 export const TICKS = 30;
@@ -417,8 +418,15 @@ export interface CampaignRecord {
   lastPlayed: string | null;
   /** Levels played, most recently played first. */
   levels: LevelRow[];
+  /** Skulls played with, in index order, each with the number of games it was on in. */
+  skulls: SkullCount[];
   /** Accounts the player has shared campaign games with. */
   partners: Friend[];
+}
+
+/** The skulls across a player's campaign games, each with a game count. */
+export function skullsPlayedWith(rows: Array<{ game: Pick<GameState, "skulls"> }>): SkullCount[] {
+  return countSkulls(rows, (r) => r.game.skulls);
 }
 
 /** Campaign totals for an account. Nothing here counts towards the
@@ -427,7 +435,7 @@ export function campaignRecord(s: LiveState, xuid: Xuid, now: number): CampaignR
   const rows = campaignHistory(s, xuid, now);
   const rec: CampaignRecord = {
     games: rows.length, completed: 0, unfinished: 0, live: 0, coop: 0, deaths: 0, kills: null, seconds: 0,
-    firstPlayed: null, lastPlayed: null, levels: [], partners: playedWith(s, xuid, "campaign"),
+    firstPlayed: null, lastPlayed: null, levels: [], skulls: skullsPlayedWith(rows), partners: playedWith(s, xuid, "campaign"),
   };
   const levels = new Map<string, LevelRow>();
   for (const r of rows) {

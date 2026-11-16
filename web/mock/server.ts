@@ -39,6 +39,7 @@ import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
 import { Content, customFor } from "./content";
+import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -213,9 +214,11 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const state = u.searchParams.get("state");
     // `map` is the base map (modded or not); `map_id` one package exactly, or `none` for retail.
     const map = u.searchParams.get("map"), mapId = u.searchParams.get("map_id");
+    // `skulls` is a comma-separated list; a game must have had all of them on.
+    const skulls = parseSkullsParam(u.searchParams.get("skulls"));
     const all = [...world.games.values()].reverse().filter((g) => !state || (state === "live" ? !g.ended_at : !!g.ended_at))
-      .map((g) => world.gameSummary(g) as ReturnType<World["gameSummary"]> & { map_id?: string })
-      .filter((g) => (!map || g.map === map) && (!mapId || (mapId === "none" ? !g.map_id : g.map_id === mapId)));
+      .map((g) => world.gameSummary(g) as ReturnType<World["gameSummary"]> & { map_id?: string; skulls?: number[] })
+      .filter((g) => (!map || g.map === map) && (!mapId || (mapId === "none" ? !g.map_id : g.map_id === mapId)) && hasAllSkulls(g.skulls, skulls));
     return list(all.slice(0, limitOf(u)));
   }
   if (path === "/v1/games" && req.method === "POST") {

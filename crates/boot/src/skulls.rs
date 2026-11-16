@@ -131,6 +131,26 @@ pub struct About {
     pub legendary: bool,
     /// Anything else the script asks, for the description.
     pub note: Option<&'static str>,
+    /// Gold (harder) or silver (for fun).
+    pub tier: SkullTier,
+}
+
+/// A skull's kind, as MCC sorts its skulls (docs/skulls.md "Gold and
+/// silver"): gold ones make the game harder (MCC scores them above 1.00x),
+/// silver ones are for fun (1.00x or below).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SkullTier {
+    Gold,
+    Silver,
+}
+
+impl SkullTier {
+    pub fn name(self) -> &'static str {
+        match self {
+            SkullTier::Gold => "Gold",
+            SkullTier::Silver => "Silver",
+        }
+    }
 }
 
 const fn about(
@@ -138,6 +158,7 @@ const fn about(
     effect: &'static str,
     level: &'static str,
     legendary: bool,
+    tier: SkullTier,
 ) -> About {
     About {
         name,
@@ -145,7 +166,16 @@ const fn about(
         level,
         legendary,
         note: None,
+        tier,
     }
+}
+
+/// Skull indices gold first, then silver, the engine's order within each:
+/// the order the Skulls screen lists them in.
+pub fn by_tier() -> Vec<usize> {
+    let mut v: Vec<usize> = (0..ABOUT.len()).collect();
+    v.sort_by_key(|i| (ABOUT[*i].tier, *i));
+    v
 }
 
 /// [`SKULLS`]' skulls, in the same order. Levels and the Legendary test are
@@ -157,38 +187,44 @@ pub static ABOUT: [About; COUNT] = [
         "Your flashlight is swapped for active camouflage.",
         "Delta Halo",
         true,
+        SkullTier::Silver,
     ),
     about(
         "Grunt Birthday Party",
         "A headshot on a Grunt bursts into confetti and cheering.",
         "The Arbiter",
         true,
+        SkullTier::Silver,
     ),
     about(
         "Assassins",
         "Every enemy wears active camouflage.",
         "Regret",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Thunderstorm",
         "Enemies are promoted to their higher ranks.",
         "Cairo Station",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Famine",
         "Weapons dropped by enemies hold far less ammo.",
         "The Oracle",
         true,
+        SkullTier::Gold,
     ),
     About {
-        note: Some("solo only; one try in seven"),
+        note: Some("solo; one try in seven"),
         ..about(
             "I Would Have Been Your Daddy",
-            "Rare combat lines play far more often.",
+            "Rare lines play far more often.",
             "Outskirts",
             true,
+            SkullTier::Silver,
         )
     },
     about(
@@ -196,48 +232,56 @@ pub static ABOUT: [About; COUNT] = [
         "Your HUD and first-person weapon are hidden.",
         "Outskirts",
         false,
+        SkullTier::Gold,
     ),
     about(
         "Ghost",
         "Enemies no longer flinch when you hit them.",
         "Uprising",
         true,
+        SkullTier::Silver,
     ),
     about(
         "Black Eye",
         "Your shields recharge only when you land a melee hit.",
         "The Great Journey",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Catch",
         "Enemies throw grenades much more often.",
         "Metropolis",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Sputnik",
         "Explosions and melee hits send bodies and objects flying.",
         "Quarantine Zone",
         true,
+        SkullTier::Silver,
     ),
     about(
         "Iron",
         "A death sends you back to the last checkpoint.",
         "High Charity",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Mythic",
         "Enemies have twice the health.",
         "Sacred Icon",
         true,
+        SkullTier::Gold,
     ),
     about(
         "Angry",
         "Enemies fire their weapons faster.",
         "Gravemind",
         true,
+        SkullTier::Gold,
     ),
     About {
         note: Some("it appears once you keep Johnson waiting at the lift"),
@@ -246,6 +290,7 @@ pub static ABOUT: [About; COUNT] = [
             "Unlimited ammo and grenades.",
             "The Armory",
             true,
+            SkullTier::Silver,
         )
     },
 ];
@@ -1421,5 +1466,34 @@ mod tests {
         );
         let mut r = feature::Registry::new(feature::Switches::defaults());
         assert!(!install(&mut r, None).unwrap(), "no store");
+    }
+
+    /// Gold and silver as MCC scores them (docs/skulls.md "Gold and
+    /// silver"): gold above 1.00x.
+    #[test]
+    fn gold_skulls_make_it_harder_and_come_first() {
+        let gold: Vec<&str> = ABOUT
+            .iter()
+            .filter(|a| a.tier == SkullTier::Gold)
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(
+            gold,
+            [
+                "Assassins",
+                "Thunderstorm",
+                "Famine",
+                "Blind",
+                "Black Eye",
+                "Catch",
+                "Iron",
+                "Mythic",
+                "Angry"
+            ]
+        );
+        let order = by_tier();
+        assert_eq!(order.len(), ABOUT.len());
+        assert_eq!(&order[..2], &[2, 3]);
+        assert_eq!(&order[9..], &[0, 1, 5, 7, 10, 14]);
     }
 }

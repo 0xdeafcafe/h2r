@@ -189,6 +189,8 @@ pub struct GameInfo {
     pub map: String,
     /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
     pub difficulty: Option<String>,
+    /// Campaign only: the skulls on in the skull array (`NewGame.skulls`).
+    pub skulls: Option<Vec<u8>>,
     pub mode: String,
     pub variant: Option<String>,
     pub team_play: bool,

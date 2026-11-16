@@ -3,6 +3,7 @@
 // thumbnails.
 
 import GametypeIcon from "../components/GametypeIcon";
+import { SkullBadges } from "../components/SkullIcon";
 import { gameMapTitle, packageLookup } from "../state/maps";
 import { geometryChoice } from "../lib/maps";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
@@ -196,6 +197,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>
                 <li>On {gameMapTitle(game)}</li>
                 <li>{isCampaign(game) ? difficultyName(game.difficulty) ?? "Campaign" : `Playlist: ${playlist(game)}`}</li>
+                <Show when={game.skulls.length}><li><SkullBadges skulls={game.skulls} size={16} /></li></Show>
                 <li>{game.status === "live" ? "In progress now" : `${isCampaign(game) ? OUTCOME_WORDS[campaignOutcome(game)] : "Finished"} ${ago(game.ended_at, now())}`}</li>
                 <Show when={isCampaign(game)} fallback={<li>{game.status === "live" ? "Leader" : "MVP"}: <b>{standings(game)[0]?.name ?? "–"}</b></li>}>
                   <li>Players: <b>{fireteam(game)}</b></li>

@@ -208,7 +208,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended&map=&map_id=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`) |
+| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
@@ -381,7 +381,9 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
 `{type: "null"}`, and optional `visibility` (`public`, the default and
 omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
-exactly which map: see "Custom maps" below; omitted when none). The ID's datatype bits must agree. Limits are 16 total slots,
+exactly which map: see "Custom maps" below; omitted when none) and `skulls`
+(the host's multiplayer skulls, ascending indices, only 4 and 6; omitted
+when none; docs/skulls.md "In multiplayer"). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -399,7 +401,9 @@ fields.
 Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
-  visibility or `map_id` (absent keeps the current one).
+  visibility, `map_id` or `skulls` (absent keeps the current one; `skulls: []`
+  turns them all off). A server from before `skulls` refuses an update that
+  has it, so the HLE sends it only when the host's set changed.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.

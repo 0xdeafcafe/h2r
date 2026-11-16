@@ -139,6 +139,13 @@ pub struct NewSession {
     /// older servers and logs read the same bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<MapId>,
+    /// The skulls the host has on for its next game (docs/skulls.md "In
+    /// multiplayer"): engine indices, ascending, only
+    /// [`crate::skulls::MULTIPLAYER`] ones. Guests read it to apply the
+    /// same set at game start. Left out when none, and by every host before
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skulls: Option<Vec<u8>>,
 }
 fn custom() -> String {
     "custom".into()
@@ -171,6 +178,10 @@ pub struct Update {
     /// none: it is the same session on some map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<MapId>,
+    /// The host's skulls changed: the new set, empty for none. Absent keeps
+    /// them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skulls: Option<Vec<u8>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -215,6 +226,12 @@ impl NewSession {
                 return Err("invalid session text".into());
             }
         }
+        if let Some(skulls) = &self.skulls {
+            crate::skulls::validate(skulls)?;
+            if !crate::skulls::multiplayer_ok(skulls) {
+                return Err("a session names only skulls that work in multiplayer".into());
+            }
+        }
         validate_attributes(&self.attributes)
     }
 }
@@ -254,6 +271,9 @@ impl Session {
         }
         if let Some(v) = u.map_id {
             next.map_id = Some(v);
+        }
+        if let Some(v) = &u.skulls {
+            next.skulls = (!v.is_empty()).then(|| v.clone());
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -343,6 +363,7 @@ mod tests {
             language: None,
             visibility: Visibility::Public,
             map_id: None,
+            skulls: None,
         }
     }
     #[test]
@@ -488,6 +509,44 @@ mod tests {
         assert_eq!(s.advertisement.map_id, Some(other));
         assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
         assert_eq!(s.advertisement.map_id, Some(other));
+    }
+    #[test]
+    fn skulls_are_optional_checked_and_updated() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        // An advertisement from before the field parses, and none is left out.
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.skulls, None);
+        assert!(serde_json::to_value(&n).unwrap().get("skulls").is_none());
+        let mut with = old;
+        with["skulls"] = json!([4, 6]);
+        let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(n.skulls, Some(vec![4, 6]));
+        assert_eq!(n.validate(), Ok(()));
+        for bad in [json!([]), json!([6, 4]), json!([10]), json!([15])] {
+            with["skulls"] = bad.clone();
+            let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+            assert!(n.validate().is_err(), "{bad}");
+        }
+        // Updates: absent keeps them, a set replaces them, empty clears.
+        assert!(
+            serde_json::to_value(Update::default())
+                .unwrap()
+                .get("skulls")
+                .is_none()
+        );
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        assert!(s.apply(UPDATED, &json!({"skulls": [6]}), "", 102).unwrap());
+        assert_eq!(s.advertisement.skulls, Some(vec![6]));
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.skulls, Some(vec![6]));
+        assert!(s.apply(UPDATED, &json!({"skulls": []}), "", 104).unwrap());
+        assert_eq!(s.advertisement.skulls, None);
+        assert!(
+            s.apply(UPDATED, &json!({"skulls": [8]}), "", 105).is_err(),
+            "Black Eye does nothing in multiplayer"
+        );
     }
     #[test]
     fn lists_show_public_to_all_friends_to_friends_invite_to_host_only() {

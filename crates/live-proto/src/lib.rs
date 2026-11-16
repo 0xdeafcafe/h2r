@@ -14,6 +14,7 @@ pub mod maps;
 pub mod motd;
 pub mod session;
 pub mod sign;
+pub mod skulls;
 pub mod team;
 pub mod title_file;
 

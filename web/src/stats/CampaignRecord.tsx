@@ -9,6 +9,8 @@ import { gameMapGroupLabel, gameMapTitle } from "../state/maps";
 import { OUTCOME_WORDS, campaignHistory, campaignRecord } from "../state/derive";
 import { gameTypeLine } from "../state/gametype";
 import Emblem from "../components/Emblem";
+import SkullIcon from "../components/SkullIcon";
+import { skullName, skullTitle } from "../lib/skulls";
 import { now } from "../lib/now";
 import { Derived, Title, playerHref } from "./Layout";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames } from "./Side";
@@ -77,6 +79,23 @@ export default function CampaignRecordPage() {
                   <span>First Played {rec().firstPlayed ? usDate(rec().firstPlayed) : "never"}</span>
                   <span>Last Played {rec().lastPlayed ? usDate(rec().lastPlayed) : "never"}</span>
                 </div>
+              </div>
+              <Title class="s-title--rule">Skulls Played With</Title>
+              <div class="s-skulls-played">
+                <Show when={rec().skulls.length} fallback={<p class="s-dim">No skulls on in any campaign game on record.</p>}>
+                  <ul class="skulls skulls--names" aria-label="Skulls played with">
+                    <For each={rec().skulls}>
+                      {(s) => (
+                        <li title={skullTitle(s.index)}>
+                          <SkullIcon index={s.index} size={22} title={false} />
+                          <span>{skullName(s.index)}</span>
+                          <small>{num(s.games)} {s.games === 1 ? "game" : "games"}</small>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </Show>
+                <p class="s-note">Counted from the {num(rec().games)} campaign {rec().games === 1 ? "game" : "games"} this page has loaded, the newest the server sent. Older games are not included.</p>
               </div>
               <Title class="s-title--rule">Levels</Title>
               <div class="s-grid-wrap" style={{ margin: "0 8px 8px" }}>

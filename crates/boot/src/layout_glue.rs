@@ -1110,8 +1110,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             Err(e) => eprintln!("skulls menu: {e}"),
         }
         registry
-            .add(&crate::skulls_screen::DifficultyRow(screen))
+            .add(&crate::skulls_screen::DifficultyRow(Arc::clone(&screen)))
             .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
+        // The same screen in its multiplayer mode, from a custom game's Game
+        // Setup (docs/skulls.md "In multiplayer").
+        registry
+            .add(&crate::skulls_screen::GameSetupRow(screen))
+            .map_err(|e| anyhow::anyhow!("skulls game setup row: {e}"))?;
     }
     // The Controls list's row text and row chosen, on the plan: our rows
     // there (the speaker row) as data, and the layouts' value text around

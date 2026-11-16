@@ -235,6 +235,10 @@ impl Network {
             None
         }
     }
+    /// The XNKIDs registered with `XNetRegisterKey`, in key order.
+    pub fn registered_keys(&self) -> Vec<[u8; 8]> {
+        lock(&self.state).keys.keys().copied().collect()
+    }
     pub fn set_error(&self, thread: u32, error: u32) {
         lock(&self.state).errors.insert(thread, error);
     }

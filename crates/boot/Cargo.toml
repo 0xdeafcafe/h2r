@@ -42,6 +42,7 @@ bink-hle = { path = "../bink-hle" }
 xapi = { path = "../xapi" }
 live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
+live-proto.workspace = true
 input = { path = "../input", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 timeline = { path = "../timeline" }

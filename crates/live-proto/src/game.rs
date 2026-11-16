@@ -134,6 +134,12 @@ pub struct NewGame {
     /// sender before this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<crate::session::MapId>,
+    /// The skulls on for the game ([`crate::skulls`]): engine indices,
+    /// ascending. Campaign: the skull array at the start; multiplayer: the
+    /// set the host chose (only [`crate::skulls::MULTIPLAYER`] ones). Left
+    /// out when none are on, and by every sender before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skulls: Option<Vec<u8>>,
 }
 
 /// The game kinds `NewGame.kind` may name.
@@ -500,6 +506,9 @@ pub struct GameSummary {
     /// The game's `NewGame.map_id`; left out when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<crate::session::MapId>,
+    /// The game's `NewGame.skulls`; left out when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skulls: Option<Vec<u8>>,
 }
 
 /// A kill as `GET /v1/games/{id}` lists it: the event data plus where it
@@ -644,6 +653,12 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     }
     if game.online.is_some() && kind != "campaign" {
         return Err("online is for campaign games".into());
+    }
+    if let Some(skulls) = &game.skulls {
+        crate::skulls::validate(skulls)?;
+        if kind != "campaign" && !crate::skulls::multiplayer_ok(skulls) {
+            return Err("a multiplayer game names only skulls that work there".into());
+        }
     }
     Ok(())
 }
@@ -1094,6 +1109,82 @@ mod tests {
         let back: GameStarted =
             serde_json::from_value(serde_json::to_value(&started).unwrap()).unwrap();
         assert_eq!(back.game.map_id, Some(id));
+    }
+
+    #[test]
+    fn new_game_skulls_are_optional_checked_and_kept() {
+        let old =
+            json!({"map": "03a_oldmombasa", "mode": "campaign", "team_play": false, "players": []});
+        let g: NewGame = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(g.skulls, None, "a payload from before the field");
+        assert!(serde_json::to_value(&g).unwrap().get("skulls").is_none());
+        let campaign = NewGame {
+            skulls: Some(vec![0, 6, 12]),
+            ..g.clone()
+        };
+        assert_eq!(validate_new(&campaign), Ok(()));
+        // A campaign skull of our own, past the retail fifteen.
+        assert_eq!(
+            validate_new(&NewGame {
+                skulls: Some(vec![6, 20]),
+                ..g.clone()
+            }),
+            Ok(())
+        );
+        let v = serde_json::to_value(&campaign).unwrap();
+        assert_eq!(v["skulls"], json!([0, 6, 12]));
+        let started = GameStarted {
+            game_id: "g".into(),
+            host: "h".into(),
+            game: campaign.clone(),
+        };
+        let back: GameStarted =
+            serde_json::from_value(serde_json::to_value(&started).unwrap()).unwrap();
+        assert_eq!(back.game.skulls, Some(vec![0, 6, 12]));
+        let mp = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            ..g.clone()
+        };
+        assert_eq!(
+            validate_new(&NewGame {
+                skulls: Some(vec![4, 6]),
+                ..mp.clone()
+            }),
+            Ok(())
+        );
+        for (game, why) in [
+            (
+                NewGame {
+                    skulls: Some(vec![]),
+                    ..g.clone()
+                },
+                "empty is left out",
+            ),
+            (
+                NewGame {
+                    skulls: Some(vec![64]),
+                    ..g.clone()
+                },
+                "past the limit",
+            ),
+            (
+                NewGame {
+                    skulls: Some(vec![6, 0]),
+                    ..g.clone()
+                },
+                "unsorted",
+            ),
+            (
+                NewGame {
+                    skulls: Some(vec![12]),
+                    ..mp.clone()
+                },
+                "Mythic does nothing in multiplayer",
+            ),
+        ] {
+            assert!(validate_new(&game).is_err(), "{why}");
+        }
     }
 
     #[test]
