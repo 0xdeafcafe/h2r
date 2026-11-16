@@ -1,5 +1,5 @@
 use super::*;
-use content::{Sha256, map_list::PREVIEW_LEN, patch_lvl};
+use content::{map_list::PREVIEW_LEN, patch_lvl, Sha256};
 
 struct Temp(PathBuf);
 impl Temp {

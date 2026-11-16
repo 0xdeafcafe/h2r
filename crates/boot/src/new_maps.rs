@@ -25,12 +25,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use content::{
-    Library, MapId, Package,
     manifest::LANGUAGES,
     map_list::{self, BaseEntry, Entry},
     patch::Source,
+    Library, MapId, Package,
 };
 
 pub const HALO2_TITLE: u32 = 0x4D53_0064;
@@ -548,8 +548,10 @@ impl Disc for IsoDisc {
         }
         let all = read(at, count * map_list::SLOT_LEN as u32)?;
         Ok(all
-            .chunks_exact(map_list::SLOT_LEN)
-            .map(<[u8]>::to_vec)
+            .as_chunks::<{ map_list::SLOT_LEN }>()
+            .0
+            .iter()
+            .map(|c| c.to_vec())
             .collect())
     }
 

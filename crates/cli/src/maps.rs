@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use map::{FourCC, Map};
 
 const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 maps install [--data DIR] [--disc disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
@@ -173,17 +173,6 @@ fn dump_tag(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn lenient_is_an_explicit_single_tag_option() {
-        assert!(super::run("tag", vec!["--lenient".into(), "--help".into()]).is_ok());
-        for command in ["maps", "tags"] {
-            assert!(super::run(command, vec!["--lenient".into(), "--help".into()]).is_err());
-        }
-    }
-}
-
 /// `h2 maps install`: puts every map package whose map name the disc lacks
 /// into 1.0's map list as a content package, and removes the ones whose
 /// package is gone (docs/maps.md §4). The boot does the same at start-up.
@@ -239,4 +228,15 @@ fn install(args: &[String]) -> Result<()> {
         r.removed.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lenient_is_an_explicit_single_tag_option() {
+        assert!(super::run("tag", vec!["--lenient".into(), "--help".into()]).is_ok());
+        for command in ["maps", "tags"] {
+            assert!(super::run(command, vec!["--lenient".into(), "--help".into()]).is_err());
+        }
+    }
 }
