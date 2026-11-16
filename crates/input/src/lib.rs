@@ -36,6 +36,8 @@ pub mod pad_hid;
 pub mod steam;
 pub mod steam_pad;
 pub mod touch;
+pub mod touch_layout;
+pub mod touch_look;
 pub mod trackpad;
 
 pub use backend::HostBackend;

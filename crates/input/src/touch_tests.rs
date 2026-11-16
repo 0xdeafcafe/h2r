@@ -399,3 +399,115 @@ fn per_frame_updates_between_drags_do_not_slow_the_drag_speed() {
         run(true)
     );
 }
+
+// ---- direct look and auto-fire (round 2) ----
+
+fn direct() -> TouchTuning {
+    TouchTuning {
+        direct_look: true,
+        ..TouchTuning::default()
+    }
+}
+
+#[test]
+fn direct_look_turns_by_angle_and_leaves_the_stick_alone() {
+    let t0 = Instant::now();
+    let mut p = TouchPad::new(direct());
+    p.update(&TouchFrame::default(), t0);
+    // 10 points right over 50 ms: 200 points a second, almost no
+    // acceleration.
+    let at = t0 + Duration::from_millis(50);
+    p.update(
+        &TouchFrame {
+            look: (10.0, 0.0),
+            ..TouchFrame::default()
+        },
+        at,
+    );
+    let (x, y) = p.last_turn();
+    let want = crate::touch_look::drag_turn((10.0, 0.0), 0.05, 1.0, 1.0, false);
+    assert!((x - want.0).abs() < 1e-12 && y == 0.0, "{x} {y}");
+    assert!(
+        x.to_degrees() > 1.9 && x.to_degrees() < 2.2,
+        "{}",
+        x.to_degrees()
+    );
+    assert_eq!(p.state(at).right_stick, (0.0, 0.0), "no stick deflection");
+    assert!(p.active());
+    // A tiny drag still turns: no jitter deadzone on the direct path.
+    p.update(
+        &TouchFrame {
+            look: (0.1, 0.0),
+            ..TouchFrame::default()
+        },
+        at + Duration::from_millis(16),
+    );
+    assert!(p.last_turn().0 > 0.0);
+}
+
+#[test]
+fn direct_gyro_is_rate_times_interval() {
+    let t0 = Instant::now();
+    let mut p = TouchPad::new(TouchTuning {
+        gyro_sensitivity: 1.0,
+        ..direct()
+    });
+    p.update(&TouchFrame::default(), t0);
+    p.update(
+        &TouchFrame {
+            gyro: (2.0, 0.0),
+            ..TouchFrame::default()
+        },
+        t0 + Duration::from_millis(20),
+    );
+    assert!((p.last_turn().0 - 0.04).abs() < 1e-9, "{:?}", p.last_turn());
+    assert_eq!(p.state(t0).right_stick, (0.0, 0.0));
+}
+
+#[test]
+fn auto_fire_holds_for_an_automatic_and_pulses_a_semi_auto() {
+    use crate::touch_layout::{Context, Seat, Trigger};
+    let t0 = Instant::now();
+    let mut p = TouchPad::new(TouchTuning {
+        auto_fire: true,
+        ..TouchTuning::default()
+    });
+    let aimed = |trigger| Context {
+        seat: Seat::OnFoot,
+        trigger,
+        on_target: true,
+        ..Context::default()
+    };
+    p.set_context(aimed(Trigger::Automatic));
+    for _ in 0..3 {
+        assert_eq!(p.state(t0).right_trigger, 1.0);
+        p.read(t0);
+    }
+    p.set_context(aimed(Trigger::SemiAuto { rate: 10.0 }));
+    let pulls: Vec<f32> = (0..6)
+        .map(|_| {
+            let r = p.state(t0).right_trigger;
+            p.read(t0);
+            r
+        })
+        .collect();
+    assert_eq!(pulls, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    // Off target: only the player's own Fire.
+    p.set_context(Context {
+        on_target: false,
+        ..aimed(Trigger::Automatic)
+    });
+    assert_eq!(p.state(t0).right_trigger, 0.0);
+    p.update(
+        &TouchFrame {
+            buttons: bits::RIGHT_TRIGGER,
+            ..TouchFrame::default()
+        },
+        t0,
+    );
+    assert_eq!(p.state(t0).right_trigger, 1.0);
+    // The setting off: never by itself.
+    let mut off = TouchPad::default();
+    off.set_context(aimed(Trigger::Automatic));
+    assert_eq!(off.state(t0).right_trigger, 0.0);
+}

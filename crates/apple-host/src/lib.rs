@@ -521,12 +521,16 @@ pub unsafe extern "C" fn h2host_touch_update(
     let Some(k) = t.shell.as_ref().and_then(|s| s.keyboard()) else {
         return false;
     };
-    if let Some(store) = &t.store {
-        let tuning = touch::tuning(store, k.touch_tuning());
-        if tuning != k.touch_tuning() {
-            k.set_touch_tuning(tuning);
-        }
+    let (plan, _) = touch::current_plan();
+    let base = match &t.store {
+        Some(store) => touch::tuning(store, k.touch_tuning()),
+        None => k.touch_tuning(),
+    };
+    let tuning = touch::live(base, &plan, input::touch_look::consumer());
+    if tuning != k.touch_tuning() {
+        k.set_touch_tuning(tuning);
     }
+    k.set_touch_context(input::touch_layout::context());
     let state = k.touch_update(&f.frame());
     if let Some(line) = t.touch_log.line(&state, std::time::Instant::now()) {
         eprintln!("h2host: touch {line}");
@@ -568,6 +572,30 @@ pub unsafe extern "C" fn h2host_touch_crouched(host: *mut H2Host) -> bool {
         .and_then(|t| t.shell.as_ref())
         .and_then(|s| s.keyboard())
         .is_some_and(|k| k.touch_crouched())
+}
+
+/// What the on-screen controls should draw now (`H2TouchLayout`): the
+/// layout for player one's state, which the boot publishes each tick
+/// (`input::touch_layout`). False with no shell or a null `out`.
+///
+/// # Safety
+/// As [`h2host_redraw`]; `out` is null or points at a writable
+/// `H2TouchLayout`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_touch_layout(
+    host: *mut H2Host,
+    out: *mut touch::H2TouchLayout,
+) -> bool {
+    // SAFETY: the caller's contract.
+    let (Some(t), Some(out)) = (unsafe { host.as_ref() }, unsafe { out.as_mut() }) else {
+        return false;
+    };
+    if t.shell.as_ref().and_then(|s| s.keyboard()).is_none() {
+        return false;
+    }
+    let (plan, generation) = touch::current_plan();
+    *out = touch::H2TouchLayout::from_plan(&plan, generation);
+    true
 }
 
 /// Gyro aiming's sensitivity from the settings, or 0 when it is off (then
@@ -715,6 +743,9 @@ mod tests {
             assert!(!h2host_touch_update(host, std::ptr::null()));
             assert!(!h2host_touch_update(std::ptr::null_mut(), &f));
             assert_eq!(h2host_touch_gyro(host), 0.0);
+            let mut l = touch::H2TouchLayout::default();
+            assert!(!h2host_touch_layout(host, &mut l));
+            assert!(!h2host_touch_layout(host, std::ptr::null_mut()));
             assert!(!h2host_touch_crouched(host));
             assert!(!h2host_touch_crouched(std::ptr::null_mut()));
             h2host_touch_shown(std::ptr::null_mut(), false);
