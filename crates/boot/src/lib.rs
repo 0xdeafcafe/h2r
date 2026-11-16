@@ -693,6 +693,12 @@ pub fn run_hosted_with_live(
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    // Render front-end time in the frame stats, when H2_FEATURES has
+    // render-timing (off by default).
+    features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
+    // Stage 7a: the Rust render_views, when H2_FEATURES has
+    // impl.render.views=on (off by default; docs/render-loop.md).
+    features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

@@ -391,3 +391,30 @@ fn guest_alloc_hands_out_arena_pages() {
     );
     assert_eq!(plan.allocs.len(), 2);
 }
+
+/// `render-timing` is off unless switched on, and on it observes each
+/// render stage on both sides with no conflict.
+#[test]
+fn render_timing_is_off_by_default_and_observes_every_stage() {
+    use feature::render_timing::RenderTiming;
+    let mut r = Registry::new(Switches::defaults());
+    assert!(!r.add(&RenderTiming::new()).unwrap());
+    let text = r.build(&feature::Base).unwrap().text();
+    assert_eq!(text, "feature render-timing: off (switched off)\n");
+
+    let mut r = Registry::new(Switches::parse("render-timing").unwrap());
+    assert!(r.add(&RenderTiming::new()).unwrap());
+    let text = r.build(&feature::Base).unwrap().text();
+    assert_eq!(
+        text,
+        "\
+feature render-timing: on
+0x0002b5d0 RENDER_VIEWS: observe_before [render-timing:views] -> original -> observe_after [render-timing:views]
+0x0002b790 RENDER_GAME_VIEW: observe_before [render-timing:game_view] -> original -> observe_after [render-timing:game_view]
+0x0002bcd0 RENDER_SCENE_PASSES: observe_before [render-timing:scene_passes] -> original -> observe_after [render-timing:scene_passes]
+0x00031170 RENDER_LIGHT_PASSES: observe_before [render-timing:light_passes] -> original -> observe_after [render-timing:light_passes]
+0x00223240 RENDER_FRAME: observe_before [render-timing:frame] -> original -> observe_after [render-timing:frame]
+0x002234e0 RENDER_GAME_VIEWS: observe_before [render-timing:game_views] -> original -> observe_after [render-timing:game_views]
+"
+    );
+}

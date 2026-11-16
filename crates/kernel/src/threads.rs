@@ -539,6 +539,9 @@ impl Machine {
             let mut slice =
                 timeline::span(timeline::Cat::Guest, timeline::Track::Guest(tid), "slice");
             let mut charged = 0u64;
+            // Frame stats charge a guest scope (the render front-end) only
+            // to the thread that opened it.
+            timeline::phase::guest_thread(Some(tid));
             let (transfer, preempted) = loop {
                 if let Some(accesses) = self.preempt_slice {
                     thread.ctx.arm_preemption(accesses);
@@ -575,6 +578,7 @@ impl Machine {
                 }
                 resume = next;
             };
+            timeline::phase::guest_thread(None);
             slice.set_arg("accesses", charged);
             drop(slice);
             {

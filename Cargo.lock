@@ -1724,6 +1724,7 @@ dependencies = [
  "engine",
  "runtime",
  "runtime-test-probe",
+ "timeline",
 ]
 
 [[package]]

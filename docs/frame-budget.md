@@ -685,6 +685,72 @@ on a flipping chain. Tests also caught and fixed boot wrappers dropping
 the new hook. All proof used tests and synthetic resources; no game image
 was built and no game was run.
 
+### Render front-end versus simulation (`render-timing`)
+
+The game thread's guest time (`cpu`) holds both the simulation and the
+game's own render front-end: the recompiled code that walks views,
+passes, objects and lights and writes the push buffer. Profilers show
+guest functions flat, without callers, so they cannot split the two. The
+`render-timing` feature does, with read-only observers on six points
+(`engine::points`, all opaque):
+
+| Stage | Point | Address |
+|---|---|---|
+| `frame` | `render_frame_and_present` | `0x00223240` |
+| `game_views` | `render_game_views` | `0x002234e0` |
+| `views` | `render_views` | `0x0002b5d0` |
+| `game_view` | `render_game_view` | `0x0002b790` |
+| `scene_passes` | `render_scene_passes` | `0x0002bcd0` |
+| `light_passes` | `render_light_passes` (one dynamic light) | `0x00031170` |
+
+Turn it on with the frame stats:
+
+```sh
+H2_FRAME_STATS=1 H2_FEATURES=render-timing h2 run ...
+```
+
+It is off by default: each hooked function leaves the direct-call path,
+and the light pass runs once per light. With `H2_FRAME_STATS` unset it
+measures nothing and says so once.
+
+**What the numbers mean.**
+
+- The frame stats gain a `render` phase (`render_us` in the CSV, `ren` in
+  the overlay). It is the time between `render_frame_and_present`'s entry
+  and its return on the guest thread that called it, minus every other
+  phase inside it (`decode`, `render-wait`, `encode`... on the game
+  thread) and minus slices of other guest threads, DPCs and the
+  scheduler: the kernel tells the stats which guest thread each slice
+  belongs to, and the render scope is suspended while it is not the
+  owner's. `cpu` no longer includes that time. **Guest time is `cpu +
+  render`; the render front-end's share is `render / (cpu + render)`.**
+  The `render` column appears only while it is non-zero.
+- Swap happens inside `render_frame_and_present`, so a frame boundary
+  falls inside the render scope: the part after Swap (little) counts to
+  the next frame. Means over many frames are unaffected.
+- Once a second the feature logs, over the frames since its last line:
+
+  ```text
+  render-timing: 30 frames; ms/frame render 14.20 = frame 0.31 + game_views 0.12 + views 0.40 + game_view 1.05 + scene_passes 9.80 + light_passes 2.52; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 6.0
+  ```
+
+  (illustrative numbers). Each stage is **exclusive**: its own code and
+  every guest function it calls, except the stages listed after it. So
+  `scene_passes` is all scene passes except the dynamic lights, which are
+  `light_passes`; `game_view` is a view's setup and UI composition outside
+  its scene passes; `frame` is the fallback screen (loading, menus with
+  no game view) and the present. The stages add up exactly to `render`,
+  because both read the same clock (a test pins that). `calls/frame`
+  counts entries: `game_view` is the number of views, `light_passes` the
+  dynamic lights drawn.
+- Interrupt service routines delivered inside the owner's slice are still
+  charged to it; they are short.
+
+**Overhead.** Twelve observer calls per frame plus two per view and per
+light, each a mutex and a clock read, a few microseconds a frame; plus
+the hooked functions leaving the direct-call path. The split is valid to
+that precision; compare `fps` with the feature off to see the cost.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split
