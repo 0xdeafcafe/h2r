@@ -57,7 +57,6 @@ const INITIAL_ROW: u32 = 0x002b_463d;
 const PANE_SET: u32 = 0x0023_0427;
 const SCREEN_TAG: u32 = 0x0022_f871;
 const TEXT_SET: u32 = 0x0025_3b1a;
-const LOCALE_FIND: u32 = 0x001a_02d0;
 const PROFILE_ROWS: u32 = 0x0024_a886;
 const CONTROLS_ROW_TEXT: u32 = 0x002c_8548;
 const TEXT_WIDGET_GET: u32 = 0x0022_edb8;
@@ -477,7 +476,7 @@ fn announce(seen: &AtomicBool, name: &str) {
 /// and the camera hook when the Video screen has the Field of View row.
 /// Every row's count, text and press come from the model. A missing
 /// original (an image with other entries) skips that hook and says so.
-pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Result<()> {
+pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: Option<Arc<Model>>) -> anyhow::Result<()> {
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
     let has = |list, kind| model.as_ref().is_some_and(|m| m.index_of(list, &kind).is_some());
     let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
@@ -522,7 +521,7 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
         shadow - 4
     };
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
-    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND, SCREEN_TAG];
+    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
     let video_hooks = [speaker_row::ROW_CHOSEN, video_screen::HEADER_BUILD];
     let speaker_hooks = [
@@ -1012,22 +1011,35 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                 })
             });
         }
-        // Our strings.
-        if let Some(o) = originals.remove(&LOCALE_FIND) {
-            let seen = AtomicBool::new(false);
-            d.register_override(LOCALE_FIND, "layouts:strings", move |cpu, ctx, _| {
-                if is_ours(cpu.edi)
-                    && let Some((_, a)) = STRING_ADDRS.get().and_then(|v| v.iter().find(|(i, _)| *i == cpu.edi))
-                {
-                    announce(&seen, "layouts: our strings");
-                    cpu.eax = *a;
-                    return ctx.runtime().memory().ret(cpu, 0);
-                }
-                Ok(o.invoke(cpu, ctx, LOCALE_FIND))
-            });
-        }
     });
+    // Our strings: a `before` on the locale lookup that answers our ids and
+    // lets every other id through, so it shares the point with the Rust
+    // lookup (`impl.engine`) instead of displacing it.
+    registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     Ok(())
+}
+
+/// The strings our rows and layouts show (`ui-strings`), served from guest
+/// memory written at install.
+pub struct StringsFeature;
+
+impl feature::Feature for StringsFeature {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("ui-strings", "Our menu strings").doc("docs/settings-menu.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.raw().before(&feature::points::LOCALE_FIND, "our strings", |c| {
+            let id = c.cpu.edi;
+            if is_ours(id)
+                && let Some((_, a)) = STRING_ADDRS.get().and_then(|v| v.iter().find(|(i, _)| *i == id))
+            {
+                c.cpu.eax = *a;
+                return Ok(feature::Flow::Return(c.ret(0)?));
+            }
+            Ok(feature::Flow::Continue)
+        });
+        Ok(())
+    }
 }
 
 /// Register an override at a shadow address that runs the original at `addr`.
@@ -1584,10 +1596,18 @@ mod tests {
         std::thread::spawn(move || {
             let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
             let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
-            tx.send(install(&r, Some(Arc::new(model))).is_ok()).ok();
+            let mut features = feature::Registry::new(feature::Switches::defaults());
+            let ok = install(&r, &mut features, Some(Arc::new(model))).is_ok();
+            let installed = features.build(&feature::Base).unwrap().install(&r).unwrap();
+            tx.send((ok, installed.off_reason("ui-strings").map(str::to_owned))).ok();
         });
-        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
+        let (ok, strings_off) = rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        assert!(ok);
+        assert_eq!(strings_off.as_deref(), Some("LOCALE_FIND has no generated original"));
         // Nothing generated, so every hook was skipped and ours own no entry.
-        rt.edit_dispatch(|d| assert!(d.override_name(ACTION_TABLE_BUILD).is_none()));
+        rt.edit_dispatch(|d| {
+            assert!(d.override_name(ACTION_TABLE_BUILD).is_none());
+            assert!(d.override_name(feature::points::LOCALE_FIND.base).is_none());
+        });
     }
 }

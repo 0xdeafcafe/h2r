@@ -2,17 +2,15 @@
 //!
 //! Keep validation-sensitive layout changes here rather than in readers.
 
-pub const GAME_GLOBALS_PTR: u32 = 0x004e_6948;
-pub const GAME_TIME_PTR: u32 = 0x0051_0c54;
+pub const GAME_GLOBALS_PTR: u32 = engine::points::GAME_GLOBALS.base;
+pub const GAME_TIME_PTR: u32 = engine::points::GAME_TIME.base;
 pub const ENGINE_GLOBALS_PTR: u32 = 0x004e_9ae8;
 pub const PLAYERS_PTR: u32 = 0x004e_8c24;
 pub const OBJECTS_PTR: u32 = 0x004e_0300;
 pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
 
-pub const MATCH_START: u32 = 0x0018_f000;
-pub const GAME_TICK: u32 = 0x0013_7fe0;
-pub const GAME_END: u32 = 0x0013_89c0;
-pub const PLAYER_KILLED: u32 = 0x0015_ce70;
+// The hooked functions (match start, tick, end, kill, weapon fire) are
+// named in `engine::points`.
 
 pub const OPTIONS: u32 = 0x8;
 pub const OPTIONS_TYPE: u32 = 0x0;
@@ -121,7 +119,7 @@ pub const UNIT_AIM: u32 = 0x168;
 /// body `+0x1a8 + 0x34 * barrel`) is set and then clears the flag. One call
 /// is one shot (likely: a shotgun's pellets are one call; a battle rifle's
 /// burst is three).
-pub const WEAPON_FIRE: u32 = 0x0010_4150;
+pub const WEAPON_FIRE: u32 = engine::points::WEAPON_FIRE.base;
 
 /// Fields whose names or semantics are only "likely" in the research document.
 /// They are not needed for the initial event contract. Runtime validation can

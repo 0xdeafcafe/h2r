@@ -439,6 +439,7 @@ dependencies = [
  "d3d",
  "dsound",
  "emit",
+ "feature",
  "font",
  "gfx",
  "iced-x86",
@@ -2195,6 +2196,8 @@ dependencies = [
 name = "live-telemetry"
 version = "0.1.0"
 dependencies = [
+ "engine",
+ "feature",
  "live-proto",
  "map",
  "runtime",
