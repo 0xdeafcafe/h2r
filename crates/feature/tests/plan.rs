@@ -57,9 +57,80 @@ fn a_string_hook_and_the_rust_lookup_share_the_locale_point() {
     assert_eq!(plan.chains.len(), engine::abi::OVERRIDES.len());
 }
 
+fn leaves(switches: &str) -> Vec<&'static str> {
+    let mut r = Registry::new(Switches::parse(switches).unwrap());
+    r.add(&feature::leaves::EngineLeaves).unwrap();
+    let plan = r.build(&Base).unwrap();
+    plan.chains
+        .values()
+        .map(|c| c.implement.as_ref().unwrap().label)
+        .collect()
+}
+
 #[test]
-fn the_rust_lookup_is_off_unless_switched_on() {
-    let mut r = Registry::new(Switches::defaults());
+fn only_the_locale_leaves_are_on_by_default() {
+    assert_eq!(
+        leaves(""),
+        ["locale_string_id_find", "locale_string_id_exists"]
+    );
+    assert!(leaves("impl.engine.locale=off").is_empty());
+    assert!(leaves("impl.engine=off").is_empty());
+    assert_eq!(leaves("impl.engine=on").len(), engine::abi::OVERRIDES.len());
+    let one = leaves("impl.engine.locale=off,impl.engine.tags.tag_get_checked=on");
+    assert_eq!(one, ["tag_get_checked"]);
+    assert_eq!(
+        leaves("impl.engine.datums=on").len(),
+        18 + 2,
+        "datums and the default locale"
+    );
+}
+
+fn strings(b: &mut feature::Builder) -> Result<(), BuildError> {
+    b.locale().source("ours", |id| (id == 7).then_some(0x1000));
+    Ok(())
+}
+
+/// With the Rust lookup on (the default) our strings need no hook: the
+/// implementation serves them. Off, one bridge hook does.
+#[test]
+fn string_sources_are_served_by_the_rust_lookup_or_one_bridge_hook() {
+    for (switches, native) in [("", true), ("impl.engine.locale=off", false)] {
+        let mut r = Registry::new(Switches::parse(switches).unwrap());
+        r.add(&from_fn("ui-strings", strings)).unwrap();
+        r.add(&feature::leaves::EngineLeaves).unwrap();
+        let plan = r.build(&Base).unwrap();
+        let chain = &plan.chains[&points::LOCALE_FIND.base];
+        if native {
+            assert!(chain.before.is_empty());
+            assert_eq!(chain.implement.as_ref().unwrap().feature, "engine-leaves");
+            assert_eq!(
+                plan.locale,
+                ["locale source ui-strings:ours (served by engine-leaves)"]
+            );
+        } else {
+            assert_eq!(chain.before.len(), 1);
+            assert_eq!(
+                (chain.before[0].feature, chain.before[0].label),
+                ("locale", "sources")
+            );
+            assert!(chain.implement.is_none());
+            assert_eq!(
+                plan.locale,
+                ["locale source ui-strings:ours (served by the locale bridge)"]
+            );
+        }
+    }
+}
+
+/// The order features are added in does not matter, and no sources means
+/// no bridge.
+#[test]
+fn the_bridge_is_decided_after_every_feature_declared() {
+    let mut r = Registry::new(Switches::parse("impl.engine=off").unwrap());
+    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&from_fn("ui-strings", strings)).unwrap();
+    assert_eq!(r.build(&Base).unwrap().chains.len(), 1);
+    let mut r = Registry::new(Switches::parse("impl.engine=off").unwrap());
     r.add(&feature::leaves::EngineLeaves).unwrap();
     assert!(r.build(&Base).unwrap().chains.is_empty());
 }

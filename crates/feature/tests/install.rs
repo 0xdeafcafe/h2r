@@ -255,3 +255,23 @@ fn a_point_without_an_original_turns_its_feature_off() {
         assert_eq!(d.override_name(0x40_4100), None);
     });
 }
+
+/// A string source served through the bridge on a running guest: ours are
+/// answered, others reach the original.
+#[test]
+fn the_locale_bridge_serves_sources() {
+    let rt = runtime();
+    let mut r = Registry::new(Switches::parse("impl.engine=off").unwrap());
+    r.add(&from_fn("ui-strings", |b| {
+        b.locale()
+            .source("ours", |id| (id == 0x0fff_0001).then_some(0xa2f0_0000));
+        Ok(())
+    }))
+    .unwrap();
+    r.build(&at(&points::LOCALE_FIND))
+        .unwrap()
+        .install(&rt)
+        .unwrap();
+    assert_eq!(call(&rt, LEAF, 0x0fff_0001).eax, 0xa2f0_0000);
+    assert_eq!(call(&rt, LEAF, 5).eax, 41);
+}

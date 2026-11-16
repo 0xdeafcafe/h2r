@@ -29,6 +29,13 @@
 //!   the ESP at entry, where only the original builds a frame.
 //! - Anything else (one side faults, or a mismatch) is a disagreement and
 //!   fails the test.
+//!
+//! **The game's path.** Every call is also made the way the game makes it
+//! with `impl.engine` on: through `engine::runtime_glue::invoke` (the body
+//! the `engine-leaves` feature installs) on a `runtime::Guest` holding the
+//! same 64 MB. That side must agree with the direct adapter exactly: same
+//! outcome, every register, every byte, and the same fault address and
+//! direction (the runtime's own fault, which `invoke` reports).
 
 #![cfg(feature = "differential")]
 
@@ -152,6 +159,8 @@ struct Tally {
     returned: u64,
     faulted: u64,
     disagreed: u64,
+    /// Calls whose game path (runtime `invoke`) disagreed with the adapter.
+    game_disagreed: u64,
 }
 
 struct Harness<'a> {
@@ -160,6 +169,10 @@ struct Harness<'a> {
     a: FlatMemory,
     /// Memory the Rust runs on. Kept equal to `a` between calls.
     b: FlatMemory,
+    /// The runtime's guest, for the game's path; kept equal to `b`. RAM is
+    /// mapped at 0 in one piece starting at physical `c_phys`.
+    c: runtime::Guest,
+    c_phys: usize,
     tally: BTreeMap<&'static str, Tally>,
     failures: Vec<String>,
 }
@@ -176,11 +189,27 @@ fn reg(r: &Regs, x: Reg) -> u32 {
     }
 }
 
+fn runtime_guest(image: &FlatMemory) -> (runtime::Guest, usize) {
+    let mut g = runtime::Guest::new();
+    g.map_zeroed(0, RAM as u32, runtime::guest::Permissions::RW)
+        .expect("64 MB at 0 in the runtime guest");
+    let phys = g.mappings()[0].physical_start as usize;
+    g.write_bytes(0, &image.bytes, 1)
+        .expect("image into the runtime guest");
+    (g, phys)
+}
+
 impl Harness<'_> {
     fn poke(&mut self, addr: u32, data: &[u8]) {
         let r = addr as usize..addr as usize + data.len();
         self.a.bytes[r.clone()].copy_from_slice(data);
         self.b.bytes[r].copy_from_slice(data);
+        self.c
+            .write_bytes(addr, data, 1)
+            .expect("runtime guest poke");
+    }
+    fn c_ram(&self) -> &[u8] {
+        &self.c.physical_ram()[self.c_phys..self.c_phys + RAM]
     }
     fn poke32(&mut self, addr: u32, v: u32) {
         self.poke(addr, &v.to_le_bytes());
@@ -227,6 +256,40 @@ impl Harness<'_> {
                 Err(f) => Outcome::Fault(f.addr, f.write),
             }
         };
+        let game = {
+            let mut cpu = runtime::CpuAbi {
+                eax: r.eax,
+                ecx: r.ecx,
+                edx: r.edx,
+                ebx: r.ebx,
+                esp: r.esp,
+                ebp: r.ebp,
+                esi: r.esi,
+                edi: r.edi,
+                ..Default::default()
+            };
+            match engine::runtime_glue::invoke(o, &mut cpu, &mut self.c) {
+                Ok(t) if t == runtime::TransferAbi::ret(HARNESS_EXIT) => Outcome::Returned(Regs {
+                    eax: cpu.eax,
+                    ecx: cpu.ecx,
+                    edx: cpu.edx,
+                    ebx: cpu.ebx,
+                    esp: cpu.esp,
+                    ebp: cpu.ebp,
+                    esi: cpu.esi,
+                    edi: cpu.edi,
+                }),
+                Ok(t) => Outcome::Stopped(format!("transfer {t:?}")),
+                Err(f) => Outcome::Fault(f.addr, f.access == runtime::guest::Access::Write),
+            }
+        };
+        let mut game_bad = vec![];
+        if game != ours {
+            game_bad.push(format!("outcome {game:?} vs {ours:?}"));
+        }
+        if self.c_ram() != &self.b.bytes[..] {
+            game_bad.push("memory differs".to_string());
+        }
         let theirs = self.original.run(&mut self.a, r, addr);
 
         let mut bad = vec![];
@@ -274,14 +337,27 @@ impl Harness<'_> {
             ));
         }
         let frame = self.a.bytes[dead.clone()].to_vec();
-        self.b.bytes[dead].copy_from_slice(&frame);
+        self.b.bytes[dead.clone()].copy_from_slice(&frame);
+        self.c
+            .write_bytes(dead.start as u32, &frame, 1)
+            .expect("dead frame");
 
         let t = self.tally.entry(o.name).or_default();
+        if !game_bad.is_empty() {
+            t.game_disagreed += 1;
+            self.failures.push(format!(
+                "{} {label}: game path: {}",
+                o.name,
+                game_bad.join("; ")
+            ));
+            self.c.write_bytes(0, &self.b.bytes, 1).expect("resync");
+        }
         if !bad.is_empty() {
             t.disagreed += 1;
             self.failures
                 .push(format!("{} {label}: {}", o.name, bad.join("; ")));
             self.b = self.a.clone();
+            self.c.write_bytes(0, &self.a.bytes, 1).expect("resync");
         } else if matches!(theirs, Outcome::Fault(..)) {
             t.faulted += 1;
         } else {
@@ -1132,6 +1208,7 @@ fn overrides_agree_with_the_lifted_original() {
 
     let seeds = env_list("H2_DIFF_SEEDS").unwrap_or_else(|| DEFAULT_SEEDS[..1].to_vec());
     let scale = env_list("H2_DIFF_SCALE").map_or(1, |v| v[0] as usize);
+    let c = runtime_guest(&image);
     let mut h = Harness {
         original: Original {
             lifter: &lifter,
@@ -1139,6 +1216,8 @@ fn overrides_agree_with_the_lifted_original() {
             steps: 0,
         },
         a: image.clone(),
+        c: c.0,
+        c_phys: c.1,
         b: image,
         tally: BTreeMap::new(),
         failures: vec![],
@@ -1156,13 +1235,13 @@ fn overrides_agree_with_the_lifted_original() {
         h.original.steps
     );
     println!(
-        "{:<32} {:>9} {:>8} {:>9}",
-        "function", "returned", "faulted", "disagreed"
+        "{:<32} {:>9} {:>8} {:>9} {:>9}",
+        "function", "returned", "faulted", "disagreed", "game-path"
     );
     for (name, t) in &h.tally {
         println!(
-            "{name:<32} {:>9} {:>8} {:>9}",
-            t.returned, t.faulted, t.disagreed
+            "{name:<32} {:>9} {:>8} {:>9} {:>9}",
+            t.returned, t.faulted, t.disagreed, t.game_disagreed
         );
     }
     for f in h.failures.iter().take(30) {

@@ -1,7 +1,8 @@
-# Feature engine (design; Phases 0 and 1 built)
+# Feature engine (design; Phases 0 and 1 built, Phase 2 in part)
 
-Status: design, except Phase 0, the [first slice](#the-first-slice), and
-Phase 1, the registry, which are built ([below](#what-was-built)). No other
+Status: design, except Phase 0, the [first slice](#the-first-slice),
+Phase 1, the registry, and part of Phase 2 (the differential harness, the
+leaves, `locale` sources), which are built ([below](#what-was-built)). No other
 crate, type or macro named here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
@@ -1388,6 +1389,65 @@ All on tests; nothing here was run in the game.
   `.at(site)` call-site hooks, `Refuse` in `ImageAddrs`, and a measurement
   of chain overhead on the hot locale point (the closure does no
   allocation and takes no lock; the plan warns that the point is hot).
+
+#### Phase 2 (in part)
+
+Tests only, except that the differential harness ran on the owner's XBE
+(local, never committed); nothing here was run in the game.
+
+- **The differential harness builds and runs** (`crates/engine/tests/
+  differential.rs`, feature `differential`, which now includes
+  `runtime-glue`). The `ir`/`lift` breakage the earlier TODO named was
+  already gone.
+- **Generalised to the game's path.** Every call now runs three ways from
+  one state: the original (lifted, on the IR interpreter), the adapter
+  directly, and `engine::runtime_glue::invoke` on a `runtime::Guest`
+  holding the same 64 MB, which is the body the `engine-leaves` feature
+  installs. The game path must equal the adapter exactly (outcome, every
+  register, every byte, the runtime fault's address and direction). A
+  `game-path` column counts its disagreements. Not covered: the plan's
+  chain around the body (covered by the `feature` install tests on the
+  fixture module), and async entries (phase 3).
+- **Evidence** (debug build, image sha256 pinned): seeds 1, 7, 99, 2026,
+  31337 at scale 1; every one of the 22 adapters exercised, zero
+  disagreements against the original and zero on the game path: 7.66 M
+  original instructions, 93,304 calls (for the locale leaves 4,500 finds
+  and 4,502 exists, one a fault; tags 11,762; datums 72,540). The table is
+  printed with `--nocapture`.
+- **Leaves on, by group.** `impl.engine.<group>[.<name>]`, falling back to
+  `impl.engine.<group>` and `impl.engine`. Groups: `locale` (find, exists),
+  `tags` (`tag_get_checked`, `tag_group_find`), `datums` (the other 18).
+  **`locale` is on by default; `tags` and `datums` stay off.** Why the
+  split: the harness supports all 22 equally, but the cost is not the
+  same. `LOCALE_FIND` was already overridden by default (our strings), so
+  the Rust lookup adds no dispatch there and removes a hop into the
+  original. The datum and tag leaves are the hottest functions in the
+  game; each override takes its callers off the direct-call path, and
+  every Rust access goes through the checked guest instead of the C fast
+  path. That has not been measured, and the user plays. Turn them on for a
+  play-test with `H2_FEATURES=impl.engine=on` and compare frame times
+  (`perf` scopes) before defaulting them. A second caveat for lockstep:
+  Rust accesses are not charged to the logical clock, so traces are only
+  comparable within one switch set (see "Coexisting").
+- **`locale` sources.** `b.locale().source(label, f)`: `f` maps a packed
+  id to the guest address of its text. The Rust `locale_string_id_find`
+  asks the sources first (`b.locale().serve()`), so with it on our strings
+  need no hook at all. When nothing native serves them (switched off, or
+  missing), `Registry::build` adds one `before` on `LOCALE_FIND` owned by
+  the `locale` bridge. The decision is made after every feature declared.
+  The plan text gains one `locale source <feature>:<label> (served by ...)`
+  line per source. `locale_string_id_exists` does not consult sources: it
+  answers as retail does, so an id of ours "does not exist" there, as
+  before.
+- **Boot.** `ui-strings` is a source now (one function in
+  `layout_glue.rs`). There was one string hook, not two: the speaker and
+  Video rows already share it.
+- **Points.** `LOCALE_EXISTS` joins the table (opaque).
+- **Not built:** the `record!` macro and the views for tags, datums,
+  players and objects, and folding telemetry's readers onto them. The
+  disk ran below the 5 GB build floor during this phase (other sessions'
+  builds), so the work stopped at the leaves and sources; it recovered
+  later, and the views are the first thing left for phase 2.
 
 Then, as the first thing that needs a play-test (phase 3, after the
 registry): our own list class, so the model drives Rust row functions

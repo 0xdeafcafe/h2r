@@ -1232,9 +1232,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             });
         }
     });
-    // Our strings: a `before` on the locale lookup that answers our ids and
-    // lets every other id through, so it shares the point with the Rust
-    // lookup (`impl.engine`) instead of displacing it.
+    // Our strings: a source for the locale lookup (the Rust one serves it;
+    // with that off, the plan's locale bridge does).
     registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     Ok(())
 }
@@ -1248,15 +1247,11 @@ impl feature::Feature for StringsFeature {
         feature::Manifest::new("ui-strings", "Our menu strings").doc("docs/settings-menu.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        b.raw().before(&feature::points::LOCALE_FIND, "our strings", |c| {
-            let id = c.cpu.edi;
-            if is_ours(id)
-                && let Some((_, a)) = STRING_ADDRS.get().and_then(|v| v.iter().find(|(i, _)| *i == id))
-            {
-                c.cpu.eax = *a;
-                return Ok(feature::Flow::Return(c.ret(0)?));
+        b.locale().source("our strings", |id| {
+            if !is_ours(id) {
+                return None;
             }
-            Ok(feature::Flow::Continue)
+            STRING_ADDRS.get()?.iter().find(|(i, _)| *i == id).map(|(_, a)| *a)
         });
         Ok(())
     }
@@ -1819,7 +1814,7 @@ mod tests {
             let mut features = feature::Registry::new(feature::Switches::defaults());
             let ok = install(&r, &mut features, Some(Arc::new(model))).is_ok();
             let installed = features.build(&feature::Base).unwrap().install(&r).unwrap();
-            tx.send((ok, installed.off_reason("ui-strings").map(str::to_owned))).ok();
+            tx.send((ok, installed.off_reason("locale").map(str::to_owned))).ok();
         });
         let (ok, strings_off) = rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
         assert!(ok);

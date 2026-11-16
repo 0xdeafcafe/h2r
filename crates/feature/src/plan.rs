@@ -183,6 +183,85 @@ pub struct Plan {
     pub notes: Vec<String>,
     /// Hooks on hot points: they leave the direct-call fast path.
     pub warnings: Vec<String>,
+    /// Where our strings are served from, one line per source.
+    pub locale: Vec<String>,
+}
+
+/// The `locale` facade's declarations (see [`crate::locale`]).
+pub(crate) struct LocaleInput {
+    pub sources: Vec<crate::locale::Source>,
+    pub shared: crate::locale::Sources,
+    pub server: Option<&'static str>,
+}
+
+/// Fills the shared sources and, when no native implementation serves
+/// them, adds the bridge's `before` on `LOCALE_FIND`.
+fn place_locale(
+    locale: LocaleInput,
+    off: &BTreeMap<&'static str, String>,
+    placed: &mut Vec<(u32, Hook)>,
+    notes: &mut Vec<String>,
+    addrs: &dyn ImageAddrs,
+) -> Vec<String> {
+    use engine::points::LOCALE_FIND;
+    let sources: Vec<_> = locale
+        .sources
+        .into_iter()
+        .filter(|s| !off.contains_key(s.feature))
+        .collect();
+    locale.shared.fill(
+        sources
+            .iter()
+            .map(|s| std::sync::Arc::clone(&s.f))
+            .collect(),
+    );
+    if sources.is_empty() {
+        return Vec::new();
+    }
+    let native = locale.server.filter(|f| {
+        placed.iter().any(|(_, h)| {
+            h.feature == *f && h.kind() == Kind::Implement && std::ptr::eq(h.point, &LOCALE_FIND)
+        })
+    });
+    let by = match native {
+        Some(f) => format!("served by {f}"),
+        None => match addrs.resolve(&LOCALE_FIND) {
+            Some(addr) => {
+                let shared = locale.shared.clone();
+                placed.push((
+                    addr,
+                    Hook {
+                        feature: "locale",
+                        point: &LOCALE_FIND,
+                        run: crate::Run::Before(std::sync::Arc::new(move |c: &mut crate::Call| {
+                            match shared.find(c.cpu.edi) {
+                                Some(a) => {
+                                    c.cpu.eax = a;
+                                    Ok(crate::Flow::Return(c.ret(0)?))
+                                }
+                                None => Ok(crate::Flow::Continue),
+                            }
+                        })),
+                        order: crate::Order::Default,
+                        after_features: Vec::new(),
+                        optional: false,
+                        label: "sources",
+                    },
+                ));
+                "served by the locale bridge".to_owned()
+            }
+            None => {
+                notes.push(
+                    "locale: LOCALE_FIND is not in this image; our strings are not served".into(),
+                );
+                "not served".to_owned()
+            }
+        },
+    };
+    sources
+        .iter()
+        .map(|s| format!("locale source {}:{} ({by})", s.feature, s.label))
+        .collect()
 }
 
 pub(crate) fn build(
@@ -190,6 +269,7 @@ pub(crate) fn build(
     hooks: Vec<Hook>,
     mut allocs: Vec<Alloc>,
     mut arena: Arena,
+    locale: LocaleInput,
     addrs: &dyn ImageAddrs,
 ) -> Result<Plan, Vec<Conflict>> {
     let mut conflicts = Vec::new();
@@ -228,6 +308,7 @@ pub(crate) fn build(
     }
     placed.retain(|(_, h)| !off.contains_key(h.feature));
     allocs.retain(|a| !off.contains_key(a.feature));
+    let locale_lines = place_locale(locale, &off, &mut placed, &mut notes, addrs);
 
     // Group by address; one name per address.
     let mut by_addr: BTreeMap<u32, Vec<Hook>> = BTreeMap::new();
@@ -323,6 +404,7 @@ pub(crate) fn build(
             allocs,
             notes,
             warnings,
+            locale: locale_lines,
         })
     } else {
         Err(conflicts)
@@ -441,6 +523,9 @@ impl Plan {
                 c.point.name,
                 links.join(" -> ")
             ));
+        }
+        for l in &self.locale {
+            s.push_str(&format!("{l}\n"));
         }
         for n in &self.notes {
             s.push_str(&format!("note: {n}\n"));

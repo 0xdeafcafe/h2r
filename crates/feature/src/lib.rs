@@ -18,6 +18,7 @@ pub mod arena;
 pub mod bridge;
 pub mod install;
 pub mod leaves;
+pub mod locale;
 pub mod plan;
 pub mod switches;
 
@@ -278,6 +279,10 @@ pub struct Registry {
     hooks: Vec<Hook>,
     arena: Arena,
     allocs: Vec<Alloc>,
+    sources: Vec<locale::Source>,
+    locale: locale::Sources,
+    /// The feature whose `LOCALE_FIND` implementation serves the sources.
+    locale_server: Option<&'static str>,
 }
 
 impl Registry {
@@ -288,6 +293,9 @@ impl Registry {
             hooks: Vec::new(),
             arena: Arena::default(),
             allocs: Vec::new(),
+            sources: Vec::new(),
+            locale: locale::Sources::default(),
+            locale_server: None,
         }
     }
 
@@ -309,6 +317,9 @@ impl Registry {
             arena: self.arena.clone(),
             allocs: Vec::new(),
             switches: &self.switches,
+            sources: Vec::new(),
+            locale: self.locale.clone(),
+            serves_locale: false,
         };
         match feature.build(&mut b) {
             Ok(()) => {
@@ -316,8 +327,14 @@ impl Registry {
                     hooks,
                     arena,
                     allocs,
+                    sources,
+                    serves_locale,
                     ..
                 } = b;
+                self.sources.extend(sources);
+                if serves_locale {
+                    self.locale_server = Some(m.id);
+                }
                 self.hooks.extend(hooks);
                 self.arena = arena;
                 self.allocs.extend(allocs);
@@ -338,7 +355,19 @@ impl Registry {
 
     /// The plan, or every conflict found. Pure.
     pub fn build(self, addrs: &dyn ImageAddrs) -> Result<Plan, Vec<Conflict>> {
-        plan::build(self.features, self.hooks, self.allocs, self.arena, addrs)
+        let locale = plan::LocaleInput {
+            sources: self.sources,
+            shared: self.locale,
+            server: self.locale_server,
+        };
+        plan::build(
+            self.features,
+            self.hooks,
+            self.allocs,
+            self.arena,
+            locale,
+            addrs,
+        )
     }
 }
 
@@ -349,6 +378,9 @@ pub struct Builder<'r> {
     arena: Arena,
     allocs: Vec<Alloc>,
     switches: &'r Switches,
+    sources: Vec<locale::Source>,
+    locale: locale::Sources,
+    serves_locale: bool,
 }
 
 impl<'r> Builder<'r> {
@@ -365,6 +397,10 @@ impl<'r> Builder<'r> {
     }
     pub fn game(&mut self) -> Game<'_, 'r> {
         Game(self)
+    }
+    /// Our strings (see [`locale`]).
+    pub fn locale(&mut self) -> locale::Locale<'_, 'r> {
+        locale::Locale(self)
     }
     /// The escape hatch: hooks on points. A feature that needs it is a sign
     /// of a missing extension point.
