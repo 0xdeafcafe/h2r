@@ -48,6 +48,10 @@ use crate::layout_glue::Gm;
 /// How many skulls the engine has (the array's length and the bound both
 /// functions check).
 pub const COUNT: usize = 15;
+/// Every skull we list: the engine's fifteen, then ours from index
+/// [`COUNT`] on (`crate::skulls_custom`, docs/skulls.md "Our skulls"). Ours
+/// have no byte in the engine's array: their effects are our own hooks.
+pub const TOTAL: usize = COUNT + crate::skulls_custom::OURS;
 /// The skull-on array: one byte per skull.
 pub const FLAGS: u32 = 0x004f_55dc;
 /// The game options' mode word: 1 campaign, 2 multiplayer, 3 main menu.
@@ -93,8 +97,10 @@ const fn skull(key: &'static str, label: &'static str, order: u32) -> Def {
 /// The skulls, in the engine's order: `SKULLS[n]` is `ice_cream_flavor_stock
 /// n`. Names 0 to 13 are the game's own HUD names for each index (the string
 /// ids `0x1df3e0` shows, table `0x445514`); 14 has none there and is the
-/// community's Bandana (stocked by The Armory's script).
-pub static SKULLS: [Def; COUNT] = [
+/// community's Bandana (stocked by The Armory's script). From [`COUNT`] on
+/// they are ours (`crate::skulls_custom`): hidden in the campaign by us, on
+/// any difficulty, and stored the same way.
+pub static SKULLS: [Def; TOTAL] = [
     skull("skulls.envy", "Envy", 0),
     skull("skulls.grunt_birthday_party", "Grunt Birthday Party", 1),
     skull("skulls.assassins", "Assassins", 2),
@@ -110,6 +116,12 @@ pub static SKULLS: [Def; COUNT] = [
     skull("skulls.mythic", "Mythic", 12),
     skull("skulls.angry", "Angry", 13),
     skull("skulls.bandana", "Bandana", 14),
+    skull("skulls.acrophobia", "Acrophobia", 15),
+    skull("skulls.low_gravity", "Low Gravity", 16),
+    skull("skulls.fall_damage", "Fall Damage", 17),
+    skull("skulls.unlimited_ammo", "Unlimited Ammo", 18),
+    skull("skulls.unlimited_grenades", "Unlimited Grenades", 19),
+    skull("skulls.invincible", "Invincible", 20),
 ];
 
 /// What a skull is, for the menu: its name, what it does, where it is
@@ -127,7 +139,7 @@ pub struct About {
     pub level: &'static str,
     /// Only a Legendary game places it: the level script that creates the
     /// skull (or the one that wakes that script) tests
-    /// `(difficulty_legendary)` first.
+    /// `(difficulty_legendary)` first. Ours are on any difficulty.
     pub legendary: bool,
     /// Anything else the script asks, for the description.
     pub note: Option<&'static str>,
@@ -170,18 +182,20 @@ const fn about(
     }
 }
 
-/// Skull indices gold first, then silver, the engine's order within each:
-/// the order the Skulls screen lists them in.
+/// Skull indices gold first, then silver, the engine's order within each,
+/// retail's fifteen before ours: the order the Skulls screen lists them in.
 pub fn by_tier() -> Vec<usize> {
     let mut v: Vec<usize> = (0..ABOUT.len()).collect();
-    v.sort_by_key(|i| (ABOUT[*i].tier, *i));
+    v.sort_by_key(|i| (is_ours(*i), ABOUT[*i].tier, *i));
     v
 }
 
 /// [`SKULLS`]' skulls, in the same order. Levels and the Legendary test are
 /// read from each level's scripts (`h2 hs <map>`, docs/skulls.md "Where each
-/// skull is"): every skull but Blind is placed on Legendary only.
-pub static ABOUT: [About; COUNT] = [
+/// skull is"): every retail skull but Blind is placed on Legendary only.
+/// Ours (from [`COUNT`]) are placed by us on any difficulty; their levels
+/// are `crate::skulls_custom::SPOTS`'.
+pub static ABOUT: [About; TOTAL] = [
     about(
         "Envy",
         "Your flashlight is swapped for active camouflage.",
@@ -293,7 +307,55 @@ pub static ABOUT: [About; COUNT] = [
             SkullTier::Silver,
         )
     },
+    // Ours (crate::skulls_custom).
+    about(
+        "Acrophobia",
+        "You can fly: in the air, look up to climb and level out to hover; crouch to drop.",
+        "Uprising",
+        false,
+        SkullTier::Silver,
+    ),
+    about(
+        "Low Gravity",
+        "Gravity is halved for everything.",
+        "Delta Halo",
+        false,
+        SkullTier::Silver,
+    ),
+    about(
+        "Fall Damage",
+        "A hard landing hurts: past a jump's speed, a fall drains your shields, then your health.",
+        "Metropolis",
+        false,
+        SkullTier::Gold,
+    ),
+    about(
+        "Unlimited Ammo",
+        "Your spare ammo never runs out, but you still reload; energy weapons never drain.",
+        "Outskirts",
+        false,
+        SkullTier::Silver,
+    ),
+    about(
+        "Unlimited Grenades",
+        "Your grenades are topped up as you throw them.",
+        "Sacred Icon",
+        false,
+        SkullTier::Silver,
+    ),
+    about(
+        "Invincible",
+        "You take no damage.",
+        "The Great Journey",
+        false,
+        SkullTier::Silver,
+    ),
 ];
+
+/// Whether skull `index` is one of ours (no byte in the engine's array).
+pub fn is_ours(index: usize) -> bool {
+    (COUNT..TOTAL).contains(&index)
+}
 
 /// A skull on a profile's menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -462,10 +524,26 @@ pub fn selection(store: &Store, profiles: &[String]) -> Option<Set> {
     let mut on = [false; COUNT];
     for p in profiles {
         for (i, v) in collected(store, p) {
-            on[i] |= v;
+            if i < COUNT {
+                on[i] |= v;
+            }
         }
     }
     Some(on)
+}
+
+/// Our skulls (indices from [`COUNT`]) that a campaign start turns on for
+/// `profiles`: every one any of them has on, ascending.
+pub fn custom_selection(store: &Store, profiles: &[String]) -> Vec<usize> {
+    let mut on: Vec<usize> = profiles
+        .iter()
+        .flat_map(|p| collected(store, p))
+        .filter(|(i, v)| *v && is_ours(*i))
+        .map(|(i, _)| i)
+        .collect();
+    on.sort_unstable();
+    on.dedup();
+    on
 }
 
 /// A press on `profile`'s row of `key`: flip it. Only a collected skull can
@@ -669,11 +747,13 @@ pub fn at_start(
     }
     let (names, fallback) = profiles;
     let on = selection(store, names)?;
+    let ours = custom_selection(store, names);
     let labels: Vec<&str> = SKULLS
         .iter()
         .zip(on)
         .filter(|(_, o)| *o)
         .map(|(d, _)| d.label)
+        .chain(ours.iter().map(|i| SKULLS[*i].label))
         .collect();
     Some((
         on,
@@ -776,6 +856,12 @@ impl feature::Feature for Skulls {
                         } else {
                             eprintln!("{line} (could not write the skulls)");
                         }
+                        // Ours have no byte in the array: their hooks read
+                        // this set (crate::skulls_custom).
+                        crate::skulls_custom::set_campaign(&custom_selection(&store, &profiles.0));
+                    } else {
+                        // Not a campaign: none of ours act in it.
+                        crate::skulls_custom::set_campaign(&[]);
                     }
                     Ok(feature::Flow::Continue)
                 })
@@ -924,12 +1010,13 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_is_the_engines_fifteen() {
-        assert_eq!(SKULLS.len(), COUNT);
+    fn the_catalog_is_the_engines_fifteen_then_ours() {
+        assert_eq!(COUNT, 15);
+        assert_eq!(SKULLS.len(), TOTAL);
         let mut keys: Vec<_> = SKULLS.iter().map(|d| d.key).collect();
         keys.sort();
         keys.dedup();
-        assert_eq!(keys.len(), COUNT);
+        assert_eq!(keys.len(), TOTAL);
         assert!(
             SKULLS
                 .iter()
@@ -994,14 +1081,18 @@ mod tests {
         assert_eq!(collected(&s, "Arbiter"), [(11, true)]);
         assert!(collected(&s, "Nobody").is_empty());
         assert!(record_pickup(&s, &[], 11)[0].contains("not kept"));
-        assert!(record_pickup(&s, &names(&["Chief"]), 15).is_empty());
+        assert!(record_pickup(&s, &names(&["Chief"]), TOTAL).is_empty());
+        // Ours are kept the same way (skulls_custom places them).
+        assert_eq!(record_pickup(&s, &names(&["Chief"]), 15).len(), 1);
+        assert_eq!(collected(&s, "Chief"), [(11, true), (15, true)]);
     }
 
     #[test]
     fn a_skull_is_locked_until_collected_and_only_then_toggles() {
         let s = store();
         assert!((0..COUNT).all(|i| state(&s, "Chief", i) == Some(State::Locked)));
-        assert_eq!(state(&s, "Chief", COUNT), None);
+        assert!((COUNT..TOTAL).all(|i| state(&s, "Chief", i) == Some(State::Locked)));
+        assert_eq!(state(&s, "Chief", TOTAL), None);
         record_pickup(&s, &names(&["Chief"]), 12);
         record_pickup(&s, &names(&["Chief"]), 1);
         assert_eq!(state(&s, "Chief", 12), Some(State::On));
@@ -1047,6 +1138,13 @@ mod tests {
                 "Mythic",
                 "Angry",
                 "Bandana",
+                // Ours (skulls_custom).
+                "Acrophobia",
+                "Low Gravity",
+                "Fall Damage",
+                "Unlimited Ammo",
+                "Unlimited Grenades",
+                "Invincible",
             ]
         );
         // The settings' labels are the same names (IWHBYD shortened).
@@ -1061,9 +1159,13 @@ mod tests {
             .map(|a| a.name)
             .collect();
         assert_eq!(
-            anywhere,
-            ["Blind"],
+            anywhere[0], "Blind",
             "only Outskirts' Blind skull has no Legendary test"
+        );
+        assert_eq!(
+            anywhere.len(),
+            1 + crate::skulls_custom::OURS,
+            "ours are found on any difficulty"
         );
         assert_eq!(ABOUT[7].level, "Uprising", "08a_deltacliffs stocks 7");
         assert_eq!(
@@ -1263,7 +1365,7 @@ mod tests {
         );
         assert_eq!(
             why(after_stock(&s, &t, 15, None, Some(on(&[12])), &p)),
-            "skulls: pickup of skull 15 ((no such skull)) not kept: the game ignores that index"
+            "skulls: pickup of skull 15 (Acrophobia) not kept: the game ignores that index"
         );
         assert_eq!(
             why(after_stock(&s, &t, 3, None, None, &p)),
@@ -1488,12 +1590,15 @@ mod tests {
                 "Catch",
                 "Iron",
                 "Mythic",
-                "Angry"
+                "Angry",
+                "Fall Damage"
             ]
         );
         let order = by_tier();
         assert_eq!(order.len(), ABOUT.len());
         assert_eq!(&order[..2], &[2, 3]);
-        assert_eq!(&order[9..], &[0, 1, 5, 7, 10, 14]);
+        assert_eq!(&order[9..15], &[0, 1, 5, 7, 10, 14]);
+        // Ours after retail's, gold first too.
+        assert_eq!(&order[15..], &[17, 15, 16, 18, 19, 20]);
     }
 }
