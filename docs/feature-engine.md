@@ -1,8 +1,8 @@
-# Feature engine (design; Phases 0 and 1 built, Phase 2 in part)
+# Feature engine (design; Phases 0, 1 and 2 built)
 
 Status: design, except Phase 0, the [first slice](#the-first-slice),
-Phase 1, the registry, and part of Phase 2 (the differential harness, the
-leaves, `locale` sources), which are built ([below](#what-was-built)). No other
+Phase 1, the registry, and Phase 2 (the differential harness, the leaves,
+`locale` sources, `record!` and the views), which are built ([below](#what-was-built)). No other
 crate, type or macro named here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
@@ -1390,7 +1390,7 @@ All on tests; nothing here was run in the game.
   of chain overhead on the hot locale point (the closure does no
   allocation and takes no lock; the plan warns that the point is hot).
 
-#### Phase 2 (in part)
+#### Phase 2
 
 Tests only, except that the differential harness ran on the owner's XBE
 (local, never committed); nothing here was run in the game.
@@ -1443,11 +1443,55 @@ Tests only, except that the differential harness ran on the owner's XBE
   `layout_glue.rs`). There was one string hook, not two: the speaker and
   Video rows already share it.
 - **Points.** `LOCALE_EXISTS` joins the table (opaque).
-- **Not built:** the `record!` macro and the views for tags, datums,
-  players and objects, and folding telemetry's readers onto them. The
-  disk ran below the 5 GB build floor during this phase (other sessions'
-  builds), so the work stopped at the leaves and sources; it recovered
-  later, and the views are the first thing left for phase 2.
+- **`record!` and the views** (`crates/engine/src/view.rs`). A record is a
+  `Copy` handle on a guest address with typed getters and `set_` setters,
+  an uppercase offset constant per field, and a builder that writes one on
+  a `FakeGuest`. The grammar is `field @ 0xOFF: Type`, not the sketch's
+  `Type @ OFF` (macro_rules cannot follow a type with `@`); it uses the
+  `paste` crate for the names. Field types: the integers, `f32`, `Vec3`,
+  `Option<DatumHandle>` (none is `0xffffffff`). Nothing is read until a
+  getter is called, and nothing is copied: every offset is a named
+  research point next to the doc it came from.
+  - `Datums<T>`: a datum array of records, from a global (`from_global`)
+    or an address. `get` is `datum_try_and_get`, `get_absolute` is
+    `datum_get_absolute`, both through the ported functions, so a view
+    has the game's semantics (salt, high water, the element size from
+    the header), not a reader's guess. `live(limit)` lists the slots below
+    the high water with a nonzero salt.
+  - `Tags`: `entry(handle)`, `get(handle, group)` (which is
+    `tag_get_checked`, parents included), `scenario()`.
+  - `players::Player` (`PLAYERS`) with `name`, `listed`; `objects::Header`
+    and `objects::Body` (`OBJECTS`), `objects::get(handle)` giving the type
+    and body or none (no array, stale handle, no body).
+  - `view::fake` lays out a datum array of a record on a `FakeGuest` with
+    the ported allocator, so tests put records where the game would.
+  - Points: `PLAYERS`, `OBJECTS`, `TAG_INDEX` and `TAG_ENTRIES` join the
+    globals table; `tags.rs` takes its two from there.
+- **Tests:** `crates/engine/tests/views.rs` on `FakeGuest` (round trip,
+  players from the global with names and stale handles, no array, objects
+  by handle, tags by handle and parent group, out of range and stale).
+  **The harness checks the views** on real layouts: for every
+  `datum_try_and_get`, `datum_get_absolute` and `tag_get_checked` call it
+  also asks the view (`Datums::get`, `Datums::get_absolute`, `Tags::get`)
+  in the original's memory, and the view must return the original's
+  `eax` (none as 0) or fault with it. Columns `views` and `view-bad`.
+  Evidence, with the same five seeds and pinned image as above: 9,798
+  view answers (`datum_try_and_get` 2,700, `datum_get_absolute` 1,337,
+  `tag_get_checked` 5,761), zero disagreements, and every other count
+  unchanged (93,304 calls, 7.66 M original instructions, 817 s debug).
+- **Telemetry folded** (`live-telemetry`): the roster (`players`) and
+  object lookups (`object_body`) read through `Datums`, `Player` and
+  `objects::get`; its layout constants for those records are aliases of
+  the view constants, and its three globals come from `engine::points`.
+  Two differences, both only on a corrupt array: the high-water check is
+  signed as in the game (it was unsigned), and the element size comes
+  from the header (it was a constant). The other telemetry readers
+  (`fov_row`, community variants) are untouched, to keep boot edits
+  small.
+- **Not built:** `Scenario`/`Block<T>` tag-block views, the `likely`
+  range-checked fields, `GameGlobals`, and the UI views (`Widget`,
+  `ListHandler`, which phase 3 needs). `record!` is the base for all of
+  them.
 
 Then, as the first thing that needs a play-test (phase 3, after the
 registry): our own list class, so the model drives Rust row functions
