@@ -100,3 +100,46 @@ fn without_the_rust_lookup_one_bridge_hook_serves_our_strings() {
     );
     assert!(text.contains("locale source ui-strings:our strings (served by the locale bridge)\n"));
 }
+
+/// The agent API (H2_AGENT) shares the tick with telemetry and lockstep,
+/// after both, so a pause holds the tick only once they've seen it; and
+/// it watches the cutscene start and stop (docs/runtime/agent-api.md).
+#[test]
+fn the_agent_observes_the_tick_last_and_the_cutscenes() {
+    let path = std::env::temp_dir().join(format!("h2-plan-agent-{}.jsonl", std::process::id()));
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let config = TelemetryConfig {
+        enabled: true,
+        sink: TelemetrySinkConfig::File(path.clone()),
+    };
+    // The agent added first still runs last.
+    r.add(&agent::AgentFeature(agent::Agent::new())).unwrap();
+    assert!(boot::telemetry::install(&mut r, &config).unwrap().is_some());
+    r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
+        .unwrap();
+    let text = r.build(&feature::Base).unwrap().text();
+    let _ = std::fs::remove_file(path);
+    assert!(text.contains("feature agent: on\n"), "{text}");
+    assert!(
+        text.contains("GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash, agent:serve]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("CINEMATIC_START: original -> observe_after [agent:cinematic-start]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("CINEMATIC_STOP: original -> observe_after [agent:cinematic-stop]\n"),
+        "{text}"
+    );
+}
+
+/// `H2_FEATURES=-agent` leaves every hook out.
+#[test]
+fn the_agent_can_be_switched_off() {
+    let mut r = feature::Registry::new(feature::Switches::parse("-agent").unwrap());
+    assert!(!r.add(&agent::AgentFeature(agent::Agent::new())).unwrap());
+    let text = r.build(&feature::Base).unwrap().text();
+    assert!(text.contains("feature agent: off"), "{text}");
+    assert!(!text.contains("[agent:"), "{text}");
+}

@@ -34,6 +34,7 @@ pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
+pub mod agent_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
@@ -864,6 +865,11 @@ pub fn run_hosted_with_live(
     } else {
         None
     };
+    // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
+    let agent = match agent_glue::socket_from_env() {
+        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path)?),
+        None => None,
+    };
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
@@ -902,6 +908,13 @@ pub fn run_hosted_with_live(
     let installed = plan.install(&loaded.runtime).context("installing the feature plan")?;
     for n in &installed.notes {
         eprintln!("feature plan: {n}");
+    }
+    if let Some(a) = &agent {
+        a.set_plan(&plan, &installed);
+        if let Some(why) = installed.off_reason("agent") {
+            a.agent.set_no_tick_hook();
+            eprintln!("agent: answering between slices only, no pausing: {why}");
+        }
     }
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
         eprintln!("{}", skulls::report(&plan, &installed, store));
@@ -1024,6 +1037,9 @@ pub fn run_hosted_with_live(
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        if let Some(a) = &agent {
+            a.after_slice(&loaded.runtime, d3d_diag::presents());
+        }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
             && audio_errors.len() < 8
@@ -1043,6 +1059,8 @@ pub fn run_hosted_with_live(
     if let Some(a) = &ds {
         a.output.halt();
     }
+    // Fail what's queued and close the socket before the module goes.
+    drop(agent);
     if let Some(h) = &harness {
         match h.finish() {
             Ok(line) => eprintln!("{line}"),
