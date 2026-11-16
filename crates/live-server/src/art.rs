@@ -86,10 +86,17 @@ pub fn routes(art: &GameArt) -> Router {
                 if !allowed(share, peer, req.headers()) {
                     return not_found("game art is only served to this machine").into_response();
                 }
-                let resp: Response = next.run(req).await;
+                let mut resp: Response = next.run(req).await;
                 if resp.status() == axum::http::StatusCode::NOT_FOUND {
                     return not_found("no such game art").into_response();
                 }
+                // Art changes in place when it is extracted again (new
+                // models, materials): browsers ask each time and get a 304
+                // while it is unchanged, never an old copy.
+                resp.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-cache"),
+                );
                 resp
             },
         ))
@@ -185,6 +192,11 @@ mod tests {
             let r = app.clone().oneshot(req).await.unwrap();
             assert_eq!(r.status(), axum::http::StatusCode::OK, "{path}");
             assert_eq!(r.headers()[axum::http::header::CONTENT_TYPE], ty, "{path}");
+            assert_eq!(
+                r.headers()[axum::http::header::CACHE_CONTROL],
+                "no-cache",
+                "{path}: re-extracted art must not be served from a stale cache"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

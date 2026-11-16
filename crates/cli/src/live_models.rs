@@ -42,9 +42,11 @@ pub const MODELS_VERSION: u32 = 2;
 pub const MAX_TEXTURE: u32 = 512;
 /// Base colour of a material whose diffuse map could not be decoded.
 pub const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+/// Glass without a picture of its own: a dark blue-grey, mostly see-through.
+pub const GLASS: [f32; 4] = [0.18, 0.22, 0.26, 0.35];
 
 /// One file in the manifest's `models` object.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GlbRef {
     /// Relative to the manifest, `/`-separated.
     pub glb: String,
@@ -54,10 +56,14 @@ pub struct GlbRef {
     /// Weapons: the clip set to hold it with (`rifle`, `pistol`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// Weapons: what its shots are, how fast they fly and how often
+    /// (crate::live_weapons), for the viewer's tracers and bolts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ballistics: Option<crate::live_weapons::Ballistics>,
 }
 
 /// The manifest's `models` object.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelsEntry {
     pub version: u32,
     /// By species: `spartan`, `elite`.
@@ -84,6 +90,7 @@ impl ModelsEntry {
                         glb,
                         clips: Vec::new(),
                         class: None,
+                        ballistics: None,
                     };
                     (n.clone(), r)
                 })
@@ -380,11 +387,139 @@ pub fn change_colour(map: &Image, uv: [f32; 2]) -> [f32; 4] {
 
 // ---- the model and its glb ---------------------------------------------------
 
-/// A material: a diffuse texture when one was decoded, else grey.
-#[derive(Clone, Debug, PartialEq)]
+/// A material: a diffuse texture when one was decoded, else grey, and what
+/// else its shader says about the surface ([`material_look`]).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Material {
     pub name: String,
+    /// The base map. Its alpha is kept only where the look uses it
+    /// (alpha-tested and blended surfaces); elsewhere it is opaque.
     pub texture: Option<Image>,
+    /// The change-colour map, per pixel: red is the primary colour's
+    /// weight, green the secondary's (blue and alpha, the third and fourth
+    /// colours, are not tinted).
+    pub change_colour: Option<Image>,
+    /// What glows: the self-illumination map (or, for a lit display or an
+    /// additive surface, the base map).
+    pub emissive: Option<Image>,
+    /// A glTF metallic-roughness texture (green roughness, blue metalness)
+    /// made from the base map's specular mask, for shiny and
+    /// environment-mapped shaders.
+    pub specular: Option<Image>,
+    pub blend: Blend,
+    /// The shader template's file stem (`tex_bump_env_four_change_color`).
+    pub template: String,
+}
+
+/// How a surface is composited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Blend {
+    #[default]
+    Opaque,
+    /// Cut out where the base map's alpha is under one half.
+    Mask,
+    /// Blended by the base map's alpha (decals) or see-through (glass).
+    Alpha,
+    /// Added to what is behind it (lights, vents, glows).
+    Additive,
+}
+
+/// Largest side of the change-colour, self-illumination and specular maps.
+pub const MAX_AUX_TEXTURE: u32 = 256;
+
+/// A surface's look from its shader: the template's name and its bitmap
+/// parameters (each the bitmap tag's name and, when it decoded, its first
+/// image), in the shader's order. Returns the material and the
+/// change-colour map at full size (for the per-vertex weights).
+///
+/// The template names say what the shader does (`tex_bump_env_*`,
+/// `*_change_color*`, `*_illum*`, `transparent\*_add_*`, `*alpha_test*`),
+/// and each bitmap's role comes from its own name ([`bitmap_role`]). Halo 2
+/// keeps the specular (environment) mask in the base map's alpha for its
+/// bump-env and shiny templates; it becomes metalness and smoothness here.
+/// Bump maps (8-bit palettized normals whose palette is the engine's, not
+/// the tag's) and detail maps are not used.
+pub fn material_look(
+    name: &str,
+    template: &str,
+    bitmaps: Vec<(String, Option<Image>)>,
+) -> (Material, Option<Image>) {
+    let lower = template.to_ascii_lowercase();
+    let stem = last_component(&lower).to_owned();
+    let transparent = lower.split('\\').any(|c| c == "transparent");
+    let blend = if transparent && stem.contains("add") {
+        Blend::Additive
+    } else if transparent || stem.contains("overlay") {
+        Blend::Alpha
+    } else if stem.contains("alpha_test") {
+        Blend::Mask
+    } else {
+        Blend::Opaque
+    };
+    let (mut diffuse, mut cc, mut illum) = (None, None, None);
+    for (bname, image) in bitmaps {
+        let Some(image) = image else { continue };
+        match bitmap_role(&bname) {
+            BitmapRole::Diffuse if diffuse.is_none() => diffuse = Some(image),
+            BitmapRole::ChangeColour if cc.is_none() => cc = Some(image),
+            BitmapRole::SelfIllum if illum.is_none() => illum = Some(image),
+            _ => {}
+        }
+    }
+    let mut base = diffuse.map(|d| d.fit(MAX_TEXTURE));
+    let shiny = blend == Blend::Opaque && (stem.contains("env") || stem.contains("shiny"));
+    let specular = base
+        .as_ref()
+        .filter(|_| shiny)
+        .map(|b| specular_map(b, if stem.contains("env") { 0.6 } else { 0.35 }));
+    // Glass: the base map is the vehicle's own skin, not what the glass
+    // looks like; a tinted, smooth see-through surface reads better.
+    if blend == Blend::Alpha && transparent {
+        base = None;
+    }
+    if blend == Blend::Opaque
+        && let Some(b) = base.as_mut()
+    {
+        for px in b.rgba.as_chunks_mut::<4>().0 {
+            px[3] = 255;
+        }
+    }
+    let lit_display = stem == "illum" || stem.contains("meter") || stem.contains("plasma");
+    let emissive = match illum {
+        Some(i) => Some(i.fit(MAX_AUX_TEXTURE)),
+        None if blend == Blend::Additive || lit_display => base.clone(),
+        None => None,
+    };
+    if blend == Blend::Additive {
+        base = None;
+    }
+    let material = Material {
+        name: name.to_owned(),
+        texture: base,
+        change_colour: cc.clone().map(|c| c.fit(MAX_AUX_TEXTURE)),
+        emissive,
+        specular,
+        blend,
+        template: stem,
+    };
+    (material, cc)
+}
+
+/// The metallic-roughness texture for a base map whose alpha is the
+/// specular mask: where the mask is full the surface is `metal` metallic
+/// and smooth (roughness 0.3); where it is empty, matte (0.85).
+pub fn specular_map(base: &Image, metal: f32) -> Image {
+    let small = base.clone().fit(MAX_AUX_TEXTURE);
+    let mut rgba = small.rgba;
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let a = f32::from(px[3]) / 255.0;
+        let rough = 0.85 - 0.55 * a;
+        px[0] = 255;
+        px[1] = (rough * 255.0).round() as u8;
+        px[2] = (a * metal * 255.0).round() as u8;
+        px[3] = 255;
+    }
+    Image { rgba, ..small }
 }
 
 /// Triangles of one material, in game coordinates.
@@ -459,6 +594,8 @@ pub struct Model {
     pub skeleton: Option<Skeleton>,
     /// Weapons: the animation graphs' weapon class (`rifle`, `pistol`, ...).
     pub class: Option<String>,
+    /// Weapons: their shots (crate::live_weapons).
+    pub ballistics: Option<crate::live_weapons::Ballistics>,
 }
 
 impl Model {
@@ -609,31 +746,74 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut materials: Vec<Value> = Vec::new();
+    // Each distinct picture is stored once (materials sharing a shader, or
+    // a base map that is also the emission, share it).
+    let mut stored: Vec<(Image, usize)> = Vec::new();
+    let mut texture = |bin: &mut Vec<u8>, t: &Image| -> usize {
+        if let Some(&(_, k)) = stored.iter().find(|(o, _)| o == t) {
+            return k;
+        }
+        let mut png = Vec::new();
+        assets::png::write_rgba_fast(&mut png, t.width, t.height, &t.rgba)
+            .expect("PNG into memory");
+        let bv = view(bin, &png, None);
+        images.push(json!({"bufferView": bv, "mimeType": "image/png"}));
+        textures.push(json!({"sampler": 0, "source": images.len() - 1}));
+        let k = textures.len() - 1;
+        stored.push((t.clone(), k));
+        k
+    };
     for m in &model.materials {
         let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.8});
-        // Materials sharing a shader share one image.
-        let same = m.texture.as_ref().and_then(|t| {
-            model.materials[..materials.len()]
-                .iter()
-                .position(|o| o.texture.as_ref() == Some(t))
-        });
-        match (&m.texture, same) {
-            (Some(_), Some(k)) if k < materials.len() => {
-                pbr["baseColorTexture"] =
-                    materials[k]["pbrMetallicRoughness"]["baseColorTexture"].clone();
+        let mut mat = json!({"name": m.name});
+        match (&m.texture, m.blend) {
+            (Some(t), _) => pbr["baseColorTexture"] = json!({"index": texture(&mut bin, t)}),
+            // Glass: tinted, smooth and see-through.
+            (None, Blend::Alpha) => {
+                pbr["baseColorFactor"] = json!(GLASS);
+                pbr["metallicFactor"] = json!(0.8);
+                pbr["roughnessFactor"] = json!(0.12);
             }
-            (Some(t), _) => {
-                let mut png = Vec::new();
-                assets::png::write_rgba_fast(&mut png, t.width, t.height, &t.rgba)
-                    .expect("PNG into memory");
-                let bv = view(&mut bin, &png, None);
-                images.push(json!({"bufferView": bv, "mimeType": "image/png"}));
-                textures.push(json!({"sampler": 0, "source": images.len() - 1}));
-                pbr["baseColorTexture"] = json!({"index": textures.len() - 1});
-            }
+            // Only its glow shows (added by readers that honour extras.h2.blend).
+            (None, Blend::Additive) => pbr["baseColorFactor"] = json!([0.0, 0.0, 0.0, 1.0]),
             (None, _) => pbr["baseColorFactor"] = json!(GREY),
         }
-        materials.push(json!({"name": m.name, "pbrMetallicRoughness": pbr}));
+        if let Some(t) = &m.specular {
+            pbr["metallicRoughnessTexture"] = json!({"index": texture(&mut bin, t)});
+            pbr["metallicFactor"] = json!(1.0);
+            pbr["roughnessFactor"] = json!(1.0);
+        }
+        if let Some(t) = &m.emissive {
+            mat["emissiveTexture"] = json!({"index": texture(&mut bin, t)});
+            mat["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
+        }
+        match m.blend {
+            Blend::Opaque => {}
+            Blend::Mask => {
+                mat["alphaMode"] = json!("MASK");
+                mat["alphaCutoff"] = json!(0.5);
+                mat["doubleSided"] = json!(true);
+            }
+            Blend::Alpha | Blend::Additive => {
+                mat["alphaMode"] = json!("BLEND");
+                mat["doubleSided"] = json!(true);
+            }
+        }
+        let mut h2 = serde_json::Map::new();
+        if !m.template.is_empty() {
+            h2.insert("template".into(), json!(m.template));
+        }
+        if let Some(t) = &m.change_colour {
+            h2.insert("change_colour".into(), json!(texture(&mut bin, t)));
+        }
+        if m.blend == Blend::Additive {
+            h2.insert("blend".into(), json!("add"));
+        }
+        if !h2.is_empty() {
+            mat["extras"] = json!({ "h2": h2 });
+        }
+        mat["pbrMetallicRoughness"] = pbr;
+        materials.push(mat);
     }
 
     let skeleton = model.skeleton.as_ref().filter(|s| !s.joints.is_empty());
@@ -1401,11 +1581,11 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
             Kind::Weapon => weapons.push(name.clone()),
             Kind::Vehicle => vehicles.push(name.clone()),
         }
-        extra.push((kind, name, clips, model.class));
+        extra.push((kind, name, clips, model.class, model.ballistics));
     }
     out.entry = ModelsEntry::new(&bipeds, &weapons, &vehicles);
     if let Some(entry) = &mut out.entry {
-        for (kind, name, clips, class) in extra {
+        for (kind, name, clips, class, ballistics) in extra {
             let table = match kind {
                 Kind::Biped => &mut entry.bipeds,
                 Kind::Weapon => &mut entry.weapons,
@@ -1414,6 +1594,7 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
             if let Some(r) = table.get_mut(&name) {
                 r.clips = clips;
                 r.class = class;
+                r.ballistics = ballistics;
             }
         }
     }
@@ -1564,21 +1745,39 @@ fn last_component(name: &str) -> &str {
 }
 
 /// What a shader's bitmap is for, from words in its tag name read at run
-/// time: change-colour maps end in `_cc` or say `change_color`; the diffuse
-/// map is the first bitmap that is not a bump, detail, reflection,
-/// change-colour or engine map.
+/// time: change-colour maps end in `_cc` or say `change_color` (or
+/// `color_change`); self-illumination maps say `illum`; the diffuse map is
+/// the first bitmap that is not one of those or a bump, detail, reflection
+/// or engine map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BitmapRole {
     Diffuse,
     ChangeColour,
+    SelfIllum,
     Other,
 }
 
 pub fn bitmap_role(name: &str) -> BitmapRole {
     let lower = name.to_ascii_lowercase();
     let last = last_component(&lower);
-    if last.ends_with("_cc") || last.contains("change_color") || last.contains("change_colour") {
+    let engine = ["default_bitmaps", "rasterizer"];
+    if lower.split('\\').any(|c| engine.contains(&c)) {
+        return BitmapRole::Other;
+    }
+    if last.ends_with("_cc")
+        || [
+            "change_color",
+            "change_colour",
+            "color_change",
+            "colour_change",
+        ]
+        .iter()
+        .any(|w| last.contains(w))
+    {
         return BitmapRole::ChangeColour;
+    }
+    if last.contains("illum") && !last.contains("bump") {
+        return BitmapRole::SelfIllum;
     }
     let folders = [
         "detail_maps",
@@ -1765,23 +1964,26 @@ fn read_source(
         let (template, bitmaps) = shader_bitmaps(map, shader).unwrap_or_default();
         // Emblem decals sit on the armour and take the player's emblem.
         skip.push(last_component(&template).contains("emblem"));
-        let (mut diffuse, mut cc) = (None, None);
+        let mut found = Vec::new();
         for id in bitmaps {
             let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
                 continue;
             };
-            match bitmap_role(&bname) {
-                BitmapRole::Diffuse if diffuse.is_none() => {
-                    diffuse = decode_bitmap(map, files, id).ok()
-                }
-                BitmapRole::ChangeColour if cc.is_none() => cc = decode_bitmap(map, files, id).ok(),
-                _ => {}
-            }
+            // Only the roles a look uses are decoded, each once.
+            let role = bitmap_role(&bname);
+            let wanted = role != BitmapRole::Other
+                && !found
+                    .iter()
+                    .any(|(n, i): &(String, Option<Image>)| i.is_some() && bitmap_role(n) == role);
+            let image = if wanted {
+                decode_bitmap(map, files, id).ok()
+            } else {
+                None
+            };
+            found.push((bname, image));
         }
-        materials.push(Material {
-            name,
-            texture: diffuse.map(|d| d.fit(MAX_TEXTURE)),
-        });
+        let (material, cc) = material_look(&name, &template, found);
+        materials.push(material);
         change_colour.push(cc);
     }
     let mut chosen = Vec::new();
@@ -2150,8 +2352,10 @@ pub struct BipedInfo {
 }
 
 /// The largest biped glb; past it whole weapon classes are dropped, last
-/// of [`CLIP_CLASSES`] first.
-pub const MAX_BIPED_GLB: usize = 3 << 20;
+/// of [`CLIP_CLASSES`] first. A quarter MiB over the contract's ~3 MB, so
+/// the elite keeps its sword clips beside its change-colour, glow and
+/// specular maps.
+pub const MAX_BIPED_GLB: usize = (3 << 20) + (1 << 18);
 
 /// One biped tag posed, skinned and animated. The animation note names the
 /// pose, the clip count and any clips left out.
@@ -2395,11 +2599,13 @@ fn build_weapons(disc: &Disc) -> Vec<(String, Result<Model>)> {
                 continue;
             }
             let class = weapon_class(&mut map, id);
+            let ballistics = crate::live_weapons::ballistics(&mut map, id);
             let model = object_model(&mut map, id)
                 .and_then(|(mode, _)| read_source(&mut map, &mut files, mode, usize::MAX))
                 .and_then(|src| weapon(&src))
                 .map(|mut m| {
                     m.class = class;
+                    m.ballistics = ballistics;
                     m
                 });
             out.push((stem, model));

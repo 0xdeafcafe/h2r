@@ -145,6 +145,15 @@ impl Call<'_> {
         let rt = Arc::clone(self.ctx.runtime());
         rt.memory().ret(self.cpu, cleanup)
     }
+    /// Answer in place of the rest of the chain with an async body (see
+    /// [`entry`]): it may await guest calls, and its [`Ret`] returns to the
+    /// caller.
+    pub fn answer_async(
+        &mut self,
+        make: impl FnOnce(Cx) -> EntryFuture,
+    ) -> Result<Flow, GuestFault> {
+        entry::start_with(self.cpu, self.ctx, self.addr, make).map(Flow::Return)
+    }
     pub fn arg_u32(&mut self, name: &str) -> Option<u32> {
         let rt = Arc::clone(self.ctx.runtime());
         let mem = rt.memory();

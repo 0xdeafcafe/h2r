@@ -96,6 +96,11 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
                           game-art/ in the server directory
+  assets check [--out DIR]
+                          exit 0 when DIR holds art from this h2's extractor,
+                          1 when it is missing or from an older one (then
+                          extract again: the viewer's animated models and
+                          materials need the current extractor)
   maps publish DIR [--server URL] [--as GAMERTAG]
                           upload a map package and publish it (docs/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
@@ -129,6 +134,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("maps", _) => crate::live_maps::run(rest),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
+        ("assets", Some("check")) => assets_check(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
         ("invite", Some("create")) => invite_create(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
@@ -281,6 +287,12 @@ fn serve(mut args: Args) -> Result<()> {
     }
     let game_art =
         live_server::art::GameArt::from_flag(art_dir, &game_art_dir(&data_dir), share_art)?;
+    if let Some(warning) = game_art
+        .as_ref()
+        .and_then(|a| crate::live_art::stale_warning(&a.dir))
+    {
+        eprintln!("h2 live: warning: {warning}");
+    }
     // Up before the server, so its URL is in discovery from the first
     // request; stopped (dropped) when the server stops.
     let _tunnel = match (tunnel, origin) {
@@ -360,6 +372,36 @@ fn assets_extract(mut args: Args) -> Result<()> {
         Ok::<_, anyhow::Error>,
     )?;
     crate::live_art::run(disc, out)
+}
+
+fn assets_check(mut args: Args) -> Result<()> {
+    let out = args.take("--out")?.map(PathBuf::from);
+    args.positional()?;
+    let out = out.map_or_else(
+        || Ok(game_art_dir(&data_dir(None)?)),
+        Ok::<_, anyhow::Error>,
+    )?;
+    use crate::live_art::{ArtAge, EXTRACTOR_VERSION};
+    match crate::live_art::art_age(&out) {
+        ArtAge::Current => {
+            println!(
+                "game art in {}: current (extractor v{EXTRACTOR_VERSION})",
+                out.display()
+            );
+            Ok(())
+        }
+        ArtAge::Missing => {
+            println!("game art in {}: none", out.display());
+            std::process::exit(1)
+        }
+        ArtAge::Stale(found) => {
+            println!(
+                "game art in {}: stale (extractor v{found}, this h2 extracts v{EXTRACTOR_VERSION})",
+                out.display()
+            );
+            std::process::exit(1)
+        }
+    }
 }
 
 /// A service, found from its base URL.

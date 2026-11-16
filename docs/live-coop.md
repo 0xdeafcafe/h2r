@@ -1,11 +1,12 @@
-# Campaign co-op over Live (design; first slice of phase 0 built)
+# Campaign co-op over Live (design; first slice of phase 0 and the phase 2 probe built)
 
 Retail Halo 2 plays campaign co-op only in split screen on one console.
 This page answers "can we add co-op over our Live service?" and lays out
 the options. The owner has since decided
 ([section 6](#6-decisions-made-2026-11-16)), and the first slice of phase 0
-is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)).
-**No game was built or run for this page or that slice.**
+is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)), as is
+the probe of the retail path ([section 9](#9-probe-phase-2)).
+**No game was built or run for this page or either of those.**
 
 In short:
 
@@ -800,3 +801,222 @@ token, 1200 bytes a message, rate-limited per socket
   for the handshake, releasing forced values, the scope filter on
   in-guest rows, `Action` rows for the lobby, and the tick observer
   chaining through `Dispatch::override_handler` instead of refusing.
+
+## 9. Probe (phase 2)
+
+Built on tests; **no game was built or run for it**. The probe tries the
+retail synchronous path of section 1 with two instances over System Link
+and writes enough on each machine to say how far it got and where the two
+parted. It is off unless `H2_COOP_PROBE=1`. Code:
+`crates/boot/src/coop_probe.rs`, `crates/lockstep/src/pools.rs`,
+`h2 coop-probe diff` (`crates/cli/src/coop_probe_cmd.rs`).
+
+### 9.1 What it changes
+
+All through the feature plan (feature `coop-probe`, points in
+`engine::points`), nothing patched by hand:
+
+| retail block | what the probe does | why this way |
+|---|---|---|
+| a campaign start with more than one peer is refused (`0x6eea5`) | a `before` on the session start `0x6ec80` writes 1 into the peer count `S+0x54` when the session is campaign, has exactly two peers and at most two players; a `before` on `OPTIONS_NEW` `0x138110` puts the real count back; an `after` on `0x6ec80` puts it back if the start refused for another reason first | `0x6ec80` reads `S+0x54` once (`0x6ee7e`) and makes no call between its entry and `OPTIONS_NEW`, the first call after the checks. Everything after that, the game start `0x18e8b0` and the simulation world it builds, sees the real count (`0x6e798` builds a peer mask from the same field, so it is the peer count). Porting all of `0x6ec80` (a `0x115c`-byte frame, the options block, five callees) would be a copy of retail logic with room for mistakes; the window trick changes one word for the length of the checks |
+| more than two players (`0x6ee9b`) | left alone | two machines with one player each pass it; the probe stops at two anyway |
+| the host's game-start parameters set a campaign session's peer limit `S+0x4990` to 1 (`0x6e720`, state 5) | an `after` sets it back to 2 | [guess] the guest is already in by then, but the limit checks (`0x5af70`, `0x65ab0`) compare the peer count with it, and two peers over a limit of one may be dropped |
+| no lobby for a networked campaign | on the host, once a second machine is in the System Link lobby, a `before` on `game_tick` calls the campaign menu's own setters: `0x19a6f2` (campaign 1, the level's map id in ESI) then `0x19a76d` (difficulty in AX), and re-enters the tick | these are what the campaign menu calls (`0x199af6`, `0x199b00`); `0x19a76d` also clears the variant, which selects the synchronous protocol, and both replicate to the guest as session parameters. Up to three attempts, 60 ticks apart |
+| a campaign session is never joinable (`0x63e7a`) | a `before` on `0x63e00` answers as retail would without that clause while fewer than two players are in | the predicate's only caller feeds Live presence (`0x19104a`, bit `0x10`); [guess] System Link joins are gated by the peer and player limits instead. It is cheap, and a Live co-op lobby will need it |
+
+The level comes from `H2_COOP_PROBE_MAP` (a map file stem, default
+`01a_tutorial`) and `H2_COOP_PROBE_DIFFICULTY` (`easy`, `normal`,
+`heroic`, `legendary`; default `normal`), resolved against the disc at
+boot like `--level`. Only the host uses them; setting the same values on
+both machines is harmless. If an address the probe needs already has an
+override outside the plan, it prints `coop-probe: refused: ...` and
+stays off; the game boots as usual.
+
+### 9.2 What it writes
+
+Every line on stderr starts `coop-probe:`.
+
+| line | meaning |
+|---|---|
+| `on; the host sets 01a_tutorial normal (campaign 1, map N)` | the probe is on and the level resolved. `... will not set the lobby's level` means it did not (a bad name, or not a campaign map); that machine can still join and log |
+| `refused: SESSION_GAME_START (0x0006ec80) has ...` | another override holds an address; the probe is off |
+| `session 0x...: state S, peers P (max M), players N (max K), host\|guest (...), protocol X (synchronous), difficulty D, campaign C map M, ...` | the squad session, printed whenever any of it changes. A campaign lobby shows `protocol 1 (synchronous)` and a difficulty |
+| `host: lobby setup: waiting for a second machine (1 of 2)` | the host waits for the guest to join |
+| `host: setting the lobby to ... attempt 1 of 3`, `host: LOBBY_SET_MAP returned 1`, `host: LOBBY_SET_DIFFICULTY returned 1` | the setters ran. `returned 0 (refused)` names the one that refused |
+| `host: the session holds ... press Start in the lobby` | the session now reads campaign with the right map and difficulty |
+| `joinable: true (retail false; ...)` | the presence predicate's answer changed |
+| `session start: session ...`, then `campaign with 2 peers: showing the start 1 peer until OPTIONS_NEW`, `peer count back to 2 before OPTIONS_NEW`, `session start returned 1 (the game starts)` | the session start on that machine, the bypass and its undo. `returned 0 (refused)` means it refused for some other reason (the line before it shows the session) |
+| `game limits: campaign peer limit 1 -> 2` | the host's game-start parameters were corrected |
+| `game start: options mode 1, simulation mode sync-server (3), scenarios\solo\...` | a map activated: options mode 1 is campaign; the simulation mode is the dword at simulation globals `+8` (section 1.1). The host should say `sync-server (3)` and the guest `sync-client (2)`. `local (1)` means the start did not take the synchronous path |
+| `simulation mode ... at tick T` | the mode changed |
+| `hash log <data>/coop-probe/<time>-<pid>-<role>.hashes` | the per-tick hash file for this game; `hashing the game-state block at 0x...: N pools` follows on the first tick |
+| `OUT OF SYNC: the retail latch (simulation globals +0x2c) is set at tick T, update U` | **the retail desync latch fired** (update number, tick or random seed mismatch, or an update out of order; section 1.3). The most important line |
+| `the simulation's ended latch (0x4cf772) is set at tick T` | the simulation ended itself (on a server, after the latch) |
+| `stall: N ms without a tick before tick T (last T', update U)` | more than half a second of wall time between two ticks while a game runs: a peer waiting for updates (or a load) |
+| `checkpoint save`, `checkpoint revert`, `bsp switch`, `cinematic start`, `cinematic stop` `at tick T` | those events, also noted in the hash file |
+| `game end at tick T`, `wrote N ticks to ...` | the game ended and the hash file is closed |
+
+The hash file starts `# h2 coop-probe hashes v1`, then `#` lines with the
+role, modes, scenario and session, then one line per tick and pool:
+`<tick> <pool> <16 hex digits>`. The tick is the game's own tick count
+(`game_time +8`), so both machines number ticks alike. Pool `*` is the
+whole game-state block (the `0x3fe000` bytes behind `0x4e6080`, what
+checkpoints save). The other pools cut the block at every datum array
+header (`'d@t@'`), named by the array, with `(head)` before the first; a
+name seen twice gets `#2`. Events are `# tick T ...` lines. It is flushed
+every 300 ticks and at every event, so a crash loses little. About 100
+bytes per pool per tick: expect a few MB a minute.
+
+`h2 coop-probe diff <host.hashes> <guest.hashes>` prints the ticks both
+cover, the first tick where they differ with the pools that differ there
+and any event noted at that tick, and how many ticks each pool differs on.
+It exits 0 when every common tick agrees.
+
+### 9.3 Running it
+
+You need an `h2` built from this branch and one disc image. System Link
+in `h2 play` runs on the Live HLE, which is on only with `--live` or
+`--live-server`, so both instances talk to one Live server (it carries
+no game traffic; the instances find each other by System Link broadcast).
+
+**Two instances on one Mac.** Two windows, two data directories, two XNet
+base ports at least seven apart, and the Mac's LAN address, not
+`127.0.0.1` (Halo treats `127.0.0.1` as an in-process loopback;
+[live.md](live.md), "Client HLE: sockets and System Link").
+
+```sh
+# Terminal 1: a Live server for both (file store, no Postgres needed).
+h2 live serve --db file --listen 127.0.0.1:8074
+
+# Your LAN address, used below.
+IP=$(ipconfig getifaddr en0)
+
+# Terminal 2: the host.
+H2_COOP_PROBE=1 H2_COOP_PROBE_MAP=01a_tutorial H2_COOP_PROBE_DIFFICULTY=normal \
+H2_XNET_ADDR=$IP:31000 H2_XNET_LOOPBACK_PEERS=$IP:31010 \
+h2 play disc/halo2.iso --data ~/h2-coop/host --live-server http://127.0.0.1:8074 \
+  --gamertag Alpha 2> ~/h2-coop/host.log
+
+# Terminal 3, once the host's window is up (the first start may build;
+# the second must not build at the same time, and the CLI's account file
+# is shared): the guest.
+H2_COOP_PROBE=1 \
+H2_XNET_ADDR=$IP:31010 H2_XNET_LOOPBACK_PEERS=$IP:31000 \
+h2 play disc/halo2.iso --data ~/h2-coop/guest --live-server http://127.0.0.1:8074 \
+  --gamertag Bravo --no-audio 2> ~/h2-coop/guest.log
+```
+
+`2>` keeps stderr in a file; use `2> >(tee ~/h2-coop/host.log)` to watch
+it too. `--no-audio` on one of them keeps the sound from doubling.
+`--gamertag` makes the account if it is missing.
+
+**Two Macs.** The same, without `H2_XNET_LOOPBACK_PEERS` (System Link
+broadcasts on the LAN), with each Mac's own LAN address and the same base
+port on both: `H2_XNET_ADDR=<this Mac's IP>:3074`. Both point
+`--live-server` at the one server, e.g. `http://<server Mac's IP>:8074`
+with `h2 live serve --db file --listen 0.0.0.0:8074` on it. Both Macs
+need UDP 3074 to 3080 open to each other (the macOS firewall asks the
+first time). Use the same `h2` build on both, and start with two Macs of
+the same architecture (section 6, item 6).
+
+**In the menus.**
+
+1. Both: past the title, pick or make a profile.
+2. Host: **System Link**, then create a game. Leave the game type and map
+   as they are; the probe replaces them. The host's stderr says
+   `host: lobby setup: waiting for a second machine (1 of 2)`.
+3. Guest: **System Link**; the host's game should be in the list. Join it.
+4. Host's stderr: `host: setting the lobby to ...`, two `returned 1`
+   lines, then `host: the session holds ... press Start in the lobby`. The
+   lobby may now show something odd for the map or game type: there is no
+   retail lobby screen for a campaign.
+5. Host: press Start (the usual start of a System Link game).
+6. Both: `session start ... returned 1`, then `game start: options mode
+   1, simulation mode sync-server (3)` on the host and `sync-client (2)`
+   on the guest. Play for a few minutes: move both players, fight, reach a
+   checkpoint, let a cutscene run. Quit from the pause menu when it is
+   clearly broken or after ten minutes or so.
+
+Do it once on `01a_tutorial` (small, loads fast; its co-op script may end
+early) and once on `03a_oldmombasa` (a cutscene at the start, then
+combat).
+
+**What to send back.** From each machine: the stderr file
+(`host.log`, `guest.log`) and the newest `.hashes` file in
+`<data>/coop-probe/` (`~/h2-coop/host/coop-probe/`,
+`~/h2-coop/guest/coop-probe/`), plus the output of
+
+```sh
+h2 coop-probe diff ~/h2-coop/host/coop-probe/<newest>.hashes \
+                   ~/h2-coop/guest/coop-probe/<newest>.hashes
+```
+
+and a sentence on what you saw (did the guest load the level, did both
+players move, did it freeze, crash or drop back to the menu, and when).
+`grep coop-probe: host.log` is the short version of each log.
+
+### 9.4 What might go wrong, and how you will see it
+
+- **The lobby setters refuse or never take.** `returned 0 (refused)`, or
+  three attempts and no `the session holds` line. In a pregame lobby the
+  map setter sends its change as a message instead of writing it
+  (`0x5b790`, states 3 and 4), so the session may update a few frames
+  later or not at all. The session lines show what the host's session
+  holds.
+- **The lobby setup never starts.** No `host: lobby setup` line at all on
+  the host: the menu does not tick while the lobby is up, so the setup has
+  no place to run. Report it; the next step is a hook on a lobby
+  function instead of the tick.
+- **The guest starts multiplayer.** The guest's `session start` line shows
+  difficulty `none`: the parameters did not reach it before the start.
+- **The start is refused anyway.** `session start returned 0 (refused)`
+  with the bypass lines before it: another of `0x6ec80`'s checks failed
+  (a missing map path, a bad protocol); the session line just above says
+  which field looks wrong.
+- **The guest never loads, or both freeze after loading.** `stall` lines
+  that go on: a sync-client waits for updates the server never sends, or
+  the server for the client's actions. Unread retail code (section 7).
+- **`OUT OF SYNC`.** The retail latch: the two simulations disagree on the
+  update number, the tick or the random seed. The diff names the first
+  tick and pools that differ; with no `OUT OF SYNC` line the hashes are
+  the only witness.
+- **A crash** in either instance while starting the game or on the first
+  ticks: dormant retail code meeting a case it never met. The last
+  `coop-probe:` lines say what had happened.
+- **Cost.** Hashing reads 4 MiB per tick on the game thread, a millisecond
+  or two on Apple silicon, so 30 ticks a second costs a few percent. Only
+  while a game runs, and only with the probe on.
+- Nothing is written to the disc image or to a profile by the probe. The
+  hash files grow by a few MB a minute; delete `<data>/coop-probe/` when
+  done.
+
+### 9.5 What is tested
+
+`cargo test -p boot --lib coop_probe`, `-p lockstep --lib pools`,
+`-p cli coop_probe`:
+
+- the variables: off unless `H2_COOP_PROBE` is on, defaults for the map and
+  difficulty, bad values refused;
+- only a campaign level with ids is used;
+- the peer bypass is taken only for a live campaign session with exactly
+  two peers and at most two players;
+- the joinable answer differs from retail only in the campaign clause and
+  only below two players;
+- the host setup waits for a second machine, runs once due, stops when the
+  session holds the level, and never on a guest; its two calls are the
+  menu's;
+- the peer limit is put back only for a campaign;
+- the session and simulation are read through the life cycle's pointers,
+  and mode, latch and ended changes are reported once;
+- the plan: nothing when off; every hook placed when on; the tick setup
+  only with a level; it shares the tick with the lockstep observer;
+  `H2_FEATURES=-coop-probe` turns it off; an address overridden outside
+  the plan refuses the probe and leaves the plan installable;
+- the pools cut at every header and cover the block; a changed byte
+  changes only its pool; tick lines parse back as a log; the diff names
+  the first tick and pool on invented logs, and the command exits by its
+  verdict.
+
+Not tested, because only the game can: whether the lobby ticks, whether
+the setters take in a System Link lobby, whether the bypassed start runs,
+and everything after it.

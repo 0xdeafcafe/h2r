@@ -267,6 +267,22 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/e3-lighting.md";
     /// `render_light_passes`: draws one dynamic light's passes.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/e3-lighting.md";
+    /// The top-level Settings list's row text (thiscall on the list, the
+    /// item and a word).
+    SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The top-level Settings list's row chosen (thiscall on the list, the
+    /// player chain and a pointer to the row).
+    SETTINGS_ROW_CHOSEN @ 0x002b_1da9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The Controls list's row text: the label and value of rows 0 to 5.
+    CONTROLS_ROW_TEXT @ 0x002c_8548: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The Controls list's row chosen (rows past 4 open the vibration
+    /// dialog).
+    CONTROLS_ROW_CHOSEN @ 0x002c_8719: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The campaign difficulty list's row text.
+    DIFFICULTY_ROW_TEXT @ 0x002c_9ce7: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
+    /// The campaign difficulty list's row chosen: clamps the row to 0..3,
+    /// stores the difficulty and starts the campaign.
+    DIFFICULTY_ROW_CHOSEN @ 0x002c_9d38: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
     /// Open a screen: build a 0x20-byte request for the player mask and
     /// call `loader` with it (stdcall).
     OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";
@@ -289,6 +305,38 @@ points! { ALL;
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the
     /// item; the game pushes 0, the index, 6), or 0.
     ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/playstation-audio.md";
+    /// The network session's game start: builds game options from the
+    /// session in EDX and starts the game (`0x18e8b0`); AL 1 when it
+    /// started. Refuses a campaign session with more than one peer
+    /// (`0x6eea5`).
+    SESSION_GAME_START @ 0x0006_ec80: [fn(session: edx, flag: stack 0) -> al ret 4]; "docs/live-coop.md";
+    /// Clear and default a game-options block (ESI). The session start
+    /// calls it right after its peer and player checks.
+    OPTIONS_NEW @ 0x0013_8110: [fn(options: esi) ret 0]; "docs/level-boot.md";
+    /// Whether the squad session is joinable (Live presence, AL); false
+    /// for a campaign session (`0x63e7a`).
+    SESSION_JOINABLE @ 0x0006_3e00: [fn() -> al ret 0]; "docs/live-coop.md";
+    /// The host's game-start session parameters (session in EBX, state 5
+    /// only); for a campaign session it sets the peer limit to 1.
+    SESSION_GAME_LIMITS @ 0x0006_e720: [fn(session: ebx) -> al ret 0]; "docs/live-coop.md";
+    /// Lobby: set the squad session's map (host only): stdcall `(campaign
+    /// id)`, the map id in ESI, AL 1 when set.
+    LOBBY_SET_MAP @ 0x0019_a6f2: [fn(map: esi, campaign: stack 0) -> al ret 4]; "docs/live-coop.md";
+    /// Lobby: set the squad session's campaign difficulty (AX; `0xffff`
+    /// none) and, for a difficulty, clear the variant (synchronous
+    /// protocol). AL 1 when set.
+    LOBBY_SET_DIFFICULTY @ 0x0019_a76d: [fn(difficulty: eax) -> al ret 0]; "docs/live-coop.md";
+    /// Save the game state (checkpoint): the save callbacks, then the
+    /// writer `0x2151f0`.
+    GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/checkpoints.md";
+    /// Revert the game state to a saved slot.
+    GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/checkpoints.md";
+    /// Switch the structure BSP (prepare, dispose, load, publish).
+    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/level-preflight.md";
+    /// HaloScript `cinematic_start`.
+    CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/level-preflight.md";
+    /// HaloScript `cinematic_stop`.
+    CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/level-preflight.md";
 }
 
 globals! { GLOBALS;
@@ -309,6 +357,19 @@ globals! { GLOBALS;
     CONTROLS_SCREEN_VTABLE @ 0x0045_be30; "docs/ui.md";
     /// The Controls list handler's vtable (22 slots).
     CONTROLS_LIST_VTABLE @ 0x0045_d240; "docs/ui.md";
+    /// Pointer to the simulation globals: the mode at `+8` (0 none, 1
+    /// local, 2 sync-client, 3 sync-server, 4 dist-client, 5
+    /// dist-server), the update number at `+0x28`, the out-of-sync latch
+    /// byte at `+0x2c`.
+    SIM_GLOBALS @ 0x004c_f77c; "docs/live-coop.md";
+    /// The simulation's "ended" latch byte.
+    SIM_ENDED @ 0x004c_f772; "docs/live-coop.md";
+    /// The network life cycle's ready byte.
+    NETWORK_READY @ 0x0052_7330; "docs/live-custom-games.md";
+    /// Pointer to the squad (lobby) network session.
+    SQUAD_SESSION @ 0x0052_7364; "docs/live-custom-games.md";
+    /// The base address of the game-state block (`0x3fe000` bytes).
+    GAME_STATE_BASE @ 0x004e_6080; "docs/checkpoints.md";
 }
 
 /// The point at `base`, if the table names one.

@@ -1,0 +1,1122 @@
+//! The co-op probe (docs/live-coop.md sections 1 and 9): start a campaign
+//! from a two-machine System Link lobby on the retail synchronous path,
+//! and log what happens on each machine. Off unless `H2_COOP_PROBE=1`.
+//!
+//! What it changes, all through the feature plan:
+//!
+//! * **The peer-count refusal.** The session start (`0x6ec80`) reads the
+//!   session's peer count (`S+0x54`) once, at `0x6ee7e`, and refuses a
+//!   campaign with more than one peer at `0x6eea5`. The next call it makes
+//!   is `OPTIONS_NEW` (`0x138110`), right after the checks; everything
+//!   after that (the game start `0x18e8b0`, which builds the simulation
+//!   world and reads the session's peers) must see the real count. So a
+//!   `before` on the session start writes 1 for a campaign session with
+//!   exactly two peers and at most two players, a `before` on
+//!   `OPTIONS_NEW` puts the real count back, and an `after` on the session
+//!   start puts it back when the start refused for another reason and never
+//!   reached `OPTIONS_NEW`. Nothing else runs in that window: the start
+//!   makes no other call between its entry and `OPTIONS_NEW`. The player
+//!   check (`0x6ee9b`, more than two players) is left as it is: two
+//!   machines with one player each pass it.
+//! * **The campaign lobby.** On the host, once a second machine is in the
+//!   System Link lobby, the probe calls the lobby's own setters at the
+//!   start of a game tick (the menu ticks too): `LOBBY_SET_MAP`
+//!   (`0x19a6f2`, campaign 1 and the level's map id) and
+//!   `LOBBY_SET_DIFFICULTY` (`0x19a76d`), which also clears the variant so
+//!   the session picks the synchronous protocol. Both replicate to the
+//!   guest as session parameters. The tick then runs as usual.
+//! * **The peer limit.** The host's game-start parameters (`0x6e720`) set
+//!   a campaign session's peer limit (`S+0x4990`) to 1; the probe sets it
+//!   back to 2 after it returns.
+//! * **Joinable.** The Live presence predicate (`0x63e00`) answers false
+//!   for any campaign session; the probe answers as retail would without
+//!   that clause, while fewer than two players are in. (System Link joins
+//!   are gated by the peer and player limits, not by this predicate.)
+//!
+//! What it logs, every line prefixed `coop-probe:`: the session (state,
+//! peers, players, host, protocol, difficulty, map) whenever it changes;
+//! the simulation mode and the retail out-of-sync and ended latches when
+//! they change; ticks that come more than half a second apart (a peer
+//! waiting for updates); checkpoints, reverts, BSP switches and
+//! cinematics; and every tick of a game, one line per game-state pool, to
+//! `<data>/coop-probe/<time>-<pid>-<role>.hashes` for `h2 coop-probe diff`.
+//!
+//! The decisions are pure functions over [`Gm`], tested without a guest.
+
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use engine::points::{self, Point};
+use feature::{Call, Flow};
+use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
+
+use crate::layout_glue::Gm;
+use crate::level_boot::{self, Difficulty};
+
+/// The feature id (`H2_FEATURES=-coop-probe` turns it off again).
+pub const ID: &str = "coop-probe";
+
+// ---- configuration ----
+
+/// The level the probe asks for when `H2_COOP_PROBE_MAP` is unset.
+pub const DEFAULT_MAP: &str = "01a_tutorial";
+
+/// What `H2_COOP_PROBE*` asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Config {
+    /// The campaign level the host sets, a map file stem.
+    pub map: String,
+    pub difficulty: Difficulty,
+}
+
+/// Reads `H2_COOP_PROBE`, `H2_COOP_PROBE_MAP` and
+/// `H2_COOP_PROBE_DIFFICULTY` through `get`. `None`: the probe is off
+/// (unset, empty, `0`, `off`, `false`, `no`). Anything other than those
+/// and `1`, `on`, `true`, `yes` is an error, as is a bad difficulty.
+pub fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Option<Config>, String> {
+    let on = get("H2_COOP_PROBE").unwrap_or_default();
+    match on.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "off" | "false" | "no" => return Ok(None),
+        "1" | "on" | "true" | "yes" => {}
+        v => return Err(format!("H2_COOP_PROBE={v:?}: use 1 or 0")),
+    }
+    let map = get("H2_COOP_PROBE_MAP")
+        .map(|m| m.trim().trim_end_matches(".map").to_owned())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| DEFAULT_MAP.to_owned());
+    let difficulty = match get("H2_COOP_PROBE_DIFFICULTY").map(|d| d.trim().to_owned()) {
+        Some(d) if !d.is_empty() => {
+            Difficulty::parse(&d).map_err(|e| format!("H2_COOP_PROBE_DIFFICULTY: {e}"))?
+        }
+        _ => Difficulty::Normal,
+    };
+    Ok(Some(Config { map, difficulty }))
+}
+
+/// The level the host sets, resolved against the disc.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Want {
+    pub name: String,
+    pub campaign: u32,
+    pub map: u32,
+    pub difficulty: u16,
+}
+
+impl Want {
+    /// From a level boot request; only a campaign level with ids will do.
+    pub fn from_request(r: &level_boot::Request) -> Result<Want, String> {
+        if r.kind != level_boot::Kind::Campaign {
+            return Err(format!("{} is not a campaign level", r.name));
+        }
+        if r.campaign == u32::MAX || r.map == u32::MAX {
+            return Err(format!("the globals' level list does not name {}", r.name));
+        }
+        Ok(Want {
+            name: r.name.clone(),
+            campaign: r.campaign,
+            map: r.map,
+            difficulty: r.difficulty.index(),
+        })
+    }
+}
+
+// ---- the session (docs/live-coop.md 1.1, 1.4) ----
+
+/// Squad session fields. `S+0x54` is the count of the 16-entry peer array
+/// at `+0x58` (stride `0x10c`; `0x6e798` builds a peer mask from it).
+pub mod layout {
+    pub const LOCAL_PEER: u32 = 0x40;
+    /// The local peer the parameter setters compare (`0x63f00`).
+    pub const LOCAL_PEER_PARAMS: u32 = 0x50;
+    pub const PEERS: u32 = 0x54;
+    pub const PLAYERS: u32 = 0x1118;
+    pub const PARAMS_VERSION: u32 = 0x4978;
+    /// 1 for the session kind the lobby setters accept (`0x63f00`).
+    pub const CLASS: u32 = 0x4980;
+    pub const PRIVACY: u32 = 0x498c;
+    pub const MAX_PEERS: u32 = 0x4990;
+    pub const MAX_PLAYERS: u32 = 0x4994;
+    pub const CAMPAIGN: u32 = 0x4d08;
+    pub const MAP: u32 = 0x4d0c;
+    pub const PROTOCOL: u32 = 0x4dac;
+    /// Word; `0xffff` is "not campaign".
+    pub const DIFFICULTY: u32 = 0x5dd0;
+    pub const HOST_PEER: u32 = 0x72d8;
+    pub const STATE: u32 = 0x741c;
+}
+
+/// The network life cycle's state; the joinable predicate refuses 6 to 9.
+const LIFE_CYCLE: u32 = 0x0052_7334;
+const NO_DIFFICULTY: u16 = 0xffff;
+/// Two machines, two players: where the probe stops.
+pub const MAX_PEERS: u32 = 2;
+pub const MAX_PLAYERS: u32 = 2;
+
+/// A squad session, read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Session {
+    pub addr: u32,
+    pub state: u32,
+    pub peers: u32,
+    pub players: u32,
+    pub local_peer: u32,
+    pub local_peer_params: u32,
+    pub host_peer: u32,
+    pub class: u32,
+    pub privacy: u32,
+    pub max_peers: u32,
+    pub max_players: u32,
+    pub campaign: u32,
+    pub map: u32,
+    pub protocol: u32,
+    pub difficulty: u16,
+}
+
+impl Session {
+    /// The states in which the session's fields mean anything (every
+    /// reader checks 3 to 8).
+    pub fn live(&self) -> bool {
+        (3..=8).contains(&self.state)
+    }
+    pub fn is_campaign(&self) -> bool {
+        self.difficulty != NO_DIFFICULTY
+    }
+    /// Host as the session start sees it (`0x6ec80`).
+    pub fn is_host(&self) -> bool {
+        self.host_peer == self.local_peer
+    }
+    /// Host as the parameter setters see it (`0x63f00`).
+    pub fn can_set_params(&self) -> bool {
+        self.host_peer == self.local_peer_params && self.class == 1
+    }
+    /// One line for the log.
+    pub fn describe(&self) -> String {
+        let difficulty = if self.is_campaign() {
+            self.difficulty.to_string()
+        } else {
+            "none".into()
+        };
+        format!(
+            "session {:#x}: state {}, peers {} (max {}), players {} (max {}), {} (host peer {}, local {}/{}), \
+             protocol {} ({}), difficulty {difficulty}, campaign {} map {}, privacy {}, class {}",
+            self.addr,
+            self.state,
+            self.peers,
+            self.max_peers as i32,
+            self.players,
+            self.max_players as i32,
+            if self.is_host() { "host" } else { "guest" },
+            self.host_peer as i32,
+            self.local_peer as i32,
+            self.local_peer_params as i32,
+            self.protocol as i32,
+            protocol_name(self.protocol),
+            self.campaign as i32,
+            self.map as i32,
+            self.privacy,
+            self.class,
+        )
+    }
+}
+
+pub fn protocol_name(p: u32) -> &'static str {
+    match p {
+        0 => "local",
+        1 => "synchronous",
+        2 => "distributed",
+        _ => "?",
+    }
+}
+
+/// The session at `addr`.
+pub fn read_session_at<M: Gm + ?Sized>(m: &M, addr: u32) -> Option<Session> {
+    use layout::*;
+    let f = |o: u32| m.u32(addr.wrapping_add(o));
+    Some(Session {
+        addr,
+        state: f(STATE)?,
+        peers: f(PEERS)?,
+        players: f(PLAYERS)?,
+        local_peer: f(LOCAL_PEER)?,
+        local_peer_params: f(LOCAL_PEER_PARAMS)?,
+        host_peer: f(HOST_PEER)?,
+        class: f(CLASS)?,
+        privacy: f(PRIVACY)?,
+        max_peers: f(MAX_PEERS)?,
+        max_players: f(MAX_PLAYERS)?,
+        campaign: f(CAMPAIGN)?,
+        map: f(MAP)?,
+        protocol: f(PROTOCOL)?,
+        difficulty: m.u16(addr.wrapping_add(DIFFICULTY))?,
+    })
+}
+
+/// The squad session, when the network life cycle has one (the gates of
+/// `0x63e00` and the setters: ready byte set, a session, a nonzero state).
+pub fn read_session<M: Gm + ?Sized>(m: &M) -> Option<Session> {
+    if m.u8(points::NETWORK_READY.base)? == 0 {
+        return None;
+    }
+    let addr = m.u32(points::SQUAD_SESSION.base)?;
+    if addr == 0 {
+        return None;
+    }
+    let s = read_session_at(m, addr)?;
+    (s.state != 0).then_some(s)
+}
+
+// ---- decisions ----
+
+/// What the session start's `before` does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bypass {
+    /// Leave the start as retail; why.
+    Retail(&'static str),
+    /// Show the start one peer until `OPTIONS_NEW`; `real` goes back.
+    Fake { real: u32 },
+    /// Past what the probe supports; retail refuses it.
+    Refuse(String),
+}
+
+/// The peer-count decision for a session start.
+pub fn peer_bypass(s: &Session) -> Bypass {
+    if !s.live() {
+        return Bypass::Retail("the session is not in a lobby or game state");
+    }
+    if !s.is_campaign() {
+        return Bypass::Retail("not a campaign session");
+    }
+    if s.peers <= 1 {
+        return Bypass::Retail("one peer: retail starts it");
+    }
+    if s.peers > MAX_PEERS {
+        return Bypass::Refuse(format!("{} peers: the probe stops at {MAX_PEERS}", s.peers));
+    }
+    if s.players > MAX_PLAYERS {
+        return Bypass::Refuse(format!(
+            "{} players: the probe stops at {MAX_PLAYERS}",
+            s.players
+        ));
+    }
+    Bypass::Fake { real: s.peers }
+}
+
+/// What `0x63e00` reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JoinInputs {
+    /// The ready byte is set and there is a session.
+    pub ready: bool,
+    pub state: u32,
+    pub privacy: u32,
+    pub players: u32,
+    pub max_players: u32,
+    pub life_cycle: u32,
+    pub difficulty: u16,
+}
+
+/// The retail predicate (`probe` false), or the probe's: the same without
+/// the campaign clause, while fewer than two players are in.
+pub fn joinable(j: &JoinInputs, probe: bool) -> bool {
+    if !j.ready || !(3..=8).contains(&j.state) || j.privacy != 0 {
+        return false;
+    }
+    if j.players >= j.max_players || (6..=9).contains(&j.life_cycle) {
+        return false;
+    }
+    if j.difficulty == NO_DIFFICULTY {
+        return true;
+    }
+    probe && j.players < MAX_PLAYERS
+}
+
+pub fn read_join<M: Gm + ?Sized>(m: &M) -> JoinInputs {
+    let Some(s) = read_session(m) else {
+        return JoinInputs::default();
+    };
+    JoinInputs {
+        ready: true,
+        state: s.state,
+        privacy: s.privacy,
+        players: s.players,
+        max_players: s.max_players,
+        life_cycle: m.u32(LIFE_CYCLE).unwrap_or(0),
+        difficulty: s.difficulty,
+    }
+}
+
+/// Where the host's lobby setup stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Setup {
+    /// Nothing to do yet (or ever, on a guest); why.
+    Wait(String),
+    /// The session already holds the level and difficulty.
+    Done,
+    /// Call the setters now.
+    Due,
+}
+
+pub fn host_setup(s: &Session, want: &Want) -> Setup {
+    if !s.live() {
+        return Setup::Wait(format!("session state {}", s.state));
+    }
+    if !s.can_set_params() {
+        return Setup::Wait("not the session's host".into());
+    }
+    if s.campaign == want.campaign && s.map == want.map && s.difficulty == want.difficulty {
+        return Setup::Done;
+    }
+    if s.peers < MAX_PEERS {
+        return Setup::Wait(format!(
+            "waiting for a second machine ({} of {MAX_PEERS})",
+            s.peers
+        ));
+    }
+    if s.peers > MAX_PEERS {
+        return Setup::Wait(format!(
+            "{} machines: the probe stops at {MAX_PEERS}",
+            s.peers
+        ));
+    }
+    Setup::Due
+}
+
+/// The peer limit to write after the game-start parameters, if any.
+pub fn max_peers_fix(s: &Session) -> Option<u32> {
+    (s.live() && s.is_campaign() && s.max_peers < MAX_PEERS).then_some(MAX_PEERS)
+}
+
+/// One guest call of the lobby setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetupCall {
+    pub point: &'static Point,
+    pub eax: Option<u32>,
+    pub esi: Option<u32>,
+    /// Stack arguments, the first at `[esp+4]`.
+    pub args: [Option<u32>; 1],
+}
+
+/// The calls that put `want` on the session, in order (as the campaign
+/// menu's `0x199af6` then `0x199b00` make them).
+pub fn setup_calls(want: &Want) -> [SetupCall; 2] {
+    [
+        SetupCall {
+            point: &points::LOBBY_SET_MAP,
+            eax: None,
+            esi: Some(want.map),
+            args: [Some(want.campaign)],
+        },
+        SetupCall {
+            point: &points::LOBBY_SET_DIFFICULTY,
+            eax: Some(u32::from(want.difficulty)),
+            esi: None,
+            args: [None],
+        },
+    ]
+}
+
+// ---- the simulation (docs/live-coop.md 1.1, 1.3) ----
+
+const SIM_MODE: u32 = 0x8;
+const SIM_UPDATE: u32 = 0x28;
+const SIM_DESYNC: u32 = 0x2c;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sim {
+    pub mode: u32,
+    pub update: u32,
+    pub desync: u8,
+    pub ended: u8,
+}
+
+pub fn read_sim<M: Gm + ?Sized>(m: &M) -> Option<Sim> {
+    let g = m.u32(points::SIM_GLOBALS.base)?;
+    if g == 0 {
+        return None;
+    }
+    Some(Sim {
+        mode: m.u32(g.wrapping_add(SIM_MODE))?,
+        update: m.u32(g.wrapping_add(SIM_UPDATE))?,
+        desync: m.u8(g.wrapping_add(SIM_DESYNC))?,
+        ended: m.u8(points::SIM_ENDED.base).unwrap_or(0),
+    })
+}
+
+/// The mode's name, from the table at `0x468c64`.
+pub fn mode_name(mode: u32) -> &'static str {
+    match mode {
+        0 => "none",
+        1 => "local",
+        2 => "sync-client",
+        3 => "sync-server",
+        4 => "dist-client",
+        5 => "dist-server",
+        _ => "?",
+    }
+}
+
+/// The hash log's role word for a mode.
+pub fn role(mode: u32) -> &'static str {
+    match mode {
+        3 | 5 => "host",
+        2 | 4 => "guest",
+        _ => "local",
+    }
+}
+
+/// What changed between two simulation readings, as log lines.
+pub fn sim_changes(before: Option<Sim>, now: Sim, tick: Option<u32>) -> Vec<String> {
+    let at = tick.map_or_else(String::new, |t| format!(" at tick {t}"));
+    let mut out = Vec::new();
+    let b = before.unwrap_or(Sim {
+        mode: u32::MAX,
+        ..Sim::default()
+    });
+    if b.mode != now.mode {
+        out.push(format!(
+            "simulation mode {} ({}){at}",
+            mode_name(now.mode),
+            now.mode
+        ));
+    }
+    if now.desync != 0 && b.desync == 0 {
+        out.push(format!(
+            "OUT OF SYNC: the retail latch (simulation globals +0x2c) is set{at}, update {}",
+            now.update
+        ));
+    }
+    if now.desync == 0 && b.desync != 0 && before.is_some() {
+        out.push(format!("the out-of-sync latch cleared{at}"));
+    }
+    if now.ended != 0 && b.ended == 0 {
+        out.push(format!(
+            "the simulation's ended latch (0x4cf772) is set{at}"
+        ));
+    }
+    out
+}
+
+/// Ticks further apart than this are a stall.
+pub const STALL_MS: u128 = 500;
+
+// ---- the hash log ----
+
+/// The lines of one tick: the whole block, then each pool.
+pub fn tick_lines(
+    tick: u32,
+    whole: u64,
+    pools: &[lockstep::pools::Pool],
+    hashes: &[u64],
+) -> String {
+    use lockstep::pools::{Line, WHOLE, log_name};
+    let mut s = Line {
+        tick,
+        pool: WHOLE.into(),
+        hash: whole,
+    }
+    .to_string();
+    s.push('\n');
+    for (p, h) in pools.iter().zip(hashes) {
+        s += &Line {
+            tick,
+            pool: log_name(&p.name),
+            hash: *h,
+        }
+        .to_string();
+        s.push('\n');
+    }
+    s
+}
+
+/// The game-state block: `0x3fe000` bytes behind [`points::GAME_STATE_BASE`].
+const BLOCK_LEN: u32 = 0x003f_e000;
+/// Flush the log this often (ticks), so a crash loses little.
+const FLUSH_EVERY: u32 = 300;
+
+struct HashLog {
+    out: BufWriter<File>,
+    path: PathBuf,
+    pools: Vec<lockstep::pools::Pool>,
+    base: u32,
+    buf: Vec<u8>,
+    ticks: u32,
+}
+
+impl HashLog {
+    fn open(dir: &Path, role: &str, header: &[String]) -> std::io::Result<HashLog> {
+        std::fs::create_dir_all(dir)?;
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let path = dir.join(format!("{secs}-{}-{role}.hashes", std::process::id()));
+        let mut out = BufWriter::new(File::create(&path)?);
+        writeln!(out, "{}", lockstep::pools::LOG_HEADER)?;
+        for h in header {
+            writeln!(out, "# {h}")?;
+        }
+        Ok(HashLog {
+            out,
+            path,
+            pools: Vec::new(),
+            base: 0,
+            buf: vec![0; BLOCK_LEN as usize],
+            ticks: 0,
+        })
+    }
+
+    fn note(&mut self, s: &str) {
+        let _ = writeln!(self.out, "# {s}");
+    }
+
+    /// Hashes the block and writes the tick. Re-cuts the pools when the
+    /// block moved (or on the first tick).
+    fn tick(&mut self, g: &runtime::Guest, tick: u32) -> Result<(), String> {
+        let base = g
+            .u32(points::GAME_STATE_BASE.base)
+            .map_err(|e| format!("{e:?}"))?;
+        if base == 0 {
+            return Err("no game-state block yet".into());
+        }
+        g.read_bytes(base, &mut self.buf, 1)
+            .map_err(|e| format!("reading the block: {e:?}"))?;
+        if base != self.base || self.pools.is_empty() {
+            self.base = base;
+            self.pools = lockstep::pools::find_pools(&self.buf);
+            let n = self.pools.len();
+            self.note(&format!("tick {tick} pools {n} at {base:#x}"));
+            eprintln!(
+                "coop-probe: hashing the game-state block at {base:#x}: {n} pools; writing {}",
+                self.path.display()
+            );
+        }
+        let hashes = lockstep::pools::hash_pools(&self.buf, &self.pools);
+        let whole = lockstep::pools::hash_block(&self.buf);
+        self.out
+            .write_all(tick_lines(tick, whole, &self.pools, &hashes).as_bytes())
+            .map_err(|e| e.to_string())?;
+        self.ticks += 1;
+        if self.ticks.is_multiple_of(FLUSH_EVERY) {
+            let _ = self.out.flush();
+        }
+        Ok(())
+    }
+}
+
+// ---- the feature ----
+
+#[derive(Default)]
+struct State {
+    /// The peer count the session start must get back: (session, real).
+    pending: Option<(u32, u32)>,
+    last_session: Option<String>,
+    last_sim: Option<Sim>,
+    last_join: Option<bool>,
+    setup_wait: Option<String>,
+    setup_attempts: u32,
+    setup_last_tick: Option<u32>,
+    setup_done: bool,
+    log: Option<HashLog>,
+    log_error: bool,
+    last_tick_at: Option<Instant>,
+    last_tick: Option<u32>,
+}
+
+/// The probe as a feature. Built only when `H2_COOP_PROBE` is on.
+pub struct Probe {
+    want: Option<Want>,
+    dir: PathBuf,
+    state: Arc<Mutex<State>>,
+}
+
+impl Probe {
+    pub fn new(want: Option<Want>, dir: PathBuf) -> Probe {
+        Probe {
+            want,
+            dir,
+            state: Arc::default(),
+        }
+    }
+}
+
+/// Every point the probe hooks.
+pub static HOOKED: &[&Point] = &[
+    &points::SESSION_GAME_START,
+    &points::OPTIONS_NEW,
+    &points::SESSION_JOINABLE,
+    &points::SESSION_GAME_LIMITS,
+    &points::GAME_TICK,
+    &points::GAME_ACTIVATE,
+    &points::GAME_END,
+    &points::GAME_STATE_SAVE,
+    &points::GAME_STATE_REVERT,
+    &points::BSP_SWITCH,
+    &points::CINEMATIC_START,
+    &points::CINEMATIC_STOP,
+];
+
+fn say(s: &str) {
+    eprintln!("coop-probe: {s}");
+}
+
+fn lock(s: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+    s.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn game_tick<M: Gm + ?Sized>(m: &M) -> Option<u32> {
+    let p = m.u32(points::GAME_TIME.base)?;
+    m.u32(p.wrapping_add(8))
+}
+
+/// Logs an event, in the hash log too when one is open.
+fn event(state: &Mutex<State>, g: &runtime::Guest, what: &str) {
+    let tick = game_tick(g);
+    let at = tick.map_or_else(|| "before the first tick".into(), |t| format!("tick {t}"));
+    say(&format!("{what} at {at}"));
+    if let (Some(t), Some(log)) = (tick, lock(state).log.as_mut()) {
+        log.note(&format!("tick {t} {what}"));
+        let _ = log.out.flush();
+    }
+}
+
+impl feature::Feature for Probe {
+    fn manifest(&self) -> feature::Manifest {
+        // On when added: it is only added when H2_COOP_PROBE is on, and
+        // H2_FEATURES=-coop-probe still turns it off.
+        feature::Manifest::new(ID, "Co-op probe: the retail synchronous campaign path")
+            .doc("docs/live-coop.md")
+    }
+
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        // The peer-count refusal: show one peer from the start's entry to
+        // OPTIONS_NEW.
+        let st = Arc::clone(&self.state);
+        b.raw().before(&points::SESSION_GAME_START, "one peer for the campaign check", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            let addr = c.cpu.edx;
+            let Some(s) = read_session_at(&*mem, addr) else {
+                say(&format!("session start: cannot read the session at {addr:#x}"));
+                return Ok(Flow::Continue);
+            };
+            say(&format!("session start: {}", s.describe()));
+            match peer_bypass(&s) {
+                Bypass::Retail(why) => say(&format!("session start: retail ({why})")),
+                Bypass::Refuse(why) => say(&format!("session start: refused ({why}); retail refuses too")),
+                Bypass::Fake { real } => {
+                    if Gm::set_u32(&mut *mem, addr.wrapping_add(layout::PEERS), 1) {
+                        lock(&st).pending = Some((addr, real));
+                        say(&format!(
+                            "session start: campaign with {real} peers: showing the start 1 peer until OPTIONS_NEW"
+                        ));
+                    } else {
+                        say("session start: could not write the peer count");
+                    }
+                }
+            }
+            Ok(Flow::Continue)
+        });
+        let st = Arc::clone(&self.state);
+        b.raw()
+            .before(&points::OPTIONS_NEW, "restore the peer count", move |c| {
+                restore(&st, c, "before OPTIONS_NEW");
+                Ok(Flow::Continue)
+            });
+        let st = Arc::clone(&self.state);
+        b.raw().after(
+            &points::SESSION_GAME_START,
+            "restore the peer count, report",
+            move |c| {
+                restore(&st, c, "after a refused start");
+                let started = c.cpu.eax & 0xff != 0;
+                say(&format!(
+                    "session start returned {}",
+                    if started {
+                        "1 (the game starts)"
+                    } else {
+                        "0 (refused)"
+                    }
+                ));
+                Ok(())
+            },
+        );
+
+        // Joinable while a campaign session has room.
+        let st = Arc::clone(&self.state);
+        b.raw().before(&points::SESSION_JOINABLE, "joinable campaign", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let j = read_join(&*rt.memory());
+            let (retail, probe) = (joinable(&j, false), joinable(&j, true));
+            {
+                let mut s = lock(&st);
+                if s.last_join != Some(probe) {
+                    s.last_join = Some(probe);
+                    say(&format!(
+                        "joinable: {probe} (retail {retail}; players {} of {}, difficulty {:#x})",
+                        j.players, j.max_players, j.difficulty
+                    ));
+                }
+            }
+            if probe && !retail {
+                c.cpu.eax = (c.cpu.eax & !0xff) | 1;
+                return Ok(Flow::Return(c.ret(0)?));
+            }
+            Ok(Flow::Continue)
+        });
+
+        // The peer limit the host's game start sets for a campaign.
+        b.raw()
+            .after(&points::SESSION_GAME_LIMITS, "peer limit 2", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let Some(s) = read_session_at(&*mem, c.cpu.ebx) else {
+                    return Ok(());
+                };
+                if let Some(n) = max_peers_fix(&s)
+                    && Gm::set_u32(&mut *mem, s.addr.wrapping_add(layout::MAX_PEERS), n)
+                {
+                    say(&format!(
+                        "game limits: campaign peer limit {} -> {n}",
+                        s.max_peers as i32
+                    ));
+                }
+                Ok(())
+            });
+
+        // The host's lobby setup, at the start of a tick.
+        if let Some(want) = self.want.clone() {
+            let st = Arc::clone(&self.state);
+            b.raw()
+                .before(&points::GAME_TICK, "host lobby setup", move |c| {
+                    lobby_setup(&st, &want, c)
+                });
+        }
+
+        // Every tick: session, simulation, stalls, hashes.
+        let st = Arc::clone(&self.state);
+        b.frame().on_tick("session, mode and hashes", move |o| {
+            let g = o.guest();
+            on_tick(&st, &g);
+        });
+
+        let st = Arc::clone(&self.state);
+        let dir = self.dir.clone();
+        b.game().on_start("open the hash log", move |o| {
+            let g = o.guest();
+            on_start(&st, &g, &dir);
+        });
+        let st = Arc::clone(&self.state);
+        b.game().on_end("close the hash log", move |o| {
+            let g = o.guest();
+            event(&st, &g, "game end");
+            if let Some(mut log) = lock(&st).log.take() {
+                let _ = log.out.flush();
+                say(&format!(
+                    "wrote {} ticks to {}",
+                    log.ticks,
+                    log.path.display()
+                ));
+            }
+        });
+
+        for (point, what) in [
+            (&points::GAME_STATE_SAVE, "checkpoint save"),
+            (&points::GAME_STATE_REVERT, "checkpoint revert"),
+            (&points::BSP_SWITCH, "bsp switch"),
+            (&points::CINEMATIC_START, "cinematic start"),
+            (&points::CINEMATIC_STOP, "cinematic stop"),
+        ] {
+            let st = Arc::clone(&self.state);
+            b.raw()
+                .observe_before(point, what, move |o| event(&st, &o.guest(), what))
+                .optional();
+        }
+        Ok(())
+    }
+}
+
+fn restore(st: &Mutex<State>, c: &mut Call, when: &str) {
+    let Some((addr, real)) = lock(st).pending.take() else {
+        return;
+    };
+    let rt = Arc::clone(c.ctx.runtime());
+    let ok = Gm::set_u32(&mut *rt.memory(), addr.wrapping_add(layout::PEERS), real);
+    say(&format!(
+        "session start: peer count back to {real} {when}{}",
+        if ok { "" } else { " (WRITE FAILED)" }
+    ));
+}
+
+/// Ticks between two setup attempts, and attempts in all.
+const SETUP_EVERY: u32 = 60;
+const SETUP_ATTEMPTS: u32 = 3;
+
+fn lobby_setup(st: &Arc<Mutex<State>>, want: &Want, c: &mut Call) -> Result<Flow, GuestFault> {
+    let rt = Arc::clone(c.ctx.runtime());
+    let (s, tick) = {
+        let mem = rt.memory();
+        (read_session(&*mem), game_tick(&*mem))
+    };
+    let Some(s) = s else {
+        return Ok(Flow::Continue);
+    };
+    {
+        let mut state = lock(st);
+        match host_setup(&s, want) {
+            Setup::Wait(why) => {
+                if state.setup_wait.as_deref() != Some(why.as_str()) && s.can_set_params() {
+                    say(&format!("host: lobby setup: {why}"));
+                }
+                state.setup_wait = Some(why);
+                state.setup_done = false;
+                return Ok(Flow::Continue);
+            }
+            Setup::Done => {
+                if !state.setup_done {
+                    state.setup_done = true;
+                    say(&format!(
+                        "host: the session holds {} (campaign {}, map {}, difficulty {}); press Start in the lobby",
+                        want.name, want.campaign, want.map, want.difficulty
+                    ));
+                }
+                state.setup_wait = None;
+                return Ok(Flow::Continue);
+            }
+            Setup::Due => {}
+        }
+        state.setup_done = false;
+        if state.setup_attempts >= SETUP_ATTEMPTS {
+            return Ok(Flow::Continue);
+        }
+        if let (Some(last), Some(now)) = (state.setup_last_tick, tick)
+            && now.wrapping_sub(last) < SETUP_EVERY
+        {
+            return Ok(Flow::Continue);
+        }
+        state.setup_attempts += 1;
+        state.setup_last_tick = tick;
+        say(&format!(
+            "host: setting the lobby to {} (campaign {}, map {}, difficulty {}), attempt {} of {SETUP_ATTEMPTS}",
+            want.name, want.campaign, want.map, want.difficulty, state.setup_attempts
+        ));
+    }
+    let saved = *c.cpu;
+    let calls = setup_calls(want).to_vec();
+    match run_calls(c.cpu, c.ctx, calls, saved) {
+        Ok(t) => Ok(Flow::Return(t)),
+        Err(e) => {
+            *c.cpu = saved;
+            say(&format!("host: the lobby setter call faulted: {e:?}"));
+            Ok(Flow::Continue)
+        }
+    }
+}
+
+/// Makes `calls` in order, then re-enters the tick with the registers it
+/// was entered with (its chain runs again, this time continuing).
+fn run_calls(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mut calls: Vec<SetupCall>,
+    saved: CpuAbi,
+) -> Result<TransferAbi, GuestFault> {
+    if calls.is_empty() {
+        *cpu = saved;
+        return Ok(TransferAbi::jump(points::GAME_TICK.base));
+    }
+    let call = calls.remove(0);
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    *cpu = saved;
+    for a in call.args.iter().rev().flatten() {
+        cpu.esp = cpu.esp.wrapping_sub(4);
+        mem.set_u32(cpu.esp, *a)?;
+    }
+    if let Some(v) = call.eax {
+        cpu.eax = v;
+    }
+    if let Some(v) = call.esi {
+        cpu.esi = v;
+    }
+    ctx.call_guest(cpu, &mut mem, call.point.base, move |cpu, ctx| {
+        let ok = cpu.eax & 0xff != 0;
+        say(&format!(
+            "host: {} returned {}",
+            call.point.name,
+            if ok { "1" } else { "0 (refused)" }
+        ));
+        if !ok {
+            *cpu = saved;
+            return Ok(TransferAbi::jump(points::GAME_TICK.base));
+        }
+        run_calls(cpu, ctx, calls, saved)
+    })
+}
+
+fn on_tick(st: &Mutex<State>, g: &runtime::Guest) {
+    let tick = game_tick(g);
+    let session = read_session(g).map(|s| s.describe());
+    let sim = read_sim(g);
+    let mut s = lock(st);
+    if session != s.last_session {
+        match &session {
+            Some(line) => say(line),
+            None if s.last_session.is_some() => say("no squad session"),
+            None => {}
+        }
+        s.last_session = session;
+    }
+    if let Some(now) = sim {
+        let lines = sim_changes(s.last_sim, now, tick);
+        for l in &lines {
+            say(l);
+            if let (Some(t), Some(log)) = (tick, s.log.as_mut()) {
+                log.note(&format!("tick {t} {l}"));
+                let _ = log.out.flush();
+            }
+        }
+        s.last_sim = Some(now);
+    }
+    let now = Instant::now();
+    if s.log.is_some()
+        && let Some(at) = s.last_tick_at
+    {
+        let ms = now.duration_since(at).as_millis();
+        if ms > STALL_MS {
+            let update = sim.map_or(0, |x| x.update);
+            let msg = format!(
+                "stall: {ms} ms without a tick before tick {} (last {}, update {update})",
+                tick.map_or(-1, |t| t as i64),
+                s.last_tick.map_or(-1, |t| t as i64),
+            );
+            say(&msg);
+            if let (Some(t), Some(log)) = (tick, s.log.as_mut()) {
+                log.note(&format!("tick {t} {msg}"));
+            }
+        }
+    }
+    s.last_tick_at = Some(now);
+    s.last_tick = tick;
+    if let (Some(t), Some(log)) = (tick, s.log.as_mut())
+        && let Err(e) = log.tick(g, t)
+        && !s.log_error
+    {
+        say(&format!("cannot hash tick {t}: {e}"));
+        s.log_error = true;
+    }
+}
+
+fn on_start(st: &Mutex<State>, g: &runtime::Guest, dir: &Path) {
+    let game = level_boot::active_game(g);
+    let sim = read_sim(g);
+    let mode = sim.map_or(u32::MAX, |s| s.mode);
+    let (opt_mode, path) = game.clone().unwrap_or((u32::MAX, "?".into()));
+    say(&format!(
+        "game start: options mode {}, simulation mode {} ({}), {path}",
+        opt_mode as i32,
+        mode_name(mode),
+        mode as i32
+    ));
+    let mut s = lock(st);
+    if let Some(mut old) = s.log.take() {
+        let _ = old.out.flush();
+    }
+    s.last_tick_at = None;
+    s.log_error = false;
+    if opt_mode == level_boot::MODE_MAINMENU {
+        return;
+    }
+    let role = role(mode);
+    let mut header = vec![
+        format!("role {role}"),
+        format!("simulation mode {} {}", mode as i32, mode_name(mode)),
+        format!("options mode {}", opt_mode as i32),
+        format!("scenario {path}"),
+    ];
+    if let Some(sess) = read_session(g) {
+        header.push(sess.describe());
+    }
+    match HashLog::open(dir, role, &header) {
+        Ok(log) => {
+            say(&format!("hash log {}", log.path.display()));
+            s.log = Some(log);
+        }
+        Err(e) => say(&format!("cannot open a hash log in {}: {e}", dir.display())),
+    }
+}
+
+// ---- install ----
+
+/// What [`install`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Installed {
+    Off,
+    Added {
+        level: Option<String>,
+    },
+    /// An address the probe needs already has an override outside the plan.
+    Refused(Vec<String>),
+}
+
+/// The probe's points that already have an override `existing` names.
+pub fn occupied(existing: impl Fn(u32) -> Option<String>) -> Vec<String> {
+    HOOKED
+        .iter()
+        .filter_map(|p| existing(p.base).map(|n| format!("{} ({:#010x}) has {n}", p.name, p.base)))
+        .collect()
+}
+
+/// Adds the probe to `registry` when `config` is given. The level is
+/// resolved against `disc` here, at boot; a level that does not resolve
+/// leaves the host setup out (the rest still runs). Refuses, with a line,
+/// when one of its addresses is already overridden outside the plan, so
+/// the plan never meets it.
+pub fn install(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    config: Option<Config>,
+    disc: &Path,
+    data_root: &Path,
+) -> anyhow::Result<Installed> {
+    let Some(config) = config else {
+        return Ok(Installed::Off);
+    };
+    let mut taken = Vec::new();
+    rt.edit_dispatch(|d| taken = occupied(|a| d.override_name(a).map(str::to_owned)));
+    if !taken.is_empty() {
+        for t in &taken {
+            say(&format!("refused: {t}"));
+        }
+        say("off: an address it needs is already overridden");
+        return Ok(Installed::Refused(taken));
+    }
+    let want = match level_boot::resolve(disc, &config.map, config.difficulty)
+        .map_err(|e| e.to_string())
+        .and_then(|r| Want::from_request(&r))
+    {
+        Ok(w) => {
+            say(&format!(
+                "on; the host sets {} {} (campaign {}, map {})",
+                w.name, config.difficulty, w.campaign, w.map
+            ));
+            Some(w)
+        }
+        Err(e) => {
+            say(&format!(
+                "on; H2_COOP_PROBE_MAP={}: {e}; this machine will not set the lobby's level",
+                config.map
+            ));
+            None
+        }
+    };
+    let level = want.as_ref().map(|w| w.name.clone());
+    let dir = data_root.join("coop-probe");
+    match registry.add(&Probe::new(want, dir)) {
+        Ok(_) => Ok(Installed::Added { level }),
+        Err(e) => anyhow::bail!("coop-probe: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests;

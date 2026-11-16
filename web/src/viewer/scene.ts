@@ -25,11 +25,12 @@ import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { gameToGl, yawToGl } from "../map/views";
 import { FLASH_MS, ShotQueue, flashAlpha } from "../map/shots";
-import { actorColour, bipedFile, modelScale, modelUrl, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
+import { MODEL_SCALE, actorColour, bipedFile, modelUrl, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
 import type { SampledVehicle } from "../state/frames";
-import { ModelLibrary, type BipedInstance, type WeaponInstance } from "./players3d";
+import { Projectiles, lookFor, shotEnd, type Look } from "./projectiles";
+import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
-import { BipedAnim, SpeedMeter, actionShot, clipFor, paceScale, weaponClass, type OneShot } from "./anim";
+import { BipedAnim, SpeedMeter, actionShot, aimAngles, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "./zones";
@@ -80,6 +81,8 @@ interface PlayerObj {
   /** What they are doing, for the model's clips (or the capsule's squat). */
   anim: BipedAnim;
   meter: SpeedMeter;
+  /** How far the legs are turned from the aim to follow the movement (eased, radians). */
+  legs: number;
   /** The last one-shot started on the model. */
   shotId: number;
   /** When they were first seen dead; null while alive. */
@@ -136,6 +139,9 @@ export class ViewerScene {
   private library: ModelLibrary;
   private models: { root: string; table: PlayerModels } | null = null;
   private shots = new ShotQueue();
+  /** Bolts, tracers and rockets in flight (viewer/projectiles.ts). */
+  private projectiles: Projectiles;
+  private raycaster = new THREE.Raycaster();
   private feed = new EventFeed();
   private effects: Effects3D;
   // A campaign level's zones (`bsp_<n>` nodes) and far scenery, and which are shown.
@@ -252,7 +258,10 @@ export class ViewerScene {
     this.geoBeam = new THREE.CylinderGeometry(0.35, 1, 1, 5, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
     this.geoFlash = new THREE.OctahedronGeometry(1, 0).scale(1.7, 0.75, 0.75).translate(0.9, 0, 0);
     this.library = new ModelLibrary(() => { this.dirty = true; });
+    // Models reflect the scene's environment at their own strength (players3d.ts).
+    this.library.setEnvironment(this.scene.environment);
     this.effects = new Effects3D(scene, this.camera);
+    this.projectiles = new Projectiles(scene);
 
     this.setBounds({ min: [-20, -20, 0], max: [20, 20, 4] }, false);
     this.frameCamera(true);
@@ -365,7 +374,7 @@ export class ViewerScene {
       this.looseMachines.set(m.id, o);
     }
     const mod = this.models, file = mod?.table.objects[m.kind];
-    const url = mod && file ? modelUrl(mod.root, file) : null;
+    const url = mod && file ? modelUrl(mod.root, file, mod.table.stamp) : null;
     const template = url ? this.library.vehicle(url) : null;
     const key = template ? url! : "box";
     if (key !== o.key) {
@@ -695,7 +704,7 @@ export class ViewerScene {
     }
     const m = this.models;
     const file = m ? vehicleFile(m.table, v.kind) : null;
-    const url = m && file ? modelUrl(m.root, file) : null;
+    const url = m && file ? modelUrl(m.root, file, m.table.stamp) : null;
     const template = url ? this.library.vehicle(url) : null;
     const empty = !v.occupied;
     const key = (template ? url : "box:" + v.kind) + "|" + (empty ? "empty" : colour ?? "");
@@ -749,7 +758,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), shotId: 0, diedAt: -Infinity };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, diedAt: -Infinity };
     this.players.set(index, p);
     return p;
   }
@@ -759,7 +768,7 @@ export class ViewerScene {
   private dress(p: PlayerObj, s: SmoothPlayer) {
     const m = this.models;
     const file = m ? bipedFile(m.table, s.species) : null;
-    const url = m && file ? modelUrl(m.root, file) : null;
+    const url = m && file ? modelUrl(m.root, file, m.table.stamp) : null;
     const template = url ? this.library.biped(url) : null;
     const have = template ? url : null;
     if (have !== p.bipedUrl) {
@@ -775,7 +784,7 @@ export class ViewerScene {
     }
     if (p.biped) {
       const wfile = m ? weaponFile(m.table, s.weapon) : null;
-      const wurl = m && wfile ? modelUrl(m.root, wfile) : null;
+      const wurl = m && wfile ? modelUrl(m.root, wfile, m.table.stamp) : null;
       const wt = wurl ? this.library.weapon(wurl) : null;
       const whave = wt ? wurl : null;
       if (whave !== p.weaponUrl) {
@@ -810,12 +819,14 @@ export class ViewerScene {
   /** Moves a player's model through its clips for this moment; a capsule
    *  can only squat. Reduced motion leaves the model in its pose. */
   private animate(p: PlayerObj, s: SmoothPlayer, now: number, dt: number) {
-    const speed = s.speed ?? p.meter.update(s.x, s.y, dt);
+    const measured = p.meter.update(s.x, s.y, dt);
+    const speed = s.speed ?? measured;
     const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed });
     const squat = st.loop === "crouch" ? 0.7 : 1;
     if (p.body.scale.y !== squat) { p.body.scale.y = squat; this.dirty = true; }
     const an = p.biped?.animator;
     if (!an || this.opts.reducedMotion) return;
+    this.aimBody(p, s, an, st.loop === "walk" || st.loop === "run" ? p.meter.heading : null, dt);
     const cls = this.clipClass(s);
     an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), st.loop === "die");
     if (st.shotId !== p.shotId) {
@@ -825,6 +836,19 @@ export class ViewerScene {
     }
     an.update(dt);
     this.dirty = true;
+  }
+
+  /** Points a model where its player looks: the legs follow the movement
+   *  (eased, within reach of the aim), the spine, neck and head turn the
+   *  rest of the way and pitch up or down to the aim, so the gun points
+   *  along it. The body's turn is `turn.rotation.y`, the facing plus `legs`. */
+  private aimBody(p: PlayerObj, s: SmoothPlayer, an: BipedAnimator, heading: number | null, dt: number) {
+    const { yaw, pitch } = aimAngles(s.aim);
+    const want = s.alive ? legTwist(yaw, heading) : 0;
+    p.legs += (want - p.legs) * Math.min(1, dt / 220);
+    const body = s.yaw + p.legs;
+    p.turn.rotation.y = yawToGl(body);
+    an.aim(s.alive ? pitch : 0, s.alive ? wrapAngle(yaw - body) : 0);
   }
 
   /** How long a dead player's model stays to play its dying clip (ms); 0 when it has none. */
@@ -856,8 +880,33 @@ export class ViewerScene {
     return { group, beam, flash, beamMat, flashMat };
   }
 
-  /** Draws the shots on screen now: each is put at its player's muzzle
-   *  along their aim when it appears, and stays there while it fades. */
+  /** What a player's shots look like, by their weapon (viewer/projectiles.ts). */
+  private shotLook(index: number): Look {
+    const s = this.shown.get(index), m = this.models?.table;
+    const weapon = s?.weapon ?? null;
+    return lookFor(weapon, weapon ? m?.classes[weapon] ?? null : null, weapon ? m?.ballistics?.[weapon] : null);
+  }
+
+  /** How far a shot from `from` along `dir` goes: to the victim the frame
+   *  names for this shooter, else the first piece of level in the way. */
+  private shotDistance(index: number, from: THREE.Vector3, dir: THREE.Vector3, range: number, now: number): number {
+    const s = this.shown.get(index);
+    const who = s?.actor ? s.actor.id : "p" + index;
+    let hit: THREE.Vector3 | null = null;
+    for (const h of this.feed.liveHits(now)) {
+      if (h.fromId === who && h.age < 600) hit = this.v2.set(...gameToGl(h.x, h.y, h.z + 0.35)).clone();
+    }
+    const map = this.map;
+    const cast = map ? (o: THREE.Vector3, d: THREE.Vector3, far: number) => {
+      this.raycaster.set(o, d);
+      this.raycaster.far = far;
+      return this.raycaster.intersectObject(map, true)[0]?.distance ?? null;
+    } : null;
+    return shotEnd(from, dir, range, hit, cast);
+  }
+
+  /** Draws the shots on screen now: a muzzle flash at the player's weapon,
+   *  and the shot itself flying along their aim (viewer/projectiles.ts). */
   private drawShots(now: number) {
     const S = this.scale;
     const live = this.opts.reducedMotion ? [] : this.shots.live(now);
@@ -880,10 +929,18 @@ export class ViewerScene {
         // A little roll, so a burst's flashes aren't one shape.
         t.flash.rotation.x = shot.id * 1.9;
         t.group.visible = true;
+        const look = this.shotLook(shot.index);
+        // The shot itself flies on its own; a model's beam stays only for a capsule.
+        t.beam.visible = !p.biped;
+        if (look.kind === "melee") t.flash.visible = false;
+        else if (p.biped) {
+          const dir = this.v1.clone();
+          this.projectiles.fire(look, t.group.position, dir, this.shotDistance(shot.index, t.group.position, dir, look.range, now), now);
+        }
       }
       kept.add(shot.id);
       t.beamMat.opacity = shot.alpha * 0.85;
-      t.flash.visible = shot.age < FLASH_MS;
+      t.flash.visible = shot.age < FLASH_MS && this.shotLook(shot.index).kind !== "melee";
       t.flashMat.opacity = flashAlpha(shot.age);
       this.dirty = true;
     }
@@ -925,7 +982,8 @@ export class ViewerScene {
     smoothPlayers(this.shown, frame.actors?.length ? [...frame.players, ...frame.actors] : frame.players, dt, { snap });
     const fired = this.shots.observe(frame.players, now, { quiet: seeking });
     if (frame.actors?.length) fired.push(...this.shots.observe(frame.actors, now, { quiet: seeking }));
-    for (const index of fired) this.oneShot(index, "fire", now);
+    // A sword (or anything that melees) swings rather than shoots.
+    for (const index of fired) this.oneShot(index, this.shotLook(index).kind === "melee" ? "melee" : "fire", now);
     for (const e of this.feed.observe(frame, now, { quiet: seeking })) {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
@@ -944,7 +1002,7 @@ export class ViewerScene {
       for (const [index, s] of this.shown) if (s.vehicle === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
       const o = this.vehicle(v, colour);
       const [x, y, z] = gameToGl(v.x, v.y, v.z);
-      const k = o.model ? modelScale(this.camera.position.distanceTo(this.v0.set(x, y, z)), o.height, S) : S;
+      const k = o.model ? MODEL_SCALE : S;
       const b = vehicleBasis(v.forward, v.up);
       this.m4.makeBasis(this.v0.set(...b.x), this.v1.set(...b.y), this.v2.set(...b.z));
       const g = o.group, q = g.quaternion, qx = q.x, qy = q.y, qz = q.z;
@@ -992,10 +1050,9 @@ export class ViewerScene {
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
       // A capsule (and every ring) grows with the map so it can be found. A
-      // model is life size up close and grows only as the camera backs away,
-      // up to the same limit, so it never shrinks to a speck on a big map.
+      // model is always the game's own size, beside the map's geometry.
       const k = p.biped
-        ? modelScale(this.camera.position.distanceTo(this.v0.set(x, y, z)), p.biped.height, S)
+        ? MODEL_SCALE
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
@@ -1037,6 +1094,7 @@ export class ViewerScene {
       this.dirty = true;
     }
     this.drawShots(now);
+    if (this.projectiles.update(now)) this.dirty = true;
     if (this.effects.update(this.feed.liveHits(now), still ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
     this.updateCutaway(dt, highlight);
 
@@ -1156,6 +1214,7 @@ export class ViewerScene {
     this.looseMachines.clear();
     this.geoBox.dispose();
     this.effects.dispose();
+    this.projectiles.dispose();
     this.library.dispose();
     disposeTree(this.scene);
     this.scene.environment?.dispose();

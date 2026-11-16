@@ -173,7 +173,7 @@ describe("models for vehicles and AI", () => {
     expect(vehicleFile(m, "warthog")).toBe("models/vehicle/warthog.glb");
     expect(vehicleFile(m, "ghost")).toBeNull();
     expect(vehicleFile(null, "warthog")).toBeNull();
-    expect(parseModels({ version: 1, vehicles: raw.vehicles })).toEqual({ bipeds: {}, weapons: {}, vehicles: { warthog: "models/vehicle/warthog.glb" }, objects: {}, classes: {} });
+    expect(parseModels({ version: 1, vehicles: raw.vehicles })).toEqual({ bipeds: {}, weapons: {}, vehicles: { warthog: "models/vehicle/warthog.glb" }, objects: {}, classes: {}, version: 1, animated: false });
   });
 
   test("an AI gets its species' model, else the spartan's, else a capsule", () => {

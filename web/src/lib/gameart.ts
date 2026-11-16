@@ -54,7 +54,10 @@ export function parseManifest(raw: unknown): GameArtManifest | null {
     for (const [from, to] of Object.entries(m.aliases)) if (typeof to === "string") aliases[from] = to;
   }
   const palette = Array.isArray(m.palette) ? m.palette.filter((c): c is string => typeof c === "string" && parseHexColour(c) !== null) : [];
-  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped, maps: parseMapFiles(raw), models: parseModels(m.models) };
+  const source = typeof m.source === "string" ? m.source : undefined;
+  const models = parseModels(m.models);
+  if (models && source) models.stamp = source;
+  return { version: 1, source, images, aliases, emblem: m.emblem, palette, skipped: m.skipped, maps: parseMapFiles(raw), models };
 }
 
 /** A file must stay inside the manifest's directory. */
@@ -75,7 +78,9 @@ type Fetch = (url: string) => Promise<{ ok: boolean; status: number; json(): Pro
 /** Loads a server's game art. Null when it has none (404), won't give it to
  *  this client, can't be reached, or sends something unreadable: all of
  *  those mean "use the art pack". Never throws. */
-export async function loadGameArt(serverBase: string, fetcher: Fetch = (u) => fetch(u)): Promise<GameArt | null> {
+// The manifest is always asked again (a 304 when unchanged), so art
+// extracted again shows without waiting for a browser's cache to lapse.
+export async function loadGameArt(serverBase: string, fetcher: Fetch = (u) => fetch(u, { cache: "no-cache" })): Promise<GameArt | null> {
   const root = gameArtRoot(serverBase);
   try {
     const res = await fetcher(root + "manifest.json");
