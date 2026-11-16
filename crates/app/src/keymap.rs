@@ -8,6 +8,46 @@
 use input::bindings::MouseButton;
 use winit::keyboard::KeyCode;
 
+/// The logical text path is separate from physical pad bindings. Preedit
+/// belongs to the OS; never submit it or let its editing keys drive the pad.
+pub(crate) fn text_input(
+    keyboard: &input::backend::keyboard::KeyboardMouse,
+    name: Option<&str>,
+    logical: &winit::keyboard::Key,
+    text: Option<&str>,
+    down: bool,
+    composing: bool,
+) -> bool {
+    use input::backend::keyboard::TextAction;
+    use winit::keyboard::{Key, NamedKey};
+    let control = match logical {
+        Key::Named(NamedKey::Backspace) => Some(TextAction::Backspace),
+        Key::Named(NamedKey::Enter) => Some(TextAction::Accept),
+        Key::Named(NamedKey::Escape) => Some(TextAction::Cancel),
+        _ => None,
+    };
+    let candidate = composing
+        || control.is_some()
+        || matches!(
+            logical,
+            Key::Character(_)
+                | Key::Dead(_)
+                | Key::Named(
+                    NamedKey::Shift
+                        | NamedKey::Control
+                        | NamedKey::Alt
+                        | NamedKey::AltGraph
+                        | NamedKey::CapsLock
+                )
+        );
+    let action = if composing {
+        None
+    } else {
+        control.or_else(|| text.map(|s| TextAction::Insert(s.into())))
+    };
+    keyboard.text_key(name, down, candidate, action)
+}
+
 /// The W3C `code` name for a key the input layer knows, or `None` for keys
 /// it has no binding name for (and for Cmd/Super, which the shell keeps for
 /// host shortcuts).
@@ -396,5 +436,129 @@ mod tests {
             }),
             MouseAction::Forward
         );
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    use input::{
+        backend::keyboard::{KeyboardMouse, TextAction},
+        bindings::Bindings,
+    };
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn logical_text_uses_layout_and_controls_are_captured_only_in_a_field() {
+        let kb = KeyboardMouse::new(Bindings::default());
+        let character = Key::Character("É".into());
+        assert!(!text_input(
+            &kb,
+            Some("KeyW"),
+            &character,
+            Some("É"),
+            true,
+            false
+        ));
+        kb.set_text_target(Some(9));
+        assert!(text_input(
+            &kb,
+            Some("KeyW"),
+            &character,
+            Some("É"),
+            true,
+            false
+        ));
+        assert!(text_input(
+            &kb,
+            Some("ShiftLeft"),
+            &Key::Named(NamedKey::Shift),
+            None,
+            true,
+            false
+        ));
+        for (key, name) in [
+            (NamedKey::Backspace, "Backspace"),
+            (NamedKey::Enter, "Enter"),
+            (NamedKey::Escape, "Escape"),
+        ] {
+            assert!(text_input(
+                &kb,
+                Some(name),
+                &Key::Named(key),
+                None,
+                true,
+                false
+            ));
+        }
+        assert_eq!(
+            kb.take_text(9),
+            vec![
+                TextAction::Insert("É".into()),
+                TextAction::Backspace,
+                TextAction::Accept,
+                TextAction::Cancel
+            ]
+        );
+        assert!(!text_input(
+            &kb,
+            Some("ArrowLeft"),
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            true,
+            false
+        ));
+        kb.set_text_target(None);
+        assert!(
+            text_input(
+                &kb,
+                Some("Enter"),
+                &Key::Named(NamedKey::Enter),
+                None,
+                true,
+                false
+            ),
+            "held repeat"
+        );
+        text_input(
+            &kb,
+            Some("Enter"),
+            &Key::Named(NamedKey::Enter),
+            None,
+            false,
+            false,
+        );
+        assert!(!text_input(
+            &kb,
+            Some("Enter"),
+            &Key::Named(NamedKey::Enter),
+            None,
+            true,
+            false
+        ));
+    }
+    #[test]
+    fn ime_preedit_and_dead_keys_do_not_type_or_drive_the_pad() {
+        let kb = KeyboardMouse::new(Bindings::default());
+        kb.set_text_target(Some(8));
+        assert!(text_input(
+            &kb,
+            Some("Quote"),
+            &Key::Dead(Some('´')),
+            None,
+            true,
+            false
+        ));
+        assert!(text_input(
+            &kb,
+            Some("Enter"),
+            &Key::Named(NamedKey::Enter),
+            Some("x"),
+            true,
+            true
+        ));
+        assert!(kb.take_text(8).is_empty());
+        assert!(kb.commit_text("中é"));
+        assert_eq!(kb.take_text(8), vec![TextAction::Insert("中é".into())]);
     }
 }

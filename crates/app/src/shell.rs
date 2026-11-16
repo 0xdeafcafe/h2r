@@ -8,7 +8,7 @@ use input::backend::keyboard::KeyboardMouse;
 use input::bindings::MouseButton;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -159,6 +159,8 @@ struct Shell {
     init_error: Option<anyhow::Error>,
     captured: bool,
     super_held: bool,
+    ime_composing: bool,
+    ime_allowed: bool,
     user_paused: bool,
     focus_paused: bool,
     closing: bool,
@@ -191,6 +193,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         init_error: None,
         captured: false,
         super_held: false,
+        ime_composing: false,
+        ime_allowed: false,
         user_paused: false,
         focus_paused: false,
         closing: false,
@@ -592,6 +596,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                         kb.release_all();
                     }
                     self.capture(false);
+                    self.ime_composing = false;
                 }
                 self.focus_paused = self.config.pause_on_focus_loss && !focused;
                 self.apply_pause();
@@ -602,8 +607,33 @@ impl ApplicationHandler<UserEvent> for Shell {
                     self.capture(false);
                 }
             }
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Commit(text) => {
+                    if !self.super_held
+                        && let Some(kb) = &self.keyboard
+                    {
+                        kb.commit_text(&text);
+                    }
+                    self.ime_composing = false;
+                }
+                Ime::Preedit(text, _) => self.ime_composing = !text.is_empty(),
+                Ime::Disabled => self.ime_composing = false,
+                Ime::Enabled => {}
+            },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
+                    if !self.super_held
+                        && let Some(kb) = &self.keyboard
+                    {
+                        keymap::text_input(
+                            kb,
+                            None,
+                            &event.logical_key,
+                            event.text.as_deref(),
+                            event.state == ElementState::Pressed,
+                            self.ime_composing,
+                        );
+                    }
                     return;
                 };
                 let down = event.state == ElementState::Pressed;
@@ -650,6 +680,18 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                     return;
                 }
+                if let Some(kb) = &self.keyboard
+                    && keymap::text_input(
+                        kb,
+                        keymap::key_name(code),
+                        &event.logical_key,
+                        event.text.as_deref(),
+                        down,
+                        self.ime_composing,
+                    )
+                {
+                    return;
+                }
                 if let (Some(kb), Some(name)) = (&self.keyboard, keymap::key_name(code)) {
                     if down {
                         kb.key_down(name);
@@ -692,6 +734,19 @@ impl ApplicationHandler<UserEvent> for Shell {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let text_active = self
+            .keyboard
+            .as_ref()
+            .is_some_and(KeyboardMouse::text_active);
+        if text_active != self.ime_allowed {
+            if let Some(g) = &self.gpu {
+                g.window.set_ime_allowed(text_active);
+            }
+            self.ime_allowed = text_active;
+            if !text_active {
+                self.ime_composing = false;
+            }
+        }
         self.update_status();
         // A banner change shows without waiting for the guest's next present.
         if let (Some(banner), Some(g)) = (&self.config.banner, &self.gpu)

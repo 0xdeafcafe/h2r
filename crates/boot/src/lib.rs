@@ -20,6 +20,7 @@ pub mod fov_setting;
 pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
+pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod lockstep_glue;
@@ -595,6 +596,9 @@ pub fn run_hosted_with_live(
             (Some(x), Some(pad))
         }
     };
+    if let Some(keyboard) = pad.as_ref() {
+        keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
+    }
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
