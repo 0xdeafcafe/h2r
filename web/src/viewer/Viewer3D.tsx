@@ -54,9 +54,29 @@ export default function Viewer3D(props: Viewer3DProps) {
   const moveCut = (h: number) => { setCutAt(clampCut(h, range())); if (!cut()) setCut(true); applyCut(); };
   const pickSee = (m: SeeMode) => { setSee(m); scene?.setSeeMode(m); };
   const toggleSee = () => pickSee(nextSee(see()));
+  // The flycam: f toggles it; while it is on, WASD, the arrows, Q, E, Space,
+  // Ctrl and Shift are its (none of them is another key here).
+  const [flying, setFlying] = createSignal(false);
+  const [flyHint, setFlyHint] = createSignal("");
+  let hintTimer: ReturnType<typeof setTimeout> | undefined;
+  const hint = (text: string, ms = 1600) => { setFlyHint(text); clearTimeout(hintTimer); hintTimer = setTimeout(() => setFlyHint(""), ms); };
+  onCleanup(() => clearTimeout(hintTimer));
+  let root!: HTMLDivElement;
+  const toggleFly = () => {
+    if (!scene) return;
+    scene.setFly(!scene.flying);
+    if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag to look, wheel for speed, Shift for faster, F to leave", 5000);
+    else setFlyHint("");
+    root.focus();
+  };
+  const onKeyUp = (e: KeyboardEvent) => { if (scene?.flyKey(e, false)) { e.preventDefault(); e.stopPropagation(); } };
   const onKey = (e: KeyboardEvent) => {
-    if (e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement).closest("input, select, textarea")) return;
-    if (e.key === "c") toggleCut();
+    const typing = (e.target as HTMLElement).closest("input, select, textarea");
+    // Stopped here: the pop-out page takes Space for play and pause.
+    if (!typing && scene?.flyKey(e, true)) { e.preventDefault(); e.stopPropagation(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
+    if (e.key === "f") toggleFly();
+    else if (e.key === "c") toggleCut();
     else if (e.key === "[" || e.key === "]") { if (scene) setRange(scene.cutRange()); moveCut(stepCut(cutValue(), e.key === "]" ? 1 : -1, range())); }
     else if (e.key === "x") toggleSee();
     else return;
@@ -144,6 +164,8 @@ export default function Viewer3D(props: Viewer3DProps) {
     }
     const s = scene;
     s.onAoDropped = () => setAo(false);
+    s.onFlyChange = setFlying;
+    s.onFlySpeed = (label) => hint(label);
     if (ao()) setAo(s.setAo(true));
     s.setSeeMode(see());
     s.setTextures(textures());
@@ -192,12 +214,14 @@ export default function Viewer3D(props: Viewer3DProps) {
   }));
 
   return (
-    <div class="v3" tabindex="0" onKeyDown={onKey}>
+    <div class="v3" tabindex="0" ref={root} onKeyDown={onKey} onKeyUp={onKeyUp} onFocusOut={(e) => { if (!root.contains(e.relatedTarget as Node | null)) scene?.flyRelease(); }}>
       <Show when={!failed()} fallback={<p class="v3-fail">{failed()}</p>}>
         <div ref={host} class="v3-host" />
+        <Show when={flyHint()}><div class="v3-fly-hint" role="status">{flyHint()}</div></Show>
         <div class="v3-tools" role="group" aria-label="Camera">
           <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
           <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
+          <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag to look, wheel changes speed, Shift is faster. A gamepad works too. Key: f">Fly</button>
           <select
             classList={{ on: mode() === "follow" }}
             aria-label="Follow a player"
