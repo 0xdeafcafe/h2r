@@ -9,7 +9,7 @@ import type { Xuid } from "./types";
 
 // ---------- friends ----------
 
-export interface FriendPresence { state: string; game_id: string | null; since: string | null }
+export interface FriendPresence { state: string; game_id: string | null; activity?: string | null; since: string | null }
 export interface FriendEntry { xuid: Xuid; gamertag: string; friends_since: string; presence: FriendPresence | null }
 export interface FriendRequest { xuid: Xuid; gamertag: string; at: string }
 /** `GET /v1/accounts/{gamertag}/friends`. */
@@ -25,7 +25,9 @@ export const byTag = <T extends { gamertag: string }>(a: T, b: T) => a.gamertag.
 function presenceOf(v: unknown): FriendPresence | null {
   const o = obj(v);
   if (!o || typeof o.state !== "string") return null;
-  return { state: o.state, game_id: typeof o.game_id === "string" ? o.game_id : null, since: typeof o.since === "string" ? o.since : null };
+  const p: FriendPresence = { state: o.state, game_id: typeof o.game_id === "string" ? o.game_id : null, since: typeof o.since === "string" ? o.since : null };
+  if (typeof o.activity === "string" && o.activity) p.activity = o.activity;
+  return p;
 }
 
 function requestOf(v: unknown): FriendRequest | null {

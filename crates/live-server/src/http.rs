@@ -270,6 +270,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/sessions",
             get(crate::sessions::list).post(crate::sessions::create),
         )
+        .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
