@@ -105,6 +105,9 @@ pub struct Policy {
     pub sweep_every: Duration,
     /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live-admin.md).
     pub admins: Vec<Gamertag>,
+    /// The public base URL, when served through a tunnel or proxy
+    /// (docs/live-hosting.md); set while running, shown in discovery.
+    pub public: crate::public::PublicUrl,
 }
 
 impl Default for Policy {
@@ -118,6 +121,7 @@ impl Default for Policy {
             game_idle_s: 300,
             sweep_every: Duration::from_secs(5),
             admins: Vec::new(),
+            public: Default::default(),
         }
     }
 }
@@ -758,6 +762,7 @@ impl Live {
             keys: vec![self.identity.key.public().jwk()],
             software: format!("h2recomp live-server {}", env!("CARGO_PKG_VERSION")),
             federation: false,
+            url: self.policy.public.get(),
         }
     }
 

@@ -34,6 +34,7 @@ mod scripts;
 mod shader;
 mod sound;
 mod strings;
+mod tunnel;
 mod ui;
 mod web_build;
 

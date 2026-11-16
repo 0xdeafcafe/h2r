@@ -6,8 +6,8 @@
 //! entry at `POST /v1/local/signin`. Offers live in memory only: nothing is
 //! logged or persisted, a restart forgets them.
 //!
-//! The endpoint answers only a loopback peer that is not a proxy forwarding
-//! someone else, and only once an offer has been made; anything else gets
+//! The endpoint answers only a loopback peer that is not a proxy or tunnel
+//! (cloudflared) forwarding someone else, and only once an offer has been made; anything else gets
 //! the API's ordinary "no such endpoint". An unknown, used or expired token
 //! all get the same 404.
 
@@ -275,5 +275,31 @@ mod tests {
             h.insert(header::HOST, ok.parse().unwrap());
             assert!(local(Some(lo), &h), "{ok}");
         }
+    }
+
+    #[test]
+    fn a_tunnelled_request_is_not_this_machine() {
+        // cloudflared connects from loopback; what it adds gives it away,
+        // even when the origin's Host is kept loopback.
+        let lo: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let cloudflared = [
+            ("cf-connecting-ip", "203.0.113.9"),
+            ("cf-ray", "8f1e2d3c4b5a6978-LHR"),
+            ("cf-visitor", "{\"scheme\":\"https\"}"),
+            ("x-forwarded-for", "203.0.113.9"),
+            ("x-forwarded-proto", "https"),
+        ];
+        for (name, value) in cloudflared {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, "127.0.0.1:5000".parse().unwrap());
+            h.insert(name, value.parse().unwrap());
+            assert!(!local(Some(lo), &h), "{name}");
+        }
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::HOST,
+            "happy-otter-1234.trycloudflare.com".parse().unwrap(),
+        );
+        assert!(!local(Some(lo), &h), "the tunnel's own host name");
     }
 }

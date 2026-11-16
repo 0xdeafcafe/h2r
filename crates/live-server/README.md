@@ -20,6 +20,7 @@ h2 live motd set "Welcome back" "Double XP this weekend" --header "Halo 2"
 h2 live serve --invite-only & h2 live invite create
 h2 live q games --live                          # JSON off a terminal
 h2 play disc.iso --live                         # an embedded server, signed in
+h2 live serve --tunnel                          # public via cloudflared (docs/live-hosting.md)
 ```
 
 `h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
@@ -48,7 +49,7 @@ What is built of [live-api.md](../../docs/live-api.md):
 | request | notes |
 |---|---|
 | `GET /healthz` | `{ok, position}`, position = log head |
-| `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false}` |
+| `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false, url?}`; `url` is the public base URL when tunnelled or `--public-url` ([live-hosting.md](../../docs/live-hosting.md)) |
 | `POST /v1/accounts` | body: compact JWS by the new key over `{gamertag, jwk, invite?, aud, iat}` (`aud` = server id, `iat` within 5 min); 201 `{xuid, gamertag, id}` |
 | `GET /v1/accounts` | list of `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (the 10 latest) |
