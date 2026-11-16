@@ -5,7 +5,7 @@
 import { For, Show, createMemo } from "solid-js";
 import { A } from "@solidjs/router";
 import { live } from "../state/live";
-import { mapTitle } from "../state/gameart";
+import { gameMapGroupLabel, gameMapTitle } from "../state/maps";
 import { OUTCOME_WORDS, campaignHistory, campaignRecord } from "../state/derive";
 import { gameTypeLine } from "../state/gametype";
 import Emblem from "../components/Emblem";
@@ -42,7 +42,7 @@ export default function CampaignRecordPage() {
                 <Show when={latest()} fallback={<span class="s-dim">Latest campaign game</span>}>
                   {(r) => (
                     <>
-                      <A href={`/stats/games/${r().game.game_id}`}>{mapTitle(r().game.map)}</A>
+                      <A href={`/stats/games/${r().game.game_id}`}>{gameMapTitle(r().game)}</A>
                       <span class="s-dim">{gameTypeLine(r().game)}</span>
                       <span class="s-capbar-right">{r().outcome === "playing" ? "playing now" : `${OUTCOME_WORDS[r().outcome]}, ${usDate(r().game.started_at)}`}</span>
                     </>
@@ -86,7 +86,7 @@ export default function CampaignRecordPage() {
                     <For each={rec().levels} fallback={<tr><td colspan="6" class="s-dim">No levels played yet.</td></tr>}>
                       {(l) => (
                         <tr>
-                          <td><span class="s-who"><MapPreview map={l.map} />{mapTitle(l.map)}</span></td>
+                          <td><span class="s-who"><MapPreview map={l.map} mapId={l.map_id} />{gameMapGroupLabel(l)}</span></td>
                           <td class="num">{num(l.plays)}</td>
                           <td class="num">{num(l.completions)}</td>
                           <td class="num">{num(l.deaths)}</td>

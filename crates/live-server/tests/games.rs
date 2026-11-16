@@ -148,6 +148,68 @@ async fn a_game_from_start_to_end() {
     );
 }
 
+/// A modded Lockout is `map: "lockout"` with a `map_id`: the game keeps it,
+/// and the list can keep it apart from Lockout's other games.
+#[tokio::test]
+async fn games_keep_their_map_id_and_filter_by_it() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let retail = h.start_game(&host, two_player_game(&host)).await;
+    let modded_id = "ab".repeat(32);
+    let mut game = two_player_game(&host);
+    game["map_id"] = json!(modded_id);
+    let modded = h.start_game(&host, game).await;
+    let mut other = two_player_game(&host);
+    other["map"] = json!("midship");
+    let midship = h.start_game(&host, other).await;
+
+    let ids = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["game_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = h.get("/v1/games").await.json();
+    assert_eq!(ids(&all), [midship.clone(), modded.clone(), retail.clone()]);
+    assert_eq!(all["items"][1]["map_id"], modded_id.as_str());
+    assert_eq!(all["items"][1]["map"], "lockout");
+    assert!(all["items"][2].get("map_id").is_none(), "none is left out");
+    assert_eq!(
+        h.get(&format!("/v1/games/{modded}")).await.json()["map_id"],
+        modded_id.as_str()
+    );
+    assert_eq!(
+        ids(&h.get("/v1/games?map=lockout").await.json()),
+        [modded.clone(), retail.clone()]
+    );
+    assert_eq!(
+        ids(&h.get(&format!("/v1/games?map_id={modded_id}")).await.json()),
+        std::slice::from_ref(&modded)
+    );
+    assert_eq!(
+        ids(&h.get("/v1/games?map=lockout&map_id=none").await.json()),
+        std::slice::from_ref(&retail)
+    );
+    assert_eq!(
+        h.get("/v1/games?map_id=nope").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // A malformed map_id on the way in is refused, not dropped.
+    let mut bad = two_player_game(&host);
+    bad["map_id"] = json!("xyz");
+    let r = h
+        .call(
+            Method::POST,
+            "/v1/games",
+            &[h.bearer(&host, lxm::GAMES_WRITE)],
+            bad.to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn game_writes_are_checked() {
     let h = harness().await;

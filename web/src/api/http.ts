@@ -78,6 +78,21 @@ export function api(t: ServerTarget) {
         throw e;
       }
     },
+    /** Published map packages, newest first (docs/maps.md §5); one page. */
+    maps: async (q: { base?: string; author?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal) =>
+      page<unknown>(await getJson(u("/maps", q), s)),
+    /** Every published package, following cursors (bounded). */
+    allMaps: (q: { base?: string; author?: string } = {}, s?: AbortSignal) => all<unknown>("/maps", { ...q, limit: 100 }, s, 20),
+    /** One package by map_id, as status and body: 404 (not a package) and
+     *  410 (taken down) are answers, not errors (lib/maps.ts reads them). */
+    mapPackage: async (id: string, s?: AbortSignal): Promise<{ status: number; body?: unknown }> => {
+      const r = await fetch(u("/maps/" + encodeURIComponent(id)), { signal: s, headers: { accept: "application/json" } });
+      let body: unknown;
+      try { body = await r.json(); } catch { /* not JSON */ }
+      return { status: r.status, body };
+    },
+    /** A package's preview image (only when its summary has `image`). */
+    mapImageUrl: (id: string) => u("/maps/" + encodeURIComponent(id) + "/image"),
     /** Open session advertisements (docs/live-api.md "Sessions"), following cursors. */
     sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
     /** One session by id, open or not. */

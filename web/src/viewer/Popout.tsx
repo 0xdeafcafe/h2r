@@ -3,7 +3,8 @@
 // replay here keeps in step with the game page it was opened from (and the
 // other way round) through the session's channel.
 
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle, geometryChanged } from "../state/maps";
+import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { Show, Suspense, createEffect, createMemo, createSignal, lazy, on } from "solid-js";
 import { A, useParams, useSearchParams } from "@solidjs/router";
 import { colourFor, liveFrameSource, rosterFor } from "../lib/game";
@@ -39,15 +40,16 @@ export default function Popout() {
 function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: () => string | null; mode?: ViewMode; ao?: boolean; cut?: number | null; seeThrough?: boolean }) => import("solid-js").JSX.Element }) {
   const geometry = geometryFor(() => props.game.map);
   const [params] = useSearchParams<{ cam?: string; ao?: string; cut?: string; see?: string }>();
-  createEffect(() => { document.title = `3D view · ${mapTitle(props.game.map)} · h2 live`; });
+  createEffect(() => { document.title = `3D view · ${gameMapTitle(props.game)} · h2 live`; });
   return (
     <>
       <header class="v3-bar v3-bar--page">
-        <h3>3D view · {mapTitle(props.game.map)}</h3>
+        <h3>3D view · {gameMapTitle(props.game)}</h3>
         <span class="v3-bar-state">{props.live ? "Live" : "Recorded replay"}</span>
         <span class="v3-bar-buttons"><A href={`/stats/games/${props.game.game_id}`} target="_blank" rel="noopener">Game details</A></span>
       </header>
       <div class="v3-body">
+        <Show when={!geometryChanged(props.game)} fallback={<p class="v3-note v3-note--mid">This custom map's {GEOMETRY_CHANGED_NOTE}.</p>}>
         <Suspense fallback={<div class="v3-note v3-note--mid">Loading the 3D view…</div>}>
           {props.children({
             glb: () => geometry()?.glb ?? null,
@@ -58,6 +60,7 @@ function Frame(props: { game: GameState; live: boolean; children: (geo: { glb: (
             seeThrough: params.see !== "0",
           })}
         </Suspense>
+        </Show>
       </div>
     </>
   );

@@ -46,6 +46,9 @@ pub struct LocalSession {
     /// Who finds it in the server's lists (and so in the custom games
     /// browser): the host's setting when it was last advertised.
     pub visibility: Visibility,
+    /// The host's loaded map, exactly (docs/maps.md §5), when a package
+    /// serves it; None for the disc's own map or when nothing says.
+    pub map_id: Option<live_proto::maps::MapId>,
 }
 struct Record {
     session: LocalSession,
@@ -110,7 +113,14 @@ pub(crate) struct Sessions {
     /// Reads the title's own party privacy, when the embedder knows where it
     /// is; it wins over the setting when a lobby is advertised.
     probe: Option<VisibilityProbe>,
+    /// Reads the host's loaded map's `MapId` (boot: the cache header's map
+    /// name through the VFS).
+    map_probe: Option<MapProbe>,
 }
+/// Reads the `MapId` of the map the host has loaded, when a package serves
+/// it; None for the disc's own map.
+pub type MapProbe =
+    std::sync::Arc<dyn Fn(&Guest) -> Option<live_proto::maps::MapId> + Send + Sync>;
 /// Reads the host's visibility out of guest memory (boot: the squad
 /// session's privacy), or None when there is none to read.
 pub type VisibilityProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Visibility> + Send + Sync>;
@@ -167,6 +177,9 @@ impl Sessions {
     }
     pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
         self.probe = probe;
+    }
+    pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
+        self.map_probe = probe;
     }
     pub fn clear(&mut self) {
         self.records.clear();
@@ -261,6 +274,7 @@ impl Sessions {
                 if let Some(v) = self.probe.as_ref().and_then(|probe| probe(m)) {
                     self.visibility = v;
                 }
+                let map_id = self.map_probe.as_ref().and_then(|probe| probe(m));
                 let (id, key, mut session) = if op == Op::Create {
                     if self.records.len() >= MAX_SESSIONS {
                         return hr(OUT_OF_MEMORY);
@@ -277,6 +291,7 @@ impl Sessions {
                             attributes: BTreeMap::new(),
                             revision: 0,
                             visibility: self.visibility,
+                            map_id,
                         },
                     )
                 } else {
@@ -288,6 +303,11 @@ impl Sessions {
                 };
                 session.slots = slots;
                 session.visibility = self.visibility;
+                // A session keeps its map id once it has one (the wire has
+                // no way back to none).
+                if map_id.is_some() {
+                    session.map_id = map_id;
+                }
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -326,6 +346,11 @@ impl Sessions {
                                     .get(&id)
                                     .is_none_or(|r| r.session.visibility != self.visibility)
                                     .then_some(self.visibility),
+                                map_id: session.map_id.filter(|m| {
+                                    self.records
+                                        .get(&id)
+                                        .is_none_or(|r| r.session.map_id != Some(*m))
+                                }),
                                 ..Default::default()
                             },
                         }
@@ -688,6 +713,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         name: None,
         language: None,
         visibility: s.visibility,
+        map_id: s.map_id,
     }
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {

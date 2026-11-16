@@ -3,7 +3,8 @@
 // thumbnails.
 
 import GametypeIcon from "../components/GametypeIcon";
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle, packageLookup } from "../state/maps";
+import { geometryChoice } from "../lib/maps";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
@@ -101,10 +102,12 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
   const liveSrc = liveFrameSource(props.game.game_id, roster);
   const still = stillFrame(props.game);
   const frame = (t: number) => (props.game.status === "live" ? liveSrc(t) : still(t));
-  // The map's preview, else its top view, else a drawn outline.
-  const preview = mapPicture(() => props.game.map);
-  // Only a `top` thumbnail asks for the map's views (a views.json per map).
-  const geometry = props.top ? geometryFor(() => props.game.map) : () => null;
+  // The package's image, else the map's preview, else its top view, else a drawn outline.
+  const preview = mapPicture(() => props.game.map, () => props.game.map_id);
+  // Only a `top` thumbnail asks for the map's views (a views.json per map),
+  // and not for a mod whose geometry isn't the base map's.
+  const sameGeometry = () => geometryChoice(packageLookup(props.game.map_id)) === "base";
+  const geometry = props.top ? geometryFor(() => (sameGeometry() ? props.game.map : undefined)) : () => null;
   const [broken, setBroken] = createSignal(false);
   createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
   const top = () => (broken() ? null : topView(geometry()?.views));
@@ -113,9 +116,9 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
       when={top()}
       fallback={
         <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
-          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p()} alt={`${mapTitle(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
+          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p()} alt={`${gameMapTitle(props.game)} preview`} decoding="async" draggable={false} />}</Show>
           <Show when={!preview() || props.game.status === "live"}>
-            <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${mapTitle(props.game.map)}`} />
+            <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${gameMapTitle(props.game)}`} />
           </Show>
           <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
         </span>
@@ -123,7 +126,7 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
     >
       {(v) => (
         <span class={`s-thumb s-thumb--top ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live" }}>
-          <ViewMap mini frame={frame} roster={roster} views={geometry()!.views!} view={v().id} image={geometry()!.image} label={`Map of ${mapTitle(props.game.map)}`} onError={() => setBroken(true)} />
+          <ViewMap mini frame={frame} roster={roster} views={geometry()!.views!} view={v().id} image={geometry()!.image} label={`Map of ${gameMapTitle(props.game)}`} onError={() => setBroken(true)} />
           <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
         </span>
       )}
@@ -132,8 +135,8 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
 }
 
 /** A map's picture, small, for a table row. Nothing without game art. */
-export function MapPreview(props: { map: string }) {
-  return <MapPicture map={props.map} class="s-mappic" />;
+export function MapPreview(props: { map: string; mapId?: string | null }) {
+  return <MapPicture map={props.map} mapId={props.mapId} class="s-mappic" />;
 }
 
 /** The gamertag of whoever started the game (the server names them `acct:<xuid>@<server>`). */
@@ -191,7 +194,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
               <MapThumb game={game} />
               <ul>
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>
-                <li>On {mapTitle(game.map)}</li>
+                <li>On {gameMapTitle(game)}</li>
                 <li>{isCampaign(game) ? difficultyName(game.difficulty) ?? "Campaign" : `Playlist: ${playlist(game)}`}</li>
                 <li>{game.status === "live" ? "In progress now" : `${isCampaign(game) ? OUTCOME_WORDS[campaignOutcome(game)] : "Finished"} ${ago(game.ended_at, now())}`}</li>
                 <Show when={isCampaign(game)} fallback={<li>{game.status === "live" ? "Leader" : "MVP"}: <b>{standings(game)[0]?.name ?? "–"}</b></li>}>

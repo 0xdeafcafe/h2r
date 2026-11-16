@@ -7,6 +7,8 @@ import { ApiError } from "../api/http";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { issueToken } from "./token";
+import { parsePins } from "./catalog";
+import { CONTENT_MODERATE } from "./content";
 import type { HoppersPatch, HopperView, MotdDoc } from "./validate";
 
 export interface HoppersReply {
@@ -36,11 +38,11 @@ async function parseError(r: Response): Promise<never> {
 }
 
 /** A write: signed per request (the `jti` is single use). */
-async function put<T>(path: string, body: unknown): Promise<T> {
+async function put<T>(path: string, body: unknown, lxm = "titles.write"): Promise<T> {
   const me = identity.me();
   const wk = live.wellKnown();
   if (!me || !wk) throw new ApiError(401, "unauthorized", "sign in first");
-  const token = await issueToken(me, wk.id, "titles.write");
+  const token = await issueToken(me, wk.id, lxm);
   const r = await fetch(`${live.server().api}${path}`, {
     method: "PUT",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -77,6 +79,20 @@ export async function getHopper(): Promise<HoppersReply | null> {
 
 export async function putHopper(patch: HoppersPatch): Promise<HoppersReply & { published: PublishedInfo }> {
   return put(`/titles/${title()}/hopper`, patch);
+}
+
+/** Which custom maps (map_ids) each hopper allows; a public read. An
+ *  older server without pins answers 404: no pins. */
+export async function getPins(): Promise<Map<number, string[]>> {
+  const r = await fetch(`${live.server().api}/hoppers/pins`, { headers: { accept: "application/json" } });
+  if (r.status === 404) return new Map();
+  if (!r.ok) return parseError(r);
+  return parsePins(await r.json());
+}
+
+/** Sets one hopper's pinned custom maps (admins, `content.moderate`). */
+export async function putPins(hopperId: number, mapIds: string[]): Promise<{ ok: boolean; position?: number }> {
+  return put(`/hoppers/${hopperId}/pins`, { map_ids: mapIds }, CONTENT_MODERATE);
 }
 
 /** Halo 2's title id; the editors edit Halo 2's files. */

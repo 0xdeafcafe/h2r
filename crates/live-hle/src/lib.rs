@@ -6,6 +6,7 @@
 mod client;
 mod config;
 mod invites;
+pub mod maps;
 mod messages;
 pub use client::{ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
@@ -22,7 +23,7 @@ mod qos;
 mod qos_memory;
 mod sessions;
 pub use sessions::{
-    LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility,
+    LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility,
     VisibilityProbe,
 };
 mod state;
@@ -188,6 +189,14 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_visibility_probe(probe)
+    }
+    /// Lets advertisements say exactly which map the host has loaded
+    /// (`NewSession.map_id`, docs/maps.md §5). Without it they name none.
+    pub fn set_map_probe(&self, probe: Option<MapProbe>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_map_probe(probe)
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state

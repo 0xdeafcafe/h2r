@@ -106,6 +106,7 @@ impl Game {
             ended_at: self.ended.as_ref().map(|e| e.1.clone()),
             players: self.players.clone(),
             teams: self.teams.clone(),
+            map_id: g.map_id,
         }
     }
 

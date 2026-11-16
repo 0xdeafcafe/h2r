@@ -161,6 +161,9 @@ export interface GameStarted extends GameKindFields {
   /** The console's own name for itself, if it gave one. */
   console?: string;
   map: string;
+  /** The map package played (docs/maps.md §5); `map` is then its base map.
+   *  Absent for retail maps. */
+  map_id?: string;
   mode: "campaign" | "multiplayer" | string;
   variant?: string | null;
   team_play: boolean;
@@ -209,7 +212,10 @@ export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; ga
 
 export interface GameSummary extends GameKindFields {
   game_id: GameId;
+  /** The base map's name, also for a modded game. */
   map: string;
+  /** The map package played; absent for retail maps. */
+  map_id?: string;
   mode: string;
   variant?: string | null;
   started_at: string;

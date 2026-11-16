@@ -112,6 +112,29 @@ at `/dash/sessions/:id`. Both ask the server again every four seconds while
 the tab is showing (`src/state/sessions.ts`). It is read-only: joining
 happens in the game.
 
+**Custom maps** (docs/maps.md §5). A session's advertisement and a game
+may carry a `map_id`, the map package played; `map` is then its base map.
+The app looks each `map_id` up once per page load (`GET /v1/maps/{id}`,
+`src/state/maps.ts`; the rules are pure in `src/lib/maps.ts`). "Find a
+game" shows a custom map's name with a "custom map" tag, its author and
+"needs download (2.4 MB)" from the package size; a 410 (taken down by an
+admin) reads "custom map unavailable", a 404 shows as a plain map. Games
+are titled by the package name, else the base map's; stats and filters
+group by `map_id ?? map`, so a modded level is its own row ("<Base>
+(modded)" until its name is known). The picture is the package's image
+(`/v1/maps/{id}/image`, only when the summary has `image`), then the base
+map's art. A package that says its geometry changed gets "geometry
+changed, no 3D view" instead of the base map's 3D view. Admins pin
+packages to playlists in the playlist builder (`GET /v1/hoppers/pins`,
+`PUT /v1/hoppers/{id}/pins`) and moderate them under Admin, "Custom
+content": packages and blobs with state and report counts, hide, delete,
+block, reports, and the per-account upload switch (`src/admin/content.ts`,
+a `content.moderate` token). A signed-in player can report a package from
+its game's page. The mock (`mock/content.ts`) serves three invented
+packages (one with a picture, one with changed geometry, one blocked) and
+puts about a third of its sessions and multiplayer games on them or on an
+id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
+
 **Derived stats.** Medals, sprees, places, the weapon breakdown ("Tool of
 Destruction"), EXP and rank are computed in the browser from the games'
 events (`src/state/derive.ts`); the API does not serve them. They are

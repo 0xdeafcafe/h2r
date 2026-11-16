@@ -208,7 +208,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?}` |
+| `GET /v1/games?state=live\|ended&map=&map_id=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
@@ -380,7 +380,8 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `language`. Attribute values are `{type: "integer", value: <u64>}`,
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
 `{type: "null"}`, and optional `visibility` (`public`, the default and
-omitted on the wire; `friends`; `invite`). The ID's datatype bits must agree. Limits are 16 total slots,
+omitted on the wire; `friends`; `invite`) and `map_id` (64 hex digits,
+exactly which map: see "Custom maps" below; omitted when none). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -397,7 +398,8 @@ fields.
 
 Only the authenticated host may append events, signed with its registered key:
 
-- `SessionUpdated`: optional slots, attributes (full replacement), name or map.
+- `SessionUpdated`: optional slots, attributes (full replacement), name, map,
+  visibility or `map_id` (absent keeps the current one).
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.
@@ -436,6 +438,73 @@ is the previous `next` string. Ordering is by session ID. CLI queries are
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
 base through base+6. A Cloudflare HTTP tunnel alone provides no gameplay path.
+
+A `map_id` on a create or update is refused with 410 when an admin hid,
+deleted or blocked that package or one of its layers, and with 403 when the
+session's `flags` are `hopper` or `ranked` and the id is neither a retail
+map's (from the operator's retail list) nor pinned on the session's
+`hopper_id` (`custom` and `coop` sessions take any map). A `map_id` the
+server never saw is fine in a custom game: retail maps and local edits have
+ids too.
+
+## Custom maps
+
+Custom and modded maps are shared as content: the layers (file patches,
+content packs, user-made maps, preview images) by SHA-256, and the package
+manifest by `MapId` ([maps.md](maps.md) §1, §5). Retail map bytes are never
+stored: players use their own disc for the base.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
+| `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
+| `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
+| `GET /v1/maps?base=&author=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first |
+| `GET /v1/maps/{map_id}` | read rule | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
+| `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
+| `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
+| `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
+
+Uploads (`PUT /v1/content`) stream to `<data>/content/tmp`, hashed as they
+arrive, and the SHA-256 of the body must be the path's (400 otherwise).
+The blob is then kept once, under `<data>/content/<first two hex
+digits>/<sha256>`, and never changed; a server-signed `ContentStored`
+event (`content-<sha256>` stream; `{sha256, size, uploader}`) records it.
+A body starting with a map's `daeh` header is a whole map, capped at
+100 MiB; anything else at 32 MiB (413 over either; `h2 live serve
+--content-layer-mib N --content-map-mib N`). Each account stores at most
+1 GiB (`--content-quota-mib N`), counting what it uploaded first and not
+deleted (413 over it). Uploads and publishes are rate limited per account
+(a burst of 20, then one every two seconds; 429). A hash on the operator's
+retail list is refused (403), and so is a hash an admin blocked (410). A
+server with no data directory stores nothing (503).
+
+A package is published as an event the author signs with their own key,
+like the account's other events: stream `package-<map_id>`, type
+`MapPublished`, data `{manifest, image?}`. `manifest` is the package
+manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
+`[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
+preview, uploaded like a layer, given exactly when the manifest names one.
+The server checks the manifest as the runtime does ([maps.md](maps.md) §7,
+"Manifest checks"), computes `MapId::of` and requires the stream to be that
+id's; refuses a manifest with no layers (only a retail base: 403) or naming a
+retail hash (403); refuses it while any layer or the image is not stored
+(409, naming the files); and checks the image is at most 512 KiB and starts
+with a PNG or JPEG signature. The first publisher of a `MapId` is its
+author (another account: 409). The usual signature, key, five-minute clock
+and nonce checks apply.
+
+A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
+{map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
+size, image?, geometry?, published_at}`: `size` is the layers' bytes (what a
+player without them downloads), `image` the preview's hash, `geometry` the
+manifest's `[result] geometry` (set when the mod changed the map's
+geometry). `missing` lists layers the server no longer holds (deleted by an
+admin). Lists leave out taken-down packages.
+
+The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
+join-time download) is in [maps.md](maps.md) §5, "As built".
 
 ## Co-op relay
 

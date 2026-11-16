@@ -229,6 +229,103 @@ The 3D viewer uses the base map's geometry with the mod's placements,
 unless `[result] geometry` differs from the base's, in which case the
 geometry is extracted from the patched map.
 
+### As built (Live)
+
+**Built** (the network side; the lane that built it is "maps-live").
+
+- **Wire.** `NewSession.map_id`, `session::Update.map_id`,
+  `NewGame.map_id` and `GameSummary.map_id` are `Option<MapId>`,
+  serde-default and left out when none, so old payloads parse and old
+  servers and logs read the same bytes. `map` stays the base map's name
+  (the name the game loads, `maps\<map>.map`). A retail map from the disc
+  is sent with no `map_id` at all: the game reports a `MapId` only for a
+  map a package serves (`Vfs::map_id`), and the 1.0 map pack's packages
+  (`h2 import-mappack`, served from `T:\$c`, not `<data>/maps`) count as
+  retail for the same reason.
+- **Stats.** A game keeps its `map_id`; `GET /v1/games` filters by `map`
+  (every game on that base) and by `map_id` (one exact map, or `none` for
+  retail). The web groups history and career stats by `map_id ?? map`, so a
+  modded Lockout never mixes into Lockout's stats, and shows the package's
+  name, falling back to the base map's title.
+- **Content store** (`crates/live-server/src/content.rs`, API in
+  [live-api.md](live-api.md) "Custom maps"). Blobs by SHA-256 under
+  `<data>/content/<aa>/<sha256>`, checked on upload, kept once, immutable;
+  caps 32 MiB (patches, packs, images) and 100 MiB (a whole map: the body
+  starts with `daeh`), a 1 GiB per-account quota, a per-account rate. A
+  package is a `MapPublished` event its author signs; the server validates
+  the manifest, computes `MapId::of`, and refuses it while a layer is
+  missing.
+- **No retail bytes.** The operator's `<data>/retail-maps.sha256`
+  (`sha256sum` output, empty by default) lists retail hashes: those blobs
+  are refused, and a line naming its map makes `MapId::retail` a retail id
+  for ranked play. A manifest with no layers is refused whatever the list
+  says.
+- **Moderation** ([live-admin.md](live-admin.md) §7): hide, delete, block
+  by hash or `MapId`, per-account upload switch, reports. Taken-down
+  content answers 410 and sessions on it are refused.
+- **Ranked.** Hopper pins (`PUT /v1/hoppers/{hopper_id}/pins`) say which
+  custom maps a matchmaking hopper allows; a `hopper` or `ranked` session
+  may only advertise a retail `MapId` or a pinned one (the server checks on
+  create and on update). `custom` and `coop` sessions take any map that is
+  not taken down.
+- **The game's side.** The boot names the loaded map's `MapId` with
+  `boot::map_override::map_id(vfs, name)` (the cache header's short name,
+  `0x00547898`): telemetry's `set_map_id_locator` fills `NewGame.map_id`,
+  and live-hle's `set_map_probe` fills each advertisement's `map_id` (and
+  sends it on a lobby update when it changes).
+- **Joining** (`live_hle::maps::MapGate`, given to the HLE through
+  `ServerOptions.maps`). A search result whose map cannot be had is left
+  out of the browser; finding a session by id (how a join starts) makes its
+  map ready first, or the session is not found. Ready means: a package here
+  already has the `MapId`; or the server's manifest is fetched
+  (`GET /v1/maps/{id}`), its base checked against the disc's own map
+  (`Bases`, the SHA-256 of `maps\<map>.map`), the missing layers and image
+  downloaded from `/v1/content/{sha256}`, each checked against its
+  SHA-256, and written as `<data>/maps/live-<first 16 hex of the
+  MapId>/` with its `manifest.toml` last; then `active.toml` names that
+  directory for the map so the choice rule serves it. Refusals, printed
+  with their reason before any map load: the disc lacks the base
+  (`NoBase`), an admin took it down (410: `TakenDown`), the server never
+  saw it and it is not here (`Unpublished`), a `hopper`/`ranked` session on
+  a map that is neither the disc's retail one nor pinned on its hopper
+  (`Ranked`), or a download that failed or did not match its hash.
+- **CLI.** `h2 live maps publish DIR [--as GAMERTAG]` checks the package as
+  the runtime does, uploads each layer and the image (refusing a file
+  whose hash is not the manifest's), signs the manifest with the local
+  account's key and publishes it; `h2 live maps list [--base MAP] [--author
+  GAMERTAG] [--json]` prints the server's packages.
+- **Pictures and viewer** (web): the package's image (served at
+  `/v1/maps/{id}/image`), then the base map's art; the 3D viewer uses the
+  base map's geometry unless the package has `[result] geometry`, when it
+  says "geometry changed, no 3D view" (the art manifest has no base
+  geometry hash to compare with yet, so any `geometry` counts as changed).
+
+Deviations from the design above:
+
+- The metadata is not a separate Postgres table: it is the event log (the
+  `events` table in Postgres, the file store otherwise), projected in
+  memory, like everything else the server keeps. Moderation and pins are
+  server-signed events, so they replay and are audited the same way.
+- A manifest is refused as "a whole retail map" when it has no layers at
+  all, not when it has no `[[patch]]`: a pack-only mod changes no bytes and
+  shares no retail data.
+- Hopper pins live beside the game's hopper file, keyed by the session's
+  `hopper_id`, since the binary file has no room for a `MapId`.
+- `coop` sessions are not held to the ranked rule (they are not hoppers).
+- Art option 2 (the patched map's own preview, read client-side) is not
+  built.
+- Joining writes `active.toml`: with one package per map name, that is how
+  the session's map is the one served, and it stays chosen afterwards.
+
+Not yet wired: the boot does not give the HLE a `MapGate` yet. It needs
+`Bases` over the disc's own maps (below the package layer, so a package
+cannot vouch for its own base) and `ServerOptions { maps: Some(..) }` in
+`boot::live_glue::install_with_network` (which uses `Hle::with_network`
+today). And `<data>/maps` is scanned once at mount, so a package downloaded
+while the game runs is served from the next boot, until the folder watch
+(§3) or a rescan hook on `vfs::PackageBackend` lands. A `--private`
+server's reads need a token, which the gate's fetches do not send yet.
+
 ## 6. Plan
 
 | Lane | Work | Depends on |
@@ -323,8 +420,7 @@ the speaker index fall back as for any file without one).
 and `H2_MAP_DIR` unset, the disc is mounted exactly as before
 (`Vfs::with_disc` / `with_disc_rewrite`, no wrapper).
 
-**Not yet:** applying content packs; the folder watch (§3); `MapId` in
-sessions (§5); SPPF and Serenity; caching the base's hash between runs
+**Not yet:** applying content packs; the folder watch (§3); SPPF and Serenity; caching the base's hash between runs
 (each session reads a patched map's base once, in full, on first use).
 
 ## 8. Saving packages from the editor

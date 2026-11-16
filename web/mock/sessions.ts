@@ -30,7 +30,7 @@ interface MockSession {
   advertisement: {
     addr: string | null; port: number; host_address: number[]; slots: Slots;
     attributes: Record<string, { type: string; value?: unknown }>;
-    flags: string; hopper_id: number | null; map: string | null; name: string | null; language: string | null;
+    flags: string; hopper_id: number | null; map: string | null; map_id?: string; name: string | null; language: string | null;
   };
   since: string;
   last_activity: number;
@@ -50,7 +50,8 @@ const hex = (n: number) => Array.from({ length: n }, () => Math.floor(rand() * 1
 export class Sessions {
   readonly all = new Map<string, MockSession>();
 
-  constructor(private world: World, private target = 5) {}
+  /** `custom` picks a custom map's package for a session (mock/content.ts). */
+  constructor(private world: World, private target = 5, private custom?: (key: string, map: string) => string | undefined) {}
 
   private open(): MockSession[] {
     return [...this.all.values()].filter((s) => s.state === "open");
@@ -87,6 +88,8 @@ export class Sessions {
       state: "open",
       players: { [host.xuid]: "public" },
     };
+    const custom = this.custom?.(id, s.advertisement.map!);
+    if (custom) s.advertisement.map_id = custom;
     this.all.set(id, s);
   }
 

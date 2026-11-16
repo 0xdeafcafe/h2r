@@ -112,6 +112,8 @@ pub struct Policy {
     /// The public base URL, when served through a tunnel or proxy
     /// (docs/live-hosting.md); set while running, shown in discovery.
     pub public: crate::public::PublicUrl,
+    /// Custom content: caps, quota and upload rate (docs/live-admin.md).
+    pub content: crate::content::ContentLimits,
 }
 
 impl Default for Policy {
@@ -128,6 +130,7 @@ impl Default for Policy {
             sweep_every: Duration::from_secs(5),
             admins: Vec::new(),
             public: Default::default(),
+            content: Default::default(),
         }
     }
 }
@@ -150,6 +153,10 @@ pub struct Live {
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
+    /// Custom maps and their content (docs/maps.md §5).
+    pub(crate) catalog: Arc<crate::content::Catalog>,
+    pub(crate) uploads: RateLimiter,
+    pub(crate) content_writes: tokio::sync::Mutex<()>,
     /// Unix seconds the service started.
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
@@ -194,7 +201,7 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-") {
+    if stream.starts_with("session-") || live_proto::maps::KINDS.contains(&kind) {
         return false;
     }
     if live_proto::team::Action::is_kind(kind) {
@@ -373,6 +380,8 @@ impl Live {
         dispatcher.subscribe(admins.clone());
         let invites = Arc::new(crate::invites::Invites::default());
         dispatcher.subscribe(invites.clone());
+        let catalog = Arc::new(crate::content::Catalog::default());
+        dispatcher.subscribe(catalog.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -395,6 +404,9 @@ impl Live {
             local_signin: Default::default(),
             relays: Default::default(),
             invites,
+            catalog,
+            uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
+            content_writes: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
             policy,

@@ -52,7 +52,10 @@ export interface GameState {
   console: string | null;
   /** Who started the game: `acct:<xuid>@<server>`, when the server said. */
   host: string | null;
+  /** The base map's name (a modded Lockout is "lockout"). */
   map: string;
+  /** The map package played, null for retail maps (lib/maps.ts). */
+  map_id: string | null;
   mode: string;
   /** `custom`, `matchmaking` or `campaign` when the game said; see `gameKind`. */
   kind: string | null;
@@ -227,6 +230,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         console: d.console ?? null,
         host: d.host ?? null,
         map: d.map,
+        map_id: mapId(d.map_id),
         mode: d.mode,
         ...kindFields(d),
         variant: d.variant ?? null,
@@ -310,6 +314,8 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+/** A map_id as sent: 64 hex, kept lower case; anything else is none. */
+const mapId = (v: unknown): string | null => (typeof v === "string" && /^[0-9a-f]{64}$/i.test(v) ? v.toLowerCase() : null);
 
 /** The optional game-type fields, read softly: wrong types become null. */
 function kindFields(d: GameKindFields) {
@@ -534,6 +540,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       console: det.console ?? null,
       host: det.host ?? null,
       map: d.map,
+      map_id: mapId(d.map_id),
       mode: d.mode,
       ...kindFields(d),
       variant: d.variant ?? null,
@@ -558,6 +565,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     s.gameOrder = insertByStart(s, d.game_id, d.started_at);
   } else {
     const k = kindFields(d);
+    g.map_id ??= mapId(d.map_id);
     g.kind ??= k.kind; g.playlist ??= k.playlist; g.playlist_id ??= k.playlist_id;
     g.difficulty ??= k.difficulty; g.online ??= k.online;
     if (det.team_play !== undefined) g.team_play = det.team_play;

@@ -2,7 +2,7 @@
 // page (/stats/clans/:id) with its roster, combined numbers from games its
 // members played together, and the signed-in member's actions.
 
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle } from "../state/maps";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -290,7 +290,7 @@ function TeamBody(props: { team: Team }) {
                   <For each={rec().games.slice(0, 15)} fallback={<tr><td colspan="6" class="s-dim">No games with two members on the same side yet.</td></tr>}>
                     {(g) => (
                       <tr>
-                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {mapTitle(g.game.map)}</A></td>
+                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {gameMapTitle(g.game)}</A></td>
                         <td class="hide-s">{g.game.status === "live" ? "playing now" : usDate(g.game.started_at)}</td>
                         <td>{g.slots.map((i) => g.game.players[i]?.name).filter(Boolean).join(", ")}</td>
                         <td class="num">{g.kills}</td>
@@ -313,7 +313,7 @@ function TeamBody(props: { team: Team }) {
                     <For each={rec().campaign.slice(0, 10)}>
                       {(g) => (
                         <tr>
-                          <td><A href={`/stats/games/${g.game_id}`}>{mapTitle(g.map)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
+                          <td><A href={`/stats/games/${g.game_id}`}>{gameMapTitle(g)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
                           <td class="hide-s">{g.status === "live" ? "playing now" : usDate(g.started_at)}</td>
                           <td>{fireteam(g)}</td>
                           <td>{g.status === "live" ? <span class="s-soc-live">Live</span> : OUTCOME_WORDS[campaignOutcome(g)]}</td>

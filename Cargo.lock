@@ -2848,6 +2848,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 name = "live-hle"
 version = "0.1.0"
 dependencies = [
+ "content",
  "flate2",
  "live-proto",
  "live-server",
@@ -2856,6 +2857,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "time",
+ "toml",
  "ureq",
  "url",
 ]
@@ -2865,6 +2867,7 @@ name = "live-proto"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "content",
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
@@ -2884,6 +2887,7 @@ dependencies = [
  "axum",
  "axum-server",
  "base64",
+ "content",
  "coop",
  "futures-util",
  "getrandom 0.3.4",

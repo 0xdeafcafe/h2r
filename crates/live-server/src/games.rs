@@ -102,6 +102,22 @@ fn random_game_id() -> String {
     sign::hex(&b)
 }
 
+/// Which map `GET /v1/games` keeps (docs/live-api.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GameFilter {
+    /// The map's name: games on the base map and every mod of it.
+    pub map: Option<String>,
+    /// `Some(None)`: only games with no `MapId`; `Some(Some(id))`: that map.
+    pub map_id: Option<Option<live_proto::maps::MapId>>,
+}
+
+impl GameFilter {
+    pub fn matches(&self, g: &live_proto::game::NewGame) -> bool {
+        self.map.as_ref().is_none_or(|m| g.map.eq_ignore_ascii_case(m))
+            && self.map_id.is_none_or(|id| g.map_id == id)
+    }
+}
+
 impl Live {
     /// The live game `id`, if `author` may write to it.
     fn writable_game(&self, id: &str, author: &Author) -> Result<Game, ApiError> {
@@ -293,11 +309,25 @@ impl Live {
         before: Option<u64>,
         limit: usize,
     ) -> Page<GameSummary> {
+        self.games_where(state, &GameFilter::default(), before, limit)
+    }
+
+    /// [`Live::games`] narrowed to one map: by name (`?map=`, every game on
+    /// it, modded or not) and by `MapId` (`?map_id=`: one exact map, or
+    /// `none` for games that name no `MapId`, the retail ones).
+    pub fn games_where(
+        &self,
+        state: Option<&str>,
+        filter: &GameFilter,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Page<GameSummary> {
         let position = self.position();
         let s = self.model.read();
         let page: Vec<&Game> = s
             .games_newest()
             .filter(|g| before.is_none_or(|b| g.position < b))
+            .filter(|g| filter.matches(&g.started.game))
             .filter(|g| match state {
                 Some("live") => g.ended.is_none(),
                 Some("ended") => g.ended.is_some(),

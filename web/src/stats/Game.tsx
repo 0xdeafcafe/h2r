@@ -1,4 +1,7 @@
+import { gameMapTitle, packageLookup } from "../state/maps";
 import { mapTitle } from "../state/gameart";
+import { identity } from "../state/identity";
+import { reportMap } from "../admin/content";
 import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js";
 import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
@@ -83,9 +86,9 @@ function Header(props: { game: GameState }) {
         <ul class="s-summary">
           <Show
             when={campaign()}
-            fallback={<li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {mapTitle(g().map)}</small></span></li>}
+            fallback={<li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {gameMapTitle(g())}</small></span></li>}
           >
-            <li class="first"><span>{mapTitle(g().map)}<small>{gameTitle(g())}</small></span></li>
+            <li class="first"><span>{gameMapTitle(g())}<small>{gameTitle(g())}</small></span></li>
           </Show>
           <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>
           <Show
@@ -94,6 +97,7 @@ function Header(props: { game: GameState }) {
           >
             <li class="styled">Difficulty - {difficultyName(g().difficulty) ?? "not reported"}</li>
           </Show>
+          <CustomMapLine game={g()} />
           <li title={g().ended_at ? `Ended ${agoWords(g().ended_at, now())}` : undefined}>{usDateTime(g().started_at)}</li>
           <li title={lengthNote(g(), now())}>Length: <span class="s-match-length">{hms(gameSeconds(g(), now()))}</span></li>
         </ul>
@@ -114,6 +118,41 @@ function Header(props: { game: GameState }) {
         </section>
       </div>
     </>
+  );
+}
+
+/** For a game on a custom map: who made it, on which base map, and a way
+ *  for a signed-in player to report it to the admins. */
+function CustomMapLine(props: { game: GameState }) {
+  const lookup = () => packageLookup(props.game.map_id);
+  const pkg = () => { const l = lookup(); return l?.state === "ok" ? l.map : null; };
+  const [said, setSaid] = createSignal("");
+  async function report(mapId: string) {
+    const me = identity.me(), wk = live.wellKnown();
+    if (!me || !wk) return;
+    const reason = typeof prompt === "function" ? prompt("Why should the admins look at this map?") : null;
+    if (reason === null || !reason.trim()) return;
+    try {
+      await reportMap(live.server().api, wk.id, me, mapId, reason);
+      setSaid("reported, thanks");
+    } catch (e) {
+      setSaid(`couldn't report: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return (
+    <Show when={props.game.map_id}>
+      {(id) => (
+        <li class="s-custom-map">
+          <Show when={pkg()} fallback={lookup()?.state === "gone" ? "Custom map, unavailable" : `Custom map on ${mapTitle(props.game.map)}`}>
+            {(m) => <>Custom map by {m().author.gamertag} on {mapTitle(m().base.map)}</>}
+          </Show>
+          <Show when={identity.me() && pkg() && !said()}>
+            {" "}<button type="button" class="s-linkish" onClick={() => void report(id())}>Report</button>
+          </Show>
+          <Show when={said()}> <small>({said()})</small></Show>
+        </li>
+      )}
+    </Show>
   );
 }
 
@@ -149,8 +188,8 @@ function GameView(props: { game: GameState }) {
       <Header game={props.game} />
       <Title right={<span class="s-viewer-status"><i />Live coverage</span>}>Game Viewer</Title>
       <div class="s-viewer">
-        <Block title="Tactical Map" right={`${mapTitle(props.game.map)}`} class="s-sec">
-          <TacticalMap game={props.game} frame={liveFrameSource(props.game.game_id, roster)} roster={roster} highlight={hover} label={`Live map of ${mapTitle(props.game.map)}`} />
+        <Block title="Tactical Map" right={`${gameMapTitle(props.game)}`} class="s-sec">
+          <TacticalMap game={props.game} frame={liveFrameSource(props.game.game_id, roster)} roster={roster} highlight={hover} label={`Live map of ${gameMapTitle(props.game)}`} />
           <Legend game={props.game} />
           <div class="s-live-clock"><span>Match in progress</span><b>{hms(elapsedSeconds(props.game, now()))}</b></div>
         </Block>
@@ -197,13 +236,13 @@ function Replay(props: { game: GameState }) {
       <Header game={props.game} />
       <Title right={<span class="s-viewer-status">Recorded replay</span>}>Game Viewer</Title>
       <div class="s-viewer">
-        <Block title="Tactical Map" right={mapTitle(props.game.map)} class="s-sec">
+        <Block title="Tactical Map" right={gameMapTitle(props.game)} class="s-sec">
           <Show when={!error()} fallback={<p class="s-pad s-bad">Couldn't load the replay: {error()}</p>}>
             <Show when={timeline()} fallback={<div class="s-loading">Loading recorded frames…</div>}>
               {(tl) => (
                 <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
                   <TacticalMap
-                    game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${mapTitle(props.game.map)}`}
+                    game={props.game} frame={session.frame} roster={roster} highlight={hover} label={`Replay of ${gameMapTitle(props.game)}`}
                     onKeyDown={onKey} keysLabel="Replay map. Space plays or pauses; arrow keys step five seconds."
                     soughtAt={session.soughtAt}
                     transport={() => <Transport session={session} killColour={killColour} />}

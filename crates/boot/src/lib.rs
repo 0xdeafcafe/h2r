@@ -553,6 +553,21 @@ pub fn run_hosted_with_live(
     k.set_vfs(v).context("attaching the VFS")?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
+    // Which map exactly (docs/maps.md §5): a package's MapId, None for the
+    // disc's own map. Games and advertisements carry it as `map_id`.
+    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        t.set_map_id_locator(Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, map)
+        }));
+    }
+    if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
+            let name = telemetry::loaded_map_name(g).ok()?;
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, &name)
+        })));
+    }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());

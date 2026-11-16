@@ -143,6 +143,7 @@ impl World {
             ServerOptions {
                 request_timeout: Duration::from_secs(2),
                 heartbeat_interval: Duration::from_secs(30),
+                ..Default::default()
             },
         )
         .unwrap();

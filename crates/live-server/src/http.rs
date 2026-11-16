@@ -42,6 +42,7 @@ impl IntoResponse for ApiError {
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::Conflict => StatusCode::CONFLICT,
+            ErrorCode::Gone => StatusCode::GONE,
             ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
@@ -153,6 +154,32 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(get_file).put(put_file),
         )
         .route("/v1/maps/{map}/outline", get(outline).put(put_outline))
+        .route("/v1/maps", get(crate::content::list_maps).put(crate::content::put_map))
+        .route("/v1/maps/{map}", get(crate::content::get_map))
+        .route("/v1/maps/{map}/image", get(crate::content::get_map_image))
+        .route("/v1/maps/{map}/report", post(crate::content::report_map))
+        .route(
+            "/v1/content/{sha256}/report",
+            post(crate::content::report_content),
+        )
+        .route("/v1/admin/content", get(crate::content::admin_content))
+        .route(
+            "/v1/admin/maps/{map}/{action}",
+            post(crate::content::moderate_map),
+        )
+        .route(
+            "/v1/admin/content/{sha256}/{action}",
+            post(crate::content::moderate_content),
+        )
+        .route(
+            "/v1/admin/uploads/{gamertag}",
+            axum::routing::put(crate::content::put_uploads),
+        )
+        .route("/v1/hoppers/pins", get(crate::content::get_pins))
+        .route(
+            "/v1/hoppers/{hopper}/pins",
+            axum::routing::put(crate::content::put_pins),
+        )
         .route(
             "/v1/titles/{title}/motd",
             get(crate::admin::get_motd).put(crate::admin::put_motd),
@@ -167,6 +194,13 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::admin::grant_admin).delete(crate::admin::revoke_admin),
         )
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
+    // Uploads stream to disk under their own caps (ContentLimits).
+    let uploads = Router::new()
+        .route(
+            "/v1/content/{sha256}",
+            get(crate::content::get_content).put(crate::content::put_content),
+        )
+        .layer(DefaultBodyLimit::disable());
     Router::new()
         .route("/healthz", get(healthz))
         .route("/.well-known/h2live.json", get(well_known))
@@ -225,6 +259,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             any(|| async { not_found("no such endpoint") }),
         )
         .merge(files)
+        .merge(uploads)
         .method_not_allowed_fallback(|| async {
             ApiError::new(ErrorCode::Invalid, "method not allowed here")
                 .into_response()
@@ -761,9 +796,20 @@ async fn list_games(
         Some(_) => return Err(invalid("state is live or ended")),
     };
     let before = (paging.after > 0).then_some(paging.after);
+    let filter = crate::games::GameFilter {
+        map: p.get("map").filter(|m| !m.is_empty()).cloned(),
+        map_id: match p.get("map_id").map(String::as_str) {
+            None | Some("") => None,
+            Some("none") => Some(None),
+            Some(id) => Some(Some(
+                id.parse()
+                    .map_err(|_| invalid("map_id is 64 hex digits or none"))?,
+            )),
+        },
+    };
     Ok(json(
         StatusCode::OK,
-        &live.games(state, before, paging.limit),
+        &live.games_where(state, &filter, before, paging.limit),
     ))
 }
 

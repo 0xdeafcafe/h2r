@@ -3,7 +3,7 @@
 // clan id, on a clan-coloured field) and presence words for friends. A clan
 // is the protocol's "team" (Xbox Live Teams), hence the type names.
 
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle } from "../state/maps";
 import { Show } from "solid-js";
 import Emblem from "../components/Emblem";
 import { live } from "../state/live";
@@ -42,7 +42,7 @@ export function presenceLine(f: Pick<FriendEntry, "xuid" | "presence">): string 
   const p = friendPresence(f);
   if (p.kind === "playing" && p.game_id) {
     const g = live.state.games[p.game_id];
-    if (g) return `playing ${mapTitle(g.map)}`;
+    if (g) return `playing ${gameMapTitle(g)}`;
   }
   return PRESENCE_WORDS[p.kind];
 }
