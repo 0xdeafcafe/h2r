@@ -46,6 +46,7 @@ pub struct File {
 pub struct Presence {
     pub state: String,
     pub game_id: Option<String>,
+    pub activity: Option<String>,
     pub since: String,
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
@@ -140,6 +141,13 @@ pub struct State {
     pub friends: HashMap<Xuid, Relations>,
     pub teams: live_proto::team::Store,
     pub sessions: BTreeMap<String, live_proto::session::Session>,
+    /// Co-op sessions' guests so far, in join order with the join time:
+    /// the live roster forgets a player who left. Dropped when the session
+    /// closes.
+    pub coop_joined: HashMap<String, Vec<(Xuid, String)>>,
+    /// Finished co-op games by the log position of the event that closed
+    /// the session (`GET /v1/coop/games`, newest first by that position).
+    pub coop_games: BTreeMap<u64, crate::sessions::CoopGame>,
     pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
@@ -254,6 +262,8 @@ struct PresenceData {
     state: Option<String>,
     #[serde(default)]
     game_id: Option<String>,
+    #[serde(default)]
+    activity: Option<String>,
 }
 
 fn data<T: DeserializeOwned>(e: &RecordedEvent) -> Option<T> {
@@ -490,6 +500,7 @@ impl Model {
                     Presence {
                         state,
                         game_id: d.game_id,
+                        activity: d.activity,
                         since,
                         last_seen: at,
                     },

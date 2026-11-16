@@ -32,6 +32,7 @@ export function PresenceBadge(props: { account: AccountState | undefined }) {
       <Show when={kind() === "playing" && props.account?.presence?.game_id} fallback={PRESENCE_LABEL[kind()]}>
         {(gid) => <A href={`/stats/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
       </Show>
+      <Show when={kind() !== "offline" && props.account?.presence?.activity}>{(a) => <span class="presence__activity"> ({a()})</span>}</Show>
     </span>
   );
 }

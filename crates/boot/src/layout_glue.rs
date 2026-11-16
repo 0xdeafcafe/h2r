@@ -815,7 +815,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                         match custom_games::extend_tag(&mut *mem, cpu.eax, live.0) {
                             Some(true) => {
                                 LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                eprintln!("custom games: xbox live menu tag has 5 panes and room for 5 rows");
+                                let panes = custom_games::extended_panes(custom_games::coop_row_enabled());
+                                eprintln!("custom games: xbox live menu tag has {panes} panes and room for 5 rows");
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1033,6 +1034,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, custom_games::row_kind);
+                // Any other Live menu row ends hosting a co-op campaign
+                // (crate::coop_live); no guest memory is held here.
+                if kind != custom_games::Row::Coop
+                    && let Some(lobby) = crate::coop_live::lobby()
+                {
+                    lobby.leave();
+                }
                 if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
@@ -1044,6 +1052,19 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 if kind == custom_games::Row::Download {
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
+                }
+                if kind == custom_games::Row::Coop {
+                    let screen = crate::coop_live::lobby().map(|l| l.open_from_menu());
+                    let Some(loader) = screen.and_then(crate::list_class::loader_of) else {
+                        eprintln!("coop-live: the co-op screens are off; nothing opened");
+                        return ctx.runtime().memory().ret(cpu, 8);
+                    };
+                    let note = if screen == Some(crate::coop_live::JOIN) {
+                        "coop-live: opening the join screen"
+                    } else {
+                        "coop-live: opening the co-op screen"
+                    };
+                    return open_screen(cpu, ctx, mask, loader, note);
                 }
                 if !custom_games::remember_row(&mut *ctx.runtime().memory()) {
                     eprintln!("custom games: the live menu's cursor row could not be set");
@@ -1136,7 +1157,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         for line in lines {
             eprintln!("{line}");
         }
-        let flow = Arc::new(crate::skulls_screen::PageFlow::default());
+        let (flow, line) = crate::skulls_screen::PageFlow::from_env();
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        let flow = Arc::new(flow);
         let class = crate::skulls_screen::class(Arc::clone(&screen), block, layout, picture, Arc::clone(&flow));
         match registry.add(&class) {
             Ok(true) => {}

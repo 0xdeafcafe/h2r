@@ -19,6 +19,7 @@ use crate::safe_out::OutDir;
 
 const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
        h2 h1 tags <iso|map> [map] [--group G]
+       h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips] [--force]
        h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
                      [--disc halo2.iso] [--dry-run] [--force]
 
@@ -27,13 +28,17 @@ map (a .map file, or a disc and a map name such as a30), its header, tag index
 and tag counts by group. tags: every tag, or one group's: ID, group, data
 range and name. See docs/formats/h1-map-format.md.
 
+bitmap: one bitm tag (its path, as `h2 h1 tags --group bitm` prints it):
+each image's format, type and size, decoded to PNGs in DIR (one per image,
+cube face and volume slice; every mip level with --mips). See
+docs/formats/h1-bitmaps.md.
+
 convert: a Halo 1 multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
 (manifest.toml and h1_<map>.map). --base picks the base (default per map,
 mostly beavercreek). --dry-run does everything but write and prints what it
-would write. Until the MOPP writer is merged no map is written. See
-docs/game/h1-multiplayer.md.";
+would write. See docs/game/h1-multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--force] [--dry-run]
 
@@ -56,6 +61,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match sub.as_str() {
         "info" => info(rest),
         "tags" => tags(rest),
+        "bitmap" => bitmap(rest),
         "convert" => convert(rest),
         "-h" | "--help" => {
             println!("{H1_USAGE}");
@@ -257,6 +263,115 @@ fn tags(args: &[String]) -> Result<()> {
             (None, _) => format!("@{:#010x}", t.data_address),
         };
         println!("{}  {}  {:<24} {}", t.id, t.group, data, t.name);
+    }
+    Ok(())
+}
+
+/// The arguments of `h1 bitmap`.
+#[derive(Debug, PartialEq)]
+pub struct BitmapArgs {
+    pub path: PathBuf,
+    pub map: Option<String>,
+    pub tag: String,
+    pub out: PathBuf,
+    pub mips: bool,
+    pub force: bool,
+}
+
+pub fn parse_bitmap(args: &[String]) -> Result<BitmapArgs, String> {
+    let (mut pos, mut out, mut mips, mut force) = (Vec::new(), None, false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out = Some(PathBuf::from(it.next().ok_or("--out needs a directory")?)),
+            "--mips" => mips = true,
+            "--force" => force = true,
+            s if s.starts_with("--") => return Err(format!("unknown option {s}")),
+            _ => pos.push(a.clone()),
+        }
+    }
+    let (path, map, tag) = match &pos[..] {
+        [p, t] => (p, None, t),
+        [p, m, t] => (p, Some(m.clone()), t),
+        [] | [_] => return Err("missing the disc or map, and the bitmap's tag path".into()),
+        _ => return Err(format!("unexpected argument {}", pos[3])),
+    };
+    Ok(BitmapArgs {
+        path: PathBuf::from(path),
+        map,
+        tag: tag.clone(),
+        out: out.ok_or("--out is needed")?,
+        mips,
+        force,
+    })
+}
+
+fn bitmap(args: &[String]) -> Result<()> {
+    use h1bitmaps::BitmapExt;
+    use h1map::bitmap::{BITM, Bitmap};
+    let a = parse_bitmap(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
+    let m = match open_source(&a.path, a.map.as_deref())? {
+        Source::Map(_, m) => m,
+        Source::Disc(..) => bail!("name a map on the disc, then the bitmap"),
+    };
+    let tag = m
+        .find(BITM, &a.tag)
+        .with_context(|| format!("no bitm {} (see h2 h1 tags --group bitm)", a.tag))?;
+    let bm = Bitmap::read(&m, tag)?;
+    let out = OutDir::new_strict(&a.out, a.force)?.protecting(&a.path);
+    let stem = h1models::short_name(&tag.name).replace(' ', "_");
+    println!(
+        "{}: {} image(s), {} sequence(s), usage {}",
+        tag.name,
+        bm.images.len(),
+        bm.sequences.len(),
+        bm.usage
+    );
+    for (i, img) in bm.images.iter().enumerate() {
+        println!(
+            "  #{i}: {:?} {:?} {}x{}x{}, {} mip(s) below, flags {:#x}, pixels {:#x}+{:#x}",
+            img.format,
+            img.kind,
+            img.width,
+            img.height,
+            img.depth,
+            img.mip_count,
+            img.flags,
+            img.pixel_offset,
+            img.pixel_size
+        );
+        let levels = match bm.decode_levels(&m, i) {
+            Ok(l) => l,
+            Err(e) => {
+                println!("     not decoded: {e}");
+                continue;
+            }
+        };
+        let faces = levels.iter().map(|l| l.face).max().unwrap_or(0) + 1;
+        for l in levels.iter().filter(|l| a.mips || l.level == 0) {
+            let slice = (l.width * l.height * 4) as usize;
+            for z in 0..l.depth as usize {
+                let mut name = format!("{stem}_img{i}");
+                if faces > 1 {
+                    name += &format!("_face{}", l.face);
+                }
+                if l.depth > 1 {
+                    name += &format!("_z{z}");
+                }
+                if a.mips {
+                    name += &format!("_mip{}", l.level);
+                }
+                let mut png = Vec::new();
+                assets::png::write_rgba(
+                    &mut png,
+                    l.width,
+                    l.height,
+                    &l.rgba[z * slice..(z + 1) * slice],
+                )?;
+                let p = out.write(&[name + ".png"], &png)?;
+                println!("     {}", p.display());
+            }
+        }
     }
     Ok(())
 }
@@ -631,6 +746,35 @@ mod tests {
         assert!(parse_convert(&s(&["x.map", "--out"])).is_err());
         assert!(parse_convert(&s(&["--dry-run"])).is_err());
         assert!(parse_convert(&s(&["a", "b", "c", "--dry-run"])).is_err());
+    }
+
+    #[test]
+    fn parses_bitmap_arguments() {
+        let a = parse_bitmap(&s(&[
+            "h1.iso",
+            "a30",
+            "levels\\a30\\a30_a",
+            "--out",
+            "o",
+            "--mips",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (a.map.as_deref(), a.tag.as_str(), a.mips, a.force),
+            (Some("a30"), "levels\\a30\\a30_a", true, false)
+        );
+        let a = parse_bitmap(&s(&["x.map", "t", "--out", "o", "--force"])).unwrap();
+        assert_eq!((a.map, a.tag.as_str(), a.force), (None, "t", true));
+        assert!(
+            parse_bitmap(&s(&["x.map", "t"])).is_err(),
+            "--out is needed"
+        );
+        assert!(
+            parse_bitmap(&s(&["x.map", "--out", "o"])).is_err(),
+            "a tag is needed"
+        );
+        assert!(parse_bitmap(&s(&["a", "b", "c", "d", "--out", "o"])).is_err());
+        assert!(parse_bitmap(&s(&["a", "b", "--out", "o", "--bogus"])).is_err());
     }
 
     #[test]

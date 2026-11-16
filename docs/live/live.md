@@ -1270,7 +1270,8 @@ Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
 **The prompt** (`crates/boot/src/signin_screen.rs`) is our own list class
 (`list_class`) with one row and a description, on the Controls layout. The
 d-pad types the code (up and down change the digit, left and right move;
-buttons 8 to 11 in the event's button word), A on the row or Start checks
+direction events, kinds 1 to 4, from the d-pad or the left stick, as
+`skulls-arrows` read the controller update), A on the row or Start checks
 it, B backs out and closes. The text is served from guest buffers under our
 string ids; each change goes into the other buffer of a pair, and the row
 text (`Rows::live_text`) writes it and sets the description again. The
@@ -1286,7 +1287,7 @@ reads the accounts (`0x0018fc44`) and opens the account picker with loader
 `0x0024b4a9`; the logon is the picker's. Not established without a run:
 that the picker polls `XOnlineTaskContinue` each frame while signing in,
 that a screen opened from inside that call draws on top and takes input,
-that the d-pad reaches a screen's event handler as buttons 8 to 11, that a
+that our screen's event hook sees the direction kinds before the list does, that a
 list's row text runs every frame (so a finished check shows without a
 press), and what the game shows for `INVALID_USER` after a cancel.
 
@@ -1314,8 +1315,9 @@ made on that server's web dashboard and none on this machine):
    sign-in", the row reading "Sign in as <tag>", the description the code
    page. If the description is off-screen, move it with
    `H2_SIGNIN_TEXT_RECT`.
-4. D-pad: each press logs `signin prompt: button N (Some(Up))` and so on,
-   and the digits change. Note the numbers if they are not 8 to 11.
+4. D-pad: each press logs `signin prompt: event K, button N (Some(Up))`
+   and so on (K 1 to 4), and the digits change.
+
 5. A wrong code: "Wrong code. 4 tries left." appears without another press.
 6. The right code: "Signed in. A: done"; A closes the prompt and the game
    finishes signing in; `play-accounts.json` and `accounts.json` hold the

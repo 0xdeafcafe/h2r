@@ -8,12 +8,14 @@
 //! - [`packages`]: the map packages under a data root, Halo 1
 //!   conversions among them.
 //! - [`halo1`]: Halo 1 maps, read-only (a disc or a folder).
+//! - [`halo1_art`]: a Halo 1 map's base maps and lightmap pages.
 //! - [`Status`]: a status-line message.
 //!
 //! Nothing here contains game data: map names and everything else come
 //! from the user's own disc at run time.
 
 pub mod halo1;
+pub mod halo1_art;
 pub mod packages;
 pub mod source;
 pub mod undo;

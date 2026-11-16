@@ -298,7 +298,7 @@ if it isn't, the inspector says `No Halo 1 overlay` (hover for why).
 **Looking at Halo 1 maps.** Open your Halo 1 disc image or a folder of
 Halo 1 maps with **Open...** (or start with `--halo1`), and its maps are
 listed under **Halo 1** with an eye. Click one to look at it: its level
-(in plain grey: Halo 1 textures can't be shown yet) and its multiplayer
+(textured and lit by its own lightmaps, without its sky or scenery) and its multiplayer
 spawn points, flags, weapon spawns and vehicles, which you can select to
 see their details. These maps are read only (the outliner says `Halo 1:
 read only`): nothing can be moved or saved.
@@ -320,11 +320,10 @@ Halo 2 map:
    example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
 
 If it can't convert, the inspector says `Not converted` and why, and the
-log says the same. For now every conversion stops with `Conversion isn't
-available yet: the collision builder (the MOPP writer) hasn't landed, so
-no map was written.`: the part that makes the level solid isn't finished.
+log says the same: for example `This level has 70,000 surfaces; Halo 2
+holds at most 65,536, so it can't be converted.`
 
-![Halo 1's Blood Gulch, read only: the plain grey canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
+![Halo 1's Blood Gulch, read only: the textured, lit canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
 
 ## 5. Game variants
 

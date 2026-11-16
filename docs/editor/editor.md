@@ -150,8 +150,40 @@ placements (starting locations, netgame flags, netgame equipment,
 vehicles), each with its fields as text. The studio shows them as a
 `scenario_edit::Reference`: the session's world and markers with no
 scenario, so the viewport, picking and framing are the same and nothing
-can be edited. The BSP is slope-shaded: `h1map` has no Halo 1 bitmap
-decoder yet.
+can be edited.
+
+The BSP is drawn textured and lightmapped through the same scene and
+renderer as Halo 2's (`editor_core::halo1_art`, then
+`scenario_edit::scene::reference_scene`):
+
+- **Base maps.** Each lightmap material's shader names its base map at
+  a place that depends on its group, past the 0x28-byte `shdr` header:
+  `senv` +0x88 (flags +0x28, bit 0 alpha-tested: cut out), `soso`
+  +0xa4, `swat` and `smet` +0x4c, `sgla` +0xac (else +0x158), `spla`
+  +0xd4, and the first map of a maps block at +0x54 for `schi` (0xdc
+  each, map at +0x6c) and `sotr`, Xbox's generic transparent shader
+  (0x64 each, map at +0x1c); `scex` is read as `schi` but no
+  multiplayer map has one. Every tag of those groups on five maps
+  resolves a `bitm` there. The base map is the bitmap's first image,
+  decoded by `h1bitmaps` at the first mip no larger than 512. Every
+  group but `senv` and `soso` is drawn see-through.
+- **Lightmaps.** `h1bitmaps::lightmap_pages` gives each lightmap's page
+  (R5G6B5, no palette); a material with lightmap vertices draws with
+  that page at its page-relative coordinates, as a Halo 2 lightmap is
+  (base map × lightmap × 2 in gamma space). The rest (sky, unlit
+  surfaces) keep the sun.
+- **Winding.** Halo 1's surfaces turn the other way from the
+  renderer's front faces; each triangle is turned to face its vertex
+  normals.
+- `editor_core::halo1_art::tests::disc_multiplayer_maps_are_textured_and_lightmapped`
+  (ignored; needs the Halo 1 disc) checks all 13 multiplayer maps: at
+  least 90 % of each map's shaders textured (all but four shaders over
+  the 13: three glass shaders and a monitor glow name no base map) and
+  some parts lit.
+
+Not drawn yet: the sky and scenery models, detail and bump maps, and
+`senv`'s blended types (the base map's alpha blends two detail maps,
+which shows as dark patches on Sidewinder's snow, for example).
 
 **Convert to Halo 2** (`app/convert.rs`). The inspector of a Halo 1 map
 offers the sandbox (Halo 2, or Halo 1, whose `Error::Halo1Sandbox` is
@@ -167,12 +199,12 @@ manifest, keeping the other sandbox's `[[variant]]` from a manifest
 already there (no manifest text is made here). Each frame `poll_convert`
 picks up the result: the Maps list is re-read and the new variant opened
 (`OpenPackageEntry`, guarded as usual), or the error is logged and shown
-under the button in plain words (`explain`: `MoppNotMerged` is "Conversion
-isn't available yet: the collision builder ... hasn't landed"). The
-converter is a function pointer (`App::set_converter`) so the tests run
-the whole flow with a stub; `disc_bloodgulch_converts_or_waits_for_the_mopp_writer`
-(ignored) runs the real one on the owner's discs and accepts a map or
-`MoppNotMerged`.
+under the button in plain words (`explain`: `TooManySurfaces(n)` is
+"This level has n surfaces; Halo 2 holds at most 65,536", any other error
+its own text). The converter is a function pointer
+(`App::set_converter`) so the tests run the whole flow with a stub;
+`disc_maps_convert_open_and_find_their_source` (ignored) runs the real
+one on the owner's discs, end to end.
 
 **The Halo 1 overlay.** Opening a converted variant looks for its
 `[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks

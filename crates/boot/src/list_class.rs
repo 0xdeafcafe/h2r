@@ -51,13 +51,38 @@ pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
 /// B or Back and hands anything else to the children).
 pub const SCREEN_EVENT_SLOT: u32 = 10;
 /// An event's kind word (`+0`) for a button, and its button (`+8`): the
-/// generic handler takes 1 (B) and 13 (Back); 12 is Start in the same
-/// order (A, B, X, Y, black, white, triggers, d-pad, Start, Back).
+/// generic handler takes 1 (B) and 13 (Back); the squad settings screen
+/// opens a dialog on 2 (X, `0x2bbed1`); 12 is Start in the same order (A,
+/// B, X, Y, black, white, triggers, d-pad, Start, Back).
 pub const BUTTON_EVENT: u32 = 5;
+pub const X_BUTTON: u32 = 2;
 pub const START_BUTTON: u32 = 12;
+/// The buttons that run a class's action.
+pub const ACTION_BUTTONS: [u32; 2] = [X_BUTTON, START_BUTTON];
+/// The direction events' kind words: the controller update (`0x1907d6`,
+/// through `0x190a3d`) raises 1 up, 2 left, 3 down and 4 right, from the
+/// d-pad (button word 8 to 11) or the left stick past `0x7332` (button word
+/// 16), first when pushed and then every 250 ms while held. The list
+/// handler (`0x24c024`) moves its focus on 1 and 3 and hands 2 and 4 on.
+/// Buttons (kind 5) are raised only on the frame a button goes down
+/// (its held count is 1); holding one raises nothing more.
+pub const UP_EVENT: u32 = 1;
+pub const LEFT_EVENT: u32 = 2;
+pub const DOWN_EVENT: u32 = 3;
+pub const RIGHT_EVENT: u32 = 4;
+/// Screen vtable slot 0: the destructor (thiscall, a flags word, `ret 4`),
+/// which the stack calls when a closed screen's out transition ends, just
+/// before it frees the memory (`0x235233`).
+pub const SCREEN_DESTRUCTOR_SLOT: u32 = 0;
+
+/// Told when a screen of the class is destroyed, with its address: async,
+/// as an [`Action`] is, and may call the guest (the stack is freeing the
+/// screen; its memory is still there).
+pub type OnFree = Action;
 
 /// A step of a screen's own, run on a press of a row whose press is
-/// [`Chosen::Act`] or on the Start button: async, given the screen.
+/// [`Chosen::Act`] or on X or Start ([`ACTION_BUTTONS`]): async, given the
+/// screen.
 pub type Action = Arc<
     dyn Fn(
             Cx,
@@ -76,8 +101,11 @@ pub struct Entries {
     pub row_chosen: u32,
     pub setup_pane: u32,
     pub loader_slot: u32,
-    /// Screen slot 10 of ours (a class with an action), else 0.
+    /// Screen slot 10 of ours (a class with an action or a sideways step),
+    /// else 0.
     pub event: u32,
+    /// Screen slot 0 of ours (a class told of frees), else 0.
+    pub destructor: u32,
     /// Our copy of the Controls screen vtable, then of the list's.
     pub screen_vtable: u32,
     pub list_vtable: u32,
@@ -111,6 +139,18 @@ pub trait Rows: Send + Sync {
     fn live_text(&self) -> LiveText {
         LiveText::default()
     }
+    /// Left (`right` false) or right on row `row`, for a class with
+    /// sideways steps ([`ListClass::sideways`]): what to log, `None` when
+    /// the row has nothing to step.
+    fn sideways(&self, _row: i16, _right: bool) -> Option<String> {
+        None
+    }
+    /// Writes the texts that change at run time (`crate::coop_live`'s) into
+    /// guest memory, before a row's texts are set and when the screen
+    /// opens. Most screens' texts are written once at install.
+    fn write_texts(&self, _m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        Ok(())
+    }
 }
 
 /// See [`Rows::live_text`].
@@ -120,7 +160,7 @@ pub struct LiveText {
     pub redraw: bool,
 }
 
-/// What a class's own button handler did with a button ([`ListClass::buttons`]).
+/// What a class's own event hook did with an event ([`ListClass::buttons`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     /// Taken: the screen's children never see it.
@@ -129,9 +169,11 @@ pub enum Button {
     Pass,
 }
 
-/// A class's own handling of button events (the event's button word),
-/// asked before the Start action and the Controls handler.
-pub type Buttons = Arc<dyn Fn(u32) -> Button + Send + Sync>;
+/// A class's own handling of every event, given its kind word and button
+/// word ([`BUTTON_EVENT`] with a button, or a direction: [`UP_EVENT`],
+/// [`LEFT_EVENT`], [`DOWN_EVENT`], [`RIGHT_EVENT`]), asked before the
+/// action, the sideways steps and the Controls handler.
+pub type Buttons = Arc<dyn Fn(u32, u32) -> Button + Send + Sync>;
 
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
 /// (docs/formats/ui.md "Bitmap block") and placed with its top-left at `at`. The
@@ -583,6 +625,8 @@ pub struct ListClass {
     layout: Option<ListLayout>,
     action: Option<Action>,
     buttons: Option<Buttons>,
+    sideways: bool,
+    on_free: Option<OnFree>,
     loader: Arc<AtomicU32>,
 }
 
@@ -602,6 +646,8 @@ impl ListClass {
             layout: None,
             action: None,
             buttons: None,
+            sideways: false,
+            on_free: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -622,7 +668,7 @@ impl ListClass {
         self
     }
     /// With an action: what a row whose press is [`Chosen::Act`] runs, and
-    /// the Start button too.
+    /// X and Start ([`ACTION_BUTTONS`]) too.
     pub fn action(mut self, action: Action) -> Self {
         self.action = Some(action);
         self
@@ -631,6 +677,18 @@ impl ListClass {
     /// slot 10): the sign-in prompt's d-pad digits.
     pub fn buttons(mut self, buttons: Buttons) -> Self {
         self.buttons = Some(buttons);
+        self
+    }
+    /// With sideways steps: left and right on the focused row go to
+    /// [`Rows::sideways`] (the Controls list does nothing with them).
+    pub fn sideways(mut self) -> Self {
+        self.sideways = true;
+        self
+    }
+    /// Told when a screen of the class is destroyed (after the Controls
+    /// destructor has run, before the stack frees it).
+    pub fn on_free(mut self, f: OnFree) -> Self {
+        self.on_free = Some(f);
         self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
@@ -664,6 +722,9 @@ pub fn write_vtables(m: &mut dyn GuestMemory, e: &Entries) -> Result<(), MemFaul
     m.set_u32(e.list_vtable + 4 * list_slot::ROW_TEXT, e.row_text)?;
     if e.event != 0 {
         m.set_u32(e.screen_vtable + 4 * SCREEN_EVENT_SLOT, e.event)?;
+    }
+    if e.destructor != 0 {
+        m.set_u32(e.screen_vtable + 4 * SCREEN_DESTRUCTOR_SLOT, e.destructor)?;
     }
     Ok(())
 }
@@ -745,7 +806,9 @@ pub async fn load(
     name: &'static str,
 ) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
-    let rows = rows.count();
+    let count = rows.count();
+    cx.write(|m| rows.write_texts(m))?;
+    let rows = count;
     let request = cx.arg(0)?;
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -862,6 +925,7 @@ pub async fn row_text(
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
+    cx.write(|m| rows.write_texts(m))?;
     draw_texts(&cx, item, texts).await?;
     if let Some(shown) = shown {
         let list = cx.entry().ecx;
@@ -928,36 +992,64 @@ pub async fn row_chosen(
     Ok(Ret::new(0, 8))
 }
 
-/// Screen slot 10 of a class with an action or buttons of its own: the
-/// class's buttons first ([`Button::Handled`]: AL 1), then the Start button
-/// runs the action (AL 1, handled); every other event goes to `original`,
-/// the Controls class's handler. Thiscall, the event, `ret 4`.
+/// Screen slot 10 of a class with an action, sideways steps or an event
+/// hook of its own: the hook first ([`Button::Handled`]: AL 1), then X or
+/// Start runs the action, and left or right ([`LEFT_EVENT`],
+/// [`RIGHT_EVENT`]) on the focused row its [`Rows::sideways`] (AL 1,
+/// handled); every other event goes to `original`, the Controls class's
+/// handler. Thiscall, the event, `ret 4`.
 pub async fn event(
     cx: Cx,
     original: u32,
     action: Option<Action>,
     buttons: Option<Buttons>,
+    sideways: Option<Arc<dyn Rows>>,
 ) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
     let (kind, button) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
-    if kind == BUTTON_EVENT
-        && let Some(buttons) = &buttons
-        && buttons(button) == Button::Handled
+    if let Some(buttons) = &buttons
+        && buttons(kind, button) == Button::Handled
     {
         return Ok(Ret::new(1, 4));
     }
-    if kind == BUTTON_EVENT
-        && button == START_BUTTON
-        && let Some(action) = action
+    if let Some(action) = action
+        && kind == BUTTON_EVENT
+        && ACTION_BUTTONS.contains(&button)
     {
         action(cx.clone(), screen).await?;
         return Ok(Ret::new(1, 4));
     }
+    if let Some(rows) = sideways
+        && (kind == LEFT_EVENT || kind == RIGHT_EVENT)
+    {
+        let focused = cx
+            .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(screen.wrapping_add(ui::LIST)))
+            .await?
+            .eax;
+        let row = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
+        // The rows write the store with no guest memory held.
+        if let Some(line) = row.and_then(|r| rows.sideways(r, kind == RIGHT_EVENT)) {
+            eprintln!("{line}");
+            return Ok(Ret::new(1, 4));
+        }
+    }
     let r = cx
         .call(GuestCall::new(original).ecx(screen).args([ev]))
         .await?;
+    Ok(Ret::new(r.eax, 4))
+}
+
+/// Screen slot 0 of a class told of frees: the Controls destructor
+/// (`original`), then `on_free` with the screen. Thiscall, flags, `ret 4`.
+pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, EntryError> {
+    let screen = cx.entry().ecx;
+    let flags = cx.arg(0)?;
+    let r = cx
+        .call(GuestCall::new(original).ecx(screen).args([flags]))
+        .await?;
+    on_free(cx.clone(), screen).await?;
     Ok(Ret::new(r.eax, 4))
 }
 
@@ -1118,16 +1210,32 @@ impl feature::Feature for ListClass {
         };
         // The Controls class's event handler, read from its vtable when
         // first needed (the class's own slot replaces it in our copy).
-        let event_at = match (self.action.clone(), self.buttons.clone()) {
-            (None, None) => 0,
-            (action, buttons) => b.entry("event", move |cx| -> EntryFuture {
-                let (action, buttons) = (action.clone(), buttons.clone());
+        let sideways = self.sideways.then(|| Arc::clone(&rows));
+        let event_at = if self.action.is_some() || sideways.is_some() || self.buttons.is_some() {
+            let (action, buttons) = (self.action.clone(), self.buttons.clone());
+            b.entry("event", move |cx| -> EntryFuture {
+                let (action, buttons, sideways) =
+                    (action.clone(), buttons.clone(), sideways.clone());
                 Box::pin(async move {
                     let original =
                         cx.read(|m| ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_EVENT_SLOT))?;
-                    event(cx, original, action, buttons).await
+                    event(cx, original, action, buttons, sideways).await
+                })
+            })?
+        } else {
+            0
+        };
+        let destructor_at = match self.on_free.clone() {
+            Some(on_free) => b.entry("destructor", move |cx| -> EntryFuture {
+                let on_free = Arc::clone(&on_free);
+                Box::pin(async move {
+                    let original = cx.read(|m| {
+                        ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_DESTRUCTOR_SLOT)
+                    })?;
+                    destructor(cx, original, on_free).await
                 })
             })?,
+            None => 0,
         };
 
         let description = self
@@ -1153,6 +1261,7 @@ impl feature::Feature for ListClass {
             setup_pane: setup_pane_at,
             loader_slot,
             event: event_at,
+            destructor: destructor_at,
             screen_vtable: tables,
             list_vtable: tables + 4 * screen_slot::COUNT,
         };
@@ -1195,6 +1304,7 @@ mod tests {
             setup_pane: 0xa0f0_0030,
             loader_slot: 0xa0f0_0040,
             event: 0,
+            destructor: 0,
             screen_vtable: TABLES,
             list_vtable: TABLES + 0x70,
         }
@@ -2193,7 +2303,7 @@ mod tests {
     /// Slot 10 of a class with an action: Start runs it and is handled;
     /// anything else goes to the Controls handler.
     #[test]
-    fn the_start_button_runs_the_action_and_the_rest_go_to_the_original() {
+    fn x_and_start_run_the_action_and_the_rest_go_to_the_original() {
         const EVENT: u32 = 0x0061_0000;
         let ran = Arc::new(AtomicU32::new(0));
         let run_with = |button: u32| {
@@ -2207,7 +2317,7 @@ mod tests {
                 Box::pin(async { Ok(()) })
             });
             let f = move |cx| -> EntryFuture {
-                Box::pin(event(cx, 0x2300ea, Some(Arc::clone(&action)), None))
+                Box::pin(event(cx, 0x2300ea, Some(Arc::clone(&action)), None, None))
             };
             let regs = Regs {
                 esp: STACK,
@@ -2219,38 +2329,48 @@ mod tests {
                 ..Default::default()
             })
         };
-        let run = run_with(START_BUTTON);
-        assert_eq!(run.result, Ok(Ret::new(1, 4)));
-        assert_eq!(run.calls, []);
-        assert_eq!(ran.swap(0, Ordering::SeqCst), SCREEN);
+        for button in [START_BUTTON, X_BUTTON] {
+            let run = run_with(button);
+            assert_eq!(run.result, Ok(Ret::new(1, 4)), "button {button}");
+            assert_eq!(run.calls, []);
+            assert_eq!(ran.swap(0, Ordering::SeqCst), SCREEN, "button {button}");
+        }
         let run = run_with(1);
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
         assert_eq!(run.result, Ok(Ret::new(7, 4)));
         assert_eq!(ran.load(Ordering::SeqCst), 0, "B is not Start");
     }
 
-    /// A class's own buttons come first: a handled one stops there, a
-    /// passed one goes on to the Controls handler (B still closes).
+    /// A class's own event hook comes first: a handled event stops there
+    /// (before the sideways steps and the list), a passed one goes on to
+    /// the Controls handler (B still closes).
     #[test]
-    fn a_class_s_own_buttons_are_asked_first() {
+    fn a_class_s_own_event_hook_is_asked_first() {
         const EVENT: u32 = 0x0061_0000;
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let run_with = |button: u32| {
+        let run_with = |kind: u32, button: u32| {
             let mut g = guest();
             g.map(EVENT, 0x10);
-            g.put_u32(EVENT, BUTTON_EVENT).put_u32(EVENT + 8, button);
+            g.put_u32(EVENT, kind).put_u32(EVENT + 8, button);
             g.put_u32(STACK + 4, EVENT);
             let seen = Arc::clone(&seen);
-            let buttons: Buttons = Arc::new(move |b| {
-                seen.lock().unwrap().push(b);
-                if b == 8 {
+            let buttons: Buttons = Arc::new(move |k, b| {
+                seen.lock().unwrap().push((k, b));
+                if k == LEFT_EVENT {
                     Button::Handled
                 } else {
                     Button::Pass
                 }
             });
+            let sideways: Arc<dyn Rows> = Arc::new(Stepping::default());
             let f = move |cx| -> EntryFuture {
-                Box::pin(event(cx, 0x2300ea, None, Some(Arc::clone(&buttons))))
+                Box::pin(event(
+                    cx,
+                    0x2300ea,
+                    None,
+                    Some(Arc::clone(&buttons)),
+                    Some(Arc::clone(&sideways)),
+                ))
             };
             let regs = Regs {
                 esp: STACK,
@@ -2262,14 +2382,110 @@ mod tests {
                 ..Default::default()
             })
         };
-        let run = run_with(8);
+        let run = run_with(LEFT_EVENT, 10);
         assert_eq!(run.result, Ok(Ret::new(1, 4)));
-        assert_eq!(run.calls, [], "handled: the list never sees it");
-        let run = run_with(1);
+        assert_eq!(
+            run.calls,
+            [],
+            "handled: no focus asked, the list never sees it"
+        );
+        let run = run_with(BUTTON_EVENT, 1);
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
-        let run = run_with(START_BUTTON);
+        let run = run_with(BUTTON_EVENT, START_BUTTON);
         assert_eq!(run.calls.len(), 1, "no action: Start goes on too");
-        assert_eq!(*seen.lock().unwrap(), [8, 1, START_BUTTON]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (LEFT_EVENT, 10),
+                (BUTTON_EVENT, 1),
+                (BUTTON_EVENT, START_BUTTON)
+            ]
+        );
+    }
+
+    /// Rows that step sideways: what they were asked, and a line for rows
+    /// 0 to 2.
+    #[derive(Default)]
+    struct Stepping(Mutex<Vec<(i16, bool)>>);
+    impl Rows for Stepping {
+        fn title(&self) -> u32 {
+            0
+        }
+        fn count(&self) -> usize {
+            3
+        }
+        fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+            Vec::new()
+        }
+        fn press(&self, _: i16) -> Chosen {
+            Chosen::Nothing
+        }
+        fn sideways(&self, row: i16, right: bool) -> Option<String> {
+            self.0.lock().unwrap().push((row, right));
+            (0..3).contains(&row).then(|| format!("stepped {row}"))
+        }
+    }
+
+    /// Slot 10 of a class with sideways steps: left (kind 2) and right
+    /// (kind 4) ask the list's focused row (`0x24c447`, EAX the list) and
+    /// step it, handled; up, down, buttons and a row with nothing to step
+    /// go to the Controls handler. Without sideways steps they all do.
+    #[test]
+    fn left_and_right_step_the_focused_row() {
+        const EVENT: u32 = 0x0061_0000;
+        let run_with = |rows: &Arc<Stepping>, sideways: bool, kind: u32, focused: u32| {
+            let mut g = guest();
+            g.map(EVENT, 0x10);
+            g.put_u32(EVENT, kind).put_u32(EVENT + 8, 16);
+            g.put_u32(STACK + 4, EVENT);
+            let rows: Arc<dyn Rows> = Arc::clone(rows) as Arc<dyn Rows>;
+            let f = move |cx| -> EntryFuture {
+                let sideways = sideways.then(|| Arc::clone(&rows));
+                Box::pin(event(cx, 0x2300ea, None, None, sideways))
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: SCREEN,
+                ..Default::default()
+            };
+            testing::run(&f, g, regs, move |c, _| Regs {
+                eax: if c.target == points::LIST_FOCUSED_ROW.base {
+                    focused
+                } else {
+                    7
+                },
+                ..Default::default()
+            })
+        };
+        let focus = Gc::new(points::LIST_FOCUSED_ROW.base).eax(SCREEN + ui::LIST);
+        let original = Gc::new(0x2300ea).ecx(SCREEN).args([EVENT]);
+        let rows = Arc::new(Stepping::default());
+        // Row 2's datum handle (a salt in the top half).
+        let run = run_with(&rows, true, LEFT_EVENT, 0xe1a2_0002);
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
+        assert_eq!(run.calls, std::slice::from_ref(&focus));
+        let run = run_with(&rows, true, RIGHT_EVENT, 0xe1a2_0001);
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
+        assert_eq!(run.calls, std::slice::from_ref(&focus));
+        assert_eq!(*rows.0.lock().unwrap(), [(2, false), (1, true)]);
+        // A row with nothing to step, and no focus: the original's.
+        let run = run_with(&rows, true, RIGHT_EVENT, 0xe1a2_0005);
+        assert_eq!(run.calls, [focus.clone(), original.clone()]);
+        assert_eq!(run.result, Ok(Ret::new(7, 4)));
+        let run = run_with(&rows, true, LEFT_EVENT, u32::MAX);
+        assert_eq!(run.calls, [focus.clone(), original.clone()]);
+        rows.0.lock().unwrap().clear();
+        // Up, down and a button are the list's; a class without sideways
+        // steps leaves left and right to it too.
+        for kind in [1, 3, BUTTON_EVENT] {
+            let run = run_with(&rows, true, kind, 0xe1a2_0001);
+            assert_eq!(run.calls, std::slice::from_ref(&original), "kind {kind}");
+        }
+        for kind in [LEFT_EVENT, RIGHT_EVENT] {
+            let run = run_with(&rows, false, kind, 0xe1a2_0001);
+            assert_eq!(run.calls, std::slice::from_ref(&original), "kind {kind}");
+        }
+        assert!(rows.0.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -2288,5 +2504,52 @@ mod tests {
             Ok(0x5000 + SCREEN_EVENT_SLOT),
             "no action: the Controls handler"
         );
+    }
+
+    /// Slot 0 of a class told of frees: ours, and the Controls destructor
+    /// runs first, then the class hears of it with the screen.
+    #[test]
+    fn a_class_told_of_frees_gets_our_destructor() {
+        let mut g = guest();
+        let e = Entries {
+            destructor: 0xa0f0_0060,
+            ..entries()
+        };
+        write_vtables(&mut g, &e).unwrap();
+        assert_eq!(
+            ui::slot(&g, TABLES, SCREEN_DESTRUCTOR_SLOT),
+            Ok(0xa0f0_0060)
+        );
+        let mut g = guest();
+        write_vtables(&mut g, &entries()).unwrap();
+        assert_eq!(
+            ui::slot(&g, TABLES, SCREEN_DESTRUCTOR_SLOT),
+            Ok(0x5000 + SCREEN_DESTRUCTOR_SLOT),
+            "none: the Controls destructor"
+        );
+
+        let told = Arc::new(AtomicU32::new(0));
+        let mut g = guest();
+        g.put_u32(STACK + 4, 0);
+        let on_free: OnFree = {
+            let told = Arc::clone(&told);
+            Arc::new(move |_, screen| {
+                told.store(screen, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            })
+        };
+        let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, 0x1234, Arc::clone(&on_free))) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |_, _| Regs {
+            eax: SCREEN,
+            ..Default::default()
+        });
+        assert_eq!(run.calls, [Gc::new(0x1234).ecx(SCREEN).args([0])]);
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        assert_eq!(told.load(Ordering::SeqCst), SCREEN);
     }
 }

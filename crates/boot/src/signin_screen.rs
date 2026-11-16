@@ -66,15 +66,12 @@ pub const TITLE: &str = "Xbox Live sign-in";
 /// Bytes per served string buffer (UTF-8 and its NUL).
 pub const BUFFER: u32 = 0x200;
 
-/// Button words in a button event (`list_class::BUTTON_EVENT`): A, B, then
-/// the d-pad after the triggers, in the order the generic handler's
-/// Start (12) and Back (13) come after them.
+/// Button words in a button event (`list_class::BUTTON_EVENT`): A, B.
+/// Directions are not button events: the controller update raises them as
+/// event kinds 1 to 4 (`list_class::UP_EVENT` and on), from the d-pad or
+/// the left stick, again every 250 ms while held.
 pub const A_BUTTON: u32 = 0;
 pub const B_BUTTON: u32 = 1;
-pub const DPAD_UP: u32 = 8;
-pub const DPAD_DOWN: u32 = 9;
-pub const DPAD_LEFT: u32 = 10;
-pub const DPAD_RIGHT: u32 = 11;
 
 /// The description: the right half of the screen, the level select's
 /// description font and colour. `H2_SIGNIN_TEXT_RECT=top,left,bottom,right`
@@ -96,15 +93,16 @@ pub enum Press {
 }
 
 impl Press {
-    /// A button event's button word.
-    pub fn from_button(button: u32) -> Option<Press> {
-        Some(match button {
-            A_BUTTON => Press::A,
-            B_BUTTON => Press::B,
-            DPAD_UP => Press::Up,
-            DPAD_DOWN => Press::Down,
-            DPAD_LEFT => Press::Left,
-            DPAD_RIGHT => Press::Right,
+    /// An event's kind and button words: a direction (d-pad or stick), or
+    /// A or B.
+    pub fn from_event(kind: u32, button: u32) -> Option<Press> {
+        Some(match (kind, button) {
+            (list_class::UP_EVENT, _) => Press::Up,
+            (list_class::DOWN_EVENT, _) => Press::Down,
+            (list_class::LEFT_EVENT, _) => Press::Left,
+            (list_class::RIGHT_EVENT, _) => Press::Right,
+            (list_class::BUTTON_EVENT, A_BUTTON) => Press::A,
+            (list_class::BUTTON_EVENT, B_BUTTON) => Press::B,
             _ => return None,
         })
     }
@@ -420,15 +418,18 @@ pub fn string_at(base: u32, id: u32) -> Option<u32> {
 /// The class: one row, the description, our buttons, A as its action.
 pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
     let for_buttons = Arc::clone(&rows);
-    let buttons: Buttons = Arc::new(move |button| {
-        let press = Press::from_button(button);
-        eprintln!("signin prompt: button {button} ({press:?})");
+    let buttons: Buttons = Arc::new(move |kind, button| {
+        let press = Press::from_event(kind, button);
+        eprintln!("signin prompt: event {kind}, button {button} ({press:?})");
         match press {
+            // Every direction is ours: up and down change the digit rather
+            // than move the one-row list, left and right move the cursor.
             Some(p @ (Press::Up | Press::Down | Press::Left | Press::Right)) => {
                 for_buttons.press(p);
                 Button::Handled
             }
             // B closes the screen as on any screen; the HLE is told first.
+            // A goes on to the list, whose row press runs the action.
             Some(Press::B) => {
                 for_buttons.press(Press::B);
                 Button::Pass
@@ -687,10 +688,21 @@ mod tests {
 
     #[test]
     fn the_buttons_map_to_presses() {
-        assert_eq!(Press::from_button(DPAD_UP), Some(Press::Up));
-        assert_eq!(Press::from_button(DPAD_RIGHT), Some(Press::Right));
-        assert_eq!(Press::from_button(B_BUTTON), Some(Press::B));
-        assert_eq!(Press::from_button(list_class::START_BUTTON), None);
+        use list_class::{BUTTON_EVENT, DOWN_EVENT, LEFT_EVENT, RIGHT_EVENT, UP_EVENT};
+        // Directions by kind, whatever the button word (d-pad 8 to 11 or
+        // the stick's 16).
+        assert_eq!(Press::from_event(UP_EVENT, 8), Some(Press::Up));
+        assert_eq!(Press::from_event(DOWN_EVENT, 16), Some(Press::Down));
+        assert_eq!(Press::from_event(LEFT_EVENT, 10), Some(Press::Left));
+        assert_eq!(Press::from_event(RIGHT_EVENT, 11), Some(Press::Right));
+        assert_eq!(Press::from_event(BUTTON_EVENT, B_BUTTON), Some(Press::B));
+        assert_eq!(Press::from_event(BUTTON_EVENT, A_BUTTON), Some(Press::A));
+        // A d-pad button word in a button event is not a direction.
+        assert_eq!(Press::from_event(BUTTON_EVENT, 8), None);
+        assert_eq!(
+            Press::from_event(BUTTON_EVENT, list_class::START_BUTTON),
+            None
+        );
     }
 
     #[test]
