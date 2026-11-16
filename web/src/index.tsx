@@ -1,3 +1,4 @@
+import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import { Navigate, Route, Router, useParams } from "@solidjs/router";
 import "./styles/theme.css";
@@ -17,6 +18,9 @@ import Admin from "./admin/Admin";
 import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
+
+// The 3D view in a window of its own; three.js stays out of the main bundle.
+const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 live.start();
 startGameArt();
@@ -45,6 +49,7 @@ render(
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
+      <Route path="/stats/games/:id/3d" component={Viewer3DPage} />
       <Route path="/signin" component={SignIn} />
       <Route path="/games/:id" component={OldGame} />
       <Route path="/players/:tag" component={OldPlayer} />

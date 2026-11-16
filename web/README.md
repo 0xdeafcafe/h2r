@@ -34,8 +34,10 @@ default 20), `H2_MOCK_TAMPER=<n>` (corrupt every nth event's data so the
 app with SPA fallback, the way the Rust server will:
 `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`),
 `H2_MOCK_GAME_ART=1` (serve a stand-in `/art/game` manifest so the game-art
-path runs; see "Game art" below). Without it `/art/game` answers 404, like a
-server with no game art.
+path runs; see "Game art" below). Without it `/art/game` has no pictures,
+like a server with no game art. The mock's own map geometry (below) is served
+either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
+answers 404.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -161,6 +163,26 @@ medals and draws its own emblem masks, weapon masks, game-type glyphs and
 map postcards in the real encoding, so nothing from the game is needed to
 run or test this path. To look at a real server's art over the mock's
 world, point only that route at it: `H2_GAME_ART_URL=http://127.0.0.1:8074`.
+
+**Map geometry and the 3D view (optional, never shipped).** The same
+extraction can write, per map, a `map.glb`, a `views.json` and pre-drawn
+pictures of the level (top-down and four iso corners), named in the art
+manifest's `maps` table. When a map has them, the game page's Tactical Map
+lays players over the picture using the view's `world_to_pixel` matrix
+(`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
+and pan and zoom; without them it is the fitted grid as before. The "3D view"
+button opens the level in a window (`src/viewer/`): three.js, loaded as its
+own chunk only then, with a sun and soft shadows, ambient occlusion (turned
+off by itself on a machine that can't keep up), orbit, top-down and
+follow-a-player cameras, and a grid floor when the map has no geometry. The
+window can be dragged, resized, maximised, or popped out to
+`/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
+replay session (`src/viewer/session.ts`), and a popped-out window keeps in
+step with the page over a `BroadcastChannel`. `?view=3d` opens the window
+and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
+two arenas of its own from its invented floor plans (`mock/arena.ts`:
+slabs, ramps, pillars and cone trees, with a small rasteriser for the
+pictures); its third map has none, so the fallbacks run too.
 
 ## Architecture
 

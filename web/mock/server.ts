@@ -3,7 +3,11 @@
 // H2_MOCK_TAMPER=<n> corrupts every nth event's data to show bad signatures.
 // H2_MOCK_STATIC=<dir> also serves a built app (SPA fallback to index.html).
 // H2_MOCK_GAME_ART=1 serves a fake /art/game manifest (see mock/gameart.ts);
-// without it /art/game answers 404, like a server with no game art.
+// without it /art/game has no pictures, like a server with no game art.
+// The mock's own map geometry (mock/arena.ts: map.glb, views.json and view
+// pictures for the maps that have an arena) is served under /art/game either
+// way, in a manifest of its own when there is no game art;
+// H2_MOCK_MAP_GEOMETRY=0 turns it off, and then /art/game answers 404.
 
 import type { ServerWebSocket } from "bun";
 import type { Frame, WireEvent } from "../src/api/types";
@@ -12,6 +16,7 @@ import { createHash } from "node:crypto";
 import { openAccountRequest } from "./account";
 import { mockGameArt } from "./gameart";
 import { Social } from "./social";
+import { mockMapGeometry } from "./arena";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -28,6 +33,7 @@ world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
+const geometry = process.env.H2_MOCK_MAP_GEOMETRY === "0" ? null : mockMapGeometry();
 
 interface StreamData {
   kind: "stream";
@@ -234,8 +240,11 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   if (path.startsWith("/art/game/")) {
     const name = decodeURIComponent(path.slice("/art/game/".length));
-    if (art && name === "manifest.json") return json(art.manifest);
-    const f = art ? await art.file(name) : null;
+    if (name === "manifest.json" && (art || geometry)) {
+      const base = art?.manifest ?? { version: 1, source: "mock-geometry", images: {} };
+      return json(geometry ? { ...base, maps: geometry.maps } : base);
+    }
+    const f = geometry?.file(name) ?? (art ? await art.file(name) : null);
     return f
       ? new Response(f.bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": f.type, "cache-control": "max-age=3600", ...CORS } })
       : err(404, "not_found", "no game art");
