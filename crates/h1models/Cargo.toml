@@ -1,0 +1,13 @@
+[package]
+name = "h1models"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+map.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tags.workspace = true
