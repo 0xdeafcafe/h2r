@@ -685,6 +685,46 @@ fn preview_art(disc: &Disc, m: &MapFile, common: &BTreeSet<String>) -> Found {
     found
 }
 
+/// Campaign level-select pictures as `map/<stem>/preview`: the bitmap the
+/// main menu's level select shows for each level (`live_catalog`).
+fn campaign_previews(disc: &Disc) -> Found {
+    let mut found = Found::default();
+    let opened = disc
+        .maps_of(CacheType::MainMenu)
+        .next()
+        .context("no main menu map on the disc")
+        .and_then(|m| disc.open(m));
+    let (mut map, mut files) = match opened {
+        Ok(o) => o,
+        Err(e) => {
+            found.skip("map/campaign/preview", format!("{e:#}"));
+            return found;
+        }
+    };
+    let levels = match crate::live_catalog::read_campaign(&mut map) {
+        Ok(l) => l,
+        Err(e) => {
+            found.skip("map/campaign/preview", format!("{e:#}"));
+            return found;
+        }
+    };
+    for l in levels {
+        let Some(stem) = l.entry.key else { continue };
+        let key = format!("map/{stem}/preview");
+        match l.picture {
+            Some(id) => decode_tag(
+                &mut map,
+                &mut files,
+                map::TagId(id),
+                move |_| key.clone(),
+                &mut found,
+            ),
+            None => found.skip(key, "the level select has no picture for it"),
+        }
+    }
+    found
+}
+
 /// Medals and the palette from the fonts, in the engine's font-table
 /// order; each from the first font that has the full set.
 fn font_art(disc: &Disc) -> Found {
@@ -853,6 +893,7 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
             s.spawn(|| category_art(disc, CacheType::MainMenu)),
             s.spawn(|| category_art(disc, CacheType::Shared)),
             s.spawn(|| font_art(disc)),
+            s.spawn(|| campaign_previews(disc)),
         ];
         workers.extend(
             disc.maps_of(CacheType::Multiplayer)
@@ -1215,5 +1256,28 @@ mod tests {
         write_pieces(&pieces, &dir).unwrap();
         assert_eq!(fs::read(dir.join("medal/4.png")).unwrap(), first);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The campaign level-select pictures from the owner's disc, written
+    /// outside the repository (`$H2_PREVIEW_CHECK`, else the default below)
+    /// for review.
+    #[test]
+    #[ignore = "needs the disc (H2_DISC)"]
+    fn campaign_previews_from_the_disc() {
+        let path = std::env::var("H2_DISC").expect("H2_DISC");
+        let out = std::env::var("H2_PREVIEW_CHECK").unwrap_or_else(|_| {
+            "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry/previews"
+                .into()
+        });
+        let disc = Disc::scan(Path::new(&path)).unwrap();
+        let found = campaign_previews(&disc);
+        let _ = fs::remove_dir_all(&out);
+        write_pieces(&found.pieces, Path::new(&out)).unwrap();
+        for p in &found.pieces {
+            println!("{} {}x{}", p.key, p.width, p.height);
+        }
+        println!("skipped {:?}", found.skipped);
+        let campaign = disc.maps_of(CacheType::Campaign).count();
+        assert_eq!(found.pieces.len() + found.skipped.len(), campaign);
     }
 }
