@@ -251,6 +251,22 @@ points! { ALL;
     /// Queue new game options (EAX = the options; `+0` the mode, 1 a
     /// campaign). The menu's campaign start and level boot both end here.
     OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/skulls.md";
+    /// `render_frame_and_present`: renders the game views (or the fallback
+    /// screen) and presents. Once a frame, from the main loop.
+    RENDER_FRAME @ 0x0022_3240: [opaque]; "docs/engine-map.md";
+    /// `render_game_views`: builds the per-player view records and cameras,
+    /// then calls `render_views`.
+    RENDER_GAME_VIEWS @ 0x0022_34e0: [opaque]; "docs/engine-map.md";
+    /// `render_views`: begin-frame setup, the loop over view records, end of
+    /// drawing.
+    RENDER_VIEWS @ 0x0002_b5d0: [opaque]; "docs/engine-map.md";
+    /// `render_game_view`: one game view (camera, render state, scene
+    /// passes, UI composition).
+    RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine-map.md";
+    /// `render_scene_passes`: the scene pass sequence of one view.
+    RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/e3-lighting.md";
+    /// `render_light_passes`: draws one dynamic light's passes.
+    RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/e3-lighting.md";
     /// Open a screen: build a 0x20-byte request for the player mask and
     /// call `loader` with it (stdcall).
     OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";
