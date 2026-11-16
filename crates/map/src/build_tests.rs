@@ -321,6 +321,8 @@ fn a_pinned_tag_can_be_replaced_by_a_built_one_that_moves() {
         Block::new(bytes[descriptor_at..descriptor_at + 0x44].to_vec()),
     );
     scenario.string_id(0, "brand new");
+    // Larger than before, so it cannot go back into its old range.
+    scenario.data(0x30, Block::zeroed(0x100));
     let raw = set.add_raw(vec![9; 0x30], 0x1000);
     scenario.raw(4, RawRef::Local(raw));
     set.tag_mut(t.scenario).unwrap().payload = TagPayload::Built(scenario);
@@ -329,7 +331,7 @@ fn a_pinned_tag_can_be_replaced_by_a_built_one_that_moves() {
     map.validate_checksum().unwrap();
     let loc = map.tag(t.scenario).unwrap().location.unwrap();
     assert!(loc.address > old.address);
-    assert_eq!(loc.size, 0x3e0 + 0x44);
+    assert_eq!(loc.size, 0x3e0 + 0x44 + 0x100);
     let b = map.read_tag_bytes(t.scenario).unwrap();
     assert_eq!(map.strings()[6].as_deref(), Some("brand new"));
     assert_eq!(word(&b, 0), string_id(6, "brand new").unwrap());

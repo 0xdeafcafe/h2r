@@ -207,6 +207,14 @@ impl Block {
                 .map(Block::tree_len)
                 .sum::<u64>()
     }
+    /// Largest alignment in the tree.
+    fn max_align(&self) -> u32 {
+        self.fixups
+            .iter()
+            .filter_map(|f| f.kind.child())
+            .map(Block::max_align)
+            .fold(self.align, u32::max)
+    }
     fn visit<'a>(&'a self, f: &mut impl FnMut(&'a FixupKind)) {
         for fixup in &self.fixups {
             f(&fixup.kind);
@@ -292,9 +300,20 @@ pub struct RawBlob {
 pub struct PinnedImage {
     /// The source header; fields the builder owns are overwritten.
     pub header: Vec<u8>,
-    /// File bytes from `0x800` up to the first rebuilt table (raw data,
-    /// BSP regions, low-detail bitmaps, locale text).
+    /// File bytes from `0x800` up to the index: raw data, BSP regions,
+    /// low-detail bitmaps, locale text, and the old string/name tables.
     pub file: Vec<u8>,
+    /// Where the old tables were, as (file offset, byte length), in the
+    /// order fixed string slots, string offsets, string blob, name blob,
+    /// name offsets. A rebuilt table that fits goes back in its old place
+    /// (rest zeroed); one that grew goes after the prefix.
+    pub tables: [(u32, u32); 5],
+    /// The whole original index region (`+0x14` bytes). The builder rewrites
+    /// its header, groups and entries; the uninterpreted bytes after the
+    /// entries (retail maps have about 0x38000 nonzero bytes there) stay.
+    pub index: Vec<u8>,
+    /// End of the original tag entries in the index region.
+    pub index_entries_end: u32,
     /// Index size (`+0x14`): BSP regions load at `INDEX_VIRTUAL_BASE + this`.
     pub index_size: u32,
     /// Largest BSP region (`+0x1c - +0x14 - +0x18`).
@@ -337,6 +356,9 @@ pub struct TagSet {
     pub salt_base: u16,
     /// Verbatim parts of a decomposed map, if any.
     pub pinned: Option<PinnedImage>,
+    /// Place built tags first-fit into metadata no pinned bytes use (default).
+    /// When false, every built tag goes after the original region.
+    pub reuse_free_space: bool,
 }
 
 /// Where things went in a built map.
@@ -385,6 +407,7 @@ impl TagSet {
             bsps: Vec::new(),
             salt_base: 0xe174,
             pinned: None,
+            reuse_free_space: true,
         }
     }
     /// Declare a group and its ancestors (no-op if already declared).
@@ -475,19 +498,26 @@ impl TagSet {
         let space = map
             .metadata_space()
             .ok_or(Error::Invalid("map has no metadata region"))?;
-        let mut starts = vec![u64::from(h.index_offset)];
-        for t in [h.strings, h.tag_names] {
-            if t.count != 0 {
-                starts.push(t.index_offset.into());
-                starts.push(t.data_offset.into());
+        let prefix_end = u64::from(h.index_offset);
+        let tables = [
+            (
+                h.fixed_strings_offset,
+                h.strings.count * FIXED_STRING_SLOT as u32,
+            ),
+            (h.strings.index_offset, h.strings.count * 4),
+            (h.strings.data_offset, h.strings.data_size),
+            (h.tag_names.data_offset, h.tag_names.data_size),
+            (h.tag_names.index_offset, h.tag_names.count * 4),
+        ];
+        for (offset, len) in tables {
+            if len != 0
+                && (u64::from(offset) < HEADER as u64
+                    || u64::from(offset) + u64::from(len) > prefix_end)
+            {
+                return Err(Error::Unsupported(
+                    "string or name table outside the prefix".into(),
+                ));
             }
-        }
-        if h.strings.count != 0 && h.fixed_strings_offset != 0 {
-            starts.push(h.fixed_strings_offset.into());
-        }
-        let prefix_end = *starts.iter().min().expect("index offset");
-        if prefix_end < HEADER as u64 {
-            return Err(Error::Unsupported("table inside the header".into()));
         }
         let end = u64::from(h.index_offset) + u64::from(h.index_size) + u64::from(h.tag_data_size);
         if end != u64::from(h.file_size) || map.storage_length() != end {
@@ -498,13 +528,8 @@ impl TagSet {
                 && l.space != space
                 && l.space.file_offset + u64::from(l.space.size) > prefix_end
             {
-                return Err(Error::Unsupported("BSP region after the tables".into()));
+                return Err(Error::Unsupported("BSP region after the index".into()));
             }
-        }
-        if u64::from(h.low_detail_offset) + u64::from(h.low_detail_size) > prefix_end {
-            return Err(Error::Unsupported(
-                "low-detail data after the tables".into(),
-            ));
         }
         let header = map.read_file_range(0, HEADER as u64)?;
         let mut file = Vec::new();
@@ -514,7 +539,11 @@ impl TagSet {
             file.extend(map.read_file_range(at, n)?);
             at += n;
         }
-        let word14 = map.read_file_range(u64::from(h.index_offset) + 0x14, 4)?;
+        let index = map.read_file_range(h.index_offset.into(), h.index_size.into())?;
+        let index_word = |at: usize| u32::from_le_bytes(index[at..at + 4].try_into().expect("4"));
+        let index_entries_end = (index_word(8) - INDEX_VIRTUAL_BASE)
+            .checked_add(16 * map.index_slots())
+            .ok_or(Error::Invalid("tag entry table"))?;
         let metadata = {
             let mut m = Vec::new();
             let mut at = space.file_offset;
@@ -576,13 +605,17 @@ impl TagSet {
             slots,
             scenario,
             globals,
-            index_word_14: u32::from_le_bytes(word14.try_into().expect("4 bytes")),
+            index_word_14: index_word(0x14),
             raw: Vec::new(),
             bsps: Vec::new(),
             salt_base: 0xe174,
+            reuse_free_space: true,
             pinned: Some(PinnedImage {
                 header,
                 file,
+                tables,
+                index_entries_end,
+                index,
                 index_size: h.index_size,
                 bsp_size: h
                     .meta_size
@@ -697,17 +730,30 @@ struct Resolve<'a> {
 struct Region {
     base: u32,
     bytes: Vec<u8>,
+    /// Where the next allocation starts, relative to `base`.
+    cursor: usize,
 }
 impl Region {
+    fn new(base: u32, bytes: Vec<u8>) -> Self {
+        let cursor = bytes.len();
+        Self {
+            base,
+            bytes,
+            cursor,
+        }
+    }
     fn alloc(&mut self, len: usize, align: u32) -> Result<u32> {
         check_align(align)?;
-        let at = u64::from(self.base) + self.bytes.len() as u64;
+        let at = u64::from(self.base) + self.cursor as u64;
         let start = round_up(at, align.into());
         let end = start + len as u64;
         if end > 1 << 32 {
             return Err(Error::Limit);
         }
-        self.bytes.resize((end - u64::from(self.base)) as usize, 0);
+        self.cursor = (end - u64::from(self.base)) as usize;
+        if self.bytes.len() < self.cursor {
+            self.bytes.resize(self.cursor, 0);
+        }
         Ok(start as u32)
     }
     fn place(&mut self, at: u32, bytes: &[u8]) -> Result<()> {
@@ -960,10 +1006,7 @@ impl<'a> Builder<'a> {
         let mut bsp_tags: HashMap<TagId, (u32, u32)> = HashMap::new();
         let mut max_bsp = pin.map_or(0, |p| p.bsp_size);
         for s in &set.bsps {
-            let mut region = Region {
-                base: bsp_base,
-                bytes: vec![0; 16],
-            };
+            let mut region = Region::new(bsp_base, vec![0; 16]);
             let built = |id: TagId| match &set.tag(id).expect("validated").payload {
                 TagPayload::Built(b) => b,
                 _ => unreachable!("validated"),
@@ -1017,10 +1060,7 @@ impl<'a> Builder<'a> {
             bsps: bsp_layout.clone(),
             ..resolve_pre
         };
-        let mut meta = Region {
-            base: metadata_base,
-            bytes: Vec::new(),
-        };
+        let mut meta = Region::new(metadata_base, Vec::new());
         let mut tag_layout = vec![(0u32, 0u32); set.slots.len()];
         if let Some(p) = pin {
             for (at, bytes) in &p.unowned {
@@ -1037,17 +1077,82 @@ impl<'a> Builder<'a> {
                 tag_layout[i] = (*address, bytes.len() as u32);
             }
         }
+        // Built tags go first-fit into space no pinned bytes use (ranges of
+        // tags that became built, padding, the region's slack), else after
+        // everything. A dry run at an aligned base gives each tree's size.
+        let mut holes = Vec::new();
+        if let Some(p) = pin.filter(|_| set.reuse_free_space) {
+            let mut used: Vec<(usize, usize)> = p
+                .unowned
+                .iter()
+                .map(|(a, b)| (a, b.len()))
+                .chain(set.slots.iter().filter_map(|s| match &s.tag {
+                    Some(TagEntry {
+                        payload: TagPayload::Pinned { address, bytes },
+                        ..
+                    }) => Some((address, bytes.len())),
+                    _ => None,
+                }))
+                .map(|(a, n)| {
+                    let lo = (a - metadata_base) as usize;
+                    (lo, lo + n)
+                })
+                .collect();
+            used.sort_unstable();
+            let mut cursor = 0;
+            for (lo, hi) in used.into_iter().chain([(p.metadata_size as usize, 0)]) {
+                if lo > cursor {
+                    holes.push((cursor, lo));
+                }
+                cursor = cursor.max(hi);
+            }
+        }
+        // Appends start after the pinned region's original length, whose
+        // slack is handed out through `holes` only.
+        let mut append = meta
+            .bytes
+            .len()
+            .max(pin.map_or(0, |p| p.metadata_size as usize));
         for (i, slot) in set.slots.iter().enumerate() {
             let Some(t) = &slot.tag else { continue };
             if let TagPayload::Built(root) = &t.payload {
                 if in_bsp.contains(&t.id) {
                     continue;
                 }
-                let start = meta.alloc(0, root.align)?;
+                let align = root.max_align();
+                let size = {
+                    let mut dry = Region::new(0, Vec::new());
+                    dry.emit(root, &resolve)?;
+                    dry.bytes.len()
+                };
+                let fit = holes.iter().enumerate().find_map(|(h, &(lo, hi))| {
+                    let start = round_up((metadata_base as usize + lo) as u64, align.into())
+                        as usize
+                        - metadata_base as usize;
+                    (start + size <= hi).then_some((h, start))
+                });
+                let end = append;
+                meta.cursor = match fit {
+                    Some((h, start)) => {
+                        let (lo, hi) = holes[h];
+                        holes.splice(h..=h, [(lo, start), (start + size, hi)]);
+                        start
+                    }
+                    // Align the root to the tree's largest alignment so the
+                    // layout matches the dry run.
+                    None => {
+                        round_up((metadata_base as usize + end) as u64, align.into()) as usize
+                            - metadata_base as usize
+                    }
+                };
                 let addr = meta.emit(root, &resolve)?;
-                debug_assert_eq!(start, addr);
-                let end = metadata_base as u64 + meta.bytes.len() as u64;
-                tag_layout[i] = (addr, (end - u64::from(addr)) as u32);
+                if meta.cursor - (addr - metadata_base) as usize != size {
+                    return Err(Error::Invalid("tag layout differs from its dry run"));
+                }
+                if fit.is_none() {
+                    append = meta.cursor;
+                }
+                tag_layout[i] = (addr, size as u32);
             }
         }
         // The reader anchors the metadata region on slot 0's address.
@@ -1110,24 +1215,49 @@ impl<'a> Builder<'a> {
                 None => name_index.extend(u32::MAX.to_le_bytes()),
             }
         }
-        let section = |file: &mut Vec<u8>, bytes: &[u8]| -> Result<u32> {
+        // A table that fits goes back where the pinned map had it; anything
+        // else follows the prefix, sector aligned.
+        let place = |file: &mut Vec<u8>, slot: usize, bytes: &[u8]| -> Result<u32> {
+            if let Some((at, len)) = pin.map(|p| p.tables[slot])
+                && len != 0
+                && bytes.len() <= len as usize
+            {
+                let at = at as usize;
+                file[at..at + len as usize].fill(0);
+                file[at..at + bytes.len()].copy_from_slice(bytes);
+                return Ok(at as u32);
+            }
             let at = round_up(file.len() as u64, SECTOR) as usize;
             file.resize(at, 0);
             file.extend_from_slice(bytes);
             u32::try_from(at).map_err(|_| Error::Limit)
         };
-        let fixed_at = section(&mut file, &fixed)?;
-        let string_index_at = section(&mut file, &string_index)?;
-        let string_blob_at = section(&mut file, &string_blob)?;
-        let name_blob_at = section(&mut file, &name_blob)?;
-        let name_index_at = section(&mut file, &name_index)?;
+        let fixed_at = place(&mut file, 0, &fixed)?;
+        let string_index_at = place(&mut file, 1, &string_index)?;
+        let string_blob_at = place(&mut file, 2, &string_blob)?;
+        let name_blob_at = place(&mut file, 3, &name_blob)?;
+        let name_index_at = place(&mut file, 4, &name_index)?;
 
         // Tag index.
-        let index_at = round_up(file.len() as u64, PAGE.into()) as usize;
+        let index_at = round_up(file.len() as u64, SECTOR) as usize;
         file.resize(index_at, 0);
-        let mut index = vec![0u8; index_size as usize];
         let groups_addr = INDEX_VIRTUAL_BASE + 0x20;
         let tags_addr = groups_addr + 12 * set.groups.len() as u32;
+        let mut index = match pin {
+            Some(p) => {
+                // The bytes after the entries are uninterpreted; never
+                // overwrite them.
+                if index_bytes > u64::from(p.index_entries_end) {
+                    return Err(Error::Invalid(
+                        "a pinned map's tag index cannot grow (uninterpreted bytes follow it)",
+                    ));
+                }
+                let mut index = p.index.clone();
+                index[..index_bytes as usize].fill(0);
+                index
+            }
+            None => vec![0u8; index_size as usize],
+        };
         put(&mut index, 0, groups_addr);
         put(&mut index, 4, set.groups.len() as u32);
         put(&mut index, 8, tags_addr);
