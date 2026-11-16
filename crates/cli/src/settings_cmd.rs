@@ -201,7 +201,7 @@ mod tests {
             "{list}"
         );
         assert!(list.contains(
-            "graphics.fps             uncapped   Frame Rate (settings file; applies at launch)"
+            "graphics.fps             uncapped   Frame Rate (settings file)"
         ));
         assert!(list.contains("pad_speaker.enabled      true       Controller Speaker (default)"));
         let get = run_with(&data, &["get", "graphics.render_scale"], &none).unwrap();
