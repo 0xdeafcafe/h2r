@@ -116,7 +116,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   group's render info: an image of the lightmap bitmap and a palette) is
   decoded from `P8` through the group's palette, and its parts draw with
   their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
-  plus a little fill light so no surface is black. Parts without a page,
+  plus a faint fill light so no texel is pure black. Parts without a page,
   and object models, keep one sun and the sky, with dark base maps lifted.
 - **Sky.** Behind a map with art, a gradient from the zenith to a pale
   horizon (not the scenario's sky model). Solid surfaces are
@@ -150,8 +150,21 @@ drawn opaque and framed, which hid the lower half of the structure and
 made the rest a speck. `tests::disc_ascension_frames_its_structure_not_its_cloud_deck`
 (ignored; needs the disc) holds the fix.
 
-Not yet: the outsides of some structures (Coagulation's bases, Midship's
-hull) have black lightmaps and show only the fill light; the scenario's
+Coagulation's bases and Midship's hull used to come out black. Their
+lightmaps were never black (the pages, palettes and coordinates match
+what the engine binds); the window was. The viewport renders into an
+sRGB texture, and Dear ImGui's shader treats every texel it samples as
+sRGB-encoded, raising it to the power 2.2 before its sRGB framebuffer
+encodes it again. Given the texture's sRGB view it sampled linear
+values and showed them as encoded ones, so a dim wall at linear 0.05
+(sRGB 63) showed as 13. `Viewport::ui_view` hands the UI an `Rgba8Unorm`
+view of the same pixels instead. `headless::tests::the_viewport_shows_what_it_rendered`
+compares the window's pixels with the viewport's own, and
+`headless::tests::disc_coagulation_bases_and_midship_hull_are_lit`
+(ignored; needs the disc) checks that under 2 % of either map's
+viewport is black (a quarter of Coagulation's was).
+
+Not yet: the scenario's
 sky model; the bucket streams (types `2f` and `30`: per-vertex colour and
 light direction, not interpreted); detail and bump maps, animated or
 self-illuminated shaders, model variants and permutations other than the

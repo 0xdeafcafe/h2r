@@ -83,7 +83,7 @@ shot() {
 # The window: a multiplayer map framed, nothing selected.
 shot window --pick ascension
 # A weapon spawn selected, with the move gizmo.
-shot scenario-weapon --pick ascension --select netgameequipment:0 --focus --camera 40,35,25
+shot scenario-weapon --pick coagulation --select netgameequipment:3 --focus --camera 40,30,22
 # Another map: Lockout's battle rifle spawn among its towers.
 shot scenario-lockout --pick lockout --select netgameequipment:0 --focus --camera 40,35,25
 # Save as package.

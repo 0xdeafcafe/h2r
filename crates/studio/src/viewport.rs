@@ -37,6 +37,8 @@ pub struct ViewportView {
     /// Right mouse is held over the viewport: orbit and WASD fly.
     looking: bool,
     panning: bool,
+    /// Where the last frame showed the image: origin and size in points.
+    shown: Option<[f32; 4]>,
 }
 
 impl Default for ViewportView {
@@ -56,7 +58,14 @@ impl ViewportView {
             local: false,
             looking: false,
             panning: false,
+            shown: None,
         }
+    }
+
+    /// Where the last frame showed the viewport (origin and size in
+    /// points), and its render target: the headless tests compare the two.
+    pub fn shown(&self) -> Option<([f32; 4], &wgpu::Texture)> {
+        Some((self.shown?, self.vp.as_ref()?.color_texture()?))
     }
 
     /// Whether the camera has the mouse (keyboard shortcuts then fly).
@@ -127,6 +136,7 @@ impl ViewportView {
             return;
         };
         ui.image(texture, size);
+        self.shown = Some([origin[0], origin[1], size[0], size[1]]);
         let hovered = ui.is_item_hovered();
         let aspect = size[0] / size[1].max(1.0);
 

@@ -5,7 +5,7 @@
 //! Rendering offscreen (instead of inside the UI's render pass) keeps the
 //! viewport independent of the shell's surface: the UI pass may have no
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
-//! toolkit is used here; `h2-editor` registers [`Viewport::color_view`]
+//! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
 use crate::scene::{Blend, Scene, SceneVertex};
@@ -175,8 +175,8 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
     if (p.lit > 0.5) {
         // The baked lightmap, as the game draws it: albedo × light × 2
         // in gamma space (LIGHTMAP_SCALE).
-        // A fill light keeps surfaces whose lightmap is black (the
-        // outsides of Coagulation's bases and Midship's hull) readable.
+        // A faint fill light keeps the few truly unlit texels from
+        // going pure black.
         light = textureSample(lm, samp, v.luv).rgb * LIGHTMAP_SCALE + vec3<f32>(LIGHTMAP_FILL);
     } else {
         // One sun and the sky; dark base maps are lifted (`p.lift`)
@@ -208,9 +208,11 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
 /// game modulates the base map by the lightmap doubled, in gamma space
 /// (D3D8, no sRGB); in linear light that is a factor of 2^2.2.
 pub const LIGHTMAP_SCALE: f32 = 4.595;
-/// Light added to every lightmapped surface, so none is black in the
-/// editor.
-pub const LIGHTMAP_FILL: f32 = 0.22;
+/// Light added to every lightmapped surface, so none is pure black in the
+/// editor. Small: lightmaps are not dark once the viewport reaches the
+/// window intact ([`Viewport::ui_view`]); 0.22 had been compensating for
+/// a window that showed linear values as encoded ones.
+pub const LIGHTMAP_FILL: f32 = 0.05;
 
 /// BSP triangles as vertices, shaded by slope: floors light, walls darker.
 pub fn world_vertices(tris: &[Tri]) -> Vec<Vertex> {
@@ -993,8 +995,7 @@ impl Viewport {
         self.target.as_ref().map(|t| &t.color)
     }
 
-    /// The colour target's view, to register with a UI renderer that
-    /// samples textures as linear colour (egui).
+    /// The colour target's view (sRGB: sampling it decodes to linear).
     pub fn color_view(&self) -> Option<&wgpu::TextureView> {
         self.target.as_ref().map(|t| &t.color_view)
     }
