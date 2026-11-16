@@ -1,8 +1,8 @@
-# Feature engine (design; Phase 0 built)
+# Feature engine (design; Phases 0 and 1 built)
 
-Status: design, except Phase 0, the [first slice](#the-first-slice), which
-is built ([below](#what-was-built)). No other crate, type or macro named
-here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
+Status: design, except Phase 0, the [first slice](#the-first-slice), and
+Phase 1, the registry, which are built ([below](#what-was-built)). No other
+crate, type or macro named here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
 plain Rust against a Rust subsystem, is tested without the game, and cannot
@@ -105,18 +105,22 @@ written out six times (`layout_glue::call_then`, `lockstep`,
   match-start observer without a message. **Fixed:** the level boot now
   runs whatever override was there (`Dispatch::override_handler`) where it
   ran the generated original, and logs that it chained; a synthetic runtime
-  test covers it. Not run in the game.
+  test covers it. Not run in the game. **Phase 1:** both are listeners on
+  the `game` bridge's start, one chain on the point.
 - `0x00137fe0` (the game tick) is wrapped by Live telemetry and by the
   lockstep observer. Lockstep refuses when the other is there, so per-tick
   hashing and telemetry cannot be on together. Theater wants a third
-  observer on the same function ([theater.md](theater.md)).
+  observer on the same function ([theater.md](theater.md)). **Fixed in
+  phase 1:** both are listeners on the `frame` bridge's tick.
 - `layout_glue::install` registers 19 overrides for three features and
   interleaves them: the Controls row-text closure serves four owners, in
   a fixed order, behind four booleans. Its header says why: "a function
   entry takes one override".
 - `engine::abi::OVERRIDES` replaces `0x001a02d0` (locale lookup).
   `layout_glue` overrides the same address to serve its strings. The day
-  `register_all` is called, one displaces the other.
+  `register_all` is called, one displaces the other. **Fixed in phase 1:**
+  the strings are a `before` on the point and the Rust lookup an
+  implementation under it (`impl.engine=on`).
 
 **Telling ours from theirs.** The Video screen is a second Controls
 screen. Because it runs the Controls class's code, every wrapper on that
@@ -1302,6 +1306,88 @@ All on tests; nothing here was run in the game.
 - Not done from the design's settings section: the other `H2_*` variables
   are not `Def`s yet, and `d3d` still reads `H2_RENDER_SCALE` itself for
   `h2 run`.
+
+#### Phase 1
+
+All on tests; nothing here was run in the game.
+
+- `engine::points`: `Point` (name, base address, `Sig`, `Class`, `hot`,
+  doc page), `Global`, and the `points!` and `globals!` macros. The table
+  holds what phase 1 hooks: `GAME_TICK`, `GAME_ACTIVATE`, `GAME_END`,
+  `PLAYER_KILLED`, `WEAPON_FIRE` (optional), `LOCALE_FIND` (hot), and the
+  globals `GAME_GLOBALS` and `GAME_TIME`. The macro grammar is
+  `NAME @ 0x...: [fn(arg: loc, ..) -> loc ret n] | [opaque], Hot, Optional; "docs/page.md";`
+  with `stack n` as the n-th dword argument. Telemetry's layout, the level
+  boot and lockstep read these instead of their own copies. A test fails
+  when one address gets two names. The other points (layouts, FOV,
+  speaker, level boot's option calls) move as their hooks move.
+- One memory trait: `engine::GuestMemory` gains `f32`, `bytes`, `cstr`,
+  `utf16`, `vec3`, `set_f32`, and is implemented for `runtime::Guest`
+  (feature `runtime-glue`). `engine::testing::FakeGuest`: sparse pages,
+  faults on unmapped access, never wraps. Not done: `layout_glue::Gm` is
+  still its own trait and the six private fakes are not replaced (the
+  `Gm` logic and its fakes move with UI steps b and c); `record!` views
+  are phase 2.
+- `crates/feature`: `Feature`, `Manifest`, `Registry` (`add`, `build`),
+  `Builder` (`frame()`, `game()`, `raw()`, `guest_alloc`), `Plan`
+  (`text`, `install`), `Conflict`, `Switches`, `Arena`, `ImageAddrs`
+  (`Base`, and `Remap` for synthetic guests).
+- Kinds as the table under "Hooks": `observe_before`, `before`,
+  `implement`, `after`, `observe_after`. Observers get `Obs` (registers,
+  the runtime for memory and clock, typed `arg_u32` from the `Sig`);
+  mutating hooks get `Call` (CPU and context). Decision: observers see the
+  runtime's `Guest`, not `&dyn GuestMemory`, because telemetry's readers
+  take `&runtime::Guest`; they move to views in phase 2.
+- Conflicts, refused at `build` and all reported: two implementations;
+  two `before` or two `after` of different features in one `Order` class
+  with no `after_feature` between them; an `after_feature` cycle; a
+  `before` on an opaque point; one address with two point names; two
+  features with one id. At `install`, an override the plan did not place
+  on any of its addresses refuses the whole plan (`InstallError::Occupied`)
+  before anything is mapped or registered. Decisions where the design was
+  vague: an `implement` on an opaque point is allowed (the implementation
+  owns the whole ABI; the 22 engine adapters are opaque points); a `before`
+  that returns early skips the rest of the chain, observers after
+  included; `after` hooks run inside out (the outermost last); a missing
+  point drops an optional hook with a note and otherwise turns the
+  feature off, at build (`ImageAddrs`) and again at install (no generated
+  original).
+- Chains: one override per address, named `plan:<POINT>[features]`; a
+  shadow entry from the arena only when something runs after the body
+  (the call-then-continue dance, written once). Each link prints
+  `feature: <POINT> <kind> <feature>:<label> active` the first time it
+  runs.
+- Arena: `0xa0f00000..0xa0f80000`, inside the kernel's HLE reservation
+  and above where Bink and DirectSound search. Shadows and `guest_alloc`
+  come from it. Telemetry's `0xa0ff5000`, lockstep's `0xa0ff9000` and the
+  level boot's `0xa2f40000` shadow pages are gone.
+- Switches: `H2_FEATURES` (`id`, `-id`, `id=on|off`, `impl.x=on`), with
+  `impl.a.b` falling back to `impl.a`. Not yet settings `Def`s, and no
+  `Toggle::Live`.
+- Bridges: `frame().on_tick`, `game().on_start` (activation returned AL
+  non-zero), `game().on_end`. All are read-only listeners, so any number
+  share a point.
+- Migration step 2: Live telemetry is a feature (match start, tick, end
+  on the bridges; kill and weapon fire as raw observers, the latter
+  optional). Lockstep's tick hash is `lockstep::TickObserver`;
+  `install_tick_observer` is now a one-feature plan. The level boot's
+  loaded mark is `level_boot::LoadedMark` on `game().on_start`; its menu
+  replacement stays a plain override (game options are phase 5). The
+  button layouts' string hook is `ui-strings`, a `before` on
+  `LOCALE_FIND`. `engine-leaves` places the 22 engine adapters as
+  implementations behind `impl.engine` (off by default, as nothing
+  installed them before); `engine::runtime_glue::register_all` stays,
+  with no caller.
+- Boot builds one `Registry`, adds the features where it used to install
+  them, then builds and installs the plan once, after lockstep and before
+  Bink and the trace. A refused plan stops boot with every conflict
+  named. Boot logs the plan, one `feature plan:` line per feature and per
+  point, then any notes.
+- Not built: `h2 features plan` (the text exists and a boot test pins it),
+  `Toggle::Live`, `Subsystem`/`Entry` and async entries (phase 3), the
+  `.at(site)` call-site hooks, `Refuse` in `ImageAddrs`, and a measurement
+  of chain overhead on the hot locale point (the closure does no
+  allocation and takes no lock; the plan warns that the point is hot).
 
 Then, as the first thing that needs a play-test (phase 3, after the
 registry): our own list class, so the model drives Rust row functions

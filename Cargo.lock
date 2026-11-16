@@ -439,6 +439,7 @@ dependencies = [
  "d3d",
  "dsound",
  "emit",
+ "feature",
  "font",
  "gfx",
  "iced-x86",
@@ -1115,6 +1116,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "feature"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "runtime",
+ "runtime-test-probe",
 ]
 
 [[package]]
@@ -2196,6 +2206,8 @@ dependencies = [
 name = "live-telemetry"
 version = "0.1.0"
 dependencies = [
+ "engine",
+ "feature",
  "live-proto",
  "map",
  "runtime",
@@ -2222,6 +2234,8 @@ dependencies = [
 name = "lockstep"
 version = "0.1.0"
 dependencies = [
+ "engine",
+ "feature",
  "input",
  "runtime",
  "xapi",

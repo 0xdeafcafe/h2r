@@ -494,8 +494,9 @@ pub fn run_hosted_with_live(
     }
     let t = Instant::now();
     // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
-    // barrier 0xa0ff4000, live telemetry 0xa0ff5000, live notice 0xa0ff6000,
-    // lockstep tick observer 0xa0ff9000.
+    // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
+    // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
+    // take theirs from the feature arena (`feature::arena`).
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
     // Interpreting past unsupported instructions is a stopgap too.
@@ -507,7 +508,10 @@ pub fn run_hosted_with_live(
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     let _live = live_glue::install(&loaded.runtime, &k, live)?;
-    let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&loaded.runtime, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
+    // Features declare their hooks here; the plan is built and installed
+    // once, below, after the last of them (docs/feature-engine.md).
+    let mut features = feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
+    let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&mut features, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -589,7 +593,7 @@ pub fn run_hosted_with_live(
         )),
         None => None,
     };
-    layout_glue::install(&loaded.runtime, model).context("installing the button layouts")?;
+    layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Games row (registered with the layouts above;
     // docs/live-custom-games.md).
@@ -608,7 +612,7 @@ pub fn run_hosted_with_live(
         eprintln!("perf: H2_PERF_FROM={v:?} is neither a present number nor `level`; ignored");
     }
     let level_name = level.as_ref().map(|l| l.name.clone());
-    level_boot::install(&loaded.runtime, level, perf_from == Some(level_boot::PerfFrom::Level))
+    level_boot::install(&loaded.runtime, &mut features, level, perf_from == Some(level_boot::PerfFrom::Level))
         .context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
     // campaign start turns on the profile's chosen skulls (docs/skulls.md).
@@ -666,8 +670,8 @@ pub fn run_hosted_with_live(
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
-    let harness = if lockstep_config.enabled() {
-        let h = lockstep_glue::Lockstep::install(&loaded.runtime, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
+    let mut harness = if lockstep_config.enabled() {
+        let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
             eprintln!("lockstep: hashing presents only: {n}");
         }
@@ -675,6 +679,24 @@ pub fn run_hosted_with_live(
     } else {
         None
     };
+    // The Rust datum, tag and locale functions, when H2_FEATURES has
+    // impl.engine=on (off by default).
+    features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    let plan = features.build(&feature::Base).map_err(|conflicts| {
+        let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
+        anyhow::anyhow!("feature plan refused: {}", c.join("; "))
+    })?;
+    for line in plan.text().lines() {
+        eprintln!("feature plan: {line}");
+    }
+    let installed = plan.install(&loaded.runtime).context("installing the feature plan")?;
+    for n in &installed.notes {
+        eprintln!("feature plan: {n}");
+    }
+    if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
+        eprintln!("lockstep: hashing presents only: {why}");
+        h.set_tick_note(why.to_owned());
+    }
     if opts.bink {
         let hle = bink_hle::BinkHle::new(None);
         loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));

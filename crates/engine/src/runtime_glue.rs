@@ -3,7 +3,9 @@
 //!
 //! Built with `--features runtime-glue`. Uses `ExecCtx::memory`,
 //! `Guest::read_bytes`/`write_bytes` and `Dispatch::register_override`
-//! with a `(cpu, ctx, selector)` handler. Nothing registers these yet.
+//! with a `(cpu, ctx, selector)` handler. [`register_all`] has no caller;
+//! the `feature` crate's `engine-leaves` feature places the same adapters
+//! through the plan (`impl.engine`, off by default).
 //!
 //! Each handler holds one memory guard for the whole call, so the Rust body
 //! sees a consistent guest, and releases it before returning the transfer.
@@ -49,6 +51,26 @@ impl GuestMemory for RuntimeMemory<'_> {
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
         let r = self.guest.write_bytes(addr, data, 1);
         r.map_err(|f| self.latch(f, addr, data.len(), true))
+    }
+}
+
+/// The runtime's guest is a [`GuestMemory`], so code written against the
+/// one trait reads it directly. A fault's reason is dropped ([`MemFault`]
+/// has none); [`invoke`] keeps it where it matters.
+impl GuestMemory for Guest {
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
+        self.read_bytes(addr, buf, 1).map_err(|_| MemFault {
+            addr,
+            len: buf.len() as u32,
+            write: false,
+        })
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
+        self.write_bytes(addr, data, 1).map_err(|_| MemFault {
+            addr,
+            len: data.len() as u32,
+            write: true,
+        })
     }
 }
 
