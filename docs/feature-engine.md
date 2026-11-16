@@ -1569,8 +1569,9 @@ Tests only; nothing here was run in the game.
   `Extension` answers a retail list's extension rows from the `ui` model
   with `before` hooks at the list's row text and row chosen (a retail row
   goes on to the original): the Settings list (the Video row) and the
-  Controls list (the speaker row). `OpenRow` is one row that opens a
-  retail screen: the Xbox Live menu's Custom Games. The layouts' value text
+  Controls list (the speaker row). The Xbox Live menu's Custom Game
+  Browser row stays raw in `layout_glue` (it landed there with its own
+  tag extension and item widget). The layouts' value text
   on Controls is a `before`/`after` pair inside the speaker row's hook at
   the same point. A `before` hook answers with an async body through
   `Call::answer_async`.
@@ -1586,8 +1587,8 @@ Tests only; nothing here was run in the game.
 - **Open rows** open another screen of ours: classes register their loader
   by screen id (`list_class::loader_of`), and a press on an `Open` row
   calls `0x149f1e(1 << player, loader)` for the pressing player.
-- **`layout_glue.rs`** is down from 1,818 to about 1,550 lines; what is
-  left is the layouts, the shared list hooks (the datum array constructor,
+- **`layout_glue.rs`** is down from 1,929 to about 1,700 lines; what is
+  left is the layouts, the Live menu's rows, the shared list hooks (the datum array constructor,
   the pane, the screen tag, the text set), the smaller Controls screen's
   speaker row, the added item widgets and the camera's field of view (it
   needs EAX from entry after the original, which an `after` hook does not
