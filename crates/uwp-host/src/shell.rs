@@ -42,6 +42,7 @@ use windows::UI::ViewManagement::{ApplicationView, ApplicationViewBoundsMode};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Console::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
 use windows::Win32::System::WinRT::Composition::ICompositorInterop;
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 use windows_core::{HRESULT, HSTRING, IInspectable, IUnknown, IUnknown_Vtbl, Interface, Ref, Result, implement, interface};
 
 /// XAML's `ISwapChainPanelNative` (windows.ui.xaml.media.dxinterop.h),
@@ -188,8 +189,7 @@ fn run() -> Result<()> {
     // the slow start (the stamp check, the boot cache, the device).
     window.Dispatcher()?.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent)?;
     let package = hstring_path(Package::Current()?.InstalledLocation()?.Path()?);
-    let local = hstring_path(ApplicationData::Current()?.LocalFolder()?.Path()?);
-    log_to(&local);
+    let local = local_state()?;
     eprintln!("h2uwp: package {}, local state {}", package.display(), local.display());
 
     let compositor = Compositor::new()?;
@@ -255,8 +255,28 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+fn local_state() -> Result<PathBuf> {
+    Ok(hstring_path(ApplicationData::Current()?.LocalFolder()?.Path()?))
+}
+
 /// The app's entry point: runs the view until the window closes.
+///
+/// The main thread joins the multithreaded apartment first, as C++/WinRT's
+/// `init_apartment` does: without it `CoreApplication::Run` fails and the
+/// console reports the launch as timed out (0x8027025B), with the process
+/// never reaching the view (found with a probe on the console).
 pub fn main() -> Result<()> {
+    // SAFETY: once, on the main thread, before any other WinRT call.
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }?;
+    // The log first, so anything after this is visible in LocalState.
+    if let Ok(local) = local_state() {
+        log_to(&local);
+    }
+    eprintln!("h2uwp: starting");
     let source: IFrameworkViewSource = Source.into();
-    CoreApplication::Run(&source)
+    let r = CoreApplication::Run(&source);
+    if let Err(e) = &r {
+        eprintln!("h2uwp: CoreApplication::Run: {e}");
+    }
+    r
 }
