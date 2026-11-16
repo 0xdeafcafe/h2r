@@ -7,6 +7,7 @@
 //! - [`History`]: edits as commands, with undo and redo.
 //! - [`save`]: write a new `.map` through `map::writer::MapEditor`: every
 //!   byte identical except the patched fields and the header checksum.
+//! - [`package`]: save as a map package (docs/maps.md) and open one.
 //! - [`geometry`], [`render`], [`panel`]: the structure BSP and markers, an
 //!   offscreen wgpu viewport, and the egui panel [`ScenarioEditor`].
 //!
@@ -19,6 +20,7 @@
 pub mod edit;
 pub mod geometry;
 pub mod layout;
+pub mod package;
 pub mod panel;
 pub mod render;
 pub mod save;
@@ -28,6 +30,7 @@ mod tests;
 
 pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
+pub use package::{PackageForm, SavedPackage};
 pub use panel::ScenarioEditor;
 pub use save::MapSource;
 pub use scenario::{Changes, Grown, Removed, Scenario, TagRef, Value};
@@ -55,5 +58,11 @@ pub enum Error {
     Refused(&'static str),
     #[error("save: {0}")]
     Save(&'static str),
+    #[error("package: {0}")]
+    Package(String),
+    #[error(transparent)]
+    Store(#[from] content::store::StoreError),
+    #[error(transparent)]
+    Resolve(#[from] content::ResolveError),
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;

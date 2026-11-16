@@ -479,3 +479,62 @@ up in the browser an admin, and the mock serves these endpoints
 - The `h2 play --live` sign-in link (§4) is a ten-minute, one-use bearer
   secret for that account, honoured only from this machine; treat the
   terminal it is printed in accordingly.
+
+## 7. Custom content: moderation
+
+Players share custom and modded maps through the server's content store
+([maps.md](maps.md) §5, [live-api.md](live-api.md) "Custom maps"). Admins
+(and the operator) moderate it with tokens for `lxm` `content.moderate`:
+
+| endpoint | does |
+|---|---|
+| `GET /v1/admin/content` | `{maps, blobs, reports, uploads_off, position}`: every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
+| `POST /v1/admin/maps/{map_id}/{action}` | acts on a package |
+| `POST /v1/admin/content/{sha256}/{action}` | acts on a blob, by hash |
+| `PUT /v1/admin/uploads/{gamertag}` `{allowed}` | switches an account's uploads and publishes off or on |
+| `PUT /v1/hoppers/{hopper_id}/pins` `{map_ids}` | the custom maps a matchmaking hopper allows (empty: retail only) |
+
+The actions, and the `state` they leave:
+
+- `hide` → `hidden`: the bytes or manifest stay, but reads answer 410 Gone,
+  lists leave it out, and sessions on it are refused. `unhide` undoes it.
+- `delete` → `deleted`: a blob's file is removed (its uploader's quota is
+  freed); a package's manifest is dropped. Reads answer 410. A fresh upload
+  or publish of the same hash or `MapId` brings it back.
+- `block` → `blocked`: deleted, and refused from now on (uploads and
+  publishes answer 410). A hash can be blocked before anyone uploads it.
+  `unblock` leaves it deleted.
+
+A package is refused in sessions (410) when it, or any of its layers, is
+hidden, deleted or blocked; a deleted layer alone shows up in the package's
+`missing` list. Each action is a server-signed `ContentModerated` event on
+the target's stream (`{target, id, action, by}`, `by` the admin's xuid),
+reports are `ContentReported` (`POST /v1/maps/{id}/report` or
+`/v1/content/{sha256}/report` by any account), the upload switch is
+`ContentUploadsSet` on the account's stream, and pins are `HopperPinsSet`
+on `hopper-<id>`. All of it replays from the log, so it survives restarts.
+
+**Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
+beside it, keyed by the `hopper_id` sessions advertise. A session with
+`hopper` or `ranked` flags may only advertise a retail map or one pinned on
+its hopper.
+
+**The retail list.** `<data>/retail-maps.sha256` (next to the server's key)
+holds the hashes of retail maps, in `sha256sum` output form:
+
+```sh
+cd /path/to/your/disc/maps && sha256sum *.map > <data>/retail-maps.sha256
+```
+
+Blobs with a listed hash are refused, so the store never holds a retail
+map. A line that names its map (`<hex>  lockout.map`) also makes
+`MapId::retail(name, hash)` a retail id, which ranked sessions may use.
+The file is absent, so empty, by default: nothing from a disc ships with
+the server. It is read on each upload, so edits apply at once. Whatever
+the list says, a manifest with no layers (only a retail base) is never
+published: it would be the retail map itself.
+
+The web admin area's **Custom content** tab (`/stats/admin`, linked from the
+dashboard's server screen) lists packages and blobs with their state and
+report counts, the actions valid for each, the reports and the upload
+switch; the playlist builder pins published packages per hopper.

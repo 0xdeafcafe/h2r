@@ -4,7 +4,8 @@
 // view in a window. Live games and replays both use it, each with its own
 // frame source, so whatever drives that source drives both views.
 
-import { mapTitle } from "../state/gameart";
+import { gameMapTitle, geometryChanged } from "../state/maps";
+import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
@@ -72,7 +73,9 @@ export default function TacticalMap(props: {
           <Show when={features()}>
             <button class="s-3d-button" aria-pressed={showFeatures()} classList={{ on: showFeatures() }} onClick={() => setShowFeatures(!showFeatures())} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>
           </Show>
-          <button class="s-3d-button" aria-pressed={open()} classList={{ on: open() }} onClick={() => setOpen(!open())} title="Open the 3D view in a window">3D view</button>
+          <Show when={!geometryChanged(props.game)} fallback={<span class="s-map-note-inline" title="The mod changed the level's geometry; the base map's would be wrong">{GEOMETRY_CHANGED_NOTE}</span>}>
+            <button class="s-3d-button" aria-pressed={open()} classList={{ on: open() }} onClick={() => setOpen(!open())} title="Open the 3D view in a window">3D view</button>
+          </Show>
         </span>
       </div>
       <div
@@ -100,9 +103,9 @@ export default function TacticalMap(props: {
           )}
         </Show>
       </div>
-      <Show when={open()}>
+      <Show when={open() && !geometryChanged(props.game)}>
         <ViewerWindow
-          title={`3D view · ${mapTitle(props.game.map)}`}
+          title={`3D view · ${gameMapTitle(props.game)}`}
           popout={`/stats/games/${encodeURIComponent(props.game.game_id)}/3d`}
           onClose={() => setOpen(false)}
           frame={props.frame}

@@ -30,7 +30,7 @@ export class Admin {
   }
 
   /** The account behind a bearer token, if it is an admin (not verified). */
-  private caller(auth: string | null, lxm: string): { ok: true; author: string } | { ok: false; reply: Reply } {
+  caller(auth: string | null, lxm: string): { ok: true; author: string } | { ok: false; reply: Reply } {
     const t = auth?.startsWith("Bearer ") ? parseJws(auth.slice(7).trim()) : null;
     const claims = t?.payload as { iss?: string; lxm?: string } | undefined;
     if (!claims?.iss) return { ok: false, reply: fail(401, "unauthorized", "this needs Authorization: Bearer <token>") };

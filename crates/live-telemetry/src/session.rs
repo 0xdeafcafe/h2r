@@ -67,6 +67,9 @@ pub struct Session {
     current: Option<Match>,
     /// Set while the console is in a matchmaking game: (name, id).
     playlist: Option<(String, String)>,
+    /// The `MapId` of the map the next game starts on, when a package
+    /// serves it (None: the disc's own map).
+    map_id: Option<live_proto::maps::MapId>,
     output: Vec<Output>,
 }
 
@@ -78,6 +81,7 @@ impl Session {
             signed_in: None,
             current: None,
             playlist: None,
+            map_id: None,
             output: Vec::new(),
         }
     }
@@ -101,6 +105,12 @@ impl Session {
     /// `None` makes them custom games.
     pub fn set_playlist(&mut self, playlist: Option<(String, String)>) {
         self.playlist = playlist;
+    }
+
+    /// The loaded map's `MapId` for the games that start from now on
+    /// (`NewGame.map_id`, docs/maps.md §5).
+    pub fn set_map_id(&mut self, map_id: Option<live_proto::maps::MapId>) {
+        self.map_id = map_id;
     }
 
     pub fn take_output(&mut self) -> Vec<Output> {
@@ -179,6 +189,7 @@ impl Session {
             difficulty,
             // Live co-op does not exist yet.
             online: None,
+            map_id: self.map_id,
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),
@@ -1209,6 +1220,19 @@ mod tests {
         let game: live_proto::game::GameStarted = serde_json::from_value(event.data).unwrap();
         assert_eq!(live_proto::game::validate_new(&game.game), Ok(()));
         game.game
+    }
+
+    #[test]
+    fn games_carry_the_loaded_maps_id() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(started(&mut session).map_id, None, "the disc's map");
+        let id = live_proto::maps::MapId([3; 32]);
+        session.set_map_id(Some(id));
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.map_id, Some(id));
+        assert_eq!(game.map, info().map, "map stays the base map's name");
     }
 
     #[test]

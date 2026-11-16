@@ -151,6 +151,11 @@ after the old end of the metadata.
 ```rust
 pub fn new() -> Self
 pub fn open(&mut self, source: MapSource) -> Result<()>   // a .map file, or a map inside an XISO
+pub fn open_named(&mut self, source: MapSource, name: &str) -> Result<()>
+pub fn set_data_root(&mut self, root: impl Into<PathBuf>) // packages in <root>/maps
+pub fn save_package(&mut self, form: &PackageForm) -> Result<SavedPackage>
+pub fn packages(&self) -> Vec<content::Package>          // for the open map
+pub fn open_package(&mut self, dir: &str) -> Result<content::MapId>
 pub fn open_disc(&mut self, iso: &Path) -> Result<()>     // fills the map picker
 pub fn ui(&mut self, ui: &mut egui::Ui, render: &egui_wgpu::RenderState)
 pub fn is_dirty(&self) -> bool
@@ -166,7 +171,8 @@ pub fn set_allow_growth(&mut self, allow: bool)
 ```
 
 - **Toolbar:** a path box (a `.map`, or an `.iso` to list its maps), undo,
-  redo, save-as path. Cmd/Ctrl+Z undoes, Cmd+Shift+Z or Cmd+Y redoes.
+  redo, save-as path (the `.map` export), **Save as package...** and
+  **Open package...** (§5), and the last package's `MapId`. Cmd/Ctrl+Z undoes, Cmd+Shift+Z or Cmd+Y redoes.
 - **Outliner:** blocks, then entries labelled with the base name of their
   palette tag or item, read from the map's own tag names at run time.
   **Delete** and **Duplicate** buttons act on the selection; right-click
@@ -202,6 +208,43 @@ also binary-only. Moving both into a small shared library would let the
 editor draw object render models too.
 
 ## 5. How a patched map reaches the game
+
+### As a map package (the default)
+
+**Save as package...** writes a map package ([maps.md](maps.md) §1, §8)
+into `<data>/maps/<dir>/`, where `<data>` is the runtime's data root
+(`h2-editor --data`, default `$TMPDIR/h2boot-data`, as `h2 play`). The
+form asks for a name (required), author, description, an optional image
+(PNG or JPEG, at most 512 KB, checked before anything is written), the
+directory (default `<map>-edit`) and whether to make it the active package
+for the map (`active.toml`). The package is:
+
+- `manifest.toml`: `[base]` the disc map's name and SHA-256; one
+  `[[patch]]`; `[result] geometry` (maps.md, "The geometry hash");
+- the patch, base to current: PPF3 when the map kept its length, BPS
+  when a block grew (§6);
+- `preview.png` or `preview.jpg`, if given.
+
+The status line and toolbar show the package's `MapId`. The disc and the
+source map are only read; the package directory appears whole or not at
+all. The runtime serves it as `D:\maps\<map>.map` at the next boot
+(maps.md §7): the active one, else the one whose directory sorts last.
+
+**Open package...** lists the packages for the open map in `<data>/maps`
+(name, directory, `MapId`). Opening one resolves it over the disc's map
+exactly as the runtime does and makes the result the unedited state, so
+further edits extend it; it is refused while there are unsaved edits, as
+switching maps is. Saving to the same directory replaces its patch with a
+new one from the base to the current state, so a package always has one
+layer. Saving to another existing directory is refused.
+
+Tests (synthetic maps): the resolved package equals the edited map, PPF3
+and BPS; manifest contents and a stable `MapId`; reopen, edit and save
+again (one layer, both edits); image validation; `active.toml`; refusal
+over unsaved edits. The ignored disc test `disc_package_round_trip` does
+the same on the first multiplayer map of the owner's disc.
+
+### As a whole `.map` (export)
 
 Through a map override directory. Save the edited map under the disc's
 file name in a directory of your choosing, and start the game with

@@ -10,6 +10,7 @@ pub mod game;
 pub mod hopper;
 pub mod jcs;
 pub mod mailbox;
+pub mod maps;
 pub mod motd;
 pub mod session;
 pub mod sign;
@@ -276,6 +277,10 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
+    /// Content uploads, package publishing and reports (docs/maps.md §5).
+    pub const CONTENT_WRITE: &str = "content.write";
+    /// Admin moderation of uploaded content and hopper pins.
+    pub const CONTENT_MODERATE: &str = "content.moderate";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
 }
@@ -567,6 +572,9 @@ pub enum ErrorCode {
     NotFound,
     /// 409: taken, replayed, or a version race.
     Conflict,
+    /// 410: there was such a thing, and an admin took it down (hidden,
+    /// deleted or blocked content, docs/live-admin.md).
+    Gone,
     /// 413.
     TooLarge,
     /// 429.

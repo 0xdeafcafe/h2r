@@ -1,5 +1,5 @@
 //! Our own list screen class (docs/feature-engine.md "UI step b"): a screen
-//! of ours with no retail function patched for it.
+//! of the `ui` model with no retail function patched for it.
 //!
 //! **What it is.** A Controls-shaped screen (the Controls tag's layout,
 //! built by the Controls constructor) whose screen and list handler point
@@ -9,29 +9,25 @@
 //! - **loader**: what `0x149f1e` is handed. It does what the Controls loader
 //!   does (allocate, construct, push), and between construct and push it
 //!   adopts the screen: our vtables, our row chosen in the press record, and
-//!   the rows trimmed to the source's.
-//! - **row text** (list slot 20): the source's texts for the item's row
-//!   (label and value), and, for a class with a description, the focused
-//!   row's description when the focus moved.
-//! - **row chosen** (the press record's function): the source's press.
+//!   the rows trimmed to the model's.
+//! - **row text** (list slot 20): the model's label and value for the item's
+//!   row, and, for a class with a description, the focused row's
+//!   description when the focus moved.
+//! - **row chosen** (the press record's function): the model's press.
 //! - **set up pane** (screen slot 18): the retail one, then our title on the
 //!   header text widget and, for a class with a description, its text widget
 //!   (made by the pane builder's own text step from a block of ours).
 //! - **loader slot** (screen slot 26): our loader, so the screen manager
 //!   re-opens it as ours.
 //!
-//! What a screen shows comes from a [`Source`]: a `ui` model screen
-//! ([`ModelSource`], the Video screen) or any other (the Skulls screen's,
-//! per profile).
-//!
 //! Nothing here tells our screens apart from retail ones at run time: the
-//! retail functions never see them. Rows: the Controls constructor builds
-//! six (seven with the speaker row); while our loader constructs, the list
-//! hook (`layout_glue`) builds at least [`building_rows`], so a class can
-//! have more rows than the six item widgets, and the list scrolls as retail
-//! lists with more rows than items do. Adopting trims the array to the
-//! source's count.
+//! retail functions never see them. The rows' datum array is built at our
+//! count: while our loader runs the Controls constructor, the datum array
+//! constructor's hook (`layout_glue`, `0x1a480d`) asks [`array_count`].
+//! Past six rows the list scrolls through the Controls list's six item
+//! widgets.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -48,62 +44,34 @@ use crate::ui::{Chosen, List, Model};
 /// adopt the screen.
 pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
 
-/// What one of our list screens shows. Every method may take the settings
-/// store's lock: none is called with guest memory held.
-pub trait Source: Send + Sync {
-    /// How many rows the screen has (fixed for the class).
-    fn rows(&self) -> usize;
+/// Our entries and vtable copies, once built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Entries {
+    pub loader: u32,
+    pub row_text: u32,
+    pub row_chosen: u32,
+    pub setup_pane: u32,
+    pub loader_slot: u32,
+    /// Our copy of the Controls screen vtable, then of the list's.
+    pub screen_vtable: u32,
+    pub list_vtable: u32,
+}
+
+/// What a screen of our class shows. Every call is made with no guest
+/// memory held (the settings store may be read or written).
+pub trait Rows: Send + Sync {
     /// The title's string id.
     fn title(&self) -> u32;
-    /// `(text slot, string id)` for each text of row `row`; empty for no
-    /// such row.
+    /// The rows when the screen opens.
+    fn count(&self) -> usize;
+    /// `(text index, string id)` for each text of row `row`.
     fn texts(&self, row: i16) -> Vec<(u32, u32)>;
-    /// A press on row `row`: what to log, if anything.
-    fn press(&self, row: i16) -> Option<String>;
+    /// A press on row `row`.
+    fn press(&self, row: i16) -> Chosen;
     /// The description's string id for row `row`, for a class with a
-    /// description text.
+    /// description text ([`ListClass::description`]).
     fn description(&self, _row: i16) -> Option<u32> {
         None
-    }
-}
-
-/// A `ui` model screen as a [`Source`].
-pub struct ModelSource {
-    pub model: Arc<Model>,
-    pub screen: &'static str,
-}
-
-impl ModelSource {
-    fn list(&self) -> List {
-        List::Screen(self.screen)
-    }
-}
-
-impl Source for ModelSource {
-    fn rows(&self) -> usize {
-        self.model.rows(self.list()).len()
-    }
-    fn title(&self) -> u32 {
-        self.model.title_id(self.screen).unwrap_or(0)
-    }
-    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        self.model
-            .row(self.list(), row)
-            .map(|r| self.model.texts(r).to_vec())
-            .unwrap_or_default()
-    }
-    fn press(&self, row: i16) -> Option<String> {
-        match self
-            .model
-            .row(self.list(), row)
-            .map(|r| self.model.press(r))
-        {
-            Some(Chosen::Stepped(msg)) => Some(msg),
-            Some(Chosen::Open(id)) => {
-                Some(format!("ui: {id} is not opened from a screen of ours yet"))
-            }
-            Some(Chosen::Nothing) | None => None,
-        }
     }
 }
 
@@ -118,6 +86,9 @@ pub struct TextBlock {
     /// Red, green, blue.
     pub colour: [f32; 3],
 }
+
+/// A text block definition's size.
+pub const TEXT_BLOCK_SIZE: u32 = 0x2c;
 
 impl TextBlock {
     /// The block's bytes: left-justified (flags bit 0), the larger text
@@ -135,9 +106,6 @@ impl TextBlock {
         b
     }
 }
-
-/// A text block definition's size.
-pub const TEXT_BLOCK_SIZE: u32 = 0x2c;
 
 /// The description widget of each open screen of a class and the row it
 /// shows, so row text sets it only when the focus moved.
@@ -185,47 +153,117 @@ impl Shown {
     }
 }
 
-/// Our entries and vtable copies, once built.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Entries {
-    pub loader: u32,
-    pub row_text: u32,
-    pub row_chosen: u32,
-    pub setup_pane: u32,
-    pub loader_slot: u32,
-    /// Our copy of the Controls screen vtable, then of the list's.
-    pub screen_vtable: u32,
-    pub list_vtable: u32,
-}
-
 /// Where the description's text block goes in the class's table page.
 const DESCRIPTION_BLOCK: u32 = 0x100;
+
+/// Where a class's description block goes, the block, and where to keep
+/// each screen's widget.
+#[derive(Clone)]
+pub struct Description {
+    pub at: u32,
+    pub block: TextBlock,
+    pub shown: Arc<Shown>,
+}
+
+/// A screen of the `ui` model.
+pub struct ModelRows {
+    pub model: Arc<Model>,
+    pub screen: &'static str,
+}
+
+impl Rows for ModelRows {
+    fn title(&self) -> u32 {
+        self.model.title_id(self.screen).unwrap_or(0)
+    }
+    fn count(&self) -> usize {
+        self.model.rows(List::Screen(self.screen)).len()
+    }
+    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        self.model
+            .row(List::Screen(self.screen), row)
+            .map(|r| self.model.texts(r).to_vec())
+            .unwrap_or_default()
+    }
+    fn press(&self, row: i16) -> Chosen {
+        self.model
+            .row(List::Screen(self.screen), row)
+            .map_or(Chosen::Nothing, |r| self.model.press(r))
+    }
+}
+
+/// The loaders of the classes built so far, by screen id, so an `Open` row
+/// (on a screen of ours or on a retail list) finds the screen it names.
+static LOADERS: Mutex<BTreeMap<&'static str, u32>> = Mutex::new(BTreeMap::new());
+
+/// The loader of our screen `screen`, once its class is built.
+pub fn loader_of(screen: &str) -> Option<u32> {
+    LOADERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(screen)
+        .copied()
+}
+
+/// The rows our loader is building a screen with (0: no loader of ours is
+/// running the Controls constructor).
+static BUILDING: AtomicU32 = AtomicU32::new(0);
+
+/// The count the datum array named `name` is built with, `count` being what
+/// the game asks for: while one of our loaders runs the Controls
+/// constructor, the Controls rows' array gets the screen's row count. No
+/// list destructor frees the array at `list + 0x70` (`0x2b7563`, `0x2376c8`,
+/// `0x1474e8`, `0x22e34b` read 2026-11-16), so it is sized when it is made
+/// rather than replaced after.
+pub fn array_count(name: u32, count: u32) -> u32 {
+    match BUILDING.load(Ordering::SeqCst) {
+        n if n != 0 && name == crate::speaker_row::LIST_NAME => n,
+        _ => count,
+    }
+}
+
+/// Clears [`BUILDING`] when the constructor call ends, however it ends.
+struct Building;
+
+impl Building {
+    fn start(rows: usize) -> Self {
+        BUILDING.store(u32::try_from(rows).unwrap_or(0), Ordering::SeqCst);
+        Building
+    }
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        BUILDING.store(0, Ordering::SeqCst);
+    }
+}
 
 /// A screen of ours as our own list class. See the module docs.
 pub struct ListClass {
     /// The feature id (`features.<id>` switches it).
     pub id: &'static str,
-    source: Arc<dyn Source>,
+    /// The screen id an `Open` row names.
+    pub screen: &'static str,
+    rows: Arc<dyn Rows>,
     description: Option<TextBlock>,
     loader: Arc<AtomicU32>,
 }
 
 impl ListClass {
-    /// The `ui` model screen `screen` as a list class.
+    /// The model's screen `screen`.
     pub fn new(id: &'static str, screen: &'static str, model: Arc<Model>) -> Self {
-        Self::with_source(id, Arc::new(ModelSource { model, screen }))
+        Self::with_rows(id, screen, Arc::new(ModelRows { model, screen }))
     }
-    /// A list class showing `source`.
-    pub fn with_source(id: &'static str, source: Arc<dyn Source>) -> Self {
+    /// A screen whose rows come from elsewhere.
+    pub fn with_rows(id: &'static str, screen: &'static str, rows: Arc<dyn Rows>) -> Self {
         ListClass {
             id,
-            source,
+            screen,
+            rows,
             description: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
-    /// With a description text: the focused row's
-    /// [`Source::description`].
+    /// With a description text: the focused row's [`Rows::description`].
     pub fn description(mut self, block: TextBlock) -> Self {
         self.description = Some(block);
         self
@@ -235,16 +273,6 @@ impl ListClass {
     pub fn loader(&self) -> u32 {
         self.loader.load(Ordering::SeqCst)
     }
-}
-
-/// The rows our loader is constructing a list for (0: none). The list hook
-/// builds the Controls list with at least this many.
-static BUILDING: AtomicU32 = AtomicU32::new(0);
-
-/// The row count the Controls list our loader is constructing needs, or 0
-/// when no loader of ours is constructing one.
-pub fn building_rows() -> u32 {
-    BUILDING.load(Ordering::SeqCst)
 }
 
 /// Writes our vtables: the Controls ones as the game has them, with our
@@ -282,8 +310,10 @@ pub enum Adopted {
 }
 
 /// Makes the Controls screen at `screen` ours: vtables, row chosen, and the
-/// rows trimmed to `rows` (as many as the array has, at most). The loaded
-/// byte is set as the Controls loader sets it.
+/// rows trimmed to `rows`. Rows cannot be added here: the array is built
+/// with the count the loader asked for ([`array_count`]), and a screen
+/// opened some other way keeps what its constructor made. The loaded byte
+/// is set as the Controls loader sets it.
 pub fn adopt(
     m: &mut dyn GuestMemory,
     screen: u32,
@@ -340,7 +370,14 @@ fn once(seen: &AtomicBool, what: &str) {
 /// The loader: the Controls loader's steps with the adoption in between.
 /// Stdcall, the request, `ret 4`; the screen in EAX (0 when allocation
 /// failed, where the retail loader would write through null).
-pub async fn load(cx: Cx, e: Entries, rows: usize, name: &'static str) -> Result<Ret, EntryError> {
+pub async fn load(
+    cx: Cx,
+    e: Entries,
+    rows: Arc<dyn Rows>,
+    name: &'static str,
+) -> Result<Ret, EntryError> {
+    // The rows are counted with no guest memory held.
+    let rows = rows.count();
     let request = cx.arg(0)?;
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -357,20 +394,16 @@ pub async fn load(cx: Cx, e: Entries, rows: usize, name: &'static str) -> Result
             u32::from(m.u16(request + 2)?),
         ))
     })?;
-    BUILDING.store(rows as u32, Ordering::SeqCst);
-    let built = cx
-        .call(
+    {
+        let _building = Building::start(rows);
+        cx.call(
             GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
                 .edi(screen)
                 .args([a, b, player]),
         )
-        .await;
-    BUILDING.store(0, Ordering::SeqCst);
-    built?;
+        .await?;
+    }
     match cx.write(|m| adopt(m, screen, &e, rows))? {
-        Adopted::Ours { rows: n } if n < rows => eprintln!(
-            "{name}: opened with {n} rows of {rows} (our list class; the list was built with {n})"
-        ),
         Adopted::Ours { rows } => eprintln!("{name}: opened with {rows} rows (our list class)"),
         Adopted::NotControls(why) => {
             eprintln!(
@@ -387,32 +420,9 @@ pub async fn load(cx: Cx, e: Entries, rows: usize, name: &'static str) -> Result
     Ok(Ret::new(screen, 4))
 }
 
-/// Sets text widget `text` (a child of `parent`) to string `id`.
-async fn set_text(cx: &Cx, text: u32, parent: u32, id: u32) -> Result<(), EntryError> {
-    cx.call(
-        GuestCall::new(points::TEXT_SET.base)
-            .edi(text)
-            .esi(parent)
-            .args([id]),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Row text (list slot 20): thiscall on the list, the item and a word,
-/// `ret 8`. Each of the row's texts goes to the item's text widget of that
-/// index. With `shown` (a class with a description), the focused row's
-/// description goes to the screen's description widget when the focus has
-/// moved since the last draw.
-pub async fn row_text(
-    cx: Cx,
-    source: Arc<dyn Source>,
-    shown: Option<Arc<Shown>>,
-) -> Result<Ret, EntryError> {
-    let item = cx.arg(0)?;
-    let row = cx.read(|m| item_row(m, item))?;
-    // The source reads the settings store; no guest memory is held here.
-    let texts = row.map(|r| source.texts(r)).unwrap_or_default();
+/// Sets each `(text index, string id)` on the item widget `item`'s text
+/// widget of that index (`ITEM_TEXT`, then `TEXT_SET`), as row text does.
+pub async fn draw_texts(cx: &Cx, item: u32, texts: Vec<(u32, u32)>) -> Result<(), EntryError> {
     for (index, id) in texts {
         let text = cx
             .call(
@@ -423,9 +433,59 @@ pub async fn row_text(
             .await?
             .eax;
         if text != 0 {
-            set_text(&cx, text, item, id).await?;
+            cx.call(
+                GuestCall::new(points::TEXT_SET.base)
+                    .edi(text)
+                    .esi(item)
+                    .args([id]),
+            )
+            .await?;
         }
     }
+    Ok(())
+}
+
+/// The player mask of a list callback whose first argument is the player
+/// chain (`[[chain]]+4` the local player index): `1 << index`, or `None`
+/// past the four local players.
+pub fn player_mask(m: &dyn GuestMemory, chain: u32) -> Result<Option<u32>, MemFault> {
+    let record = m.u32(chain)?;
+    let index = m.u32(record.wrapping_add(4))?;
+    Ok((index < 4).then(|| 1 << index))
+}
+
+/// Opens our screen `screen` for the player of `chain` (`0x149f1e(mask,
+/// loader)`). Says why when it cannot.
+pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
+    let Some(loader) = loader_of(screen) else {
+        eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
+        return Ok(());
+    };
+    let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
+        eprintln!("ui: no local player for the press; {screen} not opened");
+        return Ok(());
+    };
+    eprintln!("ui: opening {screen}");
+    cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([mask, loader]))
+        .await?;
+    Ok(())
+}
+
+/// Row text (list slot 20): thiscall on the list, the item and a word,
+/// `ret 8`. Each of the row's texts goes to the item's text widget of that
+/// index. With `shown` (a class with a description), the focused row's
+/// description goes to the screen's description widget when the focus has
+/// moved since the last draw.
+pub async fn row_text(
+    cx: Cx,
+    rows: Arc<dyn Rows>,
+    shown: Option<Arc<Shown>>,
+) -> Result<Ret, EntryError> {
+    let item = cx.arg(0)?;
+    let row = cx.read(|m| item_row(m, item))?;
+    // The rows read the settings store; no guest memory is held here.
+    let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
+    draw_texts(&cx, item, texts).await?;
     if let Some(shown) = shown {
         let list = cx.entry().ecx;
         let screen = list.wrapping_sub(ui::LIST);
@@ -435,33 +495,33 @@ pub async fn row_text(
             .eax;
         let focused = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
         if let Some(widget) = shown.focus(screen, focused)
-            && let Some(id) = focused.and_then(|r| source.description(r))
+            && let Some(id) = focused.and_then(|r| rows.description(r))
         {
-            set_text(&cx, widget, screen, id).await?;
+            cx.call(
+                GuestCall::new(points::TEXT_SET.base)
+                    .edi(widget)
+                    .esi(screen)
+                    .args([id]),
+            )
+            .await?;
         }
     }
     Ok(Ret::new(0, 8))
 }
 
 /// Row chosen (the press record's function): thiscall, the player chain and
-/// a pointer to the row, `ret 8`. The source's press; nothing is called.
-pub async fn row_chosen(cx: Cx, source: Arc<dyn Source>) -> Result<Ret, EntryError> {
-    let at = cx.arg(1)?;
+/// a pointer to the row, `ret 8`. A setting row steps; an open row opens
+/// the screen of ours it names.
+pub async fn row_chosen(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> {
+    let (chain, at) = (cx.arg(0)?, cx.arg(1)?);
     let row = cx.read(|m| m.u16(at))? as i16;
     // The store is written with no guest memory held.
-    if let Some(msg) = source.press(row) {
-        eprintln!("{msg}");
+    match rows.press(row) {
+        Chosen::Stepped(msg) => eprintln!("{msg}"),
+        Chosen::Open(id) => open(&cx, chain, id).await?,
+        _ => {}
     }
     Ok(Ret::new(0, 8))
-}
-
-/// Where a class's description block goes, the block, and where to keep
-/// each screen's widget.
-#[derive(Clone)]
-pub struct Description {
-    pub at: u32,
-    pub block: TextBlock,
-    pub shown: Arc<Shown>,
 }
 
 /// Screen slot 18: the retail pane set-up, then our title on the header,
@@ -483,7 +543,13 @@ pub async fn setup_pane(
                 .args([arg]),
         )
         .await?;
-    set_text(&cx, Screen::at(screen).header(), screen, title).await?;
+    cx.call(
+        GuestCall::new(points::TEXT_SET.base)
+            .edi(Screen::at(screen).header())
+            .esi(screen)
+            .args([title]),
+    )
+    .await?;
     if let Some(d) = description {
         cx.write(|m| m.write(d.at, &d.block.bytes()))?;
         let widget = cx
@@ -509,8 +575,8 @@ impl feature::Feature for ListClass {
             .doc("docs/feature-engine.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        let rows = self.source.rows();
-        let title = self.source.title();
+        let rows = Arc::clone(&self.rows);
+        let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
         let name = self.id;
         let shown = self.description.map(|_| Arc::new(Shown::default()));
@@ -519,23 +585,24 @@ impl feature::Feature for ListClass {
         let cell = Arc::new(std::sync::OnceLock::<Entries>::new());
         let loader = {
             let cell = Arc::clone(&cell);
+            let rows = Arc::clone(&rows);
             b.entry("loader", move |cx| -> EntryFuture {
                 let e = *cell.get().expect("entries are set at build");
-                Box::pin(load(cx, e, rows, name))
+                Box::pin(load(cx, e, Arc::clone(&rows), name))
             })?
         };
         let row_text_at = {
-            let (source, shown) = (Arc::clone(&self.source), shown.clone());
+            let (rows, shown) = (Arc::clone(&rows), shown.clone());
             let seen = Arc::new(AtomicBool::new(false));
             b.entry("row text", move |cx| -> EntryFuture {
                 once(&seen, &format!("{name}: row text"));
-                Box::pin(row_text(cx, Arc::clone(&source), shown.clone()))
+                Box::pin(row_text(cx, Arc::clone(&rows), shown.clone()))
             })?
         };
         let row_chosen_at = {
-            let source = Arc::clone(&self.source);
+            let rows = Arc::clone(&rows);
             b.entry("row chosen", move |cx| -> EntryFuture {
-                Box::pin(row_chosen(cx, Arc::clone(&source)))
+                Box::pin(row_chosen(cx, Arc::clone(&rows)))
             })?
         };
         let description = self
@@ -563,6 +630,10 @@ impl feature::Feature for ListClass {
         };
         cell.set(e).ok();
         self.loader.store(loader, Ordering::SeqCst);
+        LOADERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.screen, loader);
         Ok(())
     }
 }
@@ -595,15 +666,73 @@ mod tests {
         }
     }
 
-    fn model() -> Arc<Model> {
-        Arc::new(video_screen::model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap())
-    }
-
-    fn video(m: &Arc<Model>) -> Arc<dyn Source> {
-        Arc::new(ModelSource {
-            model: Arc::clone(m),
+    fn video_rows() -> Arc<dyn Rows> {
+        Arc::new(ModelRows {
+            model: model(),
             screen: video_screen::SCREEN,
         })
+    }
+
+    /// One row that opens `target`.
+    struct Opens(&'static str);
+    impl Rows for Opens {
+        fn title(&self) -> u32 {
+            0
+        }
+        fn count(&self) -> usize {
+            1
+        }
+        fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+            Vec::new()
+        }
+        fn press(&self, _: i16) -> Chosen {
+            Chosen::Open(self.0)
+        }
+    }
+
+    /// A press on row 0 by local player `player` of a screen whose row opens
+    /// `target`: the calls made.
+    fn press_open(target: &'static str, player: u32) -> Vec<Gc> {
+        let mut g = guest();
+        g.put_u32(STACK + 4, 0x0071_0000)
+            .put_u32(0x0071_0000, 0x0072_0000)
+            .put_u32(0x0072_0004, player);
+        g.put_u32(STACK + 8, 0x0070_0000).put_u16(0x0070_0000, 0);
+        let f = move |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::new(Opens(target)))) };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |_, _| Regs::default());
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        run.calls
+    }
+
+    #[test]
+    fn an_open_row_opens_another_screen_of_ours_for_the_pressing_player() {
+        LOADERS
+            .lock()
+            .unwrap()
+            .insert("test-open-target", 0xa0f0_5000);
+        assert_eq!(
+            press_open("test-open-target", 2),
+            [Gc::new(points::OPEN_SCREEN.base).args([1 << 2, 0xa0f0_5000])]
+        );
+        assert_eq!(press_open("test-open-missing", 0), [], "not ours");
+        assert_eq!(press_open("test-open-target", 4), [], "no local player");
+    }
+
+    #[test]
+    fn a_built_class_is_found_by_its_screen_id() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let class = ListClass::with_rows("test-found", "test-found-screen", Arc::new(Opens("x")));
+        r.add(&class).unwrap();
+        assert_eq!(loader_of("test-found-screen"), Some(class.loader()));
+        assert_eq!(loader_of("test-never-built"), None);
+    }
+
+    fn model() -> Arc<Model> {
+        Arc::new(video_screen::model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap())
     }
 
     /// The retail vtables (synthetic slot values) and a stack.
@@ -677,27 +806,15 @@ mod tests {
         assert_eq!(ui::slot(&g, TABLES, 1), Ok(0xbad));
     }
 
-    /// More rows than the six item widgets stay: the list scrolls, as the
-    /// retail difficulty list does with our fifth row on four items. The
-    /// array has what the list hook built, at most.
     #[test]
-    fn more_rows_than_item_widgets_are_kept_up_to_the_array() {
-        let mut g = guest();
-        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
-            .map(ROWS - 0x20, 0x200);
-        construct(&mut g, 15);
-        assert_eq!(
-            adopt(&mut g, SCREEN, &entries(), 15),
-            Ok(Adopted::Ours { rows: 15 })
-        );
+    fn more_rows_than_the_array_holds_are_cut_to_its_size() {
         let mut g = guest();
         g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
             .map(ROWS - 0x20, 0x200);
         construct(&mut g, 7);
         assert_eq!(
             adopt(&mut g, SCREEN, &entries(), 9),
-            Ok(Adopted::Ours { rows: 7 }),
-            "the list was built with seven"
+            Ok(Adopted::Ours { rows: 7 })
         );
     }
 
@@ -723,10 +840,14 @@ mod tests {
         assert_eq!(g.u32(TABLES), Ok(0), "no tables written");
     }
 
+    /// Loader tests run one at a time: the array count is process-wide.
+    static LOADING: Mutex<()> = Mutex::new(());
+
     /// The loader against fake callees: allocate, construct (the fake builds
     /// what the Controls constructor builds), adopt, push.
     #[test]
     fn the_loader_allocates_constructs_adopts_and_pushes() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
         let mut g = guest();
         g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
             .map(ROWS - 0x20, 0x200);
@@ -735,15 +856,18 @@ mod tests {
             .put_u32(REQUEST + 8, 4);
         g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
         let e = entries();
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, 4, "test")) };
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, video_rows(), "test")) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
         };
-        let mut building = Vec::new();
+        let during = std::sync::Mutex::new(None);
         let run = testing::run(&f, g, regs, |c, m| {
-            building.push(building_rows());
             if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                *during.lock().unwrap() = Some((
+                    array_count(crate::speaker_row::LIST_NAME, 7),
+                    array_count(0x1234, 7),
+                ));
                 construct(m, 7);
             }
             Regs {
@@ -778,16 +902,73 @@ mod tests {
         );
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
-        // The list hook is told the rows while the constructor runs only.
-        assert_eq!(building, [0, 4, 0]);
-        assert_eq!(building_rows(), 0);
+        // While the constructor ran, the Controls rows' array was asked for
+        // our four rows; any other array, and anything after, as asked.
+        assert_eq!(*during.lock().unwrap(), Some((4, 7)));
+        assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
+    }
+
+    #[test]
+    fn a_screen_of_fifteen_rows_gets_an_array_of_fifteen() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        struct Fifteen;
+        impl Rows for Fifteen {
+            fn title(&self) -> u32 {
+                0
+            }
+            fn count(&self) -> usize {
+                15
+            }
+            fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+                Vec::new()
+            }
+            fn press(&self, _: i16) -> Chosen {
+                Chosen::Nothing
+            }
+        }
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x400);
+        g.put_u16(REQUEST + 2, 0)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::new(Fifteen), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                // The fake constructor builds what the hook would have it
+                // build.
+                construct(m, array_count(crate::speaker_row::LIST_NAME, 6) as usize);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base {
+                    SCREEN
+                } else {
+                    0
+                },
+                ..Default::default()
+            }
+        });
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        let live = Screen::at(SCREEN)
+            .list()
+            .row_array(&run.guest)
+            .unwrap()
+            .live(&run.guest, 32)
+            .unwrap();
+        assert_eq!(live.len(), 15);
     }
 
     #[test]
     fn a_failed_allocation_opens_nothing() {
         let mut g = guest();
         g.put_u32(STACK + 4, REQUEST);
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), 4, "test")) };
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), video_rows(), "test")) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -812,8 +993,17 @@ mod tests {
         let list = video_screen::LIST;
         let want = m.texts(m.row(list, 1).unwrap()).to_vec();
         let f = {
-            let s = video(&m);
-            move |cx| -> EntryFuture { Box::pin(row_text(cx, Arc::clone(&s), None)) }
+            let m = Arc::clone(&m);
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(
+                    cx,
+                    Arc::new(ModelRows {
+                        model: Arc::clone(&m),
+                        screen: video_screen::SCREEN,
+                    }),
+                    None,
+                ))
+            }
         };
         let regs = Regs {
             esp: STACK,
@@ -854,8 +1044,16 @@ mod tests {
         let mut g = guest();
         g.put_u32(STACK + 8, 0x0070_0000).put_u16(0x0070_0000, 1); // Frame Rate
         let f = {
-            let s = video(&m);
-            move |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::clone(&s))) }
+            let m = Arc::clone(&m);
+            move |cx| -> EntryFuture {
+                Box::pin(row_chosen(
+                    cx,
+                    Arc::new(ModelRows {
+                        model: Arc::clone(&m),
+                        screen: video_screen::SCREEN,
+                    }),
+                ))
+            }
         };
         let regs = Regs {
             esp: STACK,
@@ -920,14 +1118,14 @@ mod tests {
         }
     }
 
-    /// A source with a description per row, for the description tests.
+    /// Rows with a description each, for the description tests.
     struct Described;
-    impl Source for Described {
-        fn rows(&self) -> usize {
-            15
-        }
+    impl Rows for Described {
         fn title(&self) -> u32 {
             0x77
+        }
+        fn count(&self) -> usize {
+            15
         }
         fn texts(&self, row: i16) -> Vec<(u32, u32)> {
             if (0..15).contains(&row) {
@@ -936,26 +1134,12 @@ mod tests {
                 Vec::new()
             }
         }
-        fn press(&self, row: i16) -> Option<String> {
-            Some(format!("pressed {row}"))
+        fn press(&self, _row: i16) -> Chosen {
+            Chosen::Nothing
         }
         fn description(&self, row: i16) -> Option<u32> {
             (0..15).contains(&row).then_some(0x200 + row as u32)
         }
-    }
-
-    #[test]
-    fn a_model_source_is_the_model_screen() {
-        let m = model();
-        let s = video(&m);
-        let list = video_screen::LIST;
-        assert_eq!(s.rows(), m.rows(list).len());
-        assert_eq!(s.title(), m.title_id(video_screen::SCREEN).unwrap());
-        assert_eq!(s.texts(1), m.texts(m.row(list, 1).unwrap()).to_vec());
-        assert!(s.texts(9).is_empty());
-        assert_eq!(s.description(1), None);
-        assert_eq!(s.press(1).as_deref(), Some("graphics.fps: 60"));
-        assert_eq!(s.press(9), None);
     }
 
     #[test]
@@ -1066,7 +1250,7 @@ mod tests {
         let list = SCREEN + ui::LIST;
         let shown = Arc::new(Shown::default());
         shown.set_widget(SCREEN, 0x9000);
-        let source: Arc<dyn Source> = Arc::new(Described);
+        let rows: Arc<dyn Rows> = Arc::new(Described);
         let draw = |focused: u32| {
             let mut g = guest();
             g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
@@ -1075,7 +1259,7 @@ mod tests {
                 .set_row(&mut g, Some(DatumHandle::new(0x8001, 9)))
                 .unwrap();
             let f = {
-                let (s, shown) = (Arc::clone(&source), Arc::clone(&shown));
+                let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
                 move |cx| -> EntryFuture {
                     Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown))))
                 }
@@ -1120,23 +1304,10 @@ mod tests {
     }
 
     #[test]
-    fn row_chosen_logs_the_sources_press() {
-        let mut g = guest();
-        g.put_u32(STACK + 8, 0x0070_0000).put_u16(0x0070_0000, 4);
-        let f = |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::new(Described))) };
-        let regs = Regs {
-            esp: STACK,
-            ..Default::default()
-        };
-        let run = testing::run(&f, g, regs, |_, _| unreachable!("no guest call"));
-        assert_eq!(run.result, Ok(Ret::new(0, 8)));
-    }
-
-    #[test]
-    fn a_class_with_a_source_and_description_places_the_same_entries() {
+    fn a_class_with_a_description_places_the_same_entries() {
         let mut r = feature::Registry::new(feature::Switches::defaults());
-        let class =
-            ListClass::with_source("described", Arc::new(Described)).description(TextBlock {
+        let class = ListClass::with_rows("described", "described", Arc::new(Described))
+            .description(TextBlock {
                 rect: [1, 2, 3, 4],
                 font: 1,
                 colour: [1.0; 3],

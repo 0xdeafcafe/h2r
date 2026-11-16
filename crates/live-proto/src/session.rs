@@ -1,5 +1,6 @@
 //! Session advertisements: public discovery data, never the exchange key.
 use crate::Xuid;
+pub use content::MapId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, net::Ipv4Addr};
 pub const CREATED: &str = "SessionCreated";
@@ -132,6 +133,12 @@ pub struct NewSession {
     /// older servers and logs read the same bytes.
     #[serde(default, skip_serializing_if = "Visibility::is_public")]
     pub visibility: Visibility,
+    /// Exactly which map (docs/maps.md §5): the base plus layers the host
+    /// has loaded, beside `map`, its name. None for a host that does not
+    /// say (every one before this field); omitted on the wire then, so
+    /// older servers and logs read the same bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<MapId>,
 }
 fn custom() -> String {
     "custom".into()
@@ -160,6 +167,10 @@ pub struct Update {
     pub map: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
+    /// A new `map_id` (the host changed map). A session cannot go back to
+    /// none: it is the same session on some map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<MapId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +251,9 @@ impl Session {
         }
         if let Some(v) = u.visibility {
             next.visibility = v;
+        }
+        if let Some(v) = u.map_id {
+            next.map_id = Some(v);
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -328,6 +342,7 @@ mod tests {
             name: None,
             language: None,
             visibility: Visibility::Public,
+            map_id: None,
         }
     }
     #[test]
@@ -446,6 +461,33 @@ mod tests {
                 .get("visibility")
                 .is_none()
         );
+    }
+    #[test]
+    fn map_id_is_optional_and_left_out_when_none() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.map_id, None);
+        let back = serde_json::to_value(&n).unwrap();
+        assert!(back.get("map_id").is_none(), "{back}");
+        let id = MapId([0xab; 32]);
+        let mut with = old;
+        with["map_id"] = json!(id.to_string());
+        let n: NewSession = serde_json::from_value(with).unwrap();
+        assert_eq!(n.map_id, Some(id));
+        assert_eq!(serde_json::to_value(&n).unwrap()["map_id"], json!("ab".repeat(32)));
+        let mut bad = serde_json::to_value(&n).unwrap();
+        bad["map_id"] = json!("not hex");
+        assert!(serde_json::from_value::<NewSession>(bad).is_err());
+        // Updates: absent keeps the id, present replaces it.
+        assert!(serde_json::to_value(Update::default()).unwrap().get("map_id").is_none());
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        let other = MapId([0xcd; 32]);
+        assert!(s.apply(UPDATED, &json!({"map_id": other.to_string()}), "", 102).unwrap());
+        assert_eq!(s.advertisement.map_id, Some(other));
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.map_id, Some(other));
     }
     #[test]
     fn lists_show_public_to_all_friends_to_friends_invite_to_host_only() {

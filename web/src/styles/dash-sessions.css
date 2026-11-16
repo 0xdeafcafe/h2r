@@ -25,3 +25,7 @@
   .dx-session .dx-centre { transform: translateY(calc(var(--u) * -40)) scale(.8); }
   .dx-roster { grid-template-columns: 1fr 1fr; font-size: calc(var(--u) * 15); }
 }
+
+/* A custom map (docs/maps.md §5): a small tag after its name. */
+.dx-custom-badge { display: inline-block; margin-left: calc(var(--u) * 4); padding: 0 calc(var(--u) * 5); border: calc(var(--u) * 1) solid rgba(246, 255, 154, .7); border-radius: calc(var(--u) * 3); font-size: .72em; letter-spacing: .08em; text-transform: uppercase; color: #f6ff9a !important; vertical-align: middle; }
+.dx-custom-badge--off { border-color: rgba(255, 160, 120, .7); color: #ffb08a !important; }

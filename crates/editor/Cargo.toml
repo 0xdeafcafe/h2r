@@ -25,3 +25,4 @@ map.workspace = true
 tags.workspace = true
 xiso.workspace = true
 rfd = "0.18"
+content.workspace = true

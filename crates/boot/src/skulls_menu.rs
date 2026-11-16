@@ -35,10 +35,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use settings::Store;
 
 use crate::layout_glue::{Gm, ID_BASE};
-use crate::list_class::{self, TextBlock};
+use crate::list_class::{Rows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State};
 use crate::speaker_row;
-use crate::ui::{LABEL_SLOT, VALUE_SLOT};
+use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 
 /// The difficulty list: its array name, retail rows and our row.
 pub const DIFFICULTY_LIST_NAME: u32 = 0x0045_d6e0;
@@ -264,10 +264,18 @@ impl SkullsScreen {
             .and_then(|p| skulls::state(&self.store, &p, i))
             .unwrap_or(State::Locked)
     }
+    /// A press on row `row`: what to log, `None` for no such row.
+    pub fn press_line(&self, row: i16) -> Option<String> {
+        let i = Self::skull(row)?;
+        let Some(profile) = self.profile() else {
+            return Some("skulls menu: no profile for this screen; nothing changed".into());
+        };
+        press(&self.store, &profile, i)
+    }
 }
 
-impl list_class::Source for SkullsScreen {
-    fn rows(&self) -> usize {
+impl Rows for SkullsScreen {
+    fn count(&self) -> usize {
         COUNT
     }
     fn title(&self) -> u32 {
@@ -284,12 +292,9 @@ impl list_class::Source for SkullsScreen {
         };
         vec![(LABEL_SLOT, label_id(i)), (VALUE_SLOT, value)]
     }
-    fn press(&self, row: i16) -> Option<String> {
-        let i = Self::skull(row)?;
-        let Some(profile) = self.profile() else {
-            return Some("skulls menu: no profile for this screen; nothing changed".into());
-        };
-        press(&self.store, &profile, i)
+    fn press(&self, row: i16) -> Chosen {
+        self.press_line(row)
+            .map_or(Chosen::Nothing, Chosen::Stepped)
     }
     fn description(&self, row: i16) -> Option<u32> {
         Self::skull(row).map(description_id)
@@ -303,7 +308,7 @@ const _: () = assert!(COUNT as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
 mod tests {
     use super::*;
     use crate::layout_glue::is_ours;
-    use crate::list_class::Source;
+    use crate::list_class::Rows;
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -344,7 +349,7 @@ mod tests {
 
     /// Each row as drawn: name and value text.
     fn drawn(s: &SkullsScreen) -> Vec<(String, String)> {
-        (0..s.rows() as i16)
+        (0..s.count() as i16)
             .map(|r| {
                 let t = s.texts(r);
                 assert_eq!(t.len(), 2);
@@ -358,7 +363,7 @@ mod tests {
     fn every_skull_is_listed_in_the_engines_order() {
         let s = SkullsScreen::new(store());
         s.open("Chief".into());
-        assert_eq!(s.rows(), 15);
+        assert_eq!(s.count(), 15);
         let names: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
         assert_eq!(
             names,
@@ -417,29 +422,35 @@ mod tests {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
         assert_eq!(
-            s.press(0).as_deref(),
+            s.press_line(0).as_deref(),
             Some("skulls menu: no profile for this screen; nothing changed")
         );
         s.open("Chief".into());
         assert_eq!(
-            s.press(11).as_deref(),
+            s.press_line(11).as_deref(),
             Some(
                 "skulls menu: Iron is locked for Chief: not collected yet (found on High Charity, Legendary only)"
             )
         );
         assert_eq!(
-            s.press(6).as_deref(),
+            s.press_line(6).as_deref(),
             Some("skulls menu: Blind is locked for Chief: not collected yet (found on Outskirts)")
         );
         assert_eq!(s.state(11), State::Locked, "a locked press changes nothing");
         assert_eq!(skulls::collected(&st, "Chief"), []);
         skulls::record_pickup(&st, &names(&["Chief"]), 11);
-        assert_eq!(s.press(11).as_deref(), Some("skulls: Iron off for Chief"));
+        assert_eq!(
+            s.press_line(11).as_deref(),
+            Some("skulls: Iron off for Chief")
+        );
         assert_eq!(s.state(11), State::Off);
-        assert_eq!(s.press(11).as_deref(), Some("skulls: Iron on for Chief"));
+        assert_eq!(
+            s.press_line(11).as_deref(),
+            Some("skulls: Iron on for Chief")
+        );
         assert_eq!(s.state(11), State::On);
-        assert_eq!(s.press(15), None);
-        assert_eq!(s.press(-1), None);
+        assert_eq!(s.press_line(15), None);
+        assert_eq!(s.press_line(-1), None);
     }
 
     /// What the screen leaves is what the campaign start turns on:
@@ -454,8 +465,8 @@ mod tests {
         }
         skulls::record_pickup(&st, &names(&["Arbiter"]), 7);
         s.open("Chief".into());
-        s.press(3); // Thunderstorm off
-        s.press(9); // Catch: locked, nothing
+        s.press_line(3); // Thunderstorm off
+        s.press_line(9); // Catch: locked, nothing
         let mut want = [false; COUNT];
         want[0] = true;
         want[12] = true;
@@ -463,15 +474,15 @@ mod tests {
         // Co-op: the other player turns theirs off on their own screen; the
         // start takes the union of both.
         s.open("Arbiter".into());
-        s.press(7);
+        s.press_line(7);
         let both = names(&["Chief", "Arbiter"]);
         assert_eq!(skulls::selection(&st, &both), Some(want));
-        s.press(7);
+        s.press_line(7);
         want[7] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
         // Toggling back restores it.
         s.open("Chief".into());
-        s.press(3);
+        s.press_line(3);
         want[3] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
     }

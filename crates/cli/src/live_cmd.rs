@@ -34,6 +34,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
+        [--content-layer-mib N] [--content-map-mib N] [--content-quota-mib N]
         [--tunnel | --tunnel-name NAME [--hostname HOST] [--no-tunnel-setup]
          | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
@@ -95,6 +96,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
                           game-art/ in the server directory
+  maps publish DIR [--server URL] [--as GAMERTAG]
+                          upload a map package and publish it (docs/maps.md §5)
+  maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
+                          the map packages the server has
   q <what> [--server URL] [--json|--jsonl]
                           query the service; `h2 live q --help` lists what
 
@@ -121,6 +126,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("friend", Some("remove")) => friend(rest.shift(), FriendAction::Remove),
         ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
         ("team", _) => team_command(rest),
+        ("maps", _) => crate::live_maps::run(rest),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
@@ -218,6 +224,12 @@ fn serve(mut args: Args) -> Result<()> {
         invite_only: args.flag("--invite-only"),
         admins: live_server::admin::Admins::from_flags_and_env(&admin_flags)
             .map_err(|e| anyhow::anyhow!("--admin/H2_LIVE_ADMINS: {e}"))?,
+        content: live_server::content::ContentLimits::from_flags(
+            args.take("--content-layer-mib")?,
+            args.take("--content-map-mib")?,
+            args.take("--content-quota-mib")?,
+        )
+        .map_err(anyhow::Error::msg)?,
         ..live_server::Policy::default()
     };
     let insecure_http = args.flag("--insecure-http");
@@ -975,7 +987,7 @@ pub(crate) fn team_run(
 
 /// The local account to act as on `client`'s server: the one named by
 /// `as_tag`, or the only one there.
-fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
+pub(crate) fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
     let mine: Vec<LocalAccount> = live_accounts::load(accounts)?
         .into_iter()
         .filter(|a| a.is_on(&client.base, &client.discovery.id))

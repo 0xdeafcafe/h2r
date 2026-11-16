@@ -11,6 +11,8 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod controls_text;
+pub mod coop_probe;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -21,6 +23,7 @@ pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
+pub mod retail_rows;
 pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
@@ -35,6 +38,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;
@@ -553,6 +557,21 @@ pub fn run_hosted_with_live(
     k.set_vfs(v).context("attaching the VFS")?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
+    // Which map exactly (docs/maps.md §5): a package's MapId, None for the
+    // disc's own map. Games and advertisements carry it as `map_id`.
+    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        t.set_map_id_locator(Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, map)
+        }));
+    }
+    if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
+            let name = telemetry::loaded_map_name(g).ok()?;
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            map_override::map_id(&mut v, &name)
+        })));
+    }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
@@ -601,7 +620,7 @@ pub fn run_hosted_with_live(
     };
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Games row (registered with the layouts above;
+    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
@@ -699,6 +718,11 @@ pub fn run_hosted_with_live(
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
+    // (docs/live-coop.md section 9). Added last, so it can see every
+    // override placed outside the plan and refuse instead of failing it.
+    let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

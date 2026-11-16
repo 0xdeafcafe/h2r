@@ -42,7 +42,7 @@ use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::skulls;
 use crate::skulls_menu;
 use crate::speaker_row;
-use crate::ui::{Chosen, List, Model, RowKind};
+use crate::ui::{List, Model, RowKind};
 use crate::video_screen;
 
 use input::layouts::{Action, Button, Layout};
@@ -62,7 +62,6 @@ const PANE_SET: u32 = 0x0023_0427;
 const SCREEN_TAG: u32 = 0x0022_f871;
 const TEXT_SET: u32 = 0x0025_3b1a;
 const PROFILE_ROWS: u32 = 0x0024_a886;
-const CONTROLS_ROW_TEXT: u32 = 0x002c_8548;
 const TEXT_WIDGET_GET: u32 = 0x0022_edb8;
 const LIST_SELECT: u32 = 0x0024_c591;
 const SCREEN_REFRESH: u32 = 0x0022_f672;
@@ -396,44 +395,39 @@ pub fn extend_panes<M: Gm>(m: &mut M, wgit: u32, alloc: &mut u32) -> Option<bool
 static PENDING_VALUE: AtomicU32 = AtomicU32::new(0);
 static ALLOC: AtomicU32 = AtomicU32::new(0);
 static STRING_ADDRS: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock::new();
-/// The Video screen's loader: our list class's (`crate::list_class`), 0
-/// until the class is built.
-static VIDEO_LOADER: AtomicU32 = AtomicU32::new(0);
-/// The Skulls screen's loader: its list class's (`crate::skulls_menu`), 0
-/// until the class is built.
-static SKULLS_LOADER: AtomicU32 = AtomicU32::new(0);
-
-/// The text hook's call (string id at `[esp+4]`) while a Video screen's
-/// header is built: our title for the Controls tag's header id, `None` for
-/// any other text.
-pub fn video_header_id<M: Gm>(m: &M, esp: u32, title: u32) -> Option<u32> {
-    (m.u32(esp.wrapping_add(4))? == video_screen::CONTROLS_HEADER).then_some(title)
-}
-
-/// In place of the Settings row-chosen call (`ret 8`) for the Video row:
-/// open the Video screen with our list class's loader, the way the Settings
-/// screen opens Controls (`0x149f1e(mask, loader)`), then return to the
-/// caller.
-fn open_video(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32) -> Result<TransferAbi, GuestFault> {
-    let loader = VIDEO_LOADER.load(Ordering::SeqCst);
-    if loader == 0 {
-        eprintln!("video screen: its list class is off; not opened");
-        return ctx.runtime().memory().ret(cpu, 8);
-    }
-    open_screen(cpu, ctx, mask, loader, "video screen: opening")
-}
+/// The Xbox Live menu tag `custom_games::extend_tag` last extended (0:
+/// none yet). A map load replaces the tag, and the next screen build
+/// extends the new one before a pane is set.
+static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
+/// Live menu item widgets of ours: one per open screen, this many slots.
+const LIVE_ITEM_SLOTS: u32 = 8;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
-fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: impl AsRef<str>) -> Result<TransferAbi, GuestFault> {
+fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: &'static str) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
     cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
     push(&mut mem, cpu, loader)?;
     push(&mut mem, cpu, mask)?;
-    eprintln!("{}", note.as_ref());
+    eprintln!("{note}");
     ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| Ok(TransferAbi::ret(ret_pc)))
+}
+
+/// In place of a row-chosen call (`ret 8`): show the game's one-button
+/// dialog for `error` to the players in `mask`, as the game shows its own
+/// (`0x19b527(1, error, 4, mask, 0, 0)`: no press or update callback, so the
+/// button just closes it), then return to the caller.
+fn open_dialog(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, error: u32) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let ret_pc = mem.u32(cpu.esp)?;
+    cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
+    for v in [0, 0, mask, 4, error, 1] {
+        push(&mut mem, cpu, v)?;
+    }
+    ctx.call_guest(cpu, &mut mem, custom_games::OK_DIALOG, move |_, _| Ok(TransferAbi::ret(ret_pc)))
 }
 
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<OriginalHandler>> {
@@ -499,9 +493,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
-    // The Skulls screen's rows, shown for the profile the row's press sets.
-    let skulls_screen = with_skulls.then(|| Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(&store))));
     let extra_rows = model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
+    // The Live menu's (tag copies, item widgets, pane word) in our data.
+    let mut live = (0u32, 0u32, 0u32);
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
@@ -512,14 +506,21 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         let mut served = served_strings(layouts, with_speaker);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
         if with_custom_games {
-            served.push((custom_games::TEXT_ID, custom_games::TEXT));
+            served.extend(custom_games::strings());
         }
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
-        ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
+        let mut alloc = (used + 0xff) & !0xff;
+        if with_custom_games {
+            // The Live menu's tag copies, item widgets and pane word: fixed
+            // places, reused each time a map load brings the tag back.
+            live = (alloc, alloc + custom_games::TAG_SPACE, alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE);
+            alloc = live.2 + 0x100;
+        }
+        ALLOC.store(alloc, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
     }
     let mut shadow = SHADOW_BASE;
@@ -528,23 +529,24 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         shadow - 4
     };
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, PROFILE_ROWS];
-    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, SCREEN_TAG];
+    let shared_hooks = [LIST_DATA_NEW, SCREEN_TAG];
     let text_hooks = [TEXT_SET];
-    let video_hooks = [
-        video_screen::SETTINGS_ROW_TEXT,
-        video_screen::SETTINGS_ROW_CHOSEN,
-        PANE_SET,
-    ];
+    let video_hooks = [PANE_SET];
     let speaker_hooks = [
-        speaker_row::ROW_CHOSEN,
         speaker_row::SMALL_CTOR,
         speaker_row::SMALL_ROW_TEXT,
         speaker_row::SMALL_ROW_CHOSEN,
     ];
     let fov_hooks = [fov_row::PLAYER_FOV];
     let controls_hooks = [speaker_row::ADD_ITEMS];
-    let custom_games_hooks = [custom_games::ROW_TEXT, custom_games::ROW_CHOSEN];
-    let skulls_hooks = [skulls_menu::DIFFICULTY_ROW_TEXT, skulls_menu::DIFFICULTY_ROW_CHOSEN, PANE_SET];
+    let custom_games_hooks = [
+        custom_games::ROW_TEXT,
+        custom_games::ROW_CHOSEN,
+        custom_games::ERROR_LOOKUP,
+        speaker_row::ADD_ITEMS,
+        PANE_SET,
+    ];
+    let skulls_hooks = [PANE_SET];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -589,13 +591,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
                 let n = video_screen::list_count(&model, name, n);
-                // A Controls list our list class's loader is constructing:
-                // as many rows as the class shows (the Skulls screen's
-                // fifteen), the item widgets scrolling over them.
-                let n = match crate::list_class::building_rows() {
-                    rows if name == speaker_row::LIST_NAME && rows > n => rows,
-                    _ => n,
-                };
                 if with_video && video_screen::settings_third_item(name, n) {
                     // Slot 19 reports a third item widget for our row.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
@@ -611,6 +606,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 } else {
                     n
                 };
+                // One of our list class screens being built: its own count.
+                let n = crate::list_class::array_count(name, n);
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -702,6 +699,28 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 if with_video && video_screen::skip_settings_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
+                // The Xbox Live menu: our row shows our pane, Content
+                // Download (moved down one) its own. The row is handed over
+                // in our word, not written back through the caller's pointer.
+                if with_custom_games && id == custom_games::SCREEN_ID {
+                    let tag = LIVE_TAG.load(Ordering::SeqCst);
+                    let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
+                        mem.u32(tag + 0x20).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    match custom_games::pane_of(row, panes) {
+                        custom_games::Pane::Retail => {}
+                        custom_games::Pane::Keep => return mem.ret(cpu, 4),
+                        custom_games::Pane::Show(p) => {
+                            let base = i16::from(mem.u8(screen + 0x5f3)? as i8);
+                            mem.set_u16(live.2, p.wrapping_sub(base) as u16)?;
+                            mem.set_u32(cpu.esp + 4, live.2)?;
+                        }
+                    }
+                    drop(mem);
+                    return Ok(o.invoke(cpu, ctx, PANE_SET));
+                }
                 let added = layouts && id == SCREEN_ID && layout_of_row(row).is_some();
                 if !added {
                     drop(mem);
@@ -745,7 +764,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     let mem = ctx.runtime().memory();
                     mem.u16(cpu.eax + 0x70).map_or(-1, |v| v as i16)
                 };
-                let wanted = (layouts && id == SCREEN_ID) || (extra_rows > 0 && id == speaker_row::SCREEN_ID);
+                let wanted = (layouts && id == SCREEN_ID)
+                    || (extra_rows > 0 && id == speaker_row::SCREEN_ID)
+                    || (with_custom_games && id == custom_games::SCREEN_ID);
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
                 }
@@ -756,6 +777,21 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                         return Ok(());
                     }
                     let mut mem = ctx.runtime().memory();
+                    if id == custom_games::SCREEN_ID {
+                        // Ours already (our pane array) or freshly extended.
+                        if mem.u32(cpu.eax + 0x24).ok() == Some(live.0) {
+                            return Ok(());
+                        }
+                        match custom_games::extend_tag(&mut *mem, cpu.eax, live.0) {
+                            Some(true) => {
+                                LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
+                                eprintln!("custom games: xbox live menu tag has 5 panes and room for 5 rows");
+                            }
+                            Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
+                            None => eprintln!("custom games: could not extend the xbox live menu tag"),
+                        }
+                        return Ok(());
+                    }
                     if id == speaker_row::SCREEN_ID {
                         match speaker_row::grow_visible(&mut *mem, cpu.eax, extra_rows) {
                             Some(0) => {}
@@ -816,114 +852,18 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row text: our speaker row, else the layout value
-        // (layouts on), else the original.
-        if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
-            let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            let drawn = AtomicBool::new(false);
-            d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
-                announce(&seen, "layouts: controls row text");
-                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
-                // The model reads the settings store: never with guest
-                // memory held.
-                let texts = row.and_then(|r| model.row(List::Controls, r)).map(|r| model.texts(r));
-                if let Some(texts) = texts {
-                    announce(&drawn, "speaker row: row text");
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let item = mem.u32(cpu.esp + 4)?;
-                    return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
-                }
-                if !layouts {
-                    return Ok(o.invoke(cpu, ctx, CONTROLS_ROW_TEXT));
-                }
-                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
-                call_then(cpu, ctx, sh, |_, _| {
-                    PENDING_VALUE.store(0, Ordering::Relaxed);
-                    Ok(())
-                })
-            });
-        }
-        // The Controls row chosen: the speaker row toggles in place (an open
-        // row there would open the Video screen). The original would open
-        // the vibration dialog for either.
-        if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
-                announce(&seen, "speaker row: row chosen");
-                let row = chosen_row(&*ctx.runtime().memory(), cpu.esp);
-                let mask = video_screen::player_mask(&*ctx.runtime().memory(), cpu.esp);
-                // Guest memory is not held while a setting changes: the
-                // speaker toggle takes DirectSound's lock, which the audio
-                // output takes with guest memory.
-                let chosen = row.and_then(|r| model.row(List::Controls, r)).map_or(Chosen::Nothing, |r| model.press(r));
-                match chosen {
-                    Chosen::Stepped(msg) => {
-                        eprintln!("{msg}");
-                        return ctx.runtime().memory().ret(cpu, 8);
-                    }
-                    Chosen::Open(_) => {
-                        let Some(mask) = mask else {
-                            eprintln!("video screen: no local player for the press; not opened");
-                            return ctx.runtime().memory().ret(cpu, 8);
-                        };
-                        return open_video(cpu, ctx, mask);
-                    }
-                    Chosen::Nothing => {}
-                }
-                Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
-            });
-        }
-        // The Settings list's row text: our Video row's label, else the
-        // original (Player Profiles, Game Variants).
-        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_TEXT) {
-            let model = Arc::clone(&model);
-            let seen = AtomicBool::new(false);
-            d.register_override(video_screen::SETTINGS_ROW_TEXT, "video:settings-row", move |cpu, ctx, _| {
-                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
-                // The model reads the store: never with guest memory held.
-                let Some(text) = video_screen::settings_text(&model, row) else {
-                    return Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_TEXT));
-                };
-                announce(&seen, "video screen: settings row text");
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                let item = mem.u32(cpu.esp + 4)?;
-                row_texts(cpu, ctx, &mut mem, item, vec![text])
-            });
-        }
-        // The Settings list's row chosen: our Video row opens the Video
-        // screen; the retail rows go to the original.
-        if let Some(o) = originals.remove(&video_screen::SETTINGS_ROW_CHOSEN) {
-            let model = Arc::clone(&model);
-            d.register_override(video_screen::SETTINGS_ROW_CHOSEN, "video:settings-chosen", move |cpu, ctx, _| {
-                let (row, mask) = {
-                    let mem = ctx.runtime().memory();
-                    (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
-                };
-                let ours = row.and_then(|r| model.row(List::Settings, r)).map(|r| model.press(r));
-                match (ours, mask) {
-                    (Some(Chosen::Open(_)), Some(mask)) => open_video(cpu, ctx, mask),
-                    (Some(_), _) => {
-                        eprintln!("video screen: no local player for the press; not opened");
-                        ctx.runtime().memory().ret(cpu, 8)
-                    }
-                    (None, _) => Ok(o.invoke(cpu, ctx, video_screen::SETTINGS_ROW_CHOSEN)),
-                }
-            });
-        }
-        // The Controls list's added item widgets, one per added row.
-        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0) {
+        // The Controls list's added item widgets, one per added row, and the
+        // Xbox Live menu's fifth item widget.
+        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0 || with_custom_games) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::ADD_ITEMS);
             let seen = AtomicBool::new(false);
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+            let live_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             d.register_override(speaker_row::ADD_ITEMS, "speaker:add-items", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: add items");
                 let handler = cpu.ecx;
                 let slots = Arc::clone(&slots);
+                let live_slots = Arc::clone(&live_slots);
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
@@ -931,24 +871,31 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    // A list of our class (the Video and Skulls screens) has
-                    // another vtable and keeps the six retail item widgets.
-                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE {
-                        return Ok(TransferAbi::ret(ret_pc));
-                    }
-                    let slot = {
-                        let mut g = slots.lock().unwrap_or_else(|e| e.into_inner());
+                    let vtable = mem.u32(handler)?;
+                    // Our class's lists (Video, Skulls) have another vtable
+                    // and keep their six item widgets.
+                    let items: Vec<u32> = if extra_rows > 0 && vtable == speaker_row::HANDLER_VTABLE {
+                        let slot = {
+                            let mut g = slots.lock().unwrap_or_else(|e| e.into_inner());
+                            let (table, next) = &mut *g;
+                            speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
+                        };
+                        (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
+                    } else if with_custom_games && vtable == custom_games::HANDLER_VTABLE {
+                        let mut g = live_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
-                        speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
+                        let size = LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE;
+                        vec![speaker_row::extra_slot(table, next, handler, live.1, size, 1)]
+                    } else {
+                        return Ok(TransferAbi::ret(ret_pc));
                     };
-                    let items: Vec<u32> = (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect();
                     let player = u32::from(mem.u16(handler + 8)?);
                     let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
                     let finish: Finish = Box::new(move |cpu| {
                         (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = saved;
                         Ok(TransferAbi::ret(ret_pc))
                     });
-                    add_items(cpu, ctx, &mut mem, handler, player, items, finish)
+                    add_items(cpu, ctx, &mut mem, handler, vtable, player, items, finish)
                 })
             });
         }
@@ -1030,21 +977,22 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Xbox Live menu's "Custom Games" row (crate::custom_games): our
-        // label on row 4, and a press on it opens the System Link browser in
-        // its Live mode. Rows 0 to 3 go to the originals.
+        // The Xbox Live menu's rows (crate::custom_games): row 3 is our
+        // "Custom Game Browser", which opens the System Link browser in its
+        // Live mode; row 4 is Content Download, which opens our Map Pack
+        // dialog. Rows 0 to 2 go to the originals.
         if let Some(o) = originals.remove(&custom_games::ROW_TEXT) {
             let seen = AtomicBool::new(false);
             d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                if video_screen::text_row(&*mem, cpu.esp) != Some(custom_games::ROW) {
+                let Some(id) = video_screen::text_row(&*mem, cpu.esp).and_then(custom_games::row_text_id) else {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_TEXT));
-                }
+                };
                 announce(&seen, "custom games: row text");
                 let item = mem.u32(cpu.esp + 4)?;
-                row_texts(cpu, ctx, &mut mem, item, vec![(0, custom_games::TEXT_ID)])
+                row_texts(cpu, ctx, &mut mem, item, vec![(0, id)])
             });
         }
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
@@ -1054,61 +1002,36 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     let mem = ctx.runtime().memory();
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
-                if row != Some(custom_games::ROW) {
+                let kind = row.map_or(custom_games::Row::Retail, custom_games::row_kind);
+                if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 announce(&seen, "custom games: row chosen");
                 let Some(mask) = mask else {
-                    eprintln!("custom games: no local player for the press; not opened");
+                    eprintln!("custom games: no local player for the press; nothing opened");
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
+                if kind == custom_games::Row::Download {
+                    eprintln!("custom games: showing the map pack dialog");
+                    return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
+                }
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }
-        // The difficulty list's "Skulls" row (crate::skulls_menu): our
-        // label on row 4, and a press on it opens the pressing player's
-        // Skulls screen. Rows 0 to 3 go to the originals.
-        if let Some(o) = originals.remove(&skulls_menu::DIFFICULTY_ROW_TEXT) {
-            let seen = AtomicBool::new(false);
-            d.register_override(skulls_menu::DIFFICULTY_ROW_TEXT, "skulls:row-text", move |cpu, ctx, _| {
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                if video_screen::text_row(&*mem, cpu.esp) != Some(skulls_menu::ROW) {
-                    drop(mem);
-                    return Ok(o.invoke(cpu, ctx, skulls_menu::DIFFICULTY_ROW_TEXT));
+        // The dialog error lookup: our Map Pack dialog's title and message.
+        if let Some(o) = originals.remove(&custom_games::ERROR_LOOKUP) {
+            let sh = alias(d, &mut next_shadow, &o, custom_games::ERROR_LOOKUP);
+            d.register_override(custom_games::ERROR_LOOKUP, "custom-games:dialog-text", move |cpu, ctx, _| {
+                let (entry, error) = (cpu.esi, ctx.runtime().memory().u32(cpu.esp + 4)?);
+                if error != custom_games::MAPPACK_ERROR {
+                    return Ok(o.invoke(cpu, ctx, custom_games::ERROR_LOOKUP));
                 }
-                announce(&seen, "skulls menu: difficulty row text");
-                let item = mem.u32(cpu.esp + 4)?;
-                row_texts(cpu, ctx, &mut mem, item, vec![(0, skulls_menu::TITLE_ID)])
-            });
-        }
-        if let Some(o) = originals.remove(&skulls_menu::DIFFICULTY_ROW_CHOSEN) {
-            let skulls_screen = skulls_screen.clone();
-            let seen = AtomicBool::new(false);
-            d.register_override(skulls_menu::DIFFICULTY_ROW_CHOSEN, "skulls:row-chosen", move |cpu, ctx, _| {
-                let (row, player, profile) = {
-                    let mem = ctx.runtime().memory();
-                    let player = skulls_menu::player_index(&*mem, cpu.esp);
-                    (chosen_row(&*mem, cpu.esp), player, player.and_then(|p| skulls_menu::profile_of(&*mem, p)))
-                };
-                if row != Some(skulls_menu::ROW) {
-                    return Ok(o.invoke(cpu, ctx, skulls_menu::DIFFICULTY_ROW_CHOSEN));
-                }
-                announce(&seen, "skulls menu: difficulty row chosen");
-                // Never the original for our row: it would clamp it to
-                // Legendary and start the campaign.
-                let (Some(player), Some(profile)) = (player, profile) else {
-                    eprintln!("skulls menu: the pressing player's index is unreadable; not opened");
-                    return ctx.runtime().memory().ret(cpu, 8);
-                };
-                let loader = SKULLS_LOADER.load(Ordering::SeqCst);
-                let Some(screen) = skulls_screen.as_ref().filter(|_| loader != 0) else {
-                    eprintln!("skulls menu: features.{} is off; not opened", skulls_menu::FEATURE);
-                    return ctx.runtime().memory().ret(cpu, 8);
-                };
-                let note = format!("skulls menu: opening the Skulls screen for {profile} (player {player})");
-                screen.open(profile);
-                open_screen(cpu, ctx, 1 << player, loader, note)
+                call_then(cpu, ctx, sh, move |_, ctx| {
+                    if !custom_games::answer_error(&mut *ctx.runtime().memory(), entry, error) {
+                        eprintln!("custom games: the map pack dialog's text could not be set");
+                    }
+                    Ok(())
+                })
             });
         }
     });
@@ -1116,29 +1039,89 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     if with_video {
         let class = crate::list_class::ListClass::new("video-screen", video_screen::SCREEN, Arc::clone(&model));
         match registry.add(&class) {
-            Ok(true) => VIDEO_LOADER.store(class.loader(), Ordering::SeqCst),
+            Ok(true) => {}
             Ok(false) => eprintln!("video screen: features.video-screen is off"),
             Err(e) => eprintln!("video screen: {e}"),
         }
+        // Its row on the Settings list, as data on the plan.
+        let rows = crate::retail_rows::Extension {
+            id: "settings-rows",
+            title: "Our rows on the Settings list",
+            list: List::Settings,
+            text: &feature::points::SETTINGS_ROW_TEXT,
+            chosen: &feature::points::SETTINGS_ROW_CHOSEN,
+            label_only: true,
+            model: Arc::clone(&model),
+        };
+        registry.add(&rows).map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
-    // The Skulls screen: our own list class, opened by the difficulty row.
-    if let Some(screen) = &skulls_screen {
+    // The Skulls screen: our own list class, opened by its row on the
+    // difficulty list (plan hooks).
+    if with_skulls {
+        let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
         let (block, line) = skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
         if let Some(line) = line {
             eprintln!("{line}");
         }
-        let source: Arc<dyn crate::list_class::Source> = Arc::clone(screen) as _;
-        let class = crate::list_class::ListClass::with_source(skulls_menu::FEATURE, source).description(block);
-        match registry.add(&class) {
-            Ok(true) => SKULLS_LOADER.store(class.loader(), Ordering::SeqCst),
-            Ok(false) => eprintln!("skulls menu: features.{} is off", skulls_menu::FEATURE),
+        match registry.add(&crate::skulls_screen::class(Arc::clone(&screen), block)) {
+            Ok(true) => {}
+            Ok(false) => eprintln!("skulls menu: features.skulls-screen is off"),
             Err(e) => eprintln!("skulls menu: {e}"),
         }
+        registry
+            .add(&crate::skulls_screen::DifficultyRow(screen))
+            .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
     }
+    // The Controls list's row text and row chosen, on the plan: our rows
+    // there (the speaker row) as data, and the layouts' value text around
+    // the original.
+    if with_speaker {
+        let rows = crate::retail_rows::Extension {
+            id: "controls-rows",
+            title: "Our rows on the Controls list",
+            list: List::Controls,
+            text: &feature::points::CONTROLS_ROW_TEXT,
+            chosen: &feature::points::CONTROLS_ROW_CHOSEN,
+            label_only: false,
+            model: Arc::clone(&model),
+        };
+        registry.add(&rows).map_err(|e| anyhow::anyhow!("controls rows: {e}"))?;
+    }
+    if layouts {
+        registry.add(&LayoutValueText).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
+    }
+    // The retail Controls row text, ported (crate::controls_text); our
+    // rows' hooks and the layouts' value pair run around it.
+    registry.add(&crate::controls_text::ControlsText).map_err(|e| anyhow::anyhow!("controls text: {e}"))?;
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
     registry.add(&StringsFeature).map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     Ok(())
+}
+
+/// The Controls row text's layout value: while the original draws a row,
+/// an empty value text stands for the edited profile's layout byte (the
+/// text hook names an added layout). Inside our rows' hook at that point.
+pub struct LayoutValueText;
+
+impl feature::Feature for LayoutValueText {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("layouts-value", "Added layouts' names on the Controls list")
+            .doc("docs/controller-layouts.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.raw()
+            .before(&feature::points::CONTROLS_ROW_TEXT, "layout value pending", |_| {
+                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
+                Ok(feature::Flow::Continue)
+            })
+            .after_feature("controls-rows");
+        b.raw().after(&feature::points::CONTROLS_ROW_TEXT, "layout value done", |_| {
+            PENDING_VALUE.store(0, Ordering::Relaxed);
+            Ok(())
+        });
+        Ok(())
+    }
 }
 
 /// The strings our rows and layouts show (`ui-strings`), served from guest
@@ -1228,15 +1211,18 @@ fn next_text(
     })
 }
 
-/// Link each of `items` as a child of the Controls list `handler`, in
-/// order, after the retail six: build an item first (zeroed, the item
+/// Link each of `items` as a child of the list `handler` (of handler vtable
+/// `vtable`: Controls, or the Xbox Live menu), in order, after the retail
+/// item widgets: build an item first (zeroed, the item
 /// constructor, then the local player) when it is not a child yet, else just
-/// move it back to the end (the original re-appends the six retail items).
+/// move it back to the end (the original re-appends the retail items).
+#[allow(clippy::too_many_arguments)]
 fn add_items(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     mem: &mut Guest,
     handler: u32,
+    vtable: u32,
     player: u32,
     mut items: Vec<u32>,
     finish: Finish,
@@ -1245,7 +1231,7 @@ fn add_items(
         return finish(cpu);
     }
     let item = items.remove(0);
-    let Some(build) = speaker_row::extra_item_needed(&*mem, handler, item) else {
+    let Some(build) = speaker_row::item_needed(&*mem, handler, vtable, item) else {
         return finish(cpu);
     };
     let link = move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, mem: &mut Guest| {
@@ -1254,7 +1240,7 @@ fn add_items(
         ctx.call_guest(cpu, mem, speaker_row::ADD_CHILD, move |cpu, ctx| {
             let rt = Arc::clone(ctx.runtime());
             let mut mem = rt.memory();
-            add_items(cpu, ctx, &mut mem, handler, player, items, finish)
+            add_items(cpu, ctx, &mut mem, handler, vtable, player, items, finish)
         })
     };
     if !build {
@@ -1278,6 +1264,7 @@ fn add_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Chosen;
     use std::collections::BTreeMap;
 
     /// A sparse byte map standing in for guest memory.
@@ -1691,16 +1678,6 @@ mod tests {
         assert_eq!(next.get(FPS.key), Some(Value::Int(60)));
         assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
         let _ = std::fs::remove_dir_all(&data);
-    }
-
-    #[test]
-    fn the_video_header_swaps_only_the_controls_title() {
-        let mut f = Fake::default();
-        put(&mut f, 0x1004, &video_screen::CONTROLS_HEADER.to_le_bytes());
-        assert_eq!(video_header_id(&f, 0x1000, 0x77), Some(0x77));
-        put(&mut f, 0x1004, &0x0600_0234u32.to_le_bytes());
-        assert_eq!(video_header_id(&f, 0x1000, 0x77), None);
-        assert_eq!(video_header_id(&Fake::default(), 0x1000, 0x77), None);
     }
 
     #[test]

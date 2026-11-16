@@ -20,8 +20,8 @@ pub use event::{
 pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
-    active_bsp, actors, game_info, game_tick, hit, object, players, snapshot, team_scores, world,
-    yaw,
+    active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, players, snapshot,
+    team_scores, world, yaw,
 };
 pub use sink::{JsonlSink, QueuedSink, Sink};
-pub use tags::{MapFile, MapLocator, TagNames};
+pub use tags::{MapFile, MapIdLocator, MapLocator, TagNames};

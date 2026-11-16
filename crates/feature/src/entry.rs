@@ -81,9 +81,19 @@ pub fn start(
     ctx: &mut ExecCtx,
     at: u32,
 ) -> Result<TransferAbi, GuestFault> {
+    start_with(cpu, ctx, at, |cx| f(cx))
+}
+
+/// [`start`] for a body made once (a `before` hook answering with one).
+pub fn start_with(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    at: u32,
+    make: impl FnOnce(Cx) -> EntryFuture,
+) -> Result<TransferAbi, GuestFault> {
     let entry = regs(cpu);
     let cx = Cx::new(RtMem(Arc::clone(ctx.runtime())), entry);
-    let fut = f(cx.clone());
+    let fut = make(cx.clone());
     drive(cpu, ctx, Running { cx, fut, entry }, at)
 }
 

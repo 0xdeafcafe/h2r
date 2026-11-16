@@ -2,7 +2,10 @@
 //!
 //! Picking a map in the sidebar opens it here, unless the open map has
 //! unsaved edits: then the pick is held until they are saved or undone.
-//! Saving always asks for a path (the source map is never overwritten).
+//! Saving always asks for a path (the source map is never overwritten);
+//! that is the `.map` export. Map packages (docs/maps.md) are saved and
+//! opened from the panel's own "Save as package..." and "Open package..."
+//! windows, in `<data>/maps` (`--data`, default the runtime's).
 
 use std::path::{Path, PathBuf};
 
@@ -37,11 +40,19 @@ impl ScenarioTool {
     pub fn editor(&self) -> &ScenarioEditor {
         &self.editor
     }
+    pub fn editor_mut(&mut self) -> &mut ScenarioEditor {
+        &mut self.editor
+    }
+
+    /// Packages are saved to and opened from `<root>/maps`.
+    pub fn set_data_root(&mut self, root: PathBuf) {
+        self.editor.set_data_root(root);
+    }
 
     /// The scenario crate's source for sidebar map `name`.
     pub fn edit_source(source: &MapSource, name: &str) -> anyhow::Result<EditSource> {
         let (path, region) = source.location(name)?;
-        Ok(EditSource { path, region })
+        Ok(EditSource::region(path, region))
     }
 
     /// Follow the sidebar's pick. Returns an error message for the status
@@ -54,8 +65,11 @@ impl ScenarioTool {
             return;
         }
         let name = name.to_owned();
-        let opened = Self::edit_source(source, &name)
-            .and_then(|s| self.editor.open(s).map_err(anyhow::Error::from));
+        let opened = Self::edit_source(source, &name).and_then(|s| {
+            self.editor
+                .open_named(s, &name)
+                .map_err(anyhow::Error::from)
+        });
         match opened {
             Ok(()) => {
                 self.path = None;
@@ -157,6 +171,25 @@ mod tests {
         assert_eq!(s, EditSource::file(&p));
         assert!(ScenarioTool::edit_source(&src, "other").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn packages_and_variants_share_the_data_root() {
+        let mut t = ScenarioTool::new();
+        assert_eq!(
+            t.editor().maps_dir(),
+            content::store::default_data_root().join("maps")
+        );
+        t.set_data_root(PathBuf::from("/d"));
+        assert_eq!(t.editor().maps_dir(), Path::new("/d/maps"));
+        assert_eq!(
+            crate::variants::VariantTool::save_root(Some(Path::new("/d"))),
+            Path::new("/d/disk/Partition1/UDATA/4D530064")
+        );
+        assert_eq!(
+            crate::variants::VariantTool::save_root(None),
+            variants::save::SaveStore::default_root().unwrap()
+        );
     }
 
     #[test]

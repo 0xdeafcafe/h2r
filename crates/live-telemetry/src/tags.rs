@@ -28,6 +28,11 @@ pub struct MapFile {
 /// name is `[A-Za-z0-9_-]{1,64}`, checked before the call).
 pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
 
+/// The `MapId` serving a map by its short name, when a package serves it
+/// (docs/maps.md §5); None for the disc's own map. The boot answers it
+/// with `boot::map_override::map_id`.
+pub type MapIdLocator = Box<dyn Fn(&str) -> Option<live_proto::maps::MapId> + Send + Sync>;
+
 const BIPED: [u8; 4] = *b"bipd";
 const WEAPON: [u8; 4] = *b"weap";
 const VEHICLE: [u8; 4] = *b"vehi";

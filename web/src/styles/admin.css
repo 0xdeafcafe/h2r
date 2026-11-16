@@ -358,3 +358,22 @@
   color: var(--s-ink-soft);
   font-size: 12px;
 }
+
+/* Custom maps a hopper allows (HopperPins.tsx). */
+.adm-pins { margin-top: 10px; }
+.adm-pin-list { list-style: none; margin: 6px 0; padding: 0; columns: 2 260px; font-size: 12px; }
+.adm-pin-list li { break-inside: avoid; padding: 1px 0; }
+.adm-pin-list li span { color: var(--s-ink-dim); }
+.adm-pin-list li.off { color: var(--s-ink-dim); }
+
+/* Custom content moderation (ContentAdmin.tsx). */
+.adm-content { display: grid; gap: 12px; }
+.adm-mod tr.off td { color: var(--s-ink-dim); }
+.adm-mod-btns { white-space: nowrap; }
+.adm-mod-btns .s-btn { margin-left: 3px; }
+.adm-state--hidden, .adm-state--deleted { color: var(--s-warn); }
+.adm-state--blocked { color: var(--s-warn); font-weight: bold; }
+.adm-reports { list-style: none; margin: 0 0 8px; padding: 0; font-size: 12px; }
+.adm-reports li { padding: 3px 0; border-bottom: 1px solid #0003; }
+.adm-reports li span { color: var(--s-ink-dim); }
+.adm-reports li p { margin: 2px 0 0; }

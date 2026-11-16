@@ -21,6 +21,9 @@ export interface Session {
   flags: string;
   hopper_id: number | null;
   map: string | null;
+  /** The map package the host is playing (docs/maps.md §5), when it named
+   *  one; `map` is then its base map. Lower-case hex, else null. */
+  map_id: string | null;
   /** The host's name for the game, usually its gametype. */
   name: string | null;
   /** Who finds it in lists: everyone, the host's friends, or nobody
@@ -60,6 +63,7 @@ export function parseSession(raw: unknown): Session | null {
     flags: text(ad.flags) ?? "custom",
     hopper_id: typeof ad.hopper_id === "number" ? ad.hopper_id : null,
     map: text(ad.map),
+    map_id: typeof ad.map_id === "string" && /^[0-9a-f]{64}$/i.test(ad.map_id) ? ad.map_id.toLowerCase() : null,
     name: text(ad.name),
     visibility: visibility(ad.visibility),
     slots: { public_filled: count(s.public_filled), public_open: count(s.public_open), private_filled: count(s.private_filled), private_open: count(s.private_open) },
@@ -123,10 +127,11 @@ export function sortSessions(list: readonly Session[]): Session[] {
   });
 }
 
-/** A list row: the host, then the map and players against the most. */
-export function sessionRow(s: Session, title?: (stem: string) => string): { key: string; label: string; meta: string } {
+/** A list row: the host, then the map and players against the most.
+ *  `custom` is a custom map's package name, which replaces the map's. */
+export function sessionRow(s: Session, title?: (stem: string) => string, custom?: string | null): { key: string; label: string; meta: string } {
   const n = seats(s);
-  return { key: s.session_id, label: s.host_gamertag, meta: `${mapName(s, title)} ${n.filled}/${n.max}` };
+  return { key: s.session_id, label: s.host_gamertag, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
 }
 
 /** "3 open", "full", or "closed" for a session no longer open. */

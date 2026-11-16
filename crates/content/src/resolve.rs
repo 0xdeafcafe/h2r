@@ -117,6 +117,26 @@ impl Resolved {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The whole resolved map in memory, reading the disc's map from `disc`
+    /// for an overlay on it (the editor opens a package this way).
+    pub fn read_all(&self, disc: &mut dyn Source) -> io::Result<Vec<u8>> {
+        match &self.data {
+            Data::Overlay { base, overlay } => match base {
+                BaseRef::Disc => OverlayView {
+                    overlay,
+                    base: disc,
+                }
+                .read_all(),
+                BaseRef::File { file, .. } => OverlayView {
+                    overlay,
+                    base: &mut FileSource::new(file.try_clone()?)?,
+                }
+                .read_all(),
+            },
+            Data::File { file, .. } => FileSource::new(file.try_clone()?)?.read_all(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -310,6 +330,16 @@ impl Library {
             return Ok(None);
         };
         resolve_package(&package, disc, &cache, cap).map(Some)
+    }
+
+    /// Resolve one package of this library, whatever the choice rule picks
+    /// for its map (the editor opens packages this way).
+    pub fn resolve_package(
+        &self,
+        package: &Package,
+        disc: &mut dyn Source,
+    ) -> Result<Resolved, ResolveError> {
+        resolve_package(package, disc, &self.root.join(CACHE_DIR), self.cache_cap)
     }
 }
 

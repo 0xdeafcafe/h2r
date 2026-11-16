@@ -7,6 +7,7 @@
 // and the prompts); these are the info plates and their data.
 
 import { For, Show, createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
+import { A } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { adminState } from "../admin/state";
@@ -133,6 +134,7 @@ function AdminPlate(props: { s: AdminStatus }) {
           {(c) => <><dt>players</dt><dd>{c().accounts} <span>accounts</span> {c().online} <span>online</span> {c().live_games} <span>live</span></dd></>}
         </Show>
         <Show when={s().data_dir}><dt>data</dt><dd title={s().data_dir!}>{s().data_dir}</dd></Show>
+        <dt>content</dt><dd><A href="/stats/admin?tab=content">custom maps, reports, uploads</A></dd>
         <dt>new admin</dt><dd><CopyCode text={grantCommand("GAMERTAG")} /></dd>
       </dl>
     </Plate>

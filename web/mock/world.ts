@@ -124,6 +124,8 @@ export class World {
   now = Date.now();
   live = false;
   tamperEvery = 0;
+  /** Which map package (map_id) a game plays, if any (mock/content.ts); unset: none. */
+  customMap?: (gameId: string, map: string) => string | undefined;
   private nextGameAt = 0;
   /** How each live campaign game will end (mock/coop.ts). */
   private readonly campaignEnd = new Map<string, string>();
@@ -268,7 +270,7 @@ export class World {
       data: coop
         ? { game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "campaign", ...g.kind, team_play: false, tick: 0, players }
         : {
-          game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "multiplayer", ...g.kind, variant: g.variant, team_play,
+          game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, ...this.mapIdOf(id, map.name), mode: "multiplayer", ...g.kind, variant: g.variant, team_play,
           score_limit: g.score_limit, time_limit_s: g.time_limit_s, tick: 0, players,
         },
     }], host);
@@ -517,9 +519,15 @@ export class World {
     return { keys: [{ kid: a.key.kid, jwk: a.key.jwk, valid_from: a.keyFrom, valid_to: null }] };
   }
 
+  /** `{map_id}` for a multiplayer game on a custom map (mock/content.ts), else nothing. */
+  private mapIdOf(id: string, map: string): { map_id?: string } {
+    const m = this.customMap?.(id, map);
+    return m ? { map_id: m } : {};
+  }
+
   gameSummary(g: SimGame) {
     return {
-      game_id: g.id, map: g.map.name, mode: g.mode, ...g.kind, variant: g.variant || null, started_at: g.started_at,
+      game_id: g.id, map: g.map.name, ...(g.mode === "multiplayer" ? this.mapIdOf(g.id, g.map.name) : {}), mode: g.mode, ...g.kind, variant: g.variant || null, started_at: g.started_at,
       ended_at: g.ended_at, players: g.players.map((p) => p.p),
       teams: g.team_play ? [...g.teams.entries()].map(([team, score]) => ({ team, score })) : null,
     };

@@ -127,6 +127,13 @@ pub struct NewGame {
     /// Local split-screen co-op is more than one player without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub online: Option<bool>,
+    /// Exactly which map (docs/maps.md §5): `map` stays the base map's name
+    /// (what the game loads as `maps\<map>.map`), so a modded Lockout is
+    /// `map: "lockout"` with this set, and stats keep the two apart by it.
+    /// None for retail maps from senders that do not know it, and for every
+    /// sender before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<crate::session::MapId>,
 }
 
 /// The game kinds `NewGame.kind` may name.
@@ -490,6 +497,9 @@ pub struct GameSummary {
     pub players: Vec<Player>,
     #[serde(default)]
     pub teams: Option<Vec<TeamScore>>,
+    /// The game's `NewGame.map_id`; left out when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<crate::session::MapId>,
 }
 
 /// A kill as `GET /v1/games/{id}` lists it: the event data plus where it
@@ -1056,6 +1066,34 @@ mod tests {
         ] {
             assert!(validate(kind, &data, &p).is_err(), "{kind} {data}");
         }
+    }
+
+    #[test]
+    fn new_game_map_id_is_optional_and_omitted_when_none() {
+        let g: NewGame = serde_json::from_value(json!({
+            "map": "lockout", "mode": "multiplayer", "team_play": false, "players": []
+        }))
+        .unwrap();
+        assert_eq!(g.map_id, None);
+        assert!(serde_json::to_value(&g).unwrap().get("map_id").is_none());
+        let id = crate::session::MapId([7; 32]);
+        let modded = NewGame {
+            map_id: Some(id),
+            ..g.clone()
+        };
+        let v = serde_json::to_value(&modded).unwrap();
+        assert_eq!(v["map"], "lockout", "map stays the base map's name");
+        assert_eq!(v["map_id"], json!("07".repeat(32)));
+        assert_eq!(serde_json::from_value::<NewGame>(v).unwrap(), modded);
+        // GameStarted flattens it, so stored games carry it too.
+        let started = GameStarted {
+            game_id: "g".into(),
+            host: "h".into(),
+            game: modded.clone(),
+        };
+        let back: GameStarted =
+            serde_json::from_value(serde_json::to_value(&started).unwrap()).unwrap();
+        assert_eq!(back.game.map_id, Some(id));
     }
 
     #[test]

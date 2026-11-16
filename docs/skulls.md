@@ -183,8 +183,8 @@ The parts:
   a skull not collected). The store is the same per-profile `skulls.*`
   values the pickup writes and the campaign start reads (`selection`), so
   what the screen leaves is what the next start turns on.
-- **The screen** (`boot::skulls_menu::SkullsScreen`): a
-  `list_class::Source` of fifteen rows for the profile the row's press set
+- **The screen** (`boot::skulls_menu::SkullsScreen`, its class in
+  `boot::skulls_screen`): `list_class::Rows` of fifteen rows for the profile the row's press set
   (`open`). It is our own list class, feature `skulls-screen`
   (`boot::list_class`, docs/feature-engine.md "UI step b"), as the Video
   screen is: built by the Controls constructor (so the Controls tag's
@@ -193,7 +193,7 @@ The parts:
   function is patched for it.
 - **Fifteen rows on six item widgets.** While the class's loader runs the
   Controls constructor, the Controls list hook (`layout_glue`, the
-  `0x1a480d` hook) builds the array with `list_class::building_rows()` rows
+  `0x1a480d` hook) builds the array with `list_class::array_count`'s count
   (15) instead of six; the list scrolls, as the difficulty list does over
   our fifth row.
 - **The description** is a text widget of ours: at pane set-up the class
@@ -205,7 +205,7 @@ The parts:
   Controls list spans the screen's width, so the text sits right of the
   title, above the list (`[222 80 150 312]`, top, left, bottom, right);
   `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
-- **The row** (`layout_glue::install`, logic in `skulls_menu`):
+- **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
 
 | Address | What | Confidence |
 |---|---|---|
@@ -224,7 +224,11 @@ The parts:
   and start the campaign): the player is the callback's `[[esp+4]]+4`;
   the profile is the name on that player's slot (in co-op each player
   sees and edits their own; with no named profile there, `default`'s);
-  the screen is opened with `0x149f1e(1 << player, loader)`.
+  the screen is opened with `0x149f1e(1 << player, loader)`. The row's
+  text and press are `before` hooks on the plan
+  (`boot::skulls_screen::DifficultyRow`); the Live menu instead adds a
+  fifth item widget ([live-custom-games.md](live-custom-games.md) §5),
+  which this list could do the same way.
 - **Strings** are served by the locale hook from ids `0x21fff000` up (15
   names, the title, "Locked", 15 descriptions): `is_ours` reads only the
   middle bytes, so they are clear of the `0x20fff0xx` ids the other rows
@@ -265,17 +269,17 @@ The menu:
 7. Campaign, a new campaign: the difficulty list is Easy, Normal, Heroic,
    Legendary, Skulls (scrolled by one), with or without skulls collected.
    stderr: `skulls menu: difficulty list: Skulls row shown; <profile> <n>
-   of 15 collected`, and `skulls menu: difficulty row text active`. Moving
+   of 15 collected`, and `skulls menu: difficulty row text`. Moving
    onto Skulls keeps the Legendary pane up.
 8. A on Skulls: a screen titled "Skulls". stderr, in order:
-   `skulls menu: difficulty row chosen active`,
+   `skulls menu: difficulty row chosen`,
    `skulls menu: opening the Skulls screen for <profile> (player 0)`,
    `layouts: list 0x45d298 grows from 6 to 15 rows` (the Controls list;
    only when no Controls list grew earlier in the run, since that line is
    said once),
    `skulls-screen: opened with 15 rows (our list class)`,
-   `skulls-screen: row text`. If it says `opened with 6 rows of 15`, the
-   list hook did not see the build: report it. If it says `no description
+   `skulls-screen: row text`. If it says fewer than 15 rows, the list
+   hook did not see the build: report it. If it says `no description
    text`, the widget could not be made.
 9. The rows: Envy, Grunt Birthday Party, Assassins, Thunderstorm, Famine,
    IWHBYD, Blind, Ghost, Black Eye, Catch, Sputnik, Iron, Mythic, Angry,

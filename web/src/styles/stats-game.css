@@ -160,6 +160,7 @@
 .s-map-tools-right { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-left: auto; }
 .s-3d-button { height: 19px; padding: 0 8px; font: 700 10px/17px var(--font-ui) !important; color: #fff; letter-spacing: .03em; cursor: pointer; background: linear-gradient(180deg, #3c6d9c, #24486f); border: 1px solid #6f9cc6; border-radius: 0; }
 .s-3d-button:hover, .s-3d-button.on { background: #17668a; border-color: #9ad1ee; }
+.s-map-note-inline { font-style: italic; color: #c9b36a; }
 .s-map--pic { background: radial-gradient(120% 90% at 50% 40%, #16293c 0, #0a1622 60%, #060d15 100%); }
 .s-map--pic::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(142, 175, 198, .06) 1px, transparent 1px), linear-gradient(90deg, rgba(142, 175, 198, .06) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; }
 .map-view canvas { touch-action: none; }
@@ -177,3 +178,7 @@
 .s-fireteam td:first-child, .s-campaign-table td:first-child { border-left-color: #555; }
 .s-campaign-table tr.s-campaign-total td { color: #fff; background: #000; font-weight: bold; }
 .s-fireteam .who, .s-campaign-table .who { display: inline-flex; align-items: center; gap: 5px; }
+
+/* A game on a custom map: its author, and a report link (Game.tsx). */
+.s-custom-map { color: #c9b36a; }
+.s-linkish { padding: 0; font: inherit; color: var(--s-link); background: none; border: 0; text-decoration: underline; cursor: pointer; }

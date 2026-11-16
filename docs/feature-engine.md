@@ -1,4 +1,4 @@
-# Feature engine (design; Phases 0 to 3 built)
+# Feature engine (design; Phases 0 to 3 built, Phase 4 in part)
 
 Status: design, except Phase 0, the [first slice](#the-first-slice),
 Phase 1, the registry, Phase 2 (the differential harness, the leaves,
@@ -1555,24 +1555,62 @@ the game exercises is the Video screen, so it is the one to play-test.
   the Video branches in the Controls row text and row chosen hooks, the
   header id swap, and the "h2r video settings" string. The Settings row
   itself is still a hook on the retail Settings list (step c territory).
-- **The Skulls screen is on it too** (docs/skulls.md "Menu"). What a
-  class shows is a `list_class::Source` (a `ui` model screen, or the
-  Skulls screen's per-profile rows); a class may have a description text
-  (a text block of ours the pane builder's own text step makes a widget
-  from at pane set-up, set to the focused row's text from row text when
-  the focus moves, docs/ui.md "A text of our own on a screen"); and a
-  class may have more rows than the six item widgets: while its loader
-  constructs, the Controls list hook builds at least
-  `list_class::building_rows()`, and the list scrolls. Gone with it: the
-  "h2r skulls" array name, the open-in-progress count, the header hook
-  and the Skulls branches in the Controls row text, row chosen and
-  added-items hooks.
-- **Limits.** Opening a screen from one of ours is not wired (an `Open`
-  row logs). Nothing has measured the entries' cost; they run only on
-  menu draws and presses (row text asks for the focused row once per
-  drawn item on a class with a description).
+  The Skulls screen keeps the old way; it is the next to move.
+- **Limits.** Six rows (the Controls item widgets); more are cut, with a
+  line. Opening a screen from one of ours is not wired (an `Open` row
+  logs). Nothing has measured the entries' cost; they run only on menu
+  draws and presses.
 
-Then (phase 4): the retail Controls and Button Layout handlers in Rust.
+#### Phase 4 (in part)
+
+Tests only; nothing here was run in the game.
+
+- **Rows on retail lists are data on the plan** (`boot::retail_rows`).
+  `Extension` answers a retail list's extension rows from the `ui` model
+  with `before` hooks at the list's row text and row chosen (a retail row
+  goes on to the original): the Settings list (the Video row) and the
+  Controls list (the speaker row). The Xbox Live menu's Custom Game
+  Browser row stays raw in `layout_glue` (it landed there with its own
+  tag extension and item widget). The layouts' value text
+  on Controls is a `before`/`after` pair inside the speaker row's hook at
+  the same point. A `before` hook answers with an async body through
+  `Call::answer_async`.
+- **The Skulls screen** is our list class (`boot::skulls_screen`); its row
+  on the difficulty list is two plan hooks. Gone from `layout_glue`: the
+  Skulls open flag, its array-name test, the header hook (`0x22fda6`) and
+  the text hook's title swap, the Skulls branches in the Controls hooks.
+  Its rows' array is built at the screen's count: while a class loader
+  runs the Controls constructor, the datum array constructor's hook
+  (`0x1a480d`, count in EAX) asks `list_class::array_count`. Building a
+  second array and swapping it in was the other way; the destructors
+  (`0x2b7563` → `0x2376c8` → `0x1474e8` → `0x22e34b`) never free
+  `list + 0x70`, so nothing would own a replaced array's lifetime. Past
+  six rows the list scrolls, as the old Skulls path did.
+- **A description text on a class** (`ListClass::description`,
+  `Rows::description`): at pane set-up the class hands a text block of its
+  own to the pane builder's text step (`0x22f9bf`), and row text sets that
+  widget to the focused row's description (`0x24c447`) when the focus
+  moves (docs/ui.md "A text of our own on a screen"). The Skulls screen
+  uses it for each skull's effect, level and Legendary requirement.
+- **Open rows** open another screen of ours: classes register their loader
+  by screen id (`list_class::loader_of`), and a press on an `Open` row
+  calls `0x149f1e(1 << player, loader)` for the pressing player.
+- **`layout_glue.rs`** is down from 1,929 to about 1,700 lines; what is
+  left is the layouts, the Live menu's rows, the shared list hooks (the datum array constructor,
+  the pane, the screen tag, the text set), the smaller Controls screen's
+  speaker row, the added item widgets and the camera's field of view (it
+  needs EAX from entry after the original, which an `after` hook does not
+  see).
+- **The Controls row text is ported** (`boot::controls_text`, feature
+  `controls-text`, an `implement` at `0x2c8548`). Every string id is read
+  at run time from its instruction in the loaded image (the `mov ecx` /
+  `mov esi` immediates, the `and`/`add` pair of the on/off rows, row 2's
+  jump table), named by instruction address; nothing is copied. Our rows'
+  `before` hooks and the layouts' value pair run around it as they did
+  around the original. Its tests run it on a synthetic image and capture
+  its guest calls (`ITEM_TEXT` twice, then `TEXT_SET` for each text that
+  exists). Not yet: captures of the retail function from a play session to
+  diff against, and the Button Layout list's handlers.
 
 Why this first:
 

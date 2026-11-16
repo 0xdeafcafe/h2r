@@ -5,6 +5,7 @@
 // builder works without it and falls back to raw numbers.
 
 import { gameArtRoot } from "../lib/gameart";
+import type { MapSummary } from "../lib/maps";
 
 export const CATALOG_VERSION = 1;
 
@@ -41,6 +42,20 @@ export interface Catalog {
   playlists: CatalogPlaylist[];
   variants: CatalogVariant[];
   skipped: Record<string, string>;
+  /** Published map packages from the server's `GET /v1/maps`, not the
+   *  disc (empty in catalog.json; `withCustom` fills it). A hopper can
+   *  allow them by map_id (`hopper pins`), not as hopper records. */
+  custom: CatalogCustomMap[];
+}
+
+/** A published custom map, as the playlist builder lists it. */
+export interface CatalogCustomMap {
+  map_id: string;
+  name: string;
+  author: string;
+  /** The base map's name ("lockout"); `base_title` its catalog name when known. */
+  base: string;
+  base_title: string;
 }
 
 /** Game types by engine index, as a record's variant carries them. */
@@ -92,7 +107,7 @@ export function parseCatalog(raw: unknown): Catalog | null {
   const skipped: Record<string, string> = {};
   if (c.skipped && typeof c.skipped === "object")
     for (const [k, v] of Object.entries(c.skipped)) if (typeof v === "string") skipped[k] = v;
-  return { version: CATALOG_VERSION, source: str(c.source) || undefined, maps, campaign, playlists, variants, skipped };
+  return { version: CATALOG_VERSION, source: str(c.source) || undefined, maps, campaign, playlists, variants, skipped, custom: [] };
 }
 
 /** The server's catalog, or null when it has none or won't give it to this
@@ -105,6 +120,40 @@ export async function loadCatalog(serverBase: string): Promise<Catalog | null> {
   } catch {
     return null;
   }
+}
+
+/** The catalog's `custom` section from the server's packages, by name;
+ *  each base map named as the disc names it when the catalog knows it. */
+export function customSection(catalog: Pick<Catalog, "maps"> | null, packages: readonly MapSummary[]): CatalogCustomMap[] {
+  const stem = (m: string) => m.split(/[\\/]/).pop()!.replace(/\.map$/i, "").toLowerCase();
+  const baseTitle = (m: string) => catalog?.maps.find((c) => c.key && stem(c.key) === stem(m))?.name ?? m.replace(/[_-]+/g, " ");
+  return packages
+    .map((p) => ({ map_id: p.map_id, name: p.name, author: p.author.gamertag, base: p.base.map, base_title: baseTitle(p.base.map) }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.map_id.localeCompare(b.map_id));
+}
+
+/** The catalog with its `custom` section filled in. */
+export function withCustom(catalog: Catalog, packages: readonly MapSummary[]): Catalog {
+  return { ...catalog, custom: customSection(catalog, packages) };
+}
+
+/** `GET /v1/hoppers/pins`: the custom maps (map_ids) each hopper allows. */
+export function parsePins(body: unknown): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  const pins = body && typeof body === "object" ? (body as { pins?: unknown }).pins : null;
+  for (const p of Array.isArray(pins) ? pins : []) {
+    if (!p || typeof p !== "object") continue;
+    const { hopper_id, map_ids } = p as { hopper_id?: unknown; map_ids?: unknown };
+    if (u32(hopper_id) === null || !Array.isArray(map_ids)) continue;
+    out.set(hopper_id as number, map_ids.filter((m): m is string => typeof m === "string" && /^[0-9a-f]{64}$/.test(m)));
+  }
+  return out;
+}
+
+/** A hopper's pins with one map turned on or off, in a stable order. */
+export function togglePin(pins: readonly string[], mapId: string, on: boolean): string[] {
+  const rest = pins.filter((m) => m !== mapId);
+  return on ? [...rest, mapId].sort() : rest;
 }
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "");

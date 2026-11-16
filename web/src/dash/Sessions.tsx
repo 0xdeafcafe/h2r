@@ -11,6 +11,8 @@ import { live } from "../state/live";
 import { now } from "../lib/now";
 import { gametype, keepSelection, kind, listed, mapName, openFor, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../lib/sessions";
 import { useSession, useSessions } from "../state/sessions";
+import { customMapBadge, pictureChoice } from "../lib/maps";
+import { packageImage, packageLookup } from "../state/maps";
 import Emblem from "../components/Emblem";
 import { BigPod, Glyph, Plate, Prompts } from "./parts";
 import type { Action } from "./input";
@@ -34,14 +36,21 @@ export default function SessionsScreen(props: SessionsProps) {
   );
 }
 
-/** The map's picture from the server's game art, else the host's emblem. */
+/** A custom map's badge for a session (lib/maps.ts customMapBadge). Reactive. */
+const badgeOf = (s: Session) => customMapBadge(s.map_id, packageLookup(s.map_id));
+
+/** The custom map's own image, else the map's picture from the server's
+ *  game art, else the host's emblem. */
 function SessionPod(props: { session: Session | null | undefined }) {
-  const pic = () => (props.session?.map ? gameImage(mapKey(props.session.map)) : null);
+  const pic = () => {
+    const s = props.session;
+    return pictureChoice(packageImage(s?.map_id), s?.map ? gameImage(mapKey(s.map))?.url : null)?.src ?? null;
+  };
   return (
     <Show when={props.session} fallback={<Glyph name="globe" />}>
       {(s) => (
         <Show when={pic()} fallback={<Emblem seed={s().host_xuid || s().host_gamertag} size={220} class="dx-emblem" />}>
-          {(p) => <img class="dx-session-pic" src={p().url} alt="" decoding="async" draggable={false} />}
+          {(p) => <img class="dx-session-pic" src={p()} alt="" decoding="async" draggable={false} />}
         </Show>
       )}
     </Show>
@@ -60,9 +69,22 @@ function Seats(props: { session: Session }) {
 
 function Facts(props: { session: Session }) {
   const s = () => props.session;
+  const custom = () => { const b = badgeOf(s()); return b?.kind === "custom" ? b : null; };
+  const gone = () => badgeOf(s())?.kind === "unavailable";
   return (
     <dl>
-      <dt>map</dt><dd>{mapName(s(), mapTitle)}</dd>
+      <Show
+        when={custom()}
+        fallback={<><dt>map</dt><dd>{mapName(s(), mapTitle)}<Show when={gone()}> <span class="dx-custom-badge dx-custom-badge--off">custom map unavailable</span></Show></dd></>}
+      >
+        {(c) => (
+          <>
+            <dt>map</dt><dd>{c().name} <span class="dx-custom-badge">custom map</span></dd>
+            <dt>made by</dt><dd>{c().author} <span>on {mapName(s(), mapTitle)}</span></dd>
+            <dt>to join</dt><dd>{c().download}</dd>
+          </>
+        )}
+      </Show>
       <dt>game</dt><dd>{gametype(s())}</dd>
       <dt>players</dt><dd>{seats(s()).filled} <span>of</span> {seats(s()).max} <span>{roomText(s())}</span></dd>
       <dt>type</dt><dd>{kind(s())}</dd>
@@ -75,7 +97,7 @@ function Facts(props: { session: Session }) {
 function SessionList(props: SessionsProps) {
   const feed = useSessions();
   const list = createMemo(() => sortSessions(feed.items().filter(listed)));
-  const rows = createMemo(() => list().map((s) => sessionRow(s, mapTitle)));
+  const rows = createMemo(() => list().map((s) => { const b = badgeOf(s); return sessionRow(s, mapTitle, b?.kind === "custom" ? b.name : null); }));
   const [sel, setSel] = createSignal(0);
   // The list reorders as it refreshes: stay on the session, not the row number.
   let key: string | null = null;

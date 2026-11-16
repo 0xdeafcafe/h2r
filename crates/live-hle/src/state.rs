@@ -403,6 +403,9 @@ impl State {
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
     }
+    pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
+        self.sessions.set_map_probe(probe);
+    }
     pub fn session_visibility(&self) -> crate::sessions::Visibility {
         self.sessions.visibility()
     }

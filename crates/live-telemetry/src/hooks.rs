@@ -13,7 +13,7 @@ use crate::memory;
 use crate::server::ServerSink;
 use crate::session::Session;
 use crate::sink::{JsonlSink, QueuedSink};
-use crate::tags::{MapLocator, TagNames};
+use crate::tags::{MapIdLocator, MapLocator, TagNames};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -35,6 +35,8 @@ pub struct Telemetry {
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
+    /// Names the loaded map's `MapId`; set by the boot with its VFS.
+    map_ids: Mutex<Option<MapIdLocator>>,
 }
 
 impl Telemetry {
@@ -47,6 +49,7 @@ impl Telemetry {
             shots: Mutex::new(BTreeMap::new()),
             hits: Mutex::new(Vec::new()),
             maps: Mutex::new(None),
+            map_ids: Mutex::new(None),
         }
     }
 
@@ -54,6 +57,12 @@ impl Telemetry {
     /// `species` and `weapon`). Without it those fields are never sent.
     pub fn set_map_locator(&self, locator: MapLocator) {
         *self.maps.lock().unwrap() = Some(locator);
+    }
+
+    /// Lets each game say which map exactly it is on (`NewGame.map_id`).
+    /// Without it every game names only its map's name.
+    pub fn set_map_id_locator(&self, locator: MapIdLocator) {
+        *self.map_ids.lock().unwrap() = Some(locator);
     }
 
     /// The matchmaking playlist (name, id) the next multiplayer game comes
@@ -169,8 +178,18 @@ impl Telemetry {
         } else {
             None
         };
+        let map_id = if info.is_match() && live_proto::game::valid_id(&info.map) {
+            self.map_ids
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|locate| locate(&info.map))
+        } else {
+            None
+        };
         {
             let mut session = self.session.lock().unwrap();
+            session.set_map_id(map_id);
             session.start_with_teams(&info, players, teams);
             if let Some(names) = names {
                 session.set_tag_names(names);
@@ -410,6 +429,49 @@ mod tests {
         drop(telemetry);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("GameStarted"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_map_id_locator_names_the_loaded_map() {
+        let path = std::env::temp_dir().join(format!(
+            "h2-telemetry-mapid-{}.jsonl",
+            live_proto::sign::random_id()
+        ));
+        let telemetry = Telemetry::new(
+            Session::new("test", None),
+            QueuedSink::new(JsonlSink::create(&path).unwrap(), 4, 1),
+        );
+        let id = live_proto::maps::MapId([0x5c; 32]);
+        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        telemetry.set_map_id_locator(Box::new(move |map| {
+            seen.lock().unwrap().push(map.to_string());
+            (map == "lockout").then_some(id)
+        }));
+        let mut guest = fixture::memory();
+        guest
+            .set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2)
+            .unwrap();
+        guest
+            .set_u16(
+                fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE,
+                30,
+            )
+            .unwrap();
+        guest
+            .write_bytes(layout::CACHE_MAP_NAME, b"lockout\0", 1)
+            .unwrap();
+        fixture::put_player(&mut guest, 0, "A", 0, true, u32::MAX);
+        telemetry.protect(|| telemetry.start(&guest));
+        drop(telemetry);
+        assert_eq!(*asked.lock().unwrap(), ["lockout"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let started = text
+            .lines()
+            .find(|l| l.contains("GameStarted"))
+            .expect("a GameStarted");
+        assert!(started.contains(&id.to_string()), "{started}");
         let _ = std::fs::remove_file(path);
     }
 

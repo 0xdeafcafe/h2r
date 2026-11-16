@@ -9,6 +9,8 @@ name = "h2"
 path = "src/main.rs"
 
 [dependencies]
+# The default data root (`content::store::default_data_root`).
+content.workspace = true
 hs.workspace = true
 tags.workspace = true
 shaders = { path = "../shaders" }
