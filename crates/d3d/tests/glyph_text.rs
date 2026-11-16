@@ -4,7 +4,7 @@
 //! A synthetic glyph cache (a 256x256 `LIN_A4R4G4B4` texture the guest's
 //! glyph-cache pointer names) holds a few shapes rasterised here the way
 //! the game's fonts are: white, with 3-bit coverage alpha. A screen-aligned
-//! quad draws its top-left 64x64 texels 1:1 over the 64x64 back buffer,
+//! quad draws its top-left 64x64 texels 1:1 into an 80x80 back buffer,
 //! as the game draws a string. At 2x, 3x and 4x the view's edges must
 //! follow the true outline (no stair steps, about a host pixel wide); at
 //! 1x, and in the reference at every scale, the image must be the one
@@ -28,8 +28,11 @@ type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
 const GLYPHS: u32 = 0x0040_0000;
 const BITMAP: u32 = MISC + 0x6000;
 const SIDE: u32 = 256;
-/// Texels drawn: the top-left `DRAWN x DRAWN`, onto the whole target.
+/// Texels drawn: the top-left `DRAWN x DRAWN`, 1:1 onto the target's
+/// top-left.
 const DRAWN: f32 = 64.0;
+/// The back buffer's side, in guest pixels.
+const TARGET: u32 = 80;
 
 const TSS_MAGFILTER: u32 = 3;
 const TSS_MINFILTER: u32 = 4;
@@ -134,7 +137,12 @@ fn glyph_cache(m: &mut SparseMemory, named: bool) {
 
 /// One frame: a transparent clear, then the text quad.
 fn frame<B: Backend>(backend: B, smoothing: bool, filter: u32, named: bool) -> Device<B> {
-    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    // A target larger than the text, so the quad's edges are inside it
+    // (at scale, positions past the last pixel centre clamp to the edge).
+    let (mut d, mut m) = create_with(backend, UploadPolicy::Tracked, |p| {
+        p.width = TARGET;
+        p.height = TARGET;
+    });
     d.set_glyph_smoothing(smoothing);
     set_states(&mut d, &mut m);
     glyph_cache(&mut m, named);
@@ -148,7 +156,7 @@ fn frame<B: Backend>(backend: B, smoothing: bool, filter: u32, named: bool) -> D
     for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
         // D3D puts pixel centres on integers: the half-pixel offset
         // maps each texel onto one pixel, as the game's text does.
-        for f in [W as f32 * u - 0.5, H as f32 * v - 0.5, 0.5, 1.0] {
+        for f in [DRAWN * u - 0.5, DRAWN * v - 0.5, 0.5, 1.0] {
             vb.extend_from_slice(&f.to_le_bytes());
         }
         vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
@@ -273,8 +281,9 @@ struct Edges {
 fn edges(px: &[u8], w: u32, scale: u32) -> Edges {
     let s = scale as f64;
     let mut sum = 0.0;
-    for y in 0..w {
-        for x in 0..w {
+    let side = DRAWN as u32 * scale;
+    for y in 0..side {
+        for x in 0..side {
             let a = alpha(px, w, x, y);
             let c = coverage(
                 texel_at(x as f64, scale),
@@ -285,7 +294,7 @@ fn edges(px: &[u8], w: u32, scale: u32) -> Edges {
             // The thin, light stroke (bottom right) is left out: its
             // coverage at the guest's size never reached 1, so no filter
             // can know how wide it was.
-            let thin = x >= w / 2 && y >= w / 2;
+            let thin = x >= side / 2 && y >= side / 2;
             if !thin {
                 sum += (a - c).abs();
             }
@@ -361,9 +370,9 @@ fn one_x_and_the_reference_are_unchanged() {
         assert_eq!(plain_image(&ctx, true, filter), off, "1x, filter {filter}");
         let (_, reference) = scaled_images(&ctx, 4, true, filter, true);
         assert_eq!(reference, off, "the 4x reference, filter {filter}");
-        // The wrapper at 1x: both its images are the plain one.
-        let ((view, _), reference) = scaled_images(&ctx, 1, true, filter, true);
-        assert_eq!(view, off, "the 1x view, filter {filter}");
+        // The wrapper at 1x draws only the reference (the view sleeps):
+        // its image is the plain one.
+        let (_, reference) = scaled_images(&ctx, 1, true, filter, true);
         assert_eq!(reference, off, "the 1x reference, filter {filter}");
     }
 }

@@ -351,10 +351,11 @@ The view redraws it from the same texels:
   `Device::set_glyph_smoothing` does the same in tests.
 
 Measured on a synthetic glyph cache (`crates/d3d/tests/glyph_text.rs`: a
-ring, a letter, a thick and a thin slanted stroke, a dot), drawn 1:1 on a
-64x64 target. Along the thick stroke's edge, the largest distance between
-where alpha crosses one half and the true edge, and the edge's width
-(rows between 0.1 and 0.9):
+ring, a letter, a thick and a thin slanted stroke, a dot), drawn 1:1 on
+the 64x64 corner of an 80x80 target (clear of the target's edge, where
+scaled positions are clamped). Along the thick stroke's edge, the largest
+distance between where alpha crosses one half and the true edge, and the
+edge's width (rows between 0.1 and 0.9):
 
 | Scale | Bilinear (before) | Point (before) | Glyph filter |
 |---|---|---|---|
