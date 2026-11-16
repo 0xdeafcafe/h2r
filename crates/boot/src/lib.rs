@@ -40,6 +40,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_mp;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
@@ -663,6 +664,16 @@ pub fn run_hosted_with_live(
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
     let skulls_on = skulls::install(&mut features, host.settings.clone()).context("installing the skulls")?;
+    // Skulls in multiplayer games: the host's set, advertised to guests on
+    // our Live service and applied on every machine at game start
+    // (docs/skulls.md "In multiplayer").
+    let skulls_mp_on = skulls_mp::install(
+        &mut features,
+        host.settings.clone(),
+        _live.clone(),
+        _telemetry.clone(),
+    )
+    .context("installing the multiplayer skulls")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -755,6 +766,9 @@ pub fn run_hosted_with_live(
     }
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
         eprintln!("{}", skulls::report(&plan, &installed, store));
+    }
+    if let Some(store) = host.settings.as_ref().filter(|_| skulls_mp_on) {
+        eprintln!("{}", skulls_mp::report(&plan, &installed, store));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");

@@ -168,7 +168,7 @@ lines say each hook ran the first time.
 
 A "Skulls" row on the difficulty list, the screen both new campaign and
 co-op campaign reach before the level loads, opens the Skulls screen: all
-fifteen skulls in the engine's order, each with its name and the pressing
+fifteen skulls, gold first ("Gold and silver" below), each with its name and the pressing
 player's profile's state (the game's own On or Off for a collected skull,
 our "Locked" for one not collected), and a description text with the
 focused skull's effect, its level and whether it needs Legendary. A on a
@@ -242,6 +242,204 @@ The parts:
   list); if co-op reaches that one, it has no Skulls row (not checked in
   game).
 
+## Gold and silver
+
+Halo 2 itself does not split its skulls into kinds: they are fifteen bytes,
+all alike, and the game says nothing about them beyond a name
+([Halopedia, Skull](https://www.halopedia.org/Skull): the gold/silver split
+starts with Halo 3). The split we use is the one the Master Chief
+Collection gives Halo 2's skulls, read off its score multipliers
+([Halopedia, MCC:Skulls](https://www.halopedia.org/MCC:Skulls)): a skull
+that multiplies the campaign score above 1.0 makes the game harder and is
+**gold**; one at 1.0 or below is for fun and is **silver**.
+
+| n | Skull | MCC multiplier | Tier |
+|---|---|---|---|
+| 2 | Assassins | 1.2 | Gold |
+| 3 | Thunderstorm | 1.2 | Gold |
+| 4 | Famine | 1.1 | Gold |
+| 6 | Blind | 1.1 | Gold |
+| 8 | Black Eye | 1.1 | Gold |
+| 9 | Catch | 1.1 | Gold |
+| 11 | Iron | 1.3 | Gold |
+| 12 | Mythic | 1.2 | Gold |
+| 13 | Angry | 1.1 | Gold |
+| 0 | Envy | 0.0 | Silver |
+| 1 | Grunt Birthday Party | 1.0 | Silver |
+| 5 | IWHBYD | 1.0 | Silver |
+| 7 | Ghost | 1.0 | Silver |
+| 10 | Sputnik | 1.0 | Silver |
+| 14 | Bandana | 0.0 | Silver |
+
+Uncertain, so said here:
+
+- This is MCC's grouping applied back to Halo 2, not anything in the
+  Xbox game. A rougher "is it a novelty?" rule disagrees on two: it would
+  call Blind silver (it only hides the HUD) and Envy gold. MCC scores
+  Blind 1.1 (gold) and Envy 0.0 (silver: active camo helps the player).
+  We follow the multipliers.
+- The multipliers are from Halopedia's MCC page as read for this work
+  (November 2026); MCC patches have changed scoring before.
+
+The tier is `skulls::About::tier` (`SkullTier`), next to the rest of
+`ABOUT`. The Skulls screen lists gold first, then silver, each in the
+engine's order (`skulls::by_tier`; `skulls_menu::row_of` maps an index to
+its row), and each description starts "Gold skull:" or "Silver skull:".
+Coloured rows are not done: our list class sets each row's text only,
+and the rows draw in the Controls tag's colour, so the tier is in words. The web badges
+and the games filter group by the same tiers (`web/src/lib/skulls.ts`,
+kept in step with `ABOUT` by hand).
+
+`ABOUT` and every index are open-ended: the screen's row count is
+`ABOUT.len()`, the wire takes indices up to 63 (`live_proto::skulls::LIMIT`),
+and the web shows "Skull n" for an index it has no name for. Fifteen
+(`COUNT`) is only the engine's array; a skull of ours past it needs its own
+storage, not a byte of `0x4f55dc`.
+
+## Where each effect lives
+
+Every read of the array, from an absolute-reference scan of the XBE (the
+only writer is `0x1df3f4`), with the function around it read in
+`h2 disasm`. Confirmed unless noted. Every one of them tests the active
+options mode (`[[0x4e6948]+8] == 1`, campaign) first, in the reader or in
+its only caller, so retail runs no skull in multiplayer (mode 2) or the
+main menu (mode 3), whatever the array holds.
+
+| n | Skull | Read at (function) | What it gates | Scope |
+|---|---|---|---|---|
+| 0 | Envy | `0xc50fd` (`0xc50a0`, campaign-only as a whole), `0xc579d` | the player's flashlight becomes active camo | simulation (player unit) |
+| 1 | GBP | `0xca13f` (`0xca0b0`) | an effect spawn (community: confetti on a headshot) | simulation, effect only |
+| 2 | Assassins | `0xc6841` | AI units get the camo flag | AI |
+| 3 | Thunderstorm | `0x203759` (`0x2036c0`) | AI characters take the next rank's variant | AI |
+| 4 | Famine | `0x1e2e50`, `0x1e2ed6` (`0x1e2a90`); `0xfda54` (`0xfda00`) | AI weapon drops' rounds scaled; a weapon made from a scenario placement starts with the placement's rounds (`+0x4c`, `+0x4e`) halved (`cdq; sub; sar`) | AI drops; simulation for placed weapons |
+| 5 | IWHBYD | `0x20b27b` (`0x20b140`) | which dialogue line plays (rare ones far more often) | AI dialogue |
+| 6 | Blind | `0x1393e1` (`0x13939b`); `0x165f31` (`0x165f16`) | the HUD draw predicate returns 0; first-person weapon render (stdcall, 4 args, `ret 0x10`) returns 0 | local (what this machine draws) |
+| 7 | Ghost | `0xc986b` (`0xc9770`) | the flinch cap that applies to players also applies to AI | AI |
+| 8 | Black Eye | `0xd5e35` (`0xd5de0`); `0xd9770` (`0xd9640`) | shields do not recharge on their own (`[unit+0x104] = 10`); a melee hit adds shield, up to 3.0 | simulation |
+| 9 | Catch | `0x1ae51f` to `0x1ae7b1`; `0x1e2d5b` | AI grenade decisions and drops | AI |
+| 10 | Sputnik | `0xd9923` (`0xd9640`) | damage impulse ×3.0 (`[0x45dbd4]`), mid-function | simulation |
+| 11 | Iron | `0x1388ae` (`0x1388a0`) | co-op respawn: a death reverts to the checkpoint | campaign co-op only |
+| 12 | Mythic | `0x1e0578`, `0x1e0ead` | AI vitality ×2 | AI |
+| 13 | Angry | `0x1fda15` (`0x1fc7e0`) | AI actor fire rate ×2 | AI |
+| 14 | Bandana | `0x25cc4d` (`0x25cb60`) | actor code sets a unit-tag short at `+0xc2` to 2; the community effect is bottomless ammo (likely, not traced to the ammo path) | AI code path; likely player ammo |
+
+Scope: **local** changes only what one machine draws; **simulation**
+changes what the host computes and every machine predicts; **AI** needs
+AI, which multiplayer maps do not run; "campaign" is campaign-only logic.
+
+## In multiplayer
+
+Status: built, tests only; not seen running.
+
+### What is offered
+
+Only the skulls whose effect can be made to work in a multiplayer game
+without patching a retail function's middle:
+
+- **Blind** (local). `before` hooks on `0x13939b` (`HUD_SHOWN`, returns
+  `AL = 0`, `ret`) and `0x165f16` (`FIRST_PERSON_RENDER`, returns 0,
+  `ret 0x10`): the same returns the campaign path takes with the skull on,
+  without the campaign test.
+- **Famine** (simulation). Around `0xfda00` (`WEAPON_FROM_PLACEMENT`,
+  stdcall `(object, placement)`): `before` halves the placement's `+0x4c`
+  and `+0x4e` (truncating toward zero, as the campaign path's
+  `cdq; sub; sar` does), `after` puts them back, so the scenario's data is
+  as it was and the next weapon from the same placement is halved from the
+  original count. Only `+0x4c` is read by `0xfda00`; `+0x4e` is halved for
+  symmetry with the campaign path. AI drops are not touched (no AI).
+
+Not offered: Sputnik and Black Eye act in the middle of `0xd9640` and
+`0xd5de0` (each would need a port of the function or a mid-function hook);
+Envy reads inside a function that is campaign-only as a whole; the rest
+need AI or are co-op campaign logic.
+
+`live_proto::skulls::MULTIPLAYER` (`[4, 6]`) is the list, and the server
+refuses a multiplayer game or session that names any other.
+
+### Choosing them
+
+A "Skulls" row is added to the Game Setup list of a multiplayer custom
+game (`skulls-mp-row`, `boot::skulls_screen::GameSetupRow`). A on it
+opens the same Skulls screen in its multiplayer mode: titled "Multiplayer
+Skulls", rows Famine and Blind, each On, Off or Locked, the description
+saying what it does in multiplayer, that the host's choice is everyone's,
+and where it is found. The choice is per profile, apart from the campaign
+one: `skulls.mp_famine` and `skulls.mp_blind` under
+`[profiles."<name>".skulls]`.
+
+`skulls.mp_require_collected` (default true, a global setting): on, a
+skull can be turned on for multiplayer only once that profile has picked it
+up in the campaign (Locked otherwise); off, both can be.
+
+| Address | What | Confidence |
+|---|---|---|
+| `0x2bb4d2` | Game Setup ("squad settings") list constructor, handler in ESI, `ret 4`: fills the "squad setting list" datum array at handler `+0x70` (capacity 10, element 4 bytes, the row's action word at `+2`) | confirmed |
+| `0x2bb74f` | row text (thiscall, item, word; `ret 8`): an action it does not know leaves the text as it was | confirmed |
+| `0x2bb801` | row chosen (thiscall, chain, row; `ret 8`): a jump table on the action with no bounds check (0 to 9; 5 is null) | confirmed |
+| `0x2bbbf6` | the help text for the focused row: blank for an action it does not know | confirmed |
+
+The constructor's `after` hook adds one row with action 10 (ours), only to
+a list whose rows include action 0 ("Change Map"): retail builds that only
+for lobby kinds 1, 3 and 5, the multiplayer custom game lobbies, and only
+the host reaches this dialog. Row text draws "Skulls" for action 10; row
+chosen, for action 10, opens our screen (`0x149f1e`) and returns `ret 8`
+without the jump table (which would read past its end). The help pane is
+blank on our row (`0x2bbbf6` has no entry for it); filling it needs a
+hook there, not done.
+
+### How the host's set reaches guests
+
+Retail's multiplayer simulation is host-authoritative, and the game
+options every peer builds at session start (`0x6ec80`) carry no skulls, so
+the set travels beside the game, through our Live session data:
+
+1. **The host advertises it.** When the game advertises a session
+   (`XSessionCreate`, `XSessionModify`), the HLE runs the boot's probe
+   (`Hle::set_skulls_probe`): the union of the signed-in profiles'
+   multiplayer choices, from a cache (the probe runs with guest memory
+   held, so it never touches the settings store). It goes on the wire as
+   `NewSession.skulls` and, when it changed, `Update.skulls`
+   ([live-api.md](live-api.md)). A press on the Skulls screen pushes an
+   update to an open advertisement at once (`Hle::set_session_skulls`).
+2. **A guest reads it.** The HLE remembers the skulls of every session it
+   saw in a search or match result. At game start
+   (`GAME_ACTIVATE`, `0x18f000`, options mode 2) a guest finds its joined
+   session (the XNKID registered with `XNetRegisterKey` that is not one of
+   our own advertisements), asks the server for it again
+   (`GET /v1/sessions/{id}`), waits up to 1.5 s, and uses what it has
+   (`Hle::host_skulls`): the fresh answer, or the set seen when it joined.
+3. **Everyone applies the host's set** for that game. The host, and a
+   machine playing alone, apply their own choice. A guest applies only the
+   host's, never its own. Telemetry's `NewGame.skulls` is the set applied
+   ([live-telemetry.md](live-telemetry.md)).
+
+The role comes from the squad session (`coop_probe::read_session`): no
+live session or one machine is local, our peer the host is host, anything
+else is a guest.
+
+Limits:
+
+- **System Link and no server.** No advertisement reaches the guest, so it
+  applies none and says so. The host still applies its own: Blind on the
+  host's screen only, Famine to the weapons the host makes (the host
+  decides objects; whether a guest's own prediction of a fresh weapon's
+  rounds then shows the full count for a moment is not checked).
+- **A change after the game starts** applies at the next game.
+- **A modified client** can ignore the host's set for Blind (it only
+  changes its own screen). Famine is enforced by the host.
+- **Older servers** refuse a session update carrying `skulls`; the HLE
+  sends the field only when the set changed, so a host with no skulls
+  never sends it.
+
+### Switching it off
+
+- `H2_FEATURES=skulls-mp=off`: no multiplayer skull is applied and nothing
+  is advertised (`skulls-mp: off: switched off (H2_FEATURES)`).
+- `H2_FEATURES=skulls-mp-row=off`: no Game Setup row.
+- `H2_NO_SKULLS=1`: neither, nor the campaign skulls.
+- As with every plan hook, a clash at one of the points refuses the plan
+  at boot rather than replacing a hook.
+
 ## To check in game
 
 1. `h2 play`, sign in a named profile, start Cairo Station on Legendary and
@@ -281,11 +479,11 @@ The menu:
    `skulls-screen: row text`. If it says fewer than 15 rows, the list
    hook did not see the build: report it. If it says `no description
    text`, the widget could not be made.
-9. The rows: Envy, Grunt Birthday Party, Assassins, Thunderstorm, Famine,
-   IWHBYD, Blind, Ghost, Black Eye, Catch, Sputnik, Iron, Mythic, Angry,
-   Bandana; each value On, Off or Locked. Scroll to the end and back: all
+9. The rows, gold first: Assassins, Thunderstorm, Famine, Blind, Black
+   Eye, Catch, Iron, Mythic, Angry, then Envy, Grunt Birthday Party,
+   IWHBYD, Ghost, Sputnik, Bandana; each value On, Off or Locked. Scroll to the end and back: all
    fifteen are reachable.
-10. The description: right of the title, the focused skull's effect and
+10. The description: "Gold skull:" or "Silver skull:", the focused skull's effect and
     "Found on <level>, Legendary only" (Blind: "any difficulty"); it
     changes as the cursor moves. If it is missing, clipped or over the
     list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
@@ -303,3 +501,33 @@ The menu:
 14. Select Level's difficulty choice (the second loader, `0x2bb432`): the
     row appears there too.
 15. `H2_NO_SKULLS_MENU=1`: the difficulty screen is retail.
+
+Multiplayer (a Live server running; two machines for 20 to 22):
+
+16. At boot: `skulls-mp: hooks installed via feature plan at 0x18f000
+    (multiplayer start), 0x13939b (Blind: HUD), 0x165f16 (Blind:
+    first-person weapon), 0xfda00 (Famine: placed weapons); offered:
+    Famine, Blind; collecting required: yes`.
+17. Host a custom game, open Game Setup: a "Skulls" row after the others;
+    stderr `skulls menu: Game Setup list: Skulls row added (N rows)`. Its
+    help pane is blank (known).
+18. A on it: "Multiplayer Skulls", rows Famine and Blind. stderr `skulls
+    menu: opening the multiplayer Skulls screen for <profile> (player 0)`.
+    A on Blind (collected): `skulls: Blind on in multiplayer for
+    <profile>`; on one not collected: Locked, and nothing changes. With
+    `skulls.mp_require_collected = false` in `settings.toml`, both can be
+    turned on.
+19. Start the game alone: `skulls-mp: multiplayer start (local): Blind`;
+    no HUD and no first-person weapon, and `skulls-mp: Blind is hiding
+    the HUD and first-person weapon this game`. With Famine: `skulls-mp:
+    Famine halved a placed weapon's ammo (the first this game)`, and a
+    map's placed weapons start with half their rounds.
+20. Host with a guest: the host says `skulls-mp: multiplayer start as host
+    of 2 machines: <set> (advertised to guests)`; the guest says
+    `skulls-mp: multiplayer start as a guest: the host's skulls, read from
+    the server now: <set>` (or `as advertised when we joined ...`), and
+    its HUD is gone if Blind is in the set, whatever its own profile says.
+21. Over System Link: the guest says `... the host's skulls are unknown
+    (...); none here ...`.
+22. After the game, the stats site shows the skull badges on that game and
+    in the games list, and `?skulls=6` on `/v1/games` finds it.

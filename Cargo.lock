@@ -750,6 +750,7 @@ dependencies = [
  "libloading",
  "lift",
  "live-hle",
+ "live-proto",
  "live-telemetry",
  "lockstep",
  "map",

@@ -61,8 +61,13 @@ pub const SKULLS_ID_BASE: u32 = ID_BASE + 0x0100_0000;
 const LABELS: Range<u32> = SKULLS_ID_BASE..SKULLS_ID_BASE + 0x10;
 pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
 pub const LOCKED_ID: u32 = SKULLS_ID_BASE + 0x11;
+/// The multiplayer screen's title.
+pub const MP_TITLE_ID: u32 = SKULLS_ID_BASE + 0x12;
 const DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x20..SKULLS_ID_BASE + 0x30;
+/// One description per multiplayer row (`skulls_mp::MP`).
+const MP_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x30..SKULLS_ID_BASE + 0x38;
 pub const TITLE: &str = "Skulls";
+pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
 
 /// The description text: right of the title, above the list (the Controls
@@ -100,11 +105,48 @@ pub fn description(i: usize) -> String {
         "any difficulty"
     };
     let note = a.note.map_or(String::new(), |n| format!(" ({n})"));
-    format!("{name}{} Found on {}, {needs}{note}.", a.effect, a.level)
+    format!(
+        "{} skull: {name}{} Found on {}, {needs}{note}.",
+        a.tier.name(),
+        a.effect,
+        a.level
+    )
+}
+
+/// The campaign screen's rows: skull indices, gold first.
+static ORDER: LazyLock<Vec<usize>> = LazyLock::new(skulls::by_tier);
+
+/// The campaign screen's row for skull `i`.
+pub fn row_of(i: usize) -> Option<i16> {
+    ORDER.iter().position(|s| *s == i).map(|r| r as i16)
 }
 
 static DESCRIPTION_TEXTS: LazyLock<Vec<String>> =
     LazyLock::new(|| (0..COUNT).map(description).collect());
+
+/// The description id of multiplayer row `row`.
+pub fn mp_description_id(row: usize) -> u32 {
+    MP_DESCRIPTIONS.start + row as u32
+}
+
+/// Multiplayer row `row`'s description: what it does in a multiplayer game,
+/// that the host's choice is everyone's, and where it is collected.
+pub fn mp_description(row: usize) -> String {
+    let m = &crate::skulls_mp::MP[row];
+    let a = &ABOUT[m.index];
+    format!(
+        "{} The host's choice is everyone's. Found on {}{}.",
+        m.effect,
+        a.level,
+        if a.legendary { ", Legendary only" } else { "" }
+    )
+}
+
+static MP_DESCRIPTION_TEXTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    (0..crate::skulls_mp::MP.len())
+        .map(mp_description)
+        .collect()
+});
 
 /// Every string we serve.
 pub fn strings() -> Vec<(u32, &'static str)> {
@@ -115,11 +157,18 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         .collect();
     v.push((TITLE_ID, TITLE));
     v.push((LOCKED_ID, LOCKED));
+    v.push((MP_TITLE_ID, MP_TITLE));
     v.extend(
         DESCRIPTION_TEXTS
             .iter()
             .enumerate()
             .map(|(i, t)| (description_id(i), t.as_str())),
+    );
+    v.extend(
+        MP_DESCRIPTION_TEXTS
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (mp_description_id(i), t.as_str())),
     );
     v
 }
@@ -233,10 +282,21 @@ pub fn press(store: &Store, profile: &str, i: usize) -> Option<String> {
     })
 }
 
-/// The Skulls screen: every skull, for the profile it was last opened for.
+/// Which skulls the screen lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// All fifteen, for the next campaign start (the difficulty list's row).
+    Campaign,
+    /// Only those that work in multiplayer (`skulls_mp::MP`), for the games
+    /// the profile hosts (the Game Setup dialog's row).
+    Multiplayer,
+}
+
+/// The Skulls screen: every skull, for the profile it was last opened for;
+/// or, opened from a lobby, the multiplayer ones.
 pub struct SkullsScreen {
     store: Arc<Store>,
-    open: Mutex<Option<String>>,
+    open: Mutex<Option<(String, Mode)>>,
 }
 
 impl SkullsScreen {
@@ -249,14 +309,39 @@ impl SkullsScreen {
     /// The screen shows `profile`'s skulls from now (the pressing player's;
     /// one screen is open at a time, over the difficulty screen).
     pub fn open(&self, profile: String) {
-        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some(profile);
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, Mode::Campaign));
+    }
+    /// The screen shows `profile`'s multiplayer skulls from now (over the
+    /// Game Setup dialog).
+    pub fn open_mp(&self, profile: String) {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, Mode::Multiplayer));
     }
     pub fn profile(&self) -> Option<String> {
-        self.open.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(p, _)| p.clone())
     }
-    /// Row `row`'s skull.
+    pub fn mode(&self) -> Mode {
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(Mode::Campaign, |(_, m)| *m)
+    }
+    /// Multiplayer row `row`'s state for the open profile; Locked with none.
+    pub fn mp_state(&self, row: usize) -> State {
+        self.profile()
+            .and_then(|p| crate::skulls_mp::state(&self.store, &p, row))
+            .unwrap_or(State::Locked)
+    }
+    /// Row `row`'s skull: gold ones first, then silver
+    /// ([`skulls::by_tier`]).
     fn skull(row: i16) -> Option<usize> {
-        usize::try_from(row).ok().filter(|i| *i < COUNT)
+        usize::try_from(row)
+            .ok()
+            .and_then(|r| ORDER.get(r).copied())
     }
     /// Skull `i`'s state for the open profile; Locked with none.
     pub fn state(&self, i: usize) -> State {
@@ -266,6 +351,16 @@ impl SkullsScreen {
     }
     /// A press on row `row`: what to log, `None` for no such row.
     pub fn press_line(&self, row: i16) -> Option<String> {
+        if self.mode() == Mode::Multiplayer {
+            let r = usize::try_from(row)
+                .ok()
+                .filter(|r| *r < crate::skulls_mp::MP.len())?;
+            let profile = self.profile()?;
+            let line = crate::skulls_mp::press(&self.store, &profile, r);
+            // An open lobby's advertisement follows the change.
+            crate::skulls_mp::changed(&profile);
+            return line;
+        }
         let i = Self::skull(row)?;
         let Some(profile) = self.profile() else {
             return Some("skulls menu: no profile for this screen; nothing changed".into());
@@ -276,12 +371,35 @@ impl SkullsScreen {
 
 impl Rows for SkullsScreen {
     fn count(&self) -> usize {
-        COUNT
+        match self.mode() {
+            Mode::Campaign => COUNT,
+            Mode::Multiplayer => crate::skulls_mp::MP.len(),
+        }
     }
     fn title(&self) -> u32 {
-        TITLE_ID
+        match self.mode() {
+            Mode::Campaign => TITLE_ID,
+            Mode::Multiplayer => MP_TITLE_ID,
+        }
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        if self.mode() == Mode::Multiplayer {
+            let Some(r) = usize::try_from(row)
+                .ok()
+                .filter(|r| *r < crate::skulls_mp::MP.len())
+            else {
+                return Vec::new();
+            };
+            let value = match self.mp_state(r) {
+                State::On => speaker_row::ON_ID,
+                State::Off => speaker_row::OFF_ID,
+                State::Locked => LOCKED_ID,
+            };
+            return vec![
+                (LABEL_SLOT, label_id(crate::skulls_mp::MP[r].index)),
+                (VALUE_SLOT, value),
+            ];
+        }
         let Some(i) = Self::skull(row) else {
             return Vec::new();
         };
@@ -297,12 +415,20 @@ impl Rows for SkullsScreen {
             .map_or(Chosen::Nothing, Chosen::Stepped)
     }
     fn description(&self, row: i16) -> Option<u32> {
+        if self.mode() == Mode::Multiplayer {
+            return usize::try_from(row)
+                .ok()
+                .filter(|r| *r < crate::skulls_mp::MP.len())
+                .map(mp_description_id);
+        }
         Self::skull(row).map(description_id)
     }
 }
 
 const _: () = assert!(COUNT as u32 <= LABELS.end - LABELS.start);
 const _: () = assert!(COUNT as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
+const _: () =
+    assert!(crate::skulls_mp::MP.len() as u32 <= MP_DESCRIPTIONS.end - MP_DESCRIPTIONS.start);
 
 #[cfg(test)]
 mod tests {
@@ -360,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn every_skull_is_listed_in_the_engines_order() {
+    fn every_skull_is_listed_gold_first() {
         let s = SkullsScreen::new(store());
         s.open("Chief".into());
         assert_eq!(s.count(), 15);
@@ -368,20 +494,22 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Envy",
-                "Grunt Birthday Party",
+                // Gold.
                 "Assassins",
                 "Thunderstorm",
                 "Famine",
-                "IWHBYD",
                 "Blind",
-                "Ghost",
                 "Black Eye",
                 "Catch",
-                "Sputnik",
                 "Iron",
                 "Mythic",
                 "Angry",
+                // Silver.
+                "Envy",
+                "Grunt Birthday Party",
+                "IWHBYD",
+                "Ghost",
+                "Sputnik",
                 "Bandana",
             ]
         );
@@ -403,7 +531,8 @@ mod tests {
         skulls::record_pickup(&st, &names(&["Arbiter"]), 3);
         s.open("Chief".into());
         let values: Vec<_> = drawn(&s).into_iter().map(|(_, v)| v).collect();
-        for (i, v) in values.iter().enumerate() {
+        for (r, v) in values.iter().enumerate() {
+            let i = ORDER[r];
             let want = match i {
                 1 => format!("{:#x}", speaker_row::OFF_ID),
                 12 => format!("{:#x}", speaker_row::ON_ID),
@@ -422,30 +551,30 @@ mod tests {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
         assert_eq!(
-            s.press_line(0).as_deref(),
+            s.press_line(row_of(0).unwrap()).as_deref(),
             Some("skulls menu: no profile for this screen; nothing changed")
         );
         s.open("Chief".into());
         assert_eq!(
-            s.press_line(11).as_deref(),
+            s.press_line(row_of(11).unwrap()).as_deref(),
             Some(
                 "skulls menu: Iron is locked for Chief: not collected yet (found on High Charity, Legendary only)"
             )
         );
         assert_eq!(
-            s.press_line(6).as_deref(),
+            s.press_line(row_of(6).unwrap()).as_deref(),
             Some("skulls menu: Blind is locked for Chief: not collected yet (found on Outskirts)")
         );
         assert_eq!(s.state(11), State::Locked, "a locked press changes nothing");
         assert_eq!(skulls::collected(&st, "Chief"), []);
         skulls::record_pickup(&st, &names(&["Chief"]), 11);
         assert_eq!(
-            s.press_line(11).as_deref(),
+            s.press_line(row_of(11).unwrap()).as_deref(),
             Some("skulls: Iron off for Chief")
         );
         assert_eq!(s.state(11), State::Off);
         assert_eq!(
-            s.press_line(11).as_deref(),
+            s.press_line(row_of(11).unwrap()).as_deref(),
             Some("skulls: Iron on for Chief")
         );
         assert_eq!(s.state(11), State::On);
@@ -465,8 +594,8 @@ mod tests {
         }
         skulls::record_pickup(&st, &names(&["Arbiter"]), 7);
         s.open("Chief".into());
-        s.press_line(3); // Thunderstorm off
-        s.press_line(9); // Catch: locked, nothing
+        s.press_line(row_of(3).unwrap()); // Thunderstorm off
+        s.press_line(row_of(9).unwrap()); // Catch: locked, nothing
         let mut want = [false; COUNT];
         want[0] = true;
         want[12] = true;
@@ -474,15 +603,15 @@ mod tests {
         // Co-op: the other player turns theirs off on their own screen; the
         // start takes the union of both.
         s.open("Arbiter".into());
-        s.press_line(7);
+        s.press_line(row_of(7).unwrap());
         let both = names(&["Chief", "Arbiter"]);
         assert_eq!(skulls::selection(&st, &both), Some(want));
-        s.press_line(7);
+        s.press_line(row_of(7).unwrap());
         want[7] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
         // Toggling back restores it.
         s.open("Chief".into());
-        s.press_line(3);
+        s.press_line(row_of(3).unwrap());
         want[3] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
     }
@@ -491,24 +620,25 @@ mod tests {
     fn each_description_says_what_it_does_where_and_if_legendary() {
         let s = SkullsScreen::new(store());
         for (i, a) in ABOUT.iter().enumerate() {
-            let id = s.description(i as i16).unwrap();
+            let id = s.description(row_of(i).unwrap()).unwrap();
             assert_eq!(id, description_id(i));
             let d = text(id);
             assert!(d.contains(a.effect), "{d}");
             assert!(d.contains(&format!("Found on {}", a.level)), "{d}");
             assert_eq!(d.contains("Legendary only"), a.legendary, "{d}");
             assert_eq!(d.contains("any difficulty"), !a.legendary, "{d}");
+            assert!(d.starts_with(&format!("{} skull: ", a.tier.name())), "{d}");
             // A text widget holds 256 UTF-16 units, and the box is small.
             assert!(d.encode_utf16().count() <= 140, "{d}");
         }
         assert_eq!(
             description(6),
-            "Your HUD and first-person weapon are hidden. Found on Outskirts, any difficulty."
+            "Gold skull: Your HUD and first-person weapon are hidden. Found on Outskirts, any difficulty."
         );
         assert_eq!(
             description(5),
-            "I Would Have Been Your Daddy: Rare combat lines play far more often. \
-             Found on Outskirts, Legendary only (solo only; one try in seven)."
+            "Silver skull: I Would Have Been Your Daddy: Rare lines play far more often. \
+             Found on Outskirts, Legendary only (solo; one try in seven)."
         );
         assert_eq!(s.description(15), None);
     }
@@ -602,7 +732,7 @@ mod tests {
     #[test]
     fn strings_are_ours_distinct_and_clear_of_the_models() {
         let all = strings();
-        assert_eq!(all.len(), 2 * COUNT + 2);
+        assert_eq!(all.len(), 2 * COUNT + 3 + crate::skulls_mp::MP.len());
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
         assert!(
@@ -620,5 +750,56 @@ mod tests {
         assert!(all.contains(&(label_id(12), "Mythic")));
         assert!(all.contains(&(TITLE_ID, "Skulls")));
         assert!(all.contains(&(LOCKED_ID, "Locked")));
+        assert!(all.contains(&(MP_TITLE_ID, "Multiplayer Skulls")));
+    }
+
+    /// Opened from a lobby's Game Setup: only the skulls that work in
+    /// multiplayer, each the profile's multiplayer On, Off or Locked, and a
+    /// press flips the multiplayer choice, never the campaign one.
+    #[test]
+    fn the_multiplayer_mode_lists_only_multiplayer_skulls() {
+        let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
+        let s = SkullsScreen::new(Arc::clone(&st));
+        s.open_mp("Chief".into());
+        assert_eq!(s.mode(), Mode::Multiplayer);
+        assert_eq!(s.count(), 2);
+        assert_eq!(s.title(), MP_TITLE_ID);
+        let shown: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(shown, ["Famine", "Blind"]);
+        assert!(
+            drawn(&s).iter().all(|(_, v)| v == "Locked"),
+            "nothing collected"
+        );
+        assert!(s.texts(2).is_empty());
+        assert_eq!(s.description(1), Some(mp_description_id(1)));
+        assert_eq!(
+            text(mp_description_id(1)),
+            "Every player's HUD and first-person weapon are hidden. The host's choice is \
+             everyone's. Found on Outskirts."
+        );
+        assert!(text(mp_description_id(0)).ends_with("Found on The Oracle, Legendary only."));
+        skulls::record_pickup(&st, &names(&["Chief"]), 6);
+        assert_eq!(s.mp_state(1), State::Off, "collected, off for multiplayer");
+        assert_eq!(
+            s.press_line(1).as_deref(),
+            Some("skulls: Blind on in multiplayer for Chief")
+        );
+        assert_eq!(s.mp_state(1), State::On);
+        assert!(
+            s.press_line(0)
+                .unwrap()
+                .contains("Famine is locked for Chief in multiplayer")
+        );
+        assert_eq!(s.press_line(2), None);
+        assert_eq!(crate::skulls_mp::chosen(&st, "Chief"), vec![6]);
+        // The campaign screen still lists all fifteen, its own states.
+        s.open("Chief".into());
+        assert_eq!(s.count(), COUNT);
+        assert_eq!(
+            s.state(6),
+            State::On,
+            "the pickup turned it on for the campaign"
+        );
+        assert_eq!(s.title(), TITLE_ID);
     }
 }
