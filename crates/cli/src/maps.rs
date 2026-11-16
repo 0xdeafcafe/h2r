@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use map::{FourCC, Map};
 
-const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
+const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 maps install [--data DIR] [--disc disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
 
 pub(super) fn run(command: &str, args: Vec<String>) -> Result<()> {
+    if command == "maps" && args.first().is_some_and(|a| a == "install") {
+        return install(&args[1..]);
+    }
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let mut disc = None;
@@ -179,4 +182,61 @@ mod tests {
             assert!(super::run(command, vec!["--lenient".into(), "--help".into()]).is_err());
         }
     }
+}
+
+/// `h2 maps install`: puts every map package whose map name the disc lacks
+/// into 1.0's map list as a content package, and removes the ones whose
+/// package is gone (docs/maps.md §4). The boot does the same at start-up.
+fn install(args: &[String]) -> Result<()> {
+    let (mut data, mut disc) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--data" => {
+                data = Some(PathBuf::from(
+                    it.next().context("--data needs a directory")?,
+                ))
+            }
+            "--disc" => {
+                disc = Some(PathBuf::from(
+                    it.next().context("--disc needs an ISO path")?,
+                ))
+            }
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unexpected argument {a}\n{USAGE}"),
+        }
+    }
+    let data = data.unwrap_or_else(content::store::default_data_root);
+    let disc = match disc {
+        Some(d) => d,
+        None => super::default_disc()?,
+    };
+    let r = boot::new_maps::install(&data, &mut boot::new_maps::IsoDisc::new(&disc))?;
+    for n in &r.notices {
+        println!("{n}");
+    }
+    for (name, offer, id) in &r.installed {
+        println!(
+            "{name}: map id {id:#x}, {}",
+            vfs::Config::new(&data, boot::new_maps::HALO2_TITLE)
+                .content_dir(*offer)
+                .display()
+        );
+    }
+    for p in &r.removed {
+        println!("removed {}", p.display());
+    }
+    for s in &r.skipped {
+        println!("skipped {s}");
+    }
+    println!(
+        "{} new map(s) in the map list, {} written, {} removed",
+        r.installed.len(),
+        r.materialised.len(),
+        r.removed.len()
+    );
+    Ok(())
 }

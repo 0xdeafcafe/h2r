@@ -32,6 +32,7 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
 pub mod map_slots;
+pub mod new_maps;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -544,6 +545,10 @@ pub fn run_hosted_with_live(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
+    // Packages for maps the disc doesn't have become content packages
+    // under T:\$c, which the main menu reads for its map list
+    // (docs/maps.md §4); before the VFS lists that folder.
+    new_maps::install_at_boot(&opts.data_root, &opts.disc);
     // Map packages from <data>/maps (docs/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
