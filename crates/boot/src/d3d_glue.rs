@@ -42,7 +42,9 @@ impl Installed {
 /// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
 /// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
 /// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
-/// too when the scale is 1. `H2_BOOT_GFX_SHADOWS=N` also writes the first
+/// too when the scale is 1. `H2_BOOT_GFX_LIGHTING_AB=1` draws a retail and
+/// an E3 view of the same run (`d3d::LightingAb`, at least 2x), written as
+/// `frame-NNNNN-retail.png` and `frame-NNNNN-e3.png`. `H2_BOOT_GFX_SHADOWS=N` also writes the first
 /// N frames that sample a shadow map (`d3d_diag::samples_shadow_map`).
 /// Halo's frame wait goes through `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
@@ -88,6 +90,25 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     }
                 }
             };
+            if std::env::var_os("H2_BOOT_GFX_LIGHTING_AB").is_some_and(|v| v != "0") {
+                // One run, both lighting modes: the 1x reference answers the
+                // guest; a retail view and an E3 view draw the same calls at
+                // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
+                // `frame-N-e3.png` are a pair from the same frame.
+                let scale = scale.max(2);
+                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x")));
+                let retail = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-retail")));
+                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("-e3")));
+                let mut b = d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference");
+                let (retail_report, e3_report) = (scale_report(b.reference_mut()), scale_report(&mut b));
+                let report: ExtraReport = Box::new(move || format!("retail view: {}\ne3 view: {}", retail_report(), e3_report()));
+                return if render_thread_requested() {
+                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                } else {
+                    install_with_report(rt, b, Some(report))
+                };
+            }
             if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The reference answers the guest at 1x; the view, on the
                 // same device, renders at `scale` and presents.
