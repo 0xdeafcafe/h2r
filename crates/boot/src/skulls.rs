@@ -31,18 +31,18 @@
 //!   left as the game has it.
 //! - **Menu**: [`screen_for`] gives the "Skulls" screen of a profile as
 //!   rows of the `ui` model, one per collected skull; [`toggle`] is a press.
-//!   The guest list wiring that shows it from the difficulty screen is not
-//!   built yet (docs/skulls.md "Menu").
+//!   `crate::skulls_menu` shows it from the difficulty screen's "Skulls"
+//!   row (docs/skulls.md "Menu").
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use runtime::TransferAbi;
 use runtime::dispatch::Dispatch;
 use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
-use runtime::TransferAbi;
 use settings::{Apply, Def, Kind, Menu, Scope, Store, Tier, Value};
 
 use crate::layout_glue::Gm;
@@ -616,8 +616,8 @@ mod tests {
         assert_eq!(flags(&g), Some(want));
         // Co-op: the union of both profiles' selections.
         let mut g = guest(&["Chief", "Arbiter"]);
-        let on = selection(&s, &signed_in(&g)).unwrap();
-        apply(&mut g, &on);
+        let both = selection(&s, &signed_in(&g)).unwrap();
+        apply(&mut g, &both);
         want[3] = true;
         assert_eq!(flags(&g), Some(want));
         // No named profile: the game's own state is left alone.
