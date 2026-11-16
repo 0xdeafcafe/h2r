@@ -36,6 +36,7 @@ import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
 import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
@@ -365,7 +366,7 @@ export class ViewerScene {
         if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          for (const m of mats) used.add(m);
+          for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
           let flat = Array.isArray(mesh.material) ? undefined : flats.get(mesh);
           if (flat && role === "machine") flat = own(flat);
           if (flat) pairs.push({ mesh, textured: mesh.material as THREE.Material, flat });
@@ -389,6 +390,7 @@ export class ViewerScene {
         for (const c of o.children) walk(c, path, aside);
       };
       const used = new Set<THREE.Material>();
+      let wet = false;
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
@@ -397,6 +399,7 @@ export class ViewerScene {
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
       this.look.adopt(root, assetExtras, url);
+      this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
       this.frameObjects.reset();
@@ -529,6 +532,8 @@ export class ViewerScene {
   setEffects(on: boolean) { this.look.setEffects(on); }
   setSky(on: boolean) { this.look.setSky(on); }
   setFog(on: boolean) { this.look.setFog(on); }
+  /** The level's rain, snow or motes, where they fall. */
+  setWeather(on: boolean) { this.look.setWeather(on); }
 
   /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
@@ -1453,6 +1458,10 @@ export class ViewerScene {
       }
     }
     if (!this.fly) this.controls.update();
+    // The water's ripples and the weather move by themselves.
+    // (Held still when motion is reduced, but the weather still follows the view.)
+    const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
+    if (moving && !this.opts.reducedMotion) this.dirty = true;
     if (!this.dirty) return;
     this.dirty = false;
     this.draw(dt);

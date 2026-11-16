@@ -90,7 +90,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   // unless asked; decals, effects, the sky and its fog are, unless not.
   const [level, setLevel] = createSignal<LevelInfo | null>(null);
   const [zonePick, setZonePick] = createSignal<ZonePick>("auto");
-  const [show, setShow] = createSignal({ cinematic: false, backdrop: false, decals: true, effects: true, sky: true, fog: true });
+  const [show, setShow] = createSignal({ cinematic: false, backdrop: false, decals: true, effects: true, sky: true, fog: true, weather: true });
   const flip = (k: keyof ReturnType<typeof show>) => {
     const on = !show()[k];
     setShow({ ...show(), [k]: on });
@@ -100,12 +100,13 @@ export default function Viewer3D(props: Viewer3DProps) {
     else if (k === "decals") scene.setDecals(on);
     else if (k === "effects") scene.setEffects(on);
     else if (k === "sky") scene.setSky(on);
+    else if (k === "weather") scene.setWeather(on);
     else scene.setFog(on);
     setLevel(scene.levelInfo());
   };
   const applyLevel = (s: ViewerScene) => {
     const o = show();
-    s.setCinematic(o.cinematic); s.setBackdrop(o.backdrop); s.setDecals(o.decals); s.setEffects(o.effects); s.setSky(o.sky); s.setFog(o.fog);
+    s.setCinematic(o.cinematic); s.setBackdrop(o.backdrop); s.setDecals(o.decals); s.setEffects(o.effects); s.setSky(o.sky); s.setFog(o.fog); s.setWeather(o.weather);
     s.setZonePick(zonePick());
     setLevel(s.levelInfo());
   };
@@ -281,6 +282,9 @@ export default function Viewer3D(props: Viewer3DProps) {
                   <label title="The level's sky, drawn around the camera"><input type="checkbox" checked={show().sky} onChange={() => flip("sky")} /> Sky</label>
                 </Show>
                 <label title="Fog: the level's own, measured from what the camera looks at"><input type="checkbox" checked={show().fog} onChange={() => flip("fog")} /> Fog</label>
+                <Show when={level()!.weather}>
+                  <label title="The level's rain, snow or drifting motes, where they fall in the game"><input type="checkbox" checked={show().weather} onChange={() => flip("weather")} /> Weather</label>
+                </Show>
                 <Show when={objectKinds().length > 0}>
                   <label title="The objects the level places: scenery, crates, weapons and their spawns, vehicles, controls"><input type="checkbox" checked={objects()} onChange={() => { setObjects(!objects()); scene?.setObjects(objects()); }} /> Objects</label>
                   <For each={objectKinds()}>{(k) => (

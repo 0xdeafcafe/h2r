@@ -21,12 +21,22 @@ export interface SkyFog {
   end: number;
 }
 
+/** The sun-lit air of the sky's light: its colour, how thick (0..1), and
+ *  the light's heading and pitch (radians, game frame). */
+export interface SkyGlow {
+  colour: [number, number, number];
+  density: number;
+  heading: number;
+  pitch: number;
+}
+
 export interface SkyInfo {
   name: string;
   /** The sky model, relative to the map glb. */
   glb?: string;
   clear?: [number, number, number];
   fog?: SkyFog;
+  glow?: SkyGlow;
 }
 
 const rgb = (v: unknown): [number, number, number] | undefined =>
@@ -45,7 +55,20 @@ export function skyOf(assetExtras: unknown): SkyInfo | null {
   if (f && fc && [f.density, f.start, f.end].every((x) => typeof x === "number" && Number.isFinite(x)) && (f.end as number) > (f.start as number) && (f.density as number) > 0) {
     out.fog = { colour: fc, density: Math.min(1, f.density as number), start: Math.max(0, f.start as number), end: f.end as number };
   }
+  const g = s.glow as Record<string, unknown> | undefined;
+  const gc = rgb(g?.colour);
+  if (g && gc && [g.density, g.heading, g.pitch].every((x) => typeof x === "number" && Number.isFinite(x)) && (g.density as number) > 0) {
+    out.glow = { colour: gc, density: Math.min(1, g.density as number), heading: g.heading as number, pitch: g.pitch as number };
+  }
   return out;
+}
+
+/** The exponential haze for a level without fog but with a glow, in a
+ *  level `radius` across: the glow's density 0.2 gives about a quarter of
+ *  its colour at the level's far side; thicker glows give more. */
+export function glowHaze(glow: SkyGlow, radius: number): number {
+  const d = Math.min(1, Math.max(0.05, glow.density));
+  return (1.3 * d) / Math.max(1, radius);
 }
 
 /** What is behind the sky model: the clear colour, else the fog's, else
