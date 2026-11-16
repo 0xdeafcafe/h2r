@@ -151,6 +151,12 @@ pub trait Rows: Send + Sync {
     fn write_texts(&self, _m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         Ok(())
     }
+    /// For the log when the screen opens with `count` rows: its title and
+    /// rows as text, with their string ids. Called with no guest memory
+    /// held.
+    fn describe(&self, _count: usize) -> Option<String> {
+        None
+    }
 }
 
 /// See [`Rows::live_text`].
@@ -807,6 +813,7 @@ pub async fn load(
 ) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
     let count = rows.count();
+    let described = rows.describe(count);
     cx.write(|m| rows.write_texts(m))?;
     let rows = count;
     let request = cx.arg(0)?;
@@ -835,7 +842,12 @@ pub async fn load(
         .await?;
     }
     match cx.write(|m| adopt(m, screen, &e, rows))? {
-        Adopted::Ours { rows } => eprintln!("{name}: opened with {rows} rows (our list class)"),
+        Adopted::Ours { rows } => {
+            eprintln!("{name}: opened with {rows} rows (our list class)");
+            if let Some(d) = &described {
+                eprintln!("{name}: {d}");
+            }
+        }
         Adopted::NotControls(why) => {
             eprintln!(
                 "{name}: the Controls constructor built something else ({why}); shown as Controls"

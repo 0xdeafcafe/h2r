@@ -618,3 +618,67 @@ fn the_screens_and_the_hooks_share_the_plan() {
     );
     assert!(crate::list_class::loader_of(JOIN).is_some());
 }
+
+/// Opening the co-op screen showed the community variants' names: the
+/// texts' ids shared their index (`0xffe0xx`), and their lookup ignores the
+/// top byte. Every id of ours must be one no other source of ours answers,
+/// on the whole id and on its low 24 bits.
+#[test]
+fn the_co_op_text_ids_are_nobody_elses() {
+    use crate::{campaign_menu, community_variants, layout_glue, skulls_menu};
+    let low = |id: u32| id & 0x00ff_ffff;
+    // The other private ranges, each as wide as its owner could take.
+    let others = [
+        ("community variants", 0x00ff_e000..0x00ff_e100),
+        (
+            "layouts",
+            layout_glue::ID_BASE..layout_glue::ID_BASE + 0x100,
+        ),
+        (
+            "campaign picker",
+            campaign_menu::ID_BASE..campaign_menu::ID_BASE + 0x100,
+        ),
+        (
+            "skulls",
+            skulls_menu::SKULLS_ID_BASE..skulls_menu::SKULLS_ID_BASE + 0x100,
+        ),
+    ];
+    for slot in 0..TEXT_SLOTS {
+        let id = Texts::id(slot);
+        assert!(
+            !community_variants::is_ours(id) && community_variants::text(id).is_none(),
+            "{id:#x} is a community variant's"
+        );
+        assert!(
+            !layout_glue::is_ours(id),
+            "{id:#x} is in the layouts' range"
+        );
+        for (who, r) in &others {
+            assert!(
+                !r.contains(&id) && !(low(r.start)..=low(r.end - 1)).contains(&low(id)),
+                "{id:#x} collides with the {who}"
+            );
+        }
+    }
+    // Every screen's texts resolve through our source, to our text.
+    let (lobby, _) = lobby_with(Arc::default());
+    lobby.set_text_base(0x00a0_0000);
+    let title = HostRows(Arc::clone(&lobby)).title();
+    assert_eq!(lobby.string(title), Some(0x00a0_0000));
+    assert_eq!(
+        lobby.texts.get(title - TEXT_ID_BASE).as_deref(),
+        Some("Co-op Campaign")
+    );
+}
+
+#[test]
+fn an_opened_screen_describes_its_rows_for_the_log() {
+    let (lobby, _) = lobby_with(Arc::default());
+    let rows = HostRows(Arc::clone(&lobby));
+    let d = rows.describe(rows.count()).unwrap();
+    assert!(
+        d.starts_with("title \"Co-op Campaign\" (0x20ffd000); rows: [0] "),
+        "{d}"
+    );
+    assert_eq!(d.matches(" = ").count(), HOST_ROWS, "{d}");
+}
