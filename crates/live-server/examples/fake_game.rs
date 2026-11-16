@@ -303,6 +303,12 @@ fn main() {
                         ),
                         // A short burst every two seconds.
                         shots: (tick % 60 < 9 && i != 2).then_some(1),
+                        stance: Some(if i == 3 { "airborne" } else { "stand" }.into()),
+                        speed: Some(r * 0.4),
+                        // A reload or a melee every four seconds.
+                        actions: (tick % 120 < 3)
+                            .then(|| vec![if i == 2 { "melee" } else { "reload" }.into()]),
+                        grenade: Some(if i % 2 == 0 { "frag" } else { "plasma" }.into()),
                     }
                 })
                 .collect(),
@@ -314,6 +320,30 @@ fn main() {
                 pos: [20.0 * (t * 0.3).cos(), 20.0 * (t * 0.3).sin(), 1.0],
                 forward: [-(t * 0.3).sin(), (t * 0.3).cos(), 0.0],
                 up: [0.0, 0.0, 1.0],
+                occupied: true,
+            }],
+            // Player 0 hits the first grunt during each burst.
+            hits: (tick % 60 < 9)
+                .then(|| live_proto::game::FrameHit {
+                    from: Some("p0".into()),
+                    to: Some("90410041".into()),
+                    weapon: Some("battle_rifle".into()),
+                    pos: [24.0 * (-t * 0.2).cos(), 24.0 * (-t * 0.2).sin(), 1.0],
+                    amount: Some(0.2),
+                    kind: Some("bullet".into()),
+                })
+                .into_iter()
+                .collect(),
+            bsp: Some(0),
+            // A door opening and closing every eight seconds.
+            machines: vec![live_proto::game::FrameMachine {
+                node: None,
+                id: "90500050".into(),
+                kind: "door".into(),
+                pos: [0.0, -18.0, 0.0],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                position: Some((t * TAU / 8.0).sin().abs()),
             }],
             actors: (0..6)
                 .map(|i| {
@@ -329,6 +359,9 @@ fn main() {
                         shots: (tick % 90 < 6).then_some(1),
                         team: Some("covenant".into()),
                         vehicle: None,
+                        stance: Some("stand".into()),
+                        speed: Some(4.8),
+                        ..Default::default()
                     }
                 })
                 .chain(std::iter::once(live_proto::game::FrameActor {

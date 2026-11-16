@@ -673,6 +673,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             pos: [1.0, 2.0, 3.0],
             forward: [2.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
+            occupied: true,
         }],
         actors: vec![FrameActor {
             id: "90070007".into(),
@@ -684,13 +685,39 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             shots: Some(2),
             team: Some("covenant".into()),
             vehicle: None,
+            stance: Some("crouch".into()),
+            speed: Some(3.5),
+            actions: Some(vec!["grenade".into()]),
+            grenade: Some("plasma".into()),
+        }],
+        hits: vec![live_proto::game::FrameHit {
+            from: Some("90070007".into()),
+            to: Some("p0".into()),
+            weapon: Some("plasma_pistol".into()),
+            pos: [1.0, 2.0, 3.0],
+            amount: Some(0.3),
+            kind: Some("bullet".into()),
+        }],
+        bsp: Some(1),
+        machines: vec![live_proto::game::FrameMachine {
+            node: Some("scarab_0".into()),
+            id: "90090009".into(),
+            kind: "scarab".into(),
+            pos: [0.0, 0.0, 10.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            position: None,
         }],
     };
     let mut bad_up = good.clone();
     bad_up.vehicles[0].up = [f64::NAN, 0.0, 1.0];
     let mut bad_species = good.clone();
     bad_species.actors[0].species = "Grunt Major".into();
-    for bad in [bad_up, bad_species] {
+    let mut bad_stance = good.clone();
+    bad_stance.actors[0].stance = Some("prone".into());
+    let mut bad_position = good.clone();
+    bad_position.machines[0].position = Some(2.0);
+    for bad in [bad_up, bad_species, bad_stance, bad_position] {
         assert!(live.ingest_frame(&author, bad).await.is_err());
     }
 
@@ -719,4 +746,12 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     assert_eq!(recorded[0]["vehicles"][0]["kind"], "warthog");
     assert_eq!(recorded[0]["actors"][0]["species"], "grunt");
     assert_eq!(recorded[0]["actors"][0]["weapon"], "plasma_pistol");
+    assert_eq!(
+        recorded[0]["actors"][0]["actions"],
+        serde_json::json!(["grenade"])
+    );
+    assert_eq!(recorded[0]["actors"][0]["stance"], "crouch");
+    assert_eq!(recorded[0]["hits"][0]["to"], "p0");
+    assert_eq!(recorded[0]["bsp"], 1);
+    assert_eq!(recorded[0]["machines"][0]["node"], "scarab_0");
 }

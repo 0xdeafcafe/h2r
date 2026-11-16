@@ -19,6 +19,8 @@ use crate::tags::{MapLocator, TagNames};
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
 const MAX_FIRING_WEAPONS: usize = 256;
+/// Damage reports kept between samples (one tick).
+const MAX_PENDING_HITS: usize = 256;
 
 const SHADOW_START: u32 = 0xa0ff_5000;
 const SHADOW_TICK: u32 = SHADOW_START + 4;
@@ -40,6 +42,9 @@ pub struct Telemetry {
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
     shots: Mutex<BTreeMap<u32, u32>>,
+    /// Damage reports since the last sample, from the damage hook (oldest
+    /// dropped past [`MAX_PENDING_HITS`]).
+    hits: Mutex<Vec<crate::event::HitRecord>>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -53,6 +58,7 @@ impl Telemetry {
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::new(BTreeMap::new()),
+            hits: Mutex::new(Vec::new()),
             maps: Mutex::new(None),
         }
     }
@@ -109,6 +115,18 @@ impl Telemetry {
         }
         let count = shots.entry(weapon).or_insert(0);
         *count = count.saturating_add(1);
+    }
+
+    /// The damage hook: one damage report.
+    fn damaged(&self, hit: crate::event::HitRecord) {
+        if self.disabled() {
+            return;
+        }
+        let mut hits = self.hits.lock().unwrap();
+        if hits.len() >= MAX_PENDING_HITS {
+            hits.remove(0);
+        }
+        hits.push(hit);
     }
 
     pub fn disabled(&self) -> bool {
@@ -172,6 +190,7 @@ impl Telemetry {
             }
         }
         self.shots.lock().unwrap().clear();
+        self.hits.lock().unwrap().clear();
         *self.last_tick.lock().unwrap() = Some(info.tick);
         self.publish()
     }
@@ -187,10 +206,14 @@ impl Telemetry {
             *last = Some(snapshot.tick);
         }
         snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
-        // Actors only go out in frames (every second tick); a failed scan
-        // sends none rather than stopping telemetry.
+        snapshot.hits = std::mem::take(&mut *self.hits.lock().unwrap());
+        // Actors, vehicles and machines only go out in frames (every second
+        // tick); a failed scan sends none rather than stopping telemetry.
         if snapshot.tick.is_multiple_of(2) {
-            snapshot.actors = memory::actors(guest).unwrap_or_default();
+            let world = memory::world(guest).unwrap_or_default();
+            snapshot.actors = world.actors;
+            snapshot.vehicles = world.vehicles;
+            snapshot.machines = world.machines;
         }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()
@@ -270,6 +293,8 @@ struct Hooks {
     kill: u32,
     /// Optional: without it frames carry no `shots`.
     fire: u32,
+    /// Optional: without it frames carry no `hits`.
+    damage: u32,
 }
 
 impl Hooks {
@@ -279,6 +304,7 @@ impl Hooks {
         end: layout::GAME_END,
         kill: layout::PLAYER_KILLED,
         fire: layout::WEAPON_FIRE,
+        damage: layout::DAMAGE_REPORT,
     };
 }
 
@@ -314,6 +340,13 @@ fn install_at(
     // The fire hook only adds `shots`: if its entry is missing the rest of
     // telemetry still installs.
     let fire_original = runtime.resolve_original(hooks.fire);
+    let damage_original = runtime.resolve_original(hooks.damage);
+    if damage_original.is_none() {
+        eprintln!(
+            "live telemetry: damage report {:#x} is not registered; frames carry no hits",
+            hooks.damage
+        );
+    }
     if fire_original.is_none() {
         eprintln!(
             "live telemetry: weapon fire {:#x} is not registered; frames carry no shots",
@@ -383,6 +416,36 @@ fn install_at(
                         let weapon = ctx.memory().u32(cpu.esp.wrapping_add(4));
                         if let Ok(weapon) = weapon {
                             observer.fired(weapon);
+                        }
+                        Ok(original.invoke(cpu, ctx, address))
+                    },
+                );
+            }
+        }
+
+        if let Some(original) = damage_original {
+            if dispatch.override_name(hooks.damage).is_some() {
+                eprintln!(
+                    "live telemetry: damage report {:#x} is already overridden; frames carry no hits",
+                    hooks.damage
+                );
+            } else {
+                let observer = Arc::clone(&telemetry);
+                let address = hooks.damage;
+                dispatch.register_override(
+                    address,
+                    "live telemetry damage",
+                    move |cpu, ctx, _| {
+                        // Custom ABI: EDI = damage report, [esp+4] = victim
+                        // object datum. Read before the original runs.
+                        let hit = {
+                            let guest = ctx.memory();
+                            guest
+                                .u32(cpu.esp.wrapping_add(4))
+                                .and_then(|victim| memory::hit(&guest, cpu.edi, victim))
+                        };
+                        if let Ok(hit) = hit {
+                            observer.damaged(hit);
                         }
                         Ok(original.invoke(cpu, ctx, address))
                     },
@@ -675,12 +738,28 @@ mod tests {
         fixture::put_player(&mut guest, 0, "Chief", 1, true, fixture::object_datum(1));
         fixture::put_object(&mut guest, 1, u32::MAX);
         fixture::put_actor(&mut guest, 2, 3, [4.0, 0.0, 0.0]);
+        fixture::put_vehicle(&mut guest, 3);
+        fixture::put_machine(&mut guest, 4, 2, 0.5);
+        guest
+            .set_u16(fixture::GLOBALS + layout::GLOBALS_ACTIVE_BSP, 1)
+            .unwrap();
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 2).unwrap();
         telemetry.protect(|| telemetry.sample(&guest));
         // A checkpoint revert re-activates the same map.
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 4).unwrap();
+        // The AI hits the player for a fifth of their body.
+        telemetry.damaged(crate::event::HitRecord {
+            code: 7,
+            effect: 0,
+            owner_player: u32::MAX,
+            owner_object: fixture::object_datum(2),
+            victim: fixture::object_datum(1),
+            pos: Some([0.0, 0.0, 0.0]),
+            body: 0.2,
+            shield: 0.0,
+        });
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -705,6 +784,18 @@ mod tests {
         assert_eq!(actor["team"], "covenant");
         assert_eq!(actor["pos"], serde_json::json!([4.0, 0.0, 0.0]));
         assert_eq!(actor["species"], "unknown", "no map file in tests");
+        let data = &frame["data"];
+        assert_eq!(data["bsp"], 1);
+        assert_eq!(data["vehicles"][0]["occupied"], false);
+        assert_eq!(data["machines"][0]["position"], 0.5);
+        assert_eq!(data["machines"][0].get("node"), None, "no name, no node");
+        assert_eq!(
+            data["hits"][0]["from"],
+            format!("{:08x}", fixture::object_datum(2))
+        );
+        assert_eq!(data["hits"][0]["to"], "p0");
+        assert_eq!(data["hits"][0]["weapon"], "needler");
+        assert_eq!(data["players"][0]["stance"], "stand");
         let _ = std::fs::remove_file(path);
     }
 
@@ -776,6 +867,7 @@ mod tests {
             end: 0x40_3000,
             kill: 0x40_4000,
             fire: 0x40_3005,
+            damage: 0x40_5000,
         };
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);
@@ -833,6 +925,7 @@ mod tests {
             end: 0x40_3000,
             kill: 0x40_4000,
             fire: 0x40_5000,
+            damage: 0x40_5000,
         };
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);

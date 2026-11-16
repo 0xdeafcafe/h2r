@@ -68,10 +68,12 @@ impl Sink for JsonlSink {
 }
 
 /// Keeps only the newer of two queued frames, carrying the older one's
-/// shots into it (same game only).
+/// shots, actions, hits and machines into it (same game only).
 fn coalesce(older: Option<Frame>, mut newer: Frame) -> Frame {
     if let Some(older) = older.filter(|f| f.game_id == newer.game_id) {
-        newer.add_shots(older.shots().collect::<Vec<_>>());
+        let mut carry = live_proto::game::FrameCarry::default();
+        carry.add(&older);
+        newer.absorb(carry);
     }
     newer
 }

@@ -99,6 +99,75 @@ pub struct ObjectState {
     pub vehicle_definition: Option<u32>,
     /// The unit's team (`+0x138`); `None` when negative.
     pub team: Option<i16>,
+    /// Movement and inventory state for `stance` and `actions`.
+    pub motion: Motion,
+}
+
+/// What a unit's stance and one-shot actions are worked out from (each
+/// `None` when its read faulted or made no sense).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Motion {
+    /// The unit's own velocity (not its vehicle's).
+    pub velocity: [f64; 3],
+    /// Crouch amount 0..1.
+    pub crouch: Option<f64>,
+    /// Biped physics mode (bipeds only).
+    pub physics_mode: Option<u8>,
+    /// Selected grenade type index.
+    pub grenade: Option<i8>,
+    /// Grenades carried, all types.
+    pub grenades: Option<u32>,
+    /// The four weapon slots' object datums (`u32::MAX` empty).
+    pub weapons: Option<[u32; 4]>,
+    /// The held weapon's first magazine: (reserve, loaded).
+    pub magazine: Option<(i16, i16)>,
+}
+
+/// A vehicle anywhere in the world.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VehicleState {
+    pub datum: u32,
+    pub definition: Option<u32>,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+    /// A biped (player or AI) is parented to it.
+    pub occupied: bool,
+}
+
+/// A machine (door, elevator, scarab, ...).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineState {
+    pub datum: u32,
+    pub definition: Option<u32>,
+    /// The scenario placement index, when the scenario placed it.
+    pub placement: Option<u16>,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+    /// Device position 0..1, when it reads as one.
+    pub position: Option<f64>,
+}
+
+/// One damage report, as the damage hook saw it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitRecord {
+    pub code: u8,
+    pub effect: u32,
+    pub owner_player: u32,
+    pub owner_object: u32,
+    pub victim: u32,
+    pub pos: Option<[f64; 3]>,
+    pub body: f32,
+    pub shield: f32,
+}
+
+/// Everything the once-per-frame object table scan finds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct World {
+    pub actors: Vec<ActorState>,
+    pub vehicles: Vec<VehicleState>,
+    pub machines: Vec<MachineState>,
 }
 
 /// An AI-controlled biped: its object datum and state.
@@ -147,6 +216,14 @@ pub struct Snapshot {
     pub shots: BTreeMap<u32, u32>,
     /// AI-controlled bipeds; read on frame ticks only, empty otherwise.
     pub actors: Vec<ActorState>,
+    /// Every vehicle; frame ticks only.
+    pub vehicles: Vec<VehicleState>,
+    /// Every machine; frame ticks only.
+    pub machines: Vec<MachineState>,
+    /// The active structure BSP index.
+    pub bsp: Option<u32>,
+    /// Damage reports since the previous snapshot.
+    pub hits: Vec<HitRecord>,
 }
 
 impl Snapshot {
