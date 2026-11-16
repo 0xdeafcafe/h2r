@@ -35,6 +35,7 @@ mod live_maps;
 mod live_query;
 mod lockstep_cmd;
 mod mappack_cmd;
+mod map_testbuild;
 mod maps;
 mod movies_cmd;
 mod object;
@@ -72,6 +73,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
+  map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
@@ -200,6 +202,9 @@ fn main() -> Result<()> {
     }
     if cmd == "strings" {
         return strings::run(args.collect());
+    }
+    if cmd == "map" {
+        return map_testbuild::run(args.collect());
     }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
