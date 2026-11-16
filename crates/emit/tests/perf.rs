@@ -103,6 +103,20 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
                 a.pop(ebx)?;
             }
             "call" | "tail" => a.call((A + 0x100) as u64)?,
+            // Many access sites in one handler, as in the image's shards
+            // (where clang declines to inline a generic accessor): loads
+            // and stores of every width at varied offsets.
+            "wide" => {
+                for k in 0..16u32 {
+                    a.movzx(ebx, byte_ptr(esi + k * 16))?;
+                    a.movzx(edx, word_ptr(esi + k * 16 + 2))?;
+                    a.add(ebx, edx)?;
+                    a.add(ebx, dword_ptr(esi + k * 16 + 4))?;
+                    a.mov(byte_ptr(esi + k * 16 + 0x401), bl)?;
+                    a.mov(word_ptr(esi + k * 16 + 0x402), bx)?;
+                    a.mov(dword_ptr(esi + k * 16 + 0x404), ebx)?;
+                }
+            }
             _ => a.add(eax, ecx)?,
         }
         a.dec(ecx)?;
@@ -123,7 +137,7 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
         }
     }
     // The benchmark builds as the image does: accounting unless H2_ACCESS_COUNT=0.
-    let codegen = if kind == "frame" || std::env::var_os("H2_ACCESS_COUNT").is_some() {
+    let codegen = if kind == "frame" || kind == "wide" || std::env::var_os("H2_ACCESS_COUNT").is_some() {
         emit::Codegen::from_env().unwrap()
     } else {
         emit::Codegen::default()
@@ -235,7 +249,7 @@ fn generated_runtime_benchmark() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(7);
-    for kind in ["register", "read", "write", "frame", "x87", "call", "tail"] {
+    for kind in ["register", "read", "write", "frame", "wide", "x87", "call", "tail"] {
         if std::env::var("H2_PERF_KIND").is_ok_and(|k| k != kind) {
             continue;
         }
@@ -1082,4 +1096,237 @@ fn image_gate_holds() {
     );
     println!("blocks by accesses (1, 2, 3, 4, 5, 6+): {histogram:?}");
     assert!(n[1] <= n[0]);
+}
+
+/// Every width the emitter loads and stores (1, 2, 4, 8, 10 and 16 bytes),
+/// at every alignment near both ends of a page, across a page boundary
+/// into RAM and into nothing, from and to unmapped, read-only and MMIO
+/// addresses, and onto a write-watched page twice (the second store hits
+/// the hold's last-dirtied page): the inline path and the helper path leave
+/// the same transfer, registers, memory, dirty pages, events and access
+/// count, accounting or not, with a slice that stops at every access or
+/// never. Each run first reads the stack, so the probe runs with the gate
+/// already held.
+#[test]
+fn inline_accesses_match_the_helper_path_at_every_width_and_edge() {
+    use runtime::{TransferAbi, abi, watch::CONTIGUOUS_BASE};
+    const SRC: u32 = 0x110000;
+    const DST: u32 = 0x120000;
+    const DST_PHYS: u32 = 0x8000;
+    const RO: u32 = 0x130000;
+    const UNMAPPED: u32 = 0x140000;
+    const MMIO: u32 = 0xfd00_0000;
+    let probe = |width: u32| {
+        function(A, |a| {
+            a.mov(ebx, dword_ptr(esp))?;
+            match width {
+                1 => {
+                    a.mov(al, byte_ptr(esi))?;
+                    a.mov(byte_ptr(edi), al)?;
+                    a.mov(byte_ptr(edi + 32), al)?;
+                    a.mov(cl, byte_ptr(edi))?;
+                }
+                2 => {
+                    a.mov(ax, word_ptr(esi))?;
+                    a.mov(word_ptr(edi), ax)?;
+                    a.mov(word_ptr(edi + 32), ax)?;
+                    a.mov(cx, word_ptr(edi))?;
+                }
+                4 => {
+                    a.mov(eax, dword_ptr(esi))?;
+                    a.mov(dword_ptr(edi), eax)?;
+                    a.mov(dword_ptr(edi + 32), eax)?;
+                    a.mov(ecx, dword_ptr(edi))?;
+                }
+                8 => {
+                    a.movq(xmm0, qword_ptr(esi))?;
+                    a.movq(qword_ptr(edi), xmm0)?;
+                    a.movq(qword_ptr(edi + 32), xmm0)?;
+                    a.movq(xmm1, qword_ptr(edi))?;
+                }
+                10 => {
+                    a.fld(tword_ptr(esi))?;
+                    a.fld(st0)?;
+                    a.fstp(tword_ptr(edi))?;
+                    a.fstp(tword_ptr(edi + 32))?;
+                    a.fld(tword_ptr(edi))?;
+                }
+                _ => {
+                    a.movups(xmm0, xmmword_ptr(esi))?;
+                    a.movups(xmmword_ptr(edi), xmm0)?;
+                    a.movups(xmmword_ptr(edi + 32), xmm0)?;
+                    a.movups(xmm1, xmmword_ptr(edi))?;
+                }
+            }
+            a.ret()
+        })
+    };
+    let memory = || {
+        let mut mem = Guest::new();
+        mem.map(A, 4096, 0, Permissions::RX).unwrap();
+        mem.map(SRC, 8192, 0x2000, Permissions::RW).unwrap();
+        mem.map(DST, 8192, DST_PHYS, Permissions::RW).unwrap();
+        mem.map(RO, 4096, 0xa000, Permissions::READ).unwrap();
+        mem.map(STACK & !4095, 4096, 0xb000, Permissions::RW).unwrap();
+        let bytes: Vec<u8> = (0..8192u32).map(|i| (i.wrapping_mul(0x9e37_79b9) >> 13) as u8).collect();
+        mem.write_bytes(SRC, &bytes, 1).unwrap();
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        let watch = mem.subscribe_writes("inline-edges");
+        mem.watch_writes(watch, CONTIGUOUS_BASE + DST_PHYS, 8192).unwrap();
+        (mem, watch)
+    };
+    let edges = |base: u32, width: u32| {
+        let mut v: Vec<u32> = [0, 1, 2, 3, 5, 7, 8, 15]
+            .into_iter()
+            .chain([4096 - width - 1, 4096 - width, 4096 - width + 1, 4095])
+            .map(|o| base + o)
+            .collect();
+        // The span crosses from RAM into nothing: the whole access fails.
+        v.push(base + 8192 - width + 1);
+        v.dedup();
+        v
+    };
+    for accounting in [false, true] {
+        for width in [1u32, 2, 4, 8, 10, 16] {
+            let (_lib, dispatch) = compile_module_with(
+                &format!("inline-edges-{width}"),
+                vec![probe(width)],
+                false,
+                true,
+                emit::opt::Passes::ALL,
+                emit::Codegen { accounting },
+            );
+            let rt = Runtime::new(memory().0, dispatch);
+            let good_src = SRC + 0x100;
+            let good_dst = DST + 0x200;
+            let cases = edges(SRC, width)
+                .into_iter()
+                .chain([UNMAPPED, MMIO, RO + 8])
+                .map(|s| (s, good_dst))
+                .chain(edges(DST, width).into_iter().chain([UNMAPPED, MMIO, RO + 8]).map(|d| (good_src, d)));
+            for (src, dst) in cases {
+                for slice in [1, 1_000_000] {
+                    let mut results = Vec::new();
+                    let mut inline = 0;
+                    for fast in [false, true] {
+                        let (mem, watch) = memory();
+                        *rt.memory() = mem;
+                        let mut ctx = ExecCtx::new(rt.clone(), 1);
+                        ctx.enable_fast_memory(fast);
+                        ctx.enable_profiling(true);
+                        let mut cpu = CpuAbi { esp: STACK, esi: src, edi: dst, ..CpuAbi::default() };
+                        let mut t = TransferAbi::jump(A);
+                        let mut stops = Vec::new();
+                        let end = loop {
+                            ctx.arm_preemption(slice);
+                            let end = Runner::default().run_from(&mut cpu, &mut ctx, t);
+                            let spent = ctx.take_slice_spent();
+                            let Some(next) = ctx.take_preempted() else { break (end, spent) };
+                            stops.push((next.target_pc, spent, cpu));
+                            t = next;
+                        };
+                        let profile = ctx.take_profile().unwrap();
+                        if fast && !accounting {
+                            inline = profile.fast_memory_accesses;
+                        }
+                        let mut bytes = vec![0; 3 * 8192];
+                        rt.memory().read_bytes(SRC, &mut bytes[..8192], 1).unwrap();
+                        rt.memory().read_bytes(DST, &mut bytes[8192..2 * 8192], 1).unwrap();
+                        rt.memory().read_bytes(RO, &mut bytes[2 * 8192..2 * 8192 + 4096], 1).unwrap();
+                        let dirty = rt.memory().take_dirty(watch).unwrap();
+                        let events = format!("{:?}", ctx.events());
+                        results.push((end.0.kind, end.0.target_pc, end.1, profile.memory_accessors, cpu, stops, bytes, dirty, events));
+                    }
+                    let key = format!("accounting={accounting} width={width} src={src:#x} dst={dst:#x} slice={slice}");
+                    assert!(matches!(results[0].0, abi::STOP | abi::FAULT), "{key}");
+                    assert!(results[0] == results[1], "{key}: {:?}\n{:?}", results[0].0, results[1].0);
+                    // The fast run took the inline path where it could: the
+                    // stack read and, for a good pair, all four accesses.
+                    if !accounting && slice == 1_000_000 {
+                        let clean = src == good_src && dst == good_dst;
+                        assert!(inline > 4 * u64::from(clean), "{key}: {inline} inline");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The inline path skips re-marking the page a hold marked last, which is
+/// sound only because Rust drains dirty bits under the gate: a new hold
+/// must forget it. Here a host thread drains the watch while the guest is
+/// looping and storing to a watched page; the guest then retakes the gate
+/// on a read and stores to the same page inline. That store must reach the
+/// host's next drain.
+#[test]
+fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
+    use runtime::watch::CONTIGUOUS_BASE;
+    use std::time::{Duration, Instant};
+    const FLAGS: u32 = DATA;
+    const PAGE: u32 = 0x120000;
+    const PAGE_PHYS: u32 = 0x8000;
+    const MAGIC: u32 = 0x5eed_0001;
+    let f = function(A, |a| {
+        let (mut top, mut done) = (a.create_label(), a.create_label());
+        a.mov(ebx, MAGIC)?;
+        a.set_label(&mut top)?;
+        // Two reads first: after the host's guard, whichever retakes the
+        // gate, the store below runs inline in the new hold.
+        a.mov(eax, dword_ptr(esi))?;
+        a.mov(edx, dword_ptr(esi + 8))?;
+        a.mov(dword_ptr(edi), ebx)?;
+        a.test(eax, eax)?;
+        a.jnz(done)?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        a.ret()?;
+        a.set_label(&mut done)?;
+        a.mov(dword_ptr(edi + 4), ebx)?;
+        a.mov(dword_ptr(esi + 4), 1u32)?;
+        a.ret()
+    });
+    for accounting in [false, true] {
+        let (_lib, dispatch) = compile_module_with(
+            "new-hold-dirty",
+            vec![f.clone()],
+            false,
+            true,
+            emit::opt::Passes::ALL,
+            emit::Codegen { accounting },
+        );
+        let mut mem = Guest::new();
+        mem.map(A, 4096, 0, Permissions::RX).unwrap();
+        mem.map(DATA, 8192, 0x2000, Permissions::RW).unwrap();
+        mem.map(PAGE, 4096, PAGE_PHYS, Permissions::RW).unwrap();
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        let watch = mem.subscribe_writes("new-hold");
+        mem.watch_writes(watch, CONTIGUOUS_BASE + PAGE_PHYS, 4096).unwrap();
+        let rt = Runtime::new(mem, dispatch);
+        let host_rt = rt.clone();
+        let host = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let wait = |addr: u32, want: u32| loop {
+                assert!(Instant::now() < deadline, "host timed out waiting for {addr:#x}");
+                if host_rt.memory().u32(addr).unwrap() == want {
+                    return;
+                }
+                std::thread::yield_now();
+            };
+            // The guest is in its loop, storing to the page inline.
+            wait(PAGE, MAGIC);
+            {
+                let mut m = host_rt.memory();
+                m.take_dirty(watch).unwrap();
+                m.set_u32(FLAGS, 1).unwrap();
+            }
+            wait(FLAGS + 4, 1);
+            host_rt.memory().take_dirty(watch).unwrap()
+        });
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut cpu = CpuAbi { esp: STACK, esi: FLAGS, edi: PAGE, ecx: 0x7fff_ffff, ..CpuAbi::default() };
+        let t = Runner::default().run(&mut cpu, &mut ctx, A);
+        assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+        let dirty = host.join().unwrap();
+        assert!(!dirty.is_empty(), "accounting {accounting}: the stores after the drain were not marked");
+    }
 }

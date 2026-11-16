@@ -246,6 +246,11 @@ then one run with the trace off.
 
 ### 2. Memory access as a real inline load or store
 
+Status (2026-11-16): the width-specialised inline access with a cold,
+register-preserving slow call has landed (`docs/performance.md`, "Inline
+guest loads and stores"); the host-address tables, dirty tracking through
+the write table and slice-long gate ownership below are not done.
+
 Keep the model (4 KiB software page table over 64 MB of RAM, slow helper
 for everything unusual). Change the fast path's shape:
 
