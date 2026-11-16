@@ -149,10 +149,7 @@ impl World {
             m.write_bytes(USERS, &b, 1).unwrap();
             m.set_u32(SERVICES, 2).unwrap();
         }
-        assert_eq!(
-            self.call("XOnlineLogon", &[USERS, SERVICES, 1, 0, OUT]),
-            0
-        );
+        assert_eq!(self.call("XOnlineLogon", &[USERS, SERVICES, 1, 0, OUT]), 0);
         self.u32(OUT)
     }
     /// Pumps the logon until it is no longer pending.

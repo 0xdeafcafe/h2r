@@ -310,9 +310,7 @@ impl AccountScreen {
                         | SetupError::WrongCodeLeft { .. }
                         | SetupError::LockedOut { .. },
                         Flow::Recover,
-                    ) => {
-                        Field::Code
-                    }
+                    ) => Field::Code,
                     _ => Field::Gamertag,
                 };
                 self.step = Step::Error { flow, retry, error };

@@ -420,7 +420,10 @@ impl State {
             .find(|a| a.xuid == entry.xuid.0 && a.key.is_some() && !a.needs_code)
             .map(record)
         else {
-            eprintln!("live: {} was saved but is not in the accounts file", entry.gamertag);
+            eprintln!(
+                "live: {} was saved but is not in the accounts file",
+                entry.gamertag
+            );
             return fail(users);
         };
         let user = &mut users[slot * USER_SIZE..(slot + 1) * USER_SIZE];
@@ -440,7 +443,6 @@ impl State {
         }
     }
     fn desired_presence(&self, controller: u32) -> client::Presence {
-
         if self.state_flags[controller as usize] & 1 == 0 {
             client::Presence {
                 state: "away",
@@ -958,7 +960,9 @@ impl State {
                 let server_url = self.config.server_url.clone();
                 let waiting = match (waiting.as_slice(), &server_url) {
                     ([], _) => None,
-                    ([one], Some(url)) if self.service.is_some() => Some((one.clone(), url.clone())),
+                    ([one], Some(url)) if self.service.is_some() => {
+                        Some((one.clone(), url.clone()))
+                    }
                     _ => return Ok(INVALID_USER),
                 };
                 m.check(a[1], a[2] as usize * 4, Access::Read, 1)?;

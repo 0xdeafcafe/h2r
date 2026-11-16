@@ -133,7 +133,6 @@ pub(crate) fn parse_accounts(json: &[u8]) -> Result<Vec<Account>, ConfigError> {
         .collect())
 }
 
-
 /// Ask the host routing table for its default-route IPv4 without sending a
 /// datagram. With no IPv4 route, an offline host uses loopback. Port 3074 is
 /// the default host base for the title's virtual datagram channels.
@@ -181,7 +180,6 @@ mod tests {
     }
     #[test]
     fn accounts_parse_private_jwks_without_exposing_secrets() {
-
         let key = KeyPair::generate();
         let data = serde_json::json!([{"xuid":"00091234567890ab", "gamertag":"Player", "key":key.private_jwk(), "server":"https://ignored.example"}]);
         let accounts = parse_accounts(&serde_json::to_vec(&data).unwrap()).unwrap();

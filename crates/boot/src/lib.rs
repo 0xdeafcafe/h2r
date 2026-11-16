@@ -49,6 +49,7 @@ pub mod skulls_custom;
 pub mod skulls_menu;
 pub mod skulls_mp;
 pub mod skulls_mp_row;
+pub mod signin_screen;
 pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod steam_speaker;
@@ -733,6 +734,10 @@ pub fn run_hosted_with_live(
     // docs/live/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
+    // A Live sign-in that needs a code asks for it in game, on our own
+    // screen opened from the logon's polling (docs/live/live.md, "In-game
+    // sign-in").
+    signin_screen::install(&loaded.runtime, &mut features, _live.as_ref()).context("installing the sign-in prompt")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).

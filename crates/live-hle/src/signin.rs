@@ -38,10 +38,7 @@ pub enum Phase {
 impl Phase {
     /// Nothing more to ask: the prompt may close.
     pub fn finished(&self) -> bool {
-        matches!(
-            self,
-            Phase::Created { .. } | Phase::Done | Phase::Cancelled
-        )
+        matches!(self, Phase::Created { .. } | Phase::Done | Phase::Cancelled)
     }
 }
 
@@ -190,7 +187,6 @@ impl Signin {
         self.verified.is_some()
     }
 
-
     fn poll(&mut self) {
         let Some(result) = self.job.as_ref().and_then(|(job, _)| job.poll()) else {
             return;
@@ -214,7 +210,10 @@ impl Signin {
                 }
             }
             (Err(SetupError::NoSuchGamertag), false) => {
-                eprintln!("live: {tag} is not on {}; offering to make it", self.prompt.server_url);
+                eprintln!(
+                    "live: {tag} is not on {}; offering to make it",
+                    self.prompt.server_url
+                );
                 Phase::Create { error: None }
             }
             (Err(e), true) => {
@@ -237,7 +236,11 @@ fn save_all(files: &[PathBuf], entry: &LocalEntry) -> Result<(), SetupError> {
     account_setup::save(first, entry)?;
     for path in rest {
         if let Err(e) = account_setup::save(path, entry) {
-            eprintln!("live: {} not saved to {}: {e}", entry.gamertag, path.display());
+            eprintln!(
+                "live: {} not saved to {}: {e}",
+                entry.gamertag,
+                path.display()
+            );
         }
     }
     Ok(())

@@ -619,7 +619,6 @@ mod tests {
         assert_eq!(r(Create, 500, ""), SetupError::Server(500));
         assert_eq!(
             SetupError::LockedOut { seconds: 150 }.to_string(),
-
             "Too many wrong codes. Try again in 3 min."
         );
     }

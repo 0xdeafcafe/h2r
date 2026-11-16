@@ -236,7 +236,6 @@ impl Hle {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Telemetry can call this after the server assigns a game ID; no I/O or
-
     /// guest memory access occurs on the caller's thread. None returns to online.
     pub fn set_game_id(&self, id: Option<&str>) -> Result<(), u32> {
         self.state
