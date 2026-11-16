@@ -630,6 +630,22 @@ a run in that mode alone draws, the two differ only within two map texels
 of the caster's outline, and the 1x reference and the guest's bytes are
 the plain backend's.
 
+The first A/B run (to present 8000, pairs from frame 4012) had all 40
+pairs byte for byte the same, with the E3 view drawing 273,913 shadow draws
+and sampling 4,021 2x maps. Those frames are a blurred cinematic shot:
+each view's image is the 1x reference's, every pixel repeated 2x2
+(against a nearest upscale of `frame-N-1x.png` the mean difference is
+below 0.2 of 255). The frame is covered, opaque, by a pass upsampling a
+small pool level, which keeps its guest size in both views
+([high-resolution.md](high-resolution.md), fixed-size targets), so the
+shadows under it never reach the screen in either.
+`a_frame_covered_by_a_small_level_shows_no_lighting_difference`
+(render_scale.rs) reproduces that: the 2x map drawn and sampled every
+frame, and the two views the same. The A/B now compares the views itself
+on every shadow-map frame, writes the first `H2_BOOT_GFX_SHADOWS`
+(default 40) pairs that differ, and reports `lighting A/B: K of M
+shadow-map frames differ between the views (first: ...)`.
+
 Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
 maps stay 1x (their texture comes through guest memory); per-axis scale.
 

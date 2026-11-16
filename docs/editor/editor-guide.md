@@ -420,6 +420,12 @@ edit it like any map. Saving it with **File > Save as package...** makes a
 new package (its **Directory** starts as `<map>-edit`), listed under
 **Packages**; the imported map is left as it was.
 
+![Blood Gulch converted with the Halo 2 sandbox, open in the Scenario tool: the canyon drawn with Halo 2 textures from Coagulation, its spawn points and item spawns, a spawn point selected and Converted from Halo 1's bloodgulch, H2 sandbox in the inspector](../images/editor/halo1-converted.jpg)
+
+*Blood Gulch converted to Halo 2. Its surfaces wear Halo 2 stand-in
+textures from its base map, Coagulation, and have no lightmaps yet, so
+they are lit by a plain sun.*
+
 **Comparing with the original.** If the editor can find the Halo 1 map a
 converted map was made from (on the Halo 1 disc or folder you opened, or
 in `H1_MAP_DIR`), the inspector says `Converted from Halo 1's <map>`,
@@ -428,6 +434,11 @@ the original level and its spawns in orange over the converted one, so
 you can check that everything lines up. Click it again to hide it. The
 editor checks that the file is the very one the map was converted from;
 if it isn't, the inspector says `No Halo 1 overlay` (hover for why).
+
+![The converted Blood Gulch with View > Halo 1 overlay on: the original Halo 1 level drawn in orange over the converted one, lining up with it](../images/editor/halo1-overlay.jpg)
+
+*The same view with the Halo 1 overlay on: the original level in orange
+over the converted one.*
 
 
 ![The top of the Inspector for a converted map: Converted from Halo 1's bloodgulch, H2 sandbox, and Halo 1 overlay: View > Halo 1 overlay](../images/editor/halo1-compare.png)
