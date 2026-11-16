@@ -23,8 +23,9 @@
 //! list's), so at most six rows; the Controls list hook may grow the array
 //! first (the speaker row), and adopting trims it back.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use engine::DatumHandle;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
@@ -52,22 +53,79 @@ pub struct Entries {
     pub list_vtable: u32,
 }
 
-/// A screen of the model as our own list class. See the module docs.
+/// What a screen of our class shows. Every call is made with no guest
+/// memory held (the settings store may be read or written).
+pub trait Rows: Send + Sync {
+    /// The title's string id.
+    fn title(&self) -> u32;
+    /// The rows when the screen opens.
+    fn count(&self) -> usize;
+    /// `(text index, string id)` for each text of row `row`.
+    fn texts(&self, row: i16) -> Vec<(u32, u32)>;
+    /// A press on row `row`.
+    fn press(&self, row: i16) -> Chosen;
+}
+
+/// A screen of the `ui` model.
+pub struct ModelRows {
+    pub model: Arc<Model>,
+    pub screen: &'static str,
+}
+
+impl Rows for ModelRows {
+    fn title(&self) -> u32 {
+        self.model.title_id(self.screen).unwrap_or(0)
+    }
+    fn count(&self) -> usize {
+        self.model.rows(List::Screen(self.screen)).len()
+    }
+    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        self.model
+            .row(List::Screen(self.screen), row)
+            .map(|r| self.model.texts(r).to_vec())
+            .unwrap_or_default()
+    }
+    fn press(&self, row: i16) -> Chosen {
+        self.model
+            .row(List::Screen(self.screen), row)
+            .map_or(Chosen::Nothing, |r| self.model.press(r))
+    }
+}
+
+/// The loaders of the classes built so far, by screen id, so an `Open` row
+/// (on a screen of ours or on a retail list) finds the screen it names.
+static LOADERS: Mutex<BTreeMap<&'static str, u32>> = Mutex::new(BTreeMap::new());
+
+/// The loader of our screen `screen`, once its class is built.
+pub fn loader_of(screen: &str) -> Option<u32> {
+    LOADERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(screen)
+        .copied()
+}
+
+/// A screen of ours as our own list class. See the module docs.
 pub struct ListClass {
     /// The feature id (`features.<id>` switches it).
     pub id: &'static str,
-    /// The model screen it shows.
+    /// The screen id an `Open` row names.
     pub screen: &'static str,
-    pub model: Arc<Model>,
+    rows: Arc<dyn Rows>,
     loader: Arc<AtomicU32>,
 }
 
 impl ListClass {
+    /// The model's screen `screen`.
     pub fn new(id: &'static str, screen: &'static str, model: Arc<Model>) -> Self {
+        Self::with_rows(id, screen, Arc::new(ModelRows { model, screen }))
+    }
+    /// A screen whose rows come from elsewhere.
+    pub fn with_rows(id: &'static str, screen: &'static str, rows: Arc<dyn Rows>) -> Self {
         ListClass {
             id,
             screen,
-            model,
+            rows,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -172,7 +230,14 @@ fn once(seen: &AtomicBool, what: &str) {
 /// The loader: the Controls loader's steps with the adoption in between.
 /// Stdcall, the request, `ret 4`; the screen in EAX (0 when allocation
 /// failed, where the retail loader would write through null).
-pub async fn load(cx: Cx, e: Entries, rows: usize, name: &'static str) -> Result<Ret, EntryError> {
+pub async fn load(
+    cx: Cx,
+    e: Entries,
+    rows: Arc<dyn Rows>,
+    name: &'static str,
+) -> Result<Ret, EntryError> {
+    // The rows are counted with no guest memory held.
+    let rows = rows.count();
     let request = cx.arg(0)?;
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -212,16 +277,9 @@ pub async fn load(cx: Cx, e: Entries, rows: usize, name: &'static str) -> Result
     Ok(Ret::new(screen, 4))
 }
 
-/// Row text (list slot 20): thiscall, the item and a word, `ret 8`. Each of
-/// the row's texts goes to the item's text widget of that index.
-pub async fn row_text(cx: Cx, model: Arc<Model>, list: List) -> Result<Ret, EntryError> {
-    let item = cx.arg(0)?;
-    let row = cx.read(|m| item_row(m, item))?;
-    // The model reads the settings store; no guest memory is held here.
-    let texts = row
-        .and_then(|r| model.row(list, r))
-        .map(|r| model.texts(r).to_vec())
-        .unwrap_or_default();
+/// Sets each `(text index, string id)` on the item widget `item`'s text
+/// widget of that index (`ITEM_TEXT`, then `TEXT_SET`), as row text does.
+pub async fn draw_texts(cx: &Cx, item: u32, texts: Vec<(u32, u32)>) -> Result<(), EntryError> {
     for (index, id) in texts {
         let text = cx
             .call(
@@ -241,19 +299,56 @@ pub async fn row_text(cx: Cx, model: Arc<Model>, list: List) -> Result<Ret, Entr
             .await?;
         }
     }
+    Ok(())
+}
+
+/// The player mask of a list callback whose first argument is the player
+/// chain (`[[chain]]+4` the local player index): `1 << index`, or `None`
+/// past the four local players.
+pub fn player_mask(m: &dyn GuestMemory, chain: u32) -> Result<Option<u32>, MemFault> {
+    let record = m.u32(chain)?;
+    let index = m.u32(record.wrapping_add(4))?;
+    Ok((index < 4).then(|| 1 << index))
+}
+
+/// Opens our screen `screen` for the player of `chain` (`0x149f1e(mask,
+/// loader)`). Says why when it cannot.
+pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
+    let Some(loader) = loader_of(screen) else {
+        eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
+        return Ok(());
+    };
+    let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
+        eprintln!("ui: no local player for the press; {screen} not opened");
+        return Ok(());
+    };
+    eprintln!("ui: opening {screen}");
+    cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([mask, loader]))
+        .await?;
+    Ok(())
+}
+
+/// Row text (list slot 20): thiscall, the item and a word, `ret 8`. Each of
+/// the row's texts goes to the item's text widget of that index.
+pub async fn row_text(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> {
+    let item = cx.arg(0)?;
+    let row = cx.read(|m| item_row(m, item))?;
+    // The rows read the settings store; no guest memory is held here.
+    let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
+    draw_texts(&cx, item, texts).await?;
     Ok(Ret::new(0, 8))
 }
 
 /// Row chosen (the press record's function): thiscall, the player chain and
-/// a pointer to the row, `ret 8`. A setting row steps; nothing else is
-/// opened from our screens yet.
-pub async fn row_chosen(cx: Cx, model: Arc<Model>, list: List) -> Result<Ret, EntryError> {
-    let at = cx.arg(1)?;
+/// a pointer to the row, `ret 8`. A setting row steps; an open row opens
+/// the screen of ours it names.
+pub async fn row_chosen(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> {
+    let (chain, at) = (cx.arg(0)?, cx.arg(1)?);
     let row = cx.read(|m| m.u16(at))? as i16;
     // The store is written with no guest memory held.
-    match model.row(list, row).map(|r| model.press(r)) {
-        Some(Chosen::Stepped(msg)) => eprintln!("{msg}"),
-        Some(Chosen::Open(id)) => eprintln!("ui: {id} is not opened from a screen of ours yet"),
+    match rows.press(row) {
+        Chosen::Stepped(msg) => eprintln!("{msg}"),
+        Chosen::Open(id) => open(&cx, chain, id).await?,
         _ => {}
     }
     Ok(Ret::new(0, 8))
@@ -287,9 +382,8 @@ impl feature::Feature for ListClass {
             .doc("docs/feature-engine.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        let list = List::Screen(self.screen);
-        let rows = self.model.rows(list).len();
-        let title = self.model.title_id(self.screen).unwrap_or(0);
+        let rows = Arc::clone(&self.rows);
+        let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
         let name = self.id;
         // The loader needs every address, so the entries are made first and
@@ -297,23 +391,24 @@ impl feature::Feature for ListClass {
         let cell = Arc::new(std::sync::OnceLock::<Entries>::new());
         let loader = {
             let cell = Arc::clone(&cell);
+            let rows = Arc::clone(&rows);
             b.entry("loader", move |cx| -> EntryFuture {
                 let e = *cell.get().expect("entries are set at build");
-                Box::pin(load(cx, e, rows, name))
+                Box::pin(load(cx, e, Arc::clone(&rows), name))
             })?
         };
         let row_text_at = {
-            let (model, list) = (Arc::clone(&self.model), list);
+            let rows = Arc::clone(&rows);
             let seen = Arc::new(AtomicBool::new(false));
             b.entry("row text", move |cx| -> EntryFuture {
                 once(&seen, &format!("{name}: row text"));
-                Box::pin(row_text(cx, Arc::clone(&model), list))
+                Box::pin(row_text(cx, Arc::clone(&rows)))
             })?
         };
         let row_chosen_at = {
-            let (model, list) = (Arc::clone(&self.model), list);
+            let rows = Arc::clone(&rows);
             b.entry("row chosen", move |cx| -> EntryFuture {
-                Box::pin(row_chosen(cx, Arc::clone(&model), list))
+                Box::pin(row_chosen(cx, Arc::clone(&rows)))
             })?
         };
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
@@ -333,6 +428,10 @@ impl feature::Feature for ListClass {
         };
         cell.set(e).ok();
         self.loader.store(loader, Ordering::SeqCst);
+        LOADERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.screen, loader);
         Ok(())
     }
 }
@@ -363,6 +462,71 @@ mod tests {
             screen_vtable: TABLES,
             list_vtable: TABLES + 0x70,
         }
+    }
+
+    fn video_rows() -> Arc<dyn Rows> {
+        Arc::new(ModelRows {
+            model: model(),
+            screen: video_screen::SCREEN,
+        })
+    }
+
+    /// One row that opens `target`.
+    struct Opens(&'static str);
+    impl Rows for Opens {
+        fn title(&self) -> u32 {
+            0
+        }
+        fn count(&self) -> usize {
+            1
+        }
+        fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+            Vec::new()
+        }
+        fn press(&self, _: i16) -> Chosen {
+            Chosen::Open(self.0)
+        }
+    }
+
+    /// A press on row 0 by local player `player` of a screen whose row opens
+    /// `target`: the calls made.
+    fn press_open(target: &'static str, player: u32) -> Vec<Gc> {
+        let mut g = guest();
+        g.put_u32(STACK + 4, 0x0071_0000)
+            .put_u32(0x0071_0000, 0x0072_0000)
+            .put_u32(0x0072_0004, player);
+        g.put_u32(STACK + 8, 0x0070_0000).put_u16(0x0070_0000, 0);
+        let f = move |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::new(Opens(target)))) };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |_, _| Regs::default());
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        run.calls
+    }
+
+    #[test]
+    fn an_open_row_opens_another_screen_of_ours_for_the_pressing_player() {
+        LOADERS
+            .lock()
+            .unwrap()
+            .insert("test-open-target", 0xa0f0_5000);
+        assert_eq!(
+            press_open("test-open-target", 2),
+            [Gc::new(points::OPEN_SCREEN.base).args([1 << 2, 0xa0f0_5000])]
+        );
+        assert_eq!(press_open("test-open-missing", 0), [], "not ours");
+        assert_eq!(press_open("test-open-target", 4), [], "no local player");
+    }
+
+    #[test]
+    fn a_built_class_is_found_by_its_screen_id() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let class = ListClass::with_rows("test-found", "test-found-screen", Arc::new(Opens("x")));
+        r.add(&class).unwrap();
+        assert_eq!(loader_of("test-found-screen"), Some(class.loader()));
+        assert_eq!(loader_of("test-never-built"), None);
     }
 
     fn model() -> Arc<Model> {
@@ -486,7 +650,7 @@ mod tests {
             .put_u32(REQUEST + 8, 4);
         g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
         let e = entries();
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, 4, "test")) };
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, video_rows(), "test")) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -533,7 +697,7 @@ mod tests {
     fn a_failed_allocation_opens_nothing() {
         let mut g = guest();
         g.put_u32(STACK + 4, REQUEST);
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), 4, "test")) };
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, entries(), video_rows(), "test")) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -559,7 +723,15 @@ mod tests {
         let want = m.texts(m.row(list, 1).unwrap()).to_vec();
         let f = {
             let m = Arc::clone(&m);
-            move |cx| -> EntryFuture { Box::pin(row_text(cx, Arc::clone(&m), list)) }
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(
+                    cx,
+                    Arc::new(ModelRows {
+                        model: Arc::clone(&m),
+                        screen: video_screen::SCREEN,
+                    }),
+                ))
+            }
         };
         let regs = Regs {
             esp: STACK,
@@ -602,7 +774,13 @@ mod tests {
         let f = {
             let m = Arc::clone(&m);
             move |cx| -> EntryFuture {
-                Box::pin(row_chosen(cx, Arc::clone(&m), video_screen::LIST))
+                Box::pin(row_chosen(
+                    cx,
+                    Arc::new(ModelRows {
+                        model: Arc::clone(&m),
+                        screen: video_screen::SCREEN,
+                    }),
+                ))
             }
         };
         let regs = Regs {
