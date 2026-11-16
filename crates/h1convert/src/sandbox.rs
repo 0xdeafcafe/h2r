@@ -20,6 +20,27 @@ pub enum H2Item {
     Dropped,
 }
 
+/// Rows whose Halo 2 item depends on the game variant: in a precision
+/// variant (its primary starting weapon is the battle rifle, carbine or
+/// sniper rifle) the item becomes this instead. Evaluated when a game
+/// starts, from the variant; until that hook exists the converted maps
+/// place the default item (docs/game/h1-multiplayer.md).
+pub const PRECISION: &[(&str, H2Item)] = &[("assault rifle", H2Item::Weapon("battle_rifle"))];
+
+/// Halo 2 starting weapons that make a variant a precision one.
+pub const PRECISION_STARTING_WEAPONS: &[&str] = &["battle_rifle", "carbine", "sniper_rifle"];
+
+/// The item for a Halo 1 path in a precision variant: the [`PRECISION`]
+/// row when one matches, else the default.
+pub fn h2_equivalent_precision(h1_tag_path: &str) -> Option<H2Item> {
+    let path = h1_tag_path.to_ascii_lowercase();
+    PRECISION
+        .iter()
+        .find(|(words, _)| path.contains(words))
+        .map(|&(_, item)| item)
+        .or_else(|| h2_equivalent(h1_tag_path))
+}
+
 /// One row of the table: words in the Halo 1 name, and the Halo 2 item.
 /// More specific rows come first ("plasma pistol" before "pistol").
 pub const TABLE: &[(&str, H2Item)] = &[
@@ -39,8 +60,8 @@ pub const TABLE: &[(&str, H2Item)] = &[
     ("flamethrower", H2Item::Weapon("shotgun")),
     ("frag grenade", H2Item::Equipment("frag_grenade")),
     ("plasma grenade", H2Item::Equipment("plasma_grenade")),
-    ("over shield", H2Item::Equipment("overshield")),
-    ("active camouflage", H2Item::Equipment("active_camo")),
+    ("over shield", H2Item::Equipment("super_shield")),
+    ("active camouflage", H2Item::Equipment("invisibility")),
     ("warthog", H2Item::Vehicle("warthog")),
     ("ghost", H2Item::Vehicle("ghost")),
     ("scorpion", H2Item::Vehicle("scorpion")),
