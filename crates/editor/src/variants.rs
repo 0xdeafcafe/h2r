@@ -21,11 +21,28 @@ pub struct VariantTool {
     editor: Option<VariantEditor>,
     /// The source path the editor was built from (`None`: no source).
     built_for: Option<Option<PathBuf>>,
+    /// The runtime data root (`--data`); `None` is the default one.
+    data_root: Option<PathBuf>,
 }
 
 impl VariantTool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Save to and list from the storage under `root` (`h2-editor --data`),
+    /// as a run with the same `--data` reads it.
+    pub fn set_data_root(&mut self, root: PathBuf) {
+        self.data_root = Some(root);
+        self.built_for = None;
+    }
+
+    /// The save storage root: `U:` under the data root.
+    pub fn save_root(data_root: Option<&Path>) -> PathBuf {
+        match data_root {
+            Some(d) => SaveStore::root_under(d),
+            None => SaveStore::root_under(&content::store::default_data_root()),
+        }
     }
 
     /// The schema from the source's main menu map, else the fallback.
@@ -59,7 +76,10 @@ impl VariantTool {
         let (schema, from_disc) = Self::schema(cx.source);
         let names = Self::names(cx.source);
         let have_names = names.is_some();
-        let store = SaveStore::default_root().map(|root| SaveStore::new(root, names));
+        let store = Some(SaveStore::new(
+            Self::save_root(self.data_root.as_deref()),
+            names,
+        ));
         self.editor = Some(VariantEditor::new(schema, store));
         self.built_for = Some(cx.source.map(|s| s.path().to_owned()));
         if !from_disc {

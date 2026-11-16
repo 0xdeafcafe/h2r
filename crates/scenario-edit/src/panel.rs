@@ -6,6 +6,7 @@
 use crate::edit::{Command, History};
 use crate::geometry::{self, Camera, Marker, Tri, Vec3};
 use crate::layout::{BlockKind, FieldType, Role};
+use crate::package::{self, PackageForm, SavedPackage};
 use crate::render::{self, Viewport};
 use crate::save::{self, MapSource};
 use crate::scenario::{Changes, Scenario, TagRef, Value};
@@ -17,6 +18,10 @@ use std::path::{Path, PathBuf};
 /// An open map.
 struct Doc {
     source: MapSource,
+    /// The map's name (`maps\\<name>.map`), the base a package names.
+    name: String,
+    /// The package directory this state came from or was last saved to.
+    package: Option<String>,
     scenario: Scenario,
     history: History,
     /// Changes at the last save (or the source's, empty), for `is_dirty`.
@@ -55,6 +60,16 @@ pub struct ScenarioEditor {
     /// to the map's metadata). Off: the engine's headroom for more tag
     /// memory is not established (docs/scenario-editor.md §6).
     allow_growth: bool,
+    /// The runtime data root; packages live in `<data>/maps`.
+    data_root: PathBuf,
+    /// The "Save as package" window, when open.
+    package_form: Option<PackageForm>,
+    /// The typed image path in that window.
+    image_path: String,
+    /// The "Open package" window's list, when open.
+    package_list: Option<Vec<content::Package>>,
+    /// The last package saved or opened.
+    last_package: Option<(String, content::MapId)>,
 }
 
 /// Why the panel refuses to grow a block while growth is off.
@@ -85,12 +100,122 @@ impl ScenarioEditor {
             next_key: 1,
             filter: String::new(),
             allow_growth: false,
+            data_root: content::store::default_data_root(),
+            package_form: None,
+            image_path: String::new(),
+            package_list: None,
+            last_package: None,
         }
     }
 
-    /// Open a map. The source is only read; edits stay in memory until
-    /// [`Self::save_as`].
+    /// Where packages are saved and listed: `<root>/maps`. Defaults to
+    /// the runtime's default data root (`h2 play` without `--data`).
+    pub fn set_data_root(&mut self, root: impl Into<PathBuf>) {
+        self.data_root = root.into();
+    }
+    pub fn maps_dir(&self) -> PathBuf {
+        content::store::maps_dir(&self.data_root)
+    }
+    /// The open map's name, as a package's base names it.
+    pub fn map_name(&self) -> Option<&str> {
+        self.doc.as_ref().map(|d| d.name.as_str())
+    }
+    /// The package the open state came from or was last saved to.
+    pub fn package_dir(&self) -> Option<&str> {
+        self.doc.as_ref()?.package.as_deref()
+    }
+    /// The last package saved or opened, and its `MapId`.
+    pub fn last_package(&self) -> Option<&(String, content::MapId)> {
+        self.last_package.as_ref()
+    }
+
+    /// Save the current state as a map package under [`Self::maps_dir`]:
+    /// one patch from the base (the disc's map) to now, the manifest and
+    /// the image. Saving to the package that was opened (or last saved)
+    /// replaces its layer; another existing directory is refused.
+    pub fn save_package(&mut self, form: &PackageForm) -> Result<SavedPackage> {
+        let maps = self.maps_dir();
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        let saved = package::save_package(
+            &maps,
+            &doc.name,
+            &doc.source,
+            &doc.scenario,
+            form,
+            doc.package.as_deref(),
+        )?;
+        doc.saved = doc.scenario.changes();
+        doc.package = Some(form.dir.clone());
+        doc.history.seal();
+        self.last_package = Some((form.dir.clone(), saved.id));
+        self.status = format!(
+            "saved package {} ({} {} bytes{}), MapId {}",
+            saved.dir.display(),
+            saved.format.extension().to_ascii_uppercase(),
+            saved.patch_len,
+            if form.activate { ", active" } else { "" },
+            saved.id
+        );
+        Ok(saved)
+    }
+
+    /// The packages for the open map under [`Self::maps_dir`].
+    pub fn packages(&self) -> Vec<content::Package> {
+        match self.map_name() {
+            Some(name) => package::packages_for(&self.maps_dir(), name),
+            None => Vec::new(),
+        }
+    }
+
+    /// Open package `dir` for the open map: resolve it over the map's base
+    /// and make the result the current, unedited state. Refused over
+    /// unsaved edits, as switching maps is.
+    pub fn open_package(&mut self, dir: &str) -> Result<content::MapId> {
+        let doc = self.doc.as_ref().ok_or(Error::Save("no map is open"))?;
+        if self.is_dirty() {
+            return Err(Error::Refused(
+                "the open map has unsaved edits: save or undo them first",
+            ));
+        }
+        let (name, base) = (doc.name.clone(), doc.source.base());
+        let (source, p) = package::open_package(&self.maps_dir(), dir, &base)?;
+        if !p.manifest.base.map.eq_ignore_ascii_case(&name) {
+            return Err(Error::Package(format!(
+                "{dir} is a package for {}, not {name}",
+                p.manifest.base.map
+            )));
+        }
+        self.open_named(source, &name)?;
+        if let Some(doc) = self.doc.as_mut() {
+            doc.package = Some(dir.to_owned());
+        }
+        self.last_package = Some((dir.to_owned(), p.id));
+        self.status = format!(
+            "opened package {dir} ({}), MapId {}",
+            p.manifest.package.name, p.id
+        );
+        Ok(p.id)
+    }
+
+    /// Open a map, named by its file name (or its name on the disc). The
+    /// source is only read; edits stay in memory until saved.
     pub fn open(&mut self, source: MapSource) -> Result<()> {
+        let name = self
+            .disc_maps
+            .iter()
+            .find(|(_, s)| *s == source)
+            .map(|(n, _)| n.clone())
+            .or_else(|| {
+                (source.region.is_none())
+                    .then(|| source.path.file_stem()?.to_str().map(str::to_owned))
+                    .flatten()
+            })
+            .unwrap_or_else(|| "map".into());
+        self.open_named(source, &name)
+    }
+
+    /// Open a map whose name (`maps\\<name>.map`) is `name`.
+    pub fn open_named(&mut self, source: MapSource, name: &str) -> Result<()> {
         let mut map = source.open()?;
         let scenario = Scenario::read(&mut map)?;
         let mut files = vec![(ResourceFile::Local, map)];
@@ -124,6 +249,8 @@ impl ScenarioEditor {
         );
         self.doc = Some(Doc {
             source,
+            name: name.to_owned(),
+            package: None,
             scenario,
             history: History::default(),
             saved: Changes::default(),
@@ -276,6 +403,8 @@ impl ScenarioEditor {
     pub fn ui(&mut self, ui: &mut egui::Ui, render: &egui_wgpu::RenderState) {
         self.shortcuts(ui);
         egui::Panel::top("scenario_toolbar").show(ui, |ui| self.toolbar(ui));
+        let ctx = ui.ctx().clone();
+        self.package_windows(&ctx);
         if self.doc.is_none() {
             ui.label(&self.status);
             return;
@@ -336,7 +465,7 @@ impl ScenarioEditor {
                         }
                     });
                 if let Some((name, s)) = chosen {
-                    if let Err(e) = self.open(s) {
+                    if let Err(e) = self.open_named(s, &name) {
                         self.status = e.to_string();
                     } else if self.save_path.is_empty() {
                         self.save_path = format!("{name}.map");
@@ -370,8 +499,140 @@ impl ScenarioEditor {
                     self.status = e.to_string();
                 }
             }
+            ui.separator();
+            if ui
+                .add_enabled(self.doc.is_some(), egui::Button::new("Save as package..."))
+                .on_hover_text("A patch against the disc's map, with a manifest, in <data>/maps")
+                .clicked()
+            {
+                self.package_form = Some(self.form_defaults());
+                self.image_path.clear();
+            }
+            if ui
+                .add_enabled(self.doc.is_some(), egui::Button::new("Open package..."))
+                .clicked()
+            {
+                self.package_list = Some(self.packages());
+            }
         });
         ui.label(&self.status);
+        if let Some((dir, id)) = &self.last_package {
+            ui.horizontal(|ui| {
+                ui.weak(format!("package {dir}, MapId"));
+                ui.monospace(id.to_string());
+            });
+        }
+    }
+
+    /// The form's starting values: the opened package's, else a new one.
+    pub fn form_defaults(&self) -> PackageForm {
+        let name = self.map_name().unwrap_or("map").to_owned();
+        let opened = self.package_dir().and_then(|dir| {
+            let m = self
+                .packages()
+                .into_iter()
+                .find(|p| p.dir_name() == dir)?
+                .manifest;
+            Some(PackageForm {
+                name: m.package.name,
+                author: m.package.author.unwrap_or_default(),
+                description: m.package.description.unwrap_or_default(),
+                image: None,
+                dir: dir.to_owned(),
+                activate: false,
+            })
+        });
+        opened.unwrap_or_else(|| PackageForm {
+            name: format!("{name} edit"),
+            dir: PackageForm::default_dir(&name, "edit"),
+            ..PackageForm::default()
+        })
+    }
+
+    fn package_windows(&mut self, ctx: &egui::Context) {
+        if let Some(mut form) = self.package_form.take() {
+            let mut open = true;
+            let mut save = false;
+            egui::Window::new("Save as package")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    egui::Grid::new("package_form")
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            ui.label("Name");
+                            ui.text_edit_singleline(&mut form.name);
+                            ui.end_row();
+                            ui.label("Author");
+                            ui.text_edit_singleline(&mut form.author);
+                            ui.end_row();
+                            ui.label("Description");
+                            ui.text_edit_multiline(&mut form.description);
+                            ui.end_row();
+                            ui.label("Image (PNG/JPEG, 512 KB)");
+                            ui.text_edit_singleline(&mut self.image_path);
+                            ui.end_row();
+                            ui.label("Directory");
+                            ui.text_edit_singleline(&mut form.dir);
+                            ui.end_row();
+                        });
+                    ui.checkbox(
+                        &mut form.activate,
+                        "Make it the active package for this map",
+                    );
+                    ui.weak(format!("in {}", self.maps_dir().display()));
+                    if self.package_dir() == Some(form.dir.as_str()) {
+                        ui.weak("replaces this package's patch");
+                    }
+                    save = ui.button("Save package").clicked();
+                });
+            if save {
+                let image = self.image_path.trim();
+                form.image = (!image.is_empty()).then(|| PathBuf::from(image));
+                match self.save_package(&form) {
+                    Ok(_) => open = false,
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
+            if open {
+                self.package_form = Some(form);
+            }
+        }
+        if let Some(list) = self.package_list.take() {
+            let mut open = true;
+            let mut chosen = None;
+            egui::Window::new("Open package")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    if list.is_empty() {
+                        ui.label(format!(
+                            "No packages for {} in {}",
+                            self.map_name().unwrap_or("this map"),
+                            self.maps_dir().display()
+                        ));
+                    }
+                    for p in &list {
+                        ui.horizontal(|ui| {
+                            if ui.button("Open").clicked() {
+                                chosen = Some(p.dir_name().to_owned());
+                            }
+                            ui.label(&p.manifest.package.name);
+                            ui.weak(p.dir_name());
+                            ui.monospace(&p.id.to_string()[..16]);
+                        });
+                    }
+                });
+            if let Some(dir) = chosen {
+                match self.open_package(&dir) {
+                    Ok(_) => open = false,
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
+            if open {
+                self.package_list = Some(list);
+            }
+        }
     }
 
     fn outliner(&mut self, ui: &mut egui::Ui) {

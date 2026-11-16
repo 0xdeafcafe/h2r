@@ -131,6 +131,8 @@ pub struct HopperTool {
     /// Browses for `.h2variant` files; without one, paths are typed.
     dialog: Option<Box<dyn FileDialog>>,
     handoff: Option<Handoff>,
+    /// The runtime data root (`--data`); `None` is the default one.
+    data_root: Option<PathBuf>,
 }
 
 impl Default for HopperTool {
@@ -150,7 +152,15 @@ impl HopperTool {
             variant_path: String::new(),
             dialog: None,
             handoff: None,
+            data_root: None,
         }
+    }
+
+    /// Read saved variants from the storage under `root` (`h2-editor
+    /// --data`).
+    pub fn set_data_root(&mut self, root: PathBuf) {
+        self.data_root = Some(root);
+        self.variants = None;
     }
 
     /// Browses for `.h2variant` files with `dialog` (the system's in the
@@ -217,7 +227,10 @@ impl HopperTool {
         }
         let (schema, _) = VariantTool::schema(cx.source);
         let names = VariantTool::names(cx.source);
-        let store = SaveStore::default_root().map(|root| SaveStore::new(root, names));
+        let store = Some(SaveStore::new(
+            VariantTool::save_root(self.data_root.as_deref()),
+            names,
+        ));
         self.set_variant_sources(&schema, store);
         if let Some(v) = &mut self.variants {
             v.auto_for = Some(now);

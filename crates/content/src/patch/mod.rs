@@ -11,17 +11,21 @@
 //! common Lunar IPS extension); new bytes the patch does not write are zero.
 //! PPF patches a fixed-size image, so a PPF record past the base's end is
 //! refused. BPS states its target size.
+//!
+//! [`write`] makes patches: PPF3 for a same-length edit, BPS otherwise.
 use std::io;
 
 pub(crate) mod bps;
 pub(crate) mod ips;
 mod overlay;
 pub(crate) mod ppf;
+pub mod write;
 
 pub use bps::{Bps, crc32};
 pub use ips::parse_ips;
 pub use overlay::{OffsetPatch, Overlay, OverlayView, Run};
 pub use ppf::{BlockCheck, Ppf};
+pub use write::{Format, Written, diff};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PatchError {

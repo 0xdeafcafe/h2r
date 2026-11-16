@@ -9,13 +9,16 @@ spirit of the original tools' Sapien. It hosts tools:
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)), wired in by
   `crates/editor/src/scenario.rs`. Picking a map in the sidebar opens it,
-  unless the open map has unsaved edits. Save always asks for a new path:
-  the source map is never overwritten.
+  unless the open map has unsaved edits. Save always asks for a new path
+  (a whole `.map`, the export): the source map is never overwritten. The
+  panel's **Save as package...** and **Open package...** save and open map
+  packages in `<data>/maps` (scenario-editor.md §5, maps.md §8).
 - **Game variants**: the game variant editor (`crates/variants`,
   [variants.md](variants.md)), wired in by `crates/editor/src/variants.rs`.
   Settings come from the disc's `mainmenu` map, save names from the XBE
   (`H2_XBE`, else `default.xbe` beside the disc). Saves go to the
-  runtime's save storage, so there is no Save As; use Export to share.
+  runtime's save storage (`U:` under `<data>`), so there is no Save As;
+  use Export to share.
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -23,8 +26,13 @@ it shows come from your own disc at run time.
 ## Running it
 
 ```
-cargo run --release -p editor -- [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>]
+cargo run --release -p editor -- [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>] [--data <dir>]
 ```
+
+`--data` is the runtime's data root, as `h2 play --data`; the default is
+the same as the runtime's, `$TMPDIR/h2boot-data`
+(`content::store::default_data_root`). Saved game variants (`U:`) and map
+packages (`maps/`) go there, so a run with the same `--data` finds them.
 
 The map source is, in order: `--disc` or `--map`, then `H2_DISC`, then
 `disc/halo2.iso` in the repository. With none, the editor starts without

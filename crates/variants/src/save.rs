@@ -348,16 +348,23 @@ impl SaveStore {
         }
     }
 
-    /// `<data root>/disk/Partition1/UDATA/4D530064`, the data root being
-    /// `~/Library/Application Support/h2recomp` (the VFS default,
-    /// docs/storage.md).
+    /// The save root under the default data root: what `h2 play` and `h2
+    /// run` use without `--data` (`content::store::default_data_root`,
+    /// `$TMPDIR/h2boot-data`). `vfs::Config::for_title` names another root
+    /// (`~/Library/Application Support/h2recomp`) that the game does not
+    /// use today.
     pub fn default_root() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
-        Some(
-            Path::new(&home)
-                .join("Library/Application Support/h2recomp/disk/Partition1/UDATA")
-                .join(TITLE_ID),
-        )
+        Some(Self::root_under(&content::store::default_data_root()))
+    }
+
+    /// `<data root>/disk/Partition1/UDATA/4D530064`: where the game's `U:`
+    /// lives under a data root (docs/storage.md).
+    pub fn root_under(data_root: &Path) -> PathBuf {
+        data_root
+            .join("disk")
+            .join("Partition1")
+            .join("UDATA")
+            .join(TITLE_ID)
     }
 
     /// Every save directory holding a variant, sorted by save name. A
@@ -501,6 +508,23 @@ fn check_saveable(v: &GameVariant) -> Result<(), SaveError> {
 mod tests {
     use super::*;
     use crate::record::SettingId;
+
+    /// The editor saves where `h2 play` without `--data` reads: U: under
+    /// `$TMPDIR/h2boot-data` (the cli's default, `play_cmd` and `boot_cmd`,
+    /// checked in the cli's own test of the same function).
+    #[test]
+    fn the_default_root_is_the_runtime_data_root() {
+        let data = std::env::temp_dir().join("h2boot-data");
+        assert_eq!(content::store::default_data_root(), data);
+        assert_eq!(
+            SaveStore::default_root().unwrap(),
+            data.join("disk/Partition1/UDATA/4D530064")
+        );
+        assert_eq!(
+            SaveStore::root_under(Path::new("/d")),
+            Path::new("/d/disk/Partition1/UDATA/4D530064")
+        );
+    }
 
     fn names() -> XbeNames {
         // Invented names: the real ones come from the user's XBE.
