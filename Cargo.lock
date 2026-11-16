@@ -918,6 +918,7 @@ dependencies = [
  "assets",
  "audio",
  "boot",
+ "content",
  "d3d",
  "dsound",
  "emit",
@@ -1405,6 +1406,7 @@ name = "editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "content",
  "eframe",
  "egui",
  "egui-wgpu",
@@ -4490,6 +4492,7 @@ name = "scenario-edit"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "content",
  "egui",
  "egui-wgpu",
  "map",
@@ -5793,6 +5796,7 @@ dependencies = [
 name = "variants"
 version = "0.1.0"
 dependencies = [
+ "content",
  "egui",
  "iced-x86",
  "map",

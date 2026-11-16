@@ -122,8 +122,12 @@ A saved variant is an XAPI save game (docs/xapi.md): a directory
 `SaveMeta.xbx` (`FEFF`, `Name=<save name>` CR LF, UTF-16LE). The game
 creates it with `0x2ad020` → XCreateSaveGame, CREATE_NEW and flags 0 (no
 `NoCopy`). On our runtime `U:\` is
-`<data root>/disk/Partition1/UDATA/4D530064/`, by default
-`~/Library/Application Support/h2recomp/disk/Partition1/UDATA/4D530064/`.
+`<data root>/disk/Partition1/UDATA/4D530064/`. The editor's default data
+root is the one `h2 play` and `h2 run` use without `--data`,
+`$TMPDIR/h2boot-data` (`content::store::default_data_root`), so variants
+saved in the editor are the ones the game finds; `h2-editor --data <dir>`
+matches a run with `--data <dir>`. (`vfs::Config::for_title` names
+`~/Library/Application Support/h2recomp`, which no run uses today.)
 
 The save name is `<content-type label>: <variant name>`, at most 0x80
 units (`0x216da0`). The label is per language, compiled into the XBE (the

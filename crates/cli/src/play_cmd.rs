@@ -153,11 +153,21 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
         .map_err(|e| eprintln!("play: controller speaker off: {e}"))
         .ok();
     // No audio, or bad controller-speaker settings: off, and the row locked.
-    let why = if !audio { Some("audio is off") } else { config.is_none().then_some("its settings are bad") };
+    let why = if !audio {
+        Some("audio is off")
+    } else {
+        config.is_none().then_some("its settings are bad")
+    };
     if let Some(why) = why {
-        let _ = store.force(boot::setting_defs::PAD_SPEAKER.key, settings::Value::Bool(false), why);
+        let _ = store.force(
+            boot::setting_defs::PAD_SPEAKER.key,
+            settings::Value::Bool(false),
+            why,
+        );
     }
-    let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(Arc::clone(store)));
+    let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(Arc::clone(
+        store,
+    )));
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
@@ -177,7 +187,9 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
         return (None, hid, setting);
     };
     if !setting.enabled() {
-        eprintln!("play: controller speaker off (Settings > Controls > Controller Speaker turns it on)");
+        eprintln!(
+            "play: controller speaker off (Settings > Controls > Controller Speaker turns it on)"
+        );
     }
     if let Some(switch) = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch) {
         setting.attach_hid(move |on| switch.set(on));
@@ -185,16 +197,24 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     let device = config.device.clone();
     let live = Arc::clone(&setting);
     let side = dsound::SideOutput {
-        open: Box::new(move || match audio::output::DeviceSink::open_named(&device) {
-            Ok(d) => {
-                eprintln!("play: controller speaker on {} at {} Hz", d.device_id(), audio::AudioSink::sample_rate(&d));
-                Some(Box::new(d) as Box<dyn audio::AudioSink>)
-            }
-            Err(e) => {
-                eprintln!("play: no controller speaker matching {device:?} ({e}); every sound stays on the main output");
-                None
-            }
-        }),
+        open: Box::new(
+            move || match audio::output::DeviceSink::open_named(&device) {
+                Ok(d) => {
+                    eprintln!(
+                        "play: controller speaker on {} at {} Hz",
+                        d.device_id(),
+                        audio::AudioSink::sample_rate(&d)
+                    );
+                    Some(Box::new(d) as Box<dyn audio::AudioSink>)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "play: no controller speaker matching {device:?} ({e}); every sound stays on the main output"
+                    );
+                    None
+                }
+            },
+        ),
         on_live: Some(Box::new(move |on| live.side_live(on))),
     };
     let pad = boot::dsound_glue::PadSpeaker {
@@ -394,7 +414,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
-    let mut data = tmp.join("h2boot-data");
+    let mut data = content::store::default_data_root();
     let mut slices = u64::MAX;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
@@ -456,7 +476,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--fps" => {
                 let v = val()?;
                 config.fps = app::fps::FpsTarget::parse(&v).map_err(anyhow::Error::msg)?;
-                flags.push(settings::Flag { key: boot::setting_defs::FPS.key.into(), value: v, flag: "--fps" });
+                flags.push(settings::Flag {
+                    key: boot::setting_defs::FPS.key.into(),
+                    value: v,
+                    flag: "--fps",
+                });
             }
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
@@ -833,6 +857,33 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `h2 play`, `h2 run` and the editor's variant store share one default
+    /// data root; the variants crate checks its side against the same path.
+    #[test]
+    fn the_default_data_root_is_shared() {
+        assert_eq!(
+            content::store::default_data_root(),
+            std::env::temp_dir().join("h2boot-data")
+        );
+        assert_eq!(
+            variants_save_root(),
+            content::store::default_data_root().join("disk/Partition1/UDATA/4D530064")
+        );
+    }
+
+    /// The variant store's root as the guest sees it: `U:` under the data
+    /// root, which the VFS maps to `disk/Partition1/UDATA/<title>`.
+    fn variants_save_root() -> std::path::PathBuf {
+        vfs::Config::new(content::store::default_data_root(), 0x4D53_0064)
+            .title_data_dir()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("UDATA")
+            .join("4D530064")
+    }
 
     #[test]
     fn h2_render_thread_is_on_unless_zero() {

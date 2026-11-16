@@ -23,7 +23,7 @@ when --out's dylib is current for this h2 and the image, 3 otherwise.";
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
-    let mut data = tmp.join("h2boot-data");
+    let mut data = content::store::default_data_root();
     let mut jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut slices = 100_000u64;
     let mut transfers = 50_000_000u64;
@@ -58,17 +58,26 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
-    let disc = disc.or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from)).context(USAGE)?;
+    let disc = disc
+        .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
+        .context(USAGE)?;
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
     if check {
         let current = boot::dylib_current(&xbe, &lib);
-        eprintln!("h2 build --check: {} is {}", lib.display(), if current { "current" } else { "out of date" });
+        eprintln!(
+            "h2 build --check: {} is {}",
+            lib.display(),
+            if current { "current" } else { "out of date" }
+        );
         std::process::exit(if current { 0 } else { 3 });
     }
     if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
         if cmd != "build" && lib.exists() {
-            eprintln!("h2 run: {} was built from another image or generator; rebuilding", lib.display());
+            eprintln!(
+                "h2 run: {} was built from another image or generator; rebuilding",
+                lib.display()
+            );
         }
         boot::build(&xbe, &out, jobs)?;
     }
@@ -86,7 +95,18 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let r = boot::run(
         &xbe,
         &lib,
-        &boot::RunOpts { disc, data_root: data, max_slices: slices, transfers_per_slice: transfers, stopgaps, trace: Some(out.join("kernel-trace.tsv")), d3d, bink, dsound, xapi },
+        &boot::RunOpts {
+            disc,
+            data_root: data,
+            max_slices: slices,
+            transfers_per_slice: transfers,
+            stopgaps,
+            trace: Some(out.join("kernel-trace.tsv")),
+            d3d,
+            bink,
+            dsound,
+            xapi,
+        },
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
@@ -96,7 +116,10 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     for l in &r.kernel_log {
         println!("DbgPrint: {}", l.trim_end());
     }
-    println!("outcome: {}", r.outcome.chars().take(400).collect::<String>());
+    println!(
+        "outcome: {}",
+        r.outcome.chars().take(400).collect::<String>()
+    );
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
@@ -124,8 +147,15 @@ fn fresh_data_dirs(data: &Path, keep: &[&Path]) -> Result<Vec<PathBuf>> {
             continue;
         }
         for k in keep {
-            if forms(&d).iter().any(|d| forms(k).iter().any(|k| k.starts_with(d))) {
-                bail!("--fresh-data would delete {} with {} in it; use another --data", d.display(), k.display());
+            if forms(&d)
+                .iter()
+                .any(|d| forms(k).iter().any(|k| k.starts_with(d)))
+            {
+                bail!(
+                    "--fresh-data would delete {} with {} in it; use another --data",
+                    d.display(),
+                    k.display()
+                );
             }
         }
         out.push(d);
@@ -155,10 +185,22 @@ mod tests {
         let out = root.join("out");
         assert!(fresh_data_dirs(&data, &[&image, &out]).is_err());
         // The image inside metadata, or the data dir's partitions as --out.
-        assert!(fresh_data_dirs(&data, &[&data.join("metadata/x.iso")]).is_err(), "inside metadata, by its spelling");
-        assert!(fresh_data_dirs(&data, &[&data.join("disk")]).is_err(), "equal");
+        assert!(
+            fresh_data_dirs(&data, &[&data.join("metadata/x.iso")]).is_err(),
+            "inside metadata, by its spelling"
+        );
+        assert!(
+            fresh_data_dirs(&data, &[&data.join("disk")]).is_err(),
+            "equal"
+        );
         // Spelled with `..` it is still inside.
-        assert!(fresh_data_dirs(&data, &[&data.join("metadata/../disk/Partition1/synthetic.xbe")]).is_err());
+        assert!(
+            fresh_data_dirs(
+                &data,
+                &[&data.join("metadata/../disk/Partition1/synthetic.xbe")]
+            )
+            .is_err()
+        );
         assert!(image.exists(), "nothing was deleted");
         let elsewhere = root.join("halo2.iso");
         std::fs::write(&elsewhere, b"").unwrap();
@@ -170,7 +212,11 @@ mod tests {
     #[test]
     fn fresh_data_skips_what_is_not_there() {
         let root = scratch("empty");
-        assert!(fresh_data_dirs(&root.join("data"), &[&root.join("halo2.iso")]).unwrap().is_empty());
+        assert!(
+            fresh_data_dirs(&root.join("data"), &[&root.join("halo2.iso")])
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
