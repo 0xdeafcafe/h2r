@@ -205,9 +205,10 @@ lightmap bitmap reference (`sbsp+0x00`), its tag, and per Halo 1 lightmap
 the page it samples, `None` for `-1`. `convert_bitmap` on that tag gives
 the Halo 2 lightmap bitmap, one image per page, R5G6B5 2D.
 
-What the structure writer (`h1convert::structure`, the h1-mp lane) has to
-do to show them, from [lighting.md](lighting.md) and
-[structure-bsp.md](structure-bsp.md):
+The structure writer (`h1convert::structure`) does not use them yet: it
+writes one lightmap group with no bitmap, and every cluster's render info
+entry stays `{-1, -1}`. What it has to do to show them, from
+[lighting.md](lighting.md) and [structure-bsp.md](structure-bsp.md):
 
 1. Install the converted lightmap bitmap (`Converted::install`) and
    reference it from the lightmap group's bitmap reference (`ltmp` group
@@ -224,7 +225,7 @@ do to show them, from [lighting.md](lighting.md) and
 4. Lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit surfaces)
    keep `{-1, -1}`.
 
-Open for that lane: whether Halo 2's structure shaders sample a non-P8
+Open: whether Halo 2's structure shaders sample a non-P8
 lightmap correctly with palette `-1` (the renderer binds the palette at
 stage 3 only when one is named, E `0x0004d40f`; what the combiner does
 with an R5G6B5 sample instead of a palette lookup is unread). If it needs

@@ -1,12 +1,15 @@
 # Xbox Live replacement
 
-Status: implemented in large part, with the sections below marking what is
-still design. The server (`crates/live-proto`, `crates/live-server`,
-`h2 live ...` in [4.2](#42-cli) and [4.3](#43-service)) has accounts,
-title files, friends, teams, sessions, invites and stats, and the opt-in
-client HLE (`crates/live-hle`) starts at
-[Client HLE: sign-in](#client-hle-sign-in). Sections 1 to 3 and 5 to 6 are
-the original design and investigation.
+Status: built, with the sections below marking what is not. The server
+(`crates/live-proto`, `crates/live-server`, `h2 live ...` in
+[4.2](#42-cli) and [4.3](#43-service)) has accounts with recovery codes,
+title files, friends, teams, sessions, invites, stats, cloud saves, custom
+maps, co-op sessions and a relay, and the client HLE (`crates/live-hle`)
+starts at [Client HLE: sign-in](#client-hle-sign-in). It is on in the app
+builds and opt-in for `h2 play` (`--live`). Sections 1 to 3 and 6 are the
+original design and investigation; the HLE sections say what the game does
+now. Not built: the in-game Create/Recover account menu
+([In-game account setup](#in-game-account-setup)) and federation.
 
 The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
 gamertag, show the message of the day and playlists, keep a friends list
@@ -38,9 +41,11 @@ thousand in the library. `0x003cd718` (17 sites) is the busiest; the
 `0x003cd0e1..0x003cd17d` cluster looks like the XNet socket calls (send,
 receive, select).
 
-**Today.** The kernel reports no cable (`crates/kernel/src/net.rs`,
+**With Live off.** The kernel reports no cable (`crates/kernel/src/net.rs`,
 `PhyGetLinkState` returns 0), so the title skips `XNetStartup` and every
 Live path reports "network cable unplugged". Nothing in `XONLINE` runs.
+With Live on, the HLE ([4.1](#41-client-recomp-side)) sets the link up and
+answers the entry points instead.
 
 ## 2. What the real service looked like
 
@@ -129,9 +134,11 @@ Implemented (crates/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
 play_live.rs; `h2 live --help` has every flag):
 
 ```
-h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
+h2 live serve [--db URL] [--blobs LOC] [--listen ADDR] [--data DIR] [--id HOST]
               [--private] [--invite-only] [--admin GAMERTAG]...
+              [--game-art DIR] [--share-game-art]
               [--tls-cert PEM --tls-key PEM | --insecure-http]
+              [--tunnel | --tunnel-name NAME | --public-url URL]
 h2 live account create <gamertag> [--server URL] [--invite CODE]
 h2 live account code [--as GAMERTAG] [--server URL]
 h2 live account recovery [--reset] [--as GAMERTAG] [--server URL]
@@ -143,10 +150,14 @@ h2 live motd set --file PATH [--server URL] [--data DIR]
 h2 live account export <gamertag> [--file PATH] [--server URL]
 h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
 h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
+h2 live hopper defaults --out FILE [--raw] [--force]
 h2 live friend add|accept|decline|remove|list ...
 h2 live team ...
 h2 live maps publish|list ...
-h2 live assets extract|check
+h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
+h2 live assets check [--out DIR]
+h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
+h2 live menubar [--install | --uninstall | --status ...]
 h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
@@ -343,6 +354,13 @@ under a second. Keys and emblem colouring are in
   world-to-pixel matrices (`map/<stem>/views.json`, `views/*.png`), listed
   under the manifest's `maps`. This adds 2 to 3 seconds. Format and
   pipeline: [live-art.md](live-art.md).
+- **Map pack maps.** `--mappack ISO` reads the map pack disc's maps too, and
+  the extractor reads maps `h2 import-mappack` installed under the default
+  data root (`--installed DATA` names another); they get the same pictures
+  and geometry ([live-art.md](live-art.md)).
+- **`h2 live assets check [--out DIR]`** exits 0 when the directory holds art
+  from this `h2`'s extractor and 1 when it is missing or older, so a script
+  knows when to extract again (`deploy/live/setup.sh` does).
 
 #### For agents: `h2 live q`
 
@@ -360,6 +378,9 @@ compact table on a terminal. Lists follow every cursor, so they are whole.
 | `q games [--live\|--ended]` | `[GameSummary]`, newest first: `{game_id, map, mode, variant, team_play, state, started_at, ended_at, players: [{index, name, xuid?, team, local?}], teams}` |
 | `q game <id>` | `GameSummary` plus `{console, host, score_limit, time_limit_s, tick, last_tick, scoreboard: [{index, score, kills, deaths, assists}], kills: [{tick, victim, killer?, weapon?, kind, pos?, position, at}], winner, end_reason, position}` |
 | `q game <id> --frames` | `[{game_id, tick, players: [{index, alive, pos, yaw, vehicle?}], source}]` (the 1 Hz recorded frames) |
+| `q sessions`, `q session <id>` | the open session advertisements, or one |
+| `q teams [gamertag]`, `q team <id>` | open teams (or one account's teams and pending recruits), or one team with members, properties and permissions |
+| `q friends <gamertag>` | `{friends: [{xuid, gamertag, friends_since, presence?}], requests_in, requests_out}` |
 | `q events [--from N] [--type T] [--stream S]` | `[{position, stream, version, type, at, data, author, kid, jws, jws_index?, hash}]` after position N |
 | `q events ... --follow` | the same, then one event per line as they are appended (JSONL, from `/v1/stream`) |
 | `q keys <gamertag>` | `{keys: [{kid, jwk, valid_from, valid_to}], position}` |
@@ -471,7 +492,10 @@ origin on GET and HEAD and nothing else. Binding to a non-loopback address
 needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. The database
 URL is never printed with its credentials.
 
-**The log.** One append-only `events` table: `position bigserial`,
+**The log.** SQLite by default, Postgres if asked (the description below is
+Postgres's; SQLite's `sqlite_schema.sql` is the same table, and its appends
+take an in-process lock and `BEGIN IMMEDIATE` for the same commit-order
+positions). One append-only `events` table: `position bigserial`,
 `stream_id`, `version`, `type`, `data jsonb`, `at`, `author`, `kid`, `jws`,
 `jws_index` (batches), `hash`, unique on `(stream_id, version)`. The `jws`
 is the author's, untouched, and the source of truth: events are decoded
@@ -544,9 +568,15 @@ online, where and with whom. To keep that from flooding the log:
    serving files by name, the `message_of_the_day.dat` and
    `multiplayer_hopper.dat` formats ([live-motd.md](live-motd.md),
    [live-admin.md](live-admin.md)) and the client HLE that fetches them.
-4. **Friends and presence.**
-5. **System Link over XNet HLE** (two local instances).
-6. **Matchmaking and custom games over Live**, then stats and clans.
+4. **Friends and presence.** Done (server and HLE; [live-api.md](live-api.md#friends)).
+5. **System Link over XNet HLE** (two local instances). Done
+   ([Client HLE: sockets and System Link](#client-hle-sockets-and-system-link)).
+6. **Matchmaking and custom games over Live**, then stats and clans. Done
+   on tests ([live-matchmaking.md](live-matchmaking.md),
+   [live-custom-games.md](live-custom-games.md), [live-telemetry.md](live-telemetry.md),
+   [Teams](#client-hle-teams)); co-op over Live too
+   ([live-coop.md](live-coop.md)). The HLE has been run in the game only
+   where those pages say so.
 
 ## 6. Open questions
 
@@ -603,7 +633,7 @@ list; the client does not invent an account.
 
 With `server_url = None`, sign-in keeps its local-only behavior. With a URL,
 logon authenticates against that service and publishes signed presence, as
-specified in [Client HLE: service logon and messages](#client-hle-service-logon-and-messages).
+specified in [Client HLE: service logon and title resources](#client-hle-service-logon-and-title-resources).
 
 Transport startup succeeds through XNetStartup, WSAStartup and XOnlineStartup,
 with paired reference-counted cleanup. GetUsers writes the fixed 16-record
@@ -719,9 +749,10 @@ The four transport channels are:
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
 
-Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is the co-op channel
-([live-coop.md](live-coop.md), section 8): the co-op transport binds it on
-the host itself, and no guest socket maps to it.
+Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is reserved for the co-op
+pad-exchange transport (`coop::link::UdpLink`, [live-coop.md](live-coop.md),
+section 8), which would bind it on the host itself; nothing binds it today,
+since Co-op over Live uses the game's own path, and no guest socket maps to it.
 
 The option wrapper maps the game's options to SO_REUSEADDR (`4`), SO_LINGER
 (`0x80`), SO_BROADCAST (`0x20`), SO_SNDBUF (`0x1001`), SO_RCVBUF (`0x1002`) and
@@ -1131,8 +1162,8 @@ The message box on the OK/cancel error dialog is about 244 by 91 pixels,
 five lines of the body font, so each line is kept under about 240 pixels.
 Lines break on `\r\n`, as the game's own strings do. The URL is shortened
 to 40 characters, and `|` (which starts a markup escape in the text scanner)
-is replaced. `h2 play` does not read `H2_LIVE_SERVER` (only the `h2 live`
-account commands do), so the message does not suggest it.
+is replaced. The message does not mention `H2_LIVE_SERVER`, which `h2 play --live` and
+the `h2 live` commands read.
 
 The first button still offers the troubleshooter. It launches the
 dashboard's network settings through `XLaunchNewImageA`, which ends the run
@@ -1154,8 +1185,12 @@ checked in a run.
 
 ### In-game account setup
 
-Making or recovering a Live account from inside the game. Built so far: the
-host calls and the screen's logic. Not yet built: the screen itself.
+Making or recovering a Live account from inside the game. Built: the host
+calls, and the sign-in
+prompt below, which recovers an account made elsewhere and can create one
+for an open server. Not built: the Create / Recover menu
+(`boot::account_screen::AccountScreen`) as a screen; only its layout helpers
+are used, by the prompt.
 
 **Host side, `live_hle::account_setup`** (no guest memory; blocking HTTP, so
 run each call on a `Job` thread and poll it from the frame loop):
@@ -1200,8 +1235,9 @@ each `Effect::Start` as a `Job`, saves the entry, and answers with
 `reload_accounts`. Page text is at most five lines of 40 characters, broken
 with `\r\n` and never holding `|`, as for the notice.
 
-**Pending (needs facts from a run):** the entry point and the drawing.
-Either of these would do:
+**Pending (needs facts from a run):** an entry point for the Create /
+Recover menu, and the drawing. The sign-in prompt (below) is the entry for
+an account that exists on the server. Either of these would do for the menu:
 
 1. A list screen like Video and Skulls (`list_class`), opened from a row or
    from the error `0x23` dialog's button. This needs the retail handler for

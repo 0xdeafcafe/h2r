@@ -363,8 +363,6 @@ wrote last, was the next fix: the alias mirror (2026-11-15, docs/graphics/d3d.md
   Mombasa profile at `183781e` that wait was 8.3% of the game thread.
 - **Memory and latency.** At most two presents in flight. Under load the
   limit is what holds the guest (6.30 fps run).
-- **`h2 play`** is wired but has not been run with it (no game runs on
-  this lane); only the flag is unit-tested.
 - **Measurement noise.** These are single runs on a shared machine with
   load swinging between 7 and 100. Repeat on a quiet machine before
   quoting fps.

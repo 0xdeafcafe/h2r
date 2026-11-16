@@ -186,7 +186,11 @@ Packages can change while the game runs (docs/game/maps.md §3, "Now"):
   drop stale cache slots (docs/runtime/cache-slots.md).
 
 The boot stacks the layers as font rewrite, then `MapOverrideBackend`
-(`H2_MAP_DIR`), then `PackageBackend`, then the disc. The packages layer
+(`H2_MAP_DIR`), then `PackageBackend`, then `CampaignMapsBackend` over the
+disc. `CampaignMapsBackend` serves a second campaign's converted maps
+(`<data>/campaigns/<key>/<map>.map`) as `maps\<map>.map` where the disc has
+no such file; a name the disc has is never shadowed
+([multiple-campaigns.md](../game/multiple-campaigns.md) §3). The packages layer
 is always there in a boot, even with an empty maps folder, so a package
 installed later is served; without a packages directory and without
 `H2_MAP_DIR`, `map_override::mount` is exactly `with_disc` /
@@ -591,7 +595,12 @@ under the VFS lock, with `OpenedFile::host`: where its bytes sit on the host
 (`Backend::host_file`: an entry's region of the disc image, a hard-disk file,
 `None` for a rewritten one). `Vfs::host_file(name)` answers the same for any
 name. The controller-speaker sound index uses both to read the maps the game
-loads ([playstation-audio.md](../audio/playstation-audio.md)). Basic setup:
+loads ([playstation-audio.md](../audio/playstation-audio.md)).
+`Vfs::set_change_observer` is told when a change is finished: `ChangeKind::Written`
+at the last close of a file object that created, overwrote, wrote or
+truncated a file (after its cleanup, so the bytes are on the host), and
+`ChangeKind::Removed` when a deletion is carried out. Cloud saves watch U:
+with it ([live-cloud-saves.md](../live/live-cloud-saves.md)). Basic setup:
 
 ```rust
 use vfs::{Config, OpenOptions, Offset, Vfs};

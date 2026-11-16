@@ -20,7 +20,7 @@ bytes, or read the disc at run time in `#[ignore]` tests.
 | 2 | Health | **Exception: keep Halo 1's** health bar and health packs. This needs a health system added to the Halo 2 engine (§6) |
 | 3 | Characters, weapons, vehicles | **Halo 1's own, converted**, by default. A setting switches to **Halo 2's** assets instead (§5) |
 | 4 | First walkable level | **a30** (Halo): open outdoor ground, the easiest first proof |
-| 5 | When conversion happens | **Offline, at import**: `h2 import halo1` writes Halo 2 `.map` files into the data folder. The engine loads them like any other level |
+| 5 | When conversion happens | **Offline, at import**: `h2 import halo1` is to write Halo 2 `.map` files into the data folder (today it copies the Halo 1 source maps only). The engine loads them like any other level |
 
 ## 1. Pipeline
 
@@ -54,11 +54,15 @@ Pieces:
 - **`crates/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
   with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
   trees, pixels copied as they are ([h1-bitmaps.md](../formats/h1-bitmaps.md)).
-- **The converter** (`crates/h1convert`, planned) works one tag group at a
-  time, in the order of §3.
-- **The import command**, `h2 import halo1 [disc/halo1.iso]`, runs the
-  pipeline for every level and writes the maps, plus the campaign's level
-  list (§4).
+- **The converter** (`crates/h1convert`) works one tag group at a time, in
+  the order of §3. Built so far for multiplayer maps only (collision,
+  structure BSP, placements, MOPP; `h2 h1 convert`): see
+  [h1-multiplayer.md](h1-multiplayer.md). Campaign levels are not converted.
+- **The import command**, `h2 import halo1 [disc/halo1.iso]`, is built as
+  step 1 only: it copies the disc's campaign maps unchanged to
+  `<data>/campaigns/halo1/source/` with a SHA-256 manifest. The goal is
+  for it to run the whole pipeline for every level and write the maps,
+  plus the campaign's level list (§4).
 
 ## 2. What each Halo 1 tag becomes
 
@@ -85,9 +89,10 @@ Each step is proven with tests; the user plays the result.
 
 1. **Import and read.** Recognise the Halo 1 disc (title ID `4D530004`),
    pull out its maps, decompress them, list their tags.
-   **Built:** `crates/h1map`, `h2 h1 info|tags`, `h2 import halo1`;
-   format in [h1-map-format.md](../formats/h1-map-format.md). Not yet
-   checked against a real disc.
+   **Built:** `crates/h1map`, `h2 h1 info|tags|bitmap|convert`,
+   `h2 import halo1`; format in
+   [h1-map-format.md](../formats/h1-map-format.md). The disc's multiplayer maps
+   are read and converted in tests ([h1-multiplayer.md](h1-multiplayer.md)).
 2. **Map builder.** Write a whole v8 map. Proof: read a retail Halo 2 map
    into a tag set, build it again, and check the result reads the same, tag
    by tag. **Built:** `map::build` and `tags::rebuild`
@@ -144,8 +149,9 @@ regenerates. For the Halo 1 campaign:
 - health packs (Halo 1 `eqip` with a health powerup) refill it on pickup;
 - the HUD draws a health meter under the shield meter.
 
-**Built** (tests only): the `h1-health` feature, on only for Halo 1
-levels through `boot::health::set_mode`. Where Halo 2 regenerates the body,
+**Built** (tests only): the `h1-health` feature and its switch,
+`boot::health::set_mode`. Nothing calls the switch yet, so the model is
+on only through the debug override. Where Halo 2 regenerates the body,
 how its own health powerup (`eqip` type 5) refills it, the HUD's body
 input, what the converter must write, and the debug switch
 `H2_HEALTH_MODEL=halo1`: [health.md](health.md).

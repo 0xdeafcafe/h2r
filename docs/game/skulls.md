@@ -16,7 +16,7 @@ Labels: **confirmed** means read from the retail XBE's instructions or the
 disc's scripts with this repo's tools (`h2 disasm`, `h2 hs`, `h2 strings`,
 an absolute-reference scan of the XBE); **likely** means strong evidence but
 not every path read; **community** means public knowledge, cited. Nothing
-here has been seen running.
+here has been seen running, apart from what the status lines above say was seen.
 
 ## What the game does
 
@@ -305,7 +305,7 @@ The multiplayer screen uses the same layout, picture and description.
 
 - **Strings** are served by the locale hook: the title, "Locked",
   15 + 6 names and descriptions from ids
-  `0x21fff000` up; the row labels with their state from `0x22fff000`
+  `0x21fff000` up; the row labels with their state from `0x23fff000`
   (three per skull). `is_ours` reads only the middle bytes, so both are
   clear of the `0x20fff0xx` ids the other rows and the `ui` model take.
   The row names are the game's (IWHBYD shortened; its description gives

@@ -101,7 +101,9 @@ path starting `t:\` or `w:\` becomes `<path>.map`; anything else becomes
 path into the options, so a level's map file is named by the basename of
 its record's path.
 
-The import writes Halo 1's converted maps to `<data>/campaigns/halo1/`.
+Halo 1's converted maps are to go in `<data>/campaigns/halo1/` (`h2 import
+halo1` only copies the source maps to its `source/` folder so far; no
+campaign level is converted yet).
 Choices:
 
 1. **The VFS serves them as `maps\<name>.map`** (chosen). The records keep

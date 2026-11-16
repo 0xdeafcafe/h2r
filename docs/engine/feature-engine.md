@@ -1,10 +1,14 @@
 # Feature engine (design; Phases 0 to 3 built, Phase 4 in part)
 
-Status: design, except Phase 0, the [first slice](#the-first-slice),
-Phase 1, the registry, Phase 2 (the differential harness, the leaves,
-`locale` sources, `record!` and the views) and Phase 3 (async entries, the
-UI views, our own list class; the Video screen on it), which are built ([below](#what-was-built)). No other
-crate, type or macro named here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
+Status: design, except what is built ([below](#what-was-built)): Phase 0
+(the [first slice](#the-first-slice)), Phase 1 (the registry), Phase 2 (the
+differential harness, the leaves, `locale` sources, `record!` and the
+views), Phase 3 (async entries, the UI views, our own list class; the
+Video screen on it), part of Phase 4 (rows on retail lists as data, the
+Skulls screen, the Controls row text), `render-timing` and the stage 7a
+view loop (`render_views`). No other crate, type or macro named here exists
+yet unless the text says so; `h2 features plan` and `h2 settings doc` are
+among those. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
 plain Rust against a Rust subsystem, is tested without the game, and cannot
@@ -698,9 +702,11 @@ from one reserved range; `b.locale().string(..)` hands out string ids
 from one private range, served by the Rust locale lookup (subsystem 0)
 or, until that is on, by one hook on each of the two lookups.
 
-**Visibility.** `h2 features plan` prints one line per point with its
-chain and which subsystems are native. A test pins that text for the
-default configuration.
+**Visibility.** (Design; not built as a command.) `h2 features plan` would
+print one line per point with its chain and which subsystems are native.
+Today `Plan::text` is that text: boot logs it as `feature plan:` lines, and
+a test pins it for the default configuration. There is no `h2 features`
+subcommand.
 
 ### Guest data access
 
@@ -1198,7 +1204,7 @@ runs under `cargo test -p <crate>`.
 | Render | `RecordingBackend`: same device call list with and without stages; a failing stage falls back |
 | Tape | record then replay through fake boundaries; a changed fingerprint refuses the film |
 | Installer | a `runtime` test with a synthetic generated module (as `lockstep::synthetic`): two parties on one point run in order; an implementation replaces the original; an async entry's awaits reach the fake guest functions and resume |
-| Docs | `h2 settings doc` and `h2 features plan` match the committed tables |
+| Docs | (design) `h2 settings doc` and `h2 features plan` match the committed tables; neither command exists yet, `Plan::text` has its golden test |
 
 What tests cannot show and the user checks in the game: that a point's
 signature is right, that a screen looks right, that a patched map plays.
@@ -1308,7 +1314,10 @@ All on tests; nothing here was run in the game.
   controller speaker with audio off).
 - `boot::setting_defs`: `graphics.fov`, `graphics.fps`,
   `graphics.render_scale`, `pad_speaker.enabled` and the proof row
-  `pad.mute_button`. `fov_setting.rs` and `video_setting.rs` are gone;
+  `pad.mute_button`. Added since: `graphics.lighting`, `steam_pad.speaker`,
+  `steam_pad.sensitivity`, `steam_pad.left_pad`, `live.visibility`,
+  `controls.aim_assist` and the `touch.*` keys (look, crouch, gyro,
+  look_accel, auto_fire). `fov_setting.rs` and `video_setting.rs` are gone;
   `SpeakerSetting` keeps only its router and HID plumbing; `boot::Host`
   carries one `Store`.
 - `boot::ui`: `Screen`, `Row`, `RowKind` (`Setting`, `Open`), `Extension`,
@@ -1318,7 +1327,7 @@ All on tests; nothing here was run in the game.
   speaker row's retail string ids), not in a crate of its own.
 - `h2 settings list|get|set`, `h2 play --set key=value`. `h2 settings doc`
   is not built.
-- Not done from the design's settings section: the other `H2_*` variables
+- Not done from the design's settings section: most other `H2_*` variables
   are not `Def`s yet, and `d3d` still reads `H2_RENDER_SCALE` itself for
   `h2 run`.
 
@@ -1330,7 +1339,12 @@ All on tests; nothing here was run in the game.
   doc page), `Global`, and the `points!` and `globals!` macros. The table
   holds what phase 1 hooks: `GAME_TICK`, `GAME_ACTIVATE`, `GAME_END`,
   `PLAYER_KILLED`, `WEAPON_FIRE` and `DAMAGE_REPORT` (optional), `LOCALE_FIND` (hot), and the
-  globals `GAME_GLOBALS` and `GAME_TIME`. The macro grammar is
+  globals `GAME_GLOBALS` and `GAME_TIME`. Points added by later features
+  (all with a doc page): `OBJECT_DAMAGE_UPDATE` and `BODY_RESTORE`
+  (health), the campaign menu's `CAMPAIGN_LEVEL_LIST`, `CAMPAIGN_START`,
+  `NEXT_LEVEL`, `PROGRESS_RAISE`, `LAST_LEVEL_SET`, `LEVEL_SELECT_NEW`,
+  `PROGRESS_MAX` and `SCREEN_REQUEST`, and the aim assist's
+  `PLAYER_CONTROL_UPDATE` and `AIM_ASSIST_PARAMS`. The macro grammar is
   `NAME @ 0x...: [fn(arg: loc, ..) -> loc ret n] | [opaque], Hot, Optional; "docs/page.md";`
   with `stack n` as the n-th dword argument. Telemetry's layout, the level
   boot and lockstep read these instead of their own copies. A test fails
@@ -1555,7 +1569,7 @@ the game exercises is the Video screen, so it is the one to play-test.
   the Video branches in the Controls row text and row chosen hooks, the
   header id swap, and the "h2r video settings" string. The Settings row
   itself is still a hook on the retail Settings list (step c territory).
-  The Skulls screen keeps the old way; it is the next to move.
+  The Skulls screen kept the old way at this point; it moved in phase 4.
 - **Limits.** Six rows (the Controls item widgets); more are cut, with a
   line. Opening a screen from one of ours is not wired (an `Open` row
   logs). Nothing has measured the entries' cost; they run only on menu
@@ -1577,7 +1591,8 @@ Tests only; nothing here was run in the game.
   `Call::answer_async`.
 - **The Skulls screen** is our list class (`boot::skulls_screen`), now a
   page between the difficulty and the level: one `before` hook on the
-  difficulty press opens it, and its Start replays that press
+  difficulty press opens it, and A, X or Start on the page closes it and
+  runs the kept press once the difficulty screen is on top again
   (docs/game/skulls.md "Menu"). Its row on the difficulty list, two plan
   hooks, is gone. Gone from `layout_glue`: the
   Skulls open flag, its array-name test, the header hook (`0x22fda6`) and
@@ -1605,7 +1620,12 @@ Tests only; nothing here was run in the game.
 - **Open rows** open another screen of ours: classes register their loader
   by screen id (`list_class::loader_of`), and a press on an `Open` row
   calls `0x149f1e(1 << player, loader)` for the pressing player.
-- **`layout_glue.rs`** is down from 1,929 to about 1,700 lines; what is
+  Later screens of ours use the class too: the campaign picker
+  (`campaign_menu`), the Live sign-in screen
+  (`signin_screen`) and the co-op lobby, friends and join
+  screens (`coop_live`).
+- **`layout_glue.rs`** went from 1,929 to about 1,700 lines in this phase (about
+  2,000 now, with later rows); what is
   left is the layouts, the Live menu's rows, the shared list hooks (the datum array constructor,
   the pane, the screen tag, the text set), the smaller Controls screen's
   speaker row, the added item widgets and the camera's field of view (it

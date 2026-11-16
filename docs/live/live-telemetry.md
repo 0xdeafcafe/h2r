@@ -2,7 +2,8 @@
 
 `crates/live-telemetry` observes the retail game state described in
 [live-gamestate.md](live-gamestate.md) and produces the events and frames in
-[live-api.md](live-api.md). It is opt-in and defaults to off. The crate does
+[live-api.md](live-api.md). It is on when Live is on or `H2_TELEMETRY_FILE` is
+set ([Server ingest](#server-ingest)), and `H2_TELEMETRY=0` turns it off. The crate does
 not change guest state or return telemetry failures to the game.
 
 ## Sampling and hooks

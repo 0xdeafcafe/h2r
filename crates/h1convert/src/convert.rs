@@ -4,8 +4,7 @@
 //!
 //! [`prepare`] does everything that needs no MOPP code and reports it;
 //! [`Prepared::build`] writes the map from it with given MOPP bytes;
-//! [`convert`] is both, taking the MOPP code from [`structure_mopp`], and so
-//! refuses to make a map until the MOPP writer is merged.
+//! [`convert`] is both, taking the MOPP code from [`structure_mopp`].
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Seek};

@@ -26,7 +26,7 @@ an in-engine cinematic: the full 3D level renderer runs (BSP, characters,
 shadow maps, cinematic lighting), but there is no player control. The
 first level with control is the Armory (`01a_tutorial`), and nothing
 reaches it yet: the intro has to finish and queue the next map
-(level-preflight.md, risk 1). Simulation, AI and physics load will be
+(docs/runtime/level-preflight.md, risk 1). Simulation, AI and physics load will be
 higher in real gameplay. Rendering load may differ either way.
 
 The window is presents 4220-4520: 300 frames, 36 s of wall time on
@@ -54,13 +54,13 @@ Three views of the same run:
   `slice` span into guest code, accessors, x87 and dispatch.
 
 `H2_GFX_MERGE_PASSES=1` is on in every run. Without it the backend
-encodes and submits a pass per draw, which BOOT.md measures at about 3x
+encodes and submits a pass per draw, which docs/runtime/BOOT.md measures at about 3x
 slower on the menu. On master, `h2 play` never merged: the variable was
 only read for `H2_BOOT_GFX`'s headless backend. So the user's `h2 play`
 numbers include a submit per draw. This branch makes `h2 play` honour
 `H2_GFX_MERGE_PASSES=1` too (opt-in, because a few edge pixels differ).
 Merged passes have since become the default for both, matching one pass
-per draw on the menu (graphics.md, "Merged passes"), so
+per draw on the menu (docs/graphics/graphics.md, "Merged passes"), so
 `H2_GFX_MERGE_PASSES=1` no longer changes anything.
 
 ## What a level frame is
@@ -227,7 +227,7 @@ Steady frame p50 71.6 ms, p99 81.5, max 721.
 | 0 | **Merged passes in `h2 play`** (`H2_GFX_MERGE_PASSES=1`, this branch): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
 | 1 | **Compile pipelines off the game thread, and prewarm them** (done: docs/graphics/graphics.md "Pipeline compiles"; draws wait at encode rather than being skipped). Create nv2a programs and render pipelines on a worker. Until one is ready, skip the draw for a frame or two, or block only on a deadline. Persist the keys seen (program hash plus pipeline key) and compile them at map load. Metal's own cache already makes a repeat compile ~5 ms (frame 4256), so the hitch is the first time a material or angle appears. | gfx, d3d nv2a | **721 -> ~80 ms** (-640): the only hitch over 110 ms in either run | ~2 | high: 665 of 721 ms is `pipeline create` |
 | 2 | **FASTMEM on by default** once its P1 is fixed (with `H2_ACCESS_COUNT`) | runtime, emit | follows p50 | **-35 to -40** (119 -> 75 measured, with a load difference) | high: measured |
-| 3 | **Fast exact FYL2X/F2XM1.** A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
+| 3 | **Fast exact FYL2X/F2XM1** (done: [x87-transcendentals.md](../lifter/x87-transcendentals.md); both first passes are table-driven now). A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
 | 4 | **Render thread:** hand recorded draws to a thread that encodes and submits (the `render-thread` lane). The game thread keeps the D3D resolve. | gfx-perf | follows p50 | **-10 to -12** of game-thread time (encode 12.5 + submit 2.1, minus the handoff) | medium: the GPU must keep up in parallel, and readbacks still sync |
 | 5 | **Render-to-texture write-back without round trips:** 3.6 readbacks a frame (depth decoded on the CPU), 3.3 ms of surface writes, `D3DSWAP_FINISH`'s full wait | d3d, gfx-perf | removes gpu-wait spikes (up to 31 ms in the loaded run) | -5 to -7 | medium: the RTT-direct work on master is the start |
 | 6 | **Guest code and dispatch:** IR passes (flags, dead stores, register promotion), cheaper `handler::execute`/resolve, close the remaining fallback-interpreter targets | codegen-opt, runtime, analyze | follows p50 | -8 to -12 of ~33 (guest 24.5, dispatch 6.1, fallback 2.5) | low: the profile is flat, top guest function 2.2% |
@@ -414,7 +414,7 @@ the 116 us measured. The three targets that move it most, in order:
 |---|---|---|---|---|---|
 | 1 | **Take the read-backs off the frame's critical path, then turn the render thread on.** 3-4 `read_surface`/`read_depth` and the pixel counters drain the queue and wait for the GPU every frame. Keep render-to-texture and depth-alias results on the GPU when only the GPU samples them, and write a level back to guest memory only when the guest's CPU really touches it (a write-watch or fault on those pages, the way FASTMEM tracks writes). Decode depth on the GPU. Answer pixel counts from a report that has already landed, where the guest polls rather than blocks. With nothing to wait for, the render thread overlaps all of the wgpu work. | d3d, gfx-perf | **-17 to -20** sync and render thread together (12.3 of round trips and ~8 of per-draw wgpu off the game thread): ~65 -> ~45-48 ms p50 | game-thread slope from ~110 to ~45 us per draw (guest plus HLE only) | medium: the waits are measured; the hard part is proving which write-backs the guest never reads on the CPU |
 | 2 | **Cut wgpu's per-draw CPU cost** (38 us per draw in `queue submit`, 13 in `record`, 3 in prepare). Persistent mapped rings instead of a `queue.write_buffer` per flush, which shows as `madvise` and memmove churn. Bind groups and uniforms cached across frames. Fewer pipeline and state switches per merged pass. Find what came in after 9a39ed7 that took `submit` from 2.1 to 7.1 ms. | gfx-perf | -5 to -8 on the sync path. With the render thread, this bounds its throughput rather than the game thread | -15 to -25 (54 -> ~25 us per draw) | medium: the time is in wgpu-core's `command_encoder_finish` and Metal's encoder setup |
-| 3 | **Guest per-draw and fixed work:** native SSE scalar and packed ops instead of the `h2s_*` soft-float helpers (3.3 ms; the x87-native pattern), `h2_fast_copy` as a host memcpy on FASTMEM RAM (3.9 ms), and in the D3D per-draw entry, FxHash or a generation counter instead of SipHash in `dirty_since`, and stream copies without the `read_vec` allocation (6.0 ms). | codegen-opt, runtime, d3d | -7 to -10 | -10 to -14 (the guest and HLE slope is ~40 us per draw) | medium for SSE and copies (the same pattern as x87 and FASTMEM), low for HLE |
+| 3 | **Guest per-draw and fixed work** (native SSE, the REP copy and `dirty_since` parts are done: [performance.md](performance.md#guest-cpu-sse-rep-copies-and-d3d-entry-2026-11-15)): native SSE scalar and packed ops instead of the `h2s_*` soft-float helpers (3.3 ms; the x87-native pattern), `h2_fast_copy` as a host memcpy on FASTMEM RAM (3.9 ms), and in the D3D per-draw entry, FxHash or a generation counter instead of SipHash in `dirty_since`, and stream copies without the `read_vec` allocation (6.0 ms). | codegen-opt, runtime, d3d | -7 to -10 | -10 to -14 (the guest and HLE slope is ~40 us per draw) | medium for SSE and copies (the same pattern as x87 and FASTMEM), low for HLE |
 
 From 64.8 ms p50: -18, -6, -8 is **~33 ms**. That is at the 30 fps
 line for this scene, with no margin for host noise or a wider view. The
@@ -512,7 +512,7 @@ the signal that does not depend on load: 1 a frame at 9a39ed7 and
 b9c05ec with merged passes, 200 from 38cd3f7 on. 38cd3f7 made merged
 passes the default and gave each draw that can `discard` (every
 alpha-tested draw) a render pass of its own, for exactness on Apple GPUs
-(graphics.md, "Merged passes"). Each render pass is two Metal command
+(docs/graphics/graphics.md, "Merged passes"). Each render pass is two Metal command
 buffers and a render encoder in wgpu 30: about 40-75 us of CPU a pass,
 in Metal's encoder setup and command-buffer commit and teardown. The
 compile workers (6f95526), the render thread and the W-buffer change
@@ -532,7 +532,7 @@ draw, all in):
 The fast rule (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
 after a partly masked draw. It was off by default at first because the
 merge self-check finds a few edge pixels off in a level frame
-(graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
+(docs/graphics/graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
 restores the rule measured as "merged" above.
 One run of The Heretic with it on (presents 4220-4520, cold pipeline
 cache, `H2_GFX_MERGE_CHECK=4216`, otherwise the command above) met a load

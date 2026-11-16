@@ -343,6 +343,8 @@ debugger or an x87 implementation reading `X87Abi` sees these values.
 | `h2gen_module_abi_version` | `uint32_t (void)` | the registration object's own probe |
 | `h2gen_module` | `const H2GenModule` | the tables below |
 
+On Windows (`H2_EMIT_TARGET=windows`) the DLL exports only symbols marked `H2_EXPORT` (h2abi.h): `h2gen_module`, `h2gen_module_abi_version` and the bridges' install functions. A macOS dylib exports every global, and `H2_EXPORT` is empty there.
+
 ```c
 typedef struct H2GenEntry  { uint32_t addr, kind; H2Handler fn; uint32_t (*abi_version)(void); } H2GenEntry;
 typedef struct H2GenResume { uint32_t pc, owner, start; } H2GenResume;

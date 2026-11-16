@@ -202,9 +202,8 @@ UI's render pass. The math (camera, rays, picking, rotation) and the
 renderer have unit and headless-GPU tests.
 
 The BSP walk repeats `cli::live_geometry::bsp_triangles` in a few lines
-(the CLI crate is a binary with many dependencies). `crates/viewer` is
-also binary-only. Moving both into a small shared library would let the
-editor draw object render models too.
+(the CLI crate is a binary with many dependencies). Object models come
+from `tags::object` (editor.md, "What the viewport shows").
 
 ## 5. How a patched map reaches the game
 

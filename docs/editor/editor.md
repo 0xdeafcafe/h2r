@@ -98,7 +98,7 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
-Cmd/Ctrl+D duplicate, Delete delete, F focus, Home frame all, W/E gizmo
+Cmd/Ctrl+D duplicate, Delete or Backspace delete, F focus, Home frame all, W/E gizmo
 mode; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
 opens it.
 
@@ -438,12 +438,16 @@ studio crate only draws them and turns input into actions.
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
     turns input into `Action`s and draws `App`. `ui/variants.rs` and
     `ui/playlists.rs` draw the other two tools.
+  - `app/convert.rs`: Convert to Halo 2 (the background conversion and
+    its plain-words errors).
   - `viewport.rs`: the viewport texture (`register_external_texture`),
     camera input, picking and the gizmo.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon
     subset merged in; Dear ImGui 1.92 rasterises at the framebuffer scale,
     so text is crisp on HiDPI).
   - `headless.rs`: renders real frames of the UI offscreen and writes PNGs.
+  - `script.rs`, `probe.rs`: the `--do` steps and the widget lookup behind
+    them (below).
 
 ## Headless screenshots
 
@@ -460,10 +464,12 @@ last. The flags that set the scene up:
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |
 | `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
+| `--convert h2\|h1` | with `--halo1-map`, run Convert to Halo 2 with that sandbox, wait for it and open the result (writes under `--data`) |
+| `--overlay on\|off` | switch the Halo 1 overlay |
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | focus the camera on the selection |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool variants\|playlists` | show that tool |
+| `--tool scenario\|variants\|playlists` | show that tool |
 | `--variant <n>` | open built-in variant `n` |
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |

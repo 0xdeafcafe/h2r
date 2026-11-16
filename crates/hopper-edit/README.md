@@ -13,4 +13,5 @@ by `h2-editor`'s playlist tool (`crates/studio`):
   the picker's sources, reading and writing both forms of the file.
 - `fixture`: invented test data (no game data).
 
-See docs/editor/editor.md ("The hopper tool") and docs/live/live-admin.md.
+See [docs/editor/editor.md](../../docs/editor/editor.md) ("Playlists") and
+[docs/live/live-admin.md](../../docs/live/live-admin.md).

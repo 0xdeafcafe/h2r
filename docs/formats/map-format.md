@@ -933,7 +933,7 @@ a weapon's bounding radius field was changed, tag-name offsets were rebuilt,
 and the saved map re-opened with a matching checksum. Its output lives only
 under session `$TMPDIR`.
 
-Validation: `cargo test -p map -p tags` (292 synthetic tests, one retail test
+Validation: `cargo test -p map -p tags` (synthetic tests; the retail tests are
 ignored by default); the explicit retail test above (30 maps / 30 edits);
 `cargo clippy -p map -p tags --no-deps --all-targets -- -D warnings`; and
 `cargo check --workspace --all-targets`. Commands use

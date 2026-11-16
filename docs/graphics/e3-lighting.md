@@ -486,12 +486,11 @@ the layer number is the pass tag, and the dynamic-light layers are 10 to 13
   size but with no research left in its first half.
 - **Before phase 5:** trace the light passes' vertex constants (cone, range,
   falloff, gel) and layer 14. About a week, static.
-- **Phase 3 (viewer prototype) can start now.** It does not depend on any of
-  this, and the finding that retail has no shadow-volume path means the
-  volumes-against-maps question is open on its merits.
-- **Phase 1** stays the cheapest visible step: shadow buffers are layer 10
-  into target 9 or 10, sampled with `GREATER` on layer 11, which the view can
-  scale and force to one tap without guest changes. Built: "Phase 1 as
+- **Phase 3 (viewer prototype) is done**: shadow maps, one tap (see "Phase
+  3: shadow prototype").
+- **Phase 1** was the cheapest visible step: shadow buffers are layer 10
+  into target 9 or 10, sampled with `GREATER` on layer 11, which the view
+  scales and forces to one tap without guest changes. Built: "Phase 1 as
   built" below.
 
 ## Phase 1 as built
@@ -882,7 +881,7 @@ Risks, largest first:
 6. **Geometry quality** for volumes: open meshes, alpha-tested casters,
    level-of-detail switches changing silhouettes.
 7. **Cost.** The view already costs a second backend. Volumes add fill, and
-   the buffers add memory at 4K. A CPU-bound runtime at 5-6 fps on the menu
+   the buffers add memory at 4K. A CPU-bound runtime at 11-16 fps on the menu
    has other priorities first; this sits behind 30 fps.
 8. **Expectation.** The result will be a new renderer's idea of the E3 look
    on retail content. It should be described that way to users.
