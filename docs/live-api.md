@@ -324,7 +324,8 @@ Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `custom`, also `hopper` or `ranked`), and optional `hopper_id`, `map`, `name`,
 `language`. Attribute values are `{type: "integer", value: <u64>}`,
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
-`{type: "null"}`. The ID's datatype bits must agree. Limits are 16 total slots,
+`{type: "null"}`, and optional `visibility` (`public`, the default and
+omitted on the wire; `friends`; `invite`). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
 rejected; addresses must be unicast IPv4 and ports 1..65529.
@@ -360,9 +361,19 @@ without a ping or changed session event produces a server-signed
 from the last recorded event. Deleted/expired sessions remain readable by ID
 and replay from the log, but are absent from the default list.
 
+Lists show a session only to the readers its visibility allows: `public` to
+everyone, `friends` to the host and the host's friends, `invite` to the host
+alone. The reader is the account of an optional `read` bearer (checked when
+present, even on a public server); without one, only public sessions. A
+listed session must also be listable: its endpoint was observed, or its
+declared address is a local-network one. When a listed session is created
+from a non-loopback IPv4, the observed address replaces any declared one
+([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
+ID ignores visibility. `SessionUpdated` may also set `visibility`.
+
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
-(author or canonical gamertag), and `attributes` (URL-encoded JSON with exact
-value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
+(author or canonical gamertag), `visibility`, and `attributes` (URL-encoded
+JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.

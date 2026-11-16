@@ -35,6 +35,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::custom_games;
 use crate::fov_row;
 use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::speaker_row;
@@ -432,6 +433,19 @@ fn open_video(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32) -> Result<Transfer
     })
 }
 
+/// In place of a row-chosen call (`ret 8`): open the screen of `loader`
+/// for `mask` through `0x149f1e`, then return to the caller.
+fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: &'static str) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let ret_pc = mem.u32(cpu.esp)?;
+    cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
+    push(&mut mem, cpu, loader)?;
+    push(&mut mem, cpu, mask)?;
+    eprintln!("{note}");
+    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| Ok(TransferAbi::ret(ret_pc)))
+}
+
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<OriginalHandler>> {
     let o = rt.resolve_original(addr);
     if o.is_none() {
@@ -485,7 +499,8 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
     let video_index = model.as_ref().and_then(|m| m.index_of(List::Controls, &RowKind::Open(video_screen::SCREEN)));
     let with_video = video_index.is_some();
     let video_index = video_index.unwrap_or(-1);
-    if !layouts && !with_speaker && !with_video {
+    let with_custom_games = custom_games::row_enabled();
+    if !layouts && !with_speaker && !with_video && !with_custom_games {
         return Ok(());
     }
     let model = model.unwrap_or_else(|| {
@@ -507,6 +522,9 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
         if with_video {
             served.push((VIDEO_LIST_NAME_ID, video_screen::LIST_NAME_TEXT));
+        }
+        if with_custom_games {
+            served.push((custom_games::TEXT_ID, custom_games::TEXT));
         }
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
@@ -533,6 +551,7 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
     ];
     let fov_hooks = [fov_row::PLAYER_FOV];
     let controls_hooks = [speaker_row::ADD_ITEMS];
+    let custom_games_hooks = [custom_games::ROW_TEXT, custom_games::ROW_CHOSEN];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -544,6 +563,7 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
         .chain(video_hooks.into_iter().filter(|_| with_video))
         .chain(text_hooks.into_iter().filter(|_| layouts || with_video))
         .chain(controls_hooks.into_iter().filter(|_| extra_rows > 0))
+        .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
         wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
@@ -588,6 +608,7 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                     }
                 }
                 let n = video_screen::list_count(&model, name, n);
+                let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -1010,6 +1031,41 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                     cpu.xmm[0][..4].copy_from_slice(&out.to_bits().to_le_bytes());
                     Ok(())
                 })
+            });
+        }
+        // The Xbox Live menu's "Custom Games" row (crate::custom_games): our
+        // label on row 4, and a press on it opens the System Link browser in
+        // its Live mode. Rows 0 to 3 go to the originals.
+        if let Some(o) = originals.remove(&custom_games::ROW_TEXT) {
+            let seen = AtomicBool::new(false);
+            d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                if video_screen::text_row(&*mem, cpu.esp) != Some(custom_games::ROW) {
+                    drop(mem);
+                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_TEXT));
+                }
+                announce(&seen, "custom games: row text");
+                let item = mem.u32(cpu.esp + 4)?;
+                row_texts(cpu, ctx, &mut mem, item, vec![(0, custom_games::TEXT_ID)])
+            });
+        }
+        if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
+            let seen = AtomicBool::new(false);
+            d.register_override(custom_games::ROW_CHOSEN, "custom-games:row-chosen", move |cpu, ctx, _| {
+                let (row, mask) = {
+                    let mem = ctx.runtime().memory();
+                    (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
+                };
+                if row != Some(custom_games::ROW) {
+                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
+                }
+                announce(&seen, "custom games: row chosen");
+                let Some(mask) = mask else {
+                    eprintln!("custom games: no local player for the press; not opened");
+                    return ctx.runtime().memory().ret(cpu, 8);
+                };
+                open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }
         // Our strings.

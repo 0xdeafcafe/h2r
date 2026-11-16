@@ -36,14 +36,21 @@ impl Live {
             return Err(forbidden("a session host must be an account"));
         };
         new.validate().map_err(invalid)?;
-        let addr = new
-            .addr
-            .or_else(|| {
-                observed.and_then(|ip| match ip {
-                    IpAddr::V4(v) => Some(v),
-                    _ => None,
-                })
-            })
+        let seen = observed.and_then(|ip| match ip {
+            IpAddr::V4(v) => Some(v),
+            _ => None,
+        });
+        // A listed session draws every browsing console's discovery probes
+        // to its address, so off-loopback it is the address the host
+        // connected from, whatever was declared. A declared address is kept
+        // otherwise, and lists show the session only if that address is a
+        // local-network one (Endpoint::listable, docs/live-custom-games.md).
+        let declared = match seen {
+            Some(v) if new.visibility.is_listed() && !v.is_loopback() => None,
+            _ => new.addr,
+        };
+        let addr = declared
+            .or(seen)
             .ok_or_else(|| invalid("an IPv4 endpoint is required"))?;
         if addr.is_unspecified() || addr.is_multicast() || addr.is_broadcast() || new.port > 65529 {
             return Err(invalid("invalid gameplay endpoint"));
@@ -87,7 +94,7 @@ impl Live {
             endpoint: Endpoint {
                 addr,
                 port: new.port,
-                source: if new.addr.is_some() {
+                source: if declared.is_some() {
                     "declared"
                 } else {
                     "observed"
@@ -306,7 +313,7 @@ pub(crate) async fn list(
     headers: HeaderMap,
     Query(q): Query<BTreeMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    live.authorize_read(crate::http::bearer(&headers))?;
+    let viewer = live.read_caller(crate::http::bearer(&headers))?;
     let limit = q
         .get("limit")
         .map(|v| v.parse::<usize>())
@@ -346,6 +353,9 @@ pub(crate) async fn list(
                     a.iter()
                         .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
                 })
+                && q.get("visibility")
+                    .is_none_or(|v| v == s.advertisement.visibility.as_str())
+                && s.listed_for(viewer, |a, b| state.is_friends(a, b))
         })
         .take(limit + 1)
         .cloned()

@@ -18,7 +18,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use tower::ServiceExt;
 fn new() -> NewSession {
     NewSession {
-        addr: Some("192.0.2.4".parse().unwrap()),
+        // A local-network address: a declared internet one would not be
+        // listed (session_visibility.rs).
+        addr: Some("192.168.2.4".parse().unwrap()),
         port: 3074,
         host_address: vec![0; 36],
         slots: Slots {
@@ -32,6 +34,7 @@ fn new() -> NewSession {
         map: Some("synthetic".into()),
         name: Some("Test lobby".into()),
         language: Some("en".into()),
+        visibility: Default::default(),
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {

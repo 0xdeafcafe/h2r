@@ -395,6 +395,17 @@ impl State {
     pub fn local_sessions(&self) -> Vec<crate::sessions::LocalSession> {
         self.sessions.snapshot()
     }
+    pub fn set_session_visibility(&mut self, v: crate::sessions::Visibility) {
+        let session = self.session();
+        self.sessions
+            .set_visibility(v, self.service.as_ref(), session.as_ref());
+    }
+    pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
+        self.sessions.set_probe(probe);
+    }
+    pub fn session_visibility(&self) -> crate::sessions::Visibility {
+        self.sessions.visibility()
+    }
     pub fn local_teams(&self) -> live_proto::team::Store {
         self.teams.store.clone()
     }

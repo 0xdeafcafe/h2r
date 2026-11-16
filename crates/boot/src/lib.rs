@@ -11,6 +11,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
@@ -587,6 +588,11 @@ pub fn run_hosted_with_live(
         None => None,
     };
     layout_glue::install(&loaded.runtime, model).context("installing the button layouts")?;
+    // The party privacy as the Live session's visibility, and the Live
+    // menu's Custom Games row (registered with the layouts above;
+    // docs/live-custom-games.md).
+    custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
+        .context("installing the Live game visibility")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/level-boot.md).

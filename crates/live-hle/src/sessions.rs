@@ -17,7 +17,9 @@ const STRING: u32 = 0x00100000;
 const BLOB: u32 = 0x00200000;
 const NULL: u32 = 0x00f00000;
 
-pub use live_proto::session::{AttributeValue as SessionAttributeValue, Slots as SessionSlots};
+pub use live_proto::session::{
+    AttributeValue as SessionAttributeValue, Slots as SessionSlots, Visibility,
+};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAttribute {
     pub id: u32,
@@ -41,6 +43,9 @@ pub struct LocalSession {
     pub slots: SessionSlots,
     pub attributes: BTreeMap<u32, SessionAttributeValue>,
     pub revision: u64,
+    /// Who finds it in the server's lists (and so in the custom games
+    /// browser): the host's setting when it was last advertised.
+    pub visibility: Visibility,
 }
 struct Record {
     session: LocalSession,
@@ -98,7 +103,17 @@ pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
+    /// The host's visibility setting, for new and updated advertisements.
+    visibility: Visibility,
+    /// Visibility updates sent outside a guest task; dropped once answered.
+    background: Vec<Pending>,
+    /// Reads the title's own party privacy, when the embedder knows where it
+    /// is; it wins over the setting when a lobby is advertised.
+    probe: Option<VisibilityProbe>,
 }
+/// Reads the host's visibility out of guest memory (boot: the squad
+/// session's privacy), or None when there is none to read.
+pub type VisibilityProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Visibility> + Send + Sync>;
 enum Failure {
     Fault(GuestFault),
     Hr(u32),
@@ -115,6 +130,43 @@ fn hr<T>(value: u32) -> Result<T> {
 impl Sessions {
     pub fn snapshot(&self) -> Vec<LocalSession> {
         self.records.values().map(|r| r.session.clone()).collect()
+    }
+    /// The host's visibility setting changed: new advertisements carry it,
+    /// and open ones are updated now (a signed `SessionUpdated`), so a lobby
+    /// can be opened to the browser or closed to it while it waits.
+    pub fn set_visibility(
+        &mut self,
+        v: Visibility,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.visibility = v;
+        self.background.retain(|p| p.take().is_none());
+        for (id, record) in &mut self.records {
+            if record.session.visibility == v {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        visibility: Some(v),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.visibility = v;
+        }
+    }
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+    pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
+        self.probe = probe;
     }
     pub fn clear(&mut self) {
         self.records.clear();
@@ -206,6 +258,9 @@ impl Sessions {
                     m.check(p[5] + i * 16 + 4, 4, Access::Write, 1)?;
                 }
                 let slots = slots(p);
+                if let Some(v) = self.probe.as_ref().and_then(|probe| probe(m)) {
+                    self.visibility = v;
+                }
                 let (id, key, mut session) = if op == Op::Create {
                     if self.records.len() >= MAX_SESSIONS {
                         return hr(OUT_OF_MEMORY);
@@ -221,6 +276,7 @@ impl Sessions {
                             slots,
                             attributes: BTreeMap::new(),
                             revision: 0,
+                            visibility: self.visibility,
                         },
                     )
                 } else {
@@ -231,6 +287,7 @@ impl Sessions {
                     (id, record.key, record.session.clone())
                 };
                 session.slots = slots;
+                session.visibility = self.visibility;
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -262,6 +319,13 @@ impl Sessions {
                             update: live_proto::session::Update {
                                 slots: Some(data.slots),
                                 attributes: Some(data.attributes),
+                                // Only a change is sent, so a server that
+                                // predates visibility sees the same updates.
+                                visibility: self
+                                    .records
+                                    .get(&id)
+                                    .is_none_or(|r| r.session.visibility != self.visibility)
+                                    .then_some(self.visibility),
                                 ..Default::default()
                             },
                         }
@@ -623,6 +687,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         map: None,
         name: None,
         language: None,
+        visibility: s.visibility,
     }
 }
 fn wire_id(s: &str) -> Option<[u8; 8]> {
