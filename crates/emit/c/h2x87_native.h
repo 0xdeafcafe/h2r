@@ -6,8 +6,21 @@
 #if H2_X87_NATIVE
 #include <math.h>
 /* The host-mode guard must precede arithmetic even when host traps are
- * enabled. Strict operations prohibit speculative FP across that guard. */
-#pragma STDC FENV_ACCESS ON
+ * enabled. Strict FP (FENV_ACCESS) would forbid speculation, but LLVM
+ * never inlines a strict-FP function into the non-strict generated
+ * handlers, so every operation became a real call. Instead the operands
+ * pass through an empty volatile asm placed after every guard: no FP
+ * operation can be evaluated before the checks have passed, and past them
+ * the host is round-to-nearest with traps masked, the environment the
+ * non-strict compiler assumes. Bit moves (h2x87n_double) are not FP. */
+#if defined(__aarch64__)
+#define H2X87N_BARRIER(x) __asm__ volatile("" : "+w"(x))
+#elif defined(__x86_64__)
+#define H2X87N_BARRIER(x) __asm__ volatile("" : "+x"(x))
+#else
+#define H2X87N_BARRIER(x) __asm__ volatile("" : "+m"(x))
+#endif
+#define H2X87N_FAST __attribute__((always_inline))
 
 static inline unsigned h2x87n_phys(const X87Abi *s, unsigned i) {
     return ((s->status >> 11) + i) & 7u;
@@ -41,7 +54,7 @@ static inline void h2x87n_put(X87Abi *s, unsigned p, uint64_t b) {
 /* Accept only canonical zero or a normal exact double with unbiased
  * exponent in [-400,400]. Low ext80 precision bits must actually be zero;
  * PC=53 alone says nothing about loads/constants/previous PC=64 results. */
-static inline int h2x87n_get(const X87Abi *s, unsigned p, double *out) {
+static inline H2X87N_FAST int h2x87n_get(const X87Abi *s, unsigned p, double *out) {
     uint64_t m; uint16_t se;
     if (!h2x87n_live(s, p)) return 0;
     memcpy(&m, s->st[p], 8); memcpy(&se, s->st[p] + 8, 2);
@@ -54,7 +67,7 @@ static inline int h2x87n_get(const X87Abi *s, unsigned p, double *out) {
     b |= (m >> 11) & UINT64_C(0xfffffffffffff);
     *out = h2x87n_double(b); return 1;
 }
-static inline int h2x87n_host_mode(void) {
+static inline H2X87N_FAST int h2x87n_host_mode(void) {
 #if defined(__aarch64__)
     uint64_t fpcr;
     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
@@ -67,7 +80,7 @@ static inline int h2x87n_host_mode(void) {
     return 0;
 #endif
 }
-static inline int h2x87n_mode(const X87Abi *s) {
+static inline H2X87N_FAST int h2x87n_mode(const X87Abi *s) {
     /* Every mask set, PC=53, RC=nearest, no pending exception. Check the
      * host rounding mode too; this reads FPCR/MXCSR. All
      * nonzero intermediates in the arithmetic proof are normal, so host
@@ -128,7 +141,7 @@ static inline uint32_t h2x87n_xch(X87Abi *s, uint32_t i) {
     /* Tag classification and stack faults belong to the reference. */
     return h2x87_v1_xch(s, i);
 }
-static inline uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
+static inline H2X87N_FAST uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
     double a, b, q, err;
     unsigned p = h2x87n_phys(s, dst);
     if (!h2x87n_mode(s) || !h2x87n_get(s, p, &a)) goto slow;
@@ -143,9 +156,11 @@ static inline uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32
         unsigned e = (unsigned)((src >> 52) & 0x7ffu);
         if (e < 1023 - 400 || e > 1023 + 400) goto slow;
         b = h2x87n_double(src);
-    } else if (kind == 3) b = (double)(int16_t)src;
+    } else if (kind == 3) b = (double)(int16_t)src; /* exact, no flags */
     else if (kind == 4) b = (double)(int32_t)src;
     else goto slow;
+    H2X87N_BARRIER(a);
+    H2X87N_BARRIER(b);
     unsigned code = op & 0xffu;
     if (code == 2 || code == 5) { double t = a; a = b; b = t; }
     if (code <= 2) {
@@ -158,7 +173,7 @@ static inline uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32
         q = a * b;
         err = __builtin_fma(a, b, -q);
     } else {
-        if (b == 0.0) goto slow;
+        if (!(h2x87n_bits(b) << 1)) goto slow; /* +-0: no FP compare */
         q = a / b;
         err = __builtin_fma(-q, b, a);
         if (b < 0.0) err = -err;
@@ -171,30 +186,33 @@ static inline uint32_t h2x87n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32
 slow:
     return h2x87_v1_arith(s, op, dst, kind, src);
 }
-static inline uint32_t h2x87n_unary(X87Abi *s, uint32_t op) {
+static inline H2X87N_FAST uint32_t h2x87n_unary(X87Abi *s, uint32_t op) {
     double a;
     unsigned p = h2x87n_phys(s, 0);
-    if (op != 0 || !h2x87n_mode(s) || !h2x87n_get(s, p, &a) || a < 0.0)
+    if (op != 0 || !h2x87n_mode(s) || !h2x87n_get(s, p, &a) ||
+        (h2x87n_bits(a) >> 63 && h2x87n_bits(a) << 1))
         return h2x87_v1_unary(s, op);
+    H2X87N_BARRIER(a);
     double q = __builtin_sqrt(a), err = __builtin_fma(q, q, -a);
     h2x87n_put(s, p, h2x87n_bits(q));
     s->status = h2x87n_status(s->status, err != 0.0, err > 0.0);
     return H2X87_OK;
 }
-static inline uint32_t h2x87n_st_f64(X87Abi *s, uint32_t i, uint64_t *value, uint16_t *sw) {
+static inline H2X87N_FAST uint32_t h2x87n_st_f64(X87Abi *s, uint32_t i, uint64_t *value, uint16_t *sw) {
     double a;
     if (!h2x87n_mode(s) || !h2x87n_get(s, h2x87n_phys(s, i), &a))
         return h2x87_v1_st_f64(s, i, value, sw);
     *value = h2x87n_bits(a); *sw = (uint16_t)(s->status & ~0x200u);
     return H2X87_OK;
 }
-static inline uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uint16_t *sw) {
+static inline H2X87N_FAST uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uint16_t *sw) {
     double a;
     if (!h2x87n_mode(s) || !h2x87n_get(s, h2x87n_phys(s, i), &a)) goto slow;
     /* Exclude the binary32 underflow/overflow ranges (including rounding
      * across their boundaries), preserving ext80's range and sticky bits. */
     uint64_t b = h2x87n_bits(a) & UINT64_C(0x7fffffffffffffff);
     if (b && (b < UINT64_C(0x3810000000000000) || b > UINT64_C(0x47efffffe0000000))) goto slow;
+    H2X87N_BARRIER(a);
     float q = (float)a;
     memcpy(value, &q, 4);
     double err = a - (double)q;
@@ -204,7 +222,7 @@ static inline uint32_t h2x87n_st_f32(X87Abi *s, uint32_t i, uint32_t *value, uin
 slow:
     return h2x87_v1_st_f32(s, i, value, sw);
 }
-#pragma STDC FENV_ACCESS OFF
+#undef H2X87N_FAST
 #else
 #define h2x87n_ld_f32 h2x87_v1_ld_f32
 #define h2x87n_ld_f64 h2x87_v1_ld_f64
