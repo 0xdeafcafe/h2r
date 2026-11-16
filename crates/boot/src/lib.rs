@@ -36,6 +36,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;
