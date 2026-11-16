@@ -46,6 +46,10 @@ pub enum Notice {
     NotSetUp,
     /// Live is on with this server, and sign-in could not reach it.
     Unreachable(String),
+    /// Live is on with this server, but this machine holds no account key
+    /// for it: how to make or recover one (docs/live/live.md, "In-game
+    /// account setup").
+    NoAccount(String),
 }
 
 // The message box on the stock dialog is about 244 by 91 pixels, five lines
@@ -61,6 +65,7 @@ impl Notice {
     pub fn for_config(config: &LiveConfig) -> Option<Self> {
         match (config.enabled, &config.server_url) {
             (false, _) => Some(Self::NotSetUp),
+            (true, Some(url)) if no_accounts(config) => Some(Self::NoAccount(url.clone())),
             (true, Some(url)) => Some(Self::Unreachable(url.clone())),
             (true, None) => None,
         }
@@ -76,6 +81,13 @@ impl Notice {
                 "Can't reach the h2 live server at\r\n{}.\r\n{START_AGAIN}",
                 display_url(url)
             ),
+            Self::NoAccount(url) => format!(
+                "No Live account on this machine yet.\r\n\
+                 Make one: h2 live account create <tag>\r\n\
+                 or recover one in a browser at\r\n{}\r\n\
+                 /dash/signup/recover, then start again.",
+                display_url(url)
+            ),
         }
     }
 
@@ -85,6 +97,16 @@ impl Notice {
         let mut units: Vec<u16> = self.text().encode_utf16().take(MESSAGE_UNITS - 1).collect();
         units.push(0);
         units
+    }
+}
+
+/// Whether the boot's accounts file holds no account with a usable key
+/// (a missing file or no path holds none). An unreadable file is not "no
+/// accounts": sign-in reports it.
+fn no_accounts(config: &LiveConfig) -> bool {
+    match &config.accounts_path {
+        None => true,
+        Some(path) => live_hle::account_setup::load(path).is_ok_and(|a| a.is_empty()),
     }
 }
 
@@ -220,6 +242,30 @@ mod tests {
         }
     }
 
+    /// An accounts file with `n` keyed entries; removed by the caller.
+    fn accounts_file(n: usize) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "h2-notice-accounts-{}-{n}.json",
+            std::process::id()
+        ));
+        let entries: Vec<String> = (0..n)
+            .map(|i| {
+                live_hle::account_setup::LocalEntry {
+                    xuid: live_proto::Xuid(0x9000000000001 + i as u64),
+                    gamertag: format!("P{i}"),
+                    id: String::new(),
+                    server: "http://127.0.0.1:8074".into(),
+                    server_id: "live.test".into(),
+                    key: Arc::new(live_proto::sign::KeyPair::generate()),
+                }
+                .to_json()
+                .to_string()
+            })
+            .collect();
+        std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
+        path
+    }
+
     #[test]
     fn notice_follows_the_live_settings() {
         assert_eq!(
@@ -230,10 +276,30 @@ mod tests {
             Notice::for_config(&config(false, Some("http://a"))),
             Some(Notice::NotSetUp)
         );
+        let one = accounts_file(1);
+        let none = accounts_file(0);
+        let with = |path: &std::path::PathBuf| LiveConfig {
+            accounts_path: Some(path.clone()),
+            ..config(true, Some("http://127.0.0.1:8074"))
+        };
         assert_eq!(
-            Notice::for_config(&config(true, Some("http://127.0.0.1:8074"))),
+            Notice::for_config(&with(&one)),
             Some(Notice::Unreachable("http://127.0.0.1:8074".into()))
         );
+        for no_account in [with(&none), config(true, Some("http://127.0.0.1:8074"))] {
+            assert_eq!(
+                Notice::for_config(&no_account),
+                Some(Notice::NoAccount("http://127.0.0.1:8074".into()))
+            );
+        }
+        // An unreadable file is left to sign-in to report.
+        std::fs::write(&none, "not json").unwrap();
+        assert!(matches!(
+            Notice::for_config(&with(&none)),
+            Some(Notice::Unreachable(_))
+        ));
+        std::fs::remove_file(one).unwrap();
+        std::fs::remove_file(none).unwrap();
         assert_eq!(Notice::for_config(&config(true, None)), None);
     }
 
@@ -243,7 +309,9 @@ mod tests {
         for n in [
             Notice::NotSetUp,
             Notice::Unreachable("http://127.0.0.1:8074/".into()),
-            Notice::Unreachable(long),
+            Notice::Unreachable(long.clone()),
+            Notice::NoAccount("https://live.forbes.red".into()),
+            Notice::NoAccount(long),
         ] {
             let text = n.text();
             let lines: Vec<&str> = text.split("\r\n").collect();
@@ -273,6 +341,12 @@ mod tests {
             Notice::NotSetUp
                 .text()
                 .ends_with("h2 live account create <tag>")
+        );
+        assert_eq!(
+            Notice::NoAccount("https://live.example/".into()).text(),
+            "No Live account on this machine yet.\r\nMake one: h2 live account create <tag>\r\n\
+             or recover one in a browser at\r\nhttps://live.example\r\n\
+             /dash/signup/recover, then start again."
         );
         let unreachable = Notice::Unreachable("http://127.0.0.1:8074/".into()).text();
         assert!(
