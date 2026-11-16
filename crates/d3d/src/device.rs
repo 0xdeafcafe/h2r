@@ -635,11 +635,22 @@ fn vertex_limit(entry: &'static str, count: u32) -> Result<(), D3dError> {
     Ok(())
 }
 
+/// What `Device::vertex_setup` derived from a vertex program's attribute
+/// format words (`+0x14`, 64 words): the streams and attributes they read.
+/// The strides are filled in from the bound streams at each draw.
+struct VertexMemo {
+    vaf: [u32; 64],
+    streams: Vec<StreamLayout>,
+}
+
 /// One Direct3D device.
 pub struct Device<B: Backend> {
     cfg: DeviceConfig,
     /// The slot types of the build's render-state table, resolved once.
     translator: Translator,
+    /// The last vertex program's attribute format words and the stream
+    /// layout they give (`vertex_setup`).
+    vertex_memo: Option<VertexMemo>,
     /// The last state translated, part by part: a part is reused while its
     /// guest words are unchanged.
     translated: crate::state::TranslateMemo,
@@ -816,6 +827,7 @@ impl<B: Backend> Device<B> {
             cfg,
             translator: Translator::new(&RenderStateTable::default()),
             translated: Default::default(),
+            vertex_memo: None,
             backend,
             created: false,
             params: None,
@@ -3147,7 +3159,7 @@ impl<B: Backend> Device<B> {
     /// Builds the vertex layout and processing mode for the current shader,
     /// plus the stream bindings it reads.
     fn vertex_setup(
-        &self,
+        &mut self,
         mem: &dyn GuestMemory,
         entry: &'static str,
     ) -> Result<(VertexLayout, VertexProcessing, Vec<StreamSource>), D3dError> {
@@ -3173,6 +3185,28 @@ impl<B: Backend> Device<B> {
         }
         let obj = h & !1;
         let vaf = crate::guest::read_array::<64>(mem, at(obj, 0x14)?)?;
+        // The streams and attributes are a function of the attribute
+        // format words alone; only the strides come from the bound streams.
+        if let Some(m) = &self.vertex_memo
+            && m.vaf == vaf
+        {
+            let mut by_stream = m.streams.clone();
+            for s in &mut by_stream {
+                s.stride = bound(s.stream as usize).stride;
+            }
+            let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
+            return Ok((
+                VertexLayout {
+                    streams: by_stream,
+                    pretransformed: false,
+                },
+                VertexProcessing::Program {
+                    start: self.program_start,
+                    microcode: self.microcode(),
+                },
+                streams,
+            ));
+        }
         let mut by_stream: Vec<StreamLayout> = Vec::new();
         for reg in 0..16usize {
             let (stream, offset, format) =
@@ -3208,6 +3242,10 @@ impl<B: Backend> Device<B> {
         }
         by_stream.sort_by_key(|s| s.stream);
         let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
+        self.vertex_memo = Some(VertexMemo {
+            vaf,
+            streams: by_stream.clone(),
+        });
         let layout = VertexLayout {
             streams: by_stream,
             pretransformed: false,
