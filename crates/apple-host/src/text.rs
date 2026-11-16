@@ -57,7 +57,7 @@ pub fn insert_actions(text: &str) -> Vec<TextAction> {
     let mut run = String::new();
     let mut prev = None;
     for c in text.chars() {
-        let after_cr = std::mem::replace(&mut prev, Some(c)) == Some('\r');
+        let after_cr = prev.replace(c) == Some('\r');
         if c == '\r' || c == '\n' {
             // "\r\n" is one Return.
             if c == '\n' && after_cr {
