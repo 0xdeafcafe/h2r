@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Keys seen recently. Each entry lives until its expiry (unix seconds);
 /// expired entries are pruned as new ones arrive.
@@ -90,11 +90,102 @@ impl RateLimiter {
     }
 }
 
+/// Locks a key out after `free` failures, for `base` doubling with each
+/// further failure (capped at `max`): wrong recovery codes per gamertag.
+/// A success clears it; a key quiet for `max` starts over.
+pub struct Backoff {
+    free: u32,
+    base: Duration,
+    max: Duration,
+    fails: Mutex<HashMap<String, (u32, Instant)>>,
+}
+
+impl Backoff {
+    pub fn new(free: u32, base: Duration, max: Duration) -> Self {
+        Backoff {
+            free,
+            base,
+            max,
+            fails: Mutex::default(),
+        }
+    }
+
+    /// How long `key` is still locked out for, if it is.
+    pub fn locked(&self, key: &str) -> Option<Duration> {
+        self.locked_at(key, Instant::now())
+    }
+
+    pub fn fail(&self, key: &str) {
+        self.fail_at(key, Instant::now())
+    }
+
+    pub fn clear(&self, key: &str) {
+        self.fails.lock().unwrap().remove(key);
+    }
+
+    fn lock_for(&self, n: u32) -> Duration {
+        if n < self.free {
+            return Duration::ZERO;
+        }
+        let doublings = (n - self.free).min(20);
+        self.base.saturating_mul(1 << doublings).min(self.max)
+    }
+
+    fn locked_at(&self, key: &str, now: Instant) -> Option<Duration> {
+        let fails = self.fails.lock().unwrap();
+        let (n, last) = fails.get(key)?;
+        let until = *last + self.lock_for(*n);
+        (until > now).then(|| until - now)
+    }
+
+    fn fail_at(&self, key: &str, now: Instant) {
+        let mut fails = self.fails.lock().unwrap();
+        let max = self.max;
+        if fails.len() > 10_000 {
+            fails.retain(|_, (_, last)| now.duration_since(*last) < max);
+        }
+        let entry = fails.entry(key.to_string()).or_insert((0, now));
+        if now.duration_since(entry.1) >= max {
+            entry.0 = 0;
+        }
+        *entry = (entry.0 + 1, now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn backoff_locks_after_the_free_failures_and_doubles() {
+        let b = Backoff::new(3, Duration::from_secs(60), Duration::from_secs(600));
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        b.fail_at("a", at(0));
+        b.fail_at("a", at(1));
+        assert_eq!(b.locked_at("a", at(1)), None);
+        b.fail_at("a", at(2));
+        assert_eq!(b.locked_at("a", at(2)), Some(Duration::from_secs(60)));
+        assert_eq!(b.locked_at("b", at(2)), None, "per key");
+        assert_eq!(b.locked_at("a", at(62)), None);
+        b.fail_at("a", at(62));
+        assert_eq!(b.locked_at("a", at(62)), Some(Duration::from_secs(120)));
+        for s in 63..70 {
+            b.fail_at("a", at(s));
+        }
+        assert_eq!(
+            b.locked_at("a", at(69)),
+            Some(Duration::from_secs(600)),
+            "capped"
+        );
+        // Quiet for the cap: starts over.
+        b.fail_at("a", at(69 + 600));
+        assert_eq!(b.locked_at("a", at(69 + 600)), None);
+        b.clear("a");
+        assert_eq!(b.locked_at("a", at(69 + 600)), None);
+    }
 
     #[test]
     fn replay_guard_expires() {

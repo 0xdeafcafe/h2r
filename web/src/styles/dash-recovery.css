@@ -1,0 +1,50 @@
+/* The recovery screens (src/dash/Recovery.tsx): the code in the big pod
+   with a ring running down to the next one, the plate with the secret and
+   the authenticator QR code, and the recover form. Our own geometry. */
+
+.dx-recovery .dx-centre { top: calc(var(--u) * 30); left: calc(var(--u) * 530); width: calc(var(--u) * 220); height: calc(var(--u) * 220); }
+.dx-pages.dx-recovery .dx-plate--main { top: calc(var(--u) * 262); padding-bottom: calc(var(--u) * 22); }
+
+/* The code in the pod. */
+.dx-rcode { position: relative; width: 100%; height: 100%; display: grid; place-items: center; align-content: center; gap: calc(var(--u) * 4); }
+.dx-rcode-ring { position: absolute; inset: 8%; width: 84%; height: 84%; transform: rotate(-90deg); }
+.dx-rcode-ring circle { fill: none; stroke-width: 3; }
+.dx-rcode-track { stroke: rgba(160, 230, 100, .18); }
+.dx-rcode-left { stroke: var(--y-1); stroke-linecap: round; filter: drop-shadow(0 0 2px rgba(230, 255, 90, .7)); transition: stroke-dashoffset 1s linear; }
+.dx-rcode b {
+  font: 600 calc(var(--u) * 40) var(--f-cond); letter-spacing: .06em; color: #f4ffd0;
+  text-shadow: 0 0 calc(var(--u) * 10) rgba(200, 255, 120, .7), 0 calc(var(--u) * 1) calc(var(--u) * 2) #062a03;
+  font-variant-numeric: tabular-nums;
+}
+.dx-rcode small { font: 600 calc(var(--u) * 15) var(--f-cond); letter-spacing: .14em; color: #b9ec86; font-variant-numeric: tabular-nums; }
+
+/* The plate. */
+.dx-recovery-body { display: grid; gap: calc(var(--u) * 8); }
+.dx-recovery-body .dx-signup-intro { margin: 0; }
+.dx-recovery-grid { display: grid; grid-template-columns: 1fr; gap: calc(var(--u) * 14); align-items: start; }
+.dx-recovery-grid--qr { grid-template-columns: 1fr calc(var(--u) * 150); }
+.dx-recovery-grid dl { margin: 0; }
+.dx-recovery-grid dd { min-width: 0; }
+.dx-rcode-inline { font-size: 1.15em !important; letter-spacing: .06em !important; font-variant-numeric: tabular-nums; }
+.dx-secret { white-space: normal; word-break: break-word; overflow: visible !important; }
+.dx-qr { width: calc(var(--u) * 150); height: calc(var(--u) * 150); border-radius: calc(var(--u) * 4); box-shadow: 0 0 0 calc(var(--u) * 2) rgba(200, 255, 140, .55), 0 0 calc(var(--u) * 18) rgba(140, 255, 60, .35); }
+.dx-recovery-actions { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u) * 16); }
+.dx .dx-recovery-actions .dx-go { margin: 0; }
+
+.dx-pods--form .dx-form > .dx-forget { grid-column: 1 / -1; }
+
+@media (max-aspect-ratio: 4/5) {
+  .dx-recovery .dx-centre { left: calc(var(--u) * 130); top: calc(var(--u) * 40); width: calc(var(--u) * 140); height: calc(var(--u) * 140); }
+  .dx-rcode b { font-size: calc(var(--u) * 26); }
+  .dx-rcode small { font-size: calc(var(--u) * 12); }
+  .dx-pages.dx-recovery .dx-plate--main { top: calc(var(--u) * 182); }
+  .dx-recovery-grid--qr { grid-template-columns: 1fr; justify-items: center; }
+  .dx-qr { width: calc(var(--u) * 200); height: calc(var(--u) * 200); }
+}
+
+/* The account plate's devices: one quiet line per key. */
+.dx-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(var(--u) * 2); }
+.dx-devices li { white-space: normal; }
+.dx-devices code { font: 500 .9em ui-monospace, Menlo, monospace; color: #e8ffd0; }
+.dx-devices .dx-device--old { opacity: .6; }
+.dx-pages .dx-plate dd.dx-secret { white-space: normal; overflow-wrap: anywhere; font: 500 .9em ui-monospace, Menlo, monospace; letter-spacing: .04em; color: #e8ffd0; }

@@ -177,6 +177,9 @@ impl State {
             game_id: None,
         }
     }
+    pub fn set_accounts(&mut self, accounts: Vec<Account>) {
+        self.accounts = accounts;
+    }
     fn task(&mut self, m: &mut Guest, out: u32, task: Task) -> Result<u32> {
         writable(m, out, 4)?;
         let Some(handle) = self.storage.alloc(m, 8) else {

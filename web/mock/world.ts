@@ -36,6 +36,8 @@ interface Account {
   /** Made by a real client (the web sign-up): the mock has no private key,
    *  so the simulation leaves it alone. */
   external?: boolean;
+  /** Keys it had before (account recovery replaces the key). */
+  retired?: Array<{ kid: string; jwk: Account["key"]["jwk"]; from: number; to: number }>;
 }
 
 interface SimPlayer {
@@ -522,7 +524,8 @@ export class World {
   }
 
   accountKeys(a: Account) {
-    return { keys: [{ kid: a.key.kid, jwk: a.key.jwk, valid_from: a.keyFrom, valid_to: null }] };
+    const old = (a.retired ?? []).map((k) => ({ kid: k.kid, jwk: k.jwk, valid_from: k.from, valid_to: k.to }));
+    return { keys: [...old, { kid: a.key.kid, jwk: a.key.jwk, valid_from: a.keyFrom, valid_to: null }] };
   }
 
   /** `{map_id}` for a multiplayer game on a custom map (mock/content.ts), else nothing. */

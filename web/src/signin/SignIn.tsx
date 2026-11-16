@@ -69,12 +69,15 @@ export default function SignIn() {
                     There's no sign-in link here. <code>h2 play --live</code> prints one each time it
                     starts; open it on this machine.
                   </p>
+                  <p>
+                    On a new device? <A href="/dash/signup/recover">Recover your account</A> with your gamertag and a recovery code.
+                  </p>
                 </Match>
                 <Match when={(() => { const v = step(); return v.s === "error" ? v : null; })()}>
                   {(v) => (
                     <>
                       <p class="si-error">{v().error}</p>
-                      <p><A href="/">Dashboard</A></p>
+                      <p><A href="/">Dashboard</A> · <A href="/dash/signup/recover">Recover an account with a code</A></p>
                     </>
                   )}
                 </Match>

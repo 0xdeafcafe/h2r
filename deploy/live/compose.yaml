@@ -46,10 +46,11 @@ services:
       - --public-url
       - ${H2_LIVE_PUBLIC_URL:-https://live.forbes.red}
       - --behind-cloudflared
-      - --invite-only
     environment:
       H2_LIVE_DB: postgres://h2live:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/h2live
       H2_LIVE_ADMINS: ${H2_LIVE_ADMINS:-}
+      # 1: sign-up needs an invite code (setup.sh asks; off by default).
+      H2_LIVE_INVITE_ONLY: ${H2_LIVE_INVITE_ONLY:-}
     volumes:
       - ${H2_LIVE_DATA_DIR:-./data}:/data
       - ${H2_LIVE_ART_DIR:-./art}:/art:ro
