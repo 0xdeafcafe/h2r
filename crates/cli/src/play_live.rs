@@ -440,7 +440,13 @@ pub fn bootstrap(
 /// own art.
 pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
     let disc = match crate::live_art::Disc::scan(disc) {
-        Ok(d) => d,
+        Ok(mut d) => {
+            // Map pack maps `h2 import-mappack` installed get art too.
+            d.add_maps(crate::live_mappack::installed(
+                &content::store::default_data_root(),
+            ));
+            d
+        }
         Err(e) => {
             eprintln!("live: no game art ({e:#})");
             return None;

@@ -42,7 +42,7 @@ import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
-import { TextureSwap, loadFlats, type TexturePair } from "./textures3d";
+import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
@@ -174,6 +174,12 @@ export class ViewerScene {
   private looseMachines = new Map<string, VehicleObj>();
   // The level and its objects textured or in flat class colours (textures3d.ts).
   private textures = new TextureSwap();
+  // Which map load is current (a newer one stops the older one's pictures),
+  // and the current map's pictures, to free with it.
+  private mapGen = 0;
+  private mapTextures: THREE.Texture[] = [];
+  /** Settles when the current map's pictures have all arrived (or stopped). */
+  texturesReady: Promise<void> = Promise.resolve();
   /** The scenario's placed objects (scenario3d.ts): what frames move by
    *  `find(kind, index)` or `apply(objects)`. */
   readonly scenarioObjects = new ScenarioObjects(() => { this.dirty = true; });
@@ -307,9 +313,14 @@ export class ViewerScene {
   /** Loads a map's glb. Resolves false (and leaves the grid floor) when it
    *  can't be loaded. */
   async loadMap(url: string): Promise<boolean> {
+    const gen = ++this.mapGen;
     try {
-      const gltf = await new GLTFLoader().loadAsync(url);
-      if (this.disposed) return false;
+      // The level comes first, drawn in its class colours; its pictures
+      // follow (textures3d.ts).
+      const loader = new GLTFLoader();
+      const pending = deferTextures(loader, url);
+      const gltf = await loader.loadAsync(url);
+      if (this.disposed || gen !== this.mapGen) return false;
       // Textured primitives' class materials, for the flat look.
       const flats = await loadFlats(gltf);
       if (this.disposed) return false;
@@ -344,6 +355,7 @@ export class ViewerScene {
         if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const m of mats) used.add(m);
           let flat = Array.isArray(mesh.material) ? undefined : flats.get(mesh);
           if (flat && role === "machine") flat = own(flat);
           if (flat) pairs.push({ mesh, textured: mesh.material as THREE.Material, flat });
@@ -366,6 +378,7 @@ export class ViewerScene {
         }
         for (const c of o.children) walk(c, path, aside);
       };
+      const used = new Set<THREE.Material>();
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
@@ -391,10 +404,22 @@ export class ViewerScene {
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
       this.frameCamera(true);
+      this.streamPictures(pending, used, gen);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** Fetches the map's pictures and puts each on its surfaces as it comes. */
+  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number) {
+    this.mapTextures = [];
+    for (const p of pending) this.mapTextures.push(...texturesSharing(p.texture, used));
+    this.texturesReady = streamTextures(pending, (p, picture) => {
+      for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
+      this.textures.refresh();
+      this.dirty = true;
+    }, { stopped: () => this.disposed || gen !== this.mapGen }).then(() => undefined);
   }
 
   /** Builds (or drops) the level's teleporters, links and lifts. */
@@ -597,6 +622,12 @@ export class ViewerScene {
 
   private clearMap() {
     if (!this.map) return;
+    for (const t of this.mapTextures) {
+      t.dispose();
+      const img = t.image as { close?: () => void } | null;
+      img?.close?.();
+    }
+    this.mapTextures = [];
     this.textures.clear();
     this.scenarioObjects.clear();
     this.scene.remove(this.map);

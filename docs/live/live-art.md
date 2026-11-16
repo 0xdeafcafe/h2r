@@ -10,6 +10,8 @@ disc is in the repository: the tests build invented tag data.
 
 Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
 `crates/cli/src/live_looks.rs` (surface pictures),
+`crates/cli/src/live_basemap.rs` (which bitmap a shader draws as its base),
+`crates/cli/src/live_mappack.rs` (map pack maps),
 `crates/cli/src/live_scenario.rs` (placed objects) and
 `crates/cli/src/live_render.rs` (the software renderer). Tests:
 `crates/cli/src/live_geometry_tests.rs` and the modules' own.
@@ -21,6 +23,8 @@ Per map, keyed by the map stem the art manifest already uses
 
 ```
 map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry
+map/<stem>/map.glb.gz       the same, gzipped (the server sends it when it can)
+map/<stem>/tex/<id>.jpg     the surface pictures map.glb names (or .png)
 map/<stem>/views.json       the pre-drawn views and how to plot on them
 map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
 map/<stem>/sky.glb          the level's sky model (when it has one)
@@ -42,9 +46,11 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 12, so a disc extracted by an older build is extracted again
+key) is 13, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
-pictures, texture coordinates and the `scenario` node).
+pictures, texture coordinates and the `scenario` node; 13 the base map
+from the shader's passes, pictures as files beside `map.glb`, the gzip
+copy and the map pack maps).
 
 ### `map.glb`
 
@@ -86,8 +92,16 @@ pictures, texture coordinates and the `scenario` node).
   draw it untextured with the class material instead (the viewer's
   Textures switch). A class material is written even when only `flat`
   names it. Glass and water keep their class material and are not
-  textured. Each picture is stored once per bitmap however many shaders
-  use it: JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
+  textured. When the shader tiles its base map (pipeline step 10), the
+  `baseColorTexture` has `KHR_texture_transform` with that `scale`
+  (listed in `extensionsUsed`, not required: a reader without it draws
+  the picture once per stored repeat). Each picture is stored once per
+  bitmap however many shaders use it, as its own file beside `map.glb`:
+  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.jpg`, `m`
+  after the id for a cut-out's alpha-kept copy), a `mimeType` and
+  `extras` `width` and `height`, and no buffer view, so the geometry loads
+  without them and each picture caches on its own (`tex/` is rewritten
+  with `map.glb`). JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
   side, every picture of a level halved until they total at most 6 MiB
   (no retail level needs it). Machines and placed objects get looks the
   same way. Detail maps, bump maps, lightmaps and the shaders' colour
@@ -184,11 +198,41 @@ pictures, texture coordinates and the `scenario` node).
   to 24 MB (1.2 to 16.6 MB before): 0.4 to 3.4 MB pictures, texture
   coordinates a fifth of the rest, 17 to 854 objects of 2 to 95 models. The
   largest, 04b_floodlab (356k triangles and 566k vertices of level, 108
-  machines), is about the most a browser should be asked to fetch; the
-  server is loopback-only and does not compress. The level is not
-  simplified. Before `EXTRACTOR_VERSION` 6 indices were u32.
+  machines), is about the most a browser should be asked to fetch. Since
+  `EXTRACTOR_VERSION` 13 the pictures are not in that count: Outskirts'
+  `map.glb` is 17.5 MB and its `tex/` 2.9 MB; gzipped, `map.glb` is 6.3 MB
+  (Zanzibar 2.1 MB, 0.99 gzipped). The level is not simplified. Before
+  `EXTRACTOR_VERSION` 6 indices were u32.
 
 ### In the 3D viewer
+
+**Loading.** The viewer draws the level as soon as `map.glb` has loaded,
+untextured (each look shows its class material), then fetches the
+pictures six at a time (`textures3d.ts` `deferTextures`,
+`streamTextures`) and swaps each in when it arrives: the images are
+decoded off the main thread (`createImageBitmap`, no flip, no colour
+conversion). Placed objects of one model are instanced (below). Every
+art URL the site builds carries the manifest's `source` stamp (`?v=<first
+16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
+keep it. The art server (`crates/live-server/src/art.rs`) answers a
+stamped request with `Cache-Control: private, max-age=31536000,
+immutable` and anything else with `no-cache`, and sends a file's `.gz`
+copy, when there is one, to a browser that takes gzip. A new extraction
+has a new stamp, so nothing stale is kept. Measured on a 10-core Mac,
+Chrome, cache off, median of five (time to the first drawn frame /
+fully textured, ms):
+
+| | before 13 | 13, uncompressed |
+|---|---|---|
+| Outskirts, local | 489 / 504 | 307 / 663 |
+| Zanzibar, local | 373 / 379 | 211 / 380 |
+| Outskirts, 100 Mbit/s | 2443 / 2461 | 1823 / 2702 |
+| Zanzibar, 100 Mbit/s | 690 / 695 | 498 / 862 |
+| Outskirts, 25 Mbit/s | 6953 / 6968 | 6052 / 7162 |
+| Zanzibar, 25 Mbit/s | 1421 / 1426 | 919 / 1468 |
+
+The geometry is most of the wait; gzip takes Outskirts' to about a third
+on the wire.
 
 `web/src/viewer/textures3d.ts` keeps both materials of every textured
 mesh (the look and the class material its primitive's `flat` names), so
@@ -216,6 +260,31 @@ scenarioObjects.apply(list: readonly ObjectPose[]): boolean
 // (after a seek, or when the frames stop sending objects).
 scenarioObjects.restAll(): void
 ```
+
+### Map pack
+
+The nine Multiplayer Map Pack maps ([map-pack.md](../map-pack.md)) get the
+same art as the disc's multiplayer maps (preview, `map.glb`, `sky.glb`,
+views) under their own stems (`containment`, `deltatap`, ...), and the
+playlist builder's catalog lists each under the English name and
+description its map list record gives (Containment, Sanctuary, ...),
+with its map id. They are found in two places (`live_mappack`):
+
+- `h2 live assets extract --mappack <iso>`: the map pack disc's
+  `/demos/dlc/<package>/*.map`, named by the package's `patch_v3.lvl`
+  record for the map (turned into a version 2 record:
+  map-pack.md section 1).
+- Where `h2 import-mappack` installed them under a runtime data root:
+  `<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/`, each package's
+  map and its version 2 `patch.lvl` (name at `+0x114`, 32 UTF-16 units;
+  description at `+0x354`, 128; map id at `+0x10c`). `h2 live assets
+  extract` reads the default data root unless `--installed <data>` names
+  another; `h2 play --live` reads the default one.
+
+Each map opens with the retail disc's shared maps, like a disc map. A map
+whose stem the disc (or an earlier source) already has is not added
+again. The maps found are part of the art's cache key, so installing the
+map pack later extracts again. Nothing of them is in the repository.
 
 ### `views.json`
 
@@ -400,9 +469,22 @@ view), the same for every view.
 10. **Looks.** For each BSP material whose surface is solid level (not
    glass or water), and each machine's and object's model material: the
    shader's template (`shad +0`) must not be in a `transparent` folder or
-   be an `overlay`; its base map is the first of its bitmaps
-   (`shad +0x20` postprocess, as for the player models) whose name says
-   diffuse (`live_models::bitmap_role`). Decoded once per bitmap (the
+   be an `overlay`; its base map is what the shader draws on texture
+   stage 0 (`live_basemap`): the resolved material's (`tags::material`,
+   docs/shader-instances.md) first level of detail, pass by pass, the
+   instance bitmap on stage 0, skipping engine defaults (`rasterizer`,
+   `default_bitmaps`) and bump maps (`P8Bump`); its tiling is that pass's
+   vertex constant register 18 x and y (stage k's scale is register
+   18 + k: a `tex_bump` pass scales base, detail and bump; a terrain
+   blend's accumulation pass scales its colour overlay and up to four
+   detail maps). When the shader does not resolve or draws no such
+   bitmap, the first of its bitmaps (`shad +0x20` postprocess) whose name
+   says diffuse (`live_models::bitmap_role`; `_bmp` names bump maps) at
+   scale 1. Names alone pick a bump map on Outskirts' beach
+   (`zanzibar_sand_bmp` comes first), which drew as black and white
+   noise; of 7,113 solid shaders on the disc 306 pick another bitmap or
+   scale by the passes, most a scale (a carpet 6 × 6, rubber mats 16 ×
+   16). Decoded once per bitmap (the
    largest stored level, DXT and swizzle as `assets::decode_image` does),
    box-filtered down to 512 pixels; solid looks are made opaque (their
    alpha is a specular or blend mask); cut-out looks (`alpha_test`) have
@@ -613,7 +695,8 @@ Keys (what telemetry sends):
   the primary change-colour weight, green the secondary (0..1), sampled
   bilinearly from the material's change-colour map at the vertex. A
   material without a change-colour map has zero weights; weapons have no
-  `COLOR_0`.
+  `COLOR_0`. These are weights, not colours: a reader must not multiply
+  the base colour by them (the viewer turns vertex colours off).
 - Materials (`material_look`): `baseColorTexture` (an embedded PNG, at most
   512 pixels a side) when the diffuse map decoded, else a grey
   `baseColorFactor`; metallic 0, roughness 0.8 unless:
@@ -630,6 +713,12 @@ Keys (what telemetry sends):
     the emission and `extras.h2.blend` `"add"` (the viewer adds them);
     the others are glass, `BLEND` with a see-through blue-grey factor and
     no texture; `overlay` templates (decals) blend by their alpha;
+  - it is an `overlay` decal on an opaque model (the Scorpion's
+    markings) whose picture has no alpha and reads, as decal layers do
+    (pipeline step 7), as doubling or multiplying: it is turned into one
+    blended by alpha that looks about the same (`overlay_as_alpha`; by
+    luminance l, double: white at l − 0.5 when l ≥ 0.5, else black at
+    1 − 2l; multiply: black at 1 − l), not a grey slab;
   - it is alpha-tested (`*alpha_test*`): `alphaMode` `MASK` at 0.5, its
     alpha kept.
   The change-colour map (at most 256 pixels a side) is also stored, its

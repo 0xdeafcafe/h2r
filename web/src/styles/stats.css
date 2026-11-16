@@ -577,13 +577,20 @@
 .skulls--names > li small { color: #9d9d9d; }
 .s-item-skulls { margin-top: 3px; }
 .s-who .skulls { margin-left: 4px; }
-.s-skull-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 8px; padding: 6px 8px; background: #1a1a1a; border: 1px solid #3f3f3f; }
-.s-skull-tier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; }
-.s-skull-filter > span, .s-skull-tier > span { margin-right: 4px; font: bold 12px/22px var(--font-ui); color: #cfcfcf; }
-.s-skull-chip { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 3px; font: 12px/22px var(--font-ui); color: #cfcfcf; cursor: pointer; background: #262626; border: 1px solid #3f3f3f; border-radius: 3px; }
-.s-skull-chip:hover { background: #333; }
-.s-skull-chip[aria-pressed="true"] { color: #fff; border-color: #6f93c4; background: #16304f; }
-.s-skull-chip:not([aria-pressed="true"]) .skull { opacity: .55; }
-.s-skull-filter .s-linkbtn { margin-left: 6px; font-size: 12px !important; }
-.s-game-skulls { margin: 4px 0; }
+.s-skull-filter { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
+.s-skull-btn { height: 24px; padding: 0 8px; font: bold 12px/22px var(--font-ui); color: #fff; cursor: pointer; background: #000; border: 1px solid #3a3a3a; }
+.s-skull-btn:hover, .s-skull-btn[aria-expanded="true"] { border-color: #8f7424; }
+.s-skull-sum { font: 12px/22px var(--font-ui); color: #cfcfcf; }
+.s-skull-x { width: 20px; height: 20px; padding: 0; font: 14px/18px var(--font-ui); color: #cfcfcf; cursor: pointer; background: none; border: 1px solid #3a3a3a; }
+.s-skull-x:hover { color: #fff; border-color: #8f7424; }
+.s-skull-pop { position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 2px; padding: 6px 8px 8px; background: #000; border: 1px solid #8f7424; box-shadow: 0 4px 12px rgba(0,0,0,.6); }
+.s-skull-tier + .s-skull-tier { margin-top: 6px; }
+.s-skull-tier h4 { margin: 0 0 3px; font: bold 11px/14px var(--font-ui); text-transform: uppercase; letter-spacing: .04em; color: #8f7424; }
+.s-skull-grid { display: grid; grid-template-columns: repeat(6, 30px); gap: 2px; }
+.s-skull-tog { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; cursor: pointer; background: #1a1a1a; border: 1px solid #333; }
+.s-skull-tog:hover { background: #2a2a2a; }
+.s-skull-tog:not([aria-pressed="true"]) .skull { opacity: .5; }
+.s-skull-tog[aria-pressed="true"] { background: #2a2210; border-color: #d6ad2e; box-shadow: inset 0 0 0 1px #d6ad2e; }
+.s-skull-btn:focus-visible, .s-skull-tog:focus-visible, .s-skull-x:focus-visible { outline: 2px solid #6f93c4; outline-offset: 1px; }
+
 .s-skulls-played { margin: 0 8px 8px; padding: 6px 4px; }

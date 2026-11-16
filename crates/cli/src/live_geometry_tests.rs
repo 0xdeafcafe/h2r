@@ -2213,6 +2213,7 @@ fn test_look(shader: u32, bitmap: u32, w: u32) -> crate::live_looks::Look {
                     .collect(),
             },
         }),
+        scale: [1.0, 1.0],
     }
 }
 
@@ -2324,8 +2325,8 @@ fn textured_primitives_name_their_class_material_and_share_pictures() {
     )
     .unwrap();
     level.looks = looks;
-    let (glb, pictures) = level.glb_and_picture_bytes();
-    assert!(pictures > 0);
+    let (glb, pictures) = level.glb_and_pictures(false);
+    assert!(pictures.bytes() > 0);
     gltf::Gltf::from_slice(&glb).expect("valid glTF");
     let (doc, bin) = parse_glb(&glb);
     assert_eq!(
@@ -2369,6 +2370,77 @@ fn textured_primitives_name_their_class_material_and_share_pictures() {
         .map(|m| m["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["floor", "shader_100", "shader_101"]);
+}
+
+#[test]
+fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_scale() {
+    let mut looks = crate::live_looks::Looks::default();
+    looks.add(test_look(100, 7, 64));
+    looks.add(crate::live_looks::Look {
+        scale: [4.0, 2.0],
+        ..test_look(101, 0x2a, 32)
+    });
+    let mut tris: Vec<Tri> = flat(0.0, 0.0, 4.0, 4.0, 0.0, true)
+        .map(|t| looked(t, Some(0)))
+        .to_vec();
+    tris.extend(flat(10.0, 0.0, 14.0, 4.0, 0.0, true).map(|t| looked(t, Some(1))));
+    let mut level = Level::build(
+        "lvl",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&tris)))],
+    )
+    .unwrap();
+    level.looks = looks;
+    let embedded = level.glb_and_pictures(false).0;
+    let dir = std::env::temp_dir().join(format!("h2-level-tex-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A stale picture from an earlier extraction goes.
+    std::fs::create_dir_all(dir.join("tex")).unwrap();
+    std::fs::write(dir.join("tex/stale.jpg"), b"x").unwrap();
+    let (glb_bytes, picture_bytes) = level.write_glb(&dir).unwrap();
+    let glb = std::fs::read(dir.join("map.glb")).unwrap();
+    assert_eq!(glb.len(), glb_bytes);
+    assert!(
+        glb.len() + picture_bytes <= embedded.len() + 64,
+        "the pictures moved out"
+    );
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    let images = doc["images"].as_array().unwrap();
+    let uris: Vec<&str> = images.iter().map(|i| i["uri"].as_str().unwrap()).collect();
+    assert_eq!(uris, ["tex/00000007.jpg", "tex/0000002a.jpg"]);
+    for (i, uri) in uris.iter().enumerate() {
+        assert!(images[i].get("bufferView").is_none());
+        assert_eq!(images[i]["mimeType"], "image/jpeg");
+        let file = std::fs::read(dir.join(uri)).unwrap();
+        assert_eq!(&file[..2], [0xff, 0xd8], "a JPEG");
+    }
+    assert!(!dir.join("tex/stale.jpg").exists());
+    let mut unzipped = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(&std::fs::read(dir.join("map.glb.gz")).unwrap()[..]),
+        &mut unzipped,
+    )
+    .unwrap();
+    assert_eq!(unzipped, glb, "the gzip copy is the glb");
+    let materials = doc["materials"].as_array().unwrap();
+    let by_name = |n: &str| materials.iter().find(|m| m["name"] == n).unwrap();
+    assert!(
+        by_name("shader_100")["pbrMetallicRoughness"]["baseColorTexture"]
+            .get("extensions")
+            .is_none()
+    );
+    assert_eq!(
+        by_name("shader_101")["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"]
+            ["scale"],
+        serde_json::json!([4.0, 2.0])
+    );
+    assert_eq!(
+        doc["extensionsUsed"],
+        serde_json::json!(["KHR_texture_transform"])
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -2430,4 +2502,82 @@ fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
     assert_eq!(doc["nodes"][4]["extras"]["item"], "weap");
     // Objects are not in the views' mesh: the pictures are unchanged.
     assert!(level.mesh.objects.is_empty());
+}
+
+/// Every level's BSP and placed-object shaders: the base map by names (the
+/// old rule) beside the base map the shader's passes draw, written to
+/// `$H2_GEOMETRY_CHECK/base_maps.txt` (else `CHECK_DIR`), changed ones
+/// first. Do not commit what it writes.
+#[test]
+#[ignore]
+fn base_maps_on_the_disc() {
+    use std::fmt::Write as _;
+    let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
+    });
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    let (mut changed, mut same, mut none) = (String::new(), 0usize, 0usize);
+    let mut total = 0usize;
+    for (m, _) in levels(&disc) {
+        let (mut map, _) = disc.open(m).unwrap();
+        let mut lib = tags::material::ShaderLibrary::read(&mut map).unwrap();
+        let shaders: Vec<TagId> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == map::FourCC(*b"shad") || t.group == map::FourCC(*b"dahs"))
+            .map(|t| t.id)
+            .collect();
+        for id in shaders {
+            let Some(template) = shader_template(&mut map, id) else {
+                continue;
+            };
+            if crate::live_looks::template_cutout(&template).is_none() {
+                continue;
+            }
+            let Ok((_, bitmaps)) = crate::live_models::shader_bitmaps(&mut map, id) else {
+                continue;
+            };
+            let names: Vec<(u32, String)> = bitmaps
+                .iter()
+                .filter_map(|&b| Some((b.0, map.tag(b).ok()?.name.clone()?)))
+                .collect();
+            let old = crate::live_looks::pick_base(&names);
+            let new = crate::live_basemap::base_map(&mut lib, &mut map, id);
+            total += 1;
+            let name_of = |b: u32| {
+                names
+                    .iter()
+                    .find(|(i, _)| *i == b)
+                    .map_or("?".to_string(), |(_, n)| n.clone())
+            };
+            match new {
+                None => none += 1,
+                Some(b) if Some(b.bitmap.0) == old && b.scale == [1.0, 1.0] => same += 1,
+                Some(b) => {
+                    let shader = map
+                        .tag(id)
+                        .ok()
+                        .and_then(|t| t.name.clone())
+                        .unwrap_or_default();
+                    writeln!(
+                        changed,
+                        "{} {shader} [{}]\n    names: {}\n    passes: {} scale {:?}",
+                        m.name(),
+                        template.rsplit('\\').next().unwrap_or(""),
+                        old.map_or("-".into(), name_of),
+                        name_of(b.bitmap.0),
+                        b.scale
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+    let dir = std::env::var("H2_GEOMETRY_CHECK").unwrap_or_else(|_| CHECK_DIR.into());
+    std::fs::create_dir_all(&dir).unwrap();
+    let head = format!(
+        "solid shaders {total}: same {same}, no stage-0 base {none}, changed {}\n\n",
+        total - same - none
+    );
+    std::fs::write(Path::new(&dir).join("base_maps.txt"), head + &changed).unwrap();
 }
