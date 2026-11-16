@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Whole-cache builder: write a complete map from a set of tags.
+pub mod build;
 /// Engine checksum and streaming checksum state.
 pub mod checksum;
 mod format;
@@ -65,3 +67,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod build_tests;
