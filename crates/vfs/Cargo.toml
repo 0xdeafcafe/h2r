@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 xiso.workspace = true
 thiserror.workspace = true
+# Map packages (PackageBackend): manifests, patches, the resolver.
+content.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # fd-anchored traversal for HostBackend::format (openat/unlinkat, no symlink following).
