@@ -45,7 +45,7 @@ export default function Players() {
   const me = () => identity.me();
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Players"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Players"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">

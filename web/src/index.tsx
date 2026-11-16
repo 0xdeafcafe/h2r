@@ -10,6 +10,7 @@ import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
 import Game from "./stats/Game";
 import Games from "./stats/Games";
+import Home from "./stats/Home";
 import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import CampaignRecordPage from "./stats/CampaignRecord";
@@ -42,7 +43,8 @@ render(
       <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
-        <Route path="/" component={Games} />
+        <Route path="/" component={Home} />
+        <Route path="/games" component={Games} />
         <Route path="/games/:id" component={Game} />
         <Route path="/players" component={Players} />
         <Route path="/players/:tag" component={ServiceRecordPage} />

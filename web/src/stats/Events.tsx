@@ -61,7 +61,7 @@ export default function Events() {
   const v = () => live.verifySummary;
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Event Log"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
       <div class="s-cols">
         <aside class="s-left">
           <Title>Event Log</Title>
