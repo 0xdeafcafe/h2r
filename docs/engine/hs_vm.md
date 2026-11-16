@@ -6,7 +6,7 @@ trait. It follows the retail interpreter's own structure, so the semantics
 come from the evaluators: threads with frame stacks, evaluators re-entered
 once per loop iteration, value slots cast through the retail table, and the
 scheduler's slot-order tick. Decoding and table provenance are in
-[../haloscript.md](../haloscript.md). It is not wired into the game yet;
+[../haloscript.md](../formats/haloscript.md). It is not wired into the game yet;
 see "Next steps".
 
 Evidence is `h2 disasm` of the owner's `default.xbe` (SHA-256 `03215919…935d`).

@@ -5,7 +5,7 @@
 //! embedded framework, with its build stamp beside the binary) and the
 //! boot cache's analysis, so the first launch need not analyse the XBE.
 //! Everything written goes under the app's Caches directory, which tvOS
-//! may purge when it needs space: saves and settings included (docs/tvos.md).
+//! may purge when it needs space: saves and settings included (docs/runtime/tvos.md).
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ pub const FRAMEWORK: &str = "Frameworks/h2game.framework/h2game";
 /// XBE, the menu, the shared maps, The Heretic (`00a_introduction`),
 /// Zanzibar, the fonts, the dashboard media and the intro movie. About
 /// 1 GB of the disc's 7 GB; the other levels and multiplayer maps are left
-/// out, and choosing one stops the game (docs/tvos.md, "Known gaps").
+/// out, and choosing one stops the game (docs/runtime/tvos.md, "Known gaps").
 pub const DISC_FILES: &[&str] = &[
     "default.xbe",
     "maps/mainmenu.map",

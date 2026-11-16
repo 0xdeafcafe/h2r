@@ -45,7 +45,7 @@ impl Live {
         // to its address, so off-loopback it is the address the host
         // connected from, whatever was declared. A declared address is kept
         // otherwise, and lists show the session only if that address is a
-        // local-network one (Endpoint::listable, docs/live-custom-games.md).
+        // local-network one (Endpoint::listable, docs/live/live-custom-games.md).
         let declared = match seen {
             Some(v) if new.visibility.is_listed() && !v.is_loopback() => None,
             _ => new.addr,

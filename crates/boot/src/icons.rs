@@ -1,4 +1,4 @@
-//! Button icons for the device in use (`docs/button-icons.md`).
+//! Button icons for the device in use (`docs/input/button-icons.md`).
 //!
 //! Two parts. [`FontRewrite`] serves the disc's font files with extra glyphs:
 //! each icon set of `font::icons` at code units of its own, next to the

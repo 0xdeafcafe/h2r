@@ -18,7 +18,7 @@
 //! So a stream sent to a mix-in still plays its own speaker bins if the game
 //! sets them afterwards, and `SetMixBinVolumes` on the send bin scales the
 //! send. Halo 2 puts its distance attenuation in exactly those volumes
-//! (`docs/dsound.md`, "Distance attenuation").
+//! (`docs/audio/dsound.md`, "Distance attenuation").
 
 use std::collections::BTreeMap;
 

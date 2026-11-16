@@ -1,5 +1,5 @@
 //! `/art/game/*`: art extracted from the owner's own disc (`h2 live assets
-//! extract`), served beside the web app (docs/live-api.md, "Optional game
+//! extract`), served beside the web app (docs/live/live-api.md, "Optional game
 //! art"). By default only to clients on this machine, since the files are
 //! the owner's copy of the game's art; `--share-game-art` serves them to
 //! everyone.
@@ -49,7 +49,7 @@ impl GameArt {
                 Some(art) => Ok(Some(art)),
                 None => anyhow::bail!(
                     "{} has no {MANIFEST}; extract the art into it with \
-                     `h2 live assets extract --out DIR` (docs/live-art.md)",
+                     `h2 live assets extract --out DIR` (docs/live/live-art.md)",
                     dir.display()
                 ),
             },
@@ -171,7 +171,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Map geometry (docs/live-art.md) goes out with glTF and JSON types.
+    /// Map geometry (docs/live/live-art.md) goes out with glTF and JSON types.
     #[tokio::test]
     async fn geometry_files_have_their_content_types() {
         use axum::body::Body;

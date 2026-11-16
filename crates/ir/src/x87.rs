@@ -5,7 +5,7 @@
 //! full tag word, and the last-instruction pointers. No x87 value is ever a
 //! temp. Each operation is a [`crate::Intrinsic::X87`] that names its
 //! registers as the instruction does, `ST(i)` relative to TOP, and maps 1:1
-//! onto one `h2x87_v1_*` helper of `crates/x87` (docs/FLOAT-ABI.md §3-§4).
+//! onto one `h2x87_v1_*` helper of `crates/x87` (docs/lifter/FLOAT-ABI.md §3-§4).
 //! The helpers never touch guest memory: the lifter reads memory operands
 //! with ordinary [`crate::Stmt::Load`]s and passes the bits by value, and
 //! writes stores with ordinary [`crate::Stmt::Store`]s.

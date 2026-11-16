@@ -507,7 +507,7 @@ pub fn run(
 
     let color = if let Some(f) = &c.final_combiner {
         // Each operand goes through an unsigned mapping (clamp to [0, 1],
-        // inverted when complemented) before the add; see docs/shaders.md.
+        // inverted when complemented) before the add; see docs/graphics/shaders.md.
         let un = |x: f32, invert: bool| {
             let x = x.clamp(0.0, 1.0);
             if invert { 1.0 - x } else { x }

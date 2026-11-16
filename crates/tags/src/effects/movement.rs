@@ -1,4 +1,4 @@
-//! `pmov` (particle movement). Layout provenance: `docs/effects.md`.
+//! `pmov` (particle movement). Layout provenance: `docs/formats/effects.md`.
 //!
 //! A `pmov` is a 0x14-byte root followed by a block of 20-byte movement
 //! records, each holding a block of 20-byte `{id, property}` parameters. The

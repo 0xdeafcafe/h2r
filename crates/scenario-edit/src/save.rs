@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// (a map inside an XISO). The source is only ever read.
 ///
 /// `bytes`, when set, are the map's current bytes held in memory (a map
-/// package resolved over this location, docs/maps.md); `path` and
+/// package resolved over this location, docs/game/maps.md); `path` and
 /// `region` then name its base, the disc's map, which the shared caches
 /// are found beside and which a package's patch starts from.
 #[derive(Clone, Debug, PartialEq, Eq)]

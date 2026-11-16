@@ -237,7 +237,7 @@ fn many_draws_to_one_target_keep_their_uniforms() {
 /// `H2_GFX_MERGE_PASSES=exact`) a draw whose program can `discard`
 /// starts a render pass of its own: on Apple GPUs such a draw's
 /// implicit-LOD samples at triangle edges depend on what earlier draws in
-/// the same render pass left in the tile (docs/graphics.md, "Merged
+/// the same render pass left in the tile (docs/graphics/graphics.md, "Merged
 /// passes"). Three provider draws, the middle one alpha-tested: two render
 /// passes merged, three per draw, and the same pixels.
 #[test]
@@ -301,7 +301,7 @@ fn a_draw_that_can_discard_starts_its_own_render_pass() {
 /// With merged passes, a draw after one that writes only some colour
 /// channels starts a new render pass unless it writes the same channels:
 /// on Apple GPUs a later draw's edge pixels otherwise depend on that draw
-/// (docs/graphics.md, "Merged passes"). Three provider draws, the first
+/// (docs/graphics/graphics.md, "Merged passes"). Three provider draws, the first
 /// with alpha writes off: two render passes merged, three per draw, and the
 /// same pixels.
 #[test]

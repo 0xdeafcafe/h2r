@@ -10,7 +10,7 @@ gfx = { path = "../gfx" }
 wgpu = "30"
 thiserror.workspace = true
 runtime.workspace = true
-# Swap/KickOff/drain/submit spans and the frame counter (docs/perf.md).
+# Swap/KickOff/drain/submit spans and the frame counter (docs/perf/perf.md).
 timeline = { path = "../timeline" }
 # NV2A program translation behind `nv2a::Nv2aShaders` (the ShaderProvider).
 shaders = { path = "../shaders" }
@@ -41,7 +41,7 @@ ir.workspace = true
 # kernel's NtYieldExecution under Machine (tests/vblank_clock.rs).
 kernel = { path = "../kernel" }
 
-# Replays a synthetic frame (docs/perf.md, "Device CPU cost"). Plain timed
+# Replays a synthetic frame (docs/perf/perf.md, "Device CPU cost"). Plain timed
 # loop, no Criterion: `cargo bench -p d3d --bench pushbuf`.
 [[bench]]
 name = "pushbuf"

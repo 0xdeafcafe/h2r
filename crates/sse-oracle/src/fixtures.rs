@@ -1,7 +1,7 @@
 //! Committed, Rosetta-free fixture set: a selection of the full corpus.
 //!
 //! `fixtures/sse-fixtures-v1.bin.zst` is a zstd-compressed binary file (layout
-//! in `docs/sse-oracle.md`). Case inputs are not stored: they are regenerated
+//! in `docs/lifter/sse-oracle.md`). Case inputs are not stored: they are regenerated
 //! from the case id by the same deterministic generator that wrote the corpus
 //! (`corpus.rs`), and `regen-fixtures` verifies every regenerated input against
 //! the corpus row it came from. Only the outputs are stored, as word diffs

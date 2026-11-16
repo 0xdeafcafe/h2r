@@ -3,7 +3,7 @@
 //! The Xbox `WAVEFORMATEX` handled by `DirectSoundCreateBuffer` carries
 //! `WAVE_FORMAT_PCM` (0x0001, 8 or 16 bit) or `WAVE_FORMAT_XBOX_ADPCM`
 //! (0x0069). Both are mono or stereo. (Multichannel and WMA go through other
-//! paths, see `docs/audio.md`.)
+//! paths, see `docs/audio/audio.md`.)
 
 use crate::{AudioError, adpcm};
 

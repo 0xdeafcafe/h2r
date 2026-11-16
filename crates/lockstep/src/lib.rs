@@ -1,5 +1,5 @@
 //! The determinism harness for the high-frame-rate work
-//! (docs/high-framerate.md, phase 1): a hash of guest RAM at every guest
+//! (docs/game/high-framerate.md, phase 1): a hash of guest RAM at every guest
 //! tick and present, a trace of those hashes, and a comparison of two
 //! traces that names the first record and the RAM megabytes where they part.
 //!
@@ -146,7 +146,7 @@ pub fn hash_guest(guest: &Guest) -> RamHash {
 /// The whole-RAM hash is the strict test (two machines doing the same work
 /// have the same RAM). This one is the narrow test: it stays equal when
 /// only presentation differs, and it is small enough to send every tick
-/// (docs/live-coop.md, docs/theater.md "What the recorder adds").
+/// (docs/live/live-coop.md, docs/game/theater.md "What the recorder adds").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimRegion {
     /// `len` bytes at a fixed guest address.
@@ -157,8 +157,8 @@ pub enum SimRegion {
 
 impl SimRegion {
     /// Halo 2's game-state arena: `0x3fe000` bytes, the block checkpoints
-    /// save, behind the base word at `0x004e6080` (docs/engine-map.md,
-    /// `game_state_arena_initialize` `0x00123b30`; docs/checkpoints.md).
+    /// save, behind the base word at `0x004e6080` (docs/engine/engine-map.md,
+    /// `game_state_arena_initialize` `0x00123b30`; docs/runtime/checkpoints.md).
     /// The base word is from a static reading and has not been checked in
     /// a running game.
     pub const HALO2: SimRegion = SimRegion::Indirect {
@@ -435,7 +435,7 @@ pub struct TickHook {
 
 impl TickHook {
     /// Halo 2: `game_tick` and the game-time pointer, from the points table
-    /// (docs/high-framerate.md section 1).
+    /// (docs/game/high-framerate.md section 1).
     pub const HALO2: TickHook = TickHook {
         entry: engine::points::GAME_TICK.base,
         game_time: Some(engine::points::GAME_TIME.base),
@@ -512,7 +512,7 @@ impl Recorder {
 /// The tick observer as a feature (`lockstep`): after each `game_tick`
 /// returns, `recorder` hashes RAM before the caller continues. It is a
 /// read-only listener on the `frame` bridge, so it shares the tick with
-/// Live telemetry (docs/feature-engine.md).
+/// Live telemetry (docs/engine/feature-engine.md).
 ///
 /// The tick runs through the plan's shadow entry, so during the tick the
 /// guest stack slot holds the continuation token instead of the caller's
@@ -523,7 +523,7 @@ pub struct TickObserver(pub Arc<Recorder>);
 impl feature::Feature for TickObserver {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new("lockstep", "Per-tick guest RAM hashes")
-            .doc("docs/high-framerate.md")
+            .doc("docs/game/high-framerate.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let recorder = Arc::clone(&self.0);

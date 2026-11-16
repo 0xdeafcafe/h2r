@@ -780,7 +780,7 @@ fn map_source_is_built_once_and_decodes_many_tags() {
 
 #[test]
 fn acyclic_skin_chain_one_past_the_limit_is_refused() {
-    // The bound is part of the documented contract (docs/ui.md).
+    // The bound is part of the documented contract (docs/formats/ui.md).
     assert_eq!(MAX_SKIN_DEPTH, 4);
     let mut m = Mem::new();
     let mut next = None;

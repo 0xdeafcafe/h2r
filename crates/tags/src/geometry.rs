@@ -9,8 +9,8 @@
 //! size. This module knows nothing about BSPs or models.
 //!
 //! The reader is hand-written. Per-field provenance, as engine addresses (E)
-//! and disc checks (V/D), is in `docs/structure-bsp.md` and
-//! `docs/map-format.md` ("Render-model geometry").
+//! and disc checks (V/D), is in `docs/formats/structure-bsp.md` and
+//! `docs/formats/map-format.md` ("Render-model geometry").
 //!
 //! Hostile-input rules, all enforced here so that every layout gets them:
 //! - Tag-block reads are charged to a per-decode byte budget, so aliased

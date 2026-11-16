@@ -1,4 +1,4 @@
-//! Friends (docs/live-api.md, Friends): requests on the account streams,
+//! Friends (docs/live/live-api.md, Friends): requests on the account streams,
 //! the answers, and the friends read, end to end through the router.
 
 mod common;

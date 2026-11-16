@@ -1,5 +1,5 @@
-//! `GET /v1/sessions/{id}/relay`: the co-op relay (docs/live-api.md, "Co-op
-//! relay"; docs/live-coop.md). A WebSocket that hands each binary message
+//! `GET /v1/sessions/{id}/relay`: the co-op relay (docs/live/live-api.md, "Co-op
+//! relay"; docs/live/live-coop.md). A WebSocket that hands each binary message
 //! from one member of a co-op session to the other, for two machines that
 //! cannot reach each other directly.
 //!

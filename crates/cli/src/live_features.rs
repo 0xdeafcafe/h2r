@@ -25,7 +25,7 @@ pub const TELEPORTER_DESTINATION: i16 = 8;
 
 /// Scenario placement blocks that can hold a lift: (name, placements,
 /// stride, palette), the palette 8 bytes after its placements with 0x28-byte
-/// entries, tag reference first (the object type table, docs/objects.md).
+/// entries, tag reference first (the object type table, docs/formats/objects.md).
 const OBJECT_BLOCKS: [(&str, usize, usize); 4] = [
     ("scen", 0x50, 0x5c),
     ("mach", 0xa8, 0x48),

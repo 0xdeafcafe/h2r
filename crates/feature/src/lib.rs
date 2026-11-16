@@ -1,4 +1,4 @@
-//! The feature registry (docs/feature-engine.md, "Hooks").
+//! The feature registry (docs/engine/feature-engine.md, "Hooks").
 //!
 //! A feature declares what it attaches to through a [`Builder`]: frame and
 //! game events (the [`frame`](Builder::frame) and [`game`](Builder::game)
@@ -193,7 +193,7 @@ pub enum Run {
     ObserveAfter(Arc<ObserveFn>),
 }
 
-/// The kind of a hook (docs/feature-engine.md, "Kinds").
+/// The kind of a hook (docs/engine/feature-engine.md, "Kinds").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     ObserveBefore,

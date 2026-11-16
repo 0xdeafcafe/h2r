@@ -1,5 +1,5 @@
 //! The whole hopper image, field by field, as the retail game reads it
-//! (docs/live-matchmaking.md §6 has the table with every address). This is
+//! (docs/live/live-matchmaking.md §6 has the table with every address). This is
 //! the decoded view: [`Descriptor`] is all 0x614 bytes of a hopper
 //! descriptor, [`Entry`] all 0x37c bytes of a record slot, and
 //! [`HopperFile::descriptor`] / [`HopperFile::entries`] read them, the

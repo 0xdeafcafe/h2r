@@ -1,6 +1,6 @@
 //! Read-only views of the guest's dynamic-light and scene-layer state.
 //!
-//! Phase 0 of the E3 lighting design (`docs/e3-lighting.md`, "Phase 0
+//! Phase 0 of the E3 lighting design (`docs/graphics/e3-lighting.md`, "Phase 0
 //! findings"): what a host-side observer needs to read the live lights and
 //! to tell the guest's draws apart by layer. Nothing here writes guest
 //! memory, and nothing is wired into the runtime yet.

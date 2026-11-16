@@ -1,8 +1,8 @@
-//! Installs crates/dsound through `dsound::register` (docs/dsound.md "Boot
+//! Installs crates/dsound through `dsound::register` (docs/audio/dsound.md "Boot
 //! integration") with a headless mixer. Completion events go through the
 //! kernel, pinned with `Kernel::reference_dispatcher` so a closed handle
 //! still gets its signal. The game's WMA codec runs natively
-//! (`dsound::xwma`). Audio time is logical (docs/dsound.md "Boot
+//! (`dsound::xwma`). Audio time is logical (docs/audio/dsound.md "Boot
 //! integration"): an output thread with `Pacing::Logical` into a
 //! `NullSink`, which the runner drives with [`advance`] between slices, so
 //! a run stays deterministic. When every guest thread waits and only
@@ -212,7 +212,7 @@ fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
 }
 
 /// `H2_AUDIO_STATS=1`: one line every [`AudioReport::EVERY`] on stderr with
-/// what the audio path did in that window (docs/dsound.md, "Audio stats").
+/// what the audio path did in that window (docs/audio/dsound.md, "Audio stats").
 pub struct AudioReport {
     last_at: std::time::Instant,
     last: Option<(dsound::OutputStats, audio::StreamHealth)>,

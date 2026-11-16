@@ -1,5 +1,5 @@
-//! The content store for custom maps (docs/maps.md §5, docs/live-api.md
-//! "Custom maps", docs/live-admin.md "Custom content"), through the router.
+//! The content store for custom maps (docs/game/maps.md §5, docs/live/live-api.md
+//! "Custom maps", docs/live/live-admin.md "Custom content"), through the router.
 //! Every byte here is invented: the "maps" are a `daeh` tag and filler.
 mod common;
 

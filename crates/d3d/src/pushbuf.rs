@@ -6,7 +6,7 @@
 //! (`device+0`) with its threshold (`device+4`), calling
 //! `D3D_MakeRequestedSpace` when full, then stores NV2A method headers and
 //! data words and advances put (36 `BEGIN_END` stores in 22 functions; see
-//! `docs/d3d.md`). The device gives those writers a real buffer in guest
+//! `docs/graphics/d3d.md`). The device gives those writers a real buffer in guest
 //! memory and *reads back* what they wrote at every D3D entry, so the inline
 //! draws are executed in order with the calls around them.
 //!

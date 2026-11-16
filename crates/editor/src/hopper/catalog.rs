@@ -2,7 +2,7 @@
 //! run time: the multiplayer maps a record can name (the globals tag's level
 //! list in the main menu map), and the game-engine names a record's variant
 //! carries. The same reading as `h2 live assets extract`'s catalog
-//! (`crates/cli/src/live_catalog.rs`, docs/live-admin.md "The catalog"),
+//! (`crates/cli/src/live_catalog.rs`, docs/live/live-admin.md "The catalog"),
 //! maps only; nothing of it is in the repo.
 
 use std::io::{Read, Seek};

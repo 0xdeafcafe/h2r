@@ -3,7 +3,7 @@
 //!
 //! This module is deliberately self-contained (hand-written fixed codecs, no
 //! schema/build.rs involvement) so it merges independently of other tag groups.
-//! Layout evidence and its provenance are recorded in `docs/sound.md`.
+//! Layout evidence and its provenance are recorded in `docs/formats/sound.md`.
 //!
 //! Model: a retail Xbox `snd!` tag is only 20 bytes. It selects a run of
 //! *pitch ranges* inside the map's single `ugh!` tag (the "sound cache file
@@ -46,7 +46,7 @@ pub enum Encoding {
     Mono,
     Stereo,
     /// Source name "codec". Retail data shows it holds Xbox ADPCM streams whose
-    /// channel count is not given by this byte; see `docs/sound.md`.
+    /// channel count is not given by this byte; see `docs/formats/sound.md`.
     Codec,
     Unknown(u8),
 }
@@ -78,7 +78,7 @@ pub struct SoundHeader {
     pub pitch_range_count: u8,
     /// +0xb..+0x10, uninterpreted.
     pub unknown: [u8; 5],
-    /// Maximum play time (+0x10); milliseconds (see docs/sound.md).
+    /// Maximum play time (+0x10); milliseconds (see docs/formats/sound.md).
     pub max_play_time: u32,
 }
 impl SoundHeader {

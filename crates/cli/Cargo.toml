@@ -55,7 +55,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # `h2 live q events --follow` reads the event stream.
 tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-# `h2 profile` and `h2 bench` (docs/perf.md): off by default so ordinary
+# `h2 profile` and `h2 bench` (docs/perf/perf.md): off by default so ordinary
 # builds skip the profiler's dependencies. `cargo run -p cli --features perf`.
 perf = { path = "../perf", optional = true }
 

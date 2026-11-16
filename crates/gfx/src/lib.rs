@@ -1,6 +1,6 @@
 //! Direct3D 8 (Xbox flavour) replacement on wgpu.
 //!
-//! The crate has three layers; see `docs/graphics.md` for the design.
+//! The crate has three layers; see `docs/graphics/graphics.md` for the design.
 //!
 //! 1. **Pure Xbox data handling**, no GPU needed and fully unit-tested:
 //!    [`format`] (the Xbox `D3DFORMAT` set), [`swizzle`] (Morton addressing),

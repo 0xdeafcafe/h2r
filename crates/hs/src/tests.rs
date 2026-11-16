@@ -553,7 +553,7 @@ fn typed_views_expose_calls_literals_globals_and_script_targets() {
 }
 #[test]
 fn menu_documentation_is_only_a_runtime_inspection_pointer() {
-    let doc = include_str!("../../../docs/haloscript.md");
+    let doc = include_str!("../../../docs/formats/haloscript.md");
     let section = doc
         .split("## Menu requirements")
         .nth(1)

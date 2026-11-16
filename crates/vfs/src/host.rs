@@ -54,7 +54,7 @@ struct Cache {
 /// How long write metadata may stay unstored: a crash or an exit that
 /// skips the backend's drop loses at most this much (plus one
 /// [`FLUSH_TICK`]) of write/change-time and archive-bit updates, never
-/// file data. docs/storage.md "Write metadata".
+/// file data. docs/runtime/storage.md "Write metadata".
 pub const METADATA_STALE: Duration = Duration::from_secs(1);
 /// How often the flusher thread looks for stale write metadata.
 /// Writable host files kept open at once (`HostBackend::handles`).
@@ -235,7 +235,7 @@ pub struct HostBackend {
     /// Shared with queued write-behind jobs, which close their last copy.
     handles: Vec<(PathBuf, Arc<File>)>,
     /// Host data writes queued off the calling thread; `None` writes
-    /// synchronously (`H2_VFS_WRITE_BEHIND=0`). docs/storage.md
+    /// synchronously (`H2_VFS_WRITE_BEHIND=0`). docs/runtime/storage.md
     /// "Write-behind".
     write_behind: Option<WriteBehind>,
     #[cfg(test)]

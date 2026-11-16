@@ -1,4 +1,4 @@
-//! The server screen's endpoints (docs/live-admin.md §5): the public
+//! The server screen's endpoints (docs/live/live-admin.md §5): the public
 //! `GET /v1/server`, the admin-only `GET /v1/admin/status`, and invites
 //! made by admin accounts (`POST /v1/invites` with a signed event, the
 //! list, revoke) through the router.

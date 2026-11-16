@@ -1,6 +1,6 @@
 //! Choosing a host output device by name, without touching a device (the
 //! cpal half is `output::DeviceSink::open_named`). Used for the PlayStation
-//! controller speaker; see `docs/playstation-audio.md`.
+//! controller speaker; see `docs/audio/playstation-audio.md`.
 
 /// Names macOS gives a wired DualSense's USB audio function
 /// (`DualSense Wireless Controller`) and a wired DualShock 4's

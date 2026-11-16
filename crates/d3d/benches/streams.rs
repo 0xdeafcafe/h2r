@@ -11,7 +11,7 @@
 //! to the device for refilling.
 //!
 //! Each configuration runs with the vertex cache off (every draw copies its
-//! windows, `H2_VERTEX_CACHE=0`) and on (`docs/d3d.md`, "Vertex cache"):
+//! windows, `H2_VERTEX_CACHE=0`) and on (`docs/graphics/d3d.md`, "Vertex cache"):
 //! the vertex buffers are static unless `H2_BENCH_DYNAMIC` is set, in which
 //! case the guest rewrites (and reports) one of the four sets every frame.
 //!

@@ -1,5 +1,5 @@
 //! `HostBackend` write-behind: every guest-visible answer is the one a
-//! synchronous write gives. docs/storage.md "Write-behind".
+//! synchronous write gives. docs/runtime/storage.md "Write-behind".
 
 use super::*;
 use crate::write_behind::{MAX_IN_FLIGHT, Queue};

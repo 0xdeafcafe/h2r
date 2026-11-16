@@ -1,5 +1,5 @@
 //! The `frame` and `game` bridges: Rust events over hooks on the retail
-//! loop, until those subsystems go native (docs/feature-engine.md,
+//! loop, until those subsystems go native (docs/engine/feature-engine.md,
 //! candidates 3 and 4). A feature that uses them names no address.
 //!
 //! Every event is a read-only observer after the guest function returned,

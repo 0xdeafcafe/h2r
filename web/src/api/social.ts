@@ -1,4 +1,4 @@
-// Friends and teams on the wire (docs/live-api.md, "Friends" and "Teams"):
+// Friends and teams on the wire (docs/live/live-api.md, "Friends" and "Teams"):
 // the read documents, defensive mapping of what the server sends, and the
 // event payloads a signed-in account writes. Signing and sending are in
 // state/sign.ts; the reactive store is state/social.ts.

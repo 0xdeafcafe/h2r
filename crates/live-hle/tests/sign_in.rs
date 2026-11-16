@@ -186,7 +186,7 @@ impl World {
 
 #[test]
 fn boundary_inventory_matches_the_report_and_has_no_duplicate_addresses() {
-    let doc = include_str!("../../../docs/live-boundary.md");
+    let doc = include_str!("../../../docs/live/live-boundary.md");
     let table = doc
         .split("## Verified target inventory")
         .nth(1)

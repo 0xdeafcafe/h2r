@@ -1,6 +1,6 @@
 //! The game variant a hopper entry carries: the last 0x130 bytes of a record
 //! slot (`+0x24c..+0x37c`), the same record as a saved variant and the
-//! active variant at `G+0x13c` (docs/variants.md, which has the full table
+//! active variant at `G+0x13c` (docs/editor/variants.md, which has the full table
 //! and the evidence). Session setup (`0x00192eb0`) copies these bytes out
 //! whole for the entry it picks; the record clean-up (`0x0019d650`) is what
 //! the game holds a variant to.
@@ -19,7 +19,7 @@ pub const NAME_UNITS: usize = 32;
 /// Longest name, in UTF-16 units.
 pub const MAX_NAME_UNITS: usize = NAME_UNITS - 1;
 
-// Offsets in the record (docs/variants.md, "Where each setting lives";
+// Offsets in the record (docs/editor/variants.md, "Where each setting lives";
 // the setting numbers are the game's own, `0x470828`).
 /// u16 header: bit 0 the built-in flag, nothing else may be set.
 pub const HEADER: usize = 0x00;
@@ -312,7 +312,7 @@ impl VariantRecord {
 
     /// Everything the record clean-up (`0x0019d650`) would change, as
     /// `(offset, what)`; empty when the game keeps the record as it is.
-    /// The rules are docs/variants.md's "The clean-up", the same as
+    /// The rules are docs/editor/variants.md's "The clean-up", the same as
     /// `variants::record::check`.
     pub fn problems(&self) -> Vec<(usize, String)> {
         let mut out = Vec::new();

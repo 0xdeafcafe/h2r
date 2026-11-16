@@ -7,7 +7,7 @@ Names are assigned. Rust: `crates/engine/src/locale.rs`; adapters in
 ## Locale record
 
 Nine 0x1c-byte records at `matg + 0x188 + language * 0x1c`
-(`docs/map-format.md`). `localized_tag_string_get` (`0x1a0180`) computes
+(`docs/formats/map-format.md`). `localized_tag_string_get` (`0x1a0180`) computes
 the same address as `(language + 0xe) * 0x1c + matg`, with `matg` from
 `0x004e034c` and the language from `0x0047ff38` (lazily initialized).
 

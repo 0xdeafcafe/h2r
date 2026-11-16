@@ -1,4 +1,4 @@
-//! `h2 build` and `h2 run`: the boot tracer (crates/boot, docs/BOOT.md).
+//! `h2 build` and `h2 run`: the boot tracer (crates/boot, docs/runtime/BOOT.md).
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ const USAGE: &str = "usage:
   for frame need it (and must not share a data directory while running).
   It refuses to when the disc, image or --out lies inside what it would empty.
 `run` installs a mappack.iso found next to the disc into --data (once; a warning
-never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
+never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
 when --out's dylib is current for this h2 and the image, 3 otherwise.";
@@ -110,7 +110,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
-    // under the bounded loss in docs/storage.md "Write metadata".
+    // under the bounded loss in docs/runtime/storage.md "Write metadata".
     vfs::flush_pending_metadata();
     let r = r?;
     for l in &r.kernel_log {

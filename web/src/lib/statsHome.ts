@@ -1,5 +1,5 @@
 // The stats home's numbers: the server's summary (`GET /v1/stats/summary`,
-// docs/live-api.md "Stats summary") read defensively, and the boards, picks
+// docs/live/live-api.md "Stats summary") read defensively, and the boards, picks
 // and grids the page draws from it. Pure, so tests share them.
 
 export type StatsWindow = "today" | "7d" | "30d" | "all";

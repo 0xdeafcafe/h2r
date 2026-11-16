@@ -1,5 +1,5 @@
 //! Text from the game's glyph cache at a render scale above 1
-//! (`crate::glyph`, docs/high-resolution.md "Text").
+//! (`crate::glyph`, docs/graphics/high-resolution.md "Text").
 //!
 //! A synthetic glyph cache (a 256x256 `LIN_A4R4G4B4` texture the guest's
 //! glyph-cache pointer names) holds a few shapes rasterised here the way
@@ -92,7 +92,7 @@ fn coverage(x0: f64, y0: f64, side: f64, n: u32) -> f64 {
 }
 
 /// The cache's texels: white, alpha the 3-bit coverage widened to 4 bits
-/// as the game's decoder does (`(a << 1) | (a & 1)`, docs/fonts.md).
+/// as the game's decoder does (`(a << 1) | (a & 1)`, docs/formats/fonts.md).
 fn glyph_texels() -> Vec<u8> {
     let mut out = Vec::with_capacity((SIDE * SIDE * 2) as usize);
     for y in 0..SIDE {

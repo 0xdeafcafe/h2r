@@ -1,6 +1,6 @@
 //! Intel SDM Vol. 2, instruction Operation / Flags Affected sections.
 //! These are EFLAGS positions, unlike iced's internal RflagsBits numbering.
-//! See docs/oracle.md for the source edition and the complete rules table.
+//! See docs/lifter/oracle.md for the source edition and the complete rules table.
 use iced_x86::{Instruction, Mnemonic, OpKind, RflagsBits};
 
 pub const CF: u32 = 1;

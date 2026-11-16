@@ -97,7 +97,7 @@ pub fn entry_variant(base: &HopperFile, r: &EditRecord) -> Option<GameVariant> {
 }
 
 /// Why [`set_variant`] refused a variant: the game's clean-up would
-/// replace it (docs/variants.md, "The clean-up").
+/// replace it (docs/editor/variants.md, "The clean-up").
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("the game would reject this variant: {}", describe(.0))]
 pub struct Rejected(pub Vec<Problem>);

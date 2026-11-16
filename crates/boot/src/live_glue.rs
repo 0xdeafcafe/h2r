@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// Install before guest execution, after attaching the kernel. Disabled is a
 /// complete no-op, including account I/O, guest allocation and console settings.
-/// `maps` is the join-time map gate (docs/maps.md §5; the boot builds it with
+/// `maps` is the join-time map gate (docs/game/maps.md §5; the boot builds it with
 /// `map_bases::gate` over the disc and `<data>/maps`); None takes sessions
 /// as they come.
 pub fn install(
@@ -59,7 +59,7 @@ pub fn visibility(v: i64) -> live_hle::Visibility {
 
 /// Keep the HLE's hosted-session visibility on the `live.visibility`
 /// setting: now, and on every change (a row press, `h2 settings set`), which
-/// also updates an open lobby (docs/live-custom-games.md).
+/// also updates an open lobby (docs/live/live-custom-games.md).
 pub fn bind_visibility(hle: &Arc<Hle>, store: &settings::Store) {
     let key = crate::setting_defs::LIVE_VISIBILITY.key;
     if store.def(key).is_none() {

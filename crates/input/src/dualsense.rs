@@ -6,7 +6,7 @@
 //! module is the byte-level half: parse an input report, keep the mute
 //! toggle, and build the output report. Opening the HID device (IOKit or
 //! hidapi in shared mode) is the host's business; see
-//! `docs/playstation-audio.md`.
+//! `docs/audio/playstation-audio.md`.
 //!
 //! Layouts follow the Linux `hid-playstation` driver
 //! (`struct dualsense_input_report`, `struct dualsense_output_report_common`)

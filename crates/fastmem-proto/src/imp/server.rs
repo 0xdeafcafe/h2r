@@ -3,7 +3,7 @@
 //! One dedicated handler thread receives `EXC_BAD_ACCESS` messages on a
 //! receive right. Threads opt in with [`WatchServer::attach_current_thread`],
 //! which installs that right as their thread-level exception port. See the
-//! docs/fastmem-proto.md for why thread-level ports rather than task-wide filtering.
+//! docs/perf/fastmem-proto.md for why thread-level ports rather than task-wide filtering.
 //!
 //! The handler path (everything reachable from `serve`) follows three rules:
 //! no locks the stopped thread could hold (only atomics, Mach traps and the
@@ -399,7 +399,7 @@ impl WatchServer {
     }
 
     /// Installs this server as the task-wide `EXC_BAD_ACCESS` port. This is
-    /// the alternative docs/fastmem-proto.md argues against; it exists so tests can
+    /// the alternative docs/perf/fastmem-proto.md argues against; it exists so tests can
     /// stand up a "previously installed" task-level handler to chain to.
     pub fn attach_task(&self) -> Result<TaskAttachment<'_>, Error> {
         let shared = &self.shared;

@@ -14,7 +14,7 @@
 //! the packets after it (the rest of that sound) keep the label, and an
 //! unknown packet on an idle stream, or a flush, clears it.
 //!
-//! See `docs/playstation-audio.md`.
+//! See `docs/audio/playstation-audio.md`.
 
 use std::collections::HashMap;
 
@@ -136,7 +136,7 @@ fn glob(pattern: &str, name: &str) -> bool {
 
 /// The controller-speaker settings: `[pad_speaker]` in the settings file, or
 /// a file of its own (`H2_PAD_SPEAKER=<path>`). Unknown keys are errors, as
-/// in `docs/settings-menu.md`.
+/// in `docs/game/settings-menu.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PadSpeakerConfig {
@@ -165,7 +165,7 @@ pub struct PadSpeakerConfig {
 /// positions in 3D (its own DirectSound3D source, or a stream feeding a 3D
 /// mix-in) is never routed: see `DirectSound::set_pad_router`. These are
 /// generic words, not tag paths read from the disc; check them against your
-/// own maps with `h2 tags <map> snd!` and adjust (`docs/playstation-audio.md`).
+/// own maps with `h2 tags <map> snd!` and adjust (`docs/audio/playstation-audio.md`).
 pub const DEFAULT_ROUTES: &[&str] = &[
     "*/ui/*shield*",
     "*reload*",

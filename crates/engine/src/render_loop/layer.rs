@@ -1,4 +1,4 @@
-//! The layer draw (docs/layer-draw.md): `0x00044550`, which draws the
+//! The layer draw (docs/graphics/layer-draw.md): `0x00044550`, which draws the
 //! current layer, and `0x0003bc30`, its loop over the layer's entries. Both
 //! as Port-grade state machines like [`super::Machine`] (`render_views`):
 //! each stops at its next guest call with every register as the original

@@ -1,4 +1,4 @@
-//! The in-game Skulls menu (docs/skulls.md "Menu"): a "Skulls" row on the
+//! The in-game Skulls menu (docs/game/skulls.md "Menu"): a "Skulls" row on the
 //! campaign difficulty list that opens the Skulls screen, which lists all
 //! fifteen skulls with what each does, where it is found (and whether only
 //! on Legendary), and the pressing player's profile's Locked, On or Off.

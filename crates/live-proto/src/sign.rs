@@ -1,5 +1,5 @@
 //! Keys, compact JWS, signed events, self-issued tokens and invites
-//! (docs/live-security.md §1-§3). Everything here is pure: callers supply
+//! (docs/live/live-security.md §1-§3). Everything here is pure: callers supply
 //! the time and the key lookups, so the server can verify without I/O and
 //! the game-side client and CLI sign with exactly the same code.
 

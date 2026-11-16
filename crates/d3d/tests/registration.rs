@@ -148,7 +148,7 @@ fn register_installs_every_entry_but_the_native_helpers() {
     assert_eq!(r.implemented.len() + r.stopping.len(), entries.len());
     // The unimplemented entries plus the two port-I/O guards that stop.
     assert_eq!(r.stopping.len(), abi::UNIMPLEMENTED.len() + 2);
-    // The counts docs/d3d.md gives: 88 overrides (85 + 3) and 7 native.
+    // The counts docs/graphics/d3d.md gives: 88 overrides (85 + 3) and 7 native.
     assert_eq!(
         (r.implemented.len(), r.stopping.len(), r.native.len()),
         (85, 3, 7)

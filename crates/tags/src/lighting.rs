@@ -1,5 +1,5 @@
 //! Lighting and atmosphere fields reviewed against the retail engine.
-//! See `docs/lighting.md` for per-field provenance and explicit opaque areas.
+//! See `docs/formats/lighting.md` for per-field provenance and explicit opaque areas.
 //! The shared BSP reader owns geometry and lightmap linkage; this module
 //! extends it. Every block read goes through the shared [`TagView`], so
 //! aliased blocks are charged to its one per-payload budget.

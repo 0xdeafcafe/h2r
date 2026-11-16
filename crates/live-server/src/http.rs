@@ -1,4 +1,4 @@
-//! The HTTP and WebSocket API (docs/live-api.md) over [`Live`].
+//! The HTTP and WebSocket API (docs/live/live-api.md) over [`Live`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -427,7 +427,7 @@ async fn keys_by_tag(
     Ok(json(StatusCode::OK, &live.keys_by_tag(&gamertag(&tag)?)?))
 }
 
-/// `GET /v1/accounts/{gamertag}/friends` (docs/live-api.md, Friends).
+/// `GET /v1/accounts/{gamertag}/friends` (docs/live/live-api.md, Friends).
 async fn account_friends(
     State(live): Shared,
     headers: HeaderMap,
@@ -548,7 +548,7 @@ struct StreamFilter {
     /// `?games=`: live frames only for these games (default: all).
     games: Vec<String>,
     /// `?frames=packed`: live frames as packed binary messages
-    /// (docs/live-telemetry.md, Packed frames); JSON otherwise.
+    /// (docs/live/live-telemetry.md, Packed frames); JSON otherwise.
     packed: bool,
 }
 

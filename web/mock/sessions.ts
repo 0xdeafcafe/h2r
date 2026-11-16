@@ -1,4 +1,4 @@
-// Made-up session advertisements for the mock (docs/live-api.md
+// Made-up session advertisements for the mock (docs/live/live-api.md
 // "Sessions"): a handful of open games that people drift in and out of,
 // that fill up, close and get replaced, so the dashboard's "find a game"
 // screen has something to show without the game. Read-only: `GET

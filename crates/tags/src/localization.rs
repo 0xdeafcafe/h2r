@@ -1,6 +1,6 @@
 //! Halo 2 retail Xbox localization, derived from cache bytes and the executable.
 //!
-//! Provenance for each table and the conversion algorithm: `docs/localization.md`.
+//! Provenance for each table and the conversion algorithm: `docs/formats/localization.md`.
 //! Cache blobs contain NUL-terminated UTF-8-like bytes, not UTF-16. The engine
 //! converts these to 16-bit units. No game strings or external layouts are built in.
 use crate::{Error, Result, records::LocaleDescriptor, wire::BinaryRecord};

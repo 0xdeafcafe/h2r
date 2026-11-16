@@ -1,7 +1,7 @@
 //! Audio foundation for h2recomp.
 //!
 //! The Xbox SDK's DirectSound (and the MCPX APU behind it) is replaced at the
-//! API level. Nothing here emulates the hardware. See `docs/audio.md`.
+//! API level. Nothing here emulates the hardware. See `docs/audio/audio.md`.
 //!
 //! Layout:
 //! - [`adpcm`]: Xbox ADPCM decoder (pure, no I/O).

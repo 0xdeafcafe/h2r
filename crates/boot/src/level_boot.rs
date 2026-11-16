@@ -3,7 +3,7 @@
 //! at boot (`h2 play --level`, `H2_LEVEL`), and mark the level's first frame
 //! for `H2_PERF_FROM=level`.
 //!
-//! The research and every address are in docs/level-boot.md. In short: the
+//! The research and every address are in docs/runtime/level-boot.md. In short: the
 //! main loop asks for the main menu (`0x18f1c0`) while no game runs and none
 //! is pending. That function builds game options on its stack (clear and
 //! default them, `0x138110`; mode 3, the main-menu scenario path; one
@@ -35,7 +35,7 @@ use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use crate::layout_glue::Gm;
 
-// ---- guest addresses (docs/level-boot.md) ----
+// ---- guest addresses (docs/runtime/level-boot.md) ----
 
 /// `request_mainmenu(reason)`, stdcall, `ret 4`.
 pub const REQUEST_MAINMENU: u32 = 0x0018_f1c0;
@@ -82,7 +82,7 @@ pub const VARIANT_SIZE: u32 = 0x130;
 pub const MODE_CAMPAIGN: u32 = 1;
 pub const MODE_MULTIPLAYER: u32 = 2;
 pub const MODE_MAINMENU: u32 = 3;
-/// `goof` game type 0, Slayer (docs/community-gametypes.md).
+/// `goof` game type 0, Slayer (docs/game/community-gametypes.md).
 pub const GAME_TYPE_SLAYER: u32 = 0;
 const GLOBALS_OPTIONS: u32 = 0x8;
 const GLOBALS_ACTIVE: u32 = 0x1120;
@@ -579,7 +579,7 @@ pub struct LoadedMark(pub Option<Arc<Request>>);
 
 impl feature::Feature for LoadedMark {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("level-boot", "Level boot loaded mark").doc("docs/level-boot.md")
+        feature::Manifest::new("level-boot", "Level boot loaded mark").doc("docs/runtime/level-boot.md")
     }
     fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
         let req = self.0.clone();

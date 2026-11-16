@@ -381,7 +381,7 @@ impl GfxBackend {
     /// ([`set_merge_discards`](Self::set_merge_discards) off) so does every
     /// draw whose program can `discard` (`PreparedShader::discards`). With
     /// the exact rule the main menu matches one pass per draw byte for
-    /// byte; one pass per draw is the exact reference (docs/graphics.md,
+    /// byte; one pass per draw is the exact reference (docs/graphics/graphics.md,
     /// "Merged passes").
     pub fn set_merge_passes(&mut self, merge: bool) {
         self.merge_passes = merge;
@@ -395,7 +395,7 @@ impl GfxBackend {
     /// exact rule), and each costs about 40-75 us of CPU in wgpu and Metal.
     /// Not proven exact: at The Heretic's frame 4216 the merge self-check
     /// finds 61 edge pixels in two passes off by up to 4 levels, after
-    /// additive draws (docs/graphics.md, "Merged passes").
+    /// additive draws (docs/graphics/graphics.md, "Merged passes").
     /// `H2_GFX_MERGE_PASSES=exact` turns it off when the backend is made.
     pub fn set_merge_discards(&mut self, on: bool) {
         self.merge_discards = on;
@@ -951,7 +951,7 @@ impl GfxBackend {
         // With merged passes, a draw that follows a draw writing only some
         // colour channels (unless it writes the same ones) starts a render
         // pass of its own: on Apple GPUs its edge pixels otherwise depend
-        // on earlier draws in the pass (docs/graphics.md, "Merged passes").
+        // on earlier draws in the pass (docs/graphics/graphics.md, "Merged passes").
         // The fast rule (the default) splits a discarding draw only after a
         // partly masked one; the exact rule splits every discarding draw.
         let prev_mask = self

@@ -1,7 +1,7 @@
 # Xbox Live client HLE
 
 Opt-in public API overrides for Halo 2 retail XONLINES/XNet 5849. `entries.rs`
-is the address/name/stack-word inventory from `docs/live-boundary.md`. Sign-in
+is the address/name/stack-word inventory from `docs/live/live-boundary.md`. Sign-in
 operations live in `state.rs`; `network.rs` implements host sockets, keys and
 address routing, with platform FFI confined to `host.rs`. `client.rs` owns the
 HTTP worker, `invites.rs` implements cached friends, invite messages and accepted
@@ -26,7 +26,7 @@ handles and the stable user array occupy a bounded claimed allocation in the
 existing shared HLE window. Peer QoS results use a separate reusable allocation.
 Unsupported APIs preserve CPU/stack state and emit `Event::Unsupported`.
 
-See `docs/live.md`'s "Client HLE" sections for configuration, channel ports,
+See `docs/live/live.md`'s "Client HLE" sections for configuration, channel ports,
 System Link's two-instance setup and exact stub behavior. The host transport
 is plaintext between HLE clients, without Xbox wire-protocol interoperability.
 With a server URL, logon verifies accounts and publishes signed presence on a

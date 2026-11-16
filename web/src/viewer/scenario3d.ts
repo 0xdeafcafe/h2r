@@ -2,7 +2,7 @@
 // multiplayer spawns, vehicles, controls, lights), from the map glb's
 // `scenario` node: one child per placement, its extras naming it
 // (`{kind, index, tag, pos, forward, up, scale, bsp?, item?}`,
-// docs/live-art.md, "Scenario objects"). Placements of the same model are
+// docs/live/live-art.md, "Scenario objects"). Placements of the same model are
 // drawn as one instanced batch per kind; the placement nodes stay in the
 // tree, hidden, so each can be handed out and moved on its own.
 //

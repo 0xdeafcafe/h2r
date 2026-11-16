@@ -1,11 +1,11 @@
 //! `render-loop`: stage 7a's Rust orchestrators placed as implementations
-//! (docs/render-loop.md). Each is switched by `impl.render.<name>`, falling
+//! (docs/graphics/render-loop.md). Each is switched by `impl.render.<name>`, falling
 //! back to `impl.render`; all are off by default.
 //!
 //! Built: `impl.render.views`, the Rust `render_views`
 //! ([`engine::render_loop::Machine`]); `impl.render.layer_draw` and
 //! `impl.render.layer_entries`, the layer draw `0x00044550` and its entry
-//! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/layer-draw.md).
+//! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/graphics/layer-draw.md).
 //! The driver runs the port to each
 //! guest call, makes it with `call_guest` (the callee returns into a
 //! continuation that resumes the port), and returns to the caller when the
@@ -30,7 +30,7 @@ pub struct RenderLoop;
 
 impl Feature for RenderLoop {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Rust render orchestrators (stage 7a)").doc("docs/render-loop.md")
+        Manifest::new(ID, "Rust render orchestrators (stage 7a)").doc("docs/graphics/render-loop.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {

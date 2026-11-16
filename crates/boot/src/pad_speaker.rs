@@ -1,4 +1,4 @@
-//! The controller-speaker sound index (docs/playstation-audio.md): whenever
+//! The controller-speaker sound index (docs/audio/playstation-audio.md): whenever
 //! the game opens a map, fingerprint the start of every `snd!` permutation
 //! in it, from the player's own map file, and give DirectSound a new
 //! `dsound::padroute::PadRouter`. The shared maps are indexed once at start.

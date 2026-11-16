@@ -1,4 +1,4 @@
-//! Custom games over Live (docs/live-custom-games.md): a "Custom Game
+//! Custom games over Live (docs/live/live-custom-games.md): a "Custom Game
 //! Browser" row on the Xbox Live menu that opens the retail System Link
 //! browser in its dormant Live mode, a Content Download row that explains how
 //! to install the Multiplayer Map Pack, and the party privacy the title
@@ -131,7 +131,7 @@ pub const ERROR_LOOKUP: u32 = 0x0023_661f;
 pub const MAPPACK_ERROR: u32 = 0x6832_0001;
 const ENTRY_TITLE: u32 = 0xc;
 const ENTRY_MESSAGE: u32 = 0x10;
-/// Our dialog text (docs/map-pack.md section 4). The message box holds about
+/// Our dialog text (docs/game/map-pack.md section 4). The message box holds about
 /// five lines of 240 units; each line renders under 220 in conduit-12.
 pub const MAPPACK_TITLE_ID: u32 = ID_BASE + 0x34;
 pub const MAPPACK_TITLE: &str = "Multiplayer Map Pack";
@@ -275,7 +275,7 @@ pub fn answer_error<M: Gm>(m: &mut M, entry: u32, error: u32) -> bool {
 
 // ---- the screen's tag: a fifth pane and room for the fifth item ----
 //
-// The tag (`wgit`, docs/ui.md) has four panes, one per row, each with the
+// The tag (`wgit`, docs/formats/ui.md) has four panes, one per row, each with the
 // hint texts under the list, the "Y" callout, the row's help text and
 // picture; pane 0 also holds the list (anchor, up to seven visible items,
 // the default list skin). The list lays items out from the anchor, each one

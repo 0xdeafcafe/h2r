@@ -2,7 +2,7 @@
 // pictures, or in the plain class colours (floor, wall, metal, ...) the
 // viewer had before. The map glb gives a textured primitive the picture's
 // material and names its class material in the primitive's extras
-// (`{class, flat}`, docs/live-art.md, "Textures"); both are kept per mesh,
+// (`{class, flat}`, docs/live/live-art.md, "Textures"); both are kept per mesh,
 // so the switch is instant. The choice is remembered in localStorage.
 //
 // `texturesPref`, `savePref` and `flatOf` are pure; `loadFlats` and

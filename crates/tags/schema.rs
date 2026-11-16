@@ -1,5 +1,5 @@
 //! Minimal Xbox retail wire schema; public sources were consulted.
-//! Provenance and verification limits: docs/map-format.md.
+//! Provenance and verification limits: docs/formats/map-format.md.
 //! Range checks alone do not establish provenance or semantic accuracy.
 
 #[derive(Clone, Copy, Debug)]
@@ -334,7 +334,7 @@ pub fn records() -> Vec<Record> {
 // the shared src/geometry.rs. Kept as one self-contained section so other tag
 // groups can be added above without touching it.
 //
-// Provenance (details and pinned links: docs/map-format.md, "Render-model
+// Provenance (details and pinned links: docs/formats/map-format.md, "Render-model
 // geometry"). Every field carries one or more tags:
 //   E = read by the engine's own code (XBE disassembly, address given);
 //   D = disc evidence, checked on every mode tag of every map by
@@ -411,7 +411,7 @@ fn model_geometry_records() -> Vec<Record> {
         // +0x30..+0x38: the runtime section block (count, pointer) the
         // engine's fixup fills; empty on disc (D).
         // +0x38..+0x5c: the shared 0x24-byte geometry block info, decoded by
-        // src/geometry.rs (E 0x00223c70; see docs/structure-bsp.md). Owner =
+        // src/geometry.rs (E 0x00223c70; see docs/formats/structure-bsp.md). Owner =
         // this tag and runtime offset = -8 on every section (D).
         record(
             "ModeSection",

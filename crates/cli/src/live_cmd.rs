@@ -1,5 +1,5 @@
 //! `h2 live ...`: run the Xbox Live replacement service and use it
-//! (docs/live.md §4.2, docs/live-security.md).
+//! (docs/live/live.md §4.2, docs/live/live-security.md).
 //!
 //! Host data lives beside the other h2recomp data
 //! (`~/Library/Application Support/h2recomp/live`):
@@ -50,7 +50,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           --tunnel-name runs a named tunnel at https://HOST,
                           first logging in to Cloudflare, creating the tunnel
                           and routing HOST to it if needed (not with
-                          --no-tunnel-setup; docs/live-hosting.md).
+                          --no-tunnel-setup; docs/live/live-hosting.md).
                           --public-url names the URL
                           a proxy of your own serves it at; with
                           --behind-cloudflared that proxy is a cloudflared
@@ -106,7 +106,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           extract again: the viewer's animated models and
                           materials need the current extractor)
   maps publish DIR [--server URL] [--as GAMERTAG]
-                          upload a map package and publish it (docs/maps.md §5)
+                          upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the map packages the server has
   q <what> [--server URL] [--json|--jsonl]

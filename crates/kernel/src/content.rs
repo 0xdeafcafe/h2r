@@ -2,7 +2,7 @@
 //! signature XAPI checks before a title may use a content package.
 //!
 //! The header, as Halo 2's statically linked XAPI reads it (addresses in
-//! docs/map-pack.md, "Why the game said the content was damaged"):
+//! docs/game/map-pack.md, "Why the game said the content was damaged"):
 //!
 //! | Offset | Size | Field |
 //! | ---: | ---: | --- |

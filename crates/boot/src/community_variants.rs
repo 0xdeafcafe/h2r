@@ -4,7 +4,7 @@
 //! icon (U+E006) where the retail ones carry the padlock (U+E008).
 //!
 //! The design, the addresses and the sources are in
-//! docs/community-gametypes.md. In short: the built-in variants are a block
+//! docs/game/community-gametypes.md. In short: the built-in variants are a block
 //! in the `goof` tag of `mainmenu.map`, each a name, a game type, a list of
 //! `(setting, value)` pairs (the choices a player makes in the editor) and a
 //! description number. `0x149f88` turns every entry into a variant at load,
@@ -28,7 +28,7 @@ use std::sync::Arc;
 use runtime::Guest;
 use runtime::guest::Permissions;
 
-// ---- guest addresses (hook points; see docs/community-gametypes.md) ----
+// ---- guest addresses (hook points; see docs/game/community-gametypes.md) ----
 
 /// Loads the built-in variants from the `goof` tag (`[esp+4]`).
 const BUILTINS_LOAD: u32 = 0x0014_9f88;
@@ -269,7 +269,7 @@ impl Variant {
 use Setting::*;
 
 /// The community variants, in list order. Sources and the reasoning for each
-/// choice are in docs/community-gametypes.md.
+/// choice are in docs/game/community-gametypes.md.
 pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Zombies",
@@ -851,7 +851,7 @@ mod tests {
             assert!(v.display_name().ends_with(ICON));
             assert!(!v.display_name().contains('\u{e008}'), "never the padlock");
         }
-        // Retail names to avoid (docs/community-gametypes.md).
+        // Retail names to avoid (docs/game/community-gametypes.md).
         for clash in [
             "Rockets",
             "Swords",

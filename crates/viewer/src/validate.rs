@@ -48,7 +48,7 @@ pub struct Totals {
 }
 
 /// Thresholds for counters that are known to be nonzero on the retail disc
-/// (observed values in docs/map-format.md). Everything else must be zero.
+/// (observed values in docs/formats/map-format.md). Everything else must be zero.
 pub const MAX_OUT_OF_BOUNDS: usize = 16; // observed 3
 pub const MAX_NON_UNIT_FRACTION: f64 = 0.005; // observed 0.0012
 pub const MAX_FOREIGN_NODE_FRACTION: f64 = 0.001; // observed 0.00027

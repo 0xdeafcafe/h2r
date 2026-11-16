@@ -1,5 +1,5 @@
 //! `h2-live-server`: the Live service on its own, for the Docker image
-//! (docs/live-hosting.md). Flags: [`live_server::standalone::USAGE`].
+//! (docs/live/live-hosting.md). Flags: [`live_server::standalone::USAGE`].
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect();

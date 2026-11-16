@@ -1,4 +1,4 @@
-// The Admin area's "Custom content" tab (docs/maps.md §5): map packages and
+// The Admin area's "Custom content" tab (docs/game/maps.md §5): map packages and
 // stored blobs with their state and report counts, hide / unhide / delete /
 // block buttons, the reports, and the per-account upload switch. The calls
 // and the parsing are in ./content.ts.

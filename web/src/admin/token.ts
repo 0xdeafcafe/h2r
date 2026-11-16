@@ -1,4 +1,4 @@
-// Self-issued request tokens (docs/live-security.md §3), the browser's
+// Self-issued request tokens (docs/live/live-security.md §3), the browser's
 // first use of them: the admin area's saves sign a 60-second JWT with the
 // signed-in account's key, exactly as live-proto's `issue_token` does
 // (header {alg, kid, typ: "JWT"} over the canonical JSON of

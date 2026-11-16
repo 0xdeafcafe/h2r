@@ -1,6 +1,6 @@
 [package]
 name = "variants"
-description = "Halo 2 game variants: the 0x130-byte record, the settings schema, saved-variant files and the editor panel (docs/variants.md)"
+description = "Halo 2 game variants: the 0x130-byte record, the settings schema, saved-variant files and the editor panel (docs/editor/variants.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

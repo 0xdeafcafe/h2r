@@ -1,12 +1,12 @@
 //! A level's sky for the 3D viewer: its render model as `map/<stem>/sky.glb`
 //! (drawn around the camera, behind everything) and its colours and fog in
-//! `map.glb`'s `asset.extras.sky` (docs/live-art.md, "Sky").
+//! `map.glb`'s `asset.extras.sky` (docs/live/live-art.md, "Sky").
 //!
 //! The scenario's skies block is `scnr+0x8` (8-byte tag references, ID at
 //! +4). Of a `sky ` tag only these fields are read, the layout public sky
 //! definitions give and the disc agrees with (`geometry_from_the_disc`
 //! reports every level's sky): the render model reference at +0 (ID at +4),
-//! the model scale at +0x14 (docs/lighting.md), the atmospheric fog block
+//! the model scale at +0x14 (docs/formats/lighting.md), the atmospheric fog block
 //! at +0x48 (0x18-byte elements: colour RGB, maximum density, start
 //! distance, opaque distance), the secondary fog block at +0x50 (the same
 //! layout) and the clear colour (RGB) at +0xa0.

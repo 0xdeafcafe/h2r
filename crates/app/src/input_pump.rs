@@ -1,4 +1,4 @@
-//! Live input into XAPI, in the order docs/xapi.md requires.
+//! Live input into XAPI, in the order docs/runtime/xapi.md requires.
 //!
 //! The window thread only feeds the `KeyboardMouse` handle (and gilrs reads
 //! pads on its own); nothing reaches the guest until the guest thread runs
@@ -11,7 +11,7 @@
 //! 3. deliver the batch (kernel event signalling relocks guest memory);
 //! 4. lock XAPI again and `acknowledge_signals`.
 //!
-//! Lock order is guest memory, then XAPI, as in docs/xapi.md.
+//! Lock order is guest memory, then XAPI, as in docs/runtime/xapi.md.
 
 use std::sync::{Mutex, MutexGuard};
 

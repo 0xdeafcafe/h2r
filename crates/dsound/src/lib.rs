@@ -4,7 +4,7 @@
 //! level: guest calls (stdcall, stack arguments) land on [`DirectSound`],
 //! which reads and writes guest memory through the [`Host`] trait and drives
 //! `audio::Mixer`. Only [`register`] knows about the runtime crate; the rest
-//! is runtime-neutral. See `docs/dsound.md`.
+//! is runtime-neutral. See `docs/audio/dsound.md`.
 //!
 //! - [`host`]: guest memory and event/callback abstractions.
 //! - [`abi`]: constants and guest structure layouts.

@@ -1,4 +1,4 @@
-//! Skulls of our own, hidden in the campaign (docs/skulls.md "Our skulls").
+//! Skulls of our own, hidden in the campaign (docs/game/skulls.md "Our skulls").
 //!
 //! Retail's skulls are fifteen bytes at `0x4f55dc` and its stock function
 //! (`0x1df3e0`) takes only `n < 15`, so ours have no byte there: each is an
@@ -68,7 +68,7 @@ pub const INVINCIBLE: usize = COUNT + 5;
 /// The feature id in the plan and `H2_FEATURES`.
 pub const FEATURE: &str = "skulls-custom";
 
-// ---- addresses (docs/skulls.md "Our skulls" has the evidence) ----
+// ---- addresses (docs/game/skulls.md "Our skulls" has the evidence) ----
 
 /// The game globals pointer: the options mode at `+8` (1 campaign, 2
 /// multiplayer) and the active structure BSP (`i16`) at `+2`.
@@ -1065,7 +1065,7 @@ pub struct SkullsCustom(pub Arc<Custom>);
 impl feature::Feature for SkullsCustom {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Our own skulls, hidden in the campaign")
-            .doc("docs/skulls.md")
+            .doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::GAME_TICK;

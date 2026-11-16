@@ -6,7 +6,7 @@
 //! loose map, and the wgpu render state for 3D viewports, through
 //! [`ToolContext`]. The hopper (playlist) tool ships here; other tools live
 //! in their own crates and plug in through adapters (README.md,
-//! docs/editor.md).
+//! docs/editor/editor.md).
 //!
 //! Nothing here contains game data: map names and everything else come
 //! from the user's own disc at run time.

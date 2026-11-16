@@ -1,4 +1,4 @@
-# The Live server behind a named Cloudflare tunnel (docs/live-hosting.md,
+# The Live server behind a named Cloudflare tunnel (docs/live/live-hosting.md,
 # "Docker with a named tunnel"). From this directory:
 #
 #   cp .env.example .env      # then fill in TUNNEL_TOKEN and POSTGRES_PASSWORD

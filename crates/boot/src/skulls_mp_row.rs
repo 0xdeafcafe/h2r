@@ -1,5 +1,5 @@
 //! The multiplayer Skulls screen and its row in the game variant editor
-//! (docs/skulls.md "In multiplayer").
+//! (docs/game/skulls.md "In multiplayer").
 //!
 //! **Where.** The variant editor's category list (`variant_editing_options`,
 //! screen 178: Match, Player, Team, Game Type, Vehicle and Equipment
@@ -19,7 +19,7 @@
 //! The Game Setup row it replaces opened through `0x149f1e`, which always
 //! says window 5 (the main menu's stack), from a dialog on window 3; the
 //! screen went onto the main menu's stack under the lobby and B closed it
-//! there (docs/skulls.md "Why the Game Setup row broke").
+//! there (docs/game/skulls.md "Why the Game Setup row broke").
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -177,7 +177,7 @@ fn row_chosen(c: &mut Call, screen: &SkullsScreen, request_at: u32) -> Result<Fl
 impl feature::Feature for VariantRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(ROW_FEATURE, "The Skulls row in the game variant editor")
-            .doc("docs/skulls.md")
+            .doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use engine::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};

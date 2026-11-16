@@ -1,7 +1,7 @@
 //! The objects a scenario places, for `map.glb`'s `scenario` node: scenery,
 //! crates, vehicles, weapons, equipment, controls, light fixtures and sound
 //! scenery from their placement blocks, and the multiplayer weapon and
-//! vehicle spawns from the netgame equipment block (docs/live-art.md,
+//! vehicle spawns from the netgame equipment block (docs/live/live-art.md,
 //! "Scenario objects"). Machines have their own node (`machines`). Each
 //! object's render model is read once per level and shared by its
 //! placements.
@@ -17,7 +17,7 @@ use crate::live_geometry::{MachineModel, MapReader, NothingDrawn, Placement, obj
 use crate::live_looks::Looks;
 
 /// A placement block of the scenario: the object type table's columns
-/// (docs/objects.md): the kind (tag group) it places, its offset in `scnr`
+/// (docs/formats/objects.md): the kind (tag group) it places, its offset in `scnr`
 /// and its record stride. The palette follows 8 bytes on, 0x28-byte
 /// entries, tag reference first. Machines (`mach`) are not here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub const BLOCKS: [Block; 8] = [
 const PALETTE_STRIDE: usize = 0x28;
 
 /// The netgame equipment block (`scnr+0x120`, 0x90-byte entries;
-/// docs/forge.md): what multiplayer spawns and respawns at run time.
+/// docs/game/forge.md): what multiplayer spawns and respawns at run time.
 /// Position at `+0x40`, yaw, pitch and roll at `+0x4c`, the item at
 /// `+0x58` (group, then tag ID at `+0x5c`): a weapon, vehicle or other
 /// object, or an item or vehicle collection the game rolls.
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn blocks_are_the_object_type_tables_minus_machines() {
-        // docs/objects.md: placement offset and stride per type.
+        // docs/formats/objects.md: placement offset and stride per type.
         let kinds: Vec<&str> = BLOCKS.iter().map(|b| b.kind).collect();
         assert_eq!(
             kinds,

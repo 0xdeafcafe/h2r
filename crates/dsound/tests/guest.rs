@@ -13,7 +13,7 @@ use dsound::{DirectSound, GuestMemory, Layout, Stop};
 
 const RATE: u32 = 8000;
 
-// Halo 2 5849 addresses, from docs/dsound.md.
+// Halo 2 5849 addresses, from docs/audio/dsound.md.
 const CREATE: u32 = 0x0037d797;
 const CREATE_BUFFER: u32 = 0x0037d4be;
 const CREATE_STREAM: u32 = 0x0037d4e2;
@@ -1926,7 +1926,7 @@ fn effects_image_descriptor_walks_like_the_xhv_engine_and_the_library_do() {
 
 // ---- Voice effects -------------------------------------------------------
 //
-// Descriptors are built the way Halo's conversions build them (docs/dsound.md,
+// Descriptors are built the way Halo's conversions build them (docs/audio/dsound.md,
 // "Voice effects"); the signal is a synthetic sine at the mixer's 8 kHz.
 
 const STREAM_SET_FILTER: u32 = 0x0037b813;

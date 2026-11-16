@@ -1,5 +1,5 @@
 //! The game's glyph cache, so text can be redrawn sharp at a render scale
-//! above 1 (`docs/fonts.md`, "Glyph cache texture").
+//! above 1 (`docs/formats/fonts.md`, "Glyph cache texture").
 //!
 //! Halo 2 draws all text from one texture: a 256x256 `LIN_A4R4G4B4`
 //! texture of one level that it fills with decoded glyphs as strings need

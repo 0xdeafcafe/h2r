@@ -1,6 +1,6 @@
 [package]
 name = "live-server"
-description = "The Xbox Live replacement service: signed events on Postgres behind axum (docs/live.md, docs/live-api.md)"
+description = "The Xbox Live replacement service: signed events on Postgres behind axum (docs/live/live.md, docs/live/live-api.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 live-proto.workspace = true
-# MapId, manifests and hashing for the content store (docs/maps.md §5).
+# MapId, manifests and hashing for the content store (docs/game/maps.md §5).
 content.workspace = true
 anyhow.workspace = true
 serde.workspace = true

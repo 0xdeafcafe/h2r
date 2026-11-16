@@ -1,4 +1,4 @@
-// The dashboard's server screen (docs/live-admin.md §5): the public facts
+// The dashboard's server screen (docs/live/live-admin.md §5): the public facts
 // every visitor sees (GET /v1/server), the admin status (GET
 // /v1/admin/status, an `admin.read` token) and invites made by an admin
 // account: a signed `InviteCreated` event POSTed to /v1/invites with an
@@ -162,7 +162,7 @@ export function artWords(a: GameArtFacts): string {
 }
 
 /** The CLI line that makes `tag` an admin (the server lets only the
- *  operator grant, docs/live-admin.md §5). */
+ *  operator grant, docs/live/live-admin.md §5). */
 export function grantCommand(tag: string, revoke = false): string {
   const t = /\s/.test(tag) ? `"${tag}"` : tag;
   return `h2 live admin ${revoke ? "revoke" : "grant"} ${t}`;

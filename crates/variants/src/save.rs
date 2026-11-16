@@ -1,10 +1,10 @@
 //! Saved variants: the file the game writes into an XAPI save directory,
 //! its signature, the save's name, and the store of saves on the host disk.
 //!
-//! docs/variants.md, "Saved variants", has the evidence. In short:
+//! docs/editor/variants.md, "Saved variants", has the evidence. In short:
 //!
 //! - A save is a directory `U:\<12 hex digits>\` named by a hash of the
-//!   save name, with `SaveMeta.xbx` naming it (XAPI's format, docs/xapi.md).
+//!   save name, with `SaveMeta.xbx` naming it (XAPI's format, docs/runtime/xapi.md).
 //! - The save name is `"<type label>: <variant name>"`, the label compiled
 //!   into the XBE per language ([`XbeNames`]).
 //! - The payload is one file named for the content type: the 0x130-byte
@@ -41,7 +41,7 @@ const HASH_MODULUS: u64 = 0x0000_ffff_ffff_ffc5;
 
 /// The save directory for a save name: 12 uppercase hex digits of
 /// `h = (h * 0x10000 + unit) % HASH_MODULUS` over the UTF-16 units
-/// (XAPI `0x3309b8`, docs/xapi.md).
+/// (XAPI `0x3309b8`, docs/runtime/xapi.md).
 pub fn directory_name(save_name: &str) -> String {
     let h = save_name
         .encode_utf16()
@@ -358,7 +358,7 @@ impl SaveStore {
     }
 
     /// `<data root>/disk/Partition1/UDATA/4D530064`: where the game's `U:`
-    /// lives under a data root (docs/storage.md).
+    /// lives under a data root (docs/runtime/storage.md).
     pub fn root_under(data_root: &Path) -> PathBuf {
         data_root
             .join("disk")

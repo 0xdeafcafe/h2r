@@ -1844,7 +1844,7 @@ fn an_unbounded_sink_at_another_rate_is_resampled() {
     assert!(played[20..1000].iter().all(|&v| v == 0.25));
 }
 
-// The controller-speaker side output (docs/playstation-audio.md): a second
+// The controller-speaker side output (docs/audio/playstation-audio.md): a second
 // fake sink for the voices the pad router labels. Synthetic PCM only.
 
 /// A side sink whose device can be unplugged by the test.

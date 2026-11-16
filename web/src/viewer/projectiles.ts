@@ -3,7 +3,7 @@
 // with its trail, a sniper's beam, and for a sword or a melee no shot at
 // all (the model swings instead). Speeds come from the art manifest's
 // per-weapon ballistics, read from the weapon's projectile tag on the
-// owner's disc (docs/live-art.md); the table here only fills gaps.
+// owner's disc (docs/live/live-art.md); the table here only fills gaps.
 //
 // Each shot flies from the weapon's muzzle along the aim and ends where
 // the frame says it hit someone, else at the first piece of level it

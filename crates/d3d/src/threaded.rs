@@ -1,6 +1,6 @@
 //! A render thread: a [`Backend`] that runs another backend's work on a
 //! host thread of its own, the way the NV2A consumes the push buffer while
-//! the CPU goes on (docs/render-thread.md).
+//! the CPU goes on (docs/graphics/render-thread.md).
 //!
 //! The device still decodes the push buffer, translates state and resolves
 //! every draw on the guest's thread, reading guest memory there. What
@@ -18,7 +18,7 @@
 //!   count already back is answered without the queue, and
 //!   `try_pixel_count` never waits: it answers from the counts the render
 //!   thread has landed, or "not back yet" (which the device turns into
-//!   `D3DERR_TESTINCOMPLETE` only for a recent test; docs/d3d.md,
+//!   `D3DERR_TESTINCOMPLETE` only for a recent test; docs/graphics/d3d.md,
 //!   "Visibility tests").
 //! - **Handles** (`create_surface`, `upload_texture`, `snapshot_surface`,
 //!   `surface_texture`, `report_pixel_count`) are proxies made on the

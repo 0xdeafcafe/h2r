@@ -1,7 +1,7 @@
 //! `render-timing`: how much of the game thread's guest time is the game's
 //! render front-end, which stage of it, and which call in the scene pass
-//! sequence (docs/feature-engine.md, "7. Rasterizer front-end", and
-//! docs/frame-budget.md).
+//! sequence (docs/engine/feature-engine.md, "7. Rasterizer front-end", and
+//! docs/perf/frame-budget.md).
 //!
 //! Read-only observers before and after `render_frame_and_present` and its
 //! main sub-stages. The outer pair opens and closes the frame stats' guest
@@ -40,7 +40,7 @@
 //! thousands of calls a frame) are hooked only with [`DEEP`]
 //! (`H2_FEATURES=render-timing,render-timing.deep`), and there their
 //! numbers rank hook overhead as much as work. For per-draw cost use the
-//! sampling profiler (docs/perf.md, `H2_PERF_FROM=level H2_PROFILE=...`),
+//! sampling profiler (docs/perf/perf.md, `H2_PERF_FROM=level H2_PROFILE=...`),
 //! which does not move the code off the direct path.
 //!
 //! Off by default (`H2_FEATURES=render-timing`): each hooked function
@@ -255,7 +255,7 @@ pub struct Site {
 pub const SCENE_PASSES_END: u32 = 0x0002_c336;
 
 /// The functions `render_scene_passes` calls (all direct calls, read with
-/// `h2 disasm`; docs/render-loop.md).
+/// `h2 disasm`; docs/graphics/render-loop.md).
 pub const SCENE_CALLEES: [u32; 37] = [
     0x0001_3450,
     0x0001_3630,
@@ -304,7 +304,7 @@ pub fn in_scene_passes(ret: u32) -> bool {
 
 /// The shader draw `0x00016b90` that shader draw begin ends in (its tail
 /// call): the state cache at `0x00485b48` and its D3D state setters
-/// (docs/layer-draw.md).
+/// (docs/graphics/layer-draw.md).
 pub const SHADER_DRAW: u32 = 0x0001_6b90;
 /// Its extent: return addresses in here are its calls.
 pub const SHADER_DRAW_END: u32 = 0x0001_6f59;
@@ -663,7 +663,7 @@ impl Default for RenderTiming {
     }
 }
 
-/// The layer being drawn (`layer::CURRENT_LAYER`, docs/e3-lighting.md).
+/// The layer being drawn (`layer::CURRENT_LAYER`, docs/graphics/e3-lighting.md).
 const CURRENT_LAYER: u32 = 0x0046_7130;
 
 /// How many call sites the log lists.
@@ -724,7 +724,7 @@ fn callee_points() -> &'static [&'static Point] {
                         name,
                         a,
                         Sig::Opaque,
-                        "docs/render-loop.md",
+                        "docs/graphics/render-loop.md",
                     )))
                 })
             })
@@ -736,7 +736,7 @@ impl Feature for RenderTiming {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Render front-end timing")
             .off_by_default()
-            .doc("docs/frame-budget.md")
+            .doc("docs/perf/frame-budget.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {

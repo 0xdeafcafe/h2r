@@ -2,7 +2,7 @@
 //!
 //! Each one replaces a whole game function at its entry, with the
 //! function's own ABI, and reproduces a path the retail code already takes.
-//! See docs/BOOT.md for the evidence behind each.
+//! See docs/runtime/BOOT.md for the evidence behind each.
 
 use crate::stopgaps::Uses;
 

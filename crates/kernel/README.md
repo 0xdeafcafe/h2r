@@ -116,7 +116,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 269, 304, 305 | RtlCompareMemoryUlong (whole leading DWORDs; unaligned source stops), RtlTimeFieldsToTime (validated, BOOLEAN) and RtlTimeToTimeFields (proleptic Gregorian from 1601; negative times stop). |
 | 335–337 | XcSHAInit/Update/Final: SHA-1 (FIPS 180-4) in the caller's 116-byte context. |
 | 340 | XcHMAC: HMAC-SHA1 (RFC 2104) over input then input2 (a zero length is not read); keys over 64 bytes stop. |
-| 323 DATA | XboxHDKey: filled with `crypto::XBOX_HD_KEY` (all zero, this console's key); `content` signs installed content with it (docs/map-pack.md). |
+| 323 DATA | XboxHDKey: filled with `crypto::XBOX_HD_KEY` (all zero, this console's key); `content` signs installed content with it (docs/game/map-pack.md). |
 | 187, 197 | Close/duplicate typed guest handles, including file handles; current-thread pseudo-handle close is a no-op and duplication creates a real thread handle. |
 | 190, 202 | VFS create/open, root-directory-relative and ObDosDevices (root -3) opens, synchronous and asynchronous file objects, free-space-query opens, guest handle and IO_STATUS_BLOCK outputs. |
 | 198, 219, 236 | VFS flush/read/write in bounded 64 KiB host chunks, byte counts, explicit/current/append offsets, EOF and backend NTSTATUS errors; an Event argument is reset then signalled on completion. |
@@ -379,7 +379,7 @@ kernel.remove_periodic(id);
   slice boundary runs the callback, and the loop sees it. That is exact
   but costs a period's worth of charged accesses (16.7 million per 60 Hz
   vblank), which is why D3D's frame-wait override yields instead
-  (`FrameWait::HALO2_CLOCKED`, docs/d3d.md "Vertical blank").
+  (`FrameWait::HALO2_CLOCKED`, docs/graphics/d3d.md "Vertical blank").
 
 Halo registers no swap callback: in device `+0x1DA0..+0x1E00` game code
 touches only `+0x1DB8`, and `+0x1DBC` is a KEVENT that only D3D's replaced
@@ -502,7 +502,7 @@ XCreateSaveGame aliases them when reserving SaveMeta.xbx. Host storage reserves
 logical cluster capacity without changing EOF; disk-full create/overwrite
 reservations preserve existing data. AllocationSize is only a hint, as on NT:
 it never changes EndOfFile, and a backend without reservation support (the
-`Backend` default) ignores it rather than failing the create. See [checkpoint acceptance](../../docs/checkpoints.md)
+`Backend` default) ignores it rather than failing the create. See [checkpoint acceptance](../../docs/runtime/checkpoints.md)
 for the generated-code harness and its boundaries.
 
 Synchronous completion is equivalent for what Halo does. The 62 opens without a
@@ -679,10 +679,10 @@ Public declarations and layouts were checked 2026-11-14 against
 [nxdk thread startup](https://github.com/XboxDev/nxdk/blob/master/lib/winapi/thread.c),
 and the independent
 [Cxbx guest layout definitions](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/kernel/common/types.h).
-The compatibility contracts in [LIFTER.md](../../docs/LIFTER.md),
-[kernel-imports.md](../../docs/kernel-imports.md),
+The compatibility contracts in [LIFTER.md](../../docs/lifter/LIFTER.md),
+[kernel-imports.md](../../docs/runtime/kernel-imports.md),
 [Runtime API changes](../runtime/API-CHANGES.md), and
-[VFS storage contract](../../docs/storage.md) remain the integration references.
+[VFS storage contract](../../docs/runtime/storage.md) remain the integration references.
 These moving references and synthetic tests are not hardware trace validation.
 
 ## Campaign cache integration
@@ -691,11 +691,11 @@ The ignored `campaign_cold_warm_cache_slots` gate lifts the supplied retail
 copy/publication path and executes it through kernel/VFS/runtime against a
 read-only ISO. It covers slots 4/5, SP-shared slot 1, their menu/shared
 prerequisites, warm reopen, failure counts, and staging/resource-buffer
-lifetime. See [cache-slots.md](../../docs/cache-slots.md) for the command,
+lifetime. See [cache-slots.md](../../docs/runtime/cache-slots.md) for the command,
 fixture boundaries, and remaining full-activation checks.
 ## Performance instrumentation
 
 With `ExecCtx::enable_profiling(true)`, kernel adapters count and time every
 invocation (including failed and stopped calls) in `perf::Scope::Kernel`.
 The duration is inclusive host wall time, unrelated to the guest clock. See
-[performance](../../docs/performance.md) for aggregation and interpretation.
+[performance](../../docs/perf/performance.md) for aggregation and interpretation.

@@ -1,4 +1,4 @@
-//! XAPI: crates/xapi through `xapi::register` (docs/xapi.md "Boot
+//! XAPI: crates/xapi through `xapi::register` (docs/runtime/xapi.md "Boot
 //! integration"), over `xapi::VfsStorage` on the kernel's VFS and a
 //! headless InputManager with the keyboard pad. crates/xapi owns the N:
 //! cache drive at 0x2d5d0a. With `--no-xapi` the boot's old
@@ -241,7 +241,7 @@ impl InputScript {
     }
 }
 
-/// `BOOL XMountUtilityDrive(BOOL fFormatClean)` at 0x002d5b77 (docs/xapi.md),
+/// `BOOL XMountUtilityDrive(BOOL fFormatClean)` at 0x002d5b77 (docs/runtime/xapi.md),
 /// only with `--no-xapi`: the retail body selects a cache partition by
 /// reading the raw disk. Native policy: Z: is the configured utility
 /// partition; a format request is ignored.

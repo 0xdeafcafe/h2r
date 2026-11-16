@@ -86,7 +86,7 @@ pub(crate) fn sign_error(e: SignError) -> ApiError {
     }
 }
 
-/// Server switches (docs/live-security.md §3, §6).
+/// Server switches (docs/live/live-security.md §3, §6).
 #[derive(Debug, Clone)]
 pub struct Policy {
     /// Reads need a token too.
@@ -107,12 +107,12 @@ pub struct Policy {
     pub relay_rate: (f64, u32),
     /// How often the presence and game managers look.
     pub sweep_every: Duration,
-    /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live-admin.md).
+    /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live/live-admin.md).
     pub admins: Vec<Gamertag>,
     /// The public base URL, when served through a tunnel or proxy
-    /// (docs/live-hosting.md); set while running, shown in discovery.
+    /// (docs/live/live-hosting.md); set while running, shown in discovery.
     pub public: crate::public::PublicUrl,
-    /// Custom content: caps, quota and upload rate (docs/live-admin.md).
+    /// Custom content: caps, quota and upload rate (docs/live/live-admin.md).
     pub content: crate::content::ContentLimits,
 }
 
@@ -153,7 +153,7 @@ pub struct Live {
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
-    /// Custom maps and their content (docs/maps.md §5).
+    /// Custom maps and their content (docs/game/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
     pub(crate) stats: Arc<crate::stats::Stats>,
@@ -457,7 +457,7 @@ impl Live {
 
     /// Makes an account an admin until the process stops: the embedded
     /// server's playing account, on the owner's own machine
-    /// (docs/live-admin.md).
+    /// (docs/live/live-admin.md).
     pub fn grant_admin_runtime(&self, xuid: Xuid, tag: &str) {
         self.admins.grant_runtime(xuid, tag);
     }

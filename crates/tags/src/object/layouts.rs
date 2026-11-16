@@ -3,10 +3,10 @@
 //! every instance on the retail disc, `D` a naming or interpretation choice
 //! made here. Unlisted bytes are opaque and preserved. Names that are not
 //! backed by engine code are `unknown_*`, apart from a few `D`-labelled names
-//! whose role is argued in `docs/objects.md`.
+//! whose role is argued in `docs/formats/objects.md`.
 //!
 //! No community tag definition was used: offsets, strides and classes come
-//! from the disc and the XBE, see `docs/objects.md`.
+//! from the disc and the XBE, see `docs/formats/objects.md`.
 use super::{Evidence::*, Field, Kind::*, Layout};
 
 const fn f(

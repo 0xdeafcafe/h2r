@@ -3,7 +3,7 @@
 //! Opens the editor window. `--data` is the runtime's data root, as `h2
 //! play --data` (default `$TMPDIR/h2boot-data`): saved game variants and
 //! map packages go there. The disc defaults to `H2_DISC`, else
-//! `disc/halo2.iso` in the repository (docs/editor.md). Paths are chosen in
+//! `disc/halo2.iso` in the repository (docs/editor/editor.md). Paths are chosen in
 //! the system's file dialog; `H2_EDITOR_TYPED_PATHS=1` types them instead.
 
 use std::path::PathBuf;

@@ -4,7 +4,7 @@
 //! `A8R8G8B8` target and checked on known pixel values.
 //!
 //! The expected values are worked by hand from the semantics in
-//! `docs/shaders.md` (NVIDIA's `NV_register_combiners` model, the D3D
+//! `docs/graphics/shaders.md` (NVIDIA's `NV_register_combiners` model, the D3D
 //! encodings, and what Halo 2's own D3D pushes, cited per test), never by
 //! running the translator. Every draw covers the pixel read back with
 //! constant vertex attributes, so interpolation plays no part. Everything

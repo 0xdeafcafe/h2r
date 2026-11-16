@@ -49,7 +49,7 @@ expected groups `jpt!`, `weap`, `item`, `proj`, `obje`. All test EAX for zero
 immediately. Several push/pop EBX around the call, consistent with EBX as an
 input that is otherwise callee-saved. Most of the engine bypasses this
 function and inlines `(datum & 0xffff) * 16 + *0x4e3b44` then `+8` with no
-checks (`docs/engine-map.md`), so overriding this does not change those.
+checks (`docs/engine/engine-map.md`), so overriding this does not change those.
 
 ## `tag_group_find` (0x122d00)
 

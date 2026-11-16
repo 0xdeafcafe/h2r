@@ -1,5 +1,5 @@
 //! `h2 live q <what>`: read the service, for people and for agents
-//! (docs/live.md, "For agents"). JSON when stdout is not a terminal (or
+//! (docs/live/live.md, "For agents"). JSON when stdout is not a terminal (or
 //! with `--json`), one JSON value per line with `--jsonl`, a compact table
 //! on a terminal. Lists are fetched whole, following every cursor.
 

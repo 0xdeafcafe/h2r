@@ -63,7 +63,7 @@ pub type AdapterFn = fn(&mut Regs, &mut dyn GuestMemory) -> Result<u32, MemFault
 #[derive(Clone, Copy)]
 pub struct Override {
     pub addr: u32,
-    /// Assigned name (`docs/engine-map.md` where it has one).
+    /// Assigned name (`docs/engine/engine-map.md` where it has one).
     pub name: &'static str,
     pub run: AdapterFn,
     pub output: Output,

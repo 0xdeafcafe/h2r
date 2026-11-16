@@ -1,10 +1,10 @@
 //! Edited maps in place of the disc's.
 //!
-//! - Map packages in `<data>/maps/` (docs/maps.md, `vfs::PackageBackend`):
+//! - Map packages in `<data>/maps/` (docs/game/maps.md, `vfs::PackageBackend`):
 //!   a base plus patches, served as `D:\maps\<name>.map`.
 //! - `H2_MAP_DIR` names a host directory whose `<name>.map` files the game
 //!   reads as `D:\maps\<name>.map` (`vfs::MapOverrideBackend`,
-//!   docs/storage.md "Map overrides", docs/scenario-editor.md "How patched
+//!   docs/runtime/storage.md "Map overrides", docs/editor/scenario-editor.md "How patched
 //!   maps reach the game"). It wins over a package for the same map.
 //!
 //! With neither (no packages directory, `H2_MAP_DIR` unset or empty), the
@@ -33,7 +33,7 @@ pub fn dir() -> Option<PathBuf> {
 /// Which map exactly the game gets for `maps\<name>.map`: a package's
 /// `MapId`, or a whole-file override's (`H2_MAP_DIR`). `None` means the
 /// retail disc map. For sessions and telemetry: pass the loaded map's
-/// short name (the cache header's, `0x00547898`, docs/live-gamestate.md).
+/// short name (the cache header's, `0x00547898`, docs/live/live-gamestate.md).
 pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
     vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
 }
@@ -70,7 +70,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
 /// Given a packages directory, the packages layer is always mounted, even
 /// with no package there yet: a package installed while the game runs (a
 /// Live join, the editor) is served at the map's next open
-/// (`vfs::PackageBackend`, docs/maps.md §3). With an empty folder it serves
+/// (`vfs::PackageBackend`, docs/game/maps.md §3). With an empty folder it serves
 /// the disc's bytes unchanged.
 pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     cfg: vfs::Config,

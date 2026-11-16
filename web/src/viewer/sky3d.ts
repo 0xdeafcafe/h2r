@@ -1,6 +1,6 @@
 // A level's sky and fog in the 3D view. The map glb's `asset.extras.sky`
 // names the sky, its model (`sky.glb`, beside the map glb), its clear
-// colour and its fog (docs/live-art.md, "Sky"). The model is drawn around
+// colour and its fog (docs/live/live-art.md, "Sky"). The model is drawn around
 // the camera, behind everything (no depth), moving with the camera but not
 // turning with it; behind it is the clear colour, else the fog's. The fog
 // is the game's, measured from the point the camera looks at (the player

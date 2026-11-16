@@ -1,4 +1,4 @@
-//! The x87 runtime helpers of docs/FLOAT-ABI.md §1-§4, operating on the
+//! The x87 runtime helpers of docs/lifter/FLOAT-ABI.md §1-§4, operating on the
 //! runtime's `X87Abi` (crates/runtime/src/cpu.rs, h2abi.h v1).
 //!
 //! The architectural logic is safe Rust on `&mut X87Abi` (the functions

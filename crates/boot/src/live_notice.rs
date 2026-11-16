@@ -16,7 +16,7 @@
 //! fill and then, for error `0x23` only, writes our message over the message
 //! buffer, so the game draws our text in its own dialog and font. No tag or
 //! localized string is changed. `H2_NO_LIVE_NOTICE=1` skips it.
-//! See docs/live.md, "Client HLE: Live not set up".
+//! See docs/live/live.md, "Client HLE: Live not set up".
 
 use std::sync::Arc;
 

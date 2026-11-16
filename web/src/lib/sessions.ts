@@ -1,5 +1,5 @@
 // Open game sessions: what hosts advertise so others can find them
-// (docs/live-api.md "Sessions"). The web only reads them; joining happens
+// (docs/live/live-api.md "Sessions"). The web only reads them; joining happens
 // in the game. Everything here is pure.
 
 export interface SessionSlots {
@@ -21,7 +21,7 @@ export interface Session {
   flags: string;
   hopper_id: number | null;
   map: string | null;
-  /** The map package the host is playing (docs/maps.md §5), when it named
+  /** The map package the host is playing (docs/game/maps.md §5), when it named
    *  one; `map` is then its base map. Lower-case hex, else null. */
   map_id: string | null;
   /** The host's name for the game, usually its gametype. */

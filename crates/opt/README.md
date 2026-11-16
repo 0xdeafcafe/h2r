@@ -77,7 +77,7 @@ best of 61):
 1.04 ns per trip (2.85x); `memory` and `call` unchanged (their minimums,
 111-116 and 175-180 ns, are the accessor calls and the runner's round trip).
 
-The main menu idle (docs/BOOT.md, presents 440-560, the same 25,271 slices
+The main menu idle (docs/runtime/BOOT.md, presents 440-560, the same 25,271 slices
 either way), second runs: none 1.86 fps, 501 ms median frame, 139 s user
 CPU; all 2.44 fps, 376 ms, 129 s. First runs, under heavier load: none
 0.96 fps (153 s), all 1.95 fps (138 s). Wall-clock frame rate moves with

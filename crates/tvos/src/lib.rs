@@ -1,4 +1,4 @@
-//! The Rust half of the tvOS app (platform/tvos, docs/tvos.md).
+//! The Rust half of the tvOS app (platform/tvos, docs/runtime/tvos.md).
 //!
 //! The UIKit host creates a full-screen view backed by a `CAMetalLayer`
 //! and calls, all on the main thread:
@@ -44,7 +44,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
     Box::new(move |mut host: app::GuestHost| -> Result<()> {
         let xbe = boot::read_xbe(&layout.disc)?;
         let gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
-        // Last run's pipelines, built ahead (Caches; docs/graphics.md).
+        // Last run's pipelines, built ahead (Caches; docs/graphics/graphics.md).
         let gfx = match d3d::pipeline_store::default_path() {
             Some(p) => gfx.with_pipeline_cache(p),
             None => gfx,

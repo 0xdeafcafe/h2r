@@ -1,4 +1,4 @@
-//! The `ui` subsystem's Rust model (docs/feature-engine.md "UI"): our list
+//! The `ui` subsystem's Rust model (docs/engine/feature-engine.md "UI"): our list
 //! screens and the rows we add to retail lists, as data over the settings
 //! [`Store`].
 //!

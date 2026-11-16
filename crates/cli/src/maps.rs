@@ -175,7 +175,7 @@ fn dump_tag(
 
 /// `h2 maps install`: puts every map package whose map name the disc lacks
 /// into 1.0's map list as a content package, and removes the ones whose
-/// package is gone (docs/maps.md §4). The boot does the same at start-up.
+/// package is gone (docs/game/maps.md §4). The boot does the same at start-up.
 fn install(args: &[String]) -> Result<()> {
     let (mut data, mut disc) = (None, None);
     let mut it = args.iter();

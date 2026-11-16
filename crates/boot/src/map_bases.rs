@@ -1,5 +1,5 @@
 //! The disc's own maps, hashed, for joining games on custom maps
-//! (docs/maps.md §5): `live_hle::maps::Bases` over the retail ISO.
+//! (docs/game/maps.md §5): `live_hle::maps::Bases` over the retail ISO.
 //!
 //! [`DiscBases`] hashes `maps\<name>.map` as the disc has it, read through
 //! its own read-only [`vfs::DiscBackend`] on the ISO: below every package

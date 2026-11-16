@@ -1,5 +1,5 @@
 //! The 0x130-byte game variant record (the variant at `G+0x13c` in
-//! docs/live-gamestate.md, the payload of a saved variant, the tail of a
+//! docs/live/live-gamestate.md, the payload of a saved variant, the tail of a
 //! hopper record slot).
 //!
 //! The record's bytes are the source of truth: [`GameVariant`] wraps them and
@@ -14,7 +14,7 @@
 //! is our encoding of those answers; the `#[ignore]` test
 //! `descriptors_match_the_xbe` decodes the descriptors from `$H2_XBE` and
 //! checks it entry by entry. The limits in [`check`] are what the game's
-//! record clean-up (`0x19d650`) leaves alone (docs/variants.md).
+//! record clean-up (`0x19d650`) leaves alone (docs/editor/variants.md).
 
 use std::fmt;
 
@@ -253,7 +253,7 @@ pub fn all_settings() -> impl Iterator<Item = SettingId> {
 
 /// Our names for the settings we can identify (from the community variant
 /// model in `crates/boot/src/community_variants.rs` and the engine fields
-/// in docs/live-gamestate.md). The editor shows the disc's own labels when
+/// in docs/live/live-gamestate.md). The editor shows the disc's own labels when
 /// it has them; these are the fallback.
 pub fn symbolic_name(id: SettingId) -> Option<&'static str> {
     Some(match id.0 {
@@ -517,7 +517,7 @@ pub struct Problem {
     pub what: String,
 }
 
-/// The clean-up's limits (`0x19d650`; docs/variants.md lists them with
+/// The clean-up's limits (`0x19d650`; docs/editor/variants.md lists them with
 /// their evidence). Returns every broken rule; empty means the game keeps
 /// the record as it is.
 pub fn check(v: &GameVariant) -> Vec<Problem> {

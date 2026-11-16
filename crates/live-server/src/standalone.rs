@@ -1,5 +1,5 @@
 //! `h2-live-server`: the service alone, for a container
-//! (docs/live-hosting.md, "Docker with a named tunnel"). The same server as
+//! (docs/live/live-hosting.md, "Docker with a named tunnel"). The same server as
 //! `h2 live serve`, built without the rest of `h2` (the recompiler, the
 //! renderer, the disc tools), so it builds on Linux and the image stays
 //! small. It does not run cloudflared: a tunnel beside it does
@@ -39,7 +39,7 @@ pub const USAGE: &str = "usage: h2-live-server --data DIR [options]
   --content-quota-mib N   content one account may store (default 1024)
 
 Retail map hashes the content store refuses: DIR/retail-maps.sha256
-(sha256sum output; docs/live-admin.md, \"Custom content\").
+(sha256sum output; docs/live/live-admin.md, \"Custom content\").
 The web app is served from $H2_LIVE_WEB (a built web/dist).";
 
 /// What `h2-live-server` was asked to run, and the lines to print first.

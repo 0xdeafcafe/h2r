@@ -1,11 +1,11 @@
 //! Level geometry (multiplayer and campaign) for the stats site:
 //! `map/<stem>/map.glb`, the pre-drawn views in `map/<stem>/views/` and
-//! `views.json` (docs/live-art.md, the map geometry contract).
+//! `views.json` (docs/live/live-art.md, the map geometry contract).
 //!
 //! Runs inside the art extraction (`live_art::extract`), from the owner's own
 //! disc, once per disc. The level is the structure BSP's render geometry as
 //! the engine draws it: every cluster and every placed instance, through the
-//! shared section decoder in `tags::structure` (docs/structure-bsp.md). No
+//! shared section decoder in `tags::structure` (docs/formats/structure-bsp.md). No
 //! layout is re-derived here except the scenario's BSP list (as the `bsp`
 //! viewer reads it) and the BSP material element (0x20 bytes, shader
 //! reference at +8, the render-model material layout; checked against the
@@ -1410,7 +1410,7 @@ fn scenario_bsps(map: &mut MapReader) -> Result<Vec<TagId>> {
 }
 
 /// Per BSP material, its shader's tag name. Element 0x20 bytes, shader tag
-/// ID at +0xc (the render-model material layout, docs/map-format.md). If any
+/// ID at +0xc (the render-model material layout, docs/formats/map-format.md). If any
 /// element's ID is neither null nor a `shad` tag, the layout does not hold
 /// here and the answer is `None`.
 fn material_shaders(map: &mut MapReader, bsp: TagId) -> Result<Option<Vec<Option<String>>>> {
@@ -1477,7 +1477,7 @@ fn material_surfaces(map: &mut MapReader, bsp: TagId) -> (Vec<Surface>, usize) {
 
 /// Scenario machine placements (`scnr+0xa8`, stride 0x48) and their palette
 /// (`scnr+0xb0`, stride 0x28, tag reference first): the object type table's
-/// `mach` entry (docs/objects.md).
+/// `mach` entry (docs/formats/objects.md).
 const MACHINES: usize = 0xa8;
 const MACHINE_STRIDE: usize = 0x48;
 const MACHINE_PALETTE: usize = 0xb0;

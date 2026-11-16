@@ -1,5 +1,5 @@
 //! `h2 coop-probe diff A B`: compare the per-pool simulation hash logs two
-//! instances wrote with `H2_COOP_PROBE=1` (docs/live-coop.md section 9).
+//! instances wrote with `H2_COOP_PROBE=1` (docs/live/live-coop.md section 9).
 
 use anyhow::{Context, Result, bail};
 

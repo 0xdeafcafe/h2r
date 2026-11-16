@@ -1,6 +1,6 @@
 //! The hopper (playlist) tool: edits `multiplayer_hopper.dat`, the 16
 //! playlists the game downloads after signing in to Live
-//! (docs/live-admin.md, docs/live-matchmaking.md). The native counterpart
+//! (docs/live/live-admin.md, docs/live/live-matchmaking.md). The native counterpart
 //! of the web admin's playlist builder (`web/src/admin/HopperBuilder.tsx`):
 //! the same fields, edits, validation and presets, on a local file instead
 //! of the server's copy.

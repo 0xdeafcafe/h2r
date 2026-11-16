@@ -1,5 +1,5 @@
 //! The Skulls screen on our own list class, and its row on the campaign
-//! difficulty list as plan hooks (docs/skulls.md "Menu").
+//! difficulty list as plan hooks (docs/game/skulls.md "Menu").
 //!
 //! The screen is a [`SkullsScreen`]: all fifteen skulls, Locked, On or Off
 //! for the profile whose player pressed the row ([`SkullsScreen::open`],
@@ -114,7 +114,7 @@ fn row_chosen(c: &mut Call, screen: &SkullsScreen, seen: &Seen) -> Result<Flow, 
 
 impl feature::Feature for DifficultyRow {
     fn manifest(&self) -> Manifest {
-        Manifest::new("skulls-row", "The Skulls row on the difficulty list").doc("docs/skulls.md")
+        Manifest::new("skulls-row", "The Skulls row on the difficulty list").doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let seen = Arc::new(Seen {

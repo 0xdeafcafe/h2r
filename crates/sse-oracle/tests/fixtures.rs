@@ -65,7 +65,7 @@ fn counts_per_form_and_category() {
         assert_eq!(categories.values().sum::<usize>(), PER_FORM);
         assert_eq!(modes[form], [PER_FORM / 8; 8], "{form:?}");
     }
-    // Spot-check multi-form mnemonics against docs/sse-oracle.md.
+    // Spot-check multi-form mnemonics against docs/lifter/sse-oracle.md.
     for (m, n) in [
         ("addps", 44_944),
         ("shufps", 1_191_016),

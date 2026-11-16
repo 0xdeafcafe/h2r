@@ -4,7 +4,7 @@
 //!
 //! - **Shapes** (always run): every x87 mnemonic in the retail image's
 //!   census, from hand-written encodings, lowers without an `Unsupported`,
-//!   validates, and has the statement shape docs/FLOAT-ABI.md asks for
+//!   validates, and has the statement shape docs/lifter/FLOAT-ABI.md asks for
 //!   (wait before a memory read, three-phase stores, FIP/FOP marks, the
 //!   `fcomi` flag merge, environment images).
 //! - **Semantics**: short programs through the interpreter, whose x87 ops

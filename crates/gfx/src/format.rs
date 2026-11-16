@@ -362,7 +362,7 @@ impl HostFormat {
 ///
 /// `F16`/`F24S8` are floating-point-depth variants (an NV2A "w-buffer"-ish
 /// format); wgpu has no 24-bit float depth, so they map to the nearest
-/// fixed/float formats and the difference is documented in `docs/graphics.md`.
+/// fixed/float formats and the difference is documented in `docs/graphics/graphics.md`.
 pub fn depth_format_to_wgpu(f: D3DFormat) -> Option<wgpu::TextureFormat> {
     use D3DFormat::*;
     match f {

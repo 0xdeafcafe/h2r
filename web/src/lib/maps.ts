@@ -1,4 +1,4 @@
-// Custom and modded maps on Live (docs/maps.md §5): the server's map
+// Custom and modded maps on Live (docs/game/maps.md §5): the server's map
 // packages (`GET /v1/maps`, `GET /v1/maps/{map_id}`), how a session or a
 // game that names one is shown, and the fallbacks when the package is
 // unknown, still loading or taken down. Everything here is pure; the

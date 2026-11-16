@@ -1,5 +1,5 @@
 //! Xbox service overrides that cannot run through the generated kernel path.
-//! See docs/xapi.md. `register` installs them into a runtime `Dispatch`.
+//! See docs/runtime/xapi.md. `register` installs them into a runtime `Dispatch`.
 #![forbid(unsafe_code)]
 
 pub mod adapter;

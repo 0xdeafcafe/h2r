@@ -135,7 +135,7 @@ pub struct State {
     pub keys: HashMap<String, Key>,
     pub files: HashMap<(TitleId, String), File>,
     pub presence: HashMap<Xuid, Presence>,
-    /// Friendship relations per account (docs/live-api.md, Friends). Only
+    /// Friendship relations per account (docs/live/live-api.md, Friends). Only
     /// accounts that ever sent or received a request have an entry.
     pub friends: HashMap<Xuid, Relations>,
     pub teams: live_proto::team::Store,

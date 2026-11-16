@@ -2,7 +2,7 @@
 //!
 //! The disc's movies are Bink 1. We carry no Bink decoder; `h2 movies` runs
 //! the user's own ffmpeg as an external process to convert them (see
-//! docs/movies.md). This crate is the other half: it describes what the
+//! docs/audio/movies.md). This crate is the other half: it describes what the
 //! conversion wrote (`movies.json` next to the files), provides a resumable
 //! app-data installer in [`install`], and lets a movie player
 //! find the outputs and notice when they are stale. It does no decoding.

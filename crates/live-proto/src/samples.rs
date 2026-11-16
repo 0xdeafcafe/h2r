@@ -1,5 +1,5 @@
 //! Invented but realistic telemetry frames, for size and speed
-//! measurements and codec tests (docs/live-telemetry.md, "Sizes"): a
+//! measurements and codec tests (docs/live/live-telemetry.md, "Sizes"): a
 //! 16-player multiplayer game and a campaign level with 60 actors, as the
 //! game would send them at 15 Hz (every second tick). Deterministic.
 

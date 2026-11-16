@@ -442,7 +442,7 @@ fn golden_vectors_match_the_encoder() {
 /// decode, validate, normalise) and passing it on (JSON per reader, or one
 /// packed stream frame plus a recorded keyframe a second). Run with
 /// `cargo test -p live-proto --release pack::tests::measure -- --ignored
-/// --nocapture` for the numbers in docs/live-telemetry.md.
+/// --nocapture` for the numbers in docs/live/live-telemetry.md.
 #[test]
 #[ignore]
 fn measure_cpu_per_frame() {

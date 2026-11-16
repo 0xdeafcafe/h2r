@@ -113,7 +113,7 @@ pub enum Arch {
     Arm64,
     /// Intel macOS.
     X86_64,
-    /// tvOS on an Apple TV (docs/tvos.md). Cross-compiled on a Mac against
+    /// tvOS on an Apple TV (docs/runtime/tvos.md). Cross-compiled on a Mac against
     /// the appletvos SDK; never the host there.
     Arm64Tvos,
 }

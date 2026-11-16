@@ -1,6 +1,6 @@
 //! The relay path: co-op datagrams through the Live server.
 //!
-//! `GET /v1/sessions/{id}/relay` is a WebSocket (docs/live-api.md, "Co-op
+//! `GET /v1/sessions/{id}/relay` is a WebSocket (docs/live/live-api.md, "Co-op
 //! relay"). The first message is `{"kind":"auth","token":...}` with a token
 //! for `sessions.relay`; after that every binary message is one datagram,
 //! handed to the session's other member. The server never looks inside one.

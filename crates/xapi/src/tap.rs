@@ -1,4 +1,4 @@
-//! Input recording and replay at the guest's own reads (docs/high-framerate.md,
+//! Input recording and replay at the guest's own reads (docs/game/high-framerate.md,
 //! phase 1).
 //!
 //! An [`InputTap`] sees every `XInputGetState` result just before it is

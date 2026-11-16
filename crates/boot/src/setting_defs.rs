@@ -1,4 +1,4 @@
-//! Our settings, one [`Def`] each (docs/settings-menu.md, docs/feature-engine.md
+//! Our settings, one [`Def`] each (docs/game/settings-menu.md, docs/engine/feature-engine.md
 //! "Settings"). The file keys and environment variables are the ones the
 //! hand-written settings used before the `settings` crate, so an existing
 //! `settings.toml` and existing launch scripts keep working.
@@ -76,7 +76,7 @@ pub static FPS: Def = Def {
 };
 
 /// The guest's back buffer: always 640x480. Halo 2's 480p mode is an
-/// upscale and its widescreen is anamorphic 640x480 (docs/high-resolution.md
+/// upscale and its widescreen is anamorphic 640x480 (docs/graphics/high-resolution.md
 /// "Terms" and "Prior art"), so no video mode changes it.
 pub const GUEST_FRAME: (u32, u32) = (640, 480);
 
@@ -112,7 +112,7 @@ pub static PAD_SPEAKER: Def = Def {
     key: "pad_speaker.enabled",
     label: "Controller Speaker",
     help: "Play the sounds the controller-speaker routes pick on a DualSense's \
-           speaker (docs/playstation-audio.md). H2_PAD_SPEAKER may also name a \
+           speaker (docs/audio/playstation-audio.md). H2_PAD_SPEAKER may also name a \
            routes file; its `enabled` decides.",
     kind: Kind::Bool,
     default: Value::Bool(true),
@@ -158,7 +158,7 @@ pub static LIVE_VISIBILITY: Def = Def {
     help: "Who finds the Live games you host in the Custom Game Browser and on the \
            web: everyone, your friends, or nobody (invitations only). Invitations \
            work in all three. Changing it updates an open lobby at once \
-           (docs/live-custom-games.md).",
+           (docs/live/live-custom-games.md).",
     kind: Kind::Choice(&[
         Choice {
             value: VISIBILITY_PUBLIC,
@@ -199,7 +199,7 @@ pub static ALL: &[&Def] = &[
     &PAD_SPEAKER,
     &PAD_MUTE,
     &LIVE_VISIBILITY,
-    // The campaign skulls, kept per profile (crate::skulls, docs/skulls.md).
+    // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
     &crate::skulls::SKULLS[2],
@@ -222,7 +222,7 @@ pub static ALL: &[&Def] = &[
     &crate::skulls::SKULLS[18],
     &crate::skulls::SKULLS[19],
     &crate::skulls::SKULLS[20],
-    // Skulls in multiplayer games (crate::skulls_mp, docs/skulls.md).
+    // Skulls in multiplayer games (crate::skulls_mp, docs/game/skulls.md).
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
     &crate::skulls_mp::MP_LOW_GRAVITY,

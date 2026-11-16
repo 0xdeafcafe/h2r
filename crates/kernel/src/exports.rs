@@ -1,6 +1,6 @@
 use crate::abi::{Convention, Export};
 use crate::ord;
-// Ordinals and word counts: nxdk xboxkrnl.exe.def and docs/kernel-imports.md.
+// Ordinals and word counts: nxdk xboxkrnl.exe.def and docs/runtime/kernel-imports.md.
 pub const EXPORTS: &[Export] = &[
     Export::stdcall(ord::AV_GET_SAVED_DATA_ADDRESS, "AvGetSavedDataAddress", 0),
     Export::stdcall(ord::AV_SEND_TV_ENCODER_OPTION, "AvSendTVEncoderOption", 4),

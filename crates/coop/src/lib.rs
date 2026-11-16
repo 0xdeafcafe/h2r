@@ -1,4 +1,4 @@
-//! Co-op over Live, phase 0 (docs/live-coop.md): what two machines need to
+//! Co-op over Live, phase 0 (docs/live/live-coop.md): what two machines need to
 //! run the same game in step, with no guest and no game data in it.
 //!
 //! - [`wire`]: the one datagram the peers exchange. It carries the sender's

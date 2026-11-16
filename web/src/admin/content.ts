@@ -1,4 +1,4 @@
-// Moderating custom content (docs/maps.md §5): an admin lists the server's
+// Moderating custom content (docs/game/maps.md §5): an admin lists the server's
 // map packages and stored blobs with their state and report counts, hides,
 // deletes or blocks them, reads the reports, and switches uploads off per
 // account. Every call carries a `content.moderate` token (./token.ts),

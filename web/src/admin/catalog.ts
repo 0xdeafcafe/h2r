@@ -1,7 +1,7 @@
 // The playlist builder's catalog: the maps, playlist texts and built-in game
 // variants the owner's own game ships, read from their disc by
 // `h2 live assets extract` and served beside the art manifest
-// (docs/live-admin.md, "The catalog"). Nothing of it is in this repo; the
+// (docs/live/live-admin.md, "The catalog"). Nothing of it is in this repo; the
 // builder works without it and falls back to raw numbers.
 
 import { gameArtRoot } from "../lib/gameart";

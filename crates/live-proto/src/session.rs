@@ -133,13 +133,13 @@ pub struct NewSession {
     /// older servers and logs read the same bytes.
     #[serde(default, skip_serializing_if = "Visibility::is_public")]
     pub visibility: Visibility,
-    /// Exactly which map (docs/maps.md §5): the base plus layers the host
+    /// Exactly which map (docs/game/maps.md §5): the base plus layers the host
     /// has loaded, beside `map`, its name. None for a host that does not
     /// say (every one before this field); omitted on the wire then, so
     /// older servers and logs read the same bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<MapId>,
-    /// The skulls the host has on for its next game (docs/skulls.md "In
+    /// The skulls the host has on for its next game (docs/game/skulls.md "In
     /// multiplayer"): engine indices, ascending, only
     /// [`crate::skulls::MULTIPLAYER`] ones. Guests read it to apply the
     /// same set at game start. Left out when none, and by every host before

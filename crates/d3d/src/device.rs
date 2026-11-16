@@ -355,7 +355,7 @@ pub struct Stats {
     /// `EndVisibilityTest` calls.
     pub visibility_tests: u64,
     /// `GetVisibilityTestResult` calls answered `D3DERR_TESTINCOMPLETE`
-    /// (the count was not back yet; see `docs/d3d.md`, "Visibility
+    /// (the count was not back yet; see `docs/graphics/d3d.md`, "Visibility
     /// tests"). Depends on host timing.
     pub visibility_incomplete: u64,
     /// Resources destroyed ([`Device::destroy_resource`]).
@@ -680,7 +680,7 @@ pub struct Device<B: Backend> {
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
     /// Snapshots of vertex windows the guest has not written since
-    /// (`docs/d3d.md`, "Vertex cache"); `None` with `H2_VERTEX_CACHE=0`
+    /// (`docs/graphics/d3d.md`, "Vertex cache"); `None` with `H2_VERTEX_CACHE=0`
     /// ([`Device::set_vertex_cache`]).
     vertex_cache: Option<VertexCache>,
     /// Index lists the same way (on and off with `vertex_cache`).
@@ -2153,7 +2153,7 @@ impl<B: Backend> Device<B> {
     /// Uploads are refreshed as for [`note_write`](Self::note_write), but a
     /// lazily held render-to-texture level can only take the bytes that
     /// differ from what it last matched: a store of the value memory
-    /// already held there is not seen (`docs/d3d.md`).
+    /// already held there is not seen (`docs/graphics/d3d.md`).
     pub fn note_written_pages(&mut self, addr: u32, len: u32) {
         self.tracker.note_write(addr, len);
     }
@@ -3685,7 +3685,7 @@ impl<B: Backend> Device<B> {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
                         // Snapshots are not stored biased, so COLORSIGN
-                        // cannot apply to them (docs/shaders.md).
+                        // cannot apply to them (docs/graphics/shaders.md).
                         extras[stage].color_sign = 0;
                         texture_info[stage] = Some(info);
                         snapshots[stage] = Some(t);

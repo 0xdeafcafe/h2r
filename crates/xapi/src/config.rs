@@ -67,12 +67,12 @@ impl Default for CacheDrive {
 pub struct Config {
     pub devices: DeviceTypes,
     pub utility_partition: u8,
-    /// The second cache volume, N:. See docs/xapi.md "The second cache volume".
+    /// The second cache volume, N:. See docs/runtime/xapi.md "The second cache volume".
     pub cache_drive: CacheDrive,
     /// Install the native save-game overrides (XCreateSaveGame,
     /// XDeleteSaveGame, XFindFirstSaveGame, XFindNextSaveGame) over
     /// `Storage::saves` instead of leaving the generated XDK code. Off by
-    /// default: nothing about boot changes. See docs/xapi.md.
+    /// default: nothing about boot changes. See docs/runtime/xapi.md.
     pub save_games: bool,
 }
 

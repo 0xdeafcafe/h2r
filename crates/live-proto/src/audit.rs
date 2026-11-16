@@ -1,5 +1,5 @@
 //! Checking events read back from a server, as a reader would
-//! (docs/live-security.md §2): the stored JWS opens to exactly the event's
+//! (docs/live/live-security.md §2): the stored JWS opens to exactly the event's
 //! fields, verifies under the author's key, and extends its stream's hash
 //! chain. Key lookup is the caller's, so this stays pure.
 

@@ -119,7 +119,7 @@ export class StreamClient {
   }
 
   /** Handles one raw message. Exposed for tests. Binary messages are
-   *  packed frame records (docs/live-telemetry.md, Packed frames). */
+   *  packed frame records (docs/live/live-telemetry.md, Packed frames). */
   handle(raw: unknown): void {
     if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
       const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);

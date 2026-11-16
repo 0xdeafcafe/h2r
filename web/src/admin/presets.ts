@@ -5,7 +5,7 @@
 // the owner's catalog (./catalog.ts) and their own published file, and
 // whatever does not resolve is listed as unavailable instead of written.
 //
-// What a preset can set, and what it cannot (docs/live-admin.md, "Presets"):
+// What a preset can set, and what it cannot (docs/live/live-admin.md, "Presets"):
 // - the title and description the playlist list shows;
 // - the first two range fields where the compiled-in defaults show what
 //   they mean for that kind of playlist (others are kept);

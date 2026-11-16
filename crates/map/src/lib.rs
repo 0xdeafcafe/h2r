@@ -5,7 +5,7 @@
 //! Only indexes and strings are loaded eagerly. Tag payloads are read on demand.
 //! All file offsets are relative to the map, even when it lives inside a disc.
 //!
-//! See `docs/map-format.md` for provenance, addressing rules and limitations.
+//! See `docs/formats/map-format.md` for provenance, addressing rules and limitations.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fills platform/tvos/build/ for the Xcode project (docs/tvos.md):
+# Fills platform/tvos/build/ for the Xcode project (docs/runtime/tvos.md):
 #
 #   platform/tvos/build.sh /abs/path/to/disc/halo2.iso [--no-module]
 #
@@ -51,4 +51,4 @@ if [ ! -f "$out/h2game.framework/h2game" ]; then
   exit 1
 fi
 du -sh "$out"/* | sed 's/^/build.sh: /'
-echo "build.sh: done; open platform/tvos/H2TV.xcodeproj, or see docs/tvos.md for xcodebuild"
+echo "build.sh: done; open platform/tvos/H2TV.xcodeproj, or see docs/runtime/tvos.md for xcodebuild"

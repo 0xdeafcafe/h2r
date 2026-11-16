@@ -25,7 +25,7 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await r.json()) as T;
 }
 
-/** The packed frames container's content type (docs/live-telemetry.md). */
+/** The packed frames container's content type (docs/live/live-telemetry.md). */
 export const PACKED_FRAMES = "application/x-h2-frames";
 
 /** Recorded frames, packed: one keyframe record each, the cursor in
@@ -124,7 +124,7 @@ export function api(t: ServerTarget) {
         throw e;
       }
     },
-    /** Published map packages, newest first (docs/maps.md §5); one page. */
+    /** Published map packages, newest first (docs/game/maps.md §5); one page. */
     maps: async (q: { base?: string; author?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal) =>
       page<unknown>(await getJson(u("/maps", q), s)),
     /** Every published package, following cursors (bounded). */
@@ -139,11 +139,11 @@ export function api(t: ServerTarget) {
     },
     /** A package's preview image (only when its summary has `image`). */
     mapImageUrl: (id: string) => u("/maps/" + encodeURIComponent(id) + "/image"),
-    /** Open session advertisements (docs/live-api.md "Sessions"), following cursors. */
+    /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors. */
     sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
     /** One session by id, open or not. */
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
-    /** Server-wide stats over a window (docs/live-api.md "Stats summary"); the raw body. */
+    /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */
     statsSummary: (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s),
     /** One page of the log; `from` is exclusive. */
     events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string }, s?: AbortSignal) =>

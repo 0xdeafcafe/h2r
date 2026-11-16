@@ -92,7 +92,7 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
         None
     };
     // Every skull reader in the game tests for a campaign first
-    // (docs/skulls.md "In multiplayer"), so the array says what is on only
+    // (docs/game/skulls.md "In multiplayer"), so the array says what is on only
     // in one; a multiplayer game's skulls are the host's choice, which the
     // boot hands to `Telemetry::set_multiplayer_skulls`.
     let skulls = if mode == "campaign" {
@@ -120,7 +120,7 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
 }
 
 /// Reads a local player's appearance from their player slot's signed-in
-/// profile copy (docs/live-gamestate.md, "Local player slots and profile
+/// profile copy (docs/live/live-gamestate.md, "Local player slots and profile
 /// appearance"). Only the four local slots hold profiles; a remote player or
 /// a slot without the signed-in flag reads as empty. Values outside their
 /// known ranges are dropped so an unvalidated "likely" offset cannot put
@@ -562,7 +562,7 @@ fn placed(
 
 /// Forward and up of a scenario rotation (yaw, pitch, roll in radians):
 /// `Rz(yaw) · Ry(−pitch) · Rx(roll)` applied to +x and +z, as map.glb's
-/// placements are built (docs/live-art.md).
+/// placements are built (docs/live/live-art.md).
 pub fn rotation_axes([yaw, pitch, roll]: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();

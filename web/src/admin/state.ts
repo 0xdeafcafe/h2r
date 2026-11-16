@@ -1,5 +1,5 @@
 // Whether the signed-in browser account is an admin on the current server.
-// The account read API carries `admin: true` for admins (docs/live-admin.md);
+// The account read API carries `admin: true` for admins (docs/live/live-admin.md);
 // this fetches it for "me" whenever the server or the signed-in account
 // changes, so the stats site's nav and the Admin page agree.
 

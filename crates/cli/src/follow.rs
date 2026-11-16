@@ -11,7 +11,7 @@
 //!
 //! [`Supervisor`] is the pure state machine (idle, building, ready, failed,
 //! restart); [`drive`] runs it against a [`Builder`], a [`Launcher`] and a
-//! [`StatusSink`], which the tests replace with fakes. See docs/app.md
+//! [`StatusSink`], which the tests replace with fakes. See docs/runtime/app.md
 //! "Following a branch".
 
 use std::fs;

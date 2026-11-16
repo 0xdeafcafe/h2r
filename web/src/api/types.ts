@@ -1,4 +1,4 @@
-// Wire types for the h2 live service, following docs/live-api.md.
+// Wire types for the h2 live service, following docs/live/live-api.md.
 // Optional fields are the ones the doc marks with `?`.
 
 export type Xuid = string;
@@ -181,7 +181,7 @@ export interface GameStarted extends GameKindFields {
   /** The console's own name for itself, if it gave one. */
   console?: string;
   map: string;
-  /** The map package played (docs/maps.md §5); `map` is then its base map.
+  /** The map package played (docs/game/maps.md §5); `map` is then its base map.
    *  Absent for retail maps. */
   map_id?: string;
   mode: "campaign" | "multiplayer" | string;

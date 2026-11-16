@@ -1,6 +1,6 @@
 [package]
 name = "content"
-description = "Map packages: the manifest, MapId, PPF/IPS/BPS patch readers and the resolver that turns a package into the bytes of maps\\<name>.map (docs/maps.md)"
+description = "Map packages: the manifest, MapId, PPF/IPS/BPS patch readers and the resolver that turns a package into the bytes of maps\\<name>.map (docs/game/maps.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

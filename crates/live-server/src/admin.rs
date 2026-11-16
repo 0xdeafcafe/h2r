@@ -1,4 +1,4 @@
-//! The admin role and the admin-only title-file editors (docs/live-admin.md).
+//! The admin role and the admin-only title-file editors (docs/live/live-admin.md).
 //!
 //! An admin may publish title files (the MOTD and the hopper/playlist file)
 //! where otherwise only the server operator's key can. Admins come from two
@@ -156,7 +156,7 @@ impl Admins {
 
     /// Makes `xuid` an admin until the process stops, without an event:
     /// the embedded server's playing account, which is re-granted on every
-    /// `h2 play --live` (docs/live-admin.md).
+    /// `h2 play --live` (docs/live/live-admin.md).
     pub fn grant_runtime(&self, xuid: Xuid, tag: &str) {
         self.granted
             .write()
@@ -1231,7 +1231,7 @@ mod tests {
         assert_eq!(back.hoppers[0].records.as_ref().unwrap()[1].from, Some(0));
     }
 
-    // Needs the `Live.admins` and `Policy.admins` wiring (docs/live-admin.md,
+    // Needs the `Live.admins` and `Policy.admins` wiring (docs/live/live-admin.md,
     // "Wiring"); exercises grant, revoke and the admin publish path end to
     // end against the in-memory store.
     #[tokio::test]

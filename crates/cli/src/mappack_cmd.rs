@@ -9,7 +9,7 @@
 //! disc's installer does on a real one. Nothing else is read from the game
 //! beyond the disc's directory tree and, for the update, the XBE
 //! certificate. The layout and what the game does with it are in
-//! docs/map-pack.md, sections 5 and 8.
+//! docs/game/map-pack.md, sections 5 and 8.
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +25,7 @@ const DLC_DIR: &str = "/demos/dlc/";
 /// Where the disc keeps one signed copy of the update per base disc version.
 const UPDATE_DIR: &str = "/demos/update/Updates/";
 const UPDATE_STEM: &str = "default.xbe.";
-/// FATX allows 42 bytes per name (docs/storage.md).
+/// FATX allows 42 bytes per name (docs/runtime/storage.md).
 const FATX_NAME_MAX: usize = 42;
 const CONTENT_META: &str = "contentmeta.xbx";
 /// The name an installed package's metadata is written under.
@@ -49,7 +49,7 @@ so Halo 2 1.0 lists them, and copies the title update that matches your Halo 2
 disc to <data>/updates/4D530064/<version>/.
 The update is never placed where the game would launch it. --data defaults to
 $TMPDIR/h2boot-data, as for `h2 play`. --disc defaults to $H2_DISC, then the
-first .iso in disc/. See docs/map-pack.md.";
+first .iso in disc/. See docs/game/map-pack.md.";
 
 #[derive(Debug, PartialEq)]
 pub struct Args {
@@ -206,7 +206,7 @@ pub struct MapPackage {
     pub extras: Vec<Entry>,
 }
 
-/// Where the offer ID sits in a ContentMeta.xbx header (docs/map-pack.md 7).
+/// Where the offer ID sits in a ContentMeta.xbx header (docs/game/map-pack.md 7).
 const META_OFFER: usize = 0x28;
 
 /// A package's ContentMeta.xbx as this console's installer writes it, for
@@ -214,7 +214,7 @@ const META_OFFER: usize = 0x28;
 /// and XAPI refuses it until it is signed with the console's hard disk key
 /// (`kernel::content`). The offer ID is inside the signed header, so it is
 /// changed first. The file table and its digest stay as on the disc: 1.0
-/// doesn't hash the package's files (docs/map-pack.md 8.4).
+/// doesn't hash the package's files (docs/game/map-pack.md 8.4).
 fn content_meta_for(disc: &[u8], path: &str, offer: u64) -> Result<Vec<u8>> {
     let mut meta = disc.to_vec();
     let header = meta.get(0x18..0x1c).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
@@ -231,7 +231,7 @@ fn content_meta_for(disc: &[u8], path: &str, offer: u64) -> Result<Vec<u8>> {
 /// The packages to install: one per map, from each disc package's
 /// `patch_v3.lvl`. Reads each package's ContentMeta.xbx and patch_v3.lvl and
 /// checks everything before anything is written. The disc's own `patch.lvl`
-/// (a Lockout record, docs/map-pack.md 8.5) and `patch_v3.lvl` are never
+/// (a Lockout record, docs/game/map-pack.md 8.5) and `patch_v3.lvl` are never
 /// installed.
 pub fn layout<R: Read + Seek>(iso: &mut Xiso<R>, plan: &Plan) -> Result<Vec<MapPackage>> {
     let mut out: Vec<MapPackage> = Vec::new();
@@ -458,7 +458,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         data.display()
     );
     if base.is_some() {
-        println!("the update is kept aside: nothing runs it yet (docs/title-updates.md)");
+        println!("the update is kept aside: nothing runs it yet (docs/runtime/title-updates.md)");
     }
     Ok(())
 }
@@ -1071,7 +1071,7 @@ mod tests {
             assert_eq!(m.meta[0x20] & 1, 1);
             assert_eq!(m.meta[0x28..0x30], m.offer.to_le_bytes());
             assert!(m.extras.iter().all(|e| !file_name(e).to_ascii_lowercase().starts_with("patch")));
-            // The disc's own patch.lvl is the Lockout record (docs/map-pack.md 8.5).
+            // The disc's own patch.lvl is the Lockout record (docs/game/map-pack.md 8.5).
             let disc_lvl = iso.read(p.files.iter().find(|f| is_named(f, PATCH_V2)).unwrap()).unwrap();
             patch_lvl::validate_v2(&disc_lvl).unwrap();
             assert_ne!(patch_lvl::v2_map_id(&disc_lvl), m.map_id);

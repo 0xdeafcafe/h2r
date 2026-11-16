@@ -33,7 +33,7 @@ fn code(xbe: &Xbe, va: u32) -> bool {
 pub fn tables(xbe: &Xbe) -> Result<Vec<Table>, xbe::Error> {
     let mut out = Vec::new();
     if xbe.certificate.title_id == 0x4d530064 && xbe.entry == 0x2d0aee {
-        // Layout evidence: docs/engine-map.md and docs/haloscript.md. Fail
+        // Layout evidence: docs/engine/engine-map.md and docs/formats/haloscript.md. Fail
         // closed as a unit if any required pointer/span is invalid.
         if let Some(known) = retail_tables(xbe) {
             out.extend(known);
@@ -202,7 +202,7 @@ fn retail_tables(xbe: &Xbe) -> Option<Vec<Table>> {
             known_layout: true,
         });
     }
-    // docs/engine-map.md: eight codecs plus unused, null record 0. All
+    // docs/engine/engine-map.md: eight codecs plus unused, null record 0. All
     // callback columns share the family span, including indexed bases in
     // record 0. Names and packed integer fields are never callback slots.
     let base = 0x47fb14;

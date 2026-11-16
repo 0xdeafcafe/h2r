@@ -7,14 +7,14 @@
 //! - [`History`]: edits as commands, with undo and redo.
 //! - [`save`]: write a new `.map` through `map::writer::MapEditor`: every
 //!   byte identical except the patched fields and the header checksum.
-//! - [`package`]: save as a map package (docs/maps.md) and open one.
+//! - [`package`]: save as a map package (docs/game/maps.md) and open one.
 //! - [`geometry`], [`render`], [`panel`]: the structure BSP and markers, an
 //!   offscreen wgpu viewport, and the egui panel [`ScenarioEditor`].
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
 //! appended to the metadata through `MapEditor::append_metadata`. See
-//! docs/scenario-editor.md §6. No game data is in this crate or its tests.
+//! docs/editor/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
 pub mod edit;

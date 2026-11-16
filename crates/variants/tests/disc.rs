@@ -202,7 +202,7 @@ fn names_from_the_xbe() {
 
 /// Checks a saved variant the game wrote (`H2_SAVED_VARIANT` = the payload
 /// file inside its save directory) against the signing key we assume for
-/// our runtime. This is the in-game check docs/variants.md asks for.
+/// our runtime. This is the in-game check docs/editor/variants.md asks for.
 #[test]
 #[ignore = "needs a variant saved by the game"]
 fn saved_variant_verifies() {

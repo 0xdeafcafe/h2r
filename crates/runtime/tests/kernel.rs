@@ -3,7 +3,7 @@ mod common;
 
 #[test]
 fn metadata_covers_the_documented_import_inventory() {
-    let document = include_str!("../../../docs/kernel-imports.md");
+    let document = include_str!("../../../docs/runtime/kernel-imports.md");
     let function_table = document
         .split("## Imported functions (135)")
         .nth(1)

@@ -1,7 +1,7 @@
 //! Where the statically linked D3D library keeps its globals in this XBE.
 //!
 //! Every address here was recovered from the retail Halo 2 XBE (SHA-256
-//! `03215919...935d`, XDK 5849 `D3D8LTCG`) by disassembly; see `docs/d3d.md`
+//! `03215919...935d`, XDK 5849 `D3D8LTCG`) by disassembly; see `docs/graphics/d3d.md`
 //! for the evidence. They are facts about one binary, so they live in one
 //! struct that a different build (or a test) can replace.
 
@@ -64,7 +64,7 @@ pub const STAGE_SLOTS: usize = 32;
 pub const DEVICE_DWORDS: u32 = 0x928;
 
 /// Offsets into the device object that guest code reads or writes. Only the
-/// ones with evidence are listed; see `docs/d3d.md` for which code touches
+/// ones with evidence are listed; see `docs/graphics/d3d.md` for which code touches
 /// each.
 pub mod device_field {
     /// Push-buffer put pointer (inlined writers advance it).

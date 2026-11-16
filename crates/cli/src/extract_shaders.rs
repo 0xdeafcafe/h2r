@@ -18,7 +18,7 @@
 //! - `manifest.tsv`: file, SHA-256, occurrence count, first occurrence.
 //! - `provenance.txt`: disc and map identities (sizes, build strings,
 //!   SHA-256 of `default.xbe` and of every byte range read from each map),
-//!   the counts `docs/shaders.md` quotes, and the PSDEF candidate-offset
+//!   the counts `docs/graphics/shaders.md` quotes, and the PSDEF candidate-offset
 //!   check.
 //!
 //! `crates/shaders/tests/corpus.rs` checks a directory against its manifest. Maps are read
@@ -448,7 +448,7 @@ fn extract(iso_path: &Path, out: &Path, force: bool) -> Result<(), String> {
     });
     corpus.count("unique xvu", xvu);
     corpus.count("unique psdef", psdef);
-    // Facts about the distinct definitions that docs/shaders.md quotes.
+    // Facts about the distinct definitions that docs/graphics/shaders.md quotes.
     let defs: Vec<PixelShaderDef> = corpus
         .files
         .iter()

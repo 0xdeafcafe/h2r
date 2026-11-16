@@ -58,7 +58,7 @@ pub struct ScenarioEditor {
     filter: String,
     /// Whether adding may grow a block past its source size (appending it
     /// to the map's metadata). Off: the engine's headroom for more tag
-    /// memory is not established (docs/scenario-editor.md §6).
+    /// memory is not established (docs/editor/scenario-editor.md §6).
     allow_growth: bool,
     /// The runtime data root; packages live in `<data>/maps`.
     data_root: PathBuf,
@@ -74,7 +74,7 @@ pub struct ScenarioEditor {
 
 /// Why the panel refuses to grow a block while growth is off.
 pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag memory, and the \
-     engine's headroom for that is not established (docs/scenario-editor.md §6)";
+     engine's headroom for that is not established (docs/editor/scenario-editor.md §6)";
 
 impl Default for ScenarioEditor {
     fn default() -> Self {

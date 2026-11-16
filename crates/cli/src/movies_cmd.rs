@@ -1,7 +1,7 @@
 //! `h2 movies`: convert the disc's Bink movies with the user's own ffmpeg.
 //!
 //! ffmpeg is only ever run as an external process; nothing here decodes Bink
-//! or links ffmpeg. See docs/movies.md for the rationale and the settings.
+//! or links ffmpeg. See docs/audio/movies.md for the rationale and the settings.
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};

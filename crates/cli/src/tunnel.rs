@@ -1,6 +1,6 @@
 //! `--tunnel`: a Live server reachable from the internet through Cloudflare
 //! Tunnel (`cloudflared`), without TLS certificates or port forwarding
-//! (docs/live-hosting.md).
+//! (docs/live/live-hosting.md).
 //!
 //! The server keeps listening on loopback; cloudflared connects out to
 //! Cloudflare and forwards each request (and WebSocket) to it.

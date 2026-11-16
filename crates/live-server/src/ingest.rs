@@ -1,7 +1,7 @@
-//! `GET /v1/ingest`: the game's WebSocket (docs/live-api.md, Streams). The
+//! `GET /v1/ingest`: the game's WebSocket (docs/live/live-api.md, Streams). The
 //! first message is `{kind: "auth", token}` with `lxm: games.write`; then
 //! `frame`, `events` (one batch JWS) and `ping` messages, and binary
-//! messages of packed frames (docs/live-telemetry.md, Packed frames). Each `events`
+//! messages of packed frames (docs/live/live-telemetry.md, Packed frames). Each `events`
 //! batch is answered with `appended` or `error`; frames are answered only
 //! when refused. The socket closes when the token expires unless the client
 //! sends a fresh `auth`.
@@ -73,7 +73,7 @@ async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
         let text = match msg {
             Some(Ok(Message::Text(text))) => text,
             Some(Ok(Message::Binary(bytes))) => {
-                // Packed frames (docs/live-telemetry.md, Packed frames): a
+                // Packed frames (docs/live/live-telemetry.md, Packed frames): a
                 // container of this socket's stream. Only refusals reply.
                 for reply in ingest_packed(&live, &author, &mut decoder, &bytes).await {
                     send_json(&mut socket, &reply_error(&reply))

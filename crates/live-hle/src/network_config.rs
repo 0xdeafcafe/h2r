@@ -73,7 +73,7 @@ impl NetworkConfig {
         }
         Ok(())
     }
-    /// The host endpoint of the co-op channel (docs/live-coop.md): base+4,
+    /// The host endpoint of the co-op channel (docs/live/live-coop.md): base+4,
     /// which no title channel and not the QoS responder uses, inside the
     /// base..base+6 range a System Link host already opens. The co-op
     /// transport binds it itself (`coop::link::UdpLink`); the guest never

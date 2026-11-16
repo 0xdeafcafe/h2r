@@ -1,5 +1,5 @@
 //! The display frame-rate setting (`H2_FPS`) and the display clock
-//! (docs/high-framerate.md).
+//! (docs/game/high-framerate.md).
 //!
 //! The guest always runs at 30 Hz: the same 60 Hz logical vblanks, the same
 //! two-vblank frame interval, one tick per frame, one input poll per frame.

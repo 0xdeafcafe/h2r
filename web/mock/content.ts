@@ -1,4 +1,4 @@
-// Made-up custom map packages for the mock (docs/maps.md §5), so the web's
+// Made-up custom map packages for the mock (docs/game/maps.md §5), so the web's
 // custom-map paths run without the game: `GET /v1/maps` and one package
 // (`/v1/maps/{map_id}`, its `/image` as a drawn PNG), reports, hopper pins,
 // and the admin's moderation (`/v1/admin/content`, hide / delete / block,

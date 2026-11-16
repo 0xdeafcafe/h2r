@@ -12,7 +12,7 @@
 //! instead, which also kept the runtime's direct calls from ever matching;
 //! `H2_BOOT_TRAMPOLINE=1` still registers that way, for comparison.)
 //!
-//! The lifter lowers x87 itself now (docs/FLOAT.md), so this is a safety
+//! The lifter lowers x87 itself now (docs/lifter/FLOAT.md), so this is a safety
 //! net, not the design: it keeps a boot or trace running through any
 //! instruction the lifter still rejects instead of stopping dead. It is
 //! slow, and interpreted transcendentals are not bit-exact.

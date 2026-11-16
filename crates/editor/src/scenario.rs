@@ -3,7 +3,7 @@
 //! Picking a map in the sidebar opens it here, unless the open map has
 //! unsaved edits: then the pick is held until they are saved or undone.
 //! Saving always asks for a path (the source map is never overwritten);
-//! that is the `.map` export. Map packages (docs/maps.md) are saved and
+//! that is the `.map` export. Map packages (docs/game/maps.md) are saved and
 //! opened from the panel's own "Save as package..." and "Open package..."
 //! windows, in `<data>/maps` (`--data`, default the runtime's).
 

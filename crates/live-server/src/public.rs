@@ -1,4 +1,4 @@
-//! Serving through a proxy or tunnel (docs/live-hosting.md): the public
+//! Serving through a proxy or tunnel (docs/live/live-hosting.md): the public
 //! base URL the server is reached at, and how to tell a request a proxy
 //! forwarded from one made on this machine.
 //!

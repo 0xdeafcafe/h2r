@@ -1,4 +1,4 @@
-//! Retail 5849 entry addresses and stdcall stack words, from docs/live-boundary.md.
+//! Retail 5849 entry addresses and stdcall stack words, from docs/live/live-boundary.md.
 //! This is derived API metadata, not signatures or executable data.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

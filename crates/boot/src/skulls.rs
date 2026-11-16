@@ -1,4 +1,4 @@
-//! Campaign skulls kept per profile (docs/skulls.md).
+//! Campaign skulls kept per profile (docs/game/skulls.md).
 //!
 //! Halo 2 turns a skull on when a level script runs
 //! `(ice_cream_flavor_stock <n>)`, after the player picks up the skull
@@ -35,7 +35,7 @@
 //! - **Menu**: [`ABOUT`] says what each skull does and where it is found;
 //!   [`state`] is a profile's Locked, On or Off for it and [`toggle`] is a
 //!   press. `crate::skulls_menu` lists all fifteen on its own screen, opened
-//!   from the difficulty screen's "Skulls" row (docs/skulls.md "Menu").
+//!   from the difficulty screen's "Skulls" row (docs/game/skulls.md "Menu").
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 
@@ -49,7 +49,7 @@ use crate::layout_glue::Gm;
 /// functions check).
 pub const COUNT: usize = 15;
 /// Every skull we list: the engine's fifteen, then ours from index
-/// [`COUNT`] on (`crate::skulls_custom`, docs/skulls.md "Our skulls"). Ours
+/// [`COUNT`] on (`crate::skulls_custom`, docs/game/skulls.md "Our skulls"). Ours
 /// have no byte in the engine's array: their effects are our own hooks.
 pub const TOTAL: usize = COUNT + crate::skulls_custom::OURS;
 /// The skull-on array: one byte per skull.
@@ -147,7 +147,7 @@ pub struct About {
     pub tier: SkullTier,
 }
 
-/// A skull's kind, as MCC sorts its skulls (docs/skulls.md "Gold and
+/// A skull's kind, as MCC sorts its skulls (docs/game/skulls.md "Gold and
 /// silver"): gold ones make the game harder (MCC scores them above 1.00x),
 /// silver ones are for fun (1.00x or below).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -191,7 +191,7 @@ pub fn by_tier() -> Vec<usize> {
 }
 
 /// [`SKULLS`]' skulls, in the same order. Levels and the Legendary test are
-/// read from each level's scripts (`h2 hs <map>`, docs/skulls.md "Where each
+/// read from each level's scripts (`h2 hs <map>`, docs/game/skulls.md "Where each
 /// skull is"): every retail skull but Blind is placed on Legendary only.
 /// Ours (from [`COUNT`]) are placed by us on any difficulty; their levels
 /// are `crate::skulls_custom::SPOTS`'.
@@ -795,7 +795,7 @@ pub struct Skulls {
 
 impl feature::Feature for Skulls {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile").doc("docs/skulls.md")
+        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile").doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
@@ -1116,7 +1116,7 @@ mod tests {
     }
 
     /// Where each skull is and whether it needs Legendary, as the level
-    /// scripts say (docs/skulls.md "Where each skull is").
+    /// scripts say (docs/game/skulls.md "Where each skull is").
     #[test]
     fn the_catalogue_follows_the_level_scripts() {
         let names: Vec<_> = ABOUT.iter().map(|a| a.name).collect();
@@ -1570,7 +1570,7 @@ mod tests {
         assert!(!install(&mut r, None).unwrap(), "no store");
     }
 
-    /// Gold and silver as MCC scores them (docs/skulls.md "Gold and
+    /// Gold and silver as MCC scores them (docs/game/skulls.md "Gold and
     /// silver"): gold above 1.00x.
     #[test]
     fn gold_skulls_make_it_harder_and_come_first() {

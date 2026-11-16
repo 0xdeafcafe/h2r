@@ -1,7 +1,7 @@
 //! The 16-byte header on Halo 2's title-storage files
 //! (`message_of_the_day.dat`, `multiplayer_hopper.dat`), checked by the
 //! game's validator `0x00081230` before either file's handler runs
-//! (docs/live-motd.md §2.4):
+//! (docs/live/live-motd.md §2.4):
 //!
 //! ```text
 //! +0x00  u32 LE  CRC register over bytes [4, size): reflected polynomial

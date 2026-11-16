@@ -213,7 +213,7 @@ still in the x87 instruction pointer (FIP). `arg` is the status word, which
 still holds the exception flags, ES and B; the runtime decodes an `arg`
 above 0xFFFF as an unknown event. Every MMX instruction makes the check
 first (`h2i_x87_wait`, before any access); `emms` makes it itself. See
-docs/FLOAT-ABI.md §2.2 for the x87 helpers' side.
+docs/lifter/FLOAT-ABI.md §2.2 for the x87 helpers' side.
 
 The runtime may map these onto its own `Event` variants. A runtime that
 injects guest exceptions (SEH dispatch, the debugger) needs `saved_eip`.
@@ -300,7 +300,7 @@ uint64_t x87_helpers)`. Each handler accumulates local counters and sends them
 once at its shared exit. A host bridge forwards this to `runtime::ffi`.
 Without that build flag, generated objects require no extension symbol and
 perform no profiling work. ABI layouts are unchanged. See
-[performance](../../docs/performance.md).
+[performance](../../docs/perf/performance.md).
 
 ### 1.7 Nothing else
 
@@ -320,7 +320,7 @@ PE header, so no GDT is backed. Only the XAPI GDT helper at 0x2d6434 would
 notice, and both its callers are bypassed under the HLE: 0x2d1e62 because the
 last section is .rdata rather than INIT, 0x2d610c because the saved descriptor
 is zero). The 16-bit `sgdt` is not lowered. Port I/O (`in`/`out`) is not lowered: it stops as unsupported. The
-three sites are the D3D GPIO guards in `docs/d3d.md`.
+three sites are the D3D GPIO guards in `docs/graphics/d3d.md`.
 
 MMX registers live in `X87Abi.st`, in physical order: `mmN` is `st[N]`
 bytes 0-7, and an MMX write sets bytes 8-9 to 0xFFFF. Every MMX instruction
@@ -609,7 +609,7 @@ package version, executable contents, and the contents and names of every
 source and support header. Changing the executable invalidates this receipt
 including when the package version is unchanged. ABI installation and the
 object cache checks still run. `--no-emit-cache` or `H2_TRACE` forces the
-front end to run again. See [BUILD-CACHE.md](../../docs/BUILD-CACHE.md).
+front end to run again. See [BUILD-CACHE.md](../../docs/lifter/BUILD-CACHE.md).
 
 
 The CLI serializes each complete output-directory transaction with

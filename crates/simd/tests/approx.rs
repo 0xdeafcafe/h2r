@@ -6,7 +6,7 @@
 //! publishes the 12,288-entry table (rcp of 1.m, rsqrt of 1.m and of 2.m, for
 //! the 4096 values of the top 12 fraction bits) and FNV-1a hashes of the
 //! native instructions over every input. Only those hashes are used here,
-//! not the table or code. See docs/simd.md for why the Pentium III is
+//! not the table or code. See docs/lifter/simd.md for why the Pentium III is
 //! expected to share these tables.
 
 use std::process::Command;

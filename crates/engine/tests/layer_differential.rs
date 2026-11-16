@@ -1,6 +1,6 @@
 //! The Rust layer draw (`engine::render_loop::layer`: `0x00044550` and its
 //! entry loop `0x0003bc30`) against the original, lifted and run on the IR
-//! interpreter, from the same seeded 64 MB state (docs/layer-draw.md).
+//! interpreter, from the same seeded 64 MB state (docs/graphics/layer-draw.md).
 //!
 //! As for `render_views` (`render_loop_differential.rs`): every callee is
 //! a stub on both sides that logs the call (target, every general

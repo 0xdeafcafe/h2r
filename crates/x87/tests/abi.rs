@@ -1,4 +1,4 @@
-//! The runtime ABI of docs/FLOAT-ABI.md §1-§4 over the runtime's `X87Abi`
+//! The runtime ABI of docs/lifter/FLOAT-ABI.md §1-§4 over the runtime's `X87Abi`
 //! (h2abi.h v1): C layout, the stack model (TOP in the status word, tags,
 //! stack faults), the helper return statuses, the #MF-at-next-instruction
 //! contract, two-phase stores and environment operations, and control-word
@@ -740,7 +740,7 @@ fn transcendentals_under_directed_rc_are_unmodelled() {
 }
 
 // ------------------------------------------------- re-review regressions
-// Each of these failed before the fix it names (docs/FLOAT-ABI.md §2.3).
+// Each of these failed before the fix it names (docs/lifter/FLOAT-ABI.md §2.3).
 
 const DE: u16 = H2_FP_DE;
 const ZE: u16 = H2_FP_ZE;

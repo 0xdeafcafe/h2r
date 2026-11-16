@@ -797,7 +797,7 @@ impl<B: Backend> Device<B> {
 
     /// Lazy render-to-texture (the default): draws sample a level's host
     /// surface in place and its pixels reach guest memory only when the
-    /// guest is about to read them (`docs/d3d.md`). Off: every target
+    /// guest is about to read them (`docs/graphics/d3d.md`). Off: every target
     /// change, `Swap`, `KickOff` and sample writes back, as before. Lazy
     /// needs a backend that samples surfaces
     /// ([`Backend::can_sample_surfaces`]); without one it stays off.

@@ -1,4 +1,4 @@
-//! Two co-op peers over a simulated link (docs/live-coop.md, phase 0): the
+//! Two co-op peers over a simulated link (docs/live/live-coop.md, phase 0): the
 //! pads each machine's guest would read are the same sequence on both,
 //! whatever the link does; a frame waits when the other port's pad is late
 //! and the game resumes when it comes; the relay carries the game while the

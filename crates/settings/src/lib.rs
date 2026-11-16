@@ -1,4 +1,4 @@
-//! Our host settings as a schema (docs/feature-engine.md "Settings").
+//! Our host settings as a schema (docs/engine/feature-engine.md "Settings").
 //!
 //! A setting is one [`Def`]: its key in `settings.toml`, its label and
 //! help, what values it may hold ([`Kind`]), its default, the environment

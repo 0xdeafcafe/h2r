@@ -1,6 +1,6 @@
 //! Runtime-neutral override adapters: decode a guest stdcall frame, run the
 //! service and report how to leave. `crate::register` binds them to the
-//! runtime's dispatch at their XBE addresses. See docs/xapi.md.
+//! runtime's dispatch at their XBE addresses. See docs/runtime/xapi.md.
 use crate::{Error, GuestMemory, Result, Storage, ThreadState, Xapi, memory};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

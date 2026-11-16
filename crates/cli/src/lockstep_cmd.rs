@@ -1,5 +1,5 @@
 //! `h2 lockstep A B`: compare two determinism traces (`H2_LOCKSTEP`,
-//! crates/lockstep, docs/high-framerate.md).
+//! crates/lockstep, docs/game/high-framerate.md).
 
 use anyhow::{Context, Result, bail};
 

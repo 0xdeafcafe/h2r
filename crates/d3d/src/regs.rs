@@ -14,7 +14,7 @@
 //!
 //! The runtime keeps the real aperture (`0xFD000000..0xFE000000`) free of
 //! RAM and has no MMIO handlers: an access there is an unsupported-device
-//! fault, by design (`docs/LIFTER.md`). So the window is a documented
+//! fault, by design (`docs/lifter/LIFTER.md`). So the window is a documented
 //! substitute: the host picks a base ([`DeviceConfig::nv2a_window`]), the
 //! two pages holding modelled registers are mapped as ordinary RAM
 //! ([`RegisterWindow::pages`]), and the device writes their words at its

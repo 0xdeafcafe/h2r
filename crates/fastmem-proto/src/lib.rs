@@ -1,6 +1,6 @@
 //! Isolated prototype of the fastmem write watch on macOS arm64: page
 //! protection plus a Mach exception server instead of a per-store dirty mark.
-//! See docs/fastmem-proto.md for the design choices, the measured costs and what the
+//! See docs/perf/fastmem-proto.md for the design choices, the measured costs and what the
 //! fastmem design has to carry over.
 //!
 //! Everything is gated to macOS arm64; on other targets the crate is empty.

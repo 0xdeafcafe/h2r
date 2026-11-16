@@ -1,4 +1,4 @@
-//! Skulls in multiplayer games (docs/skulls.md "In multiplayer").
+//! Skulls in multiplayer games (docs/game/skulls.md "In multiplayer").
 //!
 //! **Why only two.** Every reader of the skull array (`0x4f55dc`) tests the
 //! active game options for a campaign (`[[0x4e6948]+8] == 1`) before it
@@ -503,7 +503,7 @@ pub struct SkullsMp(pub Arc<MpSkulls>);
 
 impl feature::Feature for SkullsMp {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Skulls in multiplayer games").doc("docs/skulls.md")
+        feature::Manifest::new(FEATURE, "Skulls in multiplayer games").doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::Flow;

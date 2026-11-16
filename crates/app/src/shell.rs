@@ -692,7 +692,7 @@ impl ApplicationHandler<UserEvent> for Shell {
         }
         // Above 30 fps the window also redraws on its own clock; between
         // guest presents that shows the newest guest frame again (no
-        // interpolation before phase 2, docs/high-framerate.md). At 30 the
+        // interpolation before phase 2, docs/game/high-framerate.md). At 30 the
         // schedule is never due and this changes nothing.
         let mut wake = self.status.last + Duration::from_secs(1);
         // A new frame-rate target (the Video screen's row): the schedule

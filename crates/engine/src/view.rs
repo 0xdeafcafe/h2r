@@ -1,5 +1,5 @@
 //! Typed views over guest memory: an address plus accessors, with the
-//! layout written once, beside its evidence (docs/feature-engine.md, "Guest
+//! layout written once, beside its evidence (docs/engine/feature-engine.md, "Guest
 //! data access").
 //!
 //! A view never caches and never owns: every accessor reads or writes
@@ -292,7 +292,7 @@ impl Tags {
     }
 }
 
-/// Players (docs/live-gamestate.md).
+/// Players (docs/live/live-gamestate.md).
 pub mod players {
     use super::*;
 
@@ -342,7 +342,7 @@ pub mod players {
     }
 }
 
-/// Objects (docs/objects.md, docs/live-gamestate.md).
+/// Objects (docs/formats/objects.md, docs/live/live-gamestate.md).
 pub mod objects {
     use super::*;
 
@@ -398,7 +398,7 @@ pub mod objects {
     }
 }
 
-/// Screens, list handlers and their item widgets (docs/ui.md "Screen and
+/// Screens, list handlers and their item widgets (docs/formats/ui.md "Screen and
 /// list classes"). The offsets are the Controls class's; a class of ours
 /// built from the Controls constructor has the same.
 pub mod ui {

@@ -3,7 +3,7 @@
 //! # Mapping rules
 //!
 //! Field meanings come from the bitmap image block (`tags::Image`, record
-//! `BitmapImage`, stride 0x74; see `docs/map-format.md`). Evidence labels:
+//! `BitmapImage`, stride 0x74; see `docs/formats/map-format.md`). Evidence labels:
 //! **V** = checked against the disc by `h2 bitmap --all` (layout: the LOD size
 //! equals the computed layout rounded up to 128 bytes for every image in
 //! mainmenu, 00a_introduction and 01b_spacestation), **S** = source hypothesis
@@ -56,7 +56,7 @@ pub enum Evidence {
     /// the layout size check. Also covered by synthetic channel test vectors.
     Pixels,
     /// Layout size check on real images only (no known-colour content seen);
-    /// channel order rests on the synthetic test vectors / `docs/graphics.md`.
+    /// channel order rests on the synthetic test vectors / `docs/graphics/graphics.md`.
     LayoutOnly,
     /// Hypothesis: neither the pairing nor colours are confirmed. Output is
     /// for inspection only.
@@ -92,7 +92,7 @@ macro_rules! row {
 
 /// Supported formats. Halo format names: Assembly `bitm.xml` @
 /// fd14ef3c46135e9422966c6a64cd926fb0bd23fb (ids as in `tags::PixelFormat`);
-/// Xbox formats and channel semantics: `docs/graphics.md`.
+/// Xbox formats and channel semantics: `docs/graphics/graphics.md`.
 pub const FORMAT_TABLE: &[FormatRow] = &[
     row!(A8 => A8, LinA8, LayoutOnly),
     row!(Y8 => L8, LinL8, Pixels),

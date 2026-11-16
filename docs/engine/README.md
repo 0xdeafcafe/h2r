@@ -82,7 +82,7 @@ caught by the seeded runs.
 
 Agreement here tests the Rust against the lifted original. It shares the
 lifter's instruction semantics, so it is not independent evidence about the
-CPU (`docs/LIFTER.md` §8).
+CPU (`docs/lifter/LIFTER.md` §8).
 
 ## Registering the overrides
 

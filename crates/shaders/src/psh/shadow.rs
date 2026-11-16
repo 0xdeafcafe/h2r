@@ -5,7 +5,7 @@
 //! Sampling compares the stored depth with a reference under `SHADOWCTL`'s
 //! function (D3D's `D3DRS_SHADOWFUNC`) and gives 1 or 0 in every channel.
 //! The behaviour follows xemu's `psh_append_shadowmap` (read for facts
-//! only, see docs/shaders.md):
+//! only, see docs/graphics/shaders.md):
 //!
 //! * the comparison is `stored OP reference`, with `OP` the function's
 //!   value (`0x204`, `GREATER`, passes where the stored depth is greater);

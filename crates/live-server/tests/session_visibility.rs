@@ -1,4 +1,4 @@
-//! Session visibility (docs/live-custom-games.md): who finds a session in
+//! Session visibility (docs/live/live-custom-games.md): who finds a session in
 //! `GET /v1/sessions`, friends-only through the friends graph, and listed
 //! sessions held to the address the server saw the host connect from.
 mod common;

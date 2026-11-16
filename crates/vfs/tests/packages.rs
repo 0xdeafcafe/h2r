@@ -1,5 +1,5 @@
 //! Map packages through the whole VFS: a synthetic XISO as the DVD, packages
-//! under `<data>/maps`, and the game's view through `D:` (docs/maps.md).
+//! under `<data>/maps`, and the game's view through `D:` (docs/game/maps.md).
 use std::sync::{Arc, Mutex};
 use std::{
     fs,
@@ -39,7 +39,7 @@ impl Drop for TempDir {
     }
 }
 
-/// The retail copy-time checksum (docs/cache-slots.md): XOR of each whole
+/// The retail copy-time checksum (docs/runtime/cache-slots.md): XOR of each whole
 /// little-endian qword after the header, folded to 32 bits with the parity
 /// seed; a final partial qword is ignored. Written out here as an
 /// independent oracle.
@@ -634,7 +634,7 @@ fn a_maps_directory_created_after_mount_is_seen() {
 
 /// `map_changed` says when a map last opened from one package (or the
 /// disc) would now come from another: what the boot needs to drop the
-/// game's cached copy (docs/cache-slots.md, "Changed maps").
+/// game's cached copy (docs/runtime/cache-slots.md, "Changed maps").
 #[test]
 fn map_changed_compares_the_last_open_with_the_folder_now() {
     let t = TempDir::new();

@@ -4,7 +4,7 @@
 //! generators. This module is a clean-room model of the parts a title can
 //! reach through `SetFilter`, `SetLFO`, `SetEG` and `SetI3DL2Source`. The
 //! descriptor encodings come from reading how Halo 2 builds them (see
-//! `docs/dsound.md`, "Voice effects"); the DSP itself is not reproduced.
+//! `docs/audio/dsound.md`, "Voice effects"); the DSP itself is not reproduced.
 //!
 //! Everything runs in a voice's own *clock*: the number of host frames the
 //! voice has produced since it (re)started. An effect therefore depends only

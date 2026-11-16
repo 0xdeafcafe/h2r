@@ -17,7 +17,7 @@ type R<T> = Result<T, MemFault>;
 /// Callers copy from it unconditionally, so a miss reads as "".
 pub const EMPTY_STRING: u32 = 0x0043_e5e1;
 
-/// Locale-record fields (`docs/map-format.md`, "LocaleDescriptor").
+/// Locale-record fields (`docs/formats/map-format.md`, "LocaleDescriptor").
 pub mod layout {
     /// Resident pointer to the index: `count` 8-byte entries.
     pub const INDEX: u32 = 0x00;

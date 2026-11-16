@@ -1,4 +1,4 @@
-//! The map package manifest (docs/maps.md §1), read from a package's
+//! The map package manifest (docs/game/maps.md §1), read from a package's
 //! `manifest.toml`.
 //!
 //! ```toml
@@ -58,13 +58,13 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ResultInfo>,
     /// Display data for 1.0's multiplayer map list, for a map whose name the
-    /// disc doesn't have (docs/maps.md §4). Not part of the `MapId`.
+    /// disc doesn't have (docs/game/maps.md §4). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<ListInfo>,
 }
 
 /// The languages of the game's map list text, in the order its records hold
-/// them (docs/map-pack.md 8.1: nine languages a record).
+/// them (docs/game/map-pack.md 8.1: nine languages a record).
 pub const LANGUAGES: [&str; 9] = ["en", "ja", "de", "fr", "es", "it", "ko", "zh", "pt"];
 
 /// `[list]`: how a new map appears in 1.0's multiplayer map list.

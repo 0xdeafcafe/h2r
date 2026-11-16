@@ -45,7 +45,7 @@
 //! and never allocates guest pages.
 //!
 //! **Results.** The device runs the push buffer synchronously (see "GPU
-//! model" in `docs/d3d.md`), so a test that has been ended is in the
+//! model" in `docs/graphics/d3d.md`), so a test that has been ended is in the
 //! backend's queue. Whether its count is back depends on the backend: a
 //! render thread ([`crate::ThreadedBackend`]) may not have reached it yet,
 //! and a GPU may not have finished it.

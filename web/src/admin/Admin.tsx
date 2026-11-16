@@ -2,7 +2,7 @@
 // the message-of-the-day editor, the playlist (hopper) builder, custom
 // content moderation (map packages, blobs, reports, uploads), plus the
 // one-off import that signs the browser in as an existing CLI account
-// (docs/live-admin.md).
+// (docs/live/live-admin.md).
 
 import { Show, createSignal } from "solid-js";
 import { A } from "@solidjs/router";

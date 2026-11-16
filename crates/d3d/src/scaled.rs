@@ -1,5 +1,5 @@
 //! Rendering above the guest's resolution without the guest seeing it
-//! (docs/high-resolution.md, phases 1 and 2).
+//! (docs/graphics/high-resolution.md, phases 1 and 2).
 //!
 //! [`ScaledBackend`] holds two backends that get the same calls. The
 //! *reference* renders at the guest's size and answers everything the guest

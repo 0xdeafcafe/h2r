@@ -1,6 +1,6 @@
 //! The contract between the shell and a tool. Kept small on purpose: tool
 //! crates expose a plain struct with a `ui` method, and a few lines of
-//! adapter (docs/editor.md) make it a [`Tool`].
+//! adapter (docs/editor/editor.md) make it a [`Tool`].
 
 use std::path::{Path, PathBuf};
 

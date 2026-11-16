@@ -826,7 +826,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         s.push_str("    // final combiner\n    var color: vec4f;\n    {\n");
         // Each operand is unsigned-mapped (clamped to [0, 1], inverted when
         // complemented) before the add: NV_register_combiners, and the
-        // V1R0_SUM cases in nxdk_pgraph_tests (see docs/shaders.md).
+        // V1R0_SUM cases in nxdk_pgraph_tests (see docs/graphics/shaders.md).
         let un = |reg: &str, invert: bool| {
             let x = format!("clamp({reg}.rgb, vec3f(0.0), vec3f(1.0))");
             if invert { format!("(1.0 - {x})") } else { x }
@@ -934,7 +934,7 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     }
     // A `discard` the program can never take still changes how Apple GPUs
     // shade the draw's edges when it shares a render pass with earlier
-    // draws (docs/graphics.md, "Merged passes"), so none is emitted.
+    // draws (docs/graphics/graphics.md, "Merged passes"), so none is emitted.
     if kills {
         s.push_str("    if (r.kill) { discard; }\n");
     }

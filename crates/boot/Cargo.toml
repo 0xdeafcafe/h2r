@@ -16,7 +16,7 @@ ir.workspace = true
 runtime.workspace = true
 kernel.workspace = true
 vfs.workspace = true
-# Map packages under <data>/maps (docs/maps.md).
+# Map packages under <data>/maps (docs/game/maps.md).
 content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
