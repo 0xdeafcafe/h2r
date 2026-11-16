@@ -95,6 +95,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
   invite create [--days N] [--server URL] [--data DIR]
                           print an invite code for an --invite-only server
                           (POST /v1/invites, signed with the server key)
+  menubar [--install | --uninstall | --adopt-existing SERVER TUNNEL | --status ...]
+                          the optional menu bar app: server and tunnel
+                          state, start/stop, invites, logs, login items;
+                          `h2 live menubar --help` lists the rest
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
@@ -142,6 +146,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("assets", Some("check")) => assets_check(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
         ("invite", Some("create")) => invite_create(rest.shift()),
+        ("menubar", _) => menubar(rest),
         ("-h" | "--help", _) => bail!("{USAGE}"),
         _ => bail!("unknown h2 live command {:?}\n\n{USAGE}", args.join(" ")),
     }
@@ -1211,6 +1216,17 @@ fn invite_create(mut args: Args) -> Result<()> {
     let server = args.take("--server")?;
     let data = args.take("--data")?;
     args.positional()?;
+    println!("{}", create_invite(server, data, days)?);
+    Ok(())
+}
+
+/// A new invite code, signed as the operator (`h2 live invite create`, and
+/// the menu bar's Copy New Invite).
+pub(crate) fn create_invite(
+    server: Option<String>,
+    data: Option<String>,
+    days: i64,
+) -> Result<String> {
     let client = Client::connect(server)?;
     let me = operator(data, &client)?;
     let token = issue_token(&me.key, &me.author(), &me.id, lxm::INVITES_WRITE, now());
@@ -1223,8 +1239,48 @@ fn invite_create(mut args: Args) -> Result<()> {
     let invite = reply["invite"]
         .as_str()
         .context("the server's reply has no invite")?;
-    println!("{invite}");
-    Ok(())
+    Ok(invite.to_string())
+}
+
+/// `GET /v1/admin/status` signed as the operator: the JSON the dashboard's
+/// Server screen reads (the menu bar's status lines).
+pub(crate) fn admin_status(server: Option<String>, data: Option<String>) -> Result<String> {
+    let client = Client::connect(server)?;
+    let me = operator(data, &client)?;
+    let token = issue_token(
+        &me.key,
+        &me.author(),
+        &me.id,
+        live_server::invites::LXM_ADMIN_READ,
+        now(),
+    );
+    let req = client.authorized(client.agent.get(&client.url("/admin/status")), token)?;
+    call(req, None)
+}
+
+/// The menu bar's operator calls, the same as the commands above.
+struct MenubarBackend;
+
+impl live_menubar::status::Backend for MenubarBackend {
+    fn admin_status(&self, local_url: &str, data_dir: &Path) -> Result<String> {
+        admin_status(
+            Some(local_url.into()),
+            Some(data_dir.to_string_lossy().into()),
+        )
+    }
+
+    fn create_invite(&self, local_url: &str, data_dir: &Path) -> Result<String> {
+        create_invite(
+            Some(local_url.into()),
+            Some(data_dir.to_string_lossy().into()),
+            7,
+        )
+    }
+}
+
+fn menubar(args: Args) -> Result<()> {
+    let env = live_menubar::Env::system(std::sync::Arc::new(MenubarBackend))?;
+    live_menubar::main(args.0, &env)
 }
 
 #[cfg(test)]
@@ -1284,6 +1340,68 @@ mod tests {
             serve_id(None, None, Some("https://live.forbes.red"), &dir),
             None
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The menu bar's backend against a real server: the admin status
+    /// parses into what the menu shows, and invites come back.
+    #[test]
+    fn menubar_backend_reads_status_and_makes_invites() {
+        use live_menubar::status::{Backend, Health, collect, parse_status};
+        let dir = std::env::temp_dir().join(format!("h2-live-menubar-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let data = dir.join("server");
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &data,
+            Default::default(),
+        )
+        .unwrap();
+        let backend = MenubarBackend;
+        backend.healthz(&server.url).unwrap();
+        let status = parse_status(&backend.admin_status(&server.url, &data).unwrap()).unwrap();
+        assert_eq!(status.accounts, 0);
+        assert!(
+            status.uptime_s.is_some(),
+            "the admin status, not /v1/server"
+        );
+        assert_eq!(status.open_invites, Some(0));
+
+        let code = backend.create_invite(&server.url, &data).unwrap();
+        assert!(!code.is_empty());
+
+        // Through the snapshot, with launchd faked out of the way.
+        let paths = live_menubar::config::Paths {
+            live_dir: dir.clone(),
+            launch_agents: dir.join("LaunchAgents"),
+        };
+        let mut cfg = live_menubar::config::Config::defaults(&paths);
+        cfg.local_url = server.url.clone();
+        cfg.data_dir = data.clone();
+        cfg.tunnel = None;
+        struct NoLaunchd;
+        impl live_menubar::launchd::Runner for NoLaunchd {
+            fn run(&self, _: &str, _: &[&str]) -> Result<live_menubar::launchd::Output> {
+                Ok(live_menubar::launchd::Output {
+                    code: 113,
+                    ..Default::default()
+                })
+            }
+        }
+        let ld =
+            live_menubar::launchd::Launchd::new(std::sync::Arc::new(NoLaunchd), "gui/0".into());
+        let snap = collect(&cfg, &ld, &backend);
+        assert!(
+            matches!(snap.health, Health::Up(ref s) if s.uptime_s.is_some()),
+            "{snap:?}"
+        );
+
+        // Another server's key is refused, as for `h2 live invite create`.
+        let other = dir.join("other");
+        ServerIdentity::open(&other, Some("elsewhere.example")).unwrap();
+        assert!(backend.admin_status(&server.url, &other).is_err());
+        drop(server);
         fs::remove_dir_all(&dir).unwrap();
     }
 

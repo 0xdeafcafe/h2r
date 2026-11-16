@@ -322,6 +322,100 @@ between players' machines ([below](#what-the-tunnel-does-not-carry)), not
 through this server, so hosting a game still needs UDP 3074-3080 reachable
 on the host player's side.
 
+## Menu bar app
+
+`h2 live menubar` is an optional menu bar (tray) app for a server that
+launchd runs on this Mac: it shows whether the server and tunnel are up,
+starts and stops them, makes invites, and decides what runs at login. It
+has no Dock icon and no window. It never runs the server itself; closing it
+leaves the server running.
+
+It manages three LaunchAgents, named in
+`~/Library/Application Support/h2recomp/live/menubar.toml`:
+
+| Agent | Default label | What runs |
+| --- | --- | --- |
+| server | `org.h2recomp.live.server` | `h2 live serve ...` or `h2-live-server ...` |
+| tunnel | `org.h2recomp.live.tunnel` | `cloudflared tunnel ... run` |
+| menu bar | `org.h2recomp.live.menubar` | `h2 live menubar` at login |
+
+The file also holds `local_url` (where the menu bar reaches the server,
+default `http://127.0.0.1:8074`), `public_url` (the tunnel's URL, if any),
+`data_dir` (the server's key, which signs the status and invite requests)
+and `logs_dir`. A missing file is the defaults.
+
+### Install
+
+Already running the server and cloudflared as LaunchAgents of your own?
+Adopt them by label; their plists are read, never rewritten:
+
+```
+h2 live menubar --adopt-existing red.forbes.h2live.server red.forbes.h2live.tunnel
+h2 live menubar --status      # check what the menu will say
+h2 live menubar --install     # open the menu bar app at every login
+h2 live menubar               # and open it now
+```
+
+Adopting reads the server agent's `--public-url`, `--data` and `--listen`
+into `menubar.toml`, and its `StandardErrorPath` for the logs folder. Pass
+`none` as the tunnel label for a server with no tunnel. `--public-url URL`,
+`--data DIR` and `--local-url URL` set those keys by hand.
+
+Starting from nothing, the menu bar can write the agents too:
+
+```
+h2 live menubar --install-server -- --public-url https://live.example.net --behind-cloudflared --invite-only
+h2 live menubar --install-tunnel --token-file ~/.cloudflared/live.token
+h2 live menubar --install
+```
+
+`--install-server` writes and loads an agent running `h2 live serve` with
+the flags after `--` (KeepAlive, log in `live/logs/server.log`);
+`--install-tunnel` one running `cloudflared tunnel --no-autoupdate --url
+<local_url> run --token-file FILE` (cloudflared from `PATH` or
+`--cloudflared PATH`, log in `live/logs/tunnel.log`). `--uninstall`
+removes the menu bar's own login item; the server and tunnel agents stay.
+
+### The menu
+
+The icon is a ring: a dot in it when the server answers, a gap while it
+starts or an action runs, empty when it is stopped, and a slash on an
+error (the agent failed, or the server answers but will not give its
+status).
+
+- **Status lines**: the server's state and local URL; uptime, players
+  online, live games and accounts (from `GET /v1/admin/status`, what the
+  dashboard's Server screen reads, signed with the server key); the tunnel
+  agent's state, the public URL and whether it answers `/healthz`; and the
+  last action's result or error. These refresh every 4 s off the UI thread.
+- **Start / Stop / Restart Server**, **Start / Stop Tunnel**: `launchctl
+  bootstrap`, `bootout` and `kickstart -k` on the agent. Stop unloads it,
+  so KeepAlive does not bring it back. A server something else started (in
+  a terminal) shows as "not started by this app" and is not started or
+  stopped from here.
+- **Open Dashboard**, **Open Stats Site**: the public URL (else the local
+  one), and its `/stats`.
+- **Copy New Invite**: what `h2 live invite create` does (a 7-day invite,
+  signed with the server key in `data_dir`), copied to the clipboard and
+  shown in the menu.
+- **Open Logs Folder**, **View Server Log**: the folder holding the server
+  agent's log, and the log in Console.
+- **Run Server at Login**: launchd's enable/disable override for the server
+  agent (`launchctl enable|disable gui/<uid>/<label>`). A KeepAlive agent
+  starts as soon as it loads whatever `RunAtLoad` says, so the toggle stops
+  it loading at login instead, and leaves the plist alone. Start from the
+  menu still works while it is off; the server then runs until you stop it
+  or log out.
+- **Open Menu Bar App at Login**: writes or removes the menu bar's own
+  agent, as `--install` and `--uninstall` do.
+- **Quit Menu Bar**: quits; the server and tunnel keep running.
+  **Stop Everything and Quit**: stops the tunnel and the server, then quits.
+  Agents left to run at login start again at the next login.
+
+The menu bar is `crates/live-menubar` (tray-icon and muda on a winit event
+loop). macOS is complete; elsewhere the tray runs but launchd's items fail
+with a message.
+
 ## cloudflared not found, or failing
 
 cloudflared is looked up as `$H2_CLOUDFLARED`, else `cloudflared` on
@@ -415,6 +509,17 @@ UDP 3074-3080 reachable for internet play.
   `identity.rs`, `art.rs`: the lasting host, the first-start id and
   `--game-art` checks both binaries share; `crates/cli/src/live_cmd.rs`:
   `serve --behind-cloudflared` names a new server only.
+- `crates/live-menubar`: `menubar.toml` defaults, partial files and round
+  trips; plist XML (escaping, keys, and `plutil -lint`/`-extract` on
+  macOS); `launchctl print`/`print-disabled` parsing; start, stop,
+  restart, install, uninstall and the login toggle against a fake launchd
+  (a disabled agent is enabled for the bootstrap and disabled again; an
+  adopted plist is never rewritten); `/v1/admin/status` parsing from a
+  recorded reply; snapshots from scripted health; the menu model (labels
+  and which items are enabled when running, starting, failed, stopped,
+  busy, not installed, started elsewhere); every item's action; the icon's
+  states; `--adopt-existing`, `--install`, `--install-server`,
+  `--install-tunnel`.
 - `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only
