@@ -4,7 +4,7 @@
 // once the map has been clicked), pinch, drag and the buttons pan and zoom
 // it; the view eases to where it is going unless reduced motion is asked for.
 
-import { For, createEffect, on, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
@@ -39,6 +39,8 @@ export default function ViewMap(props: {
   image: (id: string) => string;
   highlight?: () => number | null;
   label?: string;
+  /** A thumbnail: small dots, no names, and no panning or zooming. */
+  mini?: boolean;
   /** The picture couldn't be loaded: the caller falls back to the grid. */
   onError?: () => void;
 }) {
@@ -67,7 +69,7 @@ export default function ViewMap(props: {
     return img;
   };
 
-  const fit = () => fitPicture(w, h, def().width, def().height, 10);
+  const fit = () => fitPicture(w, h, def().width, def().height, props.mini ? 3 : 10);
   const settle = (p: PanZoom) => clampPan(p, w, h, def().width, def().height);
   const refit = () => { target = fit(); cur = { ...target }; };
   const zoom = (factor: number, cx = w / 2, cy = h / 2) => {
@@ -147,14 +149,16 @@ export default function ViewMap(props: {
     const leave = () => { mx = null; my = null; };
     const dbl = (e: MouseEvent) => { const [x, y] = at(e); zoom(e.shiftKey ? 0.5 : 2, x, y); };
     const away = (e: PointerEvent) => { if (!wrap.contains(e.target as Node)) engaged = false; };
-    wrap.addEventListener("wheel", wheel, { passive: false });
-    canvas.addEventListener("pointerdown", down);
-    canvas.addEventListener("pointermove", move);
-    canvas.addEventListener("pointerup", up);
-    canvas.addEventListener("pointercancel", up);
-    canvas.addEventListener("pointerleave", leave);
-    canvas.addEventListener("dblclick", dbl);
-    document.addEventListener("pointerdown", away);
+    if (!props.mini) {
+      wrap.addEventListener("wheel", wheel, { passive: false });
+      canvas.addEventListener("pointerdown", down);
+      canvas.addEventListener("pointermove", move);
+      canvas.addEventListener("pointerup", up);
+      canvas.addEventListener("pointercancel", up);
+      canvas.addEventListener("pointerleave", leave);
+      canvas.addEventListener("dblclick", dbl);
+      document.addEventListener("pointerdown", away);
+    }
 
     const stop = onAnimationFrame((now) => {
       if (!visible || document.hidden || !cur || !target) return;
@@ -179,10 +183,10 @@ export default function ViewMap(props: {
       // Knockout marks.
       for (const k of f.markers) {
         const [px, py] = worldToPixel(m, k.x, k.y, k.z);
-        const x = sx(px), y = sy(py), r = 5;
+        const x = sx(px), y = sy(py), r = props.mini ? 2.5 : 5;
         ctx.globalAlpha = Math.max(0, Math.min(1, k.alpha));
         ctx.lineCap = "round";
-        for (const [colour, width] of [["rgba(0,0,0,.8)", 4], [k.colour, 2]] as const) {
+        for (const [colour, width] of (props.mini ? [["rgba(0,0,0,.8)", 2.5], [k.colour, 1.25]] : [["rgba(0,0,0,.8)", 4], [k.colour, 2]]) as [string, number][]) {
           ctx.strokeStyle = colour; ctx.lineWidth = width;
           ctx.beginPath();
           ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r);
@@ -201,8 +205,8 @@ export default function ViewMap(props: {
         let best = 14;
         for (const q of placed) { const d = Math.hypot(q.x - mx, q.y - my); if (d <= best) { best = d; hover = q.p.index; } }
       }
-      canvas.style.cursor = pointers.size ? "grabbing" : hover !== null ? "pointer" : target.k > fit().k * 1.001 ? "grab" : "default";
-      const r = 5;
+      if (!props.mini) canvas.style.cursor = pointers.size ? "grabbing" : hover !== null ? "pointer" : target.k > fit().k * 1.001 ? "grab" : "default";
+      const r = props.mini ? 3 : 5;
       for (const q of placed) {
         const info = roster.get(q.p.index);
         const colour = info?.colour ?? "#999";
@@ -214,7 +218,7 @@ export default function ViewMap(props: {
         ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(q.x + Math.cos(a) * (rr + 5), q.y + Math.sin(a) * (rr + 5));
+        ctx.moveTo(q.x + Math.cos(a) * (rr + (props.mini ? 3 : 5)), q.y + Math.sin(a) * (rr + (props.mini ? 3 : 5)));
         ctx.lineTo(q.x + Math.cos(a + 0.7) * rr, q.y + Math.sin(a + 0.7) * rr);
         ctx.lineTo(q.x + Math.cos(a - 0.7) * rr, q.y + Math.sin(a - 0.7) * rr);
         ctx.closePath();
@@ -236,13 +240,13 @@ export default function ViewMap(props: {
   });
 
   return (
-    <div ref={wrap} class="map-canvas map-view">
+    <div ref={wrap} class="map-canvas map-view" classList={{ "map-view--mini": !!props.mini }}>
       <canvas ref={canvas} role="img" aria-label={props.label ?? "Map"} />
-      <div class="map-zoom" role="group" aria-label="Zoom">
+      <Show when={!props.mini}><div class="map-zoom" role="group" aria-label="Zoom">
         <button onClick={() => zoom(1.6)} aria-label="Zoom in" title="Zoom in">+</button>
         <button onClick={() => zoom(1 / 1.6)} aria-label="Zoom out" title="Zoom out">−</button>
         <button onClick={() => { target = fit(); if (still) cur = { ...target }; }} aria-label="Fit the whole map" title="Fit the whole map">⤢</button>
-      </div>
+      </div></Show>
     </div>
   );
 }

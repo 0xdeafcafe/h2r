@@ -170,6 +170,24 @@ export function defaultView(v: MapViews): MapViewDef {
   return v.views.find((x) => x.id === "top") ?? v.views[0]!;
 }
 
+/** The straight-down view, for a thumbnail; null when there isn't one. */
+export function topView(v: MapViews | null | undefined): MapViewDef | null {
+  return v?.views.find((x) => x.id === "top") ?? null;
+}
+
+/** The view a `?map=` value asks for: that view when the map has it, else
+ *  the default. */
+export function pickView(v: MapViews, want: string | null | undefined): MapViewDef {
+  return v.views.find((x) => x.id === want) ?? defaultView(v);
+}
+
+/** What `?map=` should say for a chosen view: its id, or nothing for the
+ *  default view (and for an id the map doesn't have), so the plain URL stays plain. */
+export function viewParam(v: MapViews, id: string): string | undefined {
+  const picked = v.views.find((x) => x.id === id);
+  return picked && picked.id !== defaultView(v).id ? picked.id : undefined;
+}
+
 /** A short name for a view id: `iso-ne` → "NE". */
 export function viewLabel(id: string): string {
   if (id === "top") return "Top";
