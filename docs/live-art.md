@@ -64,7 +64,7 @@ key) is 4, so a disc extracted by an older build is extracted again.
   "views": [
     { "id": "top", "kind": "ortho", "width": 2048, "height": 2048,
       "world_to_pixel": [[a, b, c, d], [e, f, g, h]],
-      "file": "views/top.png", "up": "north",
+      "file": "views/top.png", "up": "north", "cutaway": true,
       "elevation_deg": 90, "scale": 21.4, "forward": [0, 0, -1] },
     { "id": "iso-ne", "kind": "ortho", "width": 2048, "height": 1536,
       "world_to_pixel": [[...], [...]], "file": "views/iso-ne.png",
@@ -78,6 +78,10 @@ key) is 4, so a disc extracted by an older build is extracted again.
   pixel origin at the top-left corner of the image (pixel `i` covers
   `[i, i + 1)`, so its centre is `i + 0.5`).
 - `top` looks straight down; north (+y) is up and east (+x) is right.
+  `cutaway: true`: roofs and ceilings over walkable space are cut away, so
+  the picture shows the floors players stand on (pipeline step 8). The
+  matrix is still exact; the cut only decides which surface each pixel
+  shows.
 - `iso-ne`, `iso-nw`, `iso-sw`, `iso-se` look from that compass direction
   (`azimuth_deg` from +x towards +y: 45, 135, 225, 315) at 30° elevation.
   `depth_sorted: true` means the picture has real occlusion: a plotted point
@@ -134,6 +138,11 @@ view), the same for every view.
    holding at least 15% of the largest group's triangles is kept, grown by a
    cell. z covers the kept centroids, except a sparse tail (under 5%)
    separated by a gap over 10% of the range. The frame is padded by 3%.
+   Each view's camera is then fitted to what it draws, not to the frame's
+   box: the corners of every drawn triangle cut to the frame (plus 1%),
+   projected, with a 3% margin. A level that fills only part of its frame
+   box (a tall, narrow structure like a sky platform) still fills the
+   picture.
 7. **Pictures.** `live_render`: each view is rasterised at 2 × 2 samples per
    pixel into depth and packed normal/class buffers, culling back faces and
    anything outside the frame (plus 1%). Shading per sample: Lambert from the
@@ -143,7 +152,21 @@ view), the same for every view.
    darker); thin darker lines at silhouettes, depth steps and creases. A
    pixel whose samples lie on one flat surface is shaded once. Glass is not
    drawn. Samples are averaged in linear light; alpha is coverage.
-8. **Write.** `map.glb` as soon as a map is built, then every (map, view)
+8. **Cutaway (top view).** Render geometry faces into the playable space,
+   so going down a vertical ray an up-facing surface starts solid and a
+   down-facing one (a ceiling) ends it. On a grid of 2 × 2 output pixels the
+   nearest 8 surfaces of both facings are kept per cell. A cell is cut where
+   a ceiling has an up-facing surface somewhere above it (a roof, or an
+   upper storey) and a floor at least 0.6 units below it (headroom for a
+   crouching player): everything nearer than that ceiling is not drawn
+   there, nor its shadow. Single-sided ceilings with nothing above them are
+   already invisible from above and need no cut. Cut regions are then
+   opened (eroded and dilated by a 0.8-unit square), so regions narrower
+   than about 1.6 units, such as bridges and walkways over open ground,
+   keep their top. Walls have no ceiling inside them, so they keep their
+   tops and read as rims around opened rooms. The iso views and `map.glb`
+   are not cut.
+9. **Write.** `map.glb` as soon as a map is built, then every (map, view)
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
 
@@ -158,15 +181,20 @@ drawing).
 cargo test --release -p cli geometry_from_the_disc -- --ignored --nocapture
 ```
 
-writes the outputs, a timing report, the shader names behind the classes
-and a contact sheet of every view to a directory outside the repository (the
+writes the outputs, a timing report, the shader names behind the classes,
+a contact sheet of every view and, under `cutaway/`, each top view with and
+without the cutaway side by side to a directory outside the repository (the
 path is `CHECK_DIR` in the test). Do not commit anything it writes.
 
 ## Limits
 
-- The top view shows roofs: indoor maps read as their rooftops from above.
-  The iso views cull walls facing away from the camera, which opens rooms
-  facing it.
+- The top view's cutaway shows one floor per spot: where storeys stack, the
+  highest floor that has a ceiling over it wins, so a walkable roof over a
+  room shows the room, and a player on that roof is plotted over the room.
+  Roofs of spaces under 0.6 units high, or rooms narrower than 1.6 units,
+  are not cut.
+- The iso views are not cut away; they cull walls facing away from the
+  camera, which opens rooms facing it.
 - Classes from names are a heuristic; unnamed surfaces fall back to facing.
 - The frame is a heuristic too. It keeps every retail map's playable area on
   the disc this was checked against, but a map with a dense, detailed

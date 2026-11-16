@@ -754,6 +754,10 @@ pub struct ViewEntry {
     pub up: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_sorted: Option<bool>,
+    /// Roofs and ceilings over walkable space are cut away, so the picture
+    /// shows the floors players stand on (the top view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutaway: Option<bool>,
     /// Compass direction the camera looks from (degrees from +x towards +y);
     /// absent for the top view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -920,11 +924,11 @@ fn load_level(disc: &Disc, m: &MapFile, stats: &mut MapStats) -> Result<Level> {
 }
 
 /// The view entries and cameras for a level.
-pub fn cameras(level_frame: &Bounds) -> Vec<(ViewEntry, Camera)> {
+pub fn cameras(mesh: &LevelMesh, level_frame: &Bounds) -> Vec<(ViewEntry, Camera)> {
     VIEWS
         .iter()
         .map(|spec| {
-            let cam = live_render::fit(spec, level_frame);
+            let cam = live_render::fit(spec, mesh, level_frame);
             let entry = ViewEntry {
                 id: spec.id.to_string(),
                 kind: "ortho".into(),
@@ -934,6 +938,7 @@ pub fn cameras(level_frame: &Bounds) -> Vec<(ViewEntry, Camera)> {
                 file: format!("views/{}.png", spec.id),
                 up: spec.azimuth.is_none().then(|| "north".to_string()),
                 depth_sorted: spec.azimuth.is_some().then_some(true),
+                cutaway: spec.azimuth.is_none().then_some(true),
                 azimuth_deg: spec.azimuth,
                 elevation_deg: spec.azimuth.map_or(90.0, |_| live_render::ELEVATION_DEG),
                 scale: cam.scale,
@@ -990,8 +995,10 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
     result.skipped = skipped.into_inner().unwrap();
 
     // Draw every (map, view).
-    let plans: Vec<Vec<(ViewEntry, Camera)>> =
-        loaded.iter().map(|(l, _)| cameras(&l.frame)).collect();
+    let plans: Vec<Vec<(ViewEntry, Camera)>> = loaded
+        .iter()
+        .map(|(l, _)| cameras(&l.mesh, &l.frame))
+        .collect();
     let jobs: Vec<(usize, usize)> = plans
         .iter()
         .enumerate()
@@ -1014,6 +1021,7 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
                         cam,
                         entry.width as usize,
                         entry.height as usize,
+                        entry.cutaway == Some(true),
                     );
                     let path = out.join("map").join(&level.stem).join(&entry.file);
                     let mut png = Vec::new();

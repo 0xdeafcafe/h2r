@@ -1,6 +1,6 @@
 //! Synthetic tests for the level geometry and views. Every byte is invented.
 use super::*;
-use crate::live_render::{basis, fit_box, render, shadow_map};
+use crate::live_render::{VIEWS, basis, fit_box, render, shadow_map};
 use serde_json::Value;
 
 fn tri(p: [[f32; 3]; 3]) -> Tri {
@@ -468,7 +468,7 @@ fn the_top_view_covers_exactly_the_projected_box() {
         close(apply(&m, [10.0, 10.0, 0.0]), [60.0, 4.0]),
         "z does not move a top view"
     );
-    let rgba = render(&mesh, &frame, &shadow, &cam, 64, 64);
+    let rgba = render(&mesh, &frame, &shadow, &cam, 64, 64, false);
     let mut full = 0;
     let mut partial = 0;
     for y in 0..64 {
@@ -507,7 +507,7 @@ fn iso_views_draw_each_world_point_where_the_matrix_puts_it() {
     // At the pixel the matrix gives, the nearest surface is the point
     // itself when it is visible, and something nearer when it is hidden.
     let clip = crate::live_render::clip_box(&frame);
-    let (depth, normal) = crate::live_render::gbuffer(&mesh, &cam, &clip, 1, w, h);
+    let (depth, normal) = crate::live_render::gbuffer(&mesh, &cam, &clip, None, 1, w, h);
     let probe = |p: [f32; 3]| {
         let q = apply(&m, p);
         let i = q[1] as usize * w + q[0] as usize;
@@ -532,7 +532,7 @@ fn iso_views_draw_each_world_point_where_the_matrix_puts_it() {
 
     // Drawn: covered where the level is, transparent around it.
     let shadow = shadow_map(&mesh, &frame);
-    let rgba = render(&mesh, &frame, &shadow, &cam, w, h);
+    let rgba = render(&mesh, &frame, &shadow, &cam, w, h, false);
     let q = apply(&m, [20.0, 20.0, 8.0]);
     assert_eq!(alpha(&rgba, w, q[0] as usize, q[1] as usize), 255);
     assert_eq!(alpha(&rgba, w, 2, 2), 0);
@@ -560,7 +560,7 @@ fn the_frame_skips_sparse_backdrop_and_the_views_cut_it_away() {
     // The plain is cut away: nothing but the structure is drawn.
     let cam = fit_box(basis(None), &f, 64.0, 64.0, 0.0);
     let clip = crate::live_render::clip_box(&f);
-    let (depth, _) = crate::live_render::gbuffer(&mesh, &cam, &clip, 1, 64, 64);
+    let (depth, _) = crate::live_render::gbuffer(&mesh, &cam, &clip, None, 1, 64, 64);
     let drawn: Vec<f32> = depth.iter().copied().filter(|d| d.is_finite()).collect();
     assert!(!drawn.is_empty());
     assert!(
@@ -583,10 +583,120 @@ fn sparse_height_tails_behind_a_gap_are_left_out() {
     assert_eq!(z_range(&z).0, 0.0);
 }
 
+/// A quad from four corners, counter-clockwise seen from where it faces.
+fn quad(c: [[f32; 3]; 4]) -> [Tri; 2] {
+    [tri([c[0], c[1], c[2]]), tri([c[0], c[2], c[3]])]
+}
+/// A horizontal quad at height `z` facing up or down.
+fn flat(x0: f32, y0: f32, x1: f32, y1: f32, z: f32, up: bool) -> [Tri; 2] {
+    if up {
+        quad([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
+    } else {
+        quad([[x0, y0, z], [x0, y1, z], [x1, y1, z], [x1, y0, z]])
+    }
+}
+
+#[test]
+fn the_top_view_cuts_roofs_away_but_keeps_bridges_and_walls() {
+    let mut tris = Vec::new();
+    // Ground, z 0, 60 x 40.
+    tris.extend(flat(0.0, 0.0, 60.0, 40.0, 0.0, true));
+    // A 20 x 20 room: floor at z 0 (the ground), ceiling at 3 facing down,
+    // a roof on top at 3.5, and 1-unit walls whose tops are at 3.5.
+    tris.extend(flat(5.0, 5.0, 25.0, 25.0, 3.0, false));
+    tris.extend(flat(4.0, 4.0, 26.0, 26.0, 3.5, true));
+    // A 1-unit-wide bridge at z 5 over the ground, underside at 4.8.
+    tris.extend(flat(30.0, 18.0, 58.0, 19.0, 5.0, true));
+    tris.extend(flat(30.0, 18.0, 58.0, 19.0, 4.8, false));
+    // A rock standing on the ground: top only (its bottom is buried).
+    tris.extend(flat(40.0, 30.0, 50.0, 38.0, 2.0, true));
+    tris.extend(flat(40.0, 30.0, 50.0, 38.0, -1.0, false));
+    let mesh = build_mesh(&tris);
+    let frame = mesh.bounds;
+    let clip = crate::live_render::clip_box(&frame);
+    let (w, h) = (300usize, 200usize);
+    let cam = fit_box(basis(None), &frame, w as f32, h as f32, 0.0);
+    let m = cam.world_to_pixel();
+    let cut = crate::live_render::Cutaway::new(&mesh, &cam, &clip, w, h);
+    let (depth, _) = crate::live_render::gbuffer(&mesh, &cam, &clip, Some(&cut), 1, w, h);
+    let (plain, _) = crate::live_render::gbuffer(&mesh, &cam, &clip, None, 1, w, h);
+    let z_at = |d: &[f32], p: [f32; 2]| {
+        let q = apply(&m, [p[0], p[1], 0.0]);
+        -d[q[1] as usize * w + q[0] as usize]
+    };
+    // Without the cutaway the room is its roof; with it, its floor.
+    assert_eq!(z_at(&plain, [15.0, 15.0]), 3.5);
+    assert_eq!(z_at(&depth, [15.0, 15.0]), 0.0, "room floor");
+    assert_eq!(z_at(&depth, [6.0, 15.0]), 0.0, "near the wall, inside");
+    assert_eq!(z_at(&depth, [4.5, 15.0]), 3.5, "the wall keeps its top");
+    // The bridge is too narrow to be a room; the rock has no ceiling.
+    assert_eq!(z_at(&depth, [44.0, 18.5]), 5.0, "bridge");
+    assert_eq!(z_at(&depth, [45.0, 34.0]), 2.0, "rock");
+    assert_eq!(z_at(&depth, [28.0, 35.0]), 0.0, "open ground");
+    // world_to_pixel is the same camera either way, and a full render with
+    // the cutaway still covers the level.
+    let shadow = shadow_map(&mesh, &frame);
+    let rgba = render(&mesh, &frame, &shadow, &cam, w, h, true);
+    let q = apply(&m, [15.0, 15.0, 0.0]);
+    assert_eq!(alpha(&rgba, w, q[0] as usize, q[1] as usize), 255);
+}
+
+#[test]
+fn views_fit_what_is_drawn_not_the_frame_box() {
+    // A thin diagonal walkway in a big, mostly empty frame.
+    let tris = cuboid([0.0, 0.0, 0.0], [100.0, 4.0, 1.0]);
+    let mesh = build_mesh(&tris);
+    let frame = Bounds {
+        min: [-50.0, -50.0, -20.0],
+        max: [150.0, 50.0, 20.0],
+    };
+    let spec = &VIEWS[0];
+    let cam = crate::live_render::fit(spec, &mesh, &frame);
+    let m = cam.world_to_pixel();
+    let (w, h) = (f64::from(spec.width), f64::from(spec.height));
+    let pts: Vec<[f64; 2]> = mesh
+        .bounds
+        .corners()
+        .iter()
+        .map(|&c| apply(&m, c))
+        .collect();
+    let (x0, x1) = pts
+        .iter()
+        .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p[0]), a.1.max(p[0])));
+    let margin = 0.03 * w.min(h);
+    assert!(
+        (x0 - margin).abs() < 1.0 && (x1 - (w - margin)).abs() < 1.0,
+        "{x0} {x1}"
+    );
+    assert!(pts.iter().all(|p| p[1] >= 0.0 && p[1] <= h));
+    // Geometry crossing the clip box is fitted by its cut, not its ends.
+    let long = build_mesh(&cuboid([-1000.0, 0.0, 0.0], [1000.0, 4.0, 1.0]));
+    let cam = crate::live_render::fit(spec, &long, &frame);
+    let a = apply(&cam.world_to_pixel(), [-50.0, 2.0, 0.0]);
+    assert!(a[0] > 0.0 && a[0] < margin + 25.0, "{a:?}");
+}
+
+#[test]
+fn polygons_are_cut_to_the_box() {
+    let b = Bounds {
+        min: [0.0; 3],
+        max: [1.0; 3],
+    };
+    let t = [[-1.0, 0.5, 0.5], [2.0, 0.5, 0.5], [0.5, 0.9, 0.5]];
+    let out = crate::live_render::clip_polygon(&t, &b);
+    assert!(out.len() >= 4);
+    assert!(
+        out.iter()
+            .all(|p| (0..3).all(|k| (0.0..=1.0).contains(&p[k])))
+    );
+    let far = [[5.0, 5.0, 5.0], [6.0, 5.0, 5.0], [5.0, 6.0, 5.0]];
+    assert!(crate::live_render::clip_polygon(&far, &b).is_empty());
+}
+
 #[test]
 fn views_json_and_manifest_entries_follow_the_contract() {
     let (mesh, frame) = level(&cuboid([0.0; 3], [100.0, 60.0, 10.0]));
-    let views: Vec<ViewEntry> = cameras(&frame).into_iter().map(|(e, _)| e).collect();
+    let views: Vec<ViewEntry> = cameras(&mesh, &frame).into_iter().map(|(e, _)| e).collect();
     let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
     assert_eq!(ids, ["top", "iso-ne", "iso-nw", "iso-sw", "iso-se"]);
     let file = ViewsFile {
@@ -607,6 +717,8 @@ fn views_json_and_manifest_entries_follow_the_contract() {
     );
     assert_eq!(top["up"], "north");
     assert!(top.get("depth_sorted").is_none());
+    assert_eq!(top["cutaway"], true);
+    assert!(v["views"][1].get("cutaway").is_none());
     assert_eq!(top["file"], "views/top.png");
     let iso = &v["views"][1];
     assert_eq!(
@@ -772,6 +884,38 @@ fn geometry_from_the_disc() {
             serde_json::from_slice(&fs::read(out.join(e.views.as_ref().unwrap())).unwrap())
                 .unwrap();
         assert_eq!(views.views.len(), 5, "{stem}");
+    }
+
+    // The top view without the cutaway, side by side with it, at half
+    // size, for review.
+    let pairs = check.join("cutaway");
+    let _ = fs::remove_dir_all(&pairs);
+    fs::create_dir_all(&pairs).unwrap();
+    for m in disc.maps_of(CacheType::Multiplayer) {
+        let mut stats = MapStats::default();
+        let Ok(level) = load_level(&disc, m, &mut stats) else {
+            continue;
+        };
+        let (entry, cam) = cameras(&level.mesh, &level.frame).remove(0);
+        let (w, h) = (entry.width as usize, entry.height as usize);
+        let bg = [0x15, 0x19, 0x1e];
+        let mut halves = Vec::new();
+        for cut in [false, true] {
+            let rgba =
+                live_render::render(&level.mesh, &level.frame, &level.shadow, &cam, w, h, cut);
+            halves.push(thumb(&rgba, w, h, 2, bg));
+        }
+        let (tw, th) = (halves[0].0, halves[0].1);
+        let mut pair = vec![0u8; tw * 2 * th * 4];
+        for y in 0..th {
+            for (k, (_, _, t)) in halves.iter().enumerate() {
+                let dst = (y * tw * 2 + k * tw) * 4;
+                pair[dst..dst + tw * 4].copy_from_slice(&t[y * tw * 4..(y + 1) * tw * 4]);
+            }
+        }
+        let mut png = Vec::new();
+        assets::png::write_rgba(&mut png, (tw * 2) as u32, th as u32, &pair).unwrap();
+        fs::write(pairs.join(format!("{}.png", m.name())), png).unwrap();
     }
 
     // Contact sheet: a row per map, its five views.

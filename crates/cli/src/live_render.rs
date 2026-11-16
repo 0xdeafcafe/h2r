@@ -125,9 +125,21 @@ pub fn basis(azimuth: Option<f32>) -> [[f32; 3]; 3] {
 /// A camera with the given axes that fits `b` into `w`×`h` pixels, centred,
 /// with `margin` pixels clear on the tighter side.
 pub fn fit_box(axes: [[f32; 3]; 3], b: &Bounds, w: f32, h: f32, margin: f32) -> Camera {
+    fit_points(axes, b.corners(), w, h, margin)
+}
+
+/// A camera with the given axes that fits every point into `w`×`h` pixels,
+/// centred, with `margin` pixels clear on the tighter side.
+pub fn fit_points(
+    axes: [[f32; 3]; 3],
+    points: impl IntoIterator<Item = [f32; 3]>,
+    w: f32,
+    h: f32,
+    margin: f32,
+) -> Camera {
     let [right, up, forward] = axes;
     let (mut r0, mut r1, mut u0, mut u1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for c in b.corners() {
+    for c in points {
         let (r, u) = (dot(c, right), dot(c, up));
         r0 = r0.min(r);
         r1 = r1.max(r);
@@ -148,10 +160,71 @@ pub fn fit_box(axes: [[f32; 3]; 3], b: &Bounds, w: f32, h: f32, margin: f32) -> 
     }
 }
 
-/// The camera for a view of `frame`.
-pub fn fit(spec: &ViewSpec, frame: &Bounds) -> Camera {
+/// The camera for a view of a level: fitted to what is drawn, the drawn
+/// triangles cut to the clip box of `frame`, not to the box itself, so the
+/// level fills the picture from every side.
+pub fn fit(spec: &ViewSpec, mesh: &LevelMesh, frame: &Bounds) -> Camera {
     let (w, h) = (spec.width as f32, spec.height as f32);
-    fit_box(basis(spec.azimuth), frame, w, h, 0.03 * w.min(h))
+    let axes = basis(spec.azimuth);
+    let margin = 0.03 * w.min(h);
+    let points = drawn_points(mesh, &clip_box(frame));
+    if points.is_empty() {
+        return fit_box(axes, frame, w, h, margin);
+    }
+    fit_points(axes, points, w, h, margin)
+}
+
+/// The corners of every drawn (non-glass) triangle cut to `clip`.
+pub fn drawn_points(mesh: &LevelMesh, clip: &Bounds) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    for (class, p) in &mesh.primitives {
+        if *class == Class::Glass {
+            continue;
+        }
+        for t in p.indices.as_chunks::<3>().0 {
+            let world = t.map(|i| p.positions[i as usize]);
+            if world.iter().all(|&v| inside(clip, v)) {
+                out.extend(world);
+            } else {
+                out.extend(clip_polygon(&world, clip));
+            }
+        }
+    }
+    out
+}
+
+/// A convex polygon cut to a box (Sutherland–Hodgman, one plane at a time).
+pub fn clip_polygon(poly: &[[f32; 3]], b: &Bounds) -> Vec<[f32; 3]> {
+    let mut cur = poly.to_vec();
+    for k in 0..3 {
+        for (bound, keep_below) in [(b.min[k], false), (b.max[k], true)] {
+            if cur.is_empty() {
+                return cur;
+            }
+            let ins = |p: &[f32; 3]| {
+                if keep_below {
+                    p[k] <= bound
+                } else {
+                    p[k] >= bound
+                }
+            };
+            let mut next = Vec::with_capacity(cur.len() + 2);
+            for i in 0..cur.len() {
+                let (a, c) = (cur[i], cur[(i + 1) % cur.len()]);
+                if ins(&a) {
+                    next.push(a);
+                }
+                if ins(&a) != ins(&c) {
+                    let t = (bound - a[k]) / (c[k] - a[k]);
+                    let mut q: [f32; 3] = std::array::from_fn(|j| a[j] + (c[j] - a[j]) * t);
+                    q[k] = bound;
+                    next.push(q);
+                }
+            }
+            cur = next;
+        }
+    }
+    cur
 }
 
 /// Calls `f(index, depth, barycentrics)` for every pixel whose centre is
@@ -184,7 +257,9 @@ fn raster(v: [[f32; 3]; 3], w: usize, h: usize, mut f: impl FnMut(usize, f32, [f
         let row = y * w;
         for x in x0..x1 {
             let w2 = 1.0 - w0 - w1;
-            if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+            // A hair of slack, so a sample on an edge shared by two
+            // triangles is never missed by both.
+            if w0 >= -1e-6 && w1 >= -1e-6 && w2 >= -1e-6 {
                 f(
                     row + x,
                     w0 * v[0][2] + w1 * v[1][2] + w2 * v[2][2],
@@ -312,7 +387,9 @@ const AO_RADIUS: f32 = 1.2;
 /// Depth-step line threshold (second difference), world units.
 const STEP: f32 = 0.15;
 
-/// Draws one view: `w`×`h` straight-alpha RGBA.
+/// Draws one view: `w`×`h` straight-alpha RGBA. With `cutaway`, roofs and
+/// ceilings over walkable space are cut away ([`Cutaway`]).
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     mesh: &LevelMesh,
     frame: &Bounds,
@@ -320,19 +397,225 @@ pub fn render(
     cam: &Camera,
     w: usize,
     h: usize,
+    cutaway: bool,
 ) -> Vec<u8> {
     let ss = SUPERSAMPLE;
-    let (depth, normal) = gbuffer(mesh, cam, &clip_box(frame), ss, w, h);
-    shade(&depth, &normal, frame, shadow, cam, ss, w, h)
+    let clip = clip_box(frame);
+    let cut = cutaway.then(|| Cutaway::new(mesh, cam, &clip, w, h));
+    let (depth, normal) = gbuffer(mesh, cam, &clip, cut.as_ref(), ss, w, h);
+    shade(&depth, &normal, frame, shadow, cut.as_ref(), cam, ss, w, h)
+}
+
+/// Layers kept per cutaway cell, nearest first.
+const LAYERS: usize = 8;
+/// Smallest gap between a ceiling and the floor under it that counts as
+/// walkable space, world units (a crouching player is about 0.5).
+pub const MIN_HEADROOM: f32 = 0.6;
+/// Cut regions narrower than twice this (world units) are kept, so bridges,
+/// walkways and eaves over open ground stay in the picture.
+pub const MIN_CUT_RADIUS: f32 = 0.8;
+/// Output pixels per cutaway cell, along each axis.
+const CUT_CELL: usize = 2;
+
+/// Where a view cuts the level open to show the floors under roofs.
+///
+/// Render geometry faces into the playable space, so along a view ray a
+/// surface facing the camera starts solid and one facing away (a ceiling,
+/// seen from above) ends it. Per cell of a grid over the picture, every
+/// layer is rasterised, both facings; the nearest ceiling with a front face
+/// above it and a floor at least [`MIN_HEADROOM`] beneath it marks a
+/// covered walkable space, and everything nearer than that ceiling is cut.
+/// Cut regions are then opened (eroded and dilated by [`MIN_CUT_RADIUS`]) so
+/// only room-sized ones stay cut. Cells over walls have no ceiling and keep
+/// their top, so walls read as their tops around opened rooms. The cut is a
+/// depth per cell; nothing moves, so `world_to_pixel` is unchanged.
+pub struct Cutaway {
+    cols: usize,
+    /// Fragments nearer than this are not drawn; `-inf` where nothing is cut.
+    near: Vec<f32>,
+}
+
+impl Cutaway {
+    pub fn new(mesh: &LevelMesh, cam: &Camera, clip: &Bounds, w: usize, h: usize) -> Cutaway {
+        let (cols, rows) = (w.div_ceil(CUT_CELL), h.div_ceil(CUT_CELL));
+        let n = cols * rows;
+        let mut depth = vec![f32::INFINITY; n * LAYERS];
+        let mut front = vec![false; n * LAYERS];
+        let mut used = vec![0u8; n];
+        let f = 1.0 / CUT_CELL as f32;
+        for (class, p) in &mesh.primitives {
+            if *class == Class::Glass {
+                continue;
+            }
+            let q: Vec<[f32; 3]> = p
+                .positions
+                .iter()
+                .map(|&v| {
+                    let s = cam.project(v);
+                    [s[0] * f, s[1] * f, s[2]]
+                })
+                .collect();
+            for t in p.indices.as_chunks::<3>().0 {
+                let [a, b, c] = t.map(|i| i as usize);
+                let world = [p.positions[a], p.positions[b], p.positions[c]];
+                if outside(clip, &world) {
+                    continue;
+                }
+                let facing = dot(
+                    cross(sub(world[1], world[0]), sub(world[2], world[0])),
+                    cam.forward,
+                ) < 0.0;
+                let whole = world.iter().all(|&v| inside(clip, v));
+                raster([q[a], q[b], q[c]], cols, rows, |i, z, bc| {
+                    if !(whole || inside(clip, at(&world, bc))) {
+                        return;
+                    }
+                    let (d, fr) = (
+                        &mut depth[i * LAYERS..(i + 1) * LAYERS],
+                        &mut front[i * LAYERS..(i + 1) * LAYERS],
+                    );
+                    let k = usize::from(used[i]);
+                    let mut j = k.min(LAYERS - 1);
+                    if k == LAYERS && z >= d[LAYERS - 1] {
+                        return;
+                    }
+                    while j > 0 && d[j - 1] > z {
+                        d[j] = d[j - 1];
+                        fr[j] = fr[j - 1];
+                        j -= 1;
+                    }
+                    d[j] = z;
+                    fr[j] = facing;
+                    used[i] = (k + 1).min(LAYERS) as u8;
+                });
+            }
+        }
+        let mut near = vec![f32::NEG_INFINITY; n];
+        for i in 0..n {
+            let k = usize::from(used[i]);
+            let (d, fr) = (
+                &depth[i * LAYERS..i * LAYERS + k],
+                &front[i * LAYERS..i * LAYERS + k],
+            );
+            let mut covered = false;
+            for j in 0..k.saturating_sub(1) {
+                if fr[j] {
+                    covered = true;
+                } else if covered && fr[j + 1] && d[j + 1] - d[j] >= MIN_HEADROOM {
+                    near[i] = d[j] + 0.02;
+                    break;
+                }
+            }
+        }
+        // Opening: keep only cells whose whole neighbourhood is cut, then
+        // give back every cell next to one of those.
+        let r = (MIN_CUT_RADIUS * cam.scale / CUT_CELL as f32)
+            .round()
+            .max(1.0) as usize;
+        let cut: Vec<bool> = near.iter().map(|v| v.is_finite()).collect();
+        let core = box_all(&cut, cols, rows, r);
+        let kept = box_any(&core, cols, rows, r);
+        for (v, k) in near.iter_mut().zip(&kept) {
+            if !k {
+                *v = f32::NEG_INFINITY;
+            }
+        }
+        // Kept cells the rasteriser missed (a sample exactly on a shared
+        // edge) take a neighbour's cut.
+        for _ in 0..r {
+            let mut changed = false;
+            for i in 0..n {
+                if !kept[i] || near[i].is_finite() {
+                    continue;
+                }
+                let (x, y) = (i % cols, i / cols);
+                let neighbours = [
+                    (x > 0).then(|| i - 1),
+                    (x + 1 < cols).then(|| i + 1),
+                    (y > 0).then(|| i - cols),
+                    (y + 1 < rows).then(|| i + cols),
+                ];
+                if let Some(v) = neighbours
+                    .into_iter()
+                    .flatten()
+                    .map(|j| near[j])
+                    .find(|v| v.is_finite())
+                {
+                    near[i] = v;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Cutaway { cols, near }
+    }
+
+    /// The cut depth at a pixel of a view drawn at `ss`×.
+    fn near(&self, x: usize, y: usize, ss: usize) -> f32 {
+        let c = CUT_CELL * ss;
+        self.near[(y / c) * self.cols + x / c]
+    }
+
+    /// Whether anything is cut at the cell of a supersampled pixel.
+    fn is_cut(&self, x: usize, y: usize, ss: usize) -> bool {
+        self.near(x, y, ss).is_finite()
+    }
+}
+
+/// Window sums of a mask over (2r+1)² boxes, via a summed-area table; cells
+/// outside the grid count as unset.
+fn box_count(mask: &[bool], cols: usize, rows: usize, r: usize) -> impl Fn(usize, usize) -> usize {
+    let mut sat = vec![0usize; (cols + 1) * (rows + 1)];
+    for y in 0..rows {
+        let mut row = 0;
+        for x in 0..cols {
+            row += usize::from(mask[y * cols + x]);
+            sat[(y + 1) * (cols + 1) + x + 1] = sat[y * (cols + 1) + x + 1] + row;
+        }
+    }
+    move |x, y| {
+        let (x0, y0) = (x.saturating_sub(r), y.saturating_sub(r));
+        let (x1, y1) = ((x + r + 1).min(cols), (y + r + 1).min(rows));
+        sat[y1 * (cols + 1) + x1] + sat[y0 * (cols + 1) + x0]
+            - sat[y0 * (cols + 1) + x1]
+            - sat[y1 * (cols + 1) + x0]
+    }
+}
+
+/// Erosion: set where the whole (2r+1)² box is set and inside the grid.
+fn box_all(mask: &[bool], cols: usize, rows: usize, r: usize) -> Vec<bool> {
+    let count = box_count(mask, cols, rows, r);
+    let full = (2 * r + 1) * (2 * r + 1);
+    (0..rows * cols)
+        .map(|i| count(i % cols, i / cols) == full)
+        .collect()
+}
+
+/// Dilation: set where anything in the (2r+1)² box is set.
+fn box_any(mask: &[bool], cols: usize, rows: usize, r: usize) -> Vec<bool> {
+    let count = box_count(mask, cols, rows, r);
+    (0..rows * cols)
+        .map(|i| count(i % cols, i / cols) > 0)
+        .collect()
+}
+
+/// Whether a triangle lies wholly beyond one face of `clip`.
+fn outside(clip: &Bounds, world: &[[f32; 3]; 3]) -> bool {
+    (0..3).any(|k| {
+        world.iter().all(|v| v[k] < clip.min[k]) || world.iter().all(|v| v[k] > clip.max[k])
+    })
 }
 
 /// Depth (`p·forward`, infinite where empty) and packed normal and class of
-/// the nearest front face inside `clip` at every sample of a `w`×`h` view
-/// drawn at `ss`×.
+/// the nearest front face inside `clip`, and not cut away, at every sample
+/// of a `w`×`h` view drawn at `ss`×.
 pub fn gbuffer(
     mesh: &LevelMesh,
     cam: &Camera,
     clip: &Bounds,
+    cut: Option<&Cutaway>,
     ss: usize,
     w: usize,
     h: usize,
@@ -364,14 +647,15 @@ pub fn gbuffer(
             }
             let ns = [p.normals[a], p.normals[b], p.normals[c]];
             let world = [p.positions[a], p.positions[b], p.positions[c]];
-            if (0..3).any(|k| {
-                world.iter().all(|v| v[k] < clip.min[k]) || world.iter().all(|v| v[k] > clip.max[k])
-            }) {
+            if outside(clip, &world) {
                 continue;
             }
             let whole = world.iter().all(|&v| inside(clip, v));
             raster([q[a], q[b], q[c]], hw, hh, |i, z, bc| {
-                if z < depth[i] && (whole || inside(clip, at(&world, bc))) {
+                if z < depth[i]
+                    && cut.is_none_or(|c| z >= c.near(i % hw, i / hw, ss))
+                    && (whole || inside(clip, at(&world, bc)))
+                {
                     depth[i] = z;
                     let n: [f32; 3] = std::array::from_fn(|k| {
                         bc[0] * ns[0][k] + bc[1] * ns[1][k] + bc[2] * ns[2][k]
@@ -390,6 +674,7 @@ fn shade(
     normal: &[[i8; 4]],
     frame: &Bounds,
     shadow: &ShadowMap,
+    cut: Option<&Cutaway>,
     cam: &Camera,
     ss: usize,
     w: usize,
@@ -451,10 +736,13 @@ fn shade(
                     }
                 }
                 let ao = (1.0 - 0.7 * occ / 8.0).clamp(0.3, 1.0);
-                let lit = if sun_facing > 0.0 {
-                    shadow.light(p, n)
-                } else {
+                // Under a cut-away roof the roof's shadow is gone too.
+                let lit = if sun_facing <= 0.0 {
                     0.0
+                } else if cut.is_some_and(|c| c.is_cut(x, y, ss)) {
+                    1.0
+                } else {
+                    shadow.light(p, n)
                 };
                 cache[o] = (d, ao, lit);
                 (ao, lit)
