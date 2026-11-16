@@ -666,9 +666,44 @@ pub async fn row_chosen(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> 
     match rows.press(row) {
         Chosen::Stepped(msg) => eprintln!("{msg}"),
         Chosen::Open(id) => open(&cx, chain, id).await?,
+        Chosen::Retail {
+            line,
+            calls,
+            loader,
+        } => {
+            eprintln!("{line}");
+            open_retail(&cx, chain, &calls, loader).await?
+        }
         _ => {}
     }
     Ok(Ret::new(0, 8))
+}
+
+/// Makes `calls` (stdcall, their arguments read now), then opens the retail
+/// screen whose loader is `loader` for the pressing player.
+pub async fn open_retail(
+    cx: &Cx,
+    chain: u32,
+    calls: &[(u32, Vec<crate::ui::GuestArg>)],
+    loader: u32,
+) -> Result<(), EntryError> {
+    let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
+        eprintln!("ui: no local player for the press; screen {loader:#x} not opened");
+        return Ok(());
+    };
+    for (addr, args) in calls {
+        let mut values = Vec::with_capacity(args.len());
+        for a in args {
+            values.push(match *a {
+                crate::ui::GuestArg::Value(v) => v,
+                crate::ui::GuestArg::Load(at) => cx.read(|m| m.u32(at))?,
+            });
+        }
+        cx.call(GuestCall::new(*addr).args(values)).await?;
+    }
+    cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([mask, loader]))
+        .await?;
+    Ok(())
 }
 
 /// Screen slot 18: the retail pane set-up, then our title on the header,
