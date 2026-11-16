@@ -179,6 +179,8 @@ pub struct Plan {
     pub features: Vec<FeatureState>,
     pub chains: BTreeMap<u32, Chain>,
     pub allocs: Vec<Alloc>,
+    /// Functions of ours at arena addresses ([`crate::Builder::entry`]).
+    pub entries: Vec<crate::Entry>,
     /// Hooks dropped and why.
     pub notes: Vec<String>,
     /// Hooks on hot points: they leave the direct-call fast path.
@@ -268,6 +270,7 @@ pub(crate) fn build(
     mut features: Vec<FeatureState>,
     hooks: Vec<Hook>,
     mut allocs: Vec<Alloc>,
+    mut entries: Vec<crate::Entry>,
     mut arena: Arena,
     locale: LocaleInput,
     addrs: &dyn ImageAddrs,
@@ -308,6 +311,7 @@ pub(crate) fn build(
     }
     placed.retain(|(_, h)| !off.contains_key(h.feature));
     allocs.retain(|a| !off.contains_key(a.feature));
+    entries.retain(|e| !off.contains_key(e.feature));
     let locale_lines = place_locale(locale, &off, &mut placed, &mut notes, addrs);
 
     // Group by address; one name per address.
@@ -402,6 +406,7 @@ pub(crate) fn build(
             features,
             chains,
             allocs,
+            entries,
             notes,
             warnings,
             locale: locale_lines,
@@ -522,6 +527,12 @@ impl Plan {
                 c.addr,
                 c.point.name,
                 links.join(" -> ")
+            ));
+        }
+        for e in &self.entries {
+            s.push_str(&format!(
+                "{:#010x} entry {}:{}\n",
+                e.addr, e.feature, e.label
             ));
         }
         for l in &self.locale {
