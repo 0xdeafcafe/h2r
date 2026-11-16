@@ -106,12 +106,19 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 
 /// What a module is built from: the image's hash, the generator sources'
 /// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
-/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags.
+/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags,
+/// with the optimisation tiers when `H2_OPT_COLD` asks for them.
 /// [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
-    match emit::compile::cflags() {
+    let flags = emit::compile::cflags().and_then(|mut flags| {
+        if let Some(t) = emit::compile::Tiers::from_env()? {
+            flags.push(format!("tiers {}", t.spec()));
+        }
+        Ok(flags)
+    });
+    match flags {
         Ok(flags) => stamp_with(
             xbe_bytes,
             &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
@@ -261,10 +268,11 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
-        "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
+        "clang ({}): {} compiled, {} reused{}, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
         arch.name(),
         b.compiled,
         b.reused,
+        if b.cold > 0 { format!(", {} sources in the cold tier", b.cold) } else { String::new() },
         b.cache_secs,
         b.compile_secs,
         b.archive_secs,
