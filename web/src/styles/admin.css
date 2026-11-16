@@ -20,22 +20,54 @@
   letter-spacing: 0.06em;
 }
 
-.adm input,
-.adm select,
-.adm textarea {
-  background: var(--s-row);
+/* Fields: dark inset boxes like the stats site's own panels, never the
+ * stark white of the search box. The `.stats` prefix outranks the site's
+ * default form styles (stats.css). */
+.stats .adm input:not([type="checkbox"]):not([type="file"]),
+.stats .adm select,
+.stats .adm textarea {
+  height: auto;
+  min-height: 22px;
+  box-sizing: border-box;
+  background: #141414;
   color: var(--s-white);
-  border: 1px solid var(--s-box-edge);
-  border-radius: 2px;
-  padding: 4px 6px;
-  font: 13px/1.3 Arial, sans-serif;
+  border: 1px solid #4a4a4a;
+  border-top-color: #333;
+  border-radius: 0;
+  padding: 3px 6px;
+  font: 12px/1.3 var(--font-ui);
+  box-shadow: inset 0 1px 2px #0009;
 }
 
-.adm input:focus,
-.adm select:focus,
-.adm textarea:focus {
-  outline: 1px solid var(--s-link);
+.stats .adm select { padding: 2px 4px; }
+
+.stats .adm input:focus,
+.stats .adm select:focus,
+.stats .adm textarea:focus {
+  outline: none;
+  border-color: var(--s-link);
 }
+
+.stats .adm input:disabled,
+.stats .adm select:disabled { color: var(--s-ink-dim); }
+
+/* Every admin box gets the same inner spacing; tables run edge to edge. */
+.adm .s-box-body {
+  padding: 10px 12px 12px;
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.adm .s-box-body > * { max-width: 100%; }
+.adm .s-box-body > .adm-hopper-cols,
+.adm .s-box-body > .adm-messages,
+.adm .s-box-body > .adm-field,
+.adm .s-box-body > table,
+.adm .s-box-body > form { justify-self: stretch; }
+.adm .s-box-body > p { margin: 0; }
+
+/* The title bar's way back to the dashboard. */
+.adm-server-link { font-weight: bold; }
 
 .adm-num {
   width: 90px;
@@ -66,7 +98,7 @@
 
 .adm-messages {
   list-style: none;
-  margin: 0 0 8px;
+  margin: 0;
   padding: 0;
   display: grid;
   gap: 6px;
@@ -185,7 +217,10 @@
 .adm-editor {
   display: grid;
   gap: 10px;
+  justify-items: stretch;
 }
+
+.adm-editor > .s-btn { justify-self: start; }
 
 .adm-editor > .adm-row:first-child {
   align-items: end;
@@ -206,7 +241,7 @@
 }
 
 .adm-records td {
-  padding: 2px 4px;
+  padding: 3px 4px;
   border-bottom: 1px solid var(--s-row-alt);
 }
 

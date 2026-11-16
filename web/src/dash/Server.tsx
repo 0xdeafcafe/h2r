@@ -1,14 +1,19 @@
-// The dashboard's server screens (/dash/server, docs/live/live-admin.md §5):
+// The dashboard's server screens (/dash/server, docs/live/live-admin.md §5).
+// Everything about running the service is here, on the dashboard; the stats
+// site's admin area keeps only Halo's own things (message of the day,
+// playlists, custom content), reached from the "halo admin" pod.
 //   - the overview: the server's public facts for everyone; for an admin,
-//     "your server": uptime, the tunnel, game art, admins, the log;
+//     "your server": uptime, the address, sign-up, players, game art, the log;
 //   - /dash/server/invites: an admin makes, copies and revokes invite codes;
+//   - /dash/server/accounts: an admin's view of the accounts and the admins;
+//   - /dash/server/import: anyone signs this browser in as an account the
+//     CLI exported;
 //   - /dash/server/connect: the switcher to another server.
 // Dashboard.tsx owns the screen layout (the big pod, the four small pods
-// and the prompts); these are the info plates and their data.
+// and the prompts); these are the plates and their data. Actions on a plate
+// are blades (Blades.tsx), driven by the same input as the rest.
 
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, type Accessor } from "solid-js";
-import type { Action } from "./input";
-import { A } from "@solidjs/router";
+import { Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor } from "solid-js";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { adminState } from "../admin/state";
@@ -25,11 +30,14 @@ import {
   formatUptime,
   reachWords,
   revokeInvite,
+  adminSourceWords,
   type AdminStatus,
   type InviteItem,
   type ServerFacts,
 } from "../admin/server";
+import { importAccounts } from "../admin/accountImport";
 import { Plate } from "./parts";
+import { Blades, type Blade, type BladeControls } from "./Blades";
 
 export interface ServerInfo {
   facts: Accessor<ServerFacts | null>;
@@ -120,38 +128,20 @@ function PublicPlate(props: { info: ServerInfo }) {
 
 function AdminPlate(props: { s: AdminStatus }) {
   const s = () => props.s;
-  const admins = () => s().admins.map((a) => (a.source === "granted" ? `${a.gamertag} (granted)` : a.gamertag)).join(", ") || "none";
   return (
     <Plate small="your server" title={s().id || host()} main>
-      <dl class="dx-server-facts dx-server-facts--admin">
-        <dt>up</dt><dd>{formatUptime(s().uptime_s)} <span>{s().software ?? ""}</span></dd>
-        <dt>public</dt><dd title={s().public.url ?? ""}>{s().public.url ? `${s().public.url} ` : ""}<span>{reachWords(s().public)}</span></dd>
-        <dt>sign-up</dt><dd>{yes(s().invite_only, "invite only", "open")} <span>{s().invites.open} open invites</span></dd>
+      <dl class="dx-server-facts">
+        <dt>up</dt><dd>{formatUptime(s().uptime_s)}</dd>
+        <dt>reached</dt><dd title={s().public.url ?? ""}>{reachWords(s().public)}</dd>
+        <dt>sign-up</dt><dd>{yes(s().invite_only, "invite only", "open to anyone")} <span>{s().invites.open} open invites</span></dd>
         <dt>reads</dt><dd>{yes(s().private, "private", "public")}</dd>
-        <dt>game art</dt><dd>{artWords(s().game_art)}</dd>
-        <dt>admins</dt><dd title={admins()}>{admins()}</dd>
-        <dt>federation</dt><dd>{yes(s().federation, "on", "off")}</dd>
-        <dt>event log</dt><dd>{s().log.head} <span>events</span> {s().log.store} <span>store</span></dd>
         <Show when={s().counts}>
           {(c) => <><dt>players</dt><dd>{c().accounts} <span>accounts</span> {c().online} <span>online</span> {c().live_games} <span>live</span></dd></>}
         </Show>
-        <Show when={s().data_dir}><dt>data</dt><dd title={s().data_dir!}>{s().data_dir}</dd></Show>
-        <dt>content</dt><dd><A class="dx-plain-link" href="/stats/admin?tab=content">custom maps, reports, uploads</A></dd>
+        <dt>game art</dt><dd>{artWords(s().game_art)}</dd>
+        <dt>event log</dt><dd>{s().log.head} <span>events</span></dd>
       </dl>
     </Plate>
-  );
-}
-
-/** A line of text with a copy button. */
-export function CopyCode(props: { text: string; label?: string }) {
-  const [done, setDone] = createSignal(false);
-  return (
-    <span class="dx-copy">
-      <code>{props.text}</code>
-      <button type="button" class="dx-forget" onClick={() => void copyText(props.text).then((ok) => { setDone(ok); setTimeout(() => setDone(false), 1500); })}>
-        {done() ? "copied" : props.label ?? "copy"}
-      </button>
-    </span>
   );
 }
 
@@ -159,33 +149,21 @@ export async function copyText(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
 
-export interface InviteControls {
+export interface InviteControls extends BladeControls {
   create(): void;
   copy(): void;
-  /** One step of keyboard or gamepad input on the invite rows; whether it meant anything. */
-  act(a: Action): boolean;
-  /** The selected row is an open invite (X revokes it). */
-  revokable: Accessor<boolean>;
 }
 
-type InviteRow =
-  | { kind: "days" }
-  | { kind: "code" }
-  | { kind: "create" }
-  | { kind: "made"; invite: string }
-  | { kind: "open"; item: InviteItem };
-
-/** Making, copying and revoking invite codes (admins): a column of rows
- *  (blades) moved through with up and down; A acts on the row, X revokes. */
+/** Making, copying and revoking invite codes (admins): a column of blades
+ *  moved through with up and down; A acts on the row, X revokes. */
 export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls) => void }) {
   const [days, setDays] = createSignal<number>(7);
   const [custom, setCustom] = createSignal("");
-  const [made, setMade] = createSignal<{ invite: string; exp: number; custom?: boolean } | null>(null);
+  const [made, setMade] = createSignal<{ invite: string; jti: string; exp: number; custom?: boolean } | null>(null);
   const [list, setList] = createSignal<InviteItem[]>([]);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
   const [flash, setFlash] = createSignal<string | null>(null);
-  const [sel, setSel] = createSignal(0);
   const ctx = () => {
     const me = identity.me(), wk = live.wellKnown();
     return me && wk ? { me, aud: wk.id, api: live.server().api } : null;
@@ -225,123 +203,131 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
     setErr(null);
     try {
       await revokeInvite(c.api, c.aud, c.me, jti);
-      if (made() && list().find((i) => i.jti === jti)?.invite === made()!.invite) setMade(null);
+      if (made()?.jti === jti) setMade(null);
       await load();
       props.info.refresh();
       say("invite revoked");
     } catch (x) { setErr(`couldn't revoke: ${(x as Error).message}`); }
   }
-  const open = () => list().filter((i) => i.state === "open");
-  const recent = () => list().filter((i) => i.state !== "open").slice(0, 3);
-  const rows = createMemo((): InviteRow[] => {
+  const until = (exp: number) => new Date(exp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const daysWord = (d: number) => (d === 1 ? "1 day" : `${d} days`);
+  const blades = createMemo((): Blade[] => {
     const m = made();
+    const open = list().filter((i) => i.state === "open" && (!m || (i.jti !== m.jti && i.invite !== m.invite)));
+    const recent = list().filter((i) => i.state !== "open").slice(0, 3);
+    const revoker = (jti: string) => ({ label: "revoke", run: () => void revoke(jti) });
     return [
-      { kind: "days" }, { kind: "code" }, { kind: "create" },
-      ...(m ? [{ kind: "made" as const, invite: m.invite }] : []),
-      ...open().filter((i) => !m || i.invite !== m.invite).map((item) => ({ kind: "open" as const, item })),
+      { key: "days", label: "lasts", value: `‹ ${daysWord(days())} ›`, act: () => setDays(nextInviteDays(days())), step: (by) => setDays(nextInviteDays(days(), by)) },
+      { key: "code", label: "own code", field: { value: custom(), onInput: setCustom, placeholder: "optional", maxLength: CUSTOM_CODE_MAX, onEnter: () => void create() } },
+      { key: "create", label: busy() ? "making invite" : "new invite", value: custom().trim() ? "own code" : "random code", act: () => void create(), disabled: busy(), go: true },
+      ...(m ? [{ key: `made-${m.invite}`, label: "new", value: <span class="dx-invite-code">{m.invite}</span>, act: () => void copy(m.invite), alt: list().some((i) => i.jti === m.jti && i.state === "open") ? revoker(m.jti) : undefined } satisfies Blade] : []),
+      ...open.map((it): Blade => ({
+        key: it.jti,
+        label: it.custom ? "custom code" : <span class="dx-invite-code">{it.invite}</span>,
+        value: `until ${until(it.exp)}`,
+        act: () => (it.invite ? void copy(it.invite) : say("custom code: you chose it, so it isn't shown")),
+        alt: revoker(it.jti),
+      })),
+      ...recent.map((it): Blade => ({ key: it.jti, label: it.custom ? "custom code" : "invite", value: `${it.state}${it.used_by_gamertag ? ` by ${it.used_by_gamertag}` : ""}`, old: true })),
     ];
   });
-  createEffect(() => { if (sel() >= rows().length) setSel(Math.max(0, rows().length - 1)); });
-  const focusRow = (i: number) => queueMicrotask(() => document.getElementById(`dash-inv-row-${i}`)?.focus({ preventScroll: false }));
-  const move = (i: number) => { setSel(i); focusRow(i); };
-  function activate(r: InviteRow | undefined) {
-    if (!r) return;
-    switch (r.kind) {
-      case "days": setDays(nextInviteDays(days())); break;
-      case "code": focusRow(sel()); break;
-      case "create": void create(); break;
-      case "made": void copy(r.invite); break;
-      case "open": if (r.item.invite) void copy(r.item.invite); else say("custom code: you chose it, so it isn't shown"); break;
-    }
-  }
-  const selected = () => rows()[sel()];
-  const revokable = () => selected()?.kind === "open";
+  let ctl: BladeControls | null = null;
   props.bind({
     create: () => void create(),
     copy: () => void copy(),
-    revokable,
-    act(a) {
-      if (props.info.admin() !== true) return false;
-      const n = rows().length;
-      switch (a) {
-        case "up": move(Math.max(0, sel() - 1)); return true;
-        case "down": move(Math.min(n - 1, sel() + 1)); return true;
-        case "left": case "right":
-          if (selected()?.kind !== "days") return false;
-          setDays(nextInviteDays(days(), a === "right" ? 1 : -1));
-          return true;
-        case "select": activate(selected()); return true;
-        case "alt": { const r = selected(); if (r?.kind === "open") void revoke(r.item.jti); return r?.kind === "open"; }
-        default: return false;
-      }
-    },
+    sel: () => ctl?.sel() ?? 0,
+    alt: () => ctl?.alt() ?? null,
+    act: (a) => (props.info.admin() === true && ctl ? ctl.act(a) : false),
   });
-  const until = (exp: number) => new Date(exp * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const daysWord = (d: number) => (d === 1 ? "1 day" : `${d} days`);
   return (
     <Plate small="h2 live" title="invites" main>
       <Show when={props.info.admin() === true} fallback={<p class="dx-note">Only an admin of {host()} makes invite codes.</p>}>
         <dl>
           <dt>sign-up</dt><dd>{props.info.facts()?.invite_only ? "invite code needed" : "open to anyone"}</dd>
         </dl>
-        <ul class="dx-blades" role="listbox" aria-label="invites">
-          <For each={rows()}>
-            {(r, i) => {
-              const on = () => sel() === i();
-              const common = { id: `dash-inv-row-${i()}`, onMouseEnter: () => setSel(i()), onFocus: () => setSel(i()) };
-              return (
-                <li classList={{ on: on() }} role="option" aria-selected={on()}>
-                  <Switch>
-                    <Match when={r.kind === "days"}>
-                      <button type="button" class="dx-blade" {...common} onClick={() => activate(r)}>
-                        <span>lasts</span><b>‹ {daysWord(days())} ›</b>
-                      </button>
-                    </Match>
-                    <Match when={r.kind === "code"}>
-                      <label class="dx-blade dx-blade--input" for={`dash-inv-row-${i()}`}>
-                        <span>own code</span>
-                        <input
-                          {...common} data-nav="rows" value={custom()} maxLength={CUSTOM_CODE_MAX} autocomplete="off" spellcheck={false}
-                          placeholder="optional" onInput={(e) => setCustom(e.currentTarget.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void create(); } }}
-                        />
-                      </label>
-                    </Match>
-                    <Match when={r.kind === "create"}>
-                      <button type="button" class="dx-blade dx-blade--go" {...common} disabled={busy()} onClick={() => activate(r)}>
-                        <span>{busy() ? "making invite" : "new invite"}</span><b>{custom().trim() ? "own code" : "random code"}</b>
-                      </button>
-                    </Match>
-                    <Match when={r.kind === "made" ? r : null}>
-                      {(m) => (
-                        <button type="button" class="dx-blade dx-blade--code" {...common} onClick={() => activate(r)}>
-                          <span>new</span><b class="dx-invite-code">{m().invite}</b>
-                        </button>
-                      )}
-                    </Match>
-                    <Match when={r.kind === "open" ? r.item : null}>
-                      {(it) => (
-                        <button type="button" class="dx-blade" {...common} onClick={() => activate(r)}>
-                          <span>{it().custom ? "custom code" : <code class="dx-invite-code">{it().invite}</code>}</span>
-                          <b>until {until(it().exp)}</b>
-                        </button>
-                      )}
-                    </Match>
-                  </Switch>
-                </li>
-              );
-            }}
-          </For>
-          <For each={recent()}>
-            {(i) => <li class="dx-blade-old"><span>{i.custom ? "custom code" : "invite"}</span><b>{i.state}{i.used_by_gamertag ? ` by ${i.used_by_gamertag}` : ""}</b></li>}
-          </For>
-        </ul>
+        <Blades id="dash-inv-row" label="invites" blades={blades()} bind={(c) => { ctl = c; }} />
         <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
         <Show when={flash()}><p class="dx-note dx-flash" role="status">{flash()}</p></Show>
         <Show when={!props.info.facts()?.invite_only}>
           <p class="dx-note">Sign-up is open here, so nobody needs a code yet.</p>
         </Show>
       </Show>
+    </Plate>
+  );
+}
+
+/** The accounts and who the admins are (admins). Granting stays with
+ *  whoever runs the server, so this lists and leads on; it changes nothing. */
+export function AccountsPlate(props: { info: ServerInfo; go: (href: string) => void; bind: (c: BladeControls) => void }) {
+  const blades = createMemo((): Blade[] => {
+    const s = props.info.status();
+    return [
+      { key: "players", label: "every player", value: "players", act: () => props.go("/dash/players") },
+      { key: "import", label: "import account", value: "account file", act: () => props.go("/dash/server/import") },
+      ...(s?.admins ?? []).map((a): Blade => ({ key: `admin-${a.gamertag}`, label: <>admin <b class="dx-blade-name">{a.gamertag}</b></>, value: adminSourceWords(a.source) })),
+    ];
+  });
+  return (
+    <Plate small="your server" title="accounts" main>
+      <Show when={props.info.admin() === true} fallback={<p class="dx-note">Only an admin of {host()} sees its accounts.</p>}>
+        <dl>
+          <Show when={props.info.status()?.counts ?? props.info.facts()?.counts}>
+            {(c) => <><dt>accounts</dt><dd>{c().accounts} <span>signed up</span> {c().online} <span>online</span></dd></>}
+          </Show>
+          <dt>sign-up</dt><dd>{props.info.facts()?.invite_only ? "invite code needed" : "open to anyone"}</dd>
+          <dt>admins</dt><dd>{props.info.status()?.admins.length ?? "…"}</dd>
+        </dl>
+        <Blades id="dash-acct-row" label="accounts" blades={blades()} bind={props.bind} />
+        <p class="dx-note">Admins are chosen by whoever runs the server, on its own machine.</p>
+      </Show>
+    </Plate>
+  );
+}
+
+/** Signing this browser in as an account the game or the CLI exported (its
+ *  account file). Open to anyone: it is a way in, like recovering. */
+export function ImportPlate(props: { onDone: () => void; bind: (c: BladeControls) => void }) {
+  const [text, setText] = createSignal("");
+  const [err, setErr] = createSignal<string | null>(null);
+  const [ok, setOk] = createSignal<string | null>(null);
+  const [busy, setBusy] = createSignal(false);
+  let file!: HTMLInputElement;
+  async function run() {
+    if (busy() || !text().trim()) return;
+    setBusy(true); setErr(null); setOk(null);
+    const wk = live.wellKnown();
+    const r = await importAccounts(text(), {
+      api: live.server().api, base: live.server().base, id: wk?.id ?? "",
+      add: (a) => identity.add(a),
+    });
+    setBusy(false);
+    if (!r.ok) { setErr(r.error); return; }
+    setText("");
+    adminState.reset();
+    setOk(`signed in as ${r.gamertags.join(", ")}`);
+    props.onDone();
+  }
+  async function pick(f: File | undefined) {
+    if (f) setText(await f.text());
+  }
+  const blades = createMemo((): Blade[] => [
+    { key: "file", label: "choose the account file", value: "browse", act: () => file.click() },
+    { key: "go", label: busy() ? "checking" : "import and sign in", act: () => void run(), disabled: busy() || !text().trim(), go: true },
+  ]);
+  return (
+    <Plate small="h2 live" title="import account" main>
+      <div class="dx-import">
+        <textarea
+          id="dash-import-text" class="dx-paste" rows={4} spellcheck={false} value={text()}
+          placeholder="paste the account file here, or choose it below"
+          aria-label="account file" onInput={(e) => setText(e.currentTarget.value)}
+        />
+        <input ref={file} type="file" accept=".json,application/json" hidden onChange={(e) => void pick(e.currentTarget.files?.[0])} />
+        <Blades id="dash-imp-row" label="import" blades={blades()} bind={props.bind} />
+        <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
+        <Show when={ok()}><p class="dx-note dx-flash" role="status">{ok()}</p></Show>
+        <p class="dx-note">For an account made in the game. The key is checked with {host()}, then kept in this browser, like a new account's.</p>
+      </div>
     </Plate>
   );
 }
