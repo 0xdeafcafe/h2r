@@ -7,7 +7,7 @@ import { BipedAnim, ONE_SHOT_MS, RUN_SPEED, SpeedMeter, WALK_SPEED, actionShot, 
 import { ActionWatch, EventFeed, GRENADE_MS, GrenadeQueue, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_MARK_MS, entityIndex, grenadeAt, grenadeTrail, hitColour, hitText, locator, mergeHits } from "../src/map/events";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "../src/viewer/zones";
 import { parseModels } from "../src/viewer/models";
-import { BipedAnimator, ModelLibrary, prepareBiped } from "../src/viewer/players3d";
+import { BipedAnimator, ModelLibrary, prepareBiped, upperBody } from "../src/viewer/players3d";
 import { smoothPlayers, type SmoothPlayer } from "../src/viewer/sync";
 import { actorIndex } from "../src/state/frames";
 import { actionHooks } from "../mock/action";
@@ -444,6 +444,34 @@ describe("skinned models and their clips", () => {
     expect(handAt(a).distanceTo(low)).toBeLessThan(0.02);
     expect(an.playOnce("rifle:nothing")).toBe(false);
     expect(an.playOnce(null)).toBe(false);
+  });
+
+  test("a fire clip is an overlay added to the loop; other one-shots can leave the legs to it", async () => {
+    const { t, a } = await instance();
+    expect(t.clips.get("rifle:fire")!.blendMode).toBe(THREE.AdditiveAnimationBlendMode);
+    expect(t.clips.get("rifle:reload")!.blendMode).toBe(THREE.NormalAnimationBlendMode);
+    const an = a.animator!;
+    const bone = (name: string) => { let b: THREE.Object3D | null = null; a.object.traverse((o) => { if (o.name === name) b = o; }); return b! as THREE.Object3D; };
+    // A die clip moves the pelvis; its upper-body version doesn't touch pelvis or legs.
+    const upper = upperBody(t.clips.get("rifle:die")!);
+    expect(upper.tracks.map((k) => k.name).some((n) => /pelvis|thigh|shin/.test(n))).toBe(false);
+    expect(upper.tracks.length).toBeGreaterThan(0);
+    expect(upperBody(t.clips.get("rifle:die")!)).toBe(upper);
+    // Crouched and firing: the arm kicks, the pelvis stays down.
+    an.setLoop("rifle:crouch");
+    an.update(400);
+    const pelvis = bone("pelvis").position.y, arm = bone("arm_r").quaternion.clone();
+    an.playOnce("rifle:fire");
+    an.update(60);
+    expect(bone("pelvis").position.y).toBeCloseTo(pelvis, 2);
+    expect(bone("arm_r").quaternion.angleTo(arm)).toBeGreaterThan(0.02);
+    for (let i = 0; i < 12; i++) an.update(33);
+    expect(bone("arm_r").quaternion.angleTo(arm)).toBeLessThan(0.01);
+    // Dying "from the waist up" (as a one-shot would be played on the move) leaves the pelvis to the loop.
+    an.playOnce("rifle:die", true);
+    an.update(500);
+    expect(bone("pelvis").position.y).toBeCloseTo(pelvis, 2);
+    expect(bone("arm_l").quaternion.angleTo(new THREE.Quaternion())).toBeGreaterThan(0.3);
   });
 
   test("changing the loop cross-fades; dying holds its last frame", async () => {

@@ -698,7 +698,8 @@ export class ViewerScene {
     an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), st.loop === "die");
     if (st.shotId !== p.shotId) {
       p.shotId = st.shotId;
-      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot));
+      // Anything but landing is done with the arms: unless they stand still, the legs carry on with the loop.
+      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), st.shot !== "land" && st.loop !== "idle");
     }
     an.update(dt);
     this.dirty = true;

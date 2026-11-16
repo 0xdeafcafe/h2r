@@ -106,10 +106,17 @@ export class BipedAnimator {
     if (cur) cur.timeScale = timeScale;
   }
 
-  /** Plays a clip once over the loop; false when the glb hasn't got it. */
-  playOnce(name: string | null): boolean {
-    const a = name ? this.action(name) : null;
-    if (!a) return false;
+  /** Plays a clip once over the loop; false when the glb hasn't got it.
+   *  `upperOnly` leaves the legs to the loop: a reload on the run keeps running. */
+  playOnce(name: string | null, upperOnly = false): boolean {
+    let a = name ? this.action(name) : null;
+    if (!a || !name) return false;
+    if (upperOnly && a.getClip().blendMode !== THREE.AdditiveAnimationBlendMode) {
+      const key = name + "|upper";
+      let up = this.actions.get(key);
+      if (!up) { up = this.mixer.clipAction(upperBody(a.getClip())); this.actions.set(key, up); }
+      a = up;
+    }
     if (this.shot && this.shot !== a) this.shot.stop();
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
@@ -135,7 +142,9 @@ export class BipedAnimator {
         // (a fire clip's legs) carry on; on the bones it does move it
         // outweighs the loop by as much as the envelope says.
         const share = 0.96 * over;
-        this.shot.setEffectiveWeight(Math.max(share / (1 - share), 1e-3));
+        // (An additive clip only adds its change: its weight is simply how much of it.)
+        const additive = this.shot.getClip().blendMode === THREE.AdditiveAnimationBlendMode;
+        this.shot.setEffectiveWeight(additive ? over : Math.max(share / (1 - share), 1e-3));
       }
     }
     for (const [name, w] of this.weights) {
@@ -153,6 +162,20 @@ export class BipedAnimator {
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.mixer.getRoot());
   }
+}
+
+/** Joints that carry the body over the ground: the legs and what they hang from. */
+const LOWER_BODY = /(^|_)(root|pelvis|thigh|calf|shin|knee|foot|toe|leg)(_|$)/i;
+const uppers = new WeakMap<THREE.AnimationClip, THREE.AnimationClip>();
+
+/** A clip without its lower-body tracks, made once per clip. */
+export function upperBody(clip: THREE.AnimationClip): THREE.AnimationClip {
+  let out = uppers.get(clip);
+  if (!out) {
+    out = new THREE.AnimationClip(clip.name + "|upper", clip.duration, clip.tracks.filter((t) => !LOWER_BODY.test(t.name.slice(0, t.name.lastIndexOf(".")))), clip.blendMode);
+    uppers.set(clip, out);
+  }
+  return out;
 }
 
 /** Seconds a clip takes to blend into the next. */
@@ -205,7 +228,12 @@ export function prepareBiped(g: Loaded): BipedTemplate | null {
   }
   // Version 2: skinned, with named clips. The bind pose is the old static one.
   const clips = new Map<string, THREE.AnimationClip>();
-  for (const c of g.animations ?? []) if (c.name && c.duration > 0) clips.set(c.name, c);
+  for (const c of g.animations ?? []) {
+    if (!c.name || !(c.duration > 0)) continue;
+    // A fire clip is an overlay: what it changes from its first frame is
+    // added to whatever else is playing, rather than replacing it.
+    clips.set(c.name, c.name.endsWith(":fire") ? THREE.AnimationUtils.makeClipAdditive(c.clone()) : c);
+  }
   let skinned = false;
   for (const m of all) if ((m as THREE.SkinnedMesh).isSkinnedMesh) { skinned = true; m.frustumCulled = false; }
   return { kind: "biped", root, height, regions, clips, skinned };
