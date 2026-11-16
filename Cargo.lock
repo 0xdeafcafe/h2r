@@ -1405,8 +1405,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "content",
+ "h1map",
  "map",
  "tags",
+ "toml 0.9.12+spec-1.1.0",
  "variants",
  "xbe",
  "xiso",
@@ -5407,6 +5409,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "h1map",
  "hopper-edit",
  "live-proto",
  "png",

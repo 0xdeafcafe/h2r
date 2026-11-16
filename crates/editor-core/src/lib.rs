@@ -5,11 +5,16 @@
 //! - [`undo`]: a snapshot undo stack any tool can use.
 //! - [`variant_sources`]: the game-variant schema, save names and save
 //!   storage for a source, for the variant and playlist tools.
+//! - [`packages`]: the map packages under a data root, Halo 1
+//!   conversions among them.
+//! - [`halo1`]: Halo 1 maps, read-only (a disc or a folder).
 //! - [`Status`]: a status-line message.
 //!
 //! Nothing here contains game data: map names and everything else come
 //! from the user's own disc at run time.
 
+pub mod halo1;
+pub mod packages;
 pub mod source;
 pub mod undo;
 pub mod variant_sources;

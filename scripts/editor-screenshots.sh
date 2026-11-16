@@ -98,3 +98,9 @@ shot variants-edit --tool variants --variant 3 --copy-variant "Swords Night"
 shot hopper-playlist --hopper default --playlist 2
 # A historical preset resolved against the disc.
 shot hopper-preset --hopper default --playlist 1 --preset 0
+# A Halo 1 map, read-only, when a Halo 1 disc is at hand ($H1_ISO, else
+# disc/halo1.iso next to the Halo 2 one). Not in the guide until then.
+h1="${H1_ISO:-$(dirname "$disc")/halo1.iso}"
+if [[ -f "$h1" ]]; then
+  shot halo1-map --halo1 "$h1" --halo1-map bloodgulch --select startinglocations:0 --focus --camera 40,35,40
+fi

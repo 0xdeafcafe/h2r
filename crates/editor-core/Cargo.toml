@@ -15,3 +15,6 @@ xbe.workspace = true
 # The runtime's default data root (variant saves live under it).
 content.workspace = true
 variants = { path = "../variants" }
+# Halo 1 maps, read-only, and converted packages' manifests read as plain TOML.
+h1map = { path = "../h1map" }
+toml = "0.9"

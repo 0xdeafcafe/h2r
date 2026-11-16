@@ -638,6 +638,24 @@ fn viewport_renders_markers_offscreen() {
     assert_ne!(empty, drawn);
     // Orange weapons: red dominates blue.
     assert!(drawn[0] > drawn[2], "{drawn:?}");
+    // The overlay is seen through the marker, blended over it: neither
+    // the marker's colour nor the overlay's alone.
+    let quad = |z| geometry::Tri {
+        p: [[-5.0, -5.0, z], [5.0, -5.0, z], [0.0, 5.0, z]],
+        n: [0.0, 0.0, 1.0],
+    };
+    vp.set_overlay(
+        &device,
+        &crate::render::overlay_vertices(&[quad(-2.0)], [0.0, 0.0, 1.0]),
+    );
+    vp.render(&device, &queue, &cam, size);
+    let ghosted = pixel(&vp);
+    assert_ne!(ghosted, drawn);
+    assert!(ghosted[2] > drawn[2], "blue mixed in: {ghosted:?}");
+    assert!(ghosted[0] > 0, "the marker still shows: {ghosted:?}");
+    vp.set_overlay(&device, &[]);
+    vp.render(&device, &queue, &cam, size);
+    assert_eq!(pixel(&vp), drawn);
 }
 
 /// Transparent parts (glass, water, cloud decks) are neither framed nor
