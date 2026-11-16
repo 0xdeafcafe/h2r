@@ -1,0 +1,9 @@
+[package]
+name = "settings"
+description = "Our host settings as a schema: definitions, one store, atomic handles, one writer for settings.toml"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+toml = "0.9"

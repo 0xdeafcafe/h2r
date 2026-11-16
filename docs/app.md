@@ -98,7 +98,10 @@ the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
 campaign level, or a local Slayer game on that multiplayer map, in place of
 the main menu, no title, profile or menus; a bad
 name lists the disc's levels before anything is built; `H2_LEVEL` and
-`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)). The boot's environment variables still
+`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--set
+KEY=VALUE` (any of our settings for this run, ahead of its variable and
+`<data>/settings.toml`, and its row locked; `h2 settings list` shows them,
+[settings-menu.md](settings-menu.md) "Settings as a schema"). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
 scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
 as a person's keys. Hold keys for one present at the menu's frame rate
@@ -430,7 +433,8 @@ surface, clearing the rest to black.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
-  --fps`; `fps.rs`): at 30, the default, the window redraws when the guest
+  --fps`, the Video screen's Frame Rate row, `graphics.fps` in
+  `settings::Store`; `fps.rs`): at 30, the default, the window redraws when the guest
   presents, as it always has. At 60 and 120 it also redraws on its own
   `DisplaySchedule`; uncapped redraws every event-loop turn with vsync off.
   Nothing reaches the guest, and until host replay exists

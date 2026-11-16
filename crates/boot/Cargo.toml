@@ -19,7 +19,8 @@ vfs.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 map.workspace = true
-# The host settings file (speaker_setting).
+# Our settings (setting_defs, the ui model).
+settings = { path = "../settings" }
 toml = "0.9"
 font = { path = "../font" }
 anyhow.workspace = true

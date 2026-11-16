@@ -1,7 +1,8 @@
-# Feature engine (design, nothing built)
+# Feature engine (design; Phase 0 built)
 
-Status: design only. No crate, type or macro named here exists yet unless
-the text says so. This page says how the opt-in enhancements (settings, UI
+Status: design, except Phase 0, the [first slice](#the-first-slice), which
+is built ([below](#what-was-built)). No other crate, type or macro named
+here exists yet unless the text says so. This page says how the opt-in enhancements (settings, UI
 rows and screens, game variants, Forge, Theater, render scale, E3 lighting,
 high frame rates, Live extras) should be built so that a new one is mostly
 plain Rust against a Rust subsystem, is tested without the game, and cannot
@@ -100,8 +101,11 @@ written out six times (`layout_glue::call_then`, `lockstep`,
   (`boot/src/level_boot.rs`). Telemetry installs first
   (`boot/src/lib.rs:516`), the level boot later (`:602`) with a plain
   `register_override` whose "original" is the generated function. By
-  reading, `h2 play --level` with Live telemetry on drops telemetry's
-  match-start observer without a message. Not run.
+  reading, `h2 play --level` with Live telemetry on dropped telemetry's
+  match-start observer without a message. **Fixed:** the level boot now
+  runs whatever override was there (`Dispatch::override_handler`) where it
+  ran the generated original, and logs that it chained; a synthetic runtime
+  test covers it. Not run in the game.
 - `0x00137fe0` (the game tick) is wrapped by Live telemetry and by the
   lockstep observer. Lockstep refuses when the other is there, so per-tick
   hashing and telemetry cannot be on together. Theater wants a third
@@ -1271,6 +1275,33 @@ guest behaviour, so unit tests are enough to land it.
 5. Proof: one new Video row added as a single `Def` in the same change
    (the controller mute button, `H2_PAD_MUTE`, `Restart`: it is read once
    at launch). (Day 4, with the docs.)
+
+### What was built
+
+All on tests; nothing here was run in the game.
+
+- `crates/settings`: `Def`, `Kind` (`Bool`, `Int { valid, steps, unit }`,
+  `Choice`), `Value`, `Store` (`load`, `handle`, `set`, `step`, `state`,
+  `force`, `on_change`), `Setting<T>`, `State`, `Outcome`, `Problem`, and
+  one writer for `settings.toml`. Two fields beyond the sketch above:
+  `aliases` (`H2_FOV=0` means 70) and `parse_env` (`H2_PAD_SPEAKER` may
+  name a routes file). `Store::force` locks a value the run decides (the
+  controller speaker with audio off).
+- `boot::setting_defs`: `graphics.fov`, `graphics.fps`,
+  `graphics.render_scale`, `pad_speaker.enabled` and the proof row
+  `pad.mute_button`. `fov_setting.rs` and `video_setting.rs` are gone;
+  `SpeakerSetting` keeps only its router and HID plumbing; `boot::Host`
+  carries one `Store`.
+- `boot::ui`: `Screen`, `Row`, `RowKind` (`Setting`, `Open`), `Extension`,
+  `Model` (`count`, `row`, `texts`, `press`, string ids interned by text).
+  `RowKind::Action`/`Custom`, left/right presses and `Host::Overlay` are not
+  built: nothing uses them yet. The model lives in `boot` (it needs the
+  speaker row's retail string ids), not in a crate of its own.
+- `h2 settings list|get|set`, `h2 play --set key=value`. `h2 settings doc`
+  is not built.
+- Not done from the design's settings section: the other `H2_*` variables
+  are not `Def`s yet, and `d3d` still reads `H2_RENDER_SCALE` itself for
+  `h2 run`.
 
 Then, as the first thing that needs a play-test (phase 3, after the
 registry): our own list class, so the model drives Rust row functions

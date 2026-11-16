@@ -27,6 +27,8 @@ anyhow.workspace = true
 # Enable runtime-detected ARM SHA instructions for full-image cache validation.
 sha2 = { version = "0.10", features = ["asm"] }
 boot.workspace = true
+# Our settings (play --set, h2 settings).
+settings = { path = "../settings" }
 timeline = { path = "../timeline" }
 app = { path = "../app" }
 lockstep = { path = "../lockstep" }

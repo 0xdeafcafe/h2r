@@ -35,6 +35,7 @@ mod play_cmd;
 mod play_live;
 mod safe_out;
 mod scripts;
+mod settings_cmd;
 mod shader;
 mod sound;
 mod strings;
@@ -49,6 +50,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   play <disc>             build if needed, then play it in a window (docs/app.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/app.md)
+  settings list|get|set   our settings (field of view, frame rate, ...) in
+                          <data>/settings.toml (docs/settings-menu.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/high-framerate.md)
   play <disc> --live      play signed in to Xbox Live, on a service started in
@@ -199,6 +202,9 @@ fn main() -> Result<()> {
     }
     if cmd == "play" {
         return play_cmd::run(args.collect());
+    }
+    if cmd == "settings" {
+        return settings_cmd::run(args.collect());
     }
     if cmd == "live" {
         return live_cmd::run(args.collect());
