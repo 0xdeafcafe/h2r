@@ -350,7 +350,7 @@ function addShaderPatch(mat: THREE.Material, key: string, patch: (shader: THREE.
 const shaderPatches = new WeakMap<THREE.Material, { key: string; patch: (shader: THREE.WebGLProgramParametersWithUniforms) => void }[]>();
 
 /** How strongly an environment-mapped shader's tinted reflection shows. */
-export const ENV_STRENGTH = 0.5;
+export const ENV_STRENGTH = 0.35;
 export const ENV_UNIFORMS = "uniform vec3 envPerpendicular; uniform vec3 envParallel;";
 /** Halo 2's environment-mapped shaders (the Covenant's sheen): the
  *  reflection, where the specular mask (red of the metallic-roughness
