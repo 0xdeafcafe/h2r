@@ -66,10 +66,14 @@ pub enum Phase {
     /// minus slices of other guest threads. Zero unless the
     /// `render-timing` feature is on. `Guest + Render` is all guest time.
     Render = 7,
+    /// The D3D API entries (our `d3d` layer's HLE overrides) on the game
+    /// thread, minus the phases inside them (push-buffer decode,
+    /// render-wait). Used to be part of `cpu` (or `render`).
+    D3d = 8,
 }
 
 /// Number of [`Phase`]s.
-pub const PHASES: usize = 8;
+pub const PHASES: usize = 9;
 
 impl Phase {
     pub const ALL: [Phase; PHASES] = [
@@ -81,6 +85,7 @@ impl Phase {
         Phase::Pace,
         Phase::RenderWait,
         Phase::Render,
+        Phase::D3d,
     ];
 
     /// Short name for log lines and the overlay.
@@ -94,6 +99,7 @@ impl Phase {
             Phase::Pace => "pace",
             Phase::RenderWait => "render-wait",
             Phase::Render => "render",
+            Phase::D3d => "d3d",
         }
     }
 }
@@ -174,6 +180,9 @@ struct Local {
     acc: [Cell<u64>; PHASES],
     /// Like `acc`, but never taken by a frame: for [`thread_ns`].
     total: [Cell<u64>; PHASES],
+    /// Like `total`, but only while a guest scope is open and running on
+    /// its owner: for [`scope_ns`].
+    scoped: [Cell<u64>; PHASES],
     counts: [Cell<u64>; COUNTERS],
     /// The guest scope: its phase (`INERT` when none is open), nesting
     /// depth, owning guest thread, the phase it interrupted, and whether
@@ -200,6 +209,7 @@ thread_local! {
             frame_start: Cell::new(0),
             acc: [const { Cell::new(0) }; PHASES],
             total: [const { Cell::new(0) }; PHASES],
+            scoped: [const { Cell::new(0) }; PHASES],
             counts: [const { Cell::new(0) }; COUNTERS],
             scope: Cell::new(INERT),
             scope_depth: Cell::new(0),
@@ -258,6 +268,9 @@ fn charge(l: &Local, now: u64) -> usize {
     let d = now.saturating_sub(l.since.get());
     l.acc[cur].set(l.acc[cur].get() + d);
     l.total[cur].set(l.total[cur].get() + d);
+    if l.scope_depth.get() != 0 && !l.suspended.get() {
+        l.scoped[cur].set(l.scoped[cur].get() + d);
+    }
     l.since.set(now);
     cur
 }
@@ -270,22 +283,23 @@ pub fn scope_begin(phase: Phase) {
     if !enabled() {
         return;
     }
-    let outer = LOCAL.with(|l| {
-        prepare_local(l);
+    let now = crate::now_ns();
+    LOCAL.with(|l| {
+        start_local(l, now);
         let depth = l.scope_depth.get();
-        l.scope_depth.set(depth + 1);
         if depth != 0 {
-            return false;
+            l.scope_depth.set(depth + 1);
+            return;
         }
+        // Charge the time before the scope while it is still closed.
+        let prev = charge(l, now);
+        l.scope_depth.set(1);
         l.scope.set(phase as u8);
         l.scope_owner.set(l.guest.get());
         l.suspended.set(false);
-        true
+        l.scope_prev.set(prev as u8);
+        l.current.set(phase as u8);
     });
-    if outer {
-        let prev = switch(phase as u8);
-        LOCAL.with(|l| l.scope_prev.set(prev));
-    }
 }
 
 /// Closes the guest scope [`scope_begin`] opened. Unmatched closes (stats
@@ -294,22 +308,25 @@ pub fn scope_end() {
     if !enabled() {
         return;
     }
-    let restore = LOCAL.with(|l| {
-        prepare_local(l);
+    let now = crate::now_ns();
+    LOCAL.with(|l| {
+        start_local(l, now);
         let depth = l.scope_depth.get();
         if depth == 0 {
-            return None;
+            return;
         }
-        l.scope_depth.set(depth - 1);
         if depth != 1 {
-            return None;
+            l.scope_depth.set(depth - 1);
+            return;
         }
+        charge(l, now);
+        if !l.suspended.get() {
+            l.current.set(l.scope_prev.get());
+        }
+        l.scope_depth.set(0);
         l.scope.set(INERT);
-        (!l.suspended.replace(false)).then(|| l.scope_prev.get())
+        l.suspended.set(false);
     });
-    if let Some(prev) = restore {
-        switch(prev);
-    }
 }
 
 /// The kernel says which guest thread runs on this host thread from now
@@ -324,28 +341,47 @@ pub fn guest_thread(tid: Option<u32>) {
 
 #[inline(never)]
 fn guest_thread_slow(tid: u32) {
-    let to = LOCAL.with(|l| {
-        prepare_local(l);
+    let now = crate::now_ns();
+    LOCAL.with(|l| {
+        start_local(l, now);
         l.guest.set(tid);
         if l.scope_depth.get() == 0 {
-            return None;
+            return;
         }
         let mine = tid != NO_THREAD && tid == l.scope_owner.get();
-        match (mine, l.suspended.get()) {
-            (false, false) => {
-                l.suspended.set(true);
-                Some(l.scope_prev.get())
-            }
-            (true, true) => {
-                l.suspended.set(false);
-                Some(l.scope.get())
-            }
-            _ => None,
-        }
+        let to = match (mine, l.suspended.get()) {
+            (false, false) => l.scope_prev.get(),
+            (true, true) => l.scope.get(),
+            _ => return,
+        };
+        // Charge up to now under the old state, then flip it.
+        charge(l, now);
+        l.suspended.set(!mine);
+        l.current.set(to);
     });
-    if let Some(to) = to {
-        switch(to);
+}
+
+/// Nanoseconds this host thread has spent in `phase` inside guest scopes
+/// (open and on their owner's slices) since collection started, the
+/// running interval included. `None` while stats are off. The
+/// `render-timing` feature splits the render front-end with it: `Render`
+/// is guest code there, `D3d` our D3D entries called from it.
+pub fn scope_ns(phase: Phase) -> Option<u64> {
+    if !enabled() {
+        return None;
     }
+    let now = crate::now_ns();
+    Some(LOCAL.with(|l| {
+        start_local(l, now);
+        let p = phase as usize;
+        let open =
+            if l.current.get() as usize == p && l.scope_depth.get() != 0 && !l.suspended.get() {
+                now.saturating_sub(l.since.get())
+            } else {
+                0
+            };
+        l.scoped[p].get() + open
+    }))
 }
 
 /// Nanoseconds this host thread has spent in `phase` since collection
@@ -372,7 +408,7 @@ pub fn thread_ns(phase: Phase) -> Option<u64> {
 fn reset_local(l: &Local) {
     l.started.set(false);
     l.current.set(Phase::Guest as u8);
-    for a in l.acc.iter().chain(&l.total) {
+    for a in l.acc.iter().chain(&l.total).chain(&l.scoped) {
         a.set(0);
     }
     for c in &l.counts {
@@ -902,14 +938,18 @@ impl Summary {
 
     /// One line, under the overlay's 96 characters:
     /// `14.8 fps p50 61 p99 98 max 140 ms | cpu 40 dec 3 enc 8 sub 2 gpu 5 pace 0 rt 0`,
-    /// with `ren` after `cpu` while the render front-end is being timed.
+    /// with `ren` and `d3d` after `cpu` while the render front-end is being
+    /// timed (otherwise `cpu` includes `d3d`).
     pub fn short_line(&self) -> String {
         let p = &self.phase_ms;
         let render = p[Phase::Render as usize];
-        let ren = if render > 0.0 {
-            format!(" ren {render:.0}")
+        let d3d = p[Phase::D3d as usize];
+        // `cpu` keeps its old meaning (guest code and every HLE call)
+        // unless the render front-end is being timed.
+        let (cpu, ren) = if render > 0.0 {
+            (p[0], format!(" ren {render:.0} d3d {d3d:.0}"))
         } else {
-            String::new()
+            (p[0] + d3d, String::new())
         };
         format!(
             "{:.1} fps p50 {:.0} p99 {:.0} max {:.0} ms | cpu {:.0}{ren} dec {:.0} enc {:.0} sub {:.0} gpu {:.0} pace {:.0} rt {:.0}",
@@ -917,7 +957,7 @@ impl Summary {
             self.p50_ms,
             self.p99_ms,
             self.max_ms,
-            p[0],
+            cpu,
             p[1],
             p[2],
             p[3],
@@ -953,7 +993,7 @@ mod tests {
             index,
             end_ns: end_ms * 1_000_000,
             total_ns: total_ms * 1_000_000,
-            phase_ns: [total_ms * 1_000_000, 0, 0, 0, 0, 0, 0, 0],
+            phase_ns: [total_ms * 1_000_000, 0, 0, 0, 0, 0, 0, 0, 0],
             counts: [0; COUNTERS],
         }
     }
@@ -1157,6 +1197,35 @@ mod tests {
         let w = window_summary().unwrap();
         assert_eq!(w.frames, 1);
         assert_eq!(w.count_mean[Counter::Draws as usize], 7.0);
+        // Guest scopes: D3D entries inside the render scope are scoped D3d
+        // time, outside it or on another guest thread they are not.
+        guest_thread(Some(1));
+        {
+            let _d = enter(Phase::D3d);
+            spin(2);
+        }
+        assert_eq!(scope_ns(Phase::D3d), Some(0));
+        scope_begin(Phase::Render);
+        spin(2);
+        {
+            let _d = enter(Phase::D3d);
+            spin(3);
+        }
+        guest_thread(Some(2));
+        {
+            let _d = enter(Phase::D3d);
+            spin(2);
+        }
+        guest_thread(Some(1));
+        scope_end();
+        let (render, d3d) = (
+            scope_ns(Phase::Render).unwrap(),
+            scope_ns(Phase::D3d).unwrap(),
+        );
+        assert!((2_000_000..4_000_000).contains(&render), "{render}");
+        assert!((3_000_000..5_000_000).contains(&d3d), "{d3d}");
+        assert!(thread_ns(Phase::D3d).unwrap() >= 7_000_000);
+        guest_thread(None);
         assert_eq!(stop(), None);
         assert!(!enabled());
     }

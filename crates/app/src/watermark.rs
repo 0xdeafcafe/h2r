@@ -102,7 +102,7 @@ impl LiveStats {
         Self {
             fps: s.fps,
             frame_ms: if s.fps > 0.0 { 1000.0 / s.fps } else { 0.0 },
-            cpu_ms: Some(p(Phase::Guest) + p(Phase::Render)),
+            cpu_ms: Some(p(Phase::Guest) + p(Phase::Render) + p(Phase::D3d)),
             gfx_ms: Some(p(Phase::Decode) + p(Phase::Encode) + p(Phase::Submit) + p(Phase::Wait)),
             wait_ms: Some(p(Phase::RenderWait)),
             draws: Some(s.count_mean[Counter::Draws as usize]),
@@ -540,8 +540,8 @@ mod tests {
             p99_ms: 40.0,
             max_ms: 51.0,
             // cpu, decode, encode, submit, gpu-wait, pace, render-wait,
-            // render (guest time is cpu + render)
-            phase_ms: [20.2, 0.4, 2.6, 1.0, 0.8, 0.3, 6.4, 4.0],
+            // render, d3d (guest time is cpu + render + d3d)
+            phase_ms: [18.2, 0.4, 2.6, 1.0, 0.8, 0.3, 6.4, 4.0, 2.0],
             count_mean,
         }
     }
