@@ -18,12 +18,10 @@
 //! set pane 4 of a tag that has four (`0x230427`, no bounds check), so the
 //! pane change is skipped for it and the previous difficulty's pane stays.
 //!
-//! **The screen** is a second Controls screen, opened as the Video screen
-//! is (`0x149f1e(1 << player, 0x2b7714)`): while our open call runs the list
-//! hook names its datum array [`LIST_NAME_TEXT`] and gives it one row per
-//! collected skull of the profile on the pressing player's slot. Its rows go
-//! through the Controls row text and row chosen hooks, its title through
-//! the header hook, as the Video screen's do.
+//! **The screen** is our own list class (`crate::skulls_screen`, docs/ui.md
+//! "Screen and list classes"): the row opens the class's loader for the
+//! pressing player, after [`set_open`] names the profile on that player's
+//! slot. Its rows, title and presses are the ones below.
 //!
 //! Rows are [`skulls::screen_for`]'s, so they come from the `ui` model's
 //! screen of that profile; a press is [`skulls::toggle`].
@@ -46,17 +44,14 @@ pub const DIFFICULTY_SCREEN_ID: i16 = 12;
 /// The difficulty list's row text (`ret 8`) and row chosen (`ret 8`).
 pub const DIFFICULTY_ROW_TEXT: u32 = 0x002c_9ce7;
 pub const DIFFICULTY_ROW_CHOSEN: u32 = 0x002c_9d38;
-/// The name our list's datum array is made with.
-pub const LIST_NAME_TEXT: &str = "h2r skulls";
 
-/// Our strings: a label per skull, the title (also the row's label) and the
-/// array name. `layout_glue::is_ours` looks at the middle bytes only, so a
+/// Our strings: a label per skull and the title (also the row's label).
+/// `layout_glue::is_ours` looks at the middle bytes only, so a
 /// base one higher in the top byte than [`ID_BASE`] is ours too and clear of
 /// every id the model and the other rows take (`ID_BASE + 0x00..0xff`).
 pub const SKULLS_ID_BASE: u32 = ID_BASE + 0x0100_0000;
 const LABEL_BASE: u32 = SKULLS_ID_BASE;
 pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
-pub const LIST_NAME_ID: u32 = SKULLS_ID_BASE + 0x11;
 pub const TITLE: &str = "Skulls";
 
 /// The label id of skull `i`.
@@ -64,8 +59,7 @@ pub fn label_id(i: usize) -> u32 {
     LABEL_BASE + i as u32
 }
 
-/// Every string we serve (the array name is served apart, by
-/// `layout_glue`, for its address).
+/// Every string we serve.
 pub fn strings() -> Vec<(u32, &'static str)> {
     let mut v: Vec<(u32, &'static str)> = SKULLS
         .iter()
@@ -101,29 +95,6 @@ pub fn difficulty_count(name: u32, retail: u32, row: bool) -> u32 {
     } else {
         retail
     }
-}
-
-/// The count for the list our open call builds (the Controls list at its
-/// retail six): `rows`, or `None` for any other list.
-pub fn skulls_count(name: u32, retail: u32, opening: bool, rows: usize) -> Option<u32> {
-    (opening && name == speaker_row::LIST_NAME && retail == speaker_row::VANILLA_ROWS && rows > 0)
-        .then_some(rows as u32)
-}
-
-/// Whether the list `handler`'s datum array (`[handler+0x70]`) is named
-/// [`LIST_NAME_TEXT`].
-pub fn is_skulls_list<M: Gm>(m: &M, handler: u32) -> bool {
-    let Some(array) = m.u32(handler.wrapping_add(0x70)) else {
-        return false;
-    };
-    let want = LIST_NAME_TEXT.as_bytes();
-    let mut got = vec![0; want.len() + 1];
-    m.rd(array, &mut got) && got[..want.len()] == *want && got[want.len()] == 0
-}
-
-/// Whether `screen` is one of ours (its list handler at `+0x614`).
-pub fn is_skulls_screen<M: Gm>(m: &M, screen: u32) -> bool {
-    is_skulls_list(m, screen.wrapping_add(crate::video_screen::SCREEN_LIST))
 }
 
 /// The local player index of a list callback (`[[esp+4]]+4`), as
@@ -282,31 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_list_our_open_call_builds_is_the_skulls_list() {
-        assert_eq!(skulls_count(speaker_row::LIST_NAME, 6, true, 3), Some(3));
-        assert_eq!(skulls_count(speaker_row::LIST_NAME, 6, false, 3), None);
-        assert_eq!(
-            skulls_count(speaker_row::LIST_NAME, 6, true, 0),
-            None,
-            "no skulls, no screen"
-        );
-        assert_eq!(skulls_count(DIFFICULTY_LIST_NAME, 4, true, 3), None);
-        let mut f = Fake::default();
-        f.set_u32(0x3070, 0x4000);
-        let mut name = LIST_NAME_TEXT.as_bytes().to_vec();
-        name.resize(0x20, 0);
-        f.wr(0x4000, &name);
-        assert!(is_skulls_list(&f, 0x3000));
-        assert!(is_skulls_screen(
-            &f,
-            0x3000 - crate::video_screen::SCREEN_LIST
-        ));
-        f.wr(0x4000, b"h2r video settings\0");
-        assert!(!is_skulls_list(&f, 0x3000));
-        assert!(!is_skulls_list(&Fake::default(), 0x3000));
-    }
-
-    #[test]
     fn rows_are_the_profiles_collected_skulls_with_on_and_off() {
         let s = store();
         skulls::record_pickup(&s, &names(&["Chief"]), 12);
@@ -402,7 +348,6 @@ mod tests {
         let all = strings();
         assert_eq!(all.len(), COUNT + 1);
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
-        ids.push(LIST_NAME_ID);
         assert!(ids.iter().all(|i| is_ours(*i)));
         assert!(
             ids.iter()
@@ -418,6 +363,5 @@ mod tests {
         assert_eq!(ids.len(), n);
         assert!(all.contains(&(label_id(12), "Mythic")));
         assert!(all.contains(&(TITLE_ID, "Skulls")));
-        assert!(LIST_NAME_TEXT.len() < 0x20);
     }
 }
