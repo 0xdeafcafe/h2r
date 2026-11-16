@@ -359,6 +359,14 @@ pub struct TagSet {
     /// Place built tags first-fit into metadata no pinned bytes use (default).
     /// When false, every built tag goes after the original region.
     pub reuse_free_space: bool,
+    /// Place built tags in reverse slot order (default false). Used to move
+    /// relocated retail tags away from their old addresses while reusing
+    /// the space they freed.
+    pub reverse_built: bool,
+    /// Enforce [`max_metadata_size`] (default true). Off only for offline
+    /// round trips of maps already at the bound: the bound is the largest
+    /// retail map of the type, not a measured engine limit.
+    pub check_tag_memory: bool,
 }
 
 /// Where things went in a built map.
@@ -436,6 +444,8 @@ impl TagSet {
             salt_base: 0xe174,
             pinned: None,
             reuse_free_space: true,
+            reverse_built: false,
+            check_tag_memory: true,
         }
     }
     /// Declare a group and its ancestors (no-op if already declared).
@@ -638,6 +648,8 @@ impl TagSet {
             bsps: Vec::new(),
             salt_base: 0xe174,
             reuse_free_space: true,
+            reverse_built: false,
+            check_tag_memory: true,
             pinned: Some(PinnedImage {
                 header,
                 file,
@@ -1141,8 +1153,13 @@ impl<'a> Builder<'a> {
             .bytes
             .len()
             .max(pin.map_or(0, |p| p.metadata_size as usize));
-        for (i, slot) in set.slots.iter().enumerate() {
-            let Some(t) = &slot.tag else { continue };
+        let order: Vec<usize> = if set.reverse_built {
+            (0..set.slots.len()).rev().collect()
+        } else {
+            (0..set.slots.len()).collect()
+        };
+        for i in order {
+            let Some(t) = &set.slots[i].tag else { continue };
             if let TagPayload::Built(root) = &t.payload {
                 if in_bsp.contains(&t.id) {
                     continue;
@@ -1203,7 +1220,7 @@ impl<'a> Builder<'a> {
             .checked_add(metadata_size.into())
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(Error::Limit)?;
-        if memory_size > max_metadata_size(set.cache_type)? {
+        if set.check_tag_memory && memory_size > max_metadata_size(set.cache_type)? {
             return Err(Error::Invalid(
                 "metadata exceeds the engine's tag memory for this cache type",
             ));
