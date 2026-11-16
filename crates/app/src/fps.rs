@@ -18,7 +18,15 @@
 //! above 30 the picture is no smoother: only present pacing changes. What
 //! is here is the setting, the display clock and the interpolation
 //! fraction ([`alpha`]) that phase 2 will use.
+//!
+//! The target can change while the window runs: [`FpsControl`] carries a
+//! new one from another thread (the Video screen's Frame Rate row), and
+//! the window picks it up at its next turn ([`follow`]): the schedule is
+//! retargeted and, when vsync must change (uncapped and back), the window
+//! surface is configured again.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 /// The environment variable [`FpsTarget::from_env`] reads.
@@ -91,6 +99,52 @@ impl FpsTarget {
     pub fn vsync(self, vsync: bool) -> bool {
         vsync && self != FpsTarget::Uncapped
     }
+}
+
+/// A frame-rate target that another thread sets and the window follows.
+/// Cheap to clone; every clone is the same cell.
+#[derive(Clone, Debug)]
+pub struct FpsControl(Arc<AtomicU8>);
+
+impl FpsControl {
+    pub fn new(target: FpsTarget) -> Self {
+        Self(Arc::new(AtomicU8::new(Self::index(target))))
+    }
+
+    fn index(target: FpsTarget) -> u8 {
+        FpsTarget::ALL
+            .iter()
+            .position(|t| *t == target)
+            .unwrap_or(0) as u8
+    }
+
+    pub fn set(&self, target: FpsTarget) {
+        self.0.store(Self::index(target), Ordering::Release);
+    }
+
+    pub fn get(&self) -> FpsTarget {
+        FpsTarget::ALL
+            .get(self.0.load(Ordering::Acquire) as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// What the window must do when `control` asks for another target than
+/// `current`: the new target, and the surface's new vsync when the
+/// `vsync` setting under it changes (uncapped turns it off). `None`: no
+/// change.
+pub fn follow(
+    control: &FpsControl,
+    current: FpsTarget,
+    vsync: bool,
+) -> Option<(FpsTarget, Option<bool>)> {
+    let wanted = control.get();
+    if wanted == current {
+        return None;
+    }
+    let (was, now) = (current.vsync(vsync), wanted.vsync(vsync));
+    Some((wanted, (was != now).then_some(now)))
 }
 
 impl std::fmt::Display for FpsTarget {
@@ -171,6 +225,14 @@ impl DisplaySchedule {
             due_count: 0,
             skipped: 0,
         }
+    }
+
+    /// Runs at `target` from the next call to [`due`](Self::due): the
+    /// grid starts again there, so a lower rate does not wait out a slot
+    /// booked at the higher one.
+    pub fn retarget(&mut self, target: FpsTarget) {
+        self.interval = target.display_interval();
+        self.next = None;
     }
 
     /// Whether a redraw is due at `now`; if so, the next one is booked.
@@ -291,6 +353,70 @@ mod tests {
             next > Duration::from_millis(50) && next <= Duration::from_millis(59),
             "{next:?}"
         );
+    }
+
+    #[test]
+    fn a_control_carries_every_target_across_clones() {
+        let c = FpsControl::new(FpsTarget::Thirty);
+        let other = c.clone();
+        for t in FpsTarget::ALL {
+            other.set(t);
+            assert_eq!(c.get(), t);
+        }
+    }
+
+    #[test]
+    fn follow_says_what_changes_and_when_vsync_does() {
+        let c = FpsControl::new(FpsTarget::Thirty);
+        assert_eq!(follow(&c, FpsTarget::Thirty, true), None);
+        c.set(FpsTarget::Sixty);
+        assert_eq!(
+            follow(&c, FpsTarget::Thirty, true),
+            Some((FpsTarget::Sixty, None))
+        );
+        c.set(FpsTarget::Uncapped);
+        assert_eq!(
+            follow(&c, FpsTarget::Sixty, true),
+            Some((FpsTarget::Uncapped, Some(false))),
+            "uncapped turns vsync off"
+        );
+        c.set(FpsTarget::OneTwenty);
+        assert_eq!(
+            follow(&c, FpsTarget::Uncapped, true),
+            Some((FpsTarget::OneTwenty, Some(true))),
+            "and back on"
+        );
+        assert_eq!(
+            follow(&c, FpsTarget::Uncapped, false),
+            Some((FpsTarget::OneTwenty, None)),
+            "vsync off in the settings: it stays off"
+        );
+    }
+
+    #[test]
+    fn a_retargeted_schedule_runs_at_the_new_rate_at_once() {
+        let poll = Duration::from_micros(250);
+        let mut clock = FakeDisplayClock::new(poll);
+        let mut s = DisplaySchedule::new(FpsTarget::Thirty);
+        let count = |s: &mut DisplaySchedule, clock: &mut FakeDisplayClock, until: Duration| {
+            let start = s.due_count;
+            loop {
+                let now = clock.now();
+                if now >= until {
+                    return s.due_count - start;
+                }
+                s.due(now);
+            }
+        };
+        // 30: the guest's presents drive redraws; the schedule never does.
+        assert_eq!(count(&mut s, &mut clock, Duration::from_secs(1)), 0);
+        s.retarget(FpsTarget::OneTwenty);
+        assert_eq!(count(&mut s, &mut clock, Duration::from_secs(2)), 120);
+        s.retarget(FpsTarget::Sixty);
+        assert_eq!(count(&mut s, &mut clock, Duration::from_secs(3)), 60);
+        s.retarget(FpsTarget::Thirty);
+        assert_eq!(count(&mut s, &mut clock, Duration::from_secs(4)), 0);
+        assert_eq!(s.next_due(), None, "nothing booked at 30");
     }
 
     #[test]
