@@ -296,6 +296,15 @@ fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)?.sync_all().map_err(Into::into)
 }
 
+/// `path` (already absolute) with its links resolved, so nested roots are
+/// caught below. Not on Windows: there `canonicalize` opens the directory
+/// and asks for its final path, which an Xbox app container refuses
+/// (ERROR_ACCESS_DENIED for the app's own LocalState); the absolute path is
+/// used as it is, and the roots are the app's own private directories.
+fn resolved(path: PathBuf) -> Result<PathBuf> {
+    if cfg!(windows) { Ok(path) } else { Ok(fs::canonicalize(path)?) }
+}
+
 /// Makes a file's data durable. Windows' FlushFileBuffers needs a handle
 /// with write access, which `File::open` does not give.
 fn sync_file(path: &Path) -> Result<()> {
@@ -321,8 +330,8 @@ impl HostBackend {
         let metadata_root = std::path::absolute(metadata_root)?;
         durable_create_dirs(&root)?;
         durable_create_dirs(&metadata_root)?;
-        let root = fs::canonicalize(root)?;
-        let metadata_root = fs::canonicalize(metadata_root)?;
+        let root = resolved(root)?;
+        let metadata_root = resolved(metadata_root)?;
         if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
             return Err(Error::InvalidParameter);
         }

@@ -211,6 +211,7 @@ fn run() -> Result<()> {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("h2uwp: the game did not start: {e:#}");
+            storage_check(&local.join("h2data"));
             None
         }
     };
@@ -253,6 +254,39 @@ fn run() -> Result<()> {
     vfs::flush_pending_metadata();
     drop(panel);
     Ok(())
+}
+
+/// Logs each file-system step the hard disk's mount takes, with the host
+/// error, when the game did not start: the vfs reports only an NTSTATUS
+/// (AccessDenied), which says nothing about which call the app container
+/// refused. This is how `canonicalize` and opening a directory were found
+/// to be refused in LocalState.
+fn storage_check(data: &Path) {
+    let d = data.join("check");
+    let f = d.join("file");
+    let report = |what: &str, r: std::io::Result<String>| match r {
+        Ok(s) => eprintln!("h2uwp: check {what}: ok {s}"),
+        Err(e) => eprintln!("h2uwp: check {what}: {e} ({e:?})"),
+    };
+    report("create_dir_all", std::fs::create_dir_all(&d).map(|_| String::new()));
+    report("absolute", std::path::absolute(&d).map(|p| p.display().to_string()));
+    report("canonicalize", std::fs::canonicalize(&d).map(|p| p.display().to_string()));
+    report("canonicalize parent", std::fs::canonicalize(data).map(|p| p.display().to_string()));
+    report("try_exists", d.try_exists().map(|b| b.to_string()));
+    report("open dir", std::fs::File::open(&d).map(|_| String::new()));
+    report("write", std::fs::write(&f, b"x").map(|_| String::new()));
+    report(
+        "open for write + sync",
+        std::fs::OpenOptions::new().write(true).open(&f).and_then(|h| h.sync_all()).map(|_| String::new()),
+    );
+    report("read sync", std::fs::File::open(&f).and_then(|h| h.sync_all()).map(|_| String::new()));
+    report("rename", std::fs::rename(&f, d.join("file2")).map(|_| String::new()));
+    report("read_dir", std::fs::read_dir(&d).map(|r| r.count().to_string()));
+    report("remove_dir_all", std::fs::remove_dir_all(&d).map(|_| String::new()));
+    match vfs::HostBackend::new(data.join("disk").join("Partition1"), data.join("metadata").join("Partition1")) {
+        Ok(_) => eprintln!("h2uwp: check HostBackend::new: ok"),
+        Err(e) => eprintln!("h2uwp: check HostBackend::new: {e:?}"),
+    }
 }
 
 fn local_state() -> Result<PathBuf> {
