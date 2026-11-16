@@ -304,6 +304,8 @@ see their details. These maps are read only (the outliner says `Halo 1:
 read only`): nothing can be moved or saved. **Convert to Halo 2** in the
 inspector is greyed out until the converter can be run from the editor.
 
+![Halo 1's Blood Gulch, read only: the plain grey canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
+
 ## 5. Game variants
 
 A game variant is a set of game settings: the game type (Slayer, CTF and
