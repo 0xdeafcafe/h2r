@@ -289,9 +289,25 @@ impl Translator {
 
     /// Translates `words`; identical to [`StateWords::translate`].
     pub fn translate(&self, words: &StateWords) -> DrawState {
-        let mut render = RenderState::default();
         let mut bad = Vec::new();
-        for (g, (&v, ty)) in words.render.iter().zip(&self.render).enumerate() {
+        let render = self.translate_render(&words.render, &mut bad);
+        let stages = std::array::from_fn(|s| self.translate_stage(s, &words.stages[s], &mut bad));
+        DrawState {
+            render,
+            stages,
+            bad,
+        }
+    }
+
+    /// The render-state half of [`Self::translate`]: a function of the
+    /// render words alone.
+    fn translate_render(
+        &self,
+        words: &[u32; RENDER_STATE_SLOTS],
+        bad: &mut Vec<BadState>,
+    ) -> RenderState {
+        let mut render = RenderState::default();
+        for (g, (&v, ty)) in words.iter().zip(&self.render).enumerate() {
             let Some(ty) = *ty else { continue };
             if render.set_raw(ty, v).is_err() {
                 bad.push(BadState::Render {
@@ -300,23 +316,90 @@ impl Translator {
                 });
             }
         }
-        let stages = std::array::from_fn(|s| {
-            let mut st = TextureStageState::default_for_stage(s as u32);
-            for (i, (&v, ty)) in words.stages[s].iter().zip(&self.stage).enumerate() {
-                let Some(ty) = *ty else { continue };
-                if st.set_raw(ty, v).is_err() {
-                    bad.push(BadState::Stage {
-                        stage: s as u32,
-                        state: i as u32,
-                        value: v,
-                    });
-                }
+        render
+    }
+
+    /// Stage `s` of [`Self::translate`]: a function of that stage's words
+    /// alone.
+    fn translate_stage(
+        &self,
+        s: usize,
+        words: &[u32; STAGE_SLOTS],
+        bad: &mut Vec<BadState>,
+    ) -> TextureStageState {
+        let mut st = TextureStageState::default_for_stage(s as u32);
+        for (i, (&v, ty)) in words.iter().zip(&self.stage).enumerate() {
+            let Some(ty) = *ty else { continue };
+            if st.set_raw(ty, v).is_err() {
+                bad.push(BadState::Stage {
+                    stage: s as u32,
+                    state: i as u32,
+                    value: v,
+                });
             }
-            st
-        });
+        }
+        st
+    }
+}
+
+/// One translated part (the render words, or one stage's words): its words,
+/// what they translate to, and the values rejected.
+#[derive(Clone, Debug)]
+struct Part<W, T> {
+    words: W,
+    state: T,
+    bad: Vec<BadState>,
+}
+
+/// [`Translator::translate`] for a run of draws, re-translating only the
+/// parts whose words changed since the last draw.
+///
+/// The render state is a function of the render words and each stage's
+/// state of that stage's words ([`Translator::translate_render`],
+/// [`Translator::translate_stage`]); rejected values are listed render
+/// first, then stage by stage, as `translate` lists them. Halo changes a
+/// few words between most draws, so most parts are reused.
+#[derive(Clone, Debug, Default)]
+pub struct TranslateMemo {
+    render: Option<Part<[u32; RENDER_STATE_SLOTS], RenderState>>,
+    stages: [Option<Part<[u32; STAGE_SLOTS], TextureStageState>>; STAGES],
+}
+
+impl TranslateMemo {
+    /// Equal to `t.translate(words)`.
+    pub fn translate(&mut self, t: &Translator, words: &StateWords) -> DrawState {
+        if self.render.as_ref().is_none_or(|p| p.words != words.render) {
+            let mut bad = Vec::new();
+            let state = t.translate_render(&words.render, &mut bad);
+            self.render = Some(Part {
+                words: words.render,
+                state,
+                bad,
+            });
+        }
+        for (s, part) in self.stages.iter_mut().enumerate() {
+            if part.as_ref().is_none_or(|p| p.words != words.stages[s]) {
+                let mut bad = Vec::new();
+                let state = t.translate_stage(s, &words.stages[s], &mut bad);
+                *part = Some(Part {
+                    words: words.stages[s],
+                    state,
+                    bad,
+                });
+            }
+        }
+        let render = self.render.as_ref().expect("translated above");
+        let stages = self
+            .stages
+            .each_ref()
+            .map(|p| p.as_ref().expect("translated above"));
+        let mut bad = render.bad.clone();
+        for p in &stages {
+            bad.extend_from_slice(&p.bad);
+        }
         DrawState {
-            render,
-            stages,
+            render: render.state.clone(),
+            stages: stages.map(|p| p.state.clone()),
             bad,
         }
     }
@@ -338,6 +421,47 @@ mod tests {
         }
         let d = StateWords::defaults(false).translate(&t);
         assert_eq!(d.render.depth_mode, DepthBufferMode::Disabled);
+    }
+
+    /// The memo answers what a fresh translation answers, rejected values
+    /// and their order included, over a run of draws that each change a
+    /// few render or stage words (to valid, invalid and repeated values),
+    /// and when nothing changes.
+    #[test]
+    fn memo_matches_a_fresh_translation_draw_after_draw() {
+        let table = RenderStateTable::default();
+        let t = Translator::new(&table);
+        let mut memo = TranslateMemo::default();
+        let mut w = StateWords::defaults(true);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for draw in 0..4000 {
+            for _ in 0..(next() % 4) {
+                let r = next();
+                // Small values are mostly valid enums and flags; others
+                // are mostly rejected.
+                let v = if r & 1 == 0 {
+                    (r >> 8) as u32 % 9
+                } else {
+                    (r >> 8) as u32
+                };
+                if (r >> 1) % 3 == 0 {
+                    let stage = (r >> 40) as usize % STAGES;
+                    w.stages[stage][(r >> 48) as usize % STAGE_SLOTS] = v;
+                } else {
+                    w.render[(r >> 40) as usize % RENDER_STATE_SLOTS] = v;
+                }
+            }
+            if draw % 500 == 499 {
+                w = StateWords::defaults(draw % 1000 == 499);
+            }
+            assert_eq!(memo.translate(&t, &w), t.translate(&w), "draw {draw}");
+        }
     }
 
     #[test]

@@ -640,8 +640,9 @@ pub struct Device<B: Backend> {
     cfg: DeviceConfig,
     /// The slot types of the build's render-state table, resolved once.
     translator: Translator,
-    /// The last state translated, reused while the guest arrays are unchanged.
-    translated: Option<(Box<StateWords>, DrawState)>,
+    /// The last state translated, part by part: a part is reused while its
+    /// guest words are unchanged.
+    translated: crate::state::TranslateMemo,
     /// The host backend.
     pub backend: B,
     created: bool,
@@ -814,7 +815,7 @@ impl<B: Backend> Device<B> {
         Self {
             cfg,
             translator: Translator::new(&RenderStateTable::default()),
-            translated: None,
+            translated: Default::default(),
             backend,
             created: false,
             params: None,
@@ -3770,14 +3771,7 @@ impl<B: Backend> Device<B> {
     /// [`StateWords::translate`] through the memo: consecutive draws mostly
     /// see the same arrays.
     fn translate_state(&mut self, words: &StateWords) -> DrawState {
-        if let Some((w, s)) = &self.translated
-            && **w == *words
-        {
-            return s.clone();
-        }
-        let s = self.translator.translate(words);
-        self.translated = Some((Box::new(words.clone()), s.clone()));
-        s
+        self.translated.translate(&self.translator, words)
     }
 
     fn state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
