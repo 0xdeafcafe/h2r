@@ -289,6 +289,13 @@ pub fn needs_invite(server_url: &str) -> Result<Option<bool>, SetupError> {
     }
 }
 
+/// The server's resolved API base (`https://host/v1`) and id, from its
+/// discovery document, with the checks every call here makes.
+pub fn discover(server_url: &str) -> Result<(String, String), SetupError> {
+    let server = Server::open(server_url)?;
+    Ok((server.api, server.id))
+}
+
 /// Creates `gamertag` on the server with a new key; `invite` is sent as
 /// typed (trimmed; empty is none). Returns the entry to [`save`] and the
 /// recovery secret to show the player once.

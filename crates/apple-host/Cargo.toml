@@ -17,6 +17,11 @@ vfs.workspace = true
 xiso.workspace = true
 kernel.workspace = true
 settings = { path = "../settings" }
+# Live on by default (live_hle::platform) and cloud saves when signed in
+# (docs/live/live-cloud-saves.md).
+live-hle = { path = "../live-hle" }
+live-proto.workspace = true
+cloud-saves.workspace = true
 d3d = { path = "../d3d" }
 audio = { path = "../audio" }
 # GameController only: no gilrs or IOKit HID on tvOS or iOS.

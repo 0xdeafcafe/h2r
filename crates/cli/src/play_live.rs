@@ -1,38 +1,40 @@
-//! `h2 play --live`: the game signed in to a Live service. Either an
-//! embedded server on a background runtime (Postgres from `$H2_LIVE_DB`,
-//! else the file store in `server/log`) or `--live-server URL`; an account for that
-//! server is found in, or added to, the local accounts file, and the game
-//! is booted with `boot::LiveConfig` pointing at it (docs/live/live.md).
-//!
-//! With none of those flags, `h2 play` tries [`DEFAULT_LIVE_SERVER`] (or
-//! `$H2_LIVE_SERVER`) and plays offline, as before, when it does not
-//! answer ([`choose`]). `--offline` (`--no-live`) skips that.
+//! `h2 play`'s Live flags (docs/live/live.md "Playing on Live"). With none
+//! the game plays offline and nothing is contacted. `--live` signs in to
+//! [`DEFAULT_LIVE_SERVER`] (or `$H2_LIVE_SERVER`), `--live-server URL` to
+//! that service, and `--live-local` to an embedded server on a background
+//! runtime (Postgres from `$H2_LIVE_DB`, else the file store in
+//! `server/log`), which `--live-listen` and `--live-tunnel` configure. An
+//! account for the server is found in, or added to, the local accounts
+//! file, and the game is booted with `boot::LiveConfig` pointing at it.
+//! The tvOS and iOS apps are on by default instead (`live_hle::platform`).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use live_proto::Gamertag;
+use live_proto::{Gamertag, ServerOverride};
 
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
 
-/// The Live service `h2 play` signs in to when no flag says otherwise
-/// (docs/live/live.md "Playing on Live"). The one place it is written.
-pub const DEFAULT_LIVE_SERVER: &str = "https://live.forbes.red";
-
-/// How long the default service has to answer its discovery document
-/// before `h2 play` goes on offline.
-pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// The Live service `h2 play --live` signs in to: [`live_proto::DEFAULT_SERVER`],
+/// shared with the app builds.
+pub const DEFAULT_LIVE_SERVER: &str = live_proto::DEFAULT_SERVER;
 
 /// The `--live*` flags of `h2 play`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct LiveOpts {
+    /// Any Live flag: `--live`, `--live-server`, `--live-local` (or one
+    /// that implies it).
     pub enabled: bool,
-    /// `--offline` (or `--no-live`): do not try the default service.
+    /// `--live-local`: run the server in this process. `--live-listen` and
+    /// `--live-tunnel` imply it.
+    pub local: bool,
+    /// `--offline` (or `--no-live`): no Live, as with no flag. Kept for
+    /// scripts and for symmetry with the app builds.
     pub offline: bool,
-    /// `--live-server`: use this service instead of an embedded one.
+    /// `--live-server`: this service. With `--live` alone it is filled in
+    /// from `$H2_LIVE_SERVER` or [`DEFAULT_LIVE_SERVER`] ([`choose`]).
     pub server: Option<String>,
     /// `--live-listen`: where the embedded server binds (default
     /// 127.0.0.1 on a free port).
@@ -62,25 +64,28 @@ impl LiveOpts {
     pub fn take(&mut self, flag: &str, value: &mut dyn FnMut() -> Result<String>) -> Result<bool> {
         match flag {
             "--live" => self.enabled = true,
+            "--live-local" => self.embedded(),
             "--offline" | "--no-live" => self.offline = true,
             "--live-server" => {
                 self.enabled = true;
                 self.server = Some(value()?);
             }
             "--live-listen" => {
-                self.enabled = true;
+                self.embedded();
                 let v = value()?;
                 self.listen = Some(
                     v.parse()
                         .with_context(|| format!("bad --live-listen {v:?} (want ip:port)"))?,
                 );
             }
-            "--live-tunnel" => {
-                self.enabled = true;
+            "--live-tunnel" | "--tunnel" => {
+                self.embedded();
                 self.tunnel = true;
             }
-            "--tunnel" => self.tunnel = true,
-            "--live-tunnel-name" | "--tunnel-name" => self.tunnel_name = Some(value()?),
+            "--live-tunnel-name" | "--tunnel-name" => {
+                self.embedded();
+                self.tunnel_name = Some(value()?);
+            }
             "--live-tunnel-url" => {
                 self.hostname = Some(crate::tunnel::hostname_from_url(&value()?)?);
             }
@@ -96,15 +101,26 @@ impl LiveOpts {
         Ok(true)
     }
 
+    fn embedded(&mut self) {
+        self.enabled = true;
+        self.local = true;
+    }
+
     pub fn check(&self) -> Result<()> {
-        if self.offline && (self.enabled || self.tunnel) {
-            bail!("--offline plays without Live; drop --live, --live-server or --live-tunnel");
+        if self.offline && self.enabled {
+            bail!(
+                "--offline plays without Live; drop --live, --live-local, --live-server or \
+                 --live-tunnel"
+            );
         }
-        if self.gamertag.is_some() && self.offline {
-            bail!("--gamertag is the Live account to play as; it does not go with --offline");
+        if self.gamertag.is_some() && !self.enabled {
+            bail!(
+                "--gamertag is the Live account to play as; it goes with --live, --live-server \
+                 or --live-local"
+            );
         }
         if self.server.is_some() && self.listen.is_some() {
-            bail!("--live-listen is for the embedded server; --live-server uses another");
+            bail!("--live-listen is for the embedded server (--live-local); --live-server uses another");
         }
         if self.hostname.is_some() && self.tunnel_name.is_none() {
             bail!(
@@ -117,16 +133,23 @@ impl LiveOpts {
             bail!("--no-tunnel-setup goes with --live-tunnel-name");
         }
         if mode.is_some() {
-            if !self.enabled || self.server.is_some() {
+            if self.server.is_some() {
                 bail!(
-                    "--tunnel publishes the embedded server: it goes with --live, not --live-server"
+                    "--live-tunnel publishes the embedded server: it goes with --live-local, \
+                     not --live-server"
                 );
             }
             if let Some(listen) = self.listen.filter(|l| !l.ip().is_loopback()) {
                 bail!(
-                    "--tunnel keeps the embedded server on loopback; drop --live-listen {listen}"
+                    "--live-tunnel keeps the embedded server on loopback; drop --live-listen {listen}"
                 );
             }
+        }
+        if self.local && self.server.is_some() {
+            bail!(
+                "--live-local runs a server on this machine and --live-server signs in to \
+                 another; pick one"
+            );
         }
         Ok(())
     }
@@ -142,69 +165,49 @@ impl LiveOpts {
     }
 }
 
-/// How `h2 play` plays: what the flags, `$H2_LIVE_SERVER` and the default
-/// service's answer decided.
+/// How `h2 play` plays: what the flags and `$H2_LIVE_SERVER` decided.
+/// Nothing is contacted to decide it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Choice {
-    /// Offline, as `h2 play` always played without `--live`; `why` is the
-    /// line to print, if any.
+    /// Offline; `why` is the line to print, if any.
     Offline { why: Option<String> },
-    /// `--live`, `--live-server` or `--live-tunnel`: exactly as asked.
-    Flags,
-    /// A service no flag named, which answered: `$H2_LIVE_SERVER`, else
-    /// [`DEFAULT_LIVE_SERVER`]. Played on as `--live-server url` would,
-    /// except that failing to sign in falls back to offline.
+    /// `--live-local`: the embedded server.
+    Local,
+    /// Sign in to `url`; `from` names what chose it (`--live-server`,
+    /// `H2_LIVE_SERVER` or `--live`, the default service).
     Server { url: String, from: &'static str },
 }
 
-/// What `h2 play` does about Live. `env` is `$H2_LIVE_SERVER` (`off`,
-/// `none` or `0` there mean offline); `default` is
-/// [`DEFAULT_LIVE_SERVER`] outside tests; `probe` fetches a service's
-/// discovery document ([`probe`] outside tests).
-pub fn choose(
-    opts: &LiveOpts,
-    env: Option<String>,
-    default: &str,
-    probe: &dyn Fn(&str) -> Result<()>,
-) -> Choice {
-    if opts.offline {
+/// What `h2 play` does about Live. `env` is `$H2_LIVE_SERVER`: with
+/// `--live` alone it replaces `default` ([`DEFAULT_LIVE_SERVER`] outside
+/// tests), and `off`, `none` or `0` there mean offline. `--live-server` and
+/// `--live-local` win over it.
+pub fn choose(opts: &LiveOpts, env: Option<&str>, default: &str) -> Choice {
+    if opts.offline || !opts.enabled {
         return Choice::Offline { why: None };
     }
-    if opts.enabled || opts.tunnel {
-        return Choice::Flags;
+    if opts.local {
+        return Choice::Local;
     }
-    let (url, from) = match env.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) if matches!(v.to_ascii_lowercase().as_str(), "off" | "none" | "0") => {
-            return Choice::Offline {
-                why: Some(format!("live: off (H2_LIVE_SERVER={v}); playing offline")),
-            };
-        }
-        Some(v) => (v.trim_end_matches('/').to_string(), "H2_LIVE_SERVER"),
-        None => (default.to_string(), "default"),
-    };
-    match probe(&url) {
-        Ok(()) => Choice::Server { url, from },
-        Err(e) => Choice::Offline {
-            why: Some(format!(
-                "live: {url} did not answer ({e:#}); playing offline. --live runs a service \
-                 on this machine, --offline skips this check"
-            )),
+    if let Some(url) = &opts.server {
+        return Choice::Server {
+            url: url.trim().trim_end_matches('/').to_string(),
+            from: "--live-server",
+        };
+    }
+    match ServerOverride::parse(env) {
+        ServerOverride::Off(v) => Choice::Offline {
+            why: Some(format!("live: off (H2_LIVE_SERVER={v}); playing offline")),
+        },
+        ServerOverride::Url(url) => Choice::Server {
+            url,
+            from: "H2_LIVE_SERVER",
+        },
+        ServerOverride::Unset => Choice::Server {
+            url: default.trim_end_matches('/').to_string(),
+            from: "--live",
         },
     }
-}
-
-/// Fetches `url`'s discovery document (`/.well-known/h2live.json`) within
-/// `timeout`; an error if it does not answer with one.
-pub fn probe(url: &str, timeout: Duration) -> Result<()> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(timeout)
-        .timeout(timeout)
-        .build();
-    let doc = format!("{}/.well-known/h2live.json", url.trim_end_matches('/'));
-    let text = crate::live_cmd::call(agent.get(&doc), None)?;
-    serde_json::from_str::<live_proto::Discovery>(&text)
-        .with_context(|| format!("{doc} is not an h2 live discovery document"))?;
-    Ok(())
 }
 
 /// A running live session: what to boot the game with, and the embedded
@@ -266,9 +269,9 @@ pub fn start(
     site: live_server::http::Site,
     default_name: &str,
 ) -> Result<Session> {
-    let embedded = match &opts.server {
-        Some(_) => None,
-        None => {
+    let embedded = match opts.local {
+        false => None,
+        true => {
             let listen = opts
                 .listen
                 .unwrap_or_else(|| "127.0.0.1:0".parse().expect("an address"));
@@ -280,10 +283,11 @@ pub fn start(
             )?)
         }
     };
-    let url = embedded.as_ref().map_or_else(
-        || opts.server.clone().unwrap_or_default(),
-        |e| e.url.clone(),
-    );
+    let url = match (&embedded, &opts.server) {
+        (Some(e), _) => e.url.clone(),
+        (None, Some(url)) => url.clone(),
+        (None, None) => bail!("no Live server: --live-local or a --live-server URL"),
+    };
     let client = Client::at(&url)?;
     let (account, created) = bootstrap(
         &client,
@@ -504,6 +508,14 @@ mod tests {
                 ..LiveOpts::default()
             }
         );
+        assert_eq!(
+            parse(&["--live-local"]).unwrap(),
+            LiveOpts {
+                enabled: true,
+                local: true,
+                ..LiveOpts::default()
+            }
+        );
         let o = parse(&[
             "--live-server",
             "https://h.example",
@@ -513,22 +525,24 @@ mod tests {
         .unwrap();
         assert!(
             o.enabled
+                && !o.local
                 && o.server.as_deref() == Some("https://h.example")
                 && o.gamertag.as_deref() == Some("Sneaky Pete")
         );
-        assert_eq!(
-            parse(&["--live-listen", "127.0.0.1:9000"]).unwrap().listen,
-            Some("127.0.0.1:9000".parse().unwrap())
-        );
-        // A gamertag is for whichever service is played on, the default too.
-        assert_eq!(
-            parse(&["--gamertag", "Pete"]).unwrap().gamertag.as_deref(),
-            Some("Pete")
+        let o = parse(&["--live-listen", "127.0.0.1:9000"]).unwrap();
+        assert!(o.local, "--live-listen is the embedded server's");
+        assert_eq!(o.listen, Some("127.0.0.1:9000".parse().unwrap()));
+        assert!(parse(&["--live-local", "--live-listen", "0.0.0.0:8074"]).is_ok());
+        assert!(parse(&["--live", "--gamertag", "Pete"]).is_ok());
+        assert!(
+            parse(&["--gamertag", "Pete"]).is_err(),
+            "no Live flag is offline: a gamertag has nothing to sign in to"
         );
         assert!(parse(&["--offline", "--gamertag", "Pete"]).is_err());
         assert!(parse(&["--offline"]).unwrap().offline);
         assert!(parse(&["--no-live"]).unwrap().offline);
         assert!(parse(&["--offline", "--live"]).is_err());
+        assert!(parse(&["--offline", "--live-local"]).is_err());
         assert!(parse(&["--no-live", "--live-server", "https://h.example"]).is_err());
         assert!(
             parse(&["--live", "--gamertag", "9lives"]).is_err(),
@@ -544,149 +558,74 @@ mod tests {
         );
     }
 
-    /// A one-thread HTTP server answering every request with `status` and
-    /// `body`, standing in for a Live service's discovery document. Its
-    /// URL, and the paths it was asked for.
-    fn fake_service(
-        status: u16,
-        body: &'static str,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        use std::io::{BufRead, BufReader, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let log = std::sync::Arc::clone(&asked);
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                let _ = reader.read_line(&mut line);
-                log.lock()
-                    .unwrap()
-                    .push(line.split_whitespace().nth(1).unwrap_or("").to_string());
-                // The rest of the request head.
-                loop {
-                    let mut h = String::new();
-                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
-                        break;
-                    }
-                }
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-            }
-        });
-        (url, asked)
-    }
-
-    const DISCOVERY: &str =
-        r#"{"id":"live.test","api":"/v1","keys":[],"software":"test","federation":false}"#;
-
-    fn quick(url: &str) -> Result<()> {
-        probe(url, Duration::from_secs(2))
-    }
-
-    /// A URL nothing listens on.
-    fn closed_url() -> String {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        format!("http://{}", l.local_addr().unwrap())
-    }
-
     #[test]
-    fn the_default_service_is_one_constant() {
-        assert_eq!(DEFAULT_LIVE_SERVER, "https://live.forbes.red");
-        assert!(DEFAULT_PROBE_TIMEOUT <= Duration::from_secs(5));
+    fn the_embedded_server_and_another_do_not_mix() {
+        let e = parse(&["--live-local", "--live-server", "https://h.example"]).unwrap_err();
+        assert!(format!("{e}").contains("pick one"), "{e}");
+        let e = parse(&["--live-server", "https://h.example", "--live-local"]).unwrap_err();
+        assert!(format!("{e}").contains("pick one"), "{e}");
+        // --live with --live-local is just the embedded server.
+        let o = parse(&["--live", "--live-local"]).unwrap();
+        assert_eq!(choose(&o, None, DEFAULT_LIVE_SERVER), Choice::Local);
     }
 
+    /// Every flag combination, and what it plays on: nothing is contacted
+    /// to decide (a URL nothing listens on would do as the default).
     #[test]
-    fn with_no_flags_the_default_service_is_tried() {
-        let (url, asked) = fake_service(200, DISCOVERY);
-        let none = LiveOpts::default();
-        assert_eq!(
-            choose(&none, None, &url, &quick),
-            Choice::Server {
-                url: url.clone(),
-                from: "default"
-            }
-        );
-        assert_eq!(*asked.lock().unwrap(), ["/.well-known/h2live.json"]);
-        // A trailing slash on the default is not doubled.
-        assert!(matches!(
-            choose(&none, None, &format!("{url}/"), &quick),
-            Choice::Server { .. }
-        ));
-    }
-
-    #[test]
-    fn an_unreachable_or_wrong_default_plays_offline_with_a_line() {
-        let none = LiveOpts::default();
-        let down = closed_url();
-        let Choice::Offline { why: Some(why) } = choose(&none, None, &down, &quick) else {
-            panic!("offline")
+    fn the_flag_matrix() {
+        let server = |url: &str, from| Choice::Server {
+            url: url.into(),
+            from,
         };
-        assert!(why.starts_with(&format!("live: {down} did not answer")), "{why}");
-        assert!(why.contains("playing offline"), "{why}");
-        // Something answers, but it is not a Live service.
-        let (html, _) = fake_service(200, "<html></html>");
-        assert!(matches!(
-            choose(&none, None, &html, &quick),
-            Choice::Offline { why: Some(_) }
-        ));
-        let (broken, _) = fake_service(500, "{}");
-        assert!(matches!(
-            choose(&none, None, &broken, &quick),
-            Choice::Offline { why: Some(_) }
-        ));
-    }
-
-    #[test]
-    fn flags_and_the_environment_decide_first() {
-        let (url, asked) = fake_service(200, DISCOVERY);
-        let never = |u: &str| -> Result<()> { panic!("probed {u}") };
-        // --offline: nothing is tried, nothing is said.
-        let offline = parse(&["--offline"]).unwrap();
+        let offline = Choice::Offline { why: None };
+        let default = "https://default.example";
+        let pick = |args: &[&str], env: Option<&str>| choose(&parse(args).unwrap(), env, default);
+        // The CLI is offline unless asked, whatever $H2_LIVE_SERVER says.
+        assert_eq!(pick(&[], None), offline);
+        assert_eq!(pick(&[], Some("https://env.example")), offline);
+        assert_eq!(pick(&["--offline"], None), offline);
+        assert_eq!(pick(&["--offline"], Some("https://env.example")), offline);
+        // --live: the default service, or the variable's.
+        assert_eq!(pick(&["--live"], None), server(default, "--live"));
         assert_eq!(
-            choose(&offline, Some(url.clone()), &url, &never),
-            Choice::Offline { why: None }
+            pick(&["--live"], Some("https://env.example/")),
+            server("https://env.example", "H2_LIVE_SERVER")
         );
-        // --live and --live-server are as before.
-        for flags in [&["--live"][..], &["--live-server", "https://h.example"]] {
-            assert_eq!(
-                choose(&parse(flags).unwrap(), Some(url.clone()), &url, &never),
-                Choice::Flags
-            );
-        }
-        // H2_LIVE_SERVER replaces the default...
-        let none = LiveOpts::default();
-        let down = closed_url();
-        assert_eq!(
-            choose(&none, Some(format!("{url}/")), &down, &quick),
-            Choice::Server {
-                url: url.clone(),
-                from: "H2_LIVE_SERVER"
-            }
-        );
-        assert_eq!(asked.lock().unwrap().len(), 1);
-        // ...and falls back the same way, or says off.
-        assert!(matches!(
-            choose(&none, Some(down.clone()), &url, &quick),
-            Choice::Offline { why: Some(_) }
-        ));
+        assert_eq!(pick(&["--live"], Some(" ")), server(default, "--live"));
         for off in ["off", "none", "0", "OFF"] {
-            let Choice::Offline { why: Some(why) } = choose(&none, Some(off.into()), &url, &never)
-            else {
+            let Choice::Offline { why: Some(why) } = pick(&["--live"], Some(off)) else {
                 panic!("{off}")
             };
             assert!(why.contains("H2_LIVE_SERVER"), "{why}");
         }
-        // Empty is unset.
-        assert!(matches!(
-            choose(&none, Some(" ".into()), &url, &quick),
-            Choice::Server { from: "default", .. }
-        ));
+        // --live-server: that one; the flag wins over the variable.
+        for env in [None, Some("https://env.example"), Some("off")] {
+            assert_eq!(
+                pick(&["--live-server", "https://h.example/"], env),
+                server("https://h.example", "--live-server")
+            );
+            assert_eq!(
+                pick(&["--live", "--live-server", "https://h.example"], env),
+                server("https://h.example", "--live-server")
+            );
+        }
+        // --live-local and what implies it: the embedded server.
+        for args in [
+            &["--live-local"][..],
+            &["--live-listen", "127.0.0.1:9000"],
+            &["--live-tunnel"],
+            &["--tunnel"],
+            &["--live-tunnel-name", "h2"],
+            &["--live-local", "--live-tunnel"],
+        ] {
+            assert_eq!(pick(args, Some("off")), Choice::Local, "{args:?}");
+        }
+        // The real default is the shared constant.
+        assert_eq!(DEFAULT_LIVE_SERVER, "https://live.forbes.red");
+        assert_eq!(
+            choose(&parse(&["--live"]).unwrap(), None, DEFAULT_LIVE_SERVER),
+            server("https://live.forbes.red", "--live")
+        );
     }
 
     #[test]
@@ -695,6 +634,7 @@ mod tests {
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             ..LiveOpts::default()
         };
         let session = start(
@@ -769,6 +709,7 @@ mod tests {
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             ..LiveOpts::default()
         };
         let session = start(
@@ -818,10 +759,10 @@ mod tests {
 
     #[test]
     fn tunnel_flags() {
-        let o = parse(&["--live", "--tunnel"]).unwrap();
+        let o = parse(&["--live-local", "--tunnel"]).unwrap();
         assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
         let o = parse(&[
-            "--live",
+            "--live-local",
             "--tunnel-name",
             "h2",
             "--hostname",
@@ -832,15 +773,15 @@ mod tests {
             o.tunnel_mode().unwrap().unwrap().fixed_url().as_deref(),
             Some("https://live.example.net")
         );
-        assert!(parse(&["--tunnel"]).is_err(), "needs --live");
+        assert!(parse(&["--tunnel"]).unwrap().local, "implies --live-local");
         assert!(
             parse(&["--live-server", "https://h.example", "--tunnel"]).is_err(),
             "only the embedded server is tunnelled"
         );
-        assert!(parse(&["--live", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
+        assert!(parse(&["--live-local", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
         // --tunnel is --live-tunnel's alias, so a name makes it a named one.
         assert_eq!(
-            parse(&["--live", "--tunnel", "--tunnel-name", "h2"])
+            parse(&["--live-local", "--tunnel", "--tunnel-name", "h2"])
                 .unwrap()
                 .tunnel_mode()
                 .unwrap(),
@@ -849,14 +790,14 @@ mod tests {
                 hostname: None
             })
         );
-        assert!(parse(&["--live", "--hostname", "a.example"]).is_err());
+        assert!(parse(&["--live-local", "--hostname", "a.example"]).is_err());
     }
 
     #[test]
     fn live_tunnel_flags() {
-        // --live-tunnel is --live too.
+        // --live-tunnel is --live-local too.
         let o = parse(&["--live-tunnel"]).unwrap();
-        assert!(o.enabled && o.tunnel && !o.no_tunnel_setup);
+        assert!(o.enabled && o.local && o.tunnel && !o.no_tunnel_setup);
         assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
 
         let named = crate::tunnel::Mode::Named {
@@ -878,7 +819,7 @@ mod tests {
         );
         // The old names say the same.
         let old = parse(&[
-            "--live",
+            "--live-local",
             "--tunnel",
             "--tunnel-name",
             "h2play",
@@ -942,11 +883,11 @@ mod tests {
             "only the embedded server is tunnelled"
         );
         assert!(
-            parse(&["--live-tunnel-name", "h2play"]).is_err(),
-            "needs --live"
+            parse(&["--live-tunnel-name", "h2play"]).unwrap().local,
+            "a tunnel name implies --live-local"
         );
         assert!(
-            parse(&["--live", "--no-tunnel-setup"]).is_err(),
+            parse(&["--live-local", "--no-tunnel-setup"]).is_err(),
             "no tunnel to set up"
         );
         assert!(parse(&["--live-tunnel-url"]).is_err(), "needs a value");
@@ -979,6 +920,7 @@ mod tests {
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             tunnel: true,
             cloudflared: Some(fake_cloudflared(&dir)),
             ..LiveOpts::default()
@@ -1143,6 +1085,7 @@ mod tests {
         let embedded = start(
             &LiveOpts {
                 enabled: true,
+                local: true,
                 ..LiveOpts::default()
             },
             live_server::MEMORY_DB,

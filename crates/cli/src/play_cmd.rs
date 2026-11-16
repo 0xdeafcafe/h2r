@@ -19,9 +19,9 @@ const USAGE: &str = "usage:
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
-          [--live | --live-server URL | --offline] [--live-listen ADDR] [--gamertag NAME]
-          [--live-tunnel [--live-tunnel-name NAME [--live-tunnel-url https://HOST]]
-           [--no-tunnel-setup]]
+          [--live | --live-server URL | --live-local | --offline] [--gamertag NAME]
+          [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
+           [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -61,20 +61,22 @@ with the default variant. A name the disc lacks lists them (docs/runtime/level-b
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
-With no Live flag it signs in to https://live.forbes.red when that answers within
-3s, else plays offline as before; --offline (or --no-live) skips that, and
-$H2_LIVE_SERVER names another service (off: offline). Signed in, the account's
-saves (profiles, variants, campaign saves, profile settings) are merged into the
-data root before the game starts and uploaded as it writes them; H2_CLOUD_SAVES=0
-turns that off (docs/live/live-cloud-saves.md).
---live signs the game in to Xbox Live (docs/live/live.md): it starts a service in
-the process (Postgres from $H2_LIVE_DB or postgres://localhost/h2live, made if
-missing; else a log in the live data directory's server/log, so accounts,
-friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
---live-listen ADDR, serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
-running service instead. The account is --gamertag NAME, or one named after
-your user; either is made on the server and kept in accounts.json if needed.
---live-tunnel (implies --live; --tunnel with --live is the same) publishes
+With no Live flag it plays offline and contacts nothing (--offline or
+--no-live says so explicitly). --live signs the game in to Xbox Live at
+https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
+--live-server URL signs in to that service instead (docs/live/live.md).
+The account is --gamertag NAME, or one named after your user; either is
+made on the server and kept in accounts.json if needed. Signed in, the
+account's saves (profiles, variants, campaign saves, profile settings) are
+merged into the data root before the game starts and uploaded as it writes
+them; H2_CLOUD_SAVES=0 turns that off (docs/live/live-cloud-saves.md).
+--live-local runs the service in the process instead (Postgres from
+$H2_LIVE_DB or postgres://localhost/h2live, made if missing; else a log in
+the live data directory's server/log, so accounts, friends, games and the
+MOTD are kept) on 127.0.0.1 and a free port, or --live-listen ADDR (which
+implies --live-local), serving the web app from web/dist ($H2_LIVE_WEB). It
+does not go with --live-server.
+--live-tunnel (implies --live-local; --tunnel is the same) publishes
 the embedded server through a cloudflared quick tunnel so friends can join with
 --live-server <its URL>. With --live-tunnel-name NAME --live-tunnel-url
 https://HOST (or --tunnel-name NAME --hostname HOST) it runs named tunnel NAME
@@ -672,8 +674,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
-    // With no Live flag, the default service if it answers, else offline
-    // as before (docs/live/live.md "Playing on Live").
+    // With no Live flag, offline (docs/live/live.md "Playing on Live").
     let session = start_session(&mut live, &opts.disc)?;
     // Signed in: the account's saves are merged into U: now, before the
     // game reads them, and pushed as the game writes
@@ -792,51 +793,41 @@ fn level_choice(
     Ok(Some((level.trim().to_string(), difficulty)))
 }
 
-/// The Live session to play in, if any: as the flags say, else the
-/// default service (or `$H2_LIVE_SERVER`) when it answers. A service no
-/// flag named that cannot be signed in to is not an error: the game is
-/// played offline, with a line saying why.
+/// The Live session to play in, if any: none without a Live flag
+/// (nothing is contacted), else the one the flags and `$H2_LIVE_SERVER`
+/// name ([`crate::play_live::choose`]). Asked for and not signed in to is
+/// an error.
 fn start_session(
     live: &mut crate::play_live::LiveOpts,
     disc: &std::path::Path,
 ) -> Result<Option<crate::play_live::Session>> {
-    use crate::play_live::{
-        Choice, DEFAULT_LIVE_SERVER, DEFAULT_PROBE_TIMEOUT, choose, probe,
-    };
+    use crate::play_live::{Choice, DEFAULT_LIVE_SERVER, choose};
     let env = std::env::var("H2_LIVE_SERVER").ok();
-    match choose(live, env, DEFAULT_LIVE_SERVER, &|url| {
-        probe(url, DEFAULT_PROBE_TIMEOUT)
-    }) {
+    match choose(live, env.as_deref(), DEFAULT_LIVE_SERVER) {
         Choice::Offline { why } => {
             if let Some(why) = why {
                 eprintln!("{why}");
             }
             Ok(None)
         }
-        Choice::Flags => start_live(live, disc).map(Some),
+        Choice::Local => start_live(live, disc).map(Some),
         Choice::Server { url, from } => {
             let note = match from {
-                "default" => " (the default; --offline plays without Live)",
-                _ => " (H2_LIVE_SERVER)",
+                "--live" => " (the default service; --live-server URL names another)",
+                "H2_LIVE_SERVER" => " (H2_LIVE_SERVER)",
+                _ => "",
             };
             eprintln!("live: signing in to {url}{note}");
-            live.enabled = true;
             live.server = Some(url.clone());
-            match start_live(live, disc) {
-                Ok(session) => Ok(Some(session)),
-                Err(e) => {
-                    eprintln!("live: could not sign in to {url} ({e:#}); playing offline");
-                    live.enabled = false;
-                    live.server = None;
-                    Ok(None)
-                }
-            }
+            start_live(live, disc).map(Some).with_context(|| {
+                format!("signing in to {url}; without a Live flag h2 play plays offline")
+            })
         }
     }
 }
 
-/// Starts `--live`: the server and account, with a line saying where the
-/// web app is.
+/// Starts the session `live` names: the embedded server (`--live-local`)
+/// or another, and the account, with a line saying where the web app is.
 fn start_live(
     live: &crate::play_live::LiveOpts,
     disc: &std::path::Path,
@@ -849,7 +840,7 @@ fn start_live(
     // Build the web app first if it is missing or older than its sources
     // (H2_LIVE_WEB points at a build of your own and skips this). Only the
     // embedded server serves it.
-    if live.server.is_none() && std::env::var_os("H2_LIVE_WEB").is_none() {
+    if live.local && std::env::var_os("H2_LIVE_WEB").is_none() {
         let src = crate::web_build::source_dir();
         if src.join("package.json").is_file() {
             let bun = crate::web_build::find_bun();
@@ -872,8 +863,7 @@ fn start_live(
     let has_web = web.is_some();
     // Art for the embedded server, from this disc (extracted once).
     let game_art = live
-        .server
-        .is_none()
+        .local
         .then(|| {
             crate::play_live::game_art(disc, &crate::live_cmd::game_art_dir(&places.server_data))
         })
