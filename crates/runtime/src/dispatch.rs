@@ -189,6 +189,16 @@ impl Dispatch {
             .map(|o| o.enabled = enabled)
             .is_some()
     }
+    /// The enabled override at `addr` as a handler another override can
+    /// call, so a second hook on a function can run the first instead of
+    /// displacing it (`None` when there is none). Invoke it with `addr` as
+    /// the selector, as the dispatcher would.
+    pub fn override_handler(&self, addr: u32) -> Option<crate::handler::OriginalHandler> {
+        self.overrides
+            .get(&addr)
+            .filter(|o| o.enabled)
+            .map(|o| crate::handler::OriginalHandler(o.handler.clone()))
+    }
     pub fn override_name(&self, addr: u32) -> Option<&str> {
         self.overrides.get(&addr).map(|o| o.name.as_str())
     }

@@ -30,6 +30,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
+use runtime::dispatch::Dispatch;
+use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
@@ -570,39 +572,64 @@ pub fn install(rt: &runtime::Runtime, req: Option<Request>, watch: bool) -> Resu
             });
         }
         if let Some(o) = activate {
-            d.register_override(SHADOW, "level-boot:activate-original", move |cpu, ctx, _| {
-                Ok(o.invoke(cpu, ctx, GAME_ACTIVATE))
-            });
-            d.register_override(GAME_ACTIVATE, "level-boot:activate", move |cpu, ctx, _| {
-                let req = req.clone();
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                let ret_pc = mem.u32(cpu.esp)?;
-                cpu.esp = cpu.esp.wrapping_add(4);
-                ctx.call_guest(cpu, &mut mem, SHADOW, move |cpu, ctx| {
-                    if cpu.eax & 0xff != 0 && loaded_at().is_none() {
-                        let mem = ctx.runtime().memory();
-                        match active_game(&*mem) {
-                            Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
-                                let n = crate::d3d_diag::presents();
-                                LOADED_AT.store(n, Ordering::Relaxed);
-                                eprintln!("level boot: {} loaded at present {n}", short(&path));
-                            }
-                            Some((mode, path)) if req.is_some() => {
-                                eprintln!(
-                                    "level boot: {} activated (mode {mode}), not the requested level",
-                                    short(&path)
-                                )
-                            }
-                            _ => {}
-                        }
-                    }
-                    Ok(TransferAbi::ret(ret_pc))
-                })
-            });
+            install_activate(d, GAME_ACTIVATE, SHADOW, o, req);
         }
     });
     Ok(())
+}
+
+/// The activation mark on `at` (the game-activate function): whatever ran
+/// there before, then the check for the wanted level. Live telemetry
+/// observes the same function and installs first; a plain override here
+/// would displace it, so when `at` already has an override, `shadow` runs
+/// that override (which runs the generated original) instead of the
+/// original itself. Returns the name of the override chained onto.
+pub(crate) fn install_activate(
+    d: &mut Dispatch,
+    at: u32,
+    shadow: u32,
+    original: Arc<OriginalHandler>,
+    req: Option<Arc<Request>>,
+) -> Option<String> {
+    let below_name = d.override_name(at).map(str::to_owned);
+    let below = match d.override_handler(at) {
+        Some(h) => Arc::new(h),
+        None => original,
+    };
+    if let Some(n) = &below_name {
+        eprintln!("level boot: activation mark chained after {n:?} on {at:#x}");
+    }
+    d.register_override(shadow, "level-boot:activate-original", move |cpu, ctx, _| {
+        Ok(below.invoke(cpu, ctx, at))
+    });
+    d.register_override(at, "level-boot:activate", move |cpu, ctx, _| {
+        let req = req.clone();
+        let rt = Arc::clone(ctx.runtime());
+        let mut mem = rt.memory();
+        let ret_pc = mem.u32(cpu.esp)?;
+        cpu.esp = cpu.esp.wrapping_add(4);
+        ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
+            if cpu.eax & 0xff != 0 && loaded_at().is_none() {
+                let mem = ctx.runtime().memory();
+                match active_game(&*mem) {
+                    Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
+                        let n = crate::d3d_diag::presents();
+                        LOADED_AT.store(n, Ordering::Relaxed);
+                        eprintln!("level boot: {} loaded at present {n}", short(&path));
+                    }
+                    Some((mode, path)) if req.is_some() => {
+                        eprintln!(
+                            "level boot: {} activated (mode {mode}), not the requested level",
+                            short(&path)
+                        )
+                    }
+                    _ => {}
+                }
+            }
+            Ok(TransferAbi::ret(ret_pc))
+        })
+    });
+    below_name
 }
 
 /// In place of the first `request_mainmenu(reason)`: run [`steps`] on the
@@ -1081,5 +1108,60 @@ mod tests {
         let e = from_vars(disc, Some("03a_oldmombasa"), Some("hard")).unwrap_err().to_string();
         assert!(e.contains("unknown difficulty"), "{e}");
         assert!(from_vars(disc, Some("03a_oldmombasa"), None).is_err(), "no disc");
+    }
+
+    /// Live telemetry observes game activation and installs first; the
+    /// level boot's mark on the same function must run it, not displace it.
+    /// Synthetic: the fixture module's leaf (`eax = 41; ret`) stands in for
+    /// the activation function.
+    #[test]
+    fn the_activation_mark_chains_after_an_earlier_observer() {
+        use runtime::{Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
+        use std::sync::atomic::AtomicUsize;
+        const LEAF: u32 = 0x40_2000;
+        const SHADOW_AT: u32 = 0x40_5000;
+        const FRAME: u32 = 0x60_0e00;
+
+        let mut d = Dispatch::default();
+        unsafe {
+            d.register_generated_module(
+                &runtime_test_probe::h2gen_fixture_module,
+                runtime_test_probe::h2gen_fixture_module_abi_version,
+            )
+            .unwrap();
+        }
+        let seen = Arc::new(AtomicUsize::new(0));
+        assert!(d.override_handler(LEAF).is_none(), "nothing overrides the leaf yet");
+        let mut g = Guest::new();
+        g.map_zeroed(0x60_0000, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(0x40_0000, 0x5000, Permissions::RX).unwrap();
+        g.map_zeroed(SHADOW_AT, 0x1000, Permissions::RX).unwrap();
+        let rt = Runtime::new(g, d);
+        let original = Arc::new(rt.resolve_original(LEAF).expect("the fixture leaf"));
+        // An observer as telemetry installs it: count, then the original.
+        let observer = Arc::clone(&seen);
+        let o = Arc::clone(&original);
+        let chained = rt.edit_dispatch(|d| {
+            d.register_override(LEAF, "live telemetry observer", move |cpu, ctx, sel| {
+                observer.fetch_add(1, Ordering::SeqCst);
+                Ok(o.invoke(cpu, ctx, sel))
+            });
+            install_activate(d, LEAF, SHADOW_AT, Arc::clone(&original), None)
+        });
+        assert_eq!(chained.as_deref(), Some("live telemetry observer"));
+        rt.edit_dispatch(|d| assert_eq!(d.override_name(LEAF), Some("level-boot:activate")));
+
+        rt.memory().set_u32(FRAME, HARNESS_EXIT).unwrap();
+        let mut cpu = runtime::CpuAbi { esp: FRAME, ..Default::default() };
+        let mut ctx = runtime::ExecCtx::new(rt.clone(), 1);
+        let t = Runner::default().run(&mut cpu, &mut ctx, LEAF);
+        assert!(matches!(ctx.event(t.event_id), Some(Event::HarnessExit)), "{:?}", ctx.event(t.event_id));
+        assert_eq!(cpu.eax, 41, "the original ran and its result came back");
+        assert_eq!(cpu.esp, FRAME + 4);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the earlier observer still runs");
+
+        // With nothing there first, the mark runs the original directly.
+        let mut d = Dispatch::default();
+        assert_eq!(install_activate(&mut d, LEAF, SHADOW_AT, Arc::clone(&original), None), None);
     }
 }
