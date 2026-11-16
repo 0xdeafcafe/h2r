@@ -26,7 +26,7 @@
 //!   [`KeyboardMouse::rumble`]. Set it before the manager's first `sync`: a
 //!   pad's capabilities are fixed when it is inserted.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -56,8 +56,49 @@ pub struct KeyboardMouse {
     active: crate::active::ActiveDevice,
 }
 
+/// Committed host edits; game-specific validation stays on the guest thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextAction {
+    Insert(String),
+    Backspace,
+    Accept,
+    Cancel,
+}
+const MAX_TEXT_EVENTS: usize = 64;
+const MAX_COMMIT: usize = 150;
+#[derive(Default)]
+struct TextState {
+    target: Option<u64>,
+    events: VecDeque<TextAction>,
+    held: HashSet<String>,
+    blocked: HashSet<String>,
+}
+impl TextState {
+    fn insert(&mut self, action: TextAction) {
+        if self.events.len() >= MAX_TEXT_EVENTS {
+            return;
+        }
+        let action = match action {
+            TextAction::Insert(s) => {
+                // Xbox UI text is BMP, not surrogate pairs. Controls are not edits.
+                let s: String = s
+                    .chars()
+                    .filter(|c| !c.is_control() && u32::from(*c) <= 0xffff)
+                    .take(MAX_COMMIT)
+                    .collect();
+                if s.is_empty() {
+                    return;
+                }
+                TextAction::Insert(s)
+            }
+            other => other,
+        };
+        self.events.push_back(action);
+    }
+}
 struct Inner {
     bindings: Bindings,
+    text: TextState,
     activity: u64,
     keys: HashSet<String>,
     mouse: HashSet<MouseButton>,
@@ -76,6 +117,9 @@ struct Inner {
 impl Inner {
     fn release_all(&mut self) {
         self.keys.clear();
+        self.text.events.clear();
+        self.text.held.clear();
+        self.text.blocked.clear();
         self.mouse.clear();
         self.drop_motion();
     }
@@ -104,6 +148,7 @@ impl KeyboardMouse {
         KeyboardMouse {
             inner: Arc::new(Mutex::new(Inner {
                 bindings,
+                text: TextState::default(),
                 activity: 0,
                 keys: HashSet::new(),
                 mouse: HashSet::new(),
@@ -158,6 +203,76 @@ impl KeyboardMouse {
         self.lock().rumble
     }
 
+    /// Publish the currently focused guest text field. A changed target drops
+    /// stale edits and blocks held keys until release (including the opener).
+    pub fn set_text_target(&self, target: Option<u64>) {
+        let mut i = self.lock();
+        if i.text.target == target {
+            return;
+        }
+        let mut keys: Vec<_> = i.keys.drain().collect();
+        keys.extend(i.text.held.drain());
+        i.text.blocked.extend(keys);
+        i.text.events.clear();
+        i.text.target = target;
+    }
+    pub fn text_active(&self) -> bool {
+        self.lock().text.target.is_some()
+    }
+    pub fn take_text(&self, target: u64) -> Vec<TextAction> {
+        let mut i = self.lock();
+        if i.text.target != Some(target) {
+            return Vec::new();
+        }
+        i.text.events.drain(..).collect()
+    }
+    /// Route one host key before pad mapping. Arrows and other non-text keys
+    /// pass through. Releases and repeats of captured keys never leak into pad.
+    pub fn text_key(
+        &self,
+        name: Option<&str>,
+        down: bool,
+        candidate: bool,
+        action: Option<TextAction>,
+    ) -> bool {
+        let key = name.and_then(canonical_key);
+        let mut i = self.lock();
+        if !down {
+            return key.is_some_and(|key| {
+                let captured = i.text.held.remove(&key) | i.text.blocked.remove(&key);
+                i.keys.remove(&key);
+                captured
+            });
+        }
+        if key.as_ref().is_some_and(|k| i.text.blocked.contains(k)) {
+            return true;
+        }
+        if i.text.target.is_none() || (!candidate && action.is_none()) {
+            return false;
+        }
+        if let Some(key) = key {
+            i.keys.remove(&key);
+            i.text.held.insert(key);
+        }
+        if let Some(action) = action {
+            i.text.insert(action);
+        }
+        i.activity = i.activity.wrapping_add(1);
+        self.active.set(crate::active::DeviceKind::Keyboard);
+        true
+    }
+    /// OS/IME committed text, never preedit/composition text.
+    pub fn commit_text(&self, text: &str) -> bool {
+        let mut i = self.lock();
+        if i.text.target.is_none() {
+            return false;
+        }
+        i.text.insert(TextAction::Insert(text.into()));
+        i.activity = i.activity.wrapping_add(1);
+        self.active.set(crate::active::DeviceKind::Keyboard);
+        true
+    }
+
     /// Key pressed. Returns false if the name is not a known key.
     pub fn key_down(&self, name: &str) -> bool {
         let Some(key) = canonical_key(name) else {
@@ -178,7 +293,12 @@ impl KeyboardMouse {
 
     pub fn key_up(&self, name: &str) -> bool {
         canonical_key(name)
-            .map(|k| self.lock().keys.remove(&k))
+            .map(|k| {
+                let mut i = self.lock();
+                i.text.held.remove(&k);
+                i.text.blocked.remove(&k);
+                i.keys.remove(&k)
+            })
             .is_some()
     }
 
@@ -448,5 +568,90 @@ mod tests {
         let k = KeyboardMouse::new(Bindings::default());
         assert!(!k.key_down("Nonsense"));
         assert!(k.key_down("KeyQ"));
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    #[test]
+    fn text_capture_drops_stale_edits_and_holds_keys_out_of_pad_until_release() {
+        let kb = KeyboardMouse::new(Bindings::default());
+        kb.key_down("Space");
+        kb.set_text_target(Some(1));
+        assert!(kb.text_key(
+            Some("Space"),
+            true,
+            true,
+            Some(TextAction::Insert(" ".into()))
+        ));
+        assert!(kb.take_text(1).is_empty(), "opening held key cannot type");
+        kb.text_key(Some("Space"), false, true, None);
+        assert!(kb.text_key(
+            Some("KeyW"),
+            true,
+            true,
+            Some(TextAction::Insert("É".into()))
+        ));
+        assert!(kb.text_key(
+            Some("Space"),
+            true,
+            true,
+            Some(TextAction::Insert(" ".into()))
+        ));
+        assert_eq!(
+            kb.take_text(1),
+            vec![
+                TextAction::Insert("É".into()),
+                TextAction::Insert(" ".into())
+            ]
+        );
+        assert!(kb.lock().keys.is_empty());
+        kb.commit_text("stale");
+        kb.set_text_target(Some(2));
+        assert!(kb.take_text(1).is_empty());
+        assert!(kb.take_text(2).is_empty());
+        kb.set_text_target(None);
+        assert!(kb.text_key(
+            Some("KeyW"),
+            true,
+            true,
+            Some(TextAction::Insert("w".into()))
+        ));
+        assert!(
+            kb.lock().keys.is_empty(),
+            "repeat cannot turn into a pad after close"
+        );
+        kb.text_key(Some("KeyW"), false, true, None);
+        assert!(!kb.text_key(
+            Some("KeyW"),
+            true,
+            true,
+            Some(TextAction::Insert("w".into()))
+        ));
+        kb.key_down("KeyW");
+        assert!(kb.lock().keys.contains("w"));
+    }
+    #[test]
+    fn commits_are_bmp_printable_bounded_and_focus_loss_clears_pending_work() {
+        let kb = KeyboardMouse::new(Bindings::default());
+        assert!(!kb.commit_text("outside"));
+        kb.set_text_target(Some(7));
+        assert!(kb.commit_text("Å中😀\n\t"));
+        assert_eq!(kb.take_text(7), vec![TextAction::Insert("Å中".into())]);
+        kb.commit_text(&"x".repeat(300));
+        assert_eq!(
+            kb.take_text(7),
+            vec![TextAction::Insert("x".repeat(MAX_COMMIT))]
+        );
+        for _ in 0..1000 {
+            kb.commit_text("x");
+        }
+        assert_eq!(kb.take_text(7).len(), MAX_TEXT_EVENTS);
+        kb.commit_text("discard");
+        kb.release_all();
+        assert!(kb.take_text(7).is_empty());
+        assert!(kb.text_active());
     }
 }

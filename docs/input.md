@@ -428,3 +428,12 @@ manual polling, capabilities, rumble completion and disconnect/reconnect.
 The registered-runtime test also crosses the verified capabilities/state/
 feedback addresses. Input unit tests cover packet wrapping and timeline
 validation; app tests load both checked-in TOML examples without a GPU.
+
+
+## Host text in the game's virtual keyboard
+
+The boot screen hook temporarily routes committed host text to the focused
+virtual keyboard's native insert/delete/Done/Cancel handlers. Arrows retain pad
+navigation, and normal keyboard pad mapping resumes when the screen closes.
+Layouts, Shift/dead keys and IME commits use the platform text path. See
+[host-keyboard.md](host-keyboard.md) for the limits, retail trace and tests.
