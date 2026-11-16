@@ -928,3 +928,47 @@ fn retail_h2_mode_layouts() {
     assert!(markers > 0 && bad_markers == 0);
     assert!(inverse_ok * 100 >= nodes * 99, "inverse layout");
 }
+
+#[test]
+fn install_at_takes_an_existing_slot_and_keeps_its_datum() {
+    use map::FourCC;
+    use map::build::{Block, TagPayload};
+    let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
+    set.add_group(FourCC(*b"shad"), None, None);
+    let old = set
+        .add_tag(
+            FourCC(*b"shad"),
+            "invented\\old",
+            TagPayload::Built(Block::zeroed(8)),
+        )
+        .unwrap();
+    let slots = set.slots.len();
+    let mut root = Block::zeroed(0x10);
+    root.put_u32(0, 7).tag_id(4, crate::SELF_ID);
+    let c = Converted {
+        group: FourCC(*b"bitm"),
+        root,
+        raw: vec![(vec![1, 2, 3], 0x80)],
+    };
+    assert_eq!(
+        c.clone()
+            .install_at(&mut set, old, "invented\\new")
+            .unwrap(),
+        old
+    );
+    assert_eq!(set.slots.len(), slots, "no new slot");
+    assert_eq!(
+        set.slots[old.index()].name.as_deref(),
+        Some("invented\\new")
+    );
+    let tag = set.tag(old).unwrap();
+    assert_eq!(tag.group, FourCC(*b"bitm"));
+    let TagPayload::Built(b) = &tag.payload else {
+        panic!("built")
+    };
+    assert_eq!(b.bytes[0], 7);
+    assert!(matches!(
+        c.install_at(&mut set, TagId(0x1234_0099), "x"),
+        Err(Error::Invalid(_))
+    ));
+}
