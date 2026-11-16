@@ -21,6 +21,7 @@ pub mod dsound_glue;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
+pub mod health;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -753,6 +754,10 @@ pub fn run_hosted_with_live(
     });
     let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    // Halo 1's health model on Halo 1 maps (docs/game/health.md): no body
+    // regeneration, health packs, a health meter. Off (Halo 2's) until the
+    // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
+    let health_on = health::install(&mut features).context("installing the health model")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -856,6 +861,9 @@ pub fn run_hosted_with_live(
     }
     if skulls_custom_on {
         eprintln!("{}", skulls_custom::report(&plan, &installed));
+    }
+    if health_on {
+        eprintln!("{}", health::report(&plan, &installed));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
