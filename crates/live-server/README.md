@@ -64,7 +64,9 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../docs/live/live-api.md#friends)) |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
 | `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
-| `POST /v1/invites?days=` | operator only, `invites.write`; 201 `{invite}` |
+| `POST /v1/invites?days=&code=` | operator (`invites.write`), or an admin's signed `InviteCreated` (optionally `{event, code}`); 201 `{invite, custom, jti, exp, position}` |
+| `POST /v1/accounts/{gamertag}/recover` | `{request, code}`: add a new device key with a recovery code (src/recovery.rs) |
+| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own token: its recovery secret and current code; `POST` resets it |
 | `GET /v1/events?from=&cursor=&type=&exclude=&stream=&limit=` | the log, oldest first, `from` exclusive |
 | `POST /v1/events` | body: one signed event (compact JWS), bearer token `events.write` |
 | `GET /v1/stream?from=&types=&exclude=&stream=&games=` | WebSocket: replay, `caught_up`, live events and `frame`s |

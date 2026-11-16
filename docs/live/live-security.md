@@ -30,6 +30,50 @@ in Rust through `ed25519-dalek` and in browsers through WebCrypto).
 - Key rotation: `KeyAdded` and `KeyRevoked` events on the account stream;
   a key is valid for events appended between those two positions.
 
+### Recovery
+
+A key lives on one device. To use the account on another (a second game
+install, a browser) or after losing every device, the account has a
+**recovery code**: a TOTP (RFC 6238: HMAC-SHA1, 30 s steps, six digits,
+shown `123-456`), the same scheme authenticator apps use.
+
+- **The secret.** Made by the server at account creation, 160 random
+  bits. The server keeps it in the log, sealed (below): in `AccountCreated`
+  as `recovery`, and in a server-written `RecoverySet {sealed}` when it is
+  set up on an older account or reset. The creation reply carries it once,
+  with the current code and an `otpauth://` URI
+  (`RecoveryInfo {secret, otpauth, code, period, expires_at}`).
+- **Showing a code.** Any signed-in device of the account reads the secret
+  and current code with `GET /v1/accounts/by-xuid/{xuid}/recovery` and a
+  `recovery.read` token (the web dashboard's recovery screen, `h2 live
+  account code`, the game's account screen). Enrolling an authenticator
+  app (the secret as base32, or the URI as a QR code) means a code is at
+  hand with no device left. `POST` on the same path (`recovery.write`)
+  makes a new secret: set up on an account from before recovery, or reset
+  (the old one stops working at once).
+- **Recovering.** The new device makes a key and sends
+  `POST /v1/accounts/{gamertag}/recover` with
+  `{"request": <JWS>, "code": "123456"}`. The JWS (`typ: h2live-recover`)
+  is signed by the new key over `{gamertag, jwk, aud, iat, nonce}`, proving
+  it holds the key, for this server, recently. The code goes beside it, so
+  the logged proof holds no code. The server accepts the code for the
+  current step or one either side, each step once per account; appends a
+  server-signed `KeyAdded {kid, jwk, proof, via: "totp"}`; and answers
+  `{xuid, gamertag, id}`. No token and no invite: the code is the
+  credential.
+- **Guessing.** Wrong codes count per gamertag: after 5, the gamertag is
+  locked for a minute, doubling with every further wrong code up to a day
+  (429 with the time left); a right code clears it; a gamertag quiet for a
+  day starts over. Sign-up and recovery also share the server-wide
+  creation rate limit. With three codes valid at once, the first five
+  guesses succeed with odds of about 1 in 67,000; after that each guess
+  costs exponentially more time.
+- **Sealing.** Secrets are sealed with a key derived from the server key
+  (`SHA-256("h2live-recovery-seal-v1" 0x00 seed)`): a 16-byte nonce, the
+  secret XORed with `HMAC-SHA256(k, "enc" || nonce)`, and a 16-byte tag
+  `HMAC-SHA256(k, "tag" || nonce || ct)`. The log (Postgres or files) holds
+  only that. The server key never leaves the data directory.
+
 Public keys travel as JWK (`{"kty":"OKP","crv":"Ed25519","x":"..."}`) and
 are named by their RFC 7638 thumbprint (`kid`).
 
@@ -93,8 +137,8 @@ JWT themselves, the way AT Protocol service auth works.
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
-- **Account creation** is the one write without a token. The request carries
-  the new public key and is signed by it (proof of possession), with `aud`
+- **Account creation** and **recovery** (§1) are the writes without a
+  token. The creation request carries the new public key and is signed by it (proof of possession), with `aud`
   (the server id) and `iat` so it can't be replayed to another server. Servers can
   require an invite code (`--invite-only`).
 
@@ -197,3 +241,12 @@ Not built yet; the formats above are chosen so it can be.
 - A malicious server can drop or reorder events, or refuse to serve them. It
   cannot forge another user's events or rewrite one already signed, and
   the per-stream hash chain shows when something is missing.
+- Recovery is the server's to grant. It holds every account's TOTP secret
+  (sealed with a key derived from its own), so whoever has the server key,
+  or runs the server, can add a key to any account. That was already
+  true, since the server signs the `KeyAdded` of every new account, and a
+  log-only reader (a stolen database dump) still cannot: the secrets in it
+  are sealed. The trade is deliberate: a six-digit code a person can type
+  on a gamepad, checked online with a lockout, instead of a long secret
+  only the user holds. A recovery code also lets anyone who sees it add a
+  device within its 90-second window; it is used once, then refused.
