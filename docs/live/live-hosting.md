@@ -20,8 +20,9 @@ h2 play disc.iso --live-tunnel --live-tunnel-name h2play --live-tunnel-url https
 h2 play disc.iso --live-server https://<random>.trycloudflare.com
 ```
 
-On `h2 play`, `--live-tunnel` implies `--live`. The older spellings still
-work: `--live --tunnel`, `--tunnel-name NAME` for `--live-tunnel-name`,
+On `h2 play`, `--live-tunnel` implies `--live-local` (the embedded server;
+it does not go with `--live` or `--live-server`). The older spellings still
+work: `--tunnel`, `--tunnel-name NAME` for `--live-tunnel-name`,
 `--hostname HOST` for `--live-tunnel-url https://HOST`. The URL must be
 `https://HOST` with no port and no path beyond `/`.
 
@@ -453,7 +454,7 @@ The server is on the internet now. What protects it:
   `CF-Connecting-IP`, `CF-Ray`, `CF-Visitor` and `X-Forwarded-For` to
   every request it forwards, and a visitor cannot remove them. Local
   sign-in further needs a loopback `Host` (the tunnel sends its own host
-  name). The `h2 play --live --tunnel` sign-in link stays a loopback URL.
+  name). The `h2 play --live-tunnel` sign-in link stays a loopback URL.
 - **The client's address**, for code that needs it (the session endpoint's
   observed-source fallback, [live-matchmaking.md](live-matchmaking.md)
   §3.6): `PublicUrl::client_ip` reads `CF-Connecting-IP` only while a
@@ -499,11 +500,11 @@ UDP 3074-3080 reachable for internet play.
   without a host) goes straight to `run`; `tunnel list` JSON (deleted
   tunnels, `null`); `--live-tunnel-url` parsing; the origin certificate
   search.
-- `crates/cli/src/play_live.rs`: `h2 play --live --tunnel` with a fake
+- `crates/cli/src/play_live.rs`: `h2 play --live-tunnel` with a fake
   cloudflared: discovery shows the URL, the game and sign-in link stay on
   loopback, a tunnelled redeem is refused, cloudflared stops with the
   session. `--live-tunnel` flags and their aliases (`--live-tunnel`
-  implies `--live`); a named `--live-tunnel` session logs in, creates,
+  implies `--live-local`); a named `--live-tunnel` session logs in, creates,
   routes and then runs, and only runs with `--no-tunnel-setup`.
 - `crates/live-server/src/standalone.rs`: `h2-live-server`'s flags,
   including the command line `deploy/live/compose.yaml` runs (loopback,

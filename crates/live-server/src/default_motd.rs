@@ -18,7 +18,7 @@ pub const HEADER: &str = "Welcome back to Xbox Live for Halo 2.";
 pub const TIPS: &[&str] = &[
     "Did you know? Every game you play is on the stats site at /stats: carnage reports, medals and a map of where each kill happened.",
     "Did you know? `h2 live q` asks the service anything from a terminal: who is online, recent games, a player's record. Try `h2 live q --help`.",
-    "Did you know? The web dashboard shows who is online right now. Open the address `h2 play --live` printed when it started.",
+    "Did you know? The web dashboard shows who is online right now. Open the address `h2 play --live-local` printed when it started.",
     "Did you know? Friends live on this server too: `h2 live friend add <gamertag>` sends a request, and they accept it from their side.",
     "Did you know? An admin can change this message from the web dashboard. The new one shows the next time you sign in.",
     "Did you know? Playlists come from multiplayer_hopper.dat. Admins can rebuild it in the web admin's hopper editor.",

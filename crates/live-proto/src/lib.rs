@@ -659,7 +659,10 @@ mod tests {
         assert_eq!(ServerOverride::parse(None), ServerOverride::Unset);
         assert_eq!(ServerOverride::parse(Some("  ")), ServerOverride::Unset);
         for off in ["off", "OFF", "none", " 0 "] {
-            assert!(matches!(ServerOverride::parse(Some(off)), ServerOverride::Off(_)), "{off}");
+            assert!(
+                matches!(ServerOverride::parse(Some(off)), ServerOverride::Off(_)),
+                "{off}"
+            );
         }
         assert_eq!(
             ServerOverride::parse(Some(" https://live.example/ ")),

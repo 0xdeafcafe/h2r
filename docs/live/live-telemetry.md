@@ -236,7 +236,8 @@ chain, or signatures.
 
 ## Server ingest
 
-Starting `h2 play --live` enables telemetry automatically: boot reads the
+Starting `h2 play` with Live on (`--live`, `--live-server` or
+`--live-local`) enables telemetry automatically: boot reads the
 first account in the Live `accounts.json`, uses its private JWK, and uses the
 Live `server_url`. No telemetry-specific account flags or key environment
 variables are needed. Set `H2_TELEMETRY=0` to disable both Live and file

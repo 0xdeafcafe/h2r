@@ -334,8 +334,14 @@ mod tests {
                 .starts_with("Xbox Live isn't set up in h2recomp.\r\n")
         );
         let text = Notice::NotSetUp.text();
-        assert!(text.contains("\r\nh2 play --live  (live.forbes.red)\r\n"), "{text:?}");
-        assert!(text.contains("h2 play --live-local  (this machine)"), "{text:?}");
+        assert!(
+            text.contains("\r\nh2 play --live  (live.forbes.red)\r\n"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("h2 play --live-local  (this machine)"),
+            "{text:?}"
+        );
         assert!(
             text.contains(live_proto::DEFAULT_SERVER.trim_start_matches("https://")),
             "the notice names the default service"

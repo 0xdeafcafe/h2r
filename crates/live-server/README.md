@@ -19,7 +19,8 @@ h2 live account create "Sneaky Pete"            # key made and kept locally
 h2 live motd set "Welcome back" "Double XP this weekend" --header "Halo 2"
 h2 live serve --invite-only & h2 live invite create
 h2 live q games --live                          # JSON off a terminal
-h2 play disc.iso --live                         # an embedded server, signed in
+h2 play disc.iso --live-local                   # an embedded server, signed in
+h2 play disc.iso --live                         # signed in to live.forbes.red
 h2 live serve --tunnel                          # public via cloudflared (docs/live/live-hosting.md)
 ```
 
@@ -33,7 +34,7 @@ cloudflared beside it delivers the requests.
 `h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
 overrides) at `/`, falling back to `index.html` for client routes.
 `start_embedded` is the same server on a background runtime for `h2 play
---live`: Postgres if reachable (database created if missing), else the
+--live-local`: Postgres if reachable (database created if missing), else the
 file store (`filestore.rs`: an append-only `events.jsonl`, a `blobs/`
 directory and `checkpoints.json` under `<data>/log`, replayed into memory
 on open), else in-memory with a warning if that directory is held by

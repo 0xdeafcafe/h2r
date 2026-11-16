@@ -472,9 +472,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// The CLI's own accounts file beside the per-session file `h2 play --live`
-/// hands the game (`live/play-accounts.json` → `live/accounts.json`), so an
-/// account made in game is there next time. `None` for any other path.
+/// The CLI's own accounts file beside the per-session file `h2 play` hands
+/// the game with Live on (`live/play-accounts.json` →
+/// `live/accounts.json`), so an account made in game is there next time. `None` for any other path.
 pub fn shared_accounts_path(session_accounts: &Path) -> Option<PathBuf> {
     (session_accounts.file_name()? == "play-accounts.json")
         .then(|| session_accounts.with_file_name("accounts.json"))

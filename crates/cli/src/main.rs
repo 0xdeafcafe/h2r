@@ -70,8 +70,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (docs/game/high-framerate.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
-  play <disc> --live      play signed in to Xbox Live, on a service started in
-                          the process (or --live-server URL; docs/live/live.md)
+  play <disc> --live      play signed in to Xbox Live at live.forbes.red (or
+                          --live-server URL, or --live-local for a service in
+                          the process; offline without one; docs/live/live.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc

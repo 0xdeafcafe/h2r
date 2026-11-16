@@ -1,5 +1,5 @@
 //! `POST /v1/local/signin` through the router: the one-use, this-machine-only
-//! sign-in link `h2 play --live` prints (docs/live/live-admin.md §4).
+//! sign-in link `h2 play --live-local` prints (docs/live/live-admin.md §4).
 
 mod common;
 

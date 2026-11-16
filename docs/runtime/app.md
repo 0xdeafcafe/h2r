@@ -101,12 +101,11 @@ name lists the disc's levels before anything is built; `H2_LEVEL` and
 `H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--set
 KEY=VALUE` (any of our settings for this run, ahead of its variable and
 `<data>/settings.toml`, and its row locked; `h2 settings list` shows them,
-[settings-menu.md](../game/settings-menu.md) "Settings as a schema"), and Live: with
-no flag it signs in to the default service, `https://live.forbes.red`,
-when that answers within 3 s and plays offline otherwise; `--offline` (or
-`--no-live`) skips that, `$H2_LIVE_SERVER` names another service, and
-`--live`/`--live-server URL` work as before ([live.md](../live/live.md)
-"Playing on Live"). Signed in, the account's saves are merged into U:
+[settings-menu.md](../game/settings-menu.md) "Settings as a schema"), and Live: off
+with no flag (nothing is contacted); `--live` signs in to
+`https://live.forbes.red` (`$H2_LIVE_SERVER` names another, `off` keeps it
+offline), `--live-server URL` to that service, and `--live-local` runs one
+in the process ([live.md](../live/live.md) "Playing on Live"). Signed in, the account's saves are merged into U:
 before the game starts and pushed as it writes them
 ([live-cloud-saves.md](../live/live-cloud-saves.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a

@@ -67,7 +67,12 @@ pub fn decide(switch: &Switch, env: Option<&str>) -> Decision {
             why: format!("off ({FILE}: enabled = false)"),
         };
     }
-    match switch.server.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    match switch
+        .server
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(s) => Decision::On {
             server: s.trim_end_matches('/').to_string(),
             from: FILE,
@@ -156,7 +161,8 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("h2-live-platform-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("h2-live-platform-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -174,7 +180,10 @@ mod tests {
                 server_url: Some(live_proto::DEFAULT_SERVER.into()),
             }
         );
-        assert!(lines[0].starts_with("on, https://live.forbes.red (the default"), "{lines:?}");
+        assert!(
+            lines[0].starts_with("on, https://live.forbes.red (the default"),
+            "{lines:?}"
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 

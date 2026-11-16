@@ -1,5 +1,5 @@
 //! A durable event store in a directory, for the embedded server (`h2 play
-//! --live`) when there is no Postgres: the log survives restarts, so
+//! --live-local`) when there is no Postgres: the log survives restarts, so
 //! accounts, friends, published title files and games are kept.
 //!
 //! ```text

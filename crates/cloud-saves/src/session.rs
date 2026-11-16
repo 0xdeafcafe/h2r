@@ -63,7 +63,8 @@ pub fn start(
     settings: Option<Arc<dyn ProfileSettings>>,
     log: impl Fn(&str) + Send + Clone + 'static,
 ) -> Option<Cloud> {
-    let remote = match HttpRemote::new(&account.api, &account.server_id, account.xuid, account.key) {
+    let remote = match HttpRemote::new(&account.api, &account.server_id, account.xuid, account.key)
+    {
         Ok(r) => r,
         Err(e) => {
             log(&format!("off: {e}"));

@@ -120,7 +120,9 @@ impl LiveOpts {
             );
         }
         if self.server.is_some() && self.listen.is_some() {
-            bail!("--live-listen is for the embedded server (--live-local); --live-server uses another");
+            bail!(
+                "--live-listen is for the embedded server (--live-local); --live-server uses another"
+            );
         }
         if self.hostname.is_some() && self.tunnel_name.is_none() {
             bail!(

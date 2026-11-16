@@ -193,7 +193,7 @@ pub async fn serve(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// A server running inside another program (`h2 play --live`) on its own
+/// A server running inside another program (`h2 play --live-local`) on its own
 /// tokio runtime. Dropping it stops it.
 pub struct Embedded {
     /// `http://127.0.0.1:<port>`.

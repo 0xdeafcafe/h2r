@@ -147,12 +147,18 @@ fn cloud_saves(
     let (api, server_id) = match live_hle::account_setup::discover(&entry.server) {
         Ok(found) => found,
         Err(e) => {
-            say(&format!("{} not reached ({e}); saves stay on this device", entry.server));
+            say(&format!(
+                "{} not reached ({e}); saves stay on this device",
+                entry.server
+            ));
             return None;
         }
     };
     if server_id != entry.server_id {
-        say(&format!("{} is another server now; saves stay on this device", entry.server));
+        say(&format!(
+            "{} is another server now; saves stay on this device",
+            entry.server
+        ));
         return None;
     }
     let key = live_proto::sign::KeyPair::from_private_jwk(&entry.key.private_jwk()).ok()?;
@@ -508,7 +514,10 @@ mod tests {
         let (live, _) = live_hle::platform::config(&data, None);
         assert!(live.enabled);
         assert_eq!(live.server_url.as_deref(), Some(live_proto::DEFAULT_SERVER));
-        assert!(cloud_saves(&live, &data, &store).is_none(), "no account: nothing contacted");
+        assert!(
+            cloud_saves(&live, &data, &store).is_none(),
+            "no account: nothing contacted"
+        );
         live_hle::platform::write(
             &data,
             &live_hle::platform::Switch {

@@ -1,5 +1,5 @@
 //! Builds the live web app (`web/`) with bun when its build is missing or
-//! older than the sources, so `h2 play --live` (and `--follow`) serve it
+//! older than the sources, so `h2 play --live-local` (and `--follow`) serve it
 //! without a separate step.
 //!
 //! Freshness: `web/dist/.h2-web-tree` holds the git tree id of `web/` it was
