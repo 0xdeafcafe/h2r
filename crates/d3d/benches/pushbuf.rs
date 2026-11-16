@@ -9,6 +9,11 @@
 //! texture change detection. Guest memory is `SparseMemory`, which is part
 //! of what is measured.
 //!
+//! The same frames then run through the render thread
+//! (`ThreadedBackend<NullBackend>`): the guest's side of that is what the
+//! game thread pays per draw with `H2_RENDER_THREAD` (queueing each backend
+//! call), timed without the render thread's own work.
+//!
 //! `cargo bench -p d3d --bench pushbuf` prints ms per frame. Env:
 //! `H2_BENCH_FRAMES` (default 200), `H2_BENCH_DRAWS` (default 1200).
 
@@ -19,7 +24,7 @@ use std::time::Instant;
 
 use common::*;
 use d3d::backend::{DrawOutcome, ResolvedDraw};
-use d3d::{Backend, Device, GuestMemory, SparseMemory, UploadPolicy};
+use d3d::{Backend, Device, GuestMemory, SparseMemory, ThreadedBackend, UploadPolicy};
 use gfx::texture::DecodedTexture;
 use gfx::{Clear, D3DFormat};
 use shaders::vsh::encode::{Inst, Operand, program};
@@ -109,8 +114,8 @@ impl Rng {
     }
 }
 
-fn setup() -> (Device<NullBackend>, SparseMemory) {
-    let (mut d, mut m) = create(NullBackend::default(), UploadPolicy::Tracked);
+fn setup<B: Backend>(backend: B) -> (Device<B>, SparseMemory) {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
     m.map(0x8000_0000 | 0x0040_0000, TEX_SIZE * TEXTURES);
     m.map(0x8000_0000 | 0x0030_0000, VB_VERTS * VB_STRIDE * VBS);
     set_states(&mut d, &mut m);
@@ -185,7 +190,7 @@ fn setup() -> (Device<NullBackend>, SparseMemory) {
     (d, m)
 }
 
-fn bind_vb(d: &mut Device<NullBackend>, m: &mut SparseMemory, vb: u32) {
+fn bind_vb<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, vb: u32) {
     for (i, w) in [vb_header(vb), VB_STRIDE, 0].iter().enumerate() {
         m.write_u32(STREAM_INPUTS + 4 * i as u32, *w).unwrap();
     }
@@ -195,7 +200,7 @@ fn bind_vb(d: &mut Device<NullBackend>, m: &mut SparseMemory, vb: u32) {
 }
 
 /// Inline state pokes, the way game code stores them.
-fn push_state(d: &mut Device<NullBackend>, m: &mut SparseMemory, words: &[u32]) {
+fn push_state<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, words: &[u32]) {
     let dev = d3d::GuestLayout::HALO2.device;
     let mut put = m.read_u32(dev).unwrap();
     let threshold = m.read_u32(dev + 4).unwrap();
@@ -209,7 +214,7 @@ fn push_state(d: &mut Device<NullBackend>, m: &mut SparseMemory, words: &[u32]) 
     m.write_u32(dev, put).unwrap();
 }
 
-fn frame(d: &mut Device<NullBackend>, m: &mut SparseMemory, draws: u32, f: u32) {
+fn frame<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, draws: u32, f: u32) {
     let hdr = |method: u32, count: u32| (count << 18) | method;
     let mut rng = Rng(f as u64 + 7);
     d.clear(m, 0, 0, 0xF0, 0xFFFF_FFFF, 1.0, 0).unwrap();
@@ -259,6 +264,43 @@ fn frame(d: &mut Device<NullBackend>, m: &mut SparseMemory, draws: u32, f: u32) 
     d.swap(m, 0).unwrap();
 }
 
+/// Runs `frames` timed frames after a warm-up; returns the total and the
+/// sorted per-frame times (seconds).
+fn run<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    frames: u32,
+    draws: u32,
+) -> (f64, Vec<f64>) {
+    for f in 0..5 {
+        frame(d, m, draws, f);
+    }
+    let start = Instant::now();
+    let mut times = Vec::new();
+    for f in 0..frames {
+        let t = Instant::now();
+        frame(d, m, draws, f);
+        times.push(t.elapsed().as_secs_f64());
+        if std::env::var_os("H2_BENCH_TRACE").is_some() {
+            eprintln!("frame {f}: {:.2} ms", times[times.len() - 1] * 1e3);
+        }
+    }
+    let total = start.elapsed().as_secs_f64();
+    times.sort_by(f64::total_cmp);
+    (total, times)
+}
+
+fn report(name: &str, frames: u32, draws: u32, total: f64, times: &[f64]) {
+    let (median, p10) = (times[times.len() / 2], times[times.len() / 10]);
+    println!(
+        "{name}: {frames} frames x {draws} draws: {:.3} ms/frame mean, {:.3} median, {:.3} p10, {:.2} us/draw (mean)",
+        total * 1e3 / frames as f64,
+        median * 1e3,
+        p10 * 1e3,
+        total * 1e6 / (frames as f64 * draws as f64),
+    );
+}
+
 fn main() {
     let env = |k, v: u32| {
         std::env::var(k)
@@ -268,33 +310,32 @@ fn main() {
     };
     let frames = env("H2_BENCH_FRAMES", 200);
     let draws = env("H2_BENCH_DRAWS", 1200);
-    let (mut d, mut m) = setup();
-    for f in 0..5 {
-        frame(&mut d, &mut m, draws, f);
-    }
-    let start = Instant::now();
-    let mut times = Vec::new();
-    for f in 0..frames {
-        let t = Instant::now();
-        frame(&mut d, &mut m, draws, f);
-        times.push(t.elapsed().as_secs_f64());
-        if std::env::var_os("H2_BENCH_TRACE").is_some() {
-            eprintln!("frame {f}: {:.2} ms", times[times.len() - 1] * 1e3);
-        }
-    }
-    let total = start.elapsed().as_secs_f64();
-    times.sort_by(f64::total_cmp);
-    let (median, p10) = (times[times.len() / 2], times[times.len() / 10]);
+    let (mut d, mut m) = setup(NullBackend::default());
+    let (total, times) = run(&mut d, &mut m, frames, draws);
+    report("pushbuf bench", frames, draws, total, &times);
     let stats = d.stats();
-    println!(
-        "pushbuf bench: {frames} frames x {draws} draws: {:.3} ms/frame mean, {:.3} median, {:.3} p10, {:.2} us/draw (mean)",
-        total * 1e3 / frames as f64,
-        median * 1e3,
-        p10 * 1e3,
-        total * 1e6 / (frames as f64 * draws as f64),
-    );
     println!(
         "backend draws {} sink {}  uploads {} hits {}",
         d.backend.draws, d.backend.sink, stats.texture_uploads, stats.texture_hits
+    );
+
+    // The guest's side of the render thread: the frame-in-flight limit
+    // waits for the render thread only when it falls behind.
+    let (mut d, mut m) = setup(ThreadedBackend::new(NullBackend::default()).unwrap());
+    let (total, times) = run(&mut d, &mut m, frames, draws);
+    report(
+        "pushbuf bench, render thread (guest side)",
+        frames,
+        draws,
+        total,
+        &times,
+    );
+    let w = d.backend.waits();
+    let (n, sink) = d.backend.with_inner(|b| (b.draws, b.sink)).unwrap();
+    println!(
+        "backend draws {n} sink {sink}  throttles {} ({:.1} ms)  render thread busy {:.1} ms",
+        w.throttles,
+        w.throttle_wait.as_secs_f64() * 1e3,
+        w.busy.as_secs_f64() * 1e3,
     );
 }

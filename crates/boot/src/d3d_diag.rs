@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use d3d::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
+use d3d::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetInfo, TextureInfo};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
@@ -205,6 +205,25 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
         Ok(DrawOutcome::Skipped(why)) => format!("skipped: {why}"),
         Ok(DrawOutcome::Unsupported(why)) => format!("unsupported: {why}"),
         Err(e) => format!("error: {e}"),
+    }
+}
+
+impl<B> DiagBackend<B> {
+    /// Adds a draw's outcome to the stats; returns the outcome's and the
+    /// target's names.
+    fn count(&self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) -> (String, String) {
+        let out = outcome_name(r);
+        let target = format!("{}x{} {:?}", t.width, t.height, t.format);
+        let mut s = self.stats.lock().unwrap();
+        let kind = out.split(':').next().unwrap_or("").to_string();
+        let key = if kind == "drawn" { format!("drawn -> {target}") } else { format!("{out} -> {target}") };
+        *s.by_outcome.entry(key).or_default() += 1;
+        if kind == "drawn" {
+            for ti in info.iter().flatten() {
+                *s.textures.entry(format!("{:?} {:?}", ti.format, ti.kind)).or_default() += 1;
+            }
+        }
+        (out, target)
     }
 }
 
@@ -404,20 +423,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
             }
         }
-        let out = outcome_name(&r);
-        let t = &draw.target;
-        let target = format!("{}x{} {:?}", t.width, t.height, t.format);
-        {
-            let mut s = self.stats.lock().unwrap();
-            let kind = out.split(':').next().unwrap_or("").to_string();
-            let key = if kind == "drawn" { format!("drawn -> {target}") } else { format!("{out} -> {target}") };
-            *s.by_outcome.entry(key).or_default() += 1;
-            if kind == "drawn" {
-                for ti in draw.texture_info.iter().flatten() {
-                    *s.textures.entry(format!("{:?} {:?}", ti.format, ti.kind)).or_default() += 1;
-                }
-            }
-        }
+        let (out, target) = self.count(&r, &draw.target, &draw.texture_info);
         if self.logging() {
             let tex: Vec<String> = draw
                 .texture_info
@@ -468,6 +474,25 @@ impl<B: Backend> Backend for DiagBackend<B> {
             }
         }
         r
+    }
+    fn draw_owned(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        // Capturing and logging read the draw after the inner backend has
+        // drawn it.
+        if self.capturing().is_some() || self.logging() {
+            let r = self.draw(color, depth, &draw, textures);
+            return (r, draw.streams);
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
+        self.count(&r, &target, &info);
+        (r, spare)
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()

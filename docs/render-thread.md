@@ -170,9 +170,29 @@ Against the requirements:
 ## Prototype
 
 - `d3d::ThreadedBackend<B>` (`crates/d3d/src/threaded.rs`): a `Backend`
-  that moves `B` to a thread named `d3d-render` and queues each call as
-  a closure on a channel. `finish`, `with_inner` and `with_surface` run
-  something after the queue and wait (tests, reports).
+  that moves `B` to a thread named `d3d-render` and queues each call.
+  `finish`, `with_inner` and `with_surface` run something after the
+  queue and wait (tests, reports).
+- **Batches** (2026-11-16). Calls collect in one pending list and cross
+  the channel together: one send and one wake per batch, not per call.
+  A batch goes at every call that waits (before the wait), at every
+  present (before the frame-in-flight wait), every `threaded::BATCH`
+  (64) calls and on drop. Texture-proxy drops go into the same list, so
+  they keep their place. The render thread runs a batch in order, so its
+  calls and their order are unchanged; they only start later.
+  The device hands each draw over with `Backend::draw_owned`, so the
+  render thread takes the `ResolvedDraw` (streams, indices, state, shader
+  inputs) without a copy and frees it there. The draw's stream buffers
+  come back through a bounded pool (256 draws, 16 MiB) for the device to
+  refill. Wrappers forward it (`DiagBackend`, `Headless`); one that does
+  not falls back to `draw`, which copies.
+  `cargo bench -p d3d --bench pushbuf` times the guest's side through
+  `ThreadedBackend<NullBackend>`: 4.0-4.5 us a draw before (one boxed
+  closure, channel send and wake per call, the draw cloned), 2.5-2.7
+  after, against 2.1-2.3 for the device alone. In a 250 Hz profile of
+  the main menu before this, the per-call wake alone
+  (`semaphore_signal_trap` under the channel send) was 1.3% of the game
+  thread, and the draw clone showed up in its copies and mallocs.
 - On unless `H2_RENDER_THREAD=0` (only `0` turns it off;
   `d3d_glue::render_thread_from`), it wraps
   the `GfxBackend` in it: the headless one with `H2_BOOT_GFX`, and the
@@ -212,6 +232,11 @@ Against the requirements:
   Depth-alias textures made on the render thread give the same
   read-backs, uploads, draws, skips and stats. A wrong speculation stops
   the next call, and reads wait for the work queued before them.
+  A call sequence several batches long (draws handed over and copied,
+  uploads and texture drops, clears, reads, pixel counts that every draw
+  adds to, presents) gives the synchronous backend's calls in its order
+  and the same answers, with and without jitter
+  (`batched_commands_run_in_order_and_reads_see_everything_before_them`).
 
 ## Measurements
 
@@ -304,10 +329,9 @@ wrote last, was the next fix: the alias mirror (2026-11-15, docs/d3d.md
   new program (judge and compile), and the key is built on both threads
   for every draw. That is CPU on the guest's thread that the measurements
   above predate.
-- **Copies on the guest thread.** `draw` clones each `ResolvedDraw`
-  (streams and indices) and `upload_texture` its decoded texels, because
-  the trait passes references. Taking them by value would remove those
-  copies.
+- **Copies on the guest thread.** Draws move (`draw_owned`, above), but
+  `upload_texture`, `write_surface` and `mirror_write` still copy their
+  bytes, because the trait passes references.
 - **Errors arrive late.** A backend error stops the guest at the next
   backend call, not at the entry that caused it.
 - **Waits remaining.** RTT write-backs the guest asks for

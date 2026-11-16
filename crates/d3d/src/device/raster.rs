@@ -354,8 +354,8 @@ impl<B: Backend> Device<B> {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
         };
-        let total = match desc.layout() {
-            Ok(l) => l.total_size as u64,
+        let total = match desc.total_size() {
+            Ok(l) => l as u64,
             Err(e) => return skip(e.to_string()),
         };
         let (Some(depth), Some(p)) = (self.depth, self.params) else {
@@ -1140,8 +1140,8 @@ impl<B: Backend> Device<B> {
                 let pc = PixelContainer::read(mem, resource)?;
                 TextureDesc::from_header(pc.format, pc.size)
                     .ok()
-                    .and_then(|d| d.layout().ok())
-                    .map_or(1, |l| l.total_size as u64)
+                    .and_then(|d| d.total_size().ok())
+                    .map_or(1, |l| l as u64)
             }
             _ => 1,
         };
@@ -1381,7 +1381,7 @@ impl<B: Backend> Device<B> {
                 return Err(D3dError::invalid(E, format!("{count} rectangles")));
             }
             for i in 0..count {
-                let r = mem.read_words(at(rects, 16 * i as u64)?, 4)?;
+                let r = crate::guest::read_array::<4>(mem, at(rects, 16 * i as u64)?)?;
                 effective.push(Rect {
                     x1: (r[0] as i32).max(vp.x1),
                     y1: (r[1] as i32).max(vp.y1),

@@ -100,7 +100,7 @@ impl ResourceHeader {
 
     /// Reads a header.
     pub fn read(mem: &dyn GuestMemory, addr: u32) -> Result<Self, GuestError> {
-        let w = mem.read_words(addr, 3)?;
+        let w = crate::guest::read_array::<3>(mem, addr)?;
         Ok(Self {
             common: w[0],
             data: w[1],
@@ -171,7 +171,7 @@ impl SurfaceHeader {
     /// bytes fit below 4 GiB but whose `Parent` would wrap is an error,
     /// never an overflow.
     pub fn read(mem: &dyn GuestMemory, addr: u32) -> Result<Self, GuestError> {
-        let w = mem.read_words(addr, 6)?;
+        let w = crate::guest::read_array::<6>(mem, addr)?;
         Ok(Self {
             pixels: PixelContainer {
                 resource: ResourceHeader {

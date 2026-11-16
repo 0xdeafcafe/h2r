@@ -45,6 +45,15 @@
 //!
 //! Commands run in the order they were issued, on one queue, so the GPU
 //! sees exactly the submissions the synchronous backend makes.
+//!
+//! The queue is batched: commands (texture drops included) collect in one
+//! pending list and cross to the render thread together, at every call
+//! that waits for it (before the wait), at each present (before the
+//! frame-in-flight wait), every [`BATCH`] commands and when the backend is
+//! dropped. A batch runs in order, so what the render thread does, and in
+//! what order, is unchanged; it only starts later. Draws handed over with
+//! [`Backend::draw_owned`] move to the render thread without a copy, and
+//! their stream buffers come back for the device to refill.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,13 +64,73 @@ use std::thread::JoinHandle;
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
-use crate::backend::{Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
+use crate::backend::{
+    Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
+};
 
 /// Presents the guest may run ahead of the render thread before `Swap`
 /// waits (wall time only). Two, like D3D's default swap throttling.
 pub const MAX_FRAMES_IN_FLIGHT: u64 = 2;
 
+/// Commands queued before a batch goes to the render thread without a
+/// call that waits (one channel send and wake per batch, not per command).
+pub const BATCH: usize = 64;
+
+/// Spent stream buffers kept for the device to refill: at most this many
+/// draws' worth, and [`SPARE_BYTES`] of them.
+const SPARE_DRAWS: usize = 4 * BATCH;
+const SPARE_BYTES: usize = 16 << 20;
+
 type Job<B> = Box<dyn FnOnce(&mut Worker<B>) + Send>;
+
+/// One queued backend command.
+enum Cmd<B: Backend> {
+    Job(Job<B>),
+    /// The hot path, without a boxed closure. The draw is freed on the
+    /// render thread; its stream buffers go back to the guest's side
+    /// ([`Shared::spent`]).
+    Draw(Box<DrawCmd>),
+}
+
+struct DrawCmd {
+    color: u32,
+    depth: Option<u32>,
+    textures: [Option<u64>; 4],
+    /// The outcome already answered.
+    expect: DrawOutcome,
+    draw: ResolvedDraw,
+}
+
+/// The pending batch, shared with the texture proxies so that their drops
+/// keep their place in the order.
+struct Queue<B: Backend> {
+    pending: Mutex<Vec<Cmd<B>>>,
+    tx: mpsc::Sender<Vec<Cmd<B>>>,
+}
+
+impl<B: Backend> Queue<B> {
+    /// Queues `cmd`; hands the batch over once it is [`BATCH`] long.
+    fn push(&self, cmd: Cmd<B>) -> Result<(), ()> {
+        let mut p = self.pending.lock().unwrap();
+        p.push(cmd);
+        if p.len() >= BATCH {
+            return self.send(&mut p);
+        }
+        Ok(())
+    }
+    /// Hands the pending batch to the render thread.
+    fn flush(&self) -> Result<(), ()> {
+        self.send(&mut self.pending.lock().unwrap())
+    }
+    /// Sends under the lock, so batches leave in the order they filled.
+    fn send(&self, p: &mut Vec<Cmd<B>>) -> Result<(), ()> {
+        if p.is_empty() {
+            return Ok(());
+        }
+        let batch = std::mem::replace(p, Vec::with_capacity(BATCH));
+        self.tx.send(batch).map_err(|_| ())
+    }
+}
 
 /// What lives on the render thread.
 pub struct Worker<B: Backend> {
@@ -76,12 +145,20 @@ pub struct Worker<B: Backend> {
     exit: bool,
     /// [`ThreadedBackend::with_jitter`]: a xorshift state.
     jitter: Option<u64>,
+    /// Stream buffers of the draws run in this batch, returned to
+    /// [`Shared::spent`] at its end.
+    spent: Vec<Vec<StreamBytes>>,
 }
 
 #[derive(Default)]
 struct Shared {
     /// The first error or wrong speculation, returned by the next call.
     error: Mutex<Option<String>>,
+    /// Whether `error` is set (checked without the lock on every call).
+    failed: std::sync::atomic::AtomicBool,
+    /// Stream buffers of draws the render thread has run, for the device
+    /// to refill, and their bytes.
+    spent: Mutex<(Vec<Vec<StreamBytes>>, usize)>,
     misses: AtomicU64,
     /// Presents the render thread has finished.
     presented: Mutex<u64>,
@@ -139,6 +216,7 @@ impl Shared {
         let mut g = self.error.lock().unwrap();
         if g.is_none() {
             *g = Some(e);
+            self.failed.store(true, Ordering::Release);
         }
     }
     fn miss(&self, e: String) {
@@ -182,6 +260,58 @@ impl<B: Backend> Worker<B> {
             self.shared.latch(e);
         }
     }
+
+    fn exec(&mut self, cmd: Cmd<B>) {
+        match cmd {
+            Cmd::Job(job) => job(self),
+            Cmd::Draw(d) => {
+                if let Err(e) = self.draw(&d) {
+                    self.shared.latch(e);
+                }
+                let DrawCmd { draw, .. } = *d;
+                self.spent.push(draw.streams);
+            }
+        }
+    }
+
+    fn draw(&mut self, d: &DrawCmd) -> Result<(), String> {
+        let (c, depth) = (self.surface(d.color)?, self.depth(d.depth)?);
+        let mut tex: [Option<&B::Texture>; 4] = [None; 4];
+        for (slot, id) in tex.iter_mut().zip(d.textures) {
+            if let Some(id) = id {
+                *slot = Some(
+                    self.textures
+                        .get(&id)
+                        .ok_or_else(|| format!("render thread: texture {id} is not live"))?,
+                );
+            }
+        }
+        let r = self.inner.draw(c, depth, &d.draw, tex)?;
+        if r != d.expect {
+            self.shared.miss(format!(
+                "{}: answered {:?}, the backend gave {r:?}",
+                d.draw.entry, d.expect
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns this batch's stream buffers to the guest's side (one lock
+    /// per batch), within the pool's limits; the rest are freed here.
+    fn return_spent(&mut self) {
+        if self.spent.is_empty() {
+            return;
+        }
+        let mut g = self.shared.spent.lock().unwrap();
+        let (pool, bytes) = &mut *g;
+        for streams in self.spent.drain(..) {
+            let n: usize = streams.iter().map(|s| s.data.capacity()).sum();
+            if pool.len() < SPARE_DRAWS && *bytes + n <= SPARE_BYTES {
+                *bytes += n;
+                pool.push(streams);
+            }
+        }
+    }
 }
 
 /// A texture handle: the render thread's texture of the same id. Dropping
@@ -191,16 +321,16 @@ pub struct ProxyTexture<B: Backend + 'static> {
     /// Whether the inner backend's texture has a view the shaders sample
     /// (the judge's answer; true without one).
     view: bool,
-    tx: mpsc::Sender<Job<B>>,
+    queue: Arc<Queue<B>>,
 }
 
 impl<B: Backend + 'static> Drop for ProxyTexture<B> {
     fn drop(&mut self) {
         let id = self.id;
         // After the render thread exits there is nothing left to free.
-        let _ = self.tx.send(Box::new(move |w: &mut Worker<B>| {
+        let _ = self.queue.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
             w.textures.remove(&id);
-        }));
+        })));
     }
 }
 
@@ -212,7 +342,10 @@ impl<B: Backend + 'static> std::fmt::Debug for ProxyTexture<B> {
 
 /// [`Backend`] that queues `B`'s work to a render thread.
 pub struct ThreadedBackend<B: Backend + 'static> {
-    tx: mpsc::Sender<Job<B>>,
+    queue: Arc<Queue<B>>,
+    /// Stream buffers taken from [`Shared::spent`], handed back one draw's
+    /// worth per draw.
+    spare: Vec<Vec<StreamBytes>>,
     join: Option<JoinHandle<()>>,
     shared: Arc<Shared>,
     bc: bool,
@@ -237,7 +370,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
 impl<B: Backend + 'static> ThreadedBackend<B> {
     /// Moves `inner` to a new thread named `d3d-render`.
     pub fn new(inner: B) -> std::io::Result<Self> {
-        let (tx, rx) = mpsc::channel::<Job<B>>();
+        let (tx, rx) = mpsc::channel::<Vec<Cmd<B>>>();
         let shared = Arc::new(Shared::default());
         let bc = inner.bc_supported();
         let judge = inner.judge();
@@ -257,29 +390,41 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     shared: s,
                     exit: false,
                     jitter: None,
+                    spent: Vec::new(),
                 };
-                while let Ok(job) = rx.recv() {
-                    if let Some(x) = w.jitter.as_mut() {
-                        *x ^= *x << 13;
-                        *x ^= *x >> 7;
-                        *x ^= *x << 17;
-                        std::thread::sleep(std::time::Duration::from_micros(*x % 300));
-                    }
+                'batches: while let Ok(batch) = rx.recv() {
                     let t = std::time::Instant::now();
-                    job(&mut w);
-                    let ns = t.elapsed().as_nanos() as u64;
+                    // The jitter's delays are not backend work.
+                    let mut slept = std::time::Duration::ZERO;
+                    for cmd in batch {
+                        if let Some(x) = w.jitter.as_mut() {
+                            *x ^= *x << 13;
+                            *x ^= *x >> 7;
+                            *x ^= *x << 17;
+                            let s = std::time::Instant::now();
+                            std::thread::sleep(std::time::Duration::from_micros(*x % 300));
+                            slept += s.elapsed();
+                        }
+                        w.exec(cmd);
+                        if w.exit {
+                            break 'batches;
+                        }
+                    }
+                    let ns = t.elapsed().saturating_sub(slept).as_nanos() as u64;
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
                     BUSY_NS.fetch_add(ns, Ordering::Relaxed);
-                    if w.exit {
-                        break;
-                    }
+                    w.return_spent();
                 }
                 // Wake a guest waiting on a frame that will never finish.
                 *w.shared.presented.lock().unwrap() = u64::MAX;
                 w.shared.presented_cv.notify_all();
             })?;
         Ok(Self {
-            tx,
+            queue: Arc::new(Queue {
+                pending: Mutex::new(Vec::with_capacity(BATCH)),
+                tx,
+            }),
+            spare: Vec::new(),
             join: Some(join),
             shared,
             bc,
@@ -350,6 +495,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
     }
 
     fn check(&self) -> Result<(), String> {
+        if !self.shared.failed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         match &*self.shared.error.lock().unwrap() {
             Some(e) => Err(e.clone()),
             None => Ok(()),
@@ -357,8 +505,42 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
     }
 
     fn post(&self, f: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static) {
-        if self.tx.send(Box::new(move |w: &mut Worker<B>| w.run(f))).is_err() {
+        self.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| w.run(f))));
+    }
+
+    fn push(&self, cmd: Cmd<B>) {
+        if self.queue.push(cmd).is_err() {
             self.shared.latch("render thread: gone".into());
+        }
+    }
+
+    /// Hands everything queued to the render thread.
+    fn flush(&self) {
+        if self.queue.flush().is_err() {
+            self.shared.latch("render thread: gone".into());
+        }
+    }
+
+    /// A spent draw's stream buffers (empty if none has come back).
+    fn spare_streams(&mut self) -> Vec<StreamBytes> {
+        if self.spare.is_empty() {
+            let mut g = self.shared.spent.lock().unwrap();
+            std::mem::swap(&mut self.spare, &mut g.0);
+            g.1 = 0;
+        }
+        self.spare.pop().unwrap_or_default()
+    }
+
+    /// The outcome the inner backend will give `draw`, decided now from the
+    /// draw and the textures' views; speculated as drawn without a judge.
+    fn judge_draw(
+        &mut self,
+        draw: &ResolvedDraw,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> DrawOutcome {
+        match self.judge.as_mut() {
+            Some(j) => j.draw(draw, textures.map(|t| t.map(|t| t.view))),
+            None => DrawOutcome::Drawn,
         }
     }
 
@@ -371,14 +553,14 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let _phase = timeline::phase::enter(timeline::phase::Phase::RenderWait);
         let t = std::time::Instant::now();
         let (rtx, rrx) = mpsc::sync_channel(1);
-        self.tx
-            .send(Box::new(move |w: &mut Worker<B>| {
+        let gone = |_| "render thread: gone".to_string();
+        self.queue
+            .push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
                 let _ = rtx.send(f(w));
-            }))
-            .map_err(|_| "render thread: gone".to_string())?;
-        let r = rrx
-            .recv()
-            .map_err(|_| "render thread: gone".to_string())?;
+            })))
+            .map_err(gone)?;
+        self.queue.flush().map_err(gone)?;
+        let r = rrx.recv().map_err(|_| "render thread: gone".to_string())?;
         self.waits.reads += 1;
         self.waits.read_wait += t.elapsed();
         READS.fetch_add(1, Ordering::Relaxed);
@@ -400,7 +582,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         ProxyTexture {
             id,
             view,
-            tx: self.tx.clone(),
+            queue: Arc::clone(&self.queue),
         }
     }
 
@@ -420,8 +602,9 @@ impl<B: Backend + 'static> Drop for ThreadedBackend<B> {
             eprintln!("render thread: {:?}", self.waits());
         }
         let _ = self
-            .tx
-            .send(Box::new(|w: &mut Worker<B>| w.exit = true));
+            .queue
+            .push(Cmd::Job(Box::new(|w: &mut Worker<B>| w.exit = true)));
+        let _ = self.queue.flush();
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -519,38 +702,34 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&ProxyTexture<B>>; 4],
     ) -> Result<DrawOutcome, String> {
-        self.check()?;
-        let ids = textures.map(|t| t.map(|t| t.id));
-        // The outcome the inner backend will give, decided now from the
-        // draw and the textures' views; speculated as drawn without a
-        // judge. A skipped draw still goes to the render thread: the inner
+        // A copy: the caller keeps `draw` (the device hands its draws
+        // over with `draw_owned`).
+        let (r, _) = self.draw_owned(color, depth, draw.clone(), textures);
+        r
+    }
+
+    fn draw_owned(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: ResolvedDraw,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if let Err(e) = self.check() {
+            return (Err(e), draw.streams);
+        }
+        // A skipped draw still goes to the render thread: the inner
         // backend submits a pass for another target before it skips.
-        let judged = match self.judge.as_mut() {
-            Some(j) => j.draw(draw, textures.map(|t| t.map(|t| t.view))),
-            None => DrawOutcome::Drawn,
-        };
-        let expect = judged.clone();
-        let draw = Box::new(draw.clone());
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
-            let (c, d) = (w.surface(color)?, w.depth(depth)?);
-            let mut tex: [Option<&B::Texture>; 4] = [None; 4];
-            for (slot, id) in tex.iter_mut().zip(ids) {
-                if let Some(id) = id {
-                    *slot = Some(
-                        w.textures
-                            .get(&id)
-                            .ok_or_else(|| format!("render thread: texture {id} is not live"))?,
-                    );
-                }
-            }
-            let r = w.inner.draw(c, d, &draw, tex)?;
-            if r != expect {
-                shared.miss(format!("{}: answered {expect:?}, the backend gave {r:?}", draw.entry));
-            }
-            Ok(())
-        });
-        Ok(judged)
+        let judged = self.judge_draw(&draw, textures);
+        let ids = textures.map(|t| t.map(|t| t.id));
+        self.push(Cmd::Draw(Box::new(DrawCmd {
+            color,
+            depth,
+            textures: ids,
+            expect: judged.clone(),
+            draw,
+        })));
+        (Ok(judged), self.spare_streams())
     }
 
     fn frame_stats(&mut self) {
@@ -584,6 +763,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             r?;
             w.land_pixel_counts()
         });
+        self.flush();
         // Frame-in-flight limit: wall time only, never logical time.
         let t = std::time::Instant::now();
         let mut done = self.shared.presented.lock().unwrap();
@@ -792,7 +972,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         self.post(move |w| {
             let s = w.surface(surface)?;
-            w.inner.mirror_store(s, format, width, height, layout, offset)
+            w.inner
+                .mirror_store(s, format, width, height, layout, offset)
         });
         Ok(())
     }
@@ -809,7 +990,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         self.post(move |w| {
             let s = w.surface(surface)?;
-            w.inner.mirror_load(s, format, width, height, layout, offset)
+            w.inner
+                .mirror_load(s, format, width, height, layout, offset)
         });
         Ok(())
     }
@@ -870,7 +1052,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 None => {
                     // The host format depends on the description only:
                     // decode zeros once to learn it.
-                    let len = desc.layout().map_err(|e| e.to_string())?.total_size;
+                    let len = desc.total_size().map_err(|e| e.to_string())?;
                     let v = gfx::texture::decode_texture(desc, &vec![0; len], None, options)
                         .is_ok_and(|t| j.upload_view(&t));
                     self.alias_views.push((desc.clone(), options.signed, v));
@@ -887,17 +1069,15 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             // the words on the GPU) does, with no read-back here.
             if w.inner.defers_depth_aliases() {
                 let s = w.surface(depth)?;
-                if let Some(h) = w
-                    .inner
-                    .depth_alias_texture(s, format, width, height, pitch, generation, offset, &desc, options)?
-                {
+                if let Some(h) = w.inner.depth_alias_texture(
+                    s, format, width, height, pitch, generation, offset, &desc, options,
+                )? {
                     w.textures.insert(id, h);
                     return Ok(());
                 }
             }
             // One read-back per depth generation, as the device does it.
-            if w
-                .depth_words
+            if w.depth_words
                 .as_ref()
                 .is_none_or(|(s, g, _)| (*s, *g) != (depth, generation))
             {
@@ -912,7 +1092,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let bytes = &w.depth_words.as_ref().expect("read above").2;
             let decoded = match bytes
                 .get(offset..)
-                .ok_or_else(|| format!("read_depth returned {} bytes, offset {offset}", bytes.len()))
+                .ok_or_else(|| {
+                    format!("read_depth returned {} bytes, offset {offset}", bytes.len())
+                })
                 .and_then(|b| {
                     gfx::texture::decode_texture(&desc, b, None, options).map_err(|e| e.to_string())
                 }) {
