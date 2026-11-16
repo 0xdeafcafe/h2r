@@ -39,7 +39,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 7, so a disc extracted by an older build is extracted again.
+key) is 9, so a disc extracted by an older build is extracted again.
 
 ### `map.glb`
 
@@ -51,7 +51,15 @@ key) is 7, so a disc extracted by an older build is extracted again.
   and one mesh, both named `structure`. A scenario with several (campaign
   levels) has a node and mesh per BSP, named `bsp_<index>` by the BSP's
   index in the scenario, with `extras.bsp` holding that index; all are root
-  nodes of the scene, in index order, already in world space. Each mesh has
+  nodes of the scene, in index order, already in world space. A BSP only
+  cinematics load also has `extras.cinematic: true` (pipeline step 2), so
+  a viewer can hide it; the index is still the game's BSP index, as
+  telemetry frames give it.
+- **Backdrop.** A BSP's huge triangles (sea, sea floor and distant terrain
+  planes; step 5) are not in its mesh but in a child node and mesh
+  `backdrop_<index>` (`backdrop` on a single-BSP level) with
+  `extras.backdrop: true`, same space and classes. A BSP without any
+  has no such child. Every retail multiplayer map has none. Each mesh has
   one triangle primitive per surface class present: `POSITION`, `NORMAL`
   (both float VEC3) and u16 indices. A class with more than 65,536 vertices
   in one mesh is split into several primitives so every index fits in 16
@@ -68,13 +76,48 @@ key) is 7, so a disc extracted by an older build is extracted again.
   model in model space (same axes conversion), shared by every placement
   of that machine and named after the first, and the child has a
   `matrix`: the placement's rotation, uniform scale and position in glTF
-  axes. These are the only nodes with a transform. Machines are all class
+  axes. These are the only nodes with a transform. The child's `extras`
+  repeat the placement in game coordinates as telemetry frames give a
+  moving machine: `pos`, unit `forward` and `up`, and `scale`. The node
+  names are stable: a frame's machine names the node it moves. Machines are all class
   `metal`, unless their shader names them glass, water or foliage. The
   model is drawn at rest (no animation): each region's first permutation
   at the highest detail level up to 3 of 5 it has.
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
-  (the part of the level the views show, below).
+  (the part of the level the views show, below). `bounds` covers the
+  gameplay BSPs without their backdrops: what the views draw.
+- **Features.** When a level has any, `asset.extras.features` lists its
+  teleporters, their links and its lifts (players contract section 13;
+  game coordinates):
+
+  ```json
+  "features": {
+    "teleporters": [ { "id": "t0", "pos": [x, y, z], "facing": yaw,
+                       "role": "two_way", "channel": 0 } ],
+    "links": [ { "from": "t0", "to": "t1" } ],
+    "lifts": [ { "id": "l0", "pos": [x, y, z], "dir": [x, y, z],
+                 "length": 6.0, "radius": 3.0,
+                 "source": "mach <stem> <index>: bounding sphere" } ]
+  }
+  ```
+
+  Teleporters come from the scenario's netgame flags (`scnr+0x118`,
+  0x20-byte entries: position, facing in radians at `+0xc`, type at
+  `+0x10`, team at `+0x12`, identifier at `+0x14`, all i16 after the
+  floats). Type 7 is a teleporter's entry and 8 its exit; flags within
+  0.5 units are one pad, `two_way` when it has both. A pad's `channel` is
+  its entry's identifier, else its exit's; `facing` is its exit's (the way
+  an arriving player faces), else its entry's. A link goes from each pad
+  with an entry to each other pad with an exit of the same identifier.
+  Lifts (multiplayer maps only) are the placed scenery, machines, controls
+  and crates (`scnr+0x50`, `+0xa8`, `+0xb8`, `+0x328`, each palette 8
+  bytes on) whose tag's own name has the word `lift`, `grav` or `jumppad`.
+  A lift stands on the middle of its render model's base, along the
+  placement's up axis, as tall as the model and as wide as its wider side,
+  when the model is at least 1 unit tall; else the `obje` bounding sphere
+  (radius `+0x4`, offset `+0x8`) when that is; else a nominal 4 × 1
+  column. `source` names the block, tag stem, placement index and which.
 - Retail multiplayer maps come out at 11k to 31k triangles of level and
   0.3 to 1.1 MB (0 to 6 machines). Campaign levels (1 to 8 BSPs) come out
   at 38k to 412k triangles of level, 6 to 206 machines, and 1.2 to 15.9 MB;
@@ -133,7 +176,18 @@ view), the same for every view.
 2. **BSPs.** The scenario's structure BSP block (`scnr+0x210`, stride
    `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used
    and becomes its own mesh (steps 3 to 5 run per BSP); the views draw them
-   all together. A BSP that fails to read is skipped on its own.
+   all together, except cinematic ones. A BSP that fails to read is skipped
+   on its own. **Cinematic BSPs**: with more than one BSP, the gameplay
+   ones are BSP 0 (where a level starts), both ends of every BSP switch
+   trigger volume (`scnr+0x130`, 0xe-byte entries: trigger volume, source
+   and destination BSP as i16s), and every BSP the scenario's scripts
+   switch to by number (`(switch_bsp <n>)` in the scripts decompiled with
+   the disc's own `default.xbe`, as `h2 scripts` does). The rest are only
+   loaded by cinematics, which switch by BSP name: they are flagged
+   `cinematic`, kept in `map.glb` and left out of the views, the frame and
+   `bounds` (unless every BSP would be). If the scripts cannot be read no
+   BSP is flagged and the level lists `map/<stem>/cinematic` under
+   `skipped`.
    **Machines** come next: the scenario's machine placements (`scnr+0xa8`,
    stride `0x48`) and palette (`scnr+0xb0`, stride `0x28`, tag reference
    first), from the object type table (docs/objects.md). A placement record
@@ -164,16 +218,34 @@ view), the same for every view.
    ([map-format.md](map-format.md), `ModeMaterial`). It holds on every retail
    multiplayer BSP (all 1,101 materials resolve to `shad` tags); if any
    element does not resolve on some disc, every material there is unknown.
-   The last path component of the shader's tag name is split into words and
-   matched against generic English words only (nothing from the game is
-   named in the code): `sky`, `cloud(s)`, `fog`, `mist`, `haze` mark surfaces
-   that are not level and are dropped; `glass`; `water`, `waterfall`, `pool`
-   ...; plant words; `metal…`, `steel…`, `rust…`, `grate…` .... A triangle
+   The shader's template comes first (`shad +0`, a tag reference: the
+   template's tag name, by generic words in its last path component and
+   its folder): sky and cloud templates, additive ones (`add`: glows,
+   light shafts and light volumes, which have no solid surface) and
+   decal or overlay layers (named so first: `overlay`, `decal_simple`; an
+   opaque `..._detail_overlay` is a solid surface blending a detail map)
+   are not level and are dropped; a template in a `water` folder or named
+   for water or waves is water; another `transparent` template is glass
+   unless the shader's name says otherwise. Then the last path component
+   of the shader's own tag name is split into words and matched against
+   generic English words only (nothing from the game is named in the
+   code): `sky`, `cloud(s)`, `fog`, `mist`, `haze` mark surfaces that are
+   not level and are dropped; `glass`; `water`, `waterfall`, `pool` ...;
+   plant words; `metal…`, `steel…`, `rust…`, `grate…` .... Machines'
+   shaders go through the same rules. A triangle
    facing up (normal z ≥ 0.6) is `floor` unless the name says water, foliage
    or glass; other named classes come next; then steep faces are `wall` and
    overhangs and ceilings `default`.
-5. **Mesh.** Drop non-finite, degenerate (area < 5e-7) and repeated
-   triangles; replace a vertex normal that is missing or points against its
+5. **Mesh.** Backdrop goes to the BSP's backdrop mesh: every triangle of
+   at least 4,000 square units that is not water (the biggest level
+   triangle on a retail multiplayer map is about 1,500; campaign sea-floor
+   and terrain planes run from about 5,000 to 100,000), and, grown from
+   each, every triangle reached through shared corners that has the same
+   surface and lies in that triangle's plane (normal within about 6°,
+   corners within 0.5 units), so a plane goes whole instead of leaving its
+   smaller triangles behind as shards. Sea and lake surfaces stay in the
+   level. Drop non-finite, degenerate (area < 5e-7)
+   and repeated triangles; replace a vertex normal that is missing or points against its
    triangle with the face normal; weld vertices per class on a 1/1024-unit
    position grid and 1/64 normal grid. Back faces are not removed from the
    model: whether a face looks into solid rock cannot be told from render
@@ -232,10 +304,17 @@ cargo test --release -p cli geometry_from_the_disc -- --ignored --nocapture
 writes the outputs, a timing report, the shader names behind the classes,
 a contact sheet of every view and, under `cutaway/`, each top view with and
 without the cutaway side by side, and under `machines/` the top and
-`iso-ne` views of two multiplayer maps with large machines, to a
-directory outside the repository (the
-path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR` in the test). Do not commit
-anything it writes.
+`iso-ne` views of two multiplayer maps with large machines, `bsps.txt`
+(each level's cinematic BSPs and backdrop triangles per BSP) and, when an
+earlier extraction's art directory is at `$H2_GEOMETRY_BEFORE` (else
+`BEFORE_DIR` in the test), `compare/<stem>.png` and `compare.png`: that
+extraction's top and `iso-ne` views beside these. All go to a directory
+outside the repository (the path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR`
+in the test). `shader_templates_on_the_disc` (same flags) writes every BSP
+material's template, shader, triangle count and surface by name alone and
+with the template there, and the materials whose surface the template
+changed; `features_from_the_disc` writes `features.txt`, every level's
+teleporters, links and lifts. Do not commit anything they write.
 
 ## Limits
 
@@ -250,12 +329,23 @@ anything it writes.
 - The frame is a heuristic too. It keeps every retail map's playable area on
   the disc this was checked against, but a map with a dense, detailed
   backdrop could be framed wider than its play space.
+- Lift volumes are in the objects' physics models (phantoms), which are
+  not read: a lift's size comes from its render model or bounding sphere,
+  or is nominal. Campaign lifts (lift platforms, gravity fields, lift
+  effects) are not listed.
 - No textures or lightmaps, and no object geometry but machines
   (scenery, crates and vehicles are not drawn). Machines are at rest: a
   door is drawn as its model's default pose has it, and the wheel does not
   turn.
 - Campaign levels sit in large backdrop planes (sea or ground around the
-  playable strip); the frame keeps much of that in their views.
+  playable strip). The biggest planes go to the backdrop nodes, but
+  smaller backdrop terrain stays in the level and the frame keeps some of
+  it in the views.
+- The cinematic test only knows switch volumes and numeric script
+  switches: a gameplay BSP reached only some other way (a script switching
+  by name in play) would be flagged cinematic.
+- Template words decide what is dropped: an additive or overlay template
+  used for a solid surface would vanish.
 
 # Player and weapon models
 
