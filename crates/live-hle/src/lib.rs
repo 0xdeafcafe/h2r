@@ -3,6 +3,7 @@
 //! neither guard escapes an invocation. See docs/live/live-boundary.md for the ABI.
 #![deny(unsafe_code)]
 
+pub mod account_setup;
 mod client;
 mod config;
 mod invites;
@@ -183,6 +184,20 @@ impl Hle {
             state: Mutex::new(state::State::new(accounts, address, service)),
             network: network::Network::new(network),
         }))
+    }
+    /// Reads the accounts file again (after [`account_setup::save`]), so a
+    /// new or recovered account is listed by `XOnlineGetUsers` and can sign
+    /// in without a restart. Accounts signed in now stay signed in; the
+    /// file is checked as at startup, and on an error nothing changes.
+    /// Returns how many accounts there are. No guest memory access.
+    pub fn reload_accounts(&self) -> Result<usize, ConfigError> {
+        let accounts = self.config.accounts()?;
+        let n = accounts.len();
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_accounts(accounts);
+        Ok(n)
     }
     /// Telemetry can call this after the server assigns a game ID; no I/O or
     /// guest memory access occurs on the caller's thread. None returns to online.

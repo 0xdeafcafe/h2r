@@ -10,6 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod account_screen;
 pub mod community_variants;
 pub mod controls_text;
 pub mod coop_probe;

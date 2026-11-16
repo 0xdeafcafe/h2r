@@ -57,7 +57,16 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           you run (CF-Connecting-IP trusted from loopback,
                           the URL's host the id on first start)
   account create <gamertag> [--server URL] [--invite CODE]
-                          make a key, register it, keep both in accounts.json
+                          make a key, register it, keep both in accounts.json;
+                          prints the recovery code and authenticator key
+  account code [--as GAMERTAG] [--server URL]
+                          the current recovery code, to type on a new device
+  account recovery [--reset] [--as GAMERTAG] [--server URL]
+                          the authenticator key and otpauth URI (sets recovery
+                          up on an older account; --reset replaces it)
+  account recover <gamertag> [--code CODE] [--server URL]
+                          a new key here for an account made elsewhere, added
+                          with a current code (asked for if not given)
   account import <file> [--server URL]
                           add an account the web app made (its downloaded
                           {xuid, gamertag, server, key}) to accounts.json,
@@ -92,9 +101,13 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           publish Halo 2's message_of_the_day.dat, built from
                           up to 32 lines (or a prebuilt file), signed with the
                           server key in --data
-  invite create [--days N] [--server URL] [--data DIR]
-                          print an invite code for an --invite-only server
-                          (POST /v1/invites, signed with the server key)
+  invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
+                          print an invite code for an --invite-only server:
+                          25 characters, or TEXT (4 to 32, any case); signed
+                          with the server key in --data, or with --as by an
+                          admin account
+  invite list [--as GAMERTAG] [--server URL] [--data DIR]
+  invite revoke <jti> --as GAMERTAG [--server URL]
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
@@ -125,6 +138,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("account", Some("create")) => account_create(rest.shift()),
         ("account", Some("import")) => account_import(rest.shift()),
         ("account", Some("list")) => account_list(rest.shift()),
+        ("account", Some("code")) => crate::live_recovery::account_code(rest.shift()),
+        ("account", Some("recovery")) => crate::live_recovery::account_recovery(rest.shift()),
+        ("account", Some("recover")) => crate::live_recovery::account_recover(rest.shift()),
         ("account", Some("export")) => crate::live_admin::account_export(rest.shift()),
         ("admin", Some("grant")) => crate::live_admin::admin_grant(rest.shift()),
         ("admin", Some("revoke")) => crate::live_admin::admin_revoke(rest.shift()),
@@ -141,7 +157,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("assets", Some("check")) => assets_check(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
-        ("invite", Some("create")) => invite_create(rest.shift()),
+        ("invite", Some("create")) => crate::live_recovery::invite_create(rest.shift()),
+        ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
+        ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
         _ => bail!("unknown h2 live command {:?}\n\n{USAGE}", args.join(" ")),
     }
@@ -601,6 +619,9 @@ fn account_create(mut args: Args) -> Result<()> {
         created.gamertag, created.xuid, created.id
     );
     println!("key stored in {}", path.display());
+    if let Some(info) = &created.recovery {
+        crate::live_recovery::print_recovery(info);
+    }
     Ok(())
 }
 
@@ -1200,30 +1221,6 @@ fn motd_set(mut args: Args) -> Result<()> {
         "published {} ({} bytes, sha256 {})",
         published.name, published.size, published.sha256
     );
-    Ok(())
-}
-
-fn invite_create(mut args: Args) -> Result<()> {
-    let days: i64 = args
-        .take("--days")?
-        .map_or(Ok(7), |d| d.parse())
-        .context("--days must be a whole number")?;
-    let server = args.take("--server")?;
-    let data = args.take("--data")?;
-    args.positional()?;
-    let client = Client::connect(server)?;
-    let me = operator(data, &client)?;
-    let token = issue_token(&me.key, &me.author(), &me.id, lxm::INVITES_WRITE, now());
-    let req = client
-        .agent
-        .post(&client.url("/invites"))
-        .query("days", &days.to_string());
-    let req = client.authorized(req, token)?;
-    let reply: serde_json::Value = serde_json::from_str(&call(req, Some(b""))?)?;
-    let invite = reply["invite"]
-        .as_str()
-        .context("the server's reply has no invite")?;
-    println!("{invite}");
     Ok(())
 }
 

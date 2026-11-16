@@ -172,8 +172,9 @@ with the disc and the containers read it from there.
   - `server` runs in cloudflared's network namespace
     (`network_mode: service:cloudflared`) and listens on `127.0.0.1:8074`
     with `--share-game-art --public-url https://live.forbes.red
-    --behind-cloudflared --invite-only`; admins come from
-    `H2_LIVE_ADMINS`. Its root filesystem is read-only and it has no
+    --behind-cloudflared`; admins come from `H2_LIVE_ADMINS`, and
+    `H2_LIVE_INVITE_ONLY=1` (setup.sh asks; off by default) makes sign-up
+    need an invite. Its root filesystem is read-only and it has no
     capabilities.
   - `db` is Postgres 17, on a named volume, reachable only on the compose
     network.
@@ -261,9 +262,10 @@ The id never changes after this. If the first start had the wrong
 
 ### The first admin account
 
-The server is invite-only, so the first account needs an invite. The
-operator commands sign with the key in `data/` and work against the public
-URL from the machine that has it:
+Sign up in the web app or with `h2 live account create`. If you made the
+server invite-only, the first account needs an invite. The operator
+commands sign with the key in `data/` and work against the public URL from
+the machine that has it:
 
 ```
 h2 live invite create --server https://live.forbes.red --data deploy/live/data
@@ -281,8 +283,9 @@ h2 live admin grant afr --server https://live.forbes.red --data deploy/live/data
 ```
 
 Admins then make further invites in the dashboard (Settings → Server →
-Invites, [live-admin.md](live-admin.md) §5). To drop `--invite-only` or add
-`--private`, edit the server's `command` in `compose.yaml`.
+Invites, [live-admin.md](live-admin.md) §5). To change invite-only, set
+`H2_LIVE_INVITE_ONLY` in `.env`; to add `--private`, edit the server's
+`command` in `compose.yaml`.
 
 ### Backups
 

@@ -3,11 +3,13 @@ import {
   INVITE_MAX_DAYS,
   artWords,
   createInvite,
+  customCodeError,
   fetchAdminStatus,
   fetchInvites,
   fetchServerFacts,
   formatUptime,
   grantCommand,
+  inviteBody,
   inviteData,
   parseAdminStatus,
   parseInvites,
@@ -18,7 +20,7 @@ import {
 } from "../src/admin/server";
 import type { LocalAccount } from "../src/state/account";
 import { canonicalJson, parseJws, b64urlDecode } from "../src/state/verify";
-import { Admin } from "../mock/admin";
+import { Admin, inviteKey } from "../mock/admin";
 import { HOST, World } from "../mock/world";
 
 const RFC = {
@@ -174,6 +176,45 @@ describe("invites", () => {
     expect(await verifies(jws)).toBe(true);
   });
 
+  test("the body is the event alone, or JSON {event, code} for a chosen code", () => {
+    expect(inviteBody("a.b.c")).toEqual({ contentType: "application/jose", body: "a.b.c" });
+    const b = inviteBody("a.b.c", "Pancake Night");
+    expect(b.contentType).toBe("application/json");
+    expect(JSON.parse(b.body)).toEqual({ event: "a.b.c", code: "Pancake Night" });
+  });
+
+  test("a custom code: 4 to 32 printable ASCII characters", () => {
+    expect(customCodeError("abcd")).toBeNull();
+    expect(customCodeError("Pancake Night - 2026!")).toBeNull();
+    expect(customCodeError("x".repeat(32))).toBeNull();
+    expect(customCodeError("abc")).not.toBeNull();
+    expect(customCodeError("x".repeat(33))).not.toBeNull();
+    expect(customCodeError("café")).not.toBeNull();
+    expect(customCodeError("tab\there")).not.toBeNull();
+  });
+
+  test("creating one with a custom code posts JSON {event, code}; blank means generated", async () => {
+    const { f, calls } = recorder((_u, init) => {
+      const custom = new Headers(init.headers).get("content-type") === "application/json";
+      return jsonResponse({ invite: custom ? "Pancake Night" : "BCDFG-HJKMP-QRTVW-XY234-6789B", jti: "x", exp: 5, custom }, 201);
+    });
+    const made = await createInvite("http://h/v1", "aud", me(), 7, f, Date.now(), "  Pancake Night ");
+    expect(made).toMatchObject({ invite: "Pancake Night", custom: true });
+    const h = calls[0]!.init.headers as Record<string, string>;
+    expect(h["content-type"]).toBe("application/json");
+    const body = JSON.parse(calls[0]!.init.body as string) as { event: string; code: string };
+    expect(body.code).toBe("Pancake Night");
+    const ev = parseJws(body.event)!.payload as { type: string };
+    expect(ev.type).toBe("InviteCreated");
+    expect(await verifies(body.event)).toBe(true);
+
+    const gen = await createInvite("http://h/v1", "aud", me(), 7, f, Date.now(), "   ");
+    expect(gen.custom).toBe(false);
+    expect((calls[1]!.init.headers as Record<string, string>)["content-type"]).toBe("application/jose");
+    await expect(createInvite("http://h/v1", "aud", me(), 7, f, Date.now(), "abc")).rejects.toMatchObject({ status: 400 });
+    expect(calls).toHaveLength(2);
+  });
+
   test("revoking signs InviteRevoked naming the same invite", async () => {
     const { f, calls } = recorder(() => jsonResponse({ jti: "abc", state: "revoked" }));
     await revokeInvite("http://h/v1", "aud", me(), "abcdefghijklmnop", f);
@@ -187,9 +228,10 @@ describe("invites", () => {
     const items = parseInvites({ items: [
       { jti: "a", by: "acct:1@x", by_gamertag: "afr", at: "t", exp: 9, state: "open", invite: "c1" },
       { jti: "b", by: "acct:1@x", at: "t", exp: 9, state: "used", used_by_gamertag: "Newcomer" },
+      { jti: "c", by: "acct:1@x", at: "t", exp: 9, state: "open", invite: null, custom: true },
       { nope: true },
     ] });
-    expect(items.map((i) => [i.jti, i.state, i.invite])).toEqual([["a", "open", "c1"], ["b", "used", null]]);
+    expect(items.map((i) => [i.jti, i.state, i.invite, i.custom])).toEqual([["a", "open", "c1", false], ["b", "used", null, false], ["c", "open", null, true]]);
     expect(items[1]!.used_by_gamertag).toBe("Newcomer");
     expect(parseInvites({})).toEqual([]);
   });
@@ -225,7 +267,8 @@ describe("the mock's server endpoints", () => {
   test("an invite round trip: create, list with its code, revoke", async () => {
     const { account, f } = await setup(true);
     const made = await createInvite("http://m/v1", HOST, account, 7, f);
-    expect(made.invite.split(".")).toHaveLength(3);
+    expect(made.invite).toMatch(/^[BCDFGHJKMPQRTVWXY2346789]{5}(-[BCDFGHJKMPQRTVWXY2346789]{5}){4}$/);
+    expect(made.custom).toBe(false);
     let list = await fetchInvites("http://m/v1", HOST, account, f);
     expect(list[0]!.state).toBe("open");
     expect(list[0]!.invite).toBe(made.invite);
@@ -234,5 +277,16 @@ describe("the mock's server endpoints", () => {
     expect(list[0]!.state).toBe("revoked");
     expect(list[0]!.invite).toBeNull();
     await expect(revokeInvite("http://m/v1", HOST, account, made.jti, f)).rejects.toMatchObject({ status: 409 });
+  });
+
+  test("a custom code: made, listed as custom without the code, matched loosely, unique while open", async () => {
+    const { admin, account, f } = await setup(true);
+    const made = await createInvite("http://m/v1", HOST, account, 7, f, Date.now(), "Pancake-Night");
+    expect(made).toMatchObject({ invite: "Pancake-Night", custom: true });
+    const list = await fetchInvites("http://m/v1", HOST, account, f);
+    expect(list[0]).toMatchObject({ state: "open", custom: true, invite: null });
+    expect(admin.inviteFor("pancake night")?.jti).toBe(made.jti);
+    expect(inviteKey("bcdfg-hjkmp qrtvw")).toBe("BCDFGHJKMPQRTVW");
+    await expect(createInvite("http://m/v1", HOST, account, 7, f, Date.now(), "PANCAKE NIGHT")).rejects.toMatchObject({ status: 409 });
   });
 });

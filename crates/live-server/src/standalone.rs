@@ -23,7 +23,8 @@ pub const USAGE: &str = "usage: h2-live-server --data DIR [options]
                           needs --tls-cert/--tls-key or --insecure-http
   --id HOST               the server id on first start
   --private               reads need a token
-  --invite-only           account creation needs an invite
+  --invite-only           account creation needs an invite (also
+                          $H2_LIVE_INVITE_ONLY=1); off by default
   --admin GAMERTAG        an admin (repeatable; also $H2_LIVE_ADMINS)
   --game-art DIR          art from `h2 live assets extract` (default DIR/game-art
                           under --data if extracted there), served at /art/game/
@@ -49,7 +50,8 @@ pub struct Standalone {
 }
 
 /// Parses `h2-live-server`'s arguments. `env` reads the environment
-/// (`H2_LIVE_DATA`, `H2_LIVE_DB`, `H2_LIVE_WEB`; `H2_LIVE_ADMINS` is read by
+/// (`H2_LIVE_DATA`, `H2_LIVE_DB`, `H2_LIVE_WEB`, `H2_LIVE_INVITE_ONLY`;
+/// `H2_LIVE_ADMINS` is read by
 /// [`crate::admin::Admins::from_flags_and_env`]).
 pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<Standalone> {
     let mut args = Args(args);
@@ -87,7 +89,10 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     };
     let policy = Policy {
         private: args.flag("--private"),
-        invite_only: args.flag("--invite-only"),
+        invite_only: args.flag("--invite-only")
+            || env("H2_LIVE_INVITE_ONLY").is_some_and(|v| {
+                matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+            }),
         admins: crate::admin::Admins::from_flags_and_env(&admin_flags)
             .map_err(|e| anyhow::anyhow!("--admin/H2_LIVE_ADMINS: {e}"))?,
         content: crate::content::ContentLimits::from_flags(
@@ -189,6 +194,22 @@ mod tests {
         })
     }
 
+    #[test]
+    fn invite_only_is_opt_in_by_flag_or_env() {
+        let dir = temp_dir("invite-only");
+        let data = dir.join("data");
+        let d = data.to_str().unwrap();
+        let only =
+            |args: &[&str], env: &[(&str, &str)]| run(args, env).unwrap().config.policy.invite_only;
+        assert!(!only(&["--data", d], &[]));
+        assert!(only(&["--data", d, "--invite-only"], &[]));
+        assert!(only(&["--data", d], &[("H2_LIVE_INVITE_ONLY", "1")]));
+        assert!(only(&["--data", d], &[("H2_LIVE_INVITE_ONLY", "true")]));
+        assert!(!only(&["--data", d], &[("H2_LIVE_INVITE_ONLY", "")]));
+        assert!(!only(&["--data", d], &[("H2_LIVE_INVITE_ONLY", "0")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What deploy/live/compose.yaml runs.
     #[test]
     fn the_compose_command_line() {
@@ -212,7 +233,6 @@ mod tests {
                 "--public-url",
                 "https://live.forbes.red",
                 "--behind-cloudflared",
-                "--invite-only",
             ],
             &[
                 ("H2_LIVE_DB", "postgres://h2live:pw@db/h2live"),
@@ -227,7 +247,7 @@ mod tests {
             "the tunnel shares the namespace"
         );
         assert_eq!(c.id.as_deref(), Some("live.forbes.red"), "a new server");
-        assert!(c.policy.invite_only);
+        assert!(!c.policy.invite_only, "open sign-up unless asked");
         assert!(!c.policy.private);
         assert_eq!(
             c.policy.public.get_with_kind(),

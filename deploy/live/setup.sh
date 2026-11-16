@@ -2,7 +2,8 @@
 # One-time setup for the Live server behind a named Cloudflare tunnel
 # (docs/live/live-hosting.md, "Docker with a named tunnel"). Asks for what it
 # needs, writes deploy/live/.env, extracts the game art if it is missing or stale,
-# starts the containers, waits for the public URL and makes a first invite.
+# starts the containers, waits for the public URL and, for an invite-only
+# server, makes a first invite.
 #
 #   deploy/live/setup.sh
 #
@@ -77,6 +78,8 @@ TXT
   [[ $url == https://* ]] || die "the public URL must start with https://"
   ask admins "Admin gamertag(s), comma-separated"
   [[ -n $admins ]] || die "name at least one admin gamertag"
+  ask invite_only "Invite-only sign-up (accounts need an invite code)? (y/n)" n
+  [[ $invite_only == [yY]* ]] && invite_only=1 || invite_only=""
 
   umask 077
   cat > .env <<ENV
@@ -84,6 +87,7 @@ TUNNEL_TOKEN=$token
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 H2_LIVE_ADMINS=$admins
 H2_LIVE_PUBLIC_URL=$url
+H2_LIVE_INVITE_ONLY=$invite_only
 H2_LIVE_DATA_DIR=./data
 H2_LIVE_ART_DIR=./art
 ENV
@@ -130,14 +134,21 @@ if [[ -z ${up:-} ]]; then
   die "$url didn't answer in 3 minutes (logs above)"
 fi
 
-say "First invite"
-h2 live invite create --server "$url" --data "$here/data" \
-  || echo "couldn't make an invite; run: h2 live invite create --server $url --data $here/data"
+invite_only="$(sed -n 's/^H2_LIVE_INVITE_ONLY=//p' .env)"
+if [[ -n $invite_only ]]; then
+  say "First invite"
+  h2 live invite create --server "$url" --data "$here/data" \
+    || echo "couldn't make an invite; run: h2 live invite create --server $url --data $here/data"
+  first="sign up with the invite code above"
+else
+  first="sign up"
+fi
 
 say "Done"
 cat <<TXT
-Open $url, sign up with the invite code above using one of your admin
-gamertags, and you're the admin.
+Open $url, $first using one of your admin gamertags, and you're the
+admin. Sign up as your admins soon: until then anyone could take those
+names. Invites: the Server screen, or h2 live invite create.
 
 Logs:     cd $here && docker compose logs -f server
 Update:   git pull && cd $here && docker compose up -d --build

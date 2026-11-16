@@ -117,6 +117,9 @@ pub struct Policy {
     /// Cloud saves: item cap, quota and item count per account
     /// (docs/live/live-cloud-saves.md).
     pub storage: crate::cloud_saves::StorageLimits,
+    /// Account recovery lockout per gamertag: wrong codes allowed, the
+    /// first lockout, its cap (live-security.md §1, Recovery).
+    pub recover_lockout: (u32, Duration, Duration),
 }
 
 impl Default for Policy {
@@ -135,6 +138,11 @@ impl Default for Policy {
             public: Default::default(),
             content: Default::default(),
             storage: Default::default(),
+            recover_lockout: (
+                crate::recovery::FREE_FAILURES,
+                crate::recovery::LOCK_BASE,
+                crate::recovery::LOCK_MAX,
+            ),
         }
     }
 }
@@ -157,6 +165,8 @@ pub struct Live {
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
+    /// Recovery secrets and the wrong-code lockout.
+    pub(crate) recovery: Arc<crate::recovery::Recovery>,
     /// Custom maps and their content (docs/game/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
@@ -386,8 +396,16 @@ impl Live {
         let mut dispatcher = Dispatcher::new(store.clone());
         dispatcher.subscribe(model.clone());
         dispatcher.subscribe(admins.clone());
-        let invites = Arc::new(crate::invites::Invites::default());
+        let invites = Arc::new(crate::invites::Invites::new(
+            identity.derive(crate::invites::CODE_LABEL),
+        ));
         dispatcher.subscribe(invites.clone());
+        let (free, base, max) = policy.recover_lockout;
+        let recovery = Arc::new(crate::recovery::Recovery::new(
+            &identity,
+            crate::guard::Backoff::new(free, base, max),
+        ));
+        dispatcher.subscribe(recovery.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
         let stats = Arc::new(crate::stats::Stats::default());
@@ -414,6 +432,7 @@ impl Live {
             local_signin: Default::default(),
             relays: Default::default(),
             invites,
+            recovery,
             catalog,
             stats,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
@@ -609,12 +628,19 @@ impl Live {
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
-            (Some(code), true) => {
-                let invite = Invite::open(code, self.identity.key.public(), &self.identity.id, now)
-                    .map_err(|e| forbidden(format!("invite: {e}")))?;
+            // A signed code (the older, long form) or a short one.
+            (Some(code), true) if live_proto::sign::Jws::parse(code.trim()).is_ok() => {
+                let invite = Invite::open(
+                    code.trim(),
+                    self.identity.key.public(),
+                    &self.identity.id,
+                    now,
+                )
+                .map_err(|e| forbidden(format!("invite: {e}")))?;
                 crate::invites::check_redeemable(self, &invite.jti)?;
                 Some(invite.jti)
             }
+            (Some(code), true) => Some(crate::invites::redeem_short(self, code, now)?),
             (None, true) => return Err(forbidden("this server needs an invite code")),
             (_, false) => None,
         };
@@ -649,12 +675,14 @@ impl Live {
         invite: Option<&str>,
     ) -> Result<CreatedAccount, ApiError> {
         let tag_stream = streams::gamertag(tag);
+        let secret = live_proto::recovery::TotpSecret::generate();
         // A random XUID can collide; the account stream's version check
         // catches it.
         for _ in 0..3 {
             let xuid = generate_xuid();
             let account = streams::account(xuid);
             let mut created = json!({"xuid": xuid, "gamertag": tag});
+            created["recovery"] = self.recovery.set_data(&secret)["sealed"].clone();
             if let Some(jti) = invite {
                 created["invite"] = json!(jti);
             }
@@ -688,6 +716,7 @@ impl Live {
                         xuid,
                         gamertag: tag.clone(),
                         id,
+                        recovery: Some(self.recovery.info(&secret, tag.as_str(), now())),
                     });
                 }
                 Err(StoreError::Conflict { stream, .. }) if stream == tag_stream => {
@@ -701,6 +730,11 @@ impl Live {
             ErrorCode::Unavailable,
             "could not allocate a XUID",
         ))
+    }
+
+    /// The server-wide limit on account creation, shared by recovery.
+    pub(crate) fn allow_create(&self, what: &str) -> bool {
+        self.creates.allow(what)
     }
 
     /// `POST /v1/events`: one signed event (security §2), by the token's
@@ -817,17 +851,13 @@ impl Live {
         Ok(meta)
     }
 
-    /// `POST /v1/invites`: the operator mints a single-use invite.
-    pub fn create_invite(&self, bearer: Option<&str>, days: i64) -> Result<String, ApiError> {
-        let author = self.authenticate(bearer, lxm::INVITES_WRITE)?;
+    /// The operator (a token signed by the server key) for `method`.
+    pub fn authorize_operator(&self, bearer: Option<&str>, method: &str) -> Result<(), ApiError> {
+        let author = self.authenticate(bearer, method)?;
         if !matches!(author, Author::Server(_)) {
             return Err(forbidden("only the server operator creates invites"));
         }
-        Ok(Invite::issue(
-            &self.identity.key,
-            &self.identity.id,
-            now() + days.clamp(1, 365) * 86_400,
-        ))
+        Ok(())
     }
 
     /// `POST /v1/presence/ping`: keeps the caller's presence alive without

@@ -35,6 +35,7 @@ mod live_cmd;
 mod live_maps;
 mod live_mappack;
 mod live_query;
+mod live_recovery;
 mod lockstep_cmd;
 mod mappack_cmd;
 mod map_testbuild;

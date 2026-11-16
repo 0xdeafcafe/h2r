@@ -6,7 +6,8 @@
 import { createSignal } from "solid-js";
 
 export type InputMode = "keyboard" | "pointer" | "gamepad";
-export type Action = "up" | "down" | "left" | "right" | "select" | "back" | "pageUp" | "pageDown";
+/** `alt` is the X button: a screen's second action (revoke, say). */
+export type Action = "up" | "down" | "left" | "right" | "select" | "back" | "pageUp" | "pageDown" | "alt";
 
 // ---- which device was used last ----
 
@@ -73,6 +74,7 @@ export function keyAction(key: string): Action | null {
     case "PageDown": return "pageDown";
     case "Enter": case "a": case "A": return "select";
     case "Escape": case "Backspace": case "b": case "B": return "back";
+    case "x": case "X": return "alt";
     default: return null;
   }
 }
@@ -85,9 +87,9 @@ export interface PadLike {
   axes: ReadonlyArray<number>;
 }
 
-/** The standard mapping's buttons: A and Start select, B backs out, the shoulders page, the d-pad steers. */
+/** The standard mapping's buttons: A and Start select, B backs out, X is the second action, the shoulders page, the d-pad steers. */
 const PAD_BUTTONS: Array<[number, Action]> = [
-  [0, "select"], [9, "select"], [1, "back"], [4, "pageUp"], [5, "pageDown"],
+  [0, "select"], [9, "select"], [1, "back"], [2, "alt"], [4, "pageUp"], [5, "pageDown"],
   [12, "up"], [13, "down"], [14, "left"], [15, "right"],
 ];
 const STEER: ReadonlySet<Action> = new Set<Action>(["up", "down", "left", "right"]);
