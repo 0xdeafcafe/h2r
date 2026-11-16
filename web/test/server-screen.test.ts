@@ -8,7 +8,6 @@ import {
   fetchInvites,
   fetchServerFacts,
   formatUptime,
-  grantCommand,
   inviteBody,
   inviteData,
   parseAdminStatus,
@@ -17,6 +16,8 @@ import {
   reachWords,
   revokeInvite,
   serverPods,
+  adminSourceWords,
+  HALO_ADMIN,
 } from "../src/admin/server";
 import type { LocalAccount } from "../src/state/account";
 import { canonicalJson, parseJws, b64urlDecode } from "../src/state/verify";
@@ -99,8 +100,8 @@ describe("server facts and status", () => {
     expect(reachWords({ url: "https://x", tunnel: "named" })).toBe("named tunnel");
     expect(artWords(parseAdminStatus(STATUS).game_art)).toBe("this machine only · extractor v7");
     expect(artWords(parseAdminStatus({}).game_art)).toBe("none extracted");
-    expect(grantCommand("afr")).toBe("h2 live admin grant afr");
-    expect(grantCommand("Sneaky Pete", true)).toBe('h2 live admin revoke "Sneaky Pete"');
+    expect(adminSourceWords("configured")).toBe("set at startup");
+    expect(adminSourceWords("granted")).toBe("granted");
   });
 
   test("an old server without /v1/server reads as null", async () => {
@@ -133,10 +134,26 @@ describe("admin gating", () => {
       expect(pods.map((p) => p.label)).toEqual(["another server", "event log", "players", "stats site"]);
       expect(pods.some((p) => p.to?.startsWith("/stats/admin") || p.to === "/dash/server/invites")).toBe(false);
       expect(serverPods("invites", who)).toEqual([]);
+      expect(serverPods("accounts", who)).toEqual([]);
+      // Importing is how a signed-out browser becomes a CLI account: open to all, no admin tools.
+      const imp = serverPods("import", who);
+      expect(imp.map((p) => p.to)).toEqual(["/dash/signin", "/dash/signup", "/dash/server/connect", "/dash/server"]);
     }
     const admin = serverPods("overview", true);
-    expect(admin.map((p) => p.to)).toEqual(["/dash/server/invites", "/stats/admin?tab=motd", "/stats/admin?tab=hopper", "/dash/server/connect"]);
-    expect(serverPods("invites", true).map((p) => p.run ?? p.to)).toEqual(["create", "copy", "/stats/admin?tab=motd", "/dash/server"]);
+    expect(admin.map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/accounts", HALO_ADMIN, "/dash/server/connect"]);
+    expect(serverPods("invites", true).map((p) => p.run ?? p.to)).toEqual(["create", "copy", "/dash/server/accounts", "/dash/server"]);
+    expect(serverPods("accounts", true).map((p) => p.to)).toEqual(["/dash/server/invites", "/dash/server/import", HALO_ADMIN, "/dash/server"]);
+    expect(serverPods("import", true).map((p) => p.to)).toEqual(["/dash/server/accounts", "/dash/server/invites", HALO_ADMIN, "/dash/server"]);
+  });
+
+  test("the dashboard keeps the service; the stats admin keeps only Halo's things", () => {
+    // Every admin pod on the dashboard is a dashboard screen, apart from the one way into the Halo admin.
+    for (const view of ["overview", "invites", "accounts", "import"] as const) {
+      for (const p of serverPods(view, true)) {
+        if (p.to?.startsWith("/stats")) expect(p.to).toBe(HALO_ADMIN);
+      }
+    }
+    expect(HALO_ADMIN).toBe("/stats/admin");
   });
 });
 

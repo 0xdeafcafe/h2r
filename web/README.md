@@ -61,7 +61,11 @@ frames' `machines`), two pairs of teleporters with their links and a
 gravity lift (in the glb's extras); `H2_MOCK_FURNITURE=0` leaves it out.
 `H2_MOCK_ADMIN=1` makes every account
 signed up in the browser an admin, so the dashboard's server screen shows "your server"
-and its invites, and the stats site shows the admin area (`mock/admin.ts`).
+and its invites, accounts and import screens, and the stats site shows the
+Halo admin area (`mock/admin.ts`). `H2_MOCK_HOPPER=1` serves a stand-in
+playlist file (invented playlists, plain numbers) so the Halo admin's
+playlist builder has something to edit; without it that tab says nothing
+has been imported yet.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real

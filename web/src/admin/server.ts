@@ -175,13 +175,6 @@ export function artWords(a: GameArtFacts): string {
   return a.extractor ? `${who} · extractor v${a.extractor}` : who;
 }
 
-/** The CLI line that makes `tag` an admin (the server lets only the
- *  operator grant, docs/live/live-admin.md §5). */
-export function grantCommand(tag: string, revoke = false): string {
-  const t = /\s/.test(tag) ? `"${tag}"` : tag;
-  return `h2 live admin ${revoke ? "revoke" : "grant"} ${t}`;
-}
-
 /** What an admin signs to make an invite lasting `days` from `nowMs`. */
 export function inviteData(days: number, nowMs: number, jti: string = randomId()): { jti: string; exp: number } {
   const d = Math.min(INVITE_MAX_DAYS, Math.max(1, Math.round(days)));
@@ -272,34 +265,83 @@ export async function revokeInvite(api: string, aud: string, me: LocalAccount, j
 
 /** One of the four small pods on a server screen: a place to go, or an
  *  action on the invites screen. */
-export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe"; to?: string; back?: boolean; run?: "create" | "copy" }
+export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe" | "gear"; to?: string; back?: boolean; run?: "create" | "copy" }
 
-/** The pods of the server overview and the invites screen. Admin tools
- *  only for an admin (`isMeAdmin() === true`); everyone else, and anyone
- *  while that is still unknown, gets the visitor's set. */
-export function serverPods(view: "overview" | "invites", admin: boolean | null): ServerPod[] {
+/** The server screens: the overview, and under it invites, accounts and
+ *  importing an account (/dash/server/<view>). */
+export type ServerView = "overview" | "invites" | "accounts" | "import";
+
+/** Where the dashboard's "halo admin" goes: the stats site's admin area,
+ *  which keeps only the game's own things (the message of the day,
+ *  playlists, custom content). Everything about the service (invites,
+ *  accounts and admins, importing an account, the server) is on the
+ *  dashboard. */
+export const HALO_ADMIN = "/stats/admin";
+
+/** The pods of each server screen. Admin tools only for an admin
+ *  (`isMeAdmin() === true`); everyone else, and anyone while that is still
+ *  unknown, gets the visitor's set. Importing an account is open to
+ *  anyone: it is how a browser signs in as an account the CLI holds. */
+export function serverPods(view: ServerView, admin: boolean | null): ServerPod[] {
   if (admin !== true) {
-    return view === "invites"
-      ? []
-      : [
+    switch (view) {
+      case "overview":
+        return [
           { label: "another server", glyph: "server", to: "/dash/server/connect" },
           { label: "event log", glyph: "history", to: "/stats/events" },
           { label: "players", glyph: "career", to: "/dash/players" },
           { label: "stats site", glyph: "record", to: "/stats" },
         ];
+      case "import":
+        return [
+          { label: "sign in", glyph: "key", to: "/dash/signin" },
+          { label: "create account", glyph: "sign", to: "/dash/signup" },
+          { label: "another server", glyph: "server", to: "/dash/server/connect" },
+          { label: "server", glyph: "globe", to: "/dash/server", back: true },
+        ];
+      default:
+        return [];
+    }
   }
-  if (view === "invites") {
-    return [
-      { label: "new invite", glyph: "key", run: "create" },
-      { label: "copy code", glyph: "download", run: "copy" },
-      { label: "message of the day", glyph: "sign", to: "/stats/admin?tab=motd" },
-      { label: "your server", glyph: "globe", to: "/dash/server", back: true },
-    ];
+  switch (view) {
+    case "invites":
+      return [
+        { label: "new invite", glyph: "key", run: "create" },
+        { label: "copy code", glyph: "download", run: "copy" },
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts" },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "accounts":
+      return [
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "import account", glyph: "download", to: "/dash/server/import" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "import":
+      return [
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    default:
+      return [
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "another server", glyph: "server", to: "/dash/server/connect" },
+      ];
   }
-  return [
-    { label: "invites", glyph: "key", to: "/dash/server/invites" },
-    { label: "message of the day", glyph: "sign", to: "/stats/admin?tab=motd" },
-    { label: "playlists", glyph: "record", to: "/stats/admin?tab=hopper" },
-    { label: "another server", glyph: "server", to: "/dash/server/connect" },
-  ];
+}
+
+/** How an admin came to be one, in words (no commands: granting is the
+ *  operator's, on the server's own machine). */
+export function adminSourceWords(source: string): string {
+  switch (source) {
+    case "configured": return "set at startup";
+    case "granted": return "granted";
+    case "session": return "this session";
+    default: return source;
+  }
 }
