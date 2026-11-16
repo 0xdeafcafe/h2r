@@ -1,0 +1,20 @@
+[package]
+name = "cloud-saves"
+description = "Cloud saves on the Live service: merge an account's saved items into the local save storage at sign-in, and push changes as the game writes them (docs/live/live-cloud-saves.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+live-proto.workspace = true
+# The change observer's report (vfs::Changed).
+vfs.workspace = true
+settings = { path = "../settings" }
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[dev-dependencies]
+# The real server on loopback, for HttpRemote.
+live-server.workspace = true
