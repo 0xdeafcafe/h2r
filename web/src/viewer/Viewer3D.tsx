@@ -5,6 +5,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMou
 import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
+import { gameArt } from "../state/gameart";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
 import "./viewer.css";
 
@@ -75,6 +76,13 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (!started && frame.players.length) { started = true; if (mode() !== "orbit") pick(mode(), follow()); }
     });
     onCleanup(() => { stop(); ro.disconnect(); io.disconnect(); s.dispose(); scene = null; });
+  });
+
+  // Player models, when the server's art has them: each glb is fetched the
+  // first time a player needs it. Without them players are capsules.
+  createEffect(() => {
+    const art = gameArt();
+    scene?.setModels(art?.root ?? null, art?.manifest.models);
   });
 
   // The map: load it when its address is known; a grid floor otherwise.

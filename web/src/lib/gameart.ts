@@ -4,6 +4,7 @@
 // the manifest and components fall back to the art pack when a key is absent.
 
 import { parseMapFiles } from "../map/views";
+import { parseModels, type PlayerModels } from "../viewer/models";
 
 export interface GameArtImage { file: string; width: number; height: number }
 
@@ -18,6 +19,8 @@ export interface GameArtManifest {
   skipped?: Record<string, string>;
   /** Per-map geometry files by map stem (map/views.ts), when the server has them. */
   maps?: Record<string, import("../map/views").MapFiles>;
+  /** Player and weapon models for the 3D view (viewer/models.ts), when the server has them. */
+  models?: PlayerModels | null;
 }
 
 /** A picture the manifest names: where it is and its pixel size. */
@@ -51,7 +54,7 @@ export function parseManifest(raw: unknown): GameArtManifest | null {
     for (const [from, to] of Object.entries(m.aliases)) if (typeof to === "string") aliases[from] = to;
   }
   const palette = Array.isArray(m.palette) ? m.palette.filter((c): c is string => typeof c === "string" && parseHexColour(c) !== null) : [];
-  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped, maps: parseMapFiles(raw) };
+  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped, maps: parseMapFiles(raw), models: parseModels(m.models) };
 }
 
 /** A file must stay inside the manifest's directory. */

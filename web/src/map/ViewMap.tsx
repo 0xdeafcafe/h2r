@@ -8,7 +8,8 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import type { RosterEntry } from "./render";
+import { strokeAim, strokeTracer, type RosterEntry } from "./render";
+import { ShotQueue } from "./shots";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
   type MapViewDef, type MapViews, type PanZoom,
@@ -54,6 +55,7 @@ export default function ViewMap(props: {
   let mx: number | null = null, my: number | null = null;
   let engaged = false;
   const images = new Map<string, HTMLImageElement>();
+  const shots = new ShotQueue();
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const def = (): MapViewDef => props.views.views.find((v) => v.id === props.view) ?? props.views.views[0]!;
@@ -207,11 +209,35 @@ export default function ViewMap(props: {
       }
       if (!props.mini) canvas.style.cursor = pointers.size ? "grabbing" : hover !== null ? "pointer" : target.k > fit().k * 1.001 ? "grab" : "default";
       const r = props.mini ? 3 : 5;
+      // Shots: a fading line from the player along their aim, plotted in the
+      // world so an iso view shows it rise and fall. Reduced motion has no
+      // fading lines: the aim line is drawn bright while they fire instead.
+      let firing: ReadonlySet<number> | null = null;
+      if (!props.mini) {
+        shots.observe(f.players, now);
+        if (still) firing = shots.firingNow(now);
+        else for (const shot of shots.live(now)) {
+          const [ax, ay, az] = shot.aim;
+          const [p0x, p0y] = worldToPixel(m, shot.x, shot.y, shot.z), [p1x, p1y] = worldToPixel(m, shot.x + ax * 9, shot.y + ay * 9, shot.z + az * 9);
+          const x0 = sx(p0x), y0 = sy(p0y), dx = sx(p1x) - x0, dy = sy(p1y) - y0, len = Math.hypot(dx, dy);
+          if (len < 2) continue;
+          const k = Math.max(1, 46 / len);
+          strokeTracer(ctx, x0 + (dx / len) * r, y0 + (dy / len) * r, x0 + dx * k, y0 + dy * k, shot.alpha);
+        }
+      }
       for (const q of placed) {
         const info = roster.get(q.p.index);
         const colour = info?.colour ?? "#999";
         const picked = hover === q.p.index || highlight === q.p.index;
         const rr = picked ? r * 1.4 : r;
+        // Where they are looking, when the frame says.
+        if (!props.mini && q.p.aim) {
+          const [ax, ay, az] = q.p.aim;
+          const [ex, ey] = worldToPixel(m, q.p.x + ax, q.p.y + ay, q.p.z + az), [ox, oy] = worldToPixel(m, q.p.x, q.p.y, q.p.z);
+          const hot = firing?.has(q.p.index) ?? false;
+          const flat = Math.min(1, Math.hypot(ex - ox, ey - oy) / Math.max(1e-6, Math.hypot(m[0][0], m[0][1], m[0][2])));
+          strokeAim(ctx, q.x, q.y, ex - ox, ey - oy, rr, rr + (hot ? 22 : 11) * flat, colour, hot);
+        }
         // A nose for facing, then the dot over it.
         const a = yawOnView(m, q.p.yaw);
         ctx.fillStyle = colour;

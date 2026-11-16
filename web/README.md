@@ -25,7 +25,7 @@ Vite proxies `/v1` (including the WebSockets), `/healthz` and
 |---|---|
 | `bun run mock` | the mock server alone (`H2_MOCK_PORT`, default 8075) |
 | `bun run build` | production build into `web/dist` |
-| `bun test` | unit tests (reducer, interpolation, replay, reconnect, signatures, derived stats, sign-up JWS) |
+| `bun test` | unit tests (reducer, interpolation, replay, reconnect, signatures, derived stats, sign-up JWS, player models and shots) |
 | `bun run typecheck` | `tsc --noEmit`, strict |
 
 Mock knobs: `H2_MOCK_HISTORY_MIN` (minutes of simulated history at boot,
@@ -39,6 +39,9 @@ like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
+`H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
+`mock/models.ts`) to the art manifest, so the 3D view's model path runs;
+without it players are capsules, as on a server with no models.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -192,6 +195,29 @@ and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
+
+**Players, aim and shots.** Frames may say each player's `species`, `aim`
+(a unit direction), held `weapon` and `shots` fired since their last frame;
+all four are optional and anything off the contract is dropped
+(`state/frames.ts`). When the art manifest has a `models` table
+(`viewer/models.ts`), the 3D view draws each player as their species' glb
+(a spartan for a species it has no model of) with the held weapon's glb
+under its `weapon` node, in the roster's colour: the glb's `COLOR_0` gives
+each vertex a primary weight (R, the player's colour) and a secondary one
+(G, a darker shade), and a model without it is tinted all over. Each glb is
+fetched once and cloned per player; team mates share the coloured mesh
+(`viewer/players3d.ts`). Nothing animates: the posed model glides and turns
+with the smoothed frames. It is life size up close and grows as the camera
+backs away, up to the size capsules are drawn at. Without models (the mock
+by default, an older extraction) players stay capsules. Either way a faint
+ray from the head shows the aim (level along the yaw when the frame has
+none), the label names the weapon, and each frame's shots draw a muzzle
+flash and up to three tracers along the aim that fade in 150 ms
+(`map/shots.ts`), from the weapon's `muzzle` node or from chest height. The
+2D maps draw a short aim line from each dot and a fading line for each
+shot. With reduced motion nothing flashes: the aim ray turns bright while a
+player is firing instead. Recorded frames are one a second, so a replay
+shows a second's shots as one burst.
 
 ## Architecture
 

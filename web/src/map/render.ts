@@ -4,6 +4,7 @@
 import type { MapOutline } from "../api/types";
 import type { SampledPlayer } from "../state/frames";
 import type { MapPalette } from "./palette";
+import type { LiveShot } from "./shots";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -27,6 +28,51 @@ export interface Scene {
   flat?: boolean;
   /** Player index under the pointer, when the canvas is tracking one. */
   hover?: number | null;
+  /** Shots on screen now: a fading line from the player along their aim. */
+  shots?: LiveShot[];
+  /** Players to show as firing with a steady, brighter aim line (reduced
+   *  motion, where nothing flashes). */
+  firing?: ReadonlySet<number>;
+}
+
+/** The line a shot draws on a 2D map: from (x0, y0) to (x1, y1), bright at
+ *  the player and fading out along its length, over a dark under-stroke so
+ *  it reads on any picture. */
+export function strokeTracer(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, alpha: number, width = 2) {
+  if (!(alpha > 0) || (x0 === x1 && y0 === y1)) return;
+  const fade = (rgb: string, a: number) => {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    g.addColorStop(0, `rgba(${rgb}, ${a})`);
+    g.addColorStop(1, `rgba(${rgb}, 0)`);
+    return g;
+  };
+  ctx.lineCap = "round";
+  ctx.globalAlpha = Math.min(1, alpha);
+  for (const [style, w] of [[fade("0, 0, 0", 0.55), width + 2], [fade("255, 240, 190", 1), width]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A short line from a dot the way its player is looking. */
+export function strokeAim(ctx: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, from: number, to: number, colour: string, hot = false) {
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return;
+  const ux = dx / len, uy = dy / len;
+  ctx.lineCap = "round";
+  for (const [style, w] of [["rgba(0, 0, 0, 0.7)", hot ? 4.5 : 3.5], [hot ? "rgb(255, 240, 190)" : colour, hot ? 2.5 : 1.5]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x + ux * from, y + uy * from);
+    ctx.lineTo(x + ux * to, y + uy * to);
+    ctx.stroke();
+  }
 }
 
 export interface View { cx: number; cy: number; scale: number; ready: boolean }
@@ -125,8 +171,20 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   }
   ctx.globalAlpha = 1;
 
-  // Players.
   const r = s.flat ? (s.mini ? 3 : 5) : s.mini ? 3.5 : 8;
+
+  // Shots: a fading line from the player along their aim (not on thumbnails).
+  if (!s.mini) {
+    for (const shot of s.shots ?? []) {
+      const [ax, ay] = shot.aim, flatLen = Math.hypot(ax, ay);
+      if (flatLen < 0.05) continue; // straight up or down: nothing to draw from above
+      const len = Math.max(46, 9 * v.scale) * flatLen;
+      const x = sx(shot.x), y = sy(shot.y);
+      strokeTracer(ctx, x + (ax / flatLen) * r, y - (ay / flatLen) * r, x + (ax / flatLen) * (r + len), y - (ay / flatLen) * (r + len), shot.alpha);
+    }
+  }
+
+  // Players.
   const sorted = s.players.slice().sort((a, b) => a.z - b.z);
   for (const p of sorted) {
     if (!p.alive) continue;
@@ -138,6 +196,11 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     // Facing: a soft wedge ahead of the dot. Yaw 0 = +x, counter-clockwise.
     const a = -p.yaw;
     const picked = s.highlight === p.index || s.hover === p.index;
+    // Where they are looking, when the frame says: a short line from the dot.
+    if (!s.mini && p.aim) {
+      const hot = s.firing?.has(p.index) ?? false;
+      strokeAim(ctx, x, y, p.aim[0], -p.aim[1], r, r + (hot ? 22 : 11) * Math.hypot(p.aim[0], p.aim[1]), colour, hot);
+    }
     if (s.flat) {
       // Flat style: a small solid dot with a dark hairline, no wedge or
       // nose; the label only for the hovered or selected player.

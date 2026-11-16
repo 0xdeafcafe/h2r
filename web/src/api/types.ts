@@ -35,6 +35,14 @@ export interface FramePlayer {
   pos: [number, number, number];
   yaw: number;
   vehicle?: string | null;
+  /** The player's biped: "spartan" or "elite" (others draw as a spartan). */
+  species?: string | null;
+  /** Unit aim direction in game coordinates (z up). */
+  aim?: [number, number, number] | null;
+  /** The held weapon's tag stem, lower case: "battle_rifle", "smg". */
+  weapon?: string | null;
+  /** Shots the held weapon fired since this player's previous frame. */
+  shots?: number | null;
 }
 
 export interface Frame {

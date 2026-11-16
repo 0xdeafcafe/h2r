@@ -14,6 +14,64 @@ export interface SampledPlayer {
   z: number;
   yaw: number;
   vehicle: string | null;
+  /** The biped's species id, when the frame says. */
+  species?: string | null;
+  /** Unit aim direction (game coordinates), when the frame says. */
+  aim?: Aim | null;
+  /** The held weapon's stem, when the frame says. */
+  weapon?: string | null;
+  /** Shots fired in the frame at or before the sampled tick (absent for
+   *  none), and that frame's tick: together they name one burst, so a view
+   *  can tell a new one from the one it has already drawn. */
+  shots?: number;
+  shotTick?: number;
+}
+
+export type Aim = [number, number, number];
+
+const ID = /^[a-z0-9_]{1,32}$/;
+export const MAX_SHOTS_PER_FRAME = 64;
+
+/** A species or weapon id as the contract spells them, else null. */
+export function cleanId(v: unknown): string | null {
+  return typeof v === "string" && ID.test(v) ? v : null;
+}
+
+/** An aim made unit length; null for anything that isn't three finite
+ *  numbers with some length. */
+export function cleanAim(v: unknown): Aim | null {
+  if (!Array.isArray(v) || v.length !== 3) return null;
+  const [x, y, z] = v as unknown[];
+  if (typeof x !== "number" || typeof y !== "number" || typeof z !== "number") return null;
+  const len = Math.hypot(x, y, z);
+  if (!Number.isFinite(len) || len < 1e-6) return null;
+  return [x / len, y / len, z / len];
+}
+
+/** A frame's shot count: a whole number from 0 to 64. */
+export function cleanShots(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 1) return 0;
+  return Math.min(MAX_SHOTS_PER_FRAME, Math.floor(v));
+}
+
+/** Level aim along a yaw (0 = +x, counter-clockwise). */
+export function yawAim(yaw: number): Aim {
+  return [Math.cos(yaw), Math.sin(yaw), 0];
+}
+
+/** Where a player is looking: their aim, or straight ahead when the frame
+ *  has none (an older sender). */
+export function aimOf(p: { aim?: Aim | null; yaw: number }): Aim {
+  return p.aim ?? yawAim(p.yaw);
+}
+
+/** Blends two unit directions and keeps the result unit length. Opposite
+ *  directions have no middle: the nearer end is used. */
+export function nlerpAim(a: Aim, b: Aim, t: number): Aim {
+  const x = lerp(a[0], b[0], t), y = lerp(a[1], b[1], t), z = lerp(a[2], b[2], t);
+  const len = Math.hypot(x, y, z);
+  if (len < 1e-4) return t < 0.5 ? [a[0], a[1], a[2]] : [b[0], b[1], b[2]];
+  return [x / len, y / len, z / len];
 }
 
 /** Distance (world units) above which we snap instead of interpolating,
@@ -32,14 +90,23 @@ export function lerpAngle(a: number, b: number, t: number): number {
   return a + d * t;
 }
 
-function fromFramePlayer(p: FramePlayer): SampledPlayer {
-  return { index: p.index, alive: p.alive, x: p.pos[0], y: p.pos[1], z: p.pos[2], yaw: p.yaw, vehicle: p.vehicle ?? null };
+/** A frame's player as sampled. `shotsFrom` is the frame the sample's shots
+ *  are read from (the one at or before the sampled tick), when not this one. */
+export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FramePlayer | undefined = p): SampledPlayer {
+  const out: SampledPlayer = { index: p.index, alive: p.alive, x: p.pos[0], y: p.pos[1], z: p.pos[2], yaw: p.yaw, vehicle: p.vehicle ?? null };
+  const species = cleanId(p.species), weapon = cleanId(p.weapon), aim = cleanAim(p.aim);
+  if (species) out.species = species;
+  if (weapon) out.weapon = weapon;
+  if (aim) out.aim = aim;
+  const shots = tick === undefined || !shotsFrom ? 0 : cleanShots(shotsFrom.shots);
+  if (shots && shotsFrom!.alive) { out.shots = shots; out.shotTick = tick; }
+  return out;
 }
 
 /** Blends two frames at `tick`. Players missing from `b` hold their
  *  position from `a`; players only in `b` appear when t >= 0.5. */
 export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number): SampledPlayer[] {
-  if (!b || b.tick <= a.tick) return a.players.map(fromFramePlayer);
+  if (!b || b.tick <= a.tick) return a.players.map((p) => fromFramePlayer(p, a.tick));
   const t = Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick)));
   const next = new Map<number, FramePlayer>();
   for (const p of b.players) next.set(p.index, p);
@@ -47,23 +114,23 @@ export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number):
   for (const pa of a.players) {
     const pb = next.get(pa.index);
     next.delete(pa.index);
-    if (!pb) { out.push(fromFramePlayer(pa)); continue; }
+    if (!pb) { out.push(fromFramePlayer(pa, a.tick)); continue; }
     const dx = pb.pos[0] - pa.pos[0], dy = pb.pos[1] - pa.pos[1], dz = pb.pos[2] - pa.pos[2];
     const far = dx * dx + dy * dy + dz * dz > SNAP_DISTANCE * SNAP_DISTANCE;
     if (!pa.alive || !pb.alive || far) {
       // No sliding a corpse to a spawn point: take the nearer frame.
-      out.push(fromFramePlayer(t < 0.5 ? pa : pb));
+      out.push(fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa));
       continue;
     }
-    out.push({
-      index: pa.index,
-      alive: true,
-      x: lerp(pa.pos[0], pb.pos[0], t),
-      y: lerp(pa.pos[1], pb.pos[1], t),
-      z: lerp(pa.pos[2], pb.pos[2], t),
-      yaw: lerpAngle(pa.yaw, pb.yaw, t),
-      vehicle: (t < 0.5 ? pa.vehicle : pb.vehicle) ?? null,
-    });
+    // Everything but the place comes from the nearer frame; shots from `a`.
+    const s = fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa);
+    s.x = lerp(pa.pos[0], pb.pos[0], t);
+    s.y = lerp(pa.pos[1], pb.pos[1], t);
+    s.z = lerp(pa.pos[2], pb.pos[2], t);
+    s.yaw = lerpAngle(pa.yaw, pb.yaw, t);
+    const aa = cleanAim(pa.aim), ab = cleanAim(pb.aim);
+    if (aa && ab) s.aim = nlerpAim(aa, ab, t);
+    out.push(s);
   }
   if (t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
   return out;
@@ -83,7 +150,7 @@ export function findFrame(frames: readonly Frame[], tick: number): number {
 export function sampleFrames(frames: readonly Frame[], tick: number): SampledPlayer[] {
   if (frames.length === 0) return [];
   const i = findFrame(frames, tick);
-  if (i < 0) return frames[0]!.players.map(fromFramePlayer);
+  if (i < 0) return frames[0]!.players.map((p) => fromFramePlayer(p));
   return interpolateFrames(frames[i]!, frames[i + 1], tick);
 }
 

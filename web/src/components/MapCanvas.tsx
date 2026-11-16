@@ -4,6 +4,7 @@ import type { SampledPlayer } from "../state/frames";
 import { onAnimationFrame } from "../map/scheduler";
 import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type RosterEntry } from "../map/render";
 import { readPalette, type MapPalette } from "../map/palette";
+import { ShotQueue } from "../map/shots";
 
 export interface MapFrame {
   players: SampledPlayer[];
@@ -36,6 +37,8 @@ export default function MapCanvas(props: {
   let flat = false;
   let mx: number | null = null, my: number | null = null;
   let hover: number | null = null;
+  const shots = new ShotQueue();
+  const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // Re-fit from scratch when the map outline changes.
   createEffect(() => { props.outline(); view.ready = false; });
@@ -92,7 +95,10 @@ export default function MapCanvas(props: {
         hover = found;
         canvas.style.cursor = found === null ? "default" : "pointer";
       }
+      if (!props.mini) shots.observe(f.players, now);
       const scene = {
+        shots: props.mini || still ? undefined : shots.live(now),
+        firing: props.mini || !still ? undefined : shots.firingNow(now),
         players: f.players,
         markers: f.markers,
         roster: props.roster(),
