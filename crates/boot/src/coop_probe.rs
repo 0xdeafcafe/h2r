@@ -894,7 +894,10 @@ impl feature::Feature for Probe {
                         Some(want) => lobby_setup(&st, &want, c),
                         None => Ok(Flow::Continue),
                     }
-                });
+                })
+                // Our skulls' calls re-enter the tick; the setup runs
+                // inside them.
+                .after_feature(crate::skulls_custom::FEATURE);
         }
 
         // Every tick: session, simulation, stalls, hashes.

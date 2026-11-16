@@ -565,3 +565,56 @@ fn the_co_op_hooks_are_on_the_plan_and_off_until_armed() {
     forced.disarm();
     assert!(forced.active());
 }
+
+#[test]
+fn the_screens_and_the_hooks_share_the_plan() {
+    let rt = runtime::Runtime::new(
+        runtime::Guest::new(),
+        runtime::dispatch::Dispatch::default(),
+    );
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let arm = coop_probe::install_live(&rt, &mut r, Path::new("/nonexistent"))
+        .unwrap()
+        .unwrap();
+    let (lobby, _) = lobby_with(Arc::default());
+    drop(arm);
+    r.add(&CoopScreens {
+        lobby: Arc::clone(&lobby),
+    })
+    .unwrap();
+    for (id, screen, rows) in [
+        (
+            "coop-screen",
+            SCREEN,
+            Arc::new(HostRows(Arc::clone(&lobby))) as Arc<dyn Rows>,
+        ),
+        (
+            "coop-friends",
+            FRIENDS,
+            Arc::new(FriendRows(Arc::clone(&lobby))),
+        ),
+        ("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(&lobby)))),
+    ] {
+        r.add(&ListClass::with_rows(id, screen, rows)).unwrap();
+    }
+    r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
+        .unwrap();
+    // Our skulls are on in every boot with settings, with a mutating hook
+    // on the same tick.
+    let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+    r.add(&crate::skulls_custom::SkullsCustom(Arc::new(
+        crate::skulls_custom::Custom::new(store, None, None, false),
+    )))
+    .unwrap();
+    let plan = r.build(&feature::Base).unwrap();
+    let text = plan.text();
+    assert!(
+        text.contains(FEATURE) && text.contains("open the co-op join screen"),
+        "{text}"
+    );
+    assert!(
+        lobby.texts.address(Texts::id(LINE_SLOT)).is_some(),
+        "the texts have guest memory"
+    );
+    assert!(crate::list_class::loader_of(JOIN).is_some());
+}

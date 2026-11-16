@@ -1071,7 +1071,12 @@ impl feature::Feature for CoopScreens {
                             Ok(Flow::Continue)
                         }
                     }
-                });
+                })
+                // Inside the co-op hooks' lobby setup: it runs first, and
+                // both re-enter the tick when they call the guest.
+                .after_feature(coop_probe::LIVE_ID)
+                .after_feature(coop_probe::ID)
+                .after_feature(crate::skulls_custom::FEATURE);
         }
         Ok(())
     }
