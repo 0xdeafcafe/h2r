@@ -180,10 +180,11 @@ fn the_panel_draws_without_changing_anything() {
     t.selected = 2;
     let ctx = egui::Context::default();
     for _ in 0..3 {
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             let mut st = None;
             t.ui(ui, &mut cx!(st));
-        });
+        })
+        .drop_without_applying_deltas();
     }
     assert!(!t.is_dirty());
     assert!(!t.can_undo());

@@ -252,7 +252,8 @@ fn frames_draw_headless() {
     s.add_tool(Box::new(f));
     let ctx = egui::Context::default();
     let frame = |s: &mut Shell| {
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| s.ui(ui));
+        ctx.run_ui(egui::RawInput::default(), |ui| s.ui(ui))
+            .drop_without_applying_deltas();
     };
     frame(&mut s);
     frame(&mut s);

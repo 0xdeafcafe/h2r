@@ -439,7 +439,7 @@ pub(crate) mod tests {
         }
         // A non-English title slot that a rewrite would clobber.
         let at = 0x0c + 3 * 0x10;
-        f.image_mut()[at..at + 4].copy_from_slice(b"Liste");
+        f.image_mut()[at..at + 5].copy_from_slice(b"Liste");
         f
     }
 

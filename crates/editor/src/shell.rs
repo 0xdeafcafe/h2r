@@ -295,10 +295,10 @@ impl Shell {
             PathPurpose::Open => self.request_open(path),
             PathPurpose::Source => self.open_source(path),
             PathPurpose::SaveAs => {
-                if self.save_as(path) {
-                    if let Some(next) = then {
-                        self.run(next);
-                    }
+                if self.save_as(path)
+                    && let Some(next) = then
+                {
+                    self.run(next);
                 }
             }
         }
