@@ -2402,3 +2402,152 @@ fn the_specular_mask_rides_in_red() {
     );
     assert_eq!((none.rgba[0], none.rgba[2]), (0, 0));
 }
+
+#[test]
+fn a_pass_blends_as_its_render_states_say() {
+    // The vehicles' overlay decals: DESTCOLOR, SRCCOLOR.
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x306), Some(0x300)),
+        Some(Blend::Double)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x306), Some(0)),
+        Some(Blend::Multiply)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0), Some(0x300)),
+        Some(Blend::Multiply)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(1), Some(1)),
+        Some(Blend::Additive)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x302), Some(0x303)),
+        Some(Blend::Alpha)
+    );
+    assert_eq!(
+        blend_of_pass(Some(0), Some(0x306), Some(0x300)),
+        None,
+        "not blending"
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x307), Some(0x300)),
+        None,
+        "not one we know"
+    );
+    assert_eq!(blend_of_pass(None, None, None), None);
+}
+
+#[test]
+fn a_double_decal_is_unlit_and_says_how_it_blends() {
+    let decal = Material {
+        name: "no_step".into(),
+        texture: Some(Image {
+            width: 1,
+            height: 1,
+            rgba: vec![128, 128, 128, 255],
+        }),
+        blend: Blend::Double,
+        ..Material::default()
+    };
+    let model = Model {
+        mesh_name: "vehicle".into(),
+        primitives: vec![Primitive {
+            material: 0,
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0; 2]; 3],
+            indices: vec![0, 1, 2],
+            ..Primitive::default()
+        }],
+        materials: vec![decal],
+        ..Model::default()
+    };
+    let (doc, _) = parse_glb(&write_glb(&model));
+    let m = &doc["materials"][0];
+    assert_eq!(m["extras"]["h2"]["blend"], "double");
+    assert!(m["extensions"]["KHR_materials_unlit"].is_object());
+    assert!(
+        m.get("alphaMode").is_none(),
+        "it blends by colour, not alpha"
+    );
+    assert_eq!(doc["extensionsUsed"], json!(["KHR_materials_unlit"]));
+}
+
+#[test]
+fn the_multiplayer_variant_is_drawn_else_the_default() {
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // A Scorpion: its multiplayer cannon.
+    assert_eq!(
+        pick_variant(&names(&["default", "damaged", "multiplayer"]), ""),
+        Some(2)
+    );
+    // A Warthog: its default (chaingun), not the gauss or troop variants.
+    assert_eq!(
+        pick_variant(&names(&["troop", "default", "gauss"]), "default"),
+        Some(1)
+    );
+    assert_eq!(
+        pick_variant(&names(&["default", "heretic"]), ""),
+        Some(0),
+        "no default named: the first"
+    );
+    assert_eq!(pick_variant(&[], "default"), None);
+}
+
+#[test]
+fn an_attached_object_joins_the_mesh_where_its_marker_puts_it() {
+    let tri = |material| Primitive {
+        material,
+        positions: vec![[1.0, 0.0, 0.0]],
+        normals: vec![[1.0, 0.0, 0.0]],
+        uvs: vec![[0.0; 2]],
+        indices: vec![0],
+        ..Primitive::default()
+    };
+    let mut hull = Model {
+        primitives: vec![tri(0)],
+        materials: vec![Material {
+            name: "hull".into(),
+            ..Material::default()
+        }],
+        nodes: vec![(
+            "seat_driver".into(),
+            trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+        )],
+        ..Model::default()
+    };
+    let turret = Model {
+        primitives: vec![tri(0)],
+        materials: vec![Material {
+            name: "gun".into(),
+            ..Material::default()
+        }],
+        nodes: vec![
+            (
+                "seat_gunner".into(),
+                trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+            ),
+            (
+                "seat_driver".into(),
+                trs([5.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+            ),
+        ],
+        ..Model::default()
+    };
+    // The turret marker: two units up, turned 90 degrees about +z.
+    let at = trs([0.0, 0.0, 2.0], yaw(90.0), 1.0);
+    attach_model(&mut hull, turret, &at);
+    assert_eq!(hull.materials.len(), 2);
+    let p = &hull.primitives[1];
+    assert_eq!(p.material, 1, "its materials come after the hull's");
+    assert!(close(&p.positions[0], &[0.0, 1.0, 2.0]));
+    assert!(close(&p.normals[0], &[0.0, 1.0, 0.0]));
+    let names: Vec<&str> = hull.nodes.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["seat_driver", "seat_gunner"],
+        "the hull's seat wins"
+    );
+}

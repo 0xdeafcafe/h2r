@@ -302,6 +302,24 @@ export function applyLook(mat: THREE.Material, env: THREE.Texture | null): void 
     mat.blending = THREE.AdditiveBlending;
     mat.transparent = true;
     mat.depthWrite = false;
+  } else if (look.blend === "double" || look.blend === "multiply") {
+    // A decal on the hull (a Scorpion's markings): it scales what is under
+    // it rather than covering it, as its pass blends in the game.
+    // Double: dst·src + src·dst, so its mid-grey leaves the hull as it is.
+    // (Drawn straight to the screen, three blends after its sRGB encode,
+    // so the picture doubles as stored, as in the game.)
+    mat.blending = THREE.CustomBlending;
+    mat.blendSrc = look.blend === "double" ? THREE.DstColorFactor : THREE.ZeroFactor;
+    mat.blendDst = THREE.SrcColorFactor;
+    mat.blendEquation = THREE.AddEquation;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    // A factor on what is behind, not a colour of its own.
+    mat.toneMapped = false;
+    // Pulled towards the camera a little, so it wins over the hull it lies on.
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -2;
+    mat.polygonOffsetUnits = -4;
   } else if (mat.transparent) {
     mat.depthWrite = false;
   }

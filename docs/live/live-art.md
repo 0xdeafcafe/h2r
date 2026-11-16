@@ -46,12 +46,13 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 15, so a disc extracted by an older build is extracted again
+key) is 16, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
 copy and the map pack maps; 15 vehicles in their own colours, the
-reflection tints and shaders whose compiled data another shader shares).
+reflection tints and shaders whose compiled data another shader shares;
+16 vehicles' turrets and hull decals that double what is under them).
 
 ### `map.glb`
 
@@ -698,6 +699,22 @@ Keys (what telemetry sends):
   material without a change-colour map has zero weights; weapons have no
   `COLOR_0`. These are weights, not colours: a reader must not multiply
   the base colour by them (the viewer turns vertex colours off).
+- **Turrets.** A vehicle's turrets and guns are objects of their own that
+  its model variant attaches (hlmt variants `+0x50`, 0x38 bytes: name
+  string ID at `+0`, objects block at `+0x1c`, 0x10 bytes each: parent
+  marker and child marker string IDs, then the child object reference).
+  The variant is `multiplayer` when the model has one (the Scorpion's
+  `cannon_mp`, the Wraith's `mortar_mp`, which has no side guns), else the
+  object's default (`obje +0x30`), else the first (the Warthog's
+  `default`: the chaingun; `gauss` and `troop` are other variants). Each
+  child is built like a vehicle at rest, in its own colours, its child
+  marker (or its origin, when it names none) on the parent's marker in the
+  vehicle's pose, and its own attached objects in turn (two levels). Its
+  triangles and materials join the vehicle's mesh, and its seat nodes
+  join the vehicle's (`seat_gunner` on the Warthog's chaingun) unless the
+  vehicle has that name. `asset.extras.attached` lists the attached
+  objects' tag names. On the disc the Ghost and Banshee attach nothing:
+  their guns are in their hull models.
 - **Vehicle colours.** Halo 2 paints a vehicle with its object's own
   change colours, not its driver's team (a red player's Banshee is as
   violet as anyone's). The `obje` change colours (`+0xac`, 0x10 bytes
@@ -735,8 +752,18 @@ Keys (what telemetry sends):
     the emission and `extras.h2.blend` `"add"` (the viewer adds them);
     the others are glass, `BLEND` with a see-through blue-grey factor and
     no texture; `overlay` templates (decals) blend by their alpha;
-  - it is an `overlay` decal on an opaque model (the Scorpion's
-    markings) whose picture has no alpha and reads, as decal layers do
+  - it is an `overlay` decal on an opaque model whose pass blends by
+    colour (render states `ALPHABLENDENABLE`, `SRCBLEND`, `DESTBLEND`;
+    Xbox `D3DBLEND`): `DESTCOLOR`, `SRCCOLOR` doubles what is under it
+    (`extras.h2.blend` `"double"`), `DESTCOLOR`, `ZERO` or `ZERO`,
+    `SRCCOLOR` multiplies it (`"multiply"`). The material is
+    `KHR_materials_unlit`, opaque, its picture as stored (mid-grey leaves
+    the hull alone). Every vehicle overlay on the disc doubles (the
+    Scorpion's `icon`, `number_decal`, `marine`, `no_step`, its cannon's
+    `scorpion_decal`). The viewer blends it so, unlit, not tone mapped,
+    without writing depth and pulled towards the camera (polygon offset);
+  - it is any other `overlay` decal on an opaque model whose picture has
+    no alpha and reads, as decal layers do
     (pipeline step 7), as doubling or multiplying: it is turned into one
     blended by alpha that looks about the same (`overlay_as_alpha`; by
     luminance l, double: white at l − 0.5 when l ≥ 0.5, else black at
@@ -939,9 +966,10 @@ Do not commit anything they write.
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
-- Vehicles are posed once: no turret aim, no wheel suspension. A vehicle
-  turret is its own tag and model (`cannon` on the scorpion, `mortar` on the
-  wraith, `chaingun`/`gauss` on the warthog), not part of the vehicle. A
+- Vehicles are posed once: no turret aim, no wheel suspension. Turrets
+  are attached at rest (above) and part of the vehicle's mesh: they do not
+  turn with a frame, and a Warthog is always the chaingun one (a gauss
+  Warthog is the same tag in another variant). A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.
 - `COLOR_0` change-colour weights are per vertex, so their edges are as
