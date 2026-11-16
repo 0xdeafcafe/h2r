@@ -156,7 +156,15 @@ export interface GameSummary {
   game_id: GameId;
   map: string;
   mode: string;
+  /** custom | matchmaking | campaign; older servers leave it out. */
+  kind?: string;
   variant?: string | null;
+  playlist?: string;
+  playlist_id?: string;
+  /** Campaign: easy | normal | heroic | legendary. */
+  difficulty?: string;
+  /** Campaign: co-op partners on other machines (not sent yet). */
+  online?: boolean;
   started_at: string;
   ended_at?: string | null;
   players: GamePlayer[];

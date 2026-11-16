@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FramePlayer, GameEnded, MAX_FRAME_SHOTS, PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FramePlayer, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_SHOTS,
+    MAX_FRAME_VEHICLES, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{GameEvent, GameInfo, ObjectState, Output, PlayerState, Snapshot};
+use crate::layout;
 use crate::memory::yaw;
 use crate::tags::TagNames;
 
@@ -15,8 +17,17 @@ struct PendingShots {
     count: u32,
 }
 
+/// Weapons whose shots wait for the next frame's actors; past this many the
+/// counts are dropped, not grown.
+const MAX_ACTOR_WEAPONS: usize = 512;
+
+/// Name for a vehicle or actor whose tag name is not known.
+const UNKNOWN: &str = "unknown";
+
 struct Match {
     game_id: String,
+    map: String,
+    campaign: bool,
     tick: u64,
     tick_rate: u64,
     team_play: bool,
@@ -30,6 +41,9 @@ struct Match {
     /// By player index; reset when the held weapon changes or the player
     /// has no weapon (dead, or none held).
     shots: BTreeMap<u32, PendingShots>,
+    /// Every weapon's shots since the last frame, for actors (read only on
+    /// frame ticks, so their held weapon is looked up then).
+    actor_shots: BTreeMap<u32, u32>,
 }
 
 pub struct Session {
@@ -39,6 +53,8 @@ pub struct Session {
     /// player's roster entries carry its XUID.
     signed_in: Option<live_proto::Xuid>,
     current: Option<Match>,
+    /// Set while the console is in a matchmaking game: (name, id).
+    playlist: Option<(String, String)>,
     output: Vec<Output>,
 }
 
@@ -49,6 +65,7 @@ impl Session {
             console,
             signed_in: None,
             current: None,
+            playlist: None,
             output: Vec::new(),
         }
     }
@@ -66,6 +83,12 @@ impl Session {
         for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
             p.player.xuid = Some(xuid);
         }
+    }
+
+    /// The matchmaking playlist (name, id) multiplayer games start from;
+    /// `None` makes them custom games.
+    pub fn set_playlist(&mut self, playlist: Option<(String, String)>) {
+        self.playlist = playlist;
     }
 
     pub fn take_output(&mut self) -> Vec<Output> {
@@ -90,11 +113,42 @@ impl Session {
     ) {
         let mut players = players;
         self.link(&mut players);
+        // Campaign re-activates the same map on every checkpoint revert and
+        // mission restart (`0x0018e700` calls the activation again with a
+        // copy of the active options): that is still the same game.
+        if let Some(current) = &mut self.current
+            && !current.ended
+            && current.campaign
+            && info.mode == "campaign"
+            && current.map == info.map
+        {
+            current.tick = info.tick;
+            current.last_score_tick = info.tick;
+            current.shots.clear();
+            current.actor_shots.clear();
+            return;
+        }
         self.end_previous();
         if !info.is_match() {
             return;
         }
         let game_id = live_proto::sign::random_id();
+        let campaign = info.mode == "campaign";
+        let playlist = if campaign {
+            None
+        } else {
+            self.playlist.clone()
+        };
+        let kind = match (campaign, &playlist) {
+            (true, _) => "campaign",
+            (false, Some(_)) => "matchmaking",
+            (false, None) => "custom",
+        };
+        let difficulty = if campaign {
+            info.difficulty.clone()
+        } else {
+            None
+        };
         let game = live_proto::game::NewGame {
             console: self.console.clone(),
             map: info.map.clone(),
@@ -105,6 +159,12 @@ impl Session {
             time_limit_s: info.time_limit_s,
             tick: Some(info.tick),
             players: players.iter().map(|p| p.wire_player()).collect(),
+            kind: Some(kind.into()),
+            playlist: playlist.as_ref().map(|p| p.0.clone()),
+            playlist_id: playlist.map(|p| p.1),
+            difficulty,
+            // Live co-op does not exist yet.
+            online: None,
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),
@@ -117,6 +177,8 @@ impl Session {
         )));
         self.current = Some(Match {
             game_id,
+            map: info.map.clone(),
+            campaign: info.mode == "campaign",
             tick: info.tick,
             tick_rate: u64::from(info.tick_rate.max(1)),
             team_play: info.team_play,
@@ -130,6 +192,7 @@ impl Session {
             ended: false,
             tags: None,
             shots: BTreeMap::new(),
+            actor_shots: BTreeMap::new(),
         });
     }
 
@@ -266,6 +329,15 @@ impl Session {
             shots.insert(index, pending);
         }
         current.shots = shots;
+        for (weapon, n) in &snapshot.shots {
+            if current.actor_shots.len() >= MAX_ACTOR_WEAPONS
+                && !current.actor_shots.contains_key(weapon)
+            {
+                current.actor_shots.clear();
+            }
+            let count = current.actor_shots.entry(*weapon).or_insert(0);
+            *count = count.saturating_add(*n);
+        }
 
         if snapshot.tick.is_multiple_of(2) {
             let game_id = current.game_id.clone();
@@ -306,12 +378,22 @@ impl Session {
                     }
                 })
                 .collect();
+            let actor_shots = std::mem::take(&mut current.actor_shots);
+            let actors = frame_actors(snapshot, tags, current.campaign, &actor_shots);
+            let vehicles = frame_vehicles(snapshot, &actors, tags);
             self.output.push(Output::Frame(Frame {
                 game_id,
                 tick: snapshot.tick,
                 players,
+                vehicles,
+                actors: actors.into_iter().map(|(a, _)| a).collect(),
             }));
         }
+    }
+
+    #[cfg(test)]
+    fn is_campaign(&self) -> bool {
+        self.current.as_ref().is_some_and(|m| m.campaign)
     }
 
     pub fn kill(
@@ -371,6 +453,102 @@ impl Session {
     }
 }
 
+fn finite_direction(v: [f64; 3]) -> bool {
+    v.iter().all(|c| c.is_finite()) && v.iter().map(|c| c * c).sum::<f64>() > 1e-12
+}
+
+fn team_name(team: i16, campaign: bool) -> String {
+    campaign
+        .then(|| layout::campaign_team(team))
+        .flatten()
+        .map_or_else(|| team.to_string(), str::to_owned)
+}
+
+/// The frame's actors, nearest to any live player first, capped; each with
+/// its object state (for vehicles).
+fn frame_actors(
+    snapshot: &Snapshot,
+    tags: Option<&TagNames>,
+    campaign: bool,
+    shots: &BTreeMap<u32, u32>,
+) -> Vec<(FrameActor, ObjectState)> {
+    let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
+    let distance = |pos: [f64; 3]| {
+        players
+            .iter()
+            .map(|p| (0..3).map(|i| (p[i] - pos[i]).powi(2)).sum::<f64>())
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut actors: Vec<_> = snapshot
+        .actors
+        .iter()
+        .filter(|a| finite_direction(a.object.forward))
+        .map(|a| (distance(a.object.pos), a))
+        .collect();
+    actors.sort_by(|a, b| a.0.total_cmp(&b.0));
+    actors
+        .into_iter()
+        .take(MAX_FRAME_ACTORS)
+        .map(|(_, a)| {
+            let o = &a.object;
+            let actor = FrameActor {
+                id: format!("{:08x}", a.datum),
+                species: o
+                    .definition
+                    .zip(tags)
+                    .and_then(|(d, t)| t.actor_species(d))
+                    .unwrap_or_else(|| UNKNOWN.into()),
+                pos: o.pos,
+                yaw: yaw(o.forward),
+                aim: o.aim,
+                weapon: o.weapon.zip(tags).and_then(|(w, t)| t.weapon(w.definition)),
+                shots: o
+                    .weapon
+                    .and_then(|w| shots.get(&w.datum))
+                    .map(|n| (*n).min(MAX_FRAME_SHOTS))
+                    .filter(|n| *n > 0),
+                team: o.team.map(|t| team_name(t, campaign)),
+                vehicle: o.vehicle.map(|v| format!("{v:08x}")),
+            };
+            (actor, o.clone())
+        })
+        .collect()
+}
+
+/// Every vehicle a player or a sent actor rides, once, with a sane
+/// transform.
+fn frame_vehicles(
+    snapshot: &Snapshot,
+    actors: &[(FrameActor, ObjectState)],
+    tags: Option<&TagNames>,
+) -> Vec<FrameVehicle> {
+    let mut seen = std::collections::BTreeSet::new();
+    snapshot
+        .objects
+        .iter()
+        .flatten()
+        .chain(actors.iter().map(|(_, o)| o))
+        .filter_map(|o| {
+            let id = o.vehicle?;
+            if !finite_direction(o.forward) || !finite_direction(o.up) || !seen.insert(id) {
+                return None;
+            }
+            Some(FrameVehicle {
+                id: format!("{id:08x}"),
+                kind: o
+                    .vehicle_definition
+                    .zip(tags)
+                    .and_then(|(d, t)| t.vehicle(d))
+                    .unwrap_or_else(|| UNKNOWN.into()),
+                pos: o.pos,
+                forward: o.forward,
+                up: o.up,
+            })
+        })
+        .take(MAX_FRAME_VEHICLES)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +558,7 @@ mod tests {
         GameInfo {
             map: "lockout".into(),
             mode: "multiplayer".into(),
+            difficulty: None,
             variant: Some("Slayer".into()),
             team_play: false,
             score_limit: Some(25),
@@ -418,6 +597,7 @@ mod tests {
             players,
             teams: Vec::new(),
             shots: BTreeMap::new(),
+            actors: Vec::new(),
         }
     }
 
@@ -759,6 +939,239 @@ mod tests {
             sample(&mut session, 10, Some(rifle), &[(rifle, 500)]),
             Some(Some(MAX_FRAME_SHOTS))
         );
+    }
+
+    fn campaign() -> GameInfo {
+        GameInfo {
+            map: "03a_oldmombasa".into(),
+            mode: "campaign".into(),
+            difficulty: Some("heroic".into()),
+            variant: None,
+            team_play: false,
+            score_limit: None,
+            time_limit_s: None,
+            tick_rate: 30,
+            tick: 0,
+        }
+    }
+
+    #[test]
+    fn campaign_reverts_continue_the_same_game() {
+        let mut session = Session::new("test", None);
+        session.start(&campaign(), vec![player(0, 0)]);
+        assert!(session.is_campaign());
+        let id = session.game_id().unwrap().to_owned();
+        assert_eq!(kinds(&mut session), ["GameStarted"]);
+        session.sample(&snapshot(600, vec![player(0, 0)]));
+        session.take_output();
+        // A checkpoint revert: same map, the clock goes back.
+        let mut revert = campaign();
+        revert.tick = 400;
+        session.start(&revert, vec![player(0, 0)]);
+        assert!(kinds(&mut session).is_empty(), "no new game");
+        assert_eq!(session.game_id(), Some(id.as_str()));
+        session.sample(&snapshot(402, vec![player(0, 0)]));
+        assert_eq!(frames(&mut session)[0].tick, 402);
+
+        // The next mission is a new game; so is a multiplayer map.
+        let mut next = campaign();
+        next.map = "03b_newmombasa".into();
+        session.start(&next, vec![player(0, 0)]);
+        assert_eq!(kinds(&mut session), ["GameEnded", "GameStarted"]);
+        assert_ne!(session.game_id(), Some(id.as_str()));
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(kinds(&mut session), ["GameEnded", "GameStarted"]);
+        // Multiplayer re-activations stay separate games, as before.
+        session.start(&info(), vec![player(0, 0)]);
+        assert_eq!(kinds(&mut session), ["GameEnded", "GameStarted"]);
+    }
+
+    fn started(session: &mut Session) -> live_proto::game::NewGame {
+        let event = session
+            .take_output()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "GameStarted" => Some(e),
+                _ => None,
+            })
+            .expect("a GameStarted");
+        let game: live_proto::game::GameStarted = serde_json::from_value(event.data).unwrap();
+        assert_eq!(live_proto::game::validate_new(&game.game), Ok(()));
+        game.game
+    }
+
+    #[test]
+    fn games_say_their_kind_playlist_and_difficulty() {
+        let mut session = Session::new("test", None);
+        session.start(&campaign(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("campaign"));
+        assert_eq!(game.difficulty.as_deref(), Some("heroic"));
+        assert_eq!((game.playlist, game.online), (None, None));
+
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("custom"));
+        assert_eq!((game.playlist, game.difficulty), (None, None));
+
+        session.set_playlist(Some(("Team Slayer".into(), "3".into())));
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("matchmaking"));
+        assert_eq!(game.playlist.as_deref(), Some("Team Slayer"));
+        assert_eq!(game.playlist_id.as_deref(), Some("3"));
+
+        // A playlist never makes a campaign game a matchmaking one.
+        session.start(&campaign(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("campaign"));
+        assert_eq!(game.playlist, None);
+    }
+
+    fn actor(slot: u32, pos: [f64; 3], team: i16) -> crate::event::ActorState {
+        crate::event::ActorState {
+            datum: 0x9000_0000 | (slot << 16) | slot,
+            object: ObjectState {
+                pos,
+                forward: [0.0, 1.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                definition: Some(0xe100_0011),
+                team: Some(team),
+                ..ObjectState::default()
+            },
+        }
+    }
+
+    fn campaign_names() -> TagNames {
+        TagNames::new(
+            1,
+            [
+                (
+                    0xe100_0011,
+                    *b"bipd",
+                    "objects\\characters\\grunt\\grunt".to_string(),
+                ),
+                (
+                    0xe100_0020,
+                    *b"weap",
+                    "objects\\weapons\\pistol\\plasma_pistol\\plasma_pistol".to_string(),
+                ),
+                (
+                    0xe100_0030,
+                    *b"vehi",
+                    "objects\\vehicles\\ghost\\ghost".to_string(),
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn campaign_frames_carry_actors_and_occupied_vehicles() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&campaign(), vec![p.clone()]);
+        session.set_tag_names(campaign_names());
+        session.take_output();
+
+        let mut state = snapshot(1, vec![p.clone()]);
+        state.objects[0] = Some(ObjectState {
+            pos: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            ..ObjectState::default()
+        });
+        // An odd tick's shots wait for the frame.
+        state.shots = [(0x9009_0009, 2)].into();
+        session.sample(&state);
+        assert!(frames(&mut session).is_empty());
+
+        let far = actor(3, [50.0, 0.0, 0.0], 3);
+        let mut near = actor(4, [5.0, 0.0, 0.0], 2);
+        near.object.weapon = Some(crate::event::Weapon {
+            datum: 0x9009_0009,
+            definition: 0xe100_0020,
+        });
+        near.object.aim = Some([1.0, 0.0, 0.0]);
+        let mut driver = actor(5, [20.0, 0.0, 1.0], 3);
+        driver.object.vehicle = Some(0x9006_0006);
+        driver.object.vehicle_definition = Some(0xe100_0030);
+        driver.object.up = [0.0, 0.6, 0.8];
+        let mut nameless = actor(7, [30.0, 0.0, 0.0], 12);
+        nameless.object.definition = Some(0xe100_0099);
+        state.tick = 2;
+        state.shots = [(0x9009_0009, 1)].into();
+        state.actors = vec![far, near, driver, nameless];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+
+        let ids: Vec<&str> = frame.actors.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["90040004", "90050005", "90070007", "90030003"],
+            "nearest first"
+        );
+        let near = &frame.actors[0];
+        assert_eq!(near.species, "grunt");
+        assert_eq!(near.team.as_deref(), Some("human"));
+        assert_eq!(near.weapon.as_deref(), Some("plasma_pistol"));
+        assert_eq!(near.shots, Some(3), "both ticks' shots");
+        assert_eq!(near.aim, Some([1.0, 0.0, 0.0]));
+        assert!((near.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert_eq!(frame.actors[1].team.as_deref(), Some("covenant"));
+        assert_eq!(frame.actors[1].vehicle.as_deref(), Some("90060006"));
+        assert_eq!(frame.actors[2].species, "unknown");
+        assert_eq!(frame.actors[2].team.as_deref(), Some("12"), "raw index");
+        assert_eq!(
+            frame.vehicles,
+            [FrameVehicle {
+                id: "90060006".into(),
+                kind: "ghost".into(),
+                pos: [20.0, 0.0, 1.0],
+                forward: [0.0, 1.0, 0.0],
+                up: [0.0, 0.6, 0.8],
+            }]
+        );
+        assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
+
+        // Shots were handed out; the next frame has none.
+        state.tick = 4;
+        state.shots.clear();
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].actors[0].shots, None);
+    }
+
+    #[test]
+    fn actor_count_is_capped_and_vehicles_are_listed_once() {
+        let mut session = Session::new("test", None);
+        session.start(&campaign(), vec![player(0, 0)]);
+        session.take_output();
+        let mut state = snapshot(2, vec![player(0, 0)]);
+        state.actors = (0..MAX_FRAME_ACTORS as u32 + 20)
+            .map(|i| {
+                let mut a = actor(i + 1, [i as f64, 0.0, 0.0], 3);
+                // Every actor rides the same vehicle; one has a bad up.
+                a.object.vehicle = Some(0x9fff_0fff);
+                if i == 0 {
+                    a.object.up = [f64::NAN, 0.0, 0.0];
+                }
+                a
+            })
+            .collect();
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.actors.len(), MAX_FRAME_ACTORS);
+        assert_eq!(frame.vehicles.len(), 1);
+        assert_eq!(frame.vehicles[0].kind, "unknown", "no names set");
+        assert_eq!(frame.vehicles[0].up, [0.0, 0.0, 1.0]);
+        assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
+    }
+
+    #[test]
+    fn multiplayer_teams_stay_numbers() {
+        assert_eq!(team_name(3, false), "3");
+        assert_eq!(team_name(3, true), "covenant");
+        assert_eq!(team_name(1, true), "player");
     }
 
     #[test]

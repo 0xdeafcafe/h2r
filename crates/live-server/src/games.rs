@@ -36,9 +36,63 @@ struct FrameClock {
     last_sent: Instant,
     /// Unix second of the last recorded `GameFrame`.
     last_recorded: i64,
-    /// Shots of throttled frames by player index, added to the next frame
-    /// sent so none are lost.
-    unsent_shots: Vec<(u32, u32)>,
+    /// Shots of throttled frames by shooter, added to the next frame sent
+    /// so none are lost.
+    unsent_shots: Vec<(game::Shooter, u32)>,
+    /// Shots of sent frames since the last recorded one, by shooter, added
+    /// to the next recorded frame so a replay's `shots` cover its second.
+    unrecorded_shots: Vec<(game::Shooter, u32)>,
+}
+
+/// How many shooters a clock keeps shots for: a few frames' worth.
+const MAX_CARRIED_SHOOTERS: usize = 4 * (game::MAX_PLAYERS + game::MAX_FRAME_ACTORS);
+
+/// Adds `shots` to `into`, one entry per shooter, each capped at
+/// [`game::MAX_FRAME_SHOTS`]; new shooters past the bound are dropped.
+fn carry_shots(
+    into: &mut Vec<(game::Shooter, u32)>,
+    shots: impl IntoIterator<Item = (game::Shooter, u32)>,
+) {
+    for (shooter, n) in shots {
+        if let Some((_, total)) = into.iter_mut().find(|(s, _)| *s == shooter) {
+            *total = total.saturating_add(n).min(game::MAX_FRAME_SHOTS);
+        } else if into.len() < MAX_CARRIED_SHOOTERS {
+            into.push((shooter, n.min(game::MAX_FRAME_SHOTS)));
+        }
+    }
+}
+
+impl FrameClock {
+    fn new(now: Instant) -> Self {
+        FrameClock {
+            last_sent: now - FRAME_INTERVAL,
+            last_recorded: 0,
+            unsent_shots: Vec::new(),
+            unrecorded_shots: Vec::new(),
+        }
+    }
+
+    /// Throttles a validated frame: `None` when it is dropped (its shots
+    /// carried to the next sent frame), else `Some` with the frame to record
+    /// if this is the first sent in a new second. The sent frame's `shots`
+    /// cover the frames dropped before it; the recorded one's every frame
+    /// since the last recorded.
+    fn admit(&mut self, frame: &mut Frame, now: Instant, now_s: i64) -> Option<Option<Frame>> {
+        if now.duration_since(self.last_sent) < FRAME_INTERVAL {
+            carry_shots(&mut self.unsent_shots, frame.shots());
+            return None;
+        }
+        self.last_sent = now;
+        frame.add_shots(std::mem::take(&mut self.unsent_shots));
+        if self.last_recorded >= now_s {
+            carry_shots(&mut self.unrecorded_shots, frame.shots());
+            return Some(None);
+        }
+        self.last_recorded = now_s;
+        let mut recorded = frame.clone();
+        recorded.add_shots(std::mem::take(&mut self.unrecorded_shots));
+        Some(Some(recorded))
+    }
 }
 
 /// What a frame turned into.
@@ -216,36 +270,24 @@ impl Live {
         self.model.touch_game(&frame.game_id, now_s);
         let record = {
             let mut games = self.ingest.games.lock().unwrap();
-            let clock = games.entry(frame.game_id.clone()).or_insert(FrameClock {
-                last_sent: Instant::now() - FRAME_INTERVAL,
-                last_recorded: 0,
-                unsent_shots: Vec::new(),
-            });
-            if clock.last_sent.elapsed() < FRAME_INTERVAL {
-                // Bounded: at most one entry per player per throttled frame,
-                // and frames arrive at about the interval.
-                if clock.unsent_shots.len() < 4 * game::MAX_PLAYERS {
-                    clock.unsent_shots.extend(frame.shots());
-                }
-                return Ok(FrameOutcome::Throttled);
+            let now = Instant::now();
+            let clock = games
+                .entry(frame.game_id.clone())
+                .or_insert_with(|| FrameClock::new(now));
+            match clock.admit(&mut frame, now, now_s) {
+                None => return Ok(FrameOutcome::Throttled),
+                Some(record) => record,
             }
-            clock.last_sent = Instant::now();
-            frame.add_shots(std::mem::take(&mut clock.unsent_shots));
-            let record = clock.last_recorded < now_s;
-            if record {
-                clock.last_recorded = now_s;
-            }
-            record
         };
-        let frame = Arc::new(frame);
-        let _ = self.frames.send(frame.clone());
-        if record {
-            let mut data = serde_json::to_value(&*frame).expect("serializes");
+        let recorded = record.is_some();
+        let _ = self.frames.send(Arc::new(frame));
+        if let Some(frame) = record {
+            let mut data = serde_json::to_value(&frame).expect("serializes");
             data["source"] = json!(author.to_string());
             let event = self.server_event(game::stream(&frame.game_id), game::GAME_FRAME, data);
             self.store.append(vec![event], &[]).await?;
         }
-        Ok(FrameOutcome::Sent { recorded: record })
+        Ok(FrameOutcome::Sent { recorded })
     }
 
     pub fn frames(&self) -> tokio::sync::broadcast::Receiver<Arc<Frame>> {
@@ -487,5 +529,69 @@ pub fn reply_error(e: &ApiError) -> live_proto::IngestReply {
     live_proto::IngestReply::Error {
         error: e.code,
         message: e.message.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use live_proto::game::{FrameActor, FramePlayer};
+
+    fn frame(player_shots: u32, actor_shots: u32) -> Frame {
+        Frame {
+            game_id: "g".into(),
+            players: vec![FramePlayer {
+                index: 0,
+                alive: true,
+                shots: (player_shots > 0).then_some(player_shots),
+                ..FramePlayer::default()
+            }],
+            actors: vec![FrameActor {
+                id: "90070007".into(),
+                species: "grunt".into(),
+                shots: (actor_shots > 0).then_some(actor_shots),
+                ..FrameActor::default()
+            }],
+            ..Frame::default()
+        }
+    }
+
+    fn shots(frame: &Frame) -> (Option<u32>, Option<u32>) {
+        (frame.players[0].shots, frame.actors[0].shots)
+    }
+
+    #[test]
+    fn recorded_frames_sum_the_shots_of_their_second() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+
+        // Second 10: sent at 0, 100, 200 ms (one throttled at 120 ms).
+        let mut f = frame(1, 0);
+        let recorded = clock.admit(&mut f, at(0), 10).unwrap().unwrap();
+        assert_eq!(shots(&recorded), (Some(1), None));
+        let mut f = frame(2, 1);
+        assert_eq!(clock.admit(&mut f, at(100), 10), Some(None));
+        assert_eq!(shots(&f), (Some(2), Some(1)));
+        let mut f = frame(4, 0);
+        assert_eq!(clock.admit(&mut f, at(120), 10), None, "throttled");
+        let mut f = frame(0, 3);
+        assert_eq!(clock.admit(&mut f, at(200), 10), Some(None));
+        assert_eq!(shots(&f), (Some(4), Some(3)), "carries the throttled frame");
+
+        // Second 11: the recorded frame covers everything since the last one.
+        let mut f = frame(1, 1);
+        let recorded = clock.admit(&mut f, at(1000), 11).unwrap().unwrap();
+        assert_eq!(shots(&f), (Some(1), Some(1)), "live frame: its own shots");
+        assert_eq!(shots(&recorded), (Some(2 + 4 + 1), Some(1 + 3 + 1)));
+
+        // Capped at 64 per shooter.
+        for i in 0..5 {
+            let mut f = frame(30, 30);
+            assert!(clock.admit(&mut f, at(1100 + i * 100), 11).is_some());
+        }
+        let mut f = frame(0, 0);
+        let recorded = clock.admit(&mut f, at(2000), 12).unwrap().unwrap();
+        assert_eq!(shots(&recorded), (Some(64), Some(64)));
     }
 }
