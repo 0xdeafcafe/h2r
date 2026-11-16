@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 4;
+pub const EXTRACTOR_VERSION: u32 = 5;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -368,6 +368,10 @@ pub struct Manifest {
     /// (docs/live-art.md); absent when none were extracted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub maps: BTreeMap<String, crate::live_geometry::MapEntry>,
+    /// Player and weapon models (docs/live-art.md); absent when none were
+    /// extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<crate::live_models::ModelsEntry>,
 }
 
 /// How emblem layers are coloured; see docs/live-api.md. Measured on the
@@ -416,6 +420,7 @@ pub fn build_manifest(
         palette,
         skipped,
         maps: BTreeMap::new(),
+        models: None,
     }
 }
 
@@ -830,6 +835,10 @@ pub struct Report {
     pub catalog: crate::live_catalog::Catalog,
     /// Per-map geometry counts and timings.
     pub geometry: Vec<crate::live_geometry::MapStats>,
+    /// Per model file: triangles and size.
+    pub models: Vec<crate::live_models::ModelStats>,
+    /// Where each biped came from and how it was posed.
+    pub bipeds: Vec<crate::live_models::BipedInfo>,
 }
 
 /// Decodes every category from `disc` into `out` (replacing what was
@@ -882,6 +891,10 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     skipped.extend(geometry.skipped);
     let mut manifest = build_manifest(disc.key.clone(), images, palette, skipped);
     manifest.maps = geometry.maps;
+    // Player and weapon models (docs/live-art.md).
+    let (models, bipeds) = crate::live_models::extract(disc, &staging);
+    manifest.skipped.extend(models.skipped);
+    manifest.models = models.entry;
     // The playlist builder's catalog rides along (docs/live-admin.md).
     let catalog = crate::live_catalog::extract(disc);
     fs::write(
@@ -910,6 +923,8 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
         counts,
         catalog,
         geometry: geometry.stats,
+        models: models.stats,
+        bipeds,
     })
 }
 
@@ -933,6 +948,21 @@ pub fn run(disc: PathBuf, out: PathBuf) -> Result<()> {
             g.stem,
             g.triangles,
             g.glb_bytes / 1024
+        );
+    }
+    println!("  {:<10} {} files", "models", report.models.len());
+    for b in &report.bipeds {
+        println!(
+            "    {:<14} {} ({}), posed by {}",
+            b.species, b.tag, b.map, b.animation
+        );
+    }
+    for m in &report.models {
+        println!(
+            "    {:<28} {:>7} triangles, {:>5} KiB",
+            m.key,
+            m.triangles,
+            m.glb_bytes / 1024
         );
     }
     let c = &report.catalog;

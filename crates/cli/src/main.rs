@@ -19,6 +19,7 @@ mod live_accounts;
 mod live_art;
 mod live_catalog;
 mod live_geometry;
+mod live_models;
 mod live_render;
 mod live_admin;
 mod live_cmd;
