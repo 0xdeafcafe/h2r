@@ -37,7 +37,8 @@ app with SPA fallback, the way the Rust server will:
 path runs; see "Game art" below). Without it `/art/game` has no pictures,
 like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
-answers 404.
+answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
+for the dashboard's "find a game" (default 5; 0 shows its empty state).
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -70,6 +71,14 @@ Chest and compare (`/stats/players/:tag`, `/history`,
 shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
 thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
 the menu column drops under the content.
+
+**Find a game.** The dashboard's "find a game" (`/dash/sessions`,
+`src/dash/Sessions.tsx`) lists the open sessions hosts are advertising
+(`GET /v1/sessions`): the host, the map, the game and players against the
+most, with a plate of details, and one session's own screen with its roster
+at `/dash/sessions/:id`. Both ask the server again every four seconds while
+the tab is showing (`src/state/sessions.ts`). It is read-only: joining
+happens in the game.
 
 **Derived stats.** Medals, sprees, places, the weapon breakdown ("Tool of
 Destruction"), EXP and rank are computed in the browser from the games'

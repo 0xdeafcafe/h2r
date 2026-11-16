@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { openAccountRequest } from "./account";
 import { mockGameArt } from "./gameart";
 import { Social } from "./social";
+import { Sessions } from "./sessions";
 import { mockMapGeometry } from "./arena";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
@@ -29,6 +30,10 @@ console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of hist
 const social = new Social(world);
 social.seed();
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
+// Open sessions for the dashboard's "find a game" (mock/sessions.ts).
+const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0));
+sessions.seed();
+setInterval(() => sessions.step(), 2500);
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
@@ -118,6 +123,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   const soc = await social.handle(req, u);
   if (soc) return json(soc.body, soc.status);
+  const ses = sessions.handle(req, u);
+  if (ses) return json(ses.body, ses.status);
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
