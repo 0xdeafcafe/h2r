@@ -18,6 +18,9 @@ the security gateway — `/xmatch/xmatchhost.srf`, `xmatchclient.srf`,
 `XOnlineMatchSessionDelete`. Under decision C (replace the API boundary) our
 HTTP service replaces those services; nothing here speaks their wire format.
 
+The in-game custom games browser (the System Link browser's dormant Live
+mode) and session visibility are in [live-custom-games.md](live-custom-games.md).
+
 ## 1. What the retail game calls
 
 Confidences are [live-boundary.md](live-boundary.md)'s (`confirmed` is

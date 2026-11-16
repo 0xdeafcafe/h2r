@@ -296,6 +296,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | next launch: the row says "(restart)" until then |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (1x to 4x), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | next launch, as above |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) locks it when set | next launch (the HID thread reads it once); could go live through that thread |
+| Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
 **Graphics backend (runtime variables, read at launch).**
