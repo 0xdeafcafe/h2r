@@ -3,6 +3,8 @@
 // repo. Everything here is pure, so it can be tested; state/gameart.ts loads
 // the manifest and components fall back to the art pack when a key is absent.
 
+import { parseMapFiles } from "../map/views";
+
 export interface GameArtImage { file: string; width: number; height: number }
 
 export interface GameArtManifest {
@@ -14,6 +16,8 @@ export interface GameArtManifest {
   /** Player colours, `#rrggbb` by colour index; empty when not found. */
   palette?: string[];
   skipped?: Record<string, string>;
+  /** Per-map geometry files by map stem (map/views.ts), when the server has them. */
+  maps?: Record<string, import("../map/views").MapFiles>;
 }
 
 /** A picture the manifest names: where it is and its pixel size. */
@@ -47,7 +51,7 @@ export function parseManifest(raw: unknown): GameArtManifest | null {
     for (const [from, to] of Object.entries(m.aliases)) if (typeof to === "string") aliases[from] = to;
   }
   const palette = Array.isArray(m.palette) ? m.palette.filter((c): c is string => typeof c === "string" && parseHexColour(c) !== null) : [];
-  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped };
+  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped, maps: parseMapFiles(raw) };
 }
 
 /** A file must stay inside the manifest's directory. */

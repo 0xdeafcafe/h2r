@@ -1,0 +1,50 @@
+/* The 3D game viewer: its floating window, the view inside, and the
+   pop-out page. Flat and dark, like the stats site's game viewer. */
+
+.v3-window { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 320px; min-height: 260px; background: #101010; border: 1px solid #5a5a5a; box-shadow: 0 12px 40px rgba(0, 0, 0, .65), 0 0 0 1px #000; color: #ddd; font: 11px/1.3 var(--font-ui, system-ui, sans-serif); outline: none; }
+.v3-window:focus-visible { border-color: #56aacd; }
+.v3-window--max { inset: 8px; }
+.v3-bar { flex: none; display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 4px 0 9px; background: linear-gradient(180deg, #3c5f8a 0, #26436a 48%, #1b3252 52%, #20395d 100%); border-bottom: 1px solid #0b1626; cursor: move; user-select: none; touch-action: none; }
+.v3-bar:focus-visible { outline: 1px solid #9ad1ee; outline-offset: -2px; }
+.v3-bar h3 { flex: 1; min-width: 0; margin: 0; overflow: hidden; font: 700 11px/26px var(--font-ui, system-ui, sans-serif); color: #fff; letter-spacing: .04em; text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap; }
+.v3-bar-state { font-size: 10px; color: #b9cde4; white-space: nowrap; }
+.v3-bar-buttons { display: flex; gap: 3px; align-items: center; }
+.v3-bar-buttons button, .v3-bar-buttons a { display: inline-grid; place-items: center; min-width: 22px; height: 19px; padding: 0 5px; font: 11px/1 var(--font-ui, system-ui, sans-serif); color: #fff; text-decoration: none; cursor: pointer; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .28); border-radius: 0; }
+.v3-bar-buttons button:hover, .v3-bar-buttons a:hover { background: #17668a; border-color: #56aacd; }
+.v3-bar--page { cursor: default; touch-action: auto; }
+.v3-body { position: relative; flex: 1; min-height: 0; background: #0a1420; }
+.v3-window .replay-bar, .v3-page .replay-bar { flex: none; height: 34px; border-top: 1px solid #2a2a2a; background: #161616; }
+.v3-window .replay-bar .play, .v3-page .replay-bar .play { width: 28px; height: 23px; border-color: #777; border-radius: 0; background: #2b2b2b; }
+.v3-window .replay-time, .v3-page .replay-time { font-size: 10px; color: #bbb; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.v3-window .replay-bar select, .v3-page .replay-bar select { height: 21px; font-size: 10px; color: #ddd; background: #222; border: 1px solid #555; }
+.v3-grip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; background: linear-gradient(135deg, transparent 50%, #8a8a8a 50%, #8a8a8a 58%, transparent 58%, transparent 68%, #8a8a8a 68%, #8a8a8a 76%, transparent 76%); }
+
+.v3 { position: absolute; inset: 0; overflow: hidden; }
+.v3-host { position: absolute; inset: 0; }
+.v3-canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+.v3-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.v3-label { display: flex; align-items: center; gap: 4px; padding: 1px 6px 1px 4px; margin-top: -4px; font: 600 11px/15px var(--font-ui, system-ui, sans-serif); color: #fff; white-space: nowrap; background: rgba(0, 0, 0, .62); border: 1px solid rgba(255, 255, 255, .16); cursor: pointer; pointer-events: auto; user-select: none; }
+.v3-label i { width: 7px; height: 7px; border: 1px solid rgba(0, 0, 0, .8); border-radius: 50%; }
+.v3-label:hover, .v3-label.on { background: rgba(0, 0, 0, .88); border-color: #fff; z-index: 5 !important; }
+.v3-tools { position: absolute; top: 6px; left: 6px; right: 6px; display: flex; flex-wrap: wrap; gap: 3px; pointer-events: none; }
+.v3-tools > * { pointer-events: auto; height: 21px; padding: 0 8px; font: 10px/19px var(--font-ui, system-ui, sans-serif); color: #fff; cursor: pointer; background: rgba(0, 0, 0, .66); border: 1px solid #6c6c6c; border-radius: 0; }
+.v3 .v3-tools select { height: 21px; color: #fff; border: 1px solid #6c6c6c; max-width: 150px; padding: 0 18px 0 8px; -webkit-appearance: none; appearance: none; background: rgba(0, 0, 0, .66) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%23fff'/%3E%3C/svg%3E") no-repeat right 6px center; }
+.v3 .v3-tools select.on { background-color: #2a5b86; border-color: #9ac6e6; }
+.v3-tools option { color: #fff; background: #1a1a1a; }
+.v3-tools > *:hover { border-color: #56aacd; }
+.v3-tools > .on { background: #2a5b86; border-color: #9ac6e6; }
+.v3-note { position: absolute; left: 8px; right: 8px; bottom: 8px; margin: 0; padding: 3px 6px; font-size: 10px; line-height: 14px; color: #c6d0db; background: rgba(0, 0, 0, .8); pointer-events: none; }
+.v3-note--mid { position: absolute; inset: auto 0; top: 45%; text-align: center; background: none; font-size: 11px; }
+.v3-fail { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: 24px; text-align: center; font-size: 12px; line-height: 18px; color: #c6d0db; }
+
+/* The pop-out page: the viewer fills the browser window. */
+.v3-page { position: fixed; inset: 0; display: flex; flex-direction: column; background: #101010; color: #ddd; font: 11px/1.3 var(--font-ui, system-ui, sans-serif); }
+.v3-page-inner { display: contents; }
+.v3-page > .v3-note--mid { position: static; margin: auto; }
+
+@media (max-width: 640px) {
+  .v3-window:not(.v3-window--max) { left: 4px !important; right: 4px; width: auto !important; }
+  .v3-tools > *, .v3 .v3-tools select { height: 26px; line-height: 24px; }
+  .v3-bar { height: 32px; }
+  .v3-bar-buttons button, .v3-bar-buttons a { min-width: 28px; height: 24px; }
+}
