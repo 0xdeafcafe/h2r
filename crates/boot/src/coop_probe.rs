@@ -46,6 +46,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -617,23 +618,98 @@ struct State {
     setup_attempts: u32,
     setup_last_tick: Option<u32>,
     setup_done: bool,
+    /// The level the setup state above is for.
+    setup_for: Option<Want>,
     log: Option<HashLog>,
     log_error: bool,
     last_tick_at: Option<Instant>,
     last_tick: Option<u32>,
 }
 
-/// The probe as a feature. Built only when `H2_COOP_PROBE` is on.
+/// The feature id of the co-op over Live hooks (`H2_FEATURES=-coop-live`
+/// turns them off): the probe's, armed only for a co-op session.
+pub const LIVE_ID: &str = "coop-live";
+
+/// When the hooks act. The probe (`H2_COOP_PROBE`) is armed from boot, with
+/// the level the host sets; co-op over Live (`crate::coop_live`) arms them
+/// only while this console hosts or joined a co-op session, the host with
+/// its chosen level. Disarmed, every hook lets the game run as retail and
+/// nothing is logged.
+#[derive(Debug, Default)]
+pub struct Arm {
+    forced: bool,
+    on: AtomicBool,
+    want: Mutex<Option<Want>>,
+}
+
+impl Arm {
+    /// Armed for the whole run (the probe).
+    pub fn forced(want: Option<Want>) -> Arc<Arm> {
+        Arc::new(Arm {
+            forced: true,
+            on: AtomicBool::new(true),
+            want: Mutex::new(want),
+        })
+    }
+    /// Off until a co-op session arms it.
+    pub fn session() -> Arc<Arm> {
+        Arc::new(Arm::default())
+    }
+    pub fn is_forced(&self) -> bool {
+        self.forced
+    }
+    pub fn active(&self) -> bool {
+        self.forced || self.on.load(Ordering::SeqCst)
+    }
+    /// Arms the hooks: the host with the level it sets on the lobby, a
+    /// guest with none. A forced arm keeps its own level.
+    pub fn arm(&self, want: Option<Want>) {
+        if !self.forced {
+            *self.want.lock().unwrap_or_else(|e| e.into_inner()) = want;
+        }
+        self.on.store(true, Ordering::SeqCst);
+    }
+    /// Back to retail (a forced arm stays on).
+    pub fn disarm(&self) {
+        if !self.forced {
+            *self.want.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.on.store(false, Ordering::SeqCst);
+        }
+    }
+    /// The level the host sets, when armed as host.
+    pub fn want(&self) -> Option<Want> {
+        if !self.active() {
+            return None;
+        }
+        self.want.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// The probe as a feature: added when `H2_COOP_PROBE` is on (armed from
+/// boot) or when Live is on (armed by a co-op session).
 pub struct Probe {
-    want: Option<Want>,
+    id: &'static str,
+    arm: Arc<Arm>,
     dir: PathBuf,
     state: Arc<Mutex<State>>,
 }
 
 impl Probe {
+    /// The probe, armed from boot with the level the host sets.
     pub fn new(want: Option<Want>, dir: PathBuf) -> Probe {
         Probe {
-            want,
+            id: ID,
+            arm: Arm::forced(want),
+            dir,
+            state: Arc::default(),
+        }
+    }
+    /// The co-op over Live hooks, armed by `arm`.
+    pub fn armed(arm: Arc<Arm>, dir: PathBuf) -> Probe {
+        let id = if arm.is_forced() { ID } else { LIVE_ID };
+        Probe {
+            id,
+            arm,
             dir,
             state: Arc::default(),
         }
@@ -684,15 +760,23 @@ impl feature::Feature for Probe {
     fn manifest(&self) -> feature::Manifest {
         // On when added: it is only added when H2_COOP_PROBE is on, and
         // H2_FEATURES=-coop-probe still turns it off.
-        feature::Manifest::new(ID, "Co-op probe: the retail synchronous campaign path")
-            .doc("docs/live/live-coop.md")
+        let title = if self.id == ID {
+            "Co-op probe: the retail synchronous campaign path"
+        } else {
+            "Co-op over Live: the retail synchronous campaign path, armed for co-op sessions"
+        };
+        feature::Manifest::new(self.id, title).doc("docs/live/live-coop.md")
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         // The peer-count refusal: show one peer from the start's entry to
         // OPTIONS_NEW.
         let st = Arc::clone(&self.state);
+        let arm = Arc::clone(&self.arm);
         b.raw().before(&points::SESSION_GAME_START, "one peer for the campaign check", move |c| {
+            if !arm.active() {
+                return Ok(Flow::Continue);
+            }
             let rt = Arc::clone(c.ctx.runtime());
             let mut mem = rt.memory();
             let addr = c.cpu.edx;
@@ -720,15 +804,21 @@ impl feature::Feature for Probe {
         let st = Arc::clone(&self.state);
         b.raw()
             .before(&points::OPTIONS_NEW, "restore the peer count", move |c| {
+                // Not gated on the arm: a pending count always goes back.
                 restore(&st, c, "before OPTIONS_NEW");
                 Ok(Flow::Continue)
             });
         let st = Arc::clone(&self.state);
+        let arm2 = Arc::clone(&self.arm);
         b.raw().after(
             &points::SESSION_GAME_START,
             "restore the peer count, report",
             move |c| {
+                let pending = lock(&st).pending.is_some();
                 restore(&st, c, "after a refused start");
+                if !pending && !arm2.active() {
+                    return Ok(());
+                }
                 let started = c.cpu.eax & 0xff != 0;
                 say(&format!(
                     "session start returned {}",
@@ -744,7 +834,11 @@ impl feature::Feature for Probe {
 
         // Joinable while a campaign session has room.
         let st = Arc::clone(&self.state);
+        let arm = Arc::clone(&self.arm);
         b.raw().before(&points::SESSION_JOINABLE, "joinable campaign", move |c| {
+            if !arm.active() {
+                return Ok(Flow::Continue);
+            }
             let rt = Arc::clone(c.ctx.runtime());
             let j = read_join(&*rt.memory());
             let (retail, probe) = (joinable(&j, false), joinable(&j, true));
@@ -766,8 +860,12 @@ impl feature::Feature for Probe {
         });
 
         // The peer limit the host's game start sets for a campaign.
+        let arm = Arc::clone(&self.arm);
         b.raw()
             .after(&points::SESSION_GAME_LIMITS, "peer limit 2", move |c| {
+                if !arm.active() {
+                    return Ok(());
+                }
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 let Some(s) = read_session_at(&*mem, c.cpu.ebx) else {
@@ -785,24 +883,38 @@ impl feature::Feature for Probe {
             });
 
         // The host's lobby setup, at the start of a tick.
-        if let Some(want) = self.want.clone() {
+        // A forced arm with no level never sets one; a session arm may be
+        // given one at any time.
+        if !self.arm.is_forced() || self.arm.want().is_some() {
             let st = Arc::clone(&self.state);
+            let arm = Arc::clone(&self.arm);
             b.raw()
                 .before(&points::GAME_TICK, "host lobby setup", move |c| {
-                    lobby_setup(&st, &want, c)
+                    match arm.want() {
+                        Some(want) => lobby_setup(&st, &want, c),
+                        None => Ok(Flow::Continue),
+                    }
                 });
         }
 
         // Every tick: session, simulation, stalls, hashes.
         let st = Arc::clone(&self.state);
+        let arm = Arc::clone(&self.arm);
         b.frame().on_tick("session, mode and hashes", move |o| {
+            if !arm.active() {
+                return;
+            }
             let g = o.guest();
             on_tick(&st, &g);
         });
 
         let st = Arc::clone(&self.state);
         let dir = self.dir.clone();
+        let arm = Arc::clone(&self.arm);
         b.game().on_start("open the hash log", move |o| {
+            if !arm.active() {
+                return;
+            }
             let g = o.guest();
             on_start(&st, &g, &dir);
         });
@@ -828,8 +940,13 @@ impl feature::Feature for Probe {
             (&points::CINEMATIC_STOP, "cinematic stop"),
         ] {
             let st = Arc::clone(&self.state);
+            let arm = Arc::clone(&self.arm);
             b.raw()
-                .observe_before(point, what, move |o| event(&st, &o.guest(), what))
+                .observe_before(point, what, move |o| {
+                    if arm.active() {
+                        event(&st, &o.guest(), what)
+                    }
+                })
                 .optional();
         }
         Ok(())
@@ -863,6 +980,13 @@ fn lobby_setup(st: &Arc<Mutex<State>>, want: &Want, c: &mut Call) -> Result<Flow
     };
     {
         let mut state = lock(st);
+        if state.setup_for.as_ref() != Some(want) {
+            state.setup_for = Some(want.clone());
+            state.setup_attempts = 0;
+            state.setup_last_tick = None;
+            state.setup_done = false;
+            state.setup_wait = None;
+        }
         match host_setup(&s, want) {
             Setup::Wait(why) => {
                 if state.setup_wait.as_deref() != Some(why.as_str()) && s.can_set_params() {
@@ -1115,6 +1239,32 @@ pub fn install(
     match registry.add(&Probe::new(want, dir)) {
         Ok(_) => Ok(Installed::Added { level }),
         Err(e) => anyhow::bail!("coop-probe: {e}"),
+    }
+}
+
+/// Adds the co-op over Live hooks to `registry`, armed by the returned
+/// [`Arm`] (off until a co-op session arms it), unless an address they need
+/// is already overridden outside the plan. Hash logs go to
+/// `<data>/coop-probe/` as the probe's do.
+pub fn install_live(
+    rt: &runtime::Runtime,
+    registry: &mut feature::Registry,
+    data_root: &Path,
+) -> anyhow::Result<Option<Arc<Arm>>> {
+    let mut taken = Vec::new();
+    rt.edit_dispatch(|d| taken = occupied(|a| d.override_name(a).map(str::to_owned)));
+    if !taken.is_empty() {
+        for t in &taken {
+            eprintln!("coop-live: refused: {t}");
+        }
+        eprintln!("coop-live: off: an address it needs is already overridden");
+        return Ok(None);
+    }
+    let arm = Arm::session();
+    match registry.add(&Probe::armed(Arc::clone(&arm), data_root.join("coop-probe"))) {
+        Ok(true) => Ok(Some(arm)),
+        Ok(false) => Ok(None),
+        Err(e) => anyhow::bail!("coop-live: {e}"),
     }
 }
 

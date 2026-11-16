@@ -70,7 +70,7 @@ enum Task {
 }
 enum Intent {
     Put {
-        session: LocalSession,
+        session: Box<LocalSession>,
         key: [u8; 16],
     },
     Delete([u8; 8]),
@@ -502,7 +502,10 @@ impl Sessions {
                         h,
                         Task::Pending {
                             request: pending,
-                            intent: Intent::Put { session, key },
+                            intent: Intent::Put {
+                                session: Box::new(session),
+                                key,
+                            },
                         },
                     );
                 } else {
@@ -686,7 +689,13 @@ impl Sessions {
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
                 debug("server advertise", &session);
-                self.records.insert(id, Record { session, key });
+                self.records.insert(
+                    id,
+                    Record {
+                        session: *session,
+                        key,
+                    },
+                );
                 Ok(Task::Session { id, key })
             }
             Intent::Delete(id) => {

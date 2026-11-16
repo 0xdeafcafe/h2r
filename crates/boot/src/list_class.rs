@@ -104,6 +104,12 @@ pub trait Rows: Send + Sync {
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
         None
     }
+    /// Writes the texts that change at run time (`crate::coop_live`'s) into
+    /// guest memory, before a row's texts are set and when the screen
+    /// opens. Most screens' texts are written once at install.
+    fn write_texts(&self, _m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        Ok(())
+    }
 }
 
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
@@ -703,7 +709,9 @@ pub async fn load(
     name: &'static str,
 ) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
-    let rows = rows.count();
+    let count = rows.count();
+    cx.write(|m| rows.write_texts(m))?;
+    let rows = count;
     let request = cx.arg(0)?;
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -811,6 +819,7 @@ pub async fn row_text(
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
+    cx.write(|m| rows.write_texts(m))?;
     draw_texts(&cx, item, texts).await?;
     if let Some(shown) = shown {
         let list = cx.entry().ecx;
