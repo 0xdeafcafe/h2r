@@ -16,6 +16,8 @@ write on a Rust struct, and a software mixer renders the result.
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
+| `devices` | Picks an output device by name (the DualSense speaker); no device access. |
+| `fx`, `reverb` | Per-voice effects and the mixer's I3DL2 reverb; see "Voice effects". |
 | `output` | The only platform code: cpal streams (`device` feature, on by default). `DeviceSink` is the ring-fed one; the older `Output` (mixer behind a `try_lock`) remains for the tone example. |
 
 `cargo run --release --example tone -p audio` plays a PCM tone and a
@@ -277,9 +279,10 @@ is the trace source for validating the mixer later.
 ## Next steps
 
 1. (Done: 64 confirmed, docs/formats/sound.md.)
-2. A guest-facing shim crate mapping `IDirectSound*` vtable calls onto this
-   model (owned by the runtime).
-3. Notifications and play regions. (Done: the I3DL2 reverb, as an FDN.)
+2. (Done: `crates/dsound` maps the guest's DirectSound calls onto this model;
+   see [dsound.md](dsound.md).)
+3. Notifications and play regions (Halo 2 has no call sites for them; see
+   dsound.md). (Done: the I3DL2 reverb, as an FDN.)
 4. Replace linear resampling with a windowed-sinc or polyphase path for big
    downsamples.
 5. (Done: the ring-fed `DeviceSink` removes the callback lock, and

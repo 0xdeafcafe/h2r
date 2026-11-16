@@ -207,8 +207,9 @@ their own `MovieDecoder`. `SyntheticDecoder` remains available without codecs.
 See Apple's [track output documentation](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)
 and [sample output contract](https://developer.apple.com/documentation/avfoundation/avassetreaderoutput/copynextsamplebuffer%28%29).
 
-The pre-existing registration API below illustrates a future integration;
-this change does not call it:
+The registration API below is what `boot` calls today, in skip mode
+(`crates/boot/src/lib.rs`, `if opts.bink`). Passing a `TranscodedSource`
+(the commented line) is the playback integration no host does yet:
 
 ```rust
 use std::sync::Arc;

@@ -157,9 +157,9 @@ How the engine draws text, from the disassembly (**E**):
 
 So every glyph on screen is a 1x bitmap in one texture, and the D3D layer
 can recognise it: `d3d::glyph` checks the texture's shape and that its
-header is the one the bitmap at `0x4b62ac` names. Above 1x the view
-redraws those draws with a filter that rebuilds the edges from the alpha
-([high-resolution.md](../graphics/high-resolution.md), "Text"). No glyph data is
+header is the one the bitmap at `0x4b62ac` names. With `H2_SMOOTH_TEXT=1` (off
+by default) the device redraws those draws with a filter that rebuilds the
+edges from the alpha ([high-resolution.md](../graphics/high-resolution.md), "Text"). No glyph data is
 stored or shipped; it is all the texture the game fills at run time.
 
 ## Engine addresses
