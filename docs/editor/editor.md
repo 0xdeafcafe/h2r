@@ -27,6 +27,11 @@ spirit of the original tools' Sapien. It hosts tools:
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
 
+`h2-studio` ([studio.md](studio.md)) is replacing this app with a Dear
+ImGui one, phase by phase; until it reaches parity, this one keeps
+working. Both share `crates/editor-core` (map sources, the undo stack,
+`Status`) and `scenario_edit::Session`.
+
 ## Running it
 
 ```
@@ -111,7 +116,7 @@ shell and the hopper tool `NativeDialog`; tests use `ScriptedDialog`,
 which answers from a queue and records each request. Without a dialog,
 or on `Unavailable`, the shell falls back to the typed-path prompt.
 
-`MapSource` (`crates/editor/src/source.rs`) gives `map_names()`,
+`MapSource` (`crates/editor-core/src/source.rs`) gives `map_names()`,
 `open_map(name)` (a `map::Map` over the disc region or file) and
 `resources(name)` (a `tags::geometry::RawSource` over the map and the
 shared caches), so a tool can decode tags and geometry the way

@@ -187,7 +187,13 @@ fn delete_duplicate_and_add_act_on_the_selection() {
     app.dispatch(Action::Delete);
     assert!(matches!(app.status(), Some(Status::Error(m)) if m.contains("select")));
 
-    let weapons = |app: &App| app.session.scenario().unwrap().block(BlockKind::Weapons).len();
+    let weapons = |app: &App| {
+        app.session
+            .scenario()
+            .unwrap()
+            .block(BlockKind::Weapons)
+            .len()
+    };
     let n = weapons(&app);
     app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
     // Full block, growth off: refused with the reason.

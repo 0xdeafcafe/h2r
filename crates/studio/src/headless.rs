@@ -242,9 +242,11 @@ mod tests {
         let (rgba, [w, hgt]) = h.capture(&mut app, 4).unwrap();
         assert_eq!(rgba.len(), (w * hgt * 4) as usize);
         let distinct: std::collections::HashSet<[u8; 4]> = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .step_by(97)
-            .map(|p| [p[0], p[1], p[2], p[3]])
+            .copied()
             .collect();
         assert!(distinct.len() > 8, "the frame is nearly uniform");
         let out = dir.join("studio.png");

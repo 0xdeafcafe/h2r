@@ -216,7 +216,10 @@ impl Studio {
             return;
         };
         if let Some(_m) = ui.begin_menu("File") {
-            if ui.menu_item_with_shortcut(format!("{} Open disc or map...", icon::FOLDER_OPEN), "Cmd+O") {
+            if ui.menu_item_with_shortcut(
+                format!("{} Open disc or map...", icon::FOLDER_OPEN),
+                "Cmd+O",
+            ) {
                 self.open_source_dialog(actions);
             }
             if ui.menu_item(format!("{} Open maps folder...", icon::FOLDER)) {
@@ -328,8 +331,11 @@ impl Studio {
             ) {
                 self.viewport.op = GizmoOp::Rotate;
             }
-            if ui.menu_item_enabled_selected_no_shortcut("Gizmo in local axes", self.viewport.local, true)
-            {
+            if ui.menu_item_enabled_selected_no_shortcut(
+                "Gizmo in local axes",
+                self.viewport.local,
+                true,
+            ) {
                 self.viewport.local = !self.viewport.local;
             }
             ui.separator();
@@ -462,7 +468,10 @@ impl Studio {
                 .build();
             let sel = app.session.selected();
             let (remove, add) = match sel {
-                Some((kind, _)) => (app.session.remove_refusal(kind), app.session.add_refusal(kind)),
+                Some((kind, _)) => (
+                    app.session.remove_refusal(kind),
+                    app.session.add_refusal(kind),
+                ),
                 None => (Some("select a placement"), Some("select a placement")),
             };
             let d = ui.begin_disabled_with_cond(add.is_some());
@@ -532,7 +541,13 @@ impl Studio {
         });
     }
 
-    fn viewport_window(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
+    fn viewport_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
         let padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
         let viewport = &mut self.viewport;
         ui.window(&self.keys.viewport)
@@ -772,7 +787,10 @@ impl Studio {
                         .build();
                     ui.set_next_item_width(320.0);
                     ui.input_text("Directory", &mut form.dir).build();
-                    ui.checkbox("Make it the active package for this map", &mut form.activate);
+                    ui.checkbox(
+                        "Make it the active package for this map",
+                        &mut form.activate,
+                    );
                     if app.session.package_dir() == Some(form.dir.as_str()) {
                         ui.text_disabled("Replaces this package's patch.");
                     }
@@ -843,11 +861,17 @@ fn viewport_toolbar(ui: &Ui, app: &App, viewport: &mut ViewportView, actions: &m
         }
         clicked
     };
-    if toggle(format!("{} Move (W)", icon::MOVE), viewport.op == GizmoOp::Translate) {
+    if toggle(
+        format!("{} Move (W)", icon::MOVE),
+        viewport.op == GizmoOp::Translate,
+    ) {
         viewport.op = GizmoOp::Translate;
     }
     ui.same_line();
-    if toggle(format!("{} Rotate (E)", icon::ROTATE), viewport.op == GizmoOp::Rotate) {
+    if toggle(
+        format!("{} Rotate (E)", icon::ROTATE),
+        viewport.op == GizmoOp::Rotate,
+    ) {
         viewport.op = GizmoOp::Rotate;
     }
     ui.same_line();
@@ -952,7 +976,7 @@ fn value_editor(
             drag_f32(&id)
                 .speed(speed)
                 .build(ui, &mut shown)
-                .then(|| Value::Float(shown * from_ui))
+                .then_some(Value::Float(shown * from_ui))
         }
         Value::Int(mut x) => {
             if f.role == Role::PaletteIndex {

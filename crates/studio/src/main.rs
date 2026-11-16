@@ -38,7 +38,10 @@ fn args() -> Result<Args> {
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
-        let mut value = || it.next().ok_or_else(|| anyhow!("{flag} needs a value\n{USAGE}"));
+        let mut value = || {
+            it.next()
+                .ok_or_else(|| anyhow!("{flag} needs a value\n{USAGE}"))
+        };
         match flag.as_str() {
             "--disc" | "--map" | "--folder" => a.source = Some(value()?.into()),
             "--data" => a.data = Some(value()?.into()),

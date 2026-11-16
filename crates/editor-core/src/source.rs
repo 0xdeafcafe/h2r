@@ -330,7 +330,10 @@ mod tests {
         assert_eq!(src.map_names(), vec!["A".to_string(), "b".to_string()]);
         assert_eq!(src.loose_file("a"), Some(dir.join("A.MAP")));
         assert_eq!(src.location("b").unwrap(), (dir.join("b.map"), None));
-        assert!(src.location("c").is_err(), "only maps directly in the folder");
+        assert!(
+            src.location("c").is_err(),
+            "only maps directly in the folder"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         let empty = std::env::temp_dir().join(format!("h2-editor-empty-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();

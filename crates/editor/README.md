@@ -46,9 +46,10 @@ picked in the sidebar, eframe's `egui_wgpu::RenderState` for 3D viewports
 (`None` in headless tests), and the status line (`cx.info(..)`,
 `cx.error(..)`).
 
-`UndoStack<T>` (`src/undo.rs`) is a snapshot undo stack any tool can use:
-clone the state before drawing, draw, then `undo.track(before, &state,
-ui.ctx().memory(|m| m.focused()))`, which records one step per change and
+`UndoStack<T>` (`editor_core::undo`, re-exported as `editor::undo`) is a
+snapshot undo stack any tool can use: clone the state before drawing,
+draw, then `undo.track(before, &state, ui.ctx().memory(|m|
+m.focused()).map(|id| id.value()))`, which records one step per change and
 folds a run of edits from one focused widget into one.
 
 ## Layout
@@ -56,9 +57,9 @@ folds a run of edits from one focused widget into one.
 - `src/tool.rs`: the `Tool` trait, `ToolContext`, `ToolError`.
 - `src/shell.rs`: the window, and the prompt state machine (tested in
   `src/shell/tests.rs` without a window).
-- `src/source.rs`: the disc image / loose map source (the viewer's disc
-  reader, copied).
-- `src/undo.rs`: the undo stack.
+- `editor::source` and `editor::undo` are `crates/editor-core`'s, shared
+  with `h2-studio`: the disc image / loose map / maps folder source (the
+  viewer's disc reader, copied) and the undo stack.
 - `src/hopper/`: the hopper tool. `model.rs` (working copy, edits,
   validation, writing back) and `presets.rs` are UI-free and tested with
   synthetic images; `catalog.rs` reads map names from the disc; `mod.rs`

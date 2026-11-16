@@ -266,6 +266,8 @@ impl App {
     fn run(&mut self, action: Action) {
         match action {
             Action::OpenSource(path) => self.open_source(&path),
+            // Re-picking the open map keeps it (and its edits).
+            Action::SelectMap(name) if self.loaded.as_deref() == Some(name.as_str()) => {}
             Action::SelectMap(name) => self.select_map(&name),
             Action::SaveMapAs(path) => {
                 let r = self.session.save_as(&path);
@@ -365,11 +367,7 @@ impl App {
             .location(name)
             .map(|(path, region)| EditSource::region(path, region))
             .map_err(|e| e.to_string())
-            .and_then(|s| {
-                self.session
-                    .open_named(s, name)
-                    .map_err(|e| e.to_string())
-            });
+            .and_then(|s| self.session.open_named(s, name).map_err(|e| e.to_string()));
         match opened {
             Ok(()) => {
                 self.loaded = Some(name.to_owned());

@@ -449,12 +449,7 @@ impl ScenarioEditor {
         let avail = ui.available_size().max(egui::vec2(64.0, 64.0));
         let ppp = ui.ctx().pixels_per_point();
         let px = [(avail.x * ppp) as u32, (avail.y * ppp) as u32];
-        let resized = viewport.render(
-            &render.device,
-            &render.queue,
-            self.session.camera(),
-            px,
-        );
+        let resized = viewport.render(&render.device, &render.queue, self.session.camera(), px);
         let view = viewport.color_view().expect("rendered");
         let tex = {
             let mut r = render.renderer.write();

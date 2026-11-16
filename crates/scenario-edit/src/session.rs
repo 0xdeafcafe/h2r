@@ -645,9 +645,14 @@ impl Session {
         let finite = |v: &[f32]| v.iter().all(|x| x.is_finite());
         if position != before.position && finite(&position) {
             let f = def.role(Role::Position).expect("has a position");
-            cmd.ops.push(set_op(kind, index, f.name, Value::Vec3(position)));
+            cmd.ops
+                .push(set_op(kind, index, f.name, Value::Vec3(position)));
         }
-        match (before.rotation, def.role(Role::Rotation), def.role(Role::Facing)) {
+        match (
+            before.rotation,
+            def.role(Role::Rotation),
+            def.role(Role::Facing),
+        ) {
             (Some(RotationField::Ypr(old)), Some(f), _) if !close3(old, ypr) && finite(&ypr) => {
                 cmd.label = "rotate".into();
                 cmd.ops.push(set_op(kind, index, f.name, Value::Vec3(ypr)));
@@ -656,7 +661,8 @@ impl Session {
                 if (old - ypr[0]).abs() > 1e-5 && ypr[0].is_finite() =>
             {
                 cmd.label = "rotate".into();
-                cmd.ops.push(set_op(kind, index, f.name, Value::Float(ypr[0])));
+                cmd.ops
+                    .push(set_op(kind, index, f.name, Value::Float(ypr[0])));
             }
             _ => {}
         }
