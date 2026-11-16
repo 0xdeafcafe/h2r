@@ -37,7 +37,6 @@ say "Checking tools"
 command -v docker >/dev/null || die "docker not found (install Docker Desktop)"
 docker compose version >/dev/null 2>&1 || die "docker compose not found"
 docker info >/dev/null 2>&1 || die "Docker isn't running: start Docker Desktop and run this again"
-command -v openssl >/dev/null || die "openssl not found"
 command -v curl >/dev/null || die "curl not found"
 if ! type -P h2 >/dev/null; then
   command -v cargo >/dev/null || die "neither h2 nor cargo found (needed to extract art and make invites)"
@@ -78,14 +77,58 @@ TXT
   ask admins "Admin gamertag(s), comma-separated"
   [[ -n $admins ]] || die "name at least one admin gamertag"
 
+  say "Cloudflare R2 (optional)"
+  cat <<'TXT'
+The event log is SQLite in ./data. Content and cloud saves can live in an R2
+bucket instead of ./data, shared game art can be served straight from a
+public one, and live.db can be backed up to R2 continuously (free tier:
+10 GB, no egress fees; docs/live/live-hosting.md, "Free hosting").
+Leave the bucket blank to keep everything on this machine.
+
+In the Cloudflare dashboard: R2 > Create bucket (say h2live; and h2live-public
+for the art, with a custom domain or r2.dev under Settings > Public access).
+R2 > Manage API tokens > Create API token: Object Read & Write, those buckets.
+The S3 endpoint is on the R2 overview: https://<account id>.r2.cloudflarestorage.com
+TXT
+  ask bucket "Private bucket for content, saves and backups (blank: none)"
+  r2=""
+  if [[ -n $bucket ]]; then
+    ask endpoint "S3 endpoint (https://<account id>.r2.cloudflarestorage.com)"
+    [[ $endpoint == https://* ]] || die "the endpoint starts with https://"
+    ask key_id "Access key ID"
+    secret=""
+    while [[ -z $secret ]]; do read -r -s -p "Secret access key (hidden): " secret; echo; done
+    ask public_bucket "Public bucket for the game art (blank: serve it from here)"
+    public_url=""
+    if [[ -n $public_bucket ]]; then
+      ask public_url "Its public URL (custom domain or https://pub-....r2.dev)"
+      [[ $public_url == https://* ]] || die "the public URL starts with https://"
+    fi
+    ask backup "Back up live.db to $bucket continuously with Litestream? (y/n)" y
+    r2="H2_LIVE_S3_ENDPOINT=$endpoint
+H2_LIVE_S3_ACCESS_KEY_ID=$key_id
+H2_LIVE_S3_SECRET_ACCESS_KEY=$secret
+H2_LIVE_BLOBS=s3://$bucket"
+    if [[ -n $public_bucket ]]; then
+      r2+="
+H2_LIVE_PUBLIC_BLOBS=s3://$public_bucket
+H2_LIVE_PUBLIC_BLOBS_URL=$public_url"
+    fi
+    if [[ $backup == [yY]* ]]; then
+      r2+="
+COMPOSE_PROFILES=backup
+LITESTREAM_BUCKET=$bucket"
+    fi
+  fi
+
   umask 077
   cat > .env <<ENV
 TUNNEL_TOKEN=$token
-POSTGRES_PASSWORD=$(openssl rand -hex 24)
 H2_LIVE_ADMINS=$admins
 H2_LIVE_PUBLIC_URL=$url
 H2_LIVE_DATA_DIR=./data
 H2_LIVE_ART_DIR=./art
+$r2
 ENV
   umask 022
   echo "wrote $here/.env (only you can read it)"
@@ -141,6 +184,6 @@ gamertags, and you're the admin.
 
 Logs:     cd $here && docker compose logs -f server
 Update:   git pull && cd $here && docker compose up -d --build
-Backup:   tar czf h2live-data.tgz -C $here data
-          docker compose exec -T db pg_dump -U h2live h2live > h2live.sql
+Backup:   tar czf h2live-data.tgz -C $here data   (the key; live.db too unless
+          Litestream backs it up: COMPOSE_PROFILES=backup)
 TXT

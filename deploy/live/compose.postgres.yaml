@@ -1,0 +1,33 @@
+# The server on Postgres instead of SQLite, as deploy/live ran before
+# SQLite was the default (docs/live/live-hosting.md, "Free hosting", to move
+# off it):
+#
+#   docker compose -f compose.yaml -f compose.postgres.yaml up -d
+#
+# Needs POSTGRES_PASSWORD in .env (openssl rand -hex 24).
+
+services:
+  server:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      H2_LIVE_DB: postgres://h2live:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/h2live
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: h2live
+      POSTGRES_DB: h2live
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "h2live", "-d", "h2live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg:

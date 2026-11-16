@@ -11,7 +11,8 @@ the original design and investigation.
 The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
 gamertag, show the message of the day and playlists, keep a friends list
 with presence, and later matchmake and play. Accounts are made from the CLI
-or the web app. The service behind it is ours, event sourced on Postgres.
+or the web app. The service behind it is ours, event sourced on SQLite
+(Postgres if you prefer).
 
 ## 1. What the title links
 
@@ -151,7 +152,9 @@ h2 play <disc> [--live | --live-server URL | --offline] [--live-listen ADDR] [--
 `/`, with `index.html` for any path that is not a file or under `/v1/`; it
 prints a hint to run `cd web && bun run build` when there is none.
 
-Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
+Defaults: `--db` is `$H2_LIVE_DB` or `sqlite://<--data>/live.db` (a
+server with no `live.db` but a log in `postgres://localhost/h2live` keeps
+that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#free-hosting-sqlite-and-cloudflare-r2)),
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
 `http://127.0.0.1:8074`, `--data` the server directory below.
 
@@ -450,9 +453,11 @@ replaying from the store, so nothing falls between the two; a reader that
 lags re-reads from the store. Every read reply carries that applied
 position.
 
-Postgres rather than Mongo: an event store needs ordered append with a
-uniqueness check per stream, which is one table and one constraint in
-Postgres.
+SQL rather than Mongo: an event store needs ordered append with a
+uniqueness check per stream, which is one table and one constraint. SQLite
+is the default since 2026-11-16 (one file beside the key, no database
+server, backed up to R2 by Litestream); Postgres stays supported, and
+`h2 live store copy` moves a log between the two with positions kept.
 
 Everything else is an event too, presence and matchmaking sessions
 included (decided 2026-11-15), so the log is the full history of who was

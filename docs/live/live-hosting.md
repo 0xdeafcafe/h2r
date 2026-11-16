@@ -155,8 +155,8 @@ else on this machine could send its own `CF-Connecting-IP`.
 
 ## Docker with a named tunnel
 
-`deploy/live/` runs the server, its Postgres and cloudflared with Docker
-Compose: the API, the web dashboard and the stats site at one lasting
+`deploy/live/` runs the server and cloudflared with Docker Compose (the
+log is SQLite in `data/`; blobs there or in R2, [below](#free-hosting-sqlite-and-cloudflare-r2)): the API, the web dashboard and the stats site at one lasting
 address (here `https://live.forbes.red`), with the game art shared. The
 image has no disc and no art in it; you extract the art once on a machine
 with the disc and the containers read it from there.
@@ -167,7 +167,7 @@ with the disc and the containers read it from there.
   Linux in a few minutes), into a distroless image that runs as a non-root
   user. The web app is at `/srv/web` (`H2_LIVE_WEB`); `/data` is the
   server's key and id, `/art` the art.
-- `deploy/live/compose.yaml`: three services.
+- `deploy/live/compose.yaml`: two services, and a third for backups.
   - `cloudflared` runs `tunnel run` with the token in `TUNNEL_TOKEN`.
   - `server` runs in cloudflared's network namespace
     (`network_mode: service:cloudflared`) and listens on `127.0.0.1:8074`
@@ -175,9 +175,12 @@ with the disc and the containers read it from there.
     --behind-cloudflared --invite-only`; admins come from
     `H2_LIVE_ADMINS`. Its root filesystem is read-only and it has no
     capabilities.
-  - `db` is Postgres 17, on a named volume, reachable only on the compose
-    network.
-  All three restart unless stopped.
+  - `litestream` (only with `COMPOSE_PROFILES=backup`) copies `live.db`
+    to R2 as it is written ([Backups](#backups-to-r2-litestream)).
+  All of them restart unless stopped. `compose.postgres.yaml` adds a
+  Postgres 17 container and points the server at it, for a server that
+  stays on Postgres (`docker compose -f compose.yaml -f
+  compose.postgres.yaml up -d`, `POSTGRES_PASSWORD` in `.env`).
 - `deploy/live/.env.example`: the settings; copy it to `.env`, which git
   ignores along with `data/` and `art/`.
 
@@ -192,7 +195,7 @@ request it delivers carries Cloudflare's headers, so local sign-in and
 other this-machine-only routes refuse it exactly as they do behind
 `h2 live serve --tunnel`. The server joins cloudflared's namespace rather
 than the other way round because the server is the one more likely to
-restart (Postgres not up yet, a new image); a restarted server rejoins the
+restart (a new image); a restarted server rejoins the
 namespace, while a container joined to a restarted one is left with a dead
 namespace. If cloudflared itself is recreated, Compose restarts the server
 with it (`depends_on: restart: true`).
@@ -233,7 +236,7 @@ reads the files as they are.
 
 ```
 cd deploy/live
-cp .env.example .env          # TUNNEL_TOKEN, POSTGRES_PASSWORD (openssl rand -hex 24), H2_LIVE_ADMINS
+cp .env.example .env          # TUNNEL_TOKEN, H2_LIVE_ADMINS; R2 optional
 mkdir -p data
 docker compose up -d --build
 docker compose logs -f server
@@ -250,14 +253,15 @@ Among the first lines of the log:
 
 ```
 h2 live: public at https://live.forbes.red (through cloudflared)
-h2 live: live.forbes.red on http://127.0.0.1:8074, log at position 0 (postgres://db:5432/h2live, public reads)
+h2 live: live.forbes.red on http://127.0.0.1:8074, log at position 0 (sqlite sqlite:///data/live.db, public reads)
+h2 live: blobs in /data
 h2 live: web app from /srv/web
 h2 live: serving game art from /art to everyone: ...
 ```
 
 The id never changes after this. If the first start had the wrong
-`H2_LIVE_PUBLIC_URL`, stop it, delete `data/` and the `pg` volume
-(`docker compose down -v`), and start again before anyone signs up.
+`H2_LIVE_PUBLIC_URL`, stop it, delete `data/` (and, on Postgres, the `pg`
+volume: `docker compose down -v`), and start again before anyone signs up.
 
 ### The first admin account
 
@@ -286,17 +290,19 @@ Invites, [live-admin.md](live-admin.md) §5). To drop `--invite-only` or add
 
 ### Backups
 
-Two things hold the server's state, and you need both:
+What holds the server's state:
 
-- `data/`: the server key and id. Lose it and every token and author id
-  the server has issued is orphaned. Copy it somewhere private (it holds a
-  secret key): `tar czf h2live-data.tar.gz -C deploy/live data`.
-- Postgres: the event log (accounts, friends, games, title files).
-  `docker compose exec -T db pg_dump -U h2live h2live > h2live.sql`
-  while it runs. Restore into a fresh volume with
-  `docker compose up -d db` then
-  `docker compose exec -T db psql -U h2live h2live < h2live.sql`, then
-  start the rest.
+- `data/server.key`, `data/server.json`: the server key and id. Lose them
+  and every token and author id the server has issued is orphaned. Copy
+  them somewhere private (the key is a secret). They never go to R2.
+- `data/live.db`: the event log (accounts, friends, games, title files).
+  With `COMPOSE_PROFILES=backup` Litestream keeps a copy in R2
+  ([below](#backups-to-r2-litestream)); otherwise snapshot it while the
+  server runs with `sqlite3 data/live.db "vacuum into 'h2live.db'"` (a
+  plain file copy of a database in WAL mode can miss recent writes). On
+  Postgres: `docker compose exec -T db pg_dump -U h2live h2live > h2live.sql`.
+- Blobs (custom content, cloud saves): `data/content/` and `data/storage/`,
+  or the private R2 bucket, which is its own copy.
 
 The art can always be extracted again.
 
@@ -310,8 +316,9 @@ docker image prune -f
 ```
 
 The server rebuilds and restarts; the data, the database and the id are
-kept. `docker compose pull` updates cloudflared and Postgres (stay on major
-version 17 unless you dump and restore). If a server restart ever leaves
+kept. `docker compose pull` updates cloudflared and Litestream (and
+Postgres if you use it: stay on major version 17 unless you dump and
+restore). If a server restart ever leaves
 the site down while cloudflared is up, `docker compose restart cloudflared
 server` puts both back in one namespace.
 
@@ -321,6 +328,176 @@ Only the service goes through the tunnel. Game traffic is UDP straight
 between players' machines ([below](#what-the-tunnel-does-not-carry)), not
 through this server, so hosting a game still needs UDP 3074-3080 reachable
 on the host player's side.
+
+## Free hosting (SQLite and Cloudflare R2)
+
+A server is one process: the event log is SQLite (`live.db` beside the
+key), and what is bulky and written once can live in Cloudflare R2, whose
+free tier covers a friends' server. So a small VM, a Raspberry Pi or the
+Mac you play on runs it with no database server, and nothing it stores is
+lost with the machine.
+
+| what | where | why |
+|---|---|---|
+| the event log | `<data>/live.db` (SQLite, WAL mode), backed up to R2 by Litestream | small, written constantly, needs ordered appends: a local file is fastest and free |
+| the server key and id | `<data>/server.key`, `server.json` | a secret; never uploaded |
+| custom content, cloud saves and their indexes | the private blob store: `<data>` (default) or a private R2 bucket (`--blobs s3://BUCKET`) | bulky, written once: object storage |
+| shared game art | the art directory, published to a public R2 bucket (`--public-blobs`) and redirected to | big, public and cacheable: the bytes skip the server and the tunnel |
+
+Content (maps, packs, preview images) is always served through the server,
+from whichever store holds it: the game's client follows no redirects, and
+an admin's takedown has to be immediate. Cloud saves always go through the
+server with the owner's token. Only shared art is redirected.
+
+### R2 setup
+
+In the Cloudflare dashboard (any account; R2 needs a payment method on file
+even on the free tier):
+
+1. **R2 → Create bucket**: `h2live` (private: content, cloud saves,
+   Litestream's backups). Location: automatic.
+2. **Optionally a second bucket for the art**, `h2live-public`. It must be
+   its own bucket: a public R2 bucket is public as a whole, and a cloud
+   save must never be fetchable by hash. In its **Settings → Public
+   access**, connect a custom domain on your Cloudflare zone (say
+   `art.forbes.red`; cached at the edge) or allow the `r2.dev` URL (rate
+   limited, for trying it out). Then **Settings → CORS policy**, so the
+   web app can load the art across origins (it reads emblem pixels and
+   loads models with `fetch`):
+
+   ```json
+   [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 86400}]
+   ```
+3. **R2 → Manage API tokens → Create API token**: permission **Object Read
+   & Write**, applied to those buckets only. Copy the **Access Key ID** and
+   **Secret Access Key** (shown once) and the S3 endpoint,
+   `https://<account id>.r2.cloudflarestorage.com` (on the R2 overview page).
+
+The server reads the keys from the environment, never the command line:
+
+```
+H2_LIVE_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
+H2_LIVE_S3_ACCESS_KEY_ID=...
+H2_LIVE_S3_SECRET_ACCESS_KEY=...
+```
+
+(`H2_LIVE_S3_PUBLIC_*` override any of them for the public bucket;
+`H2_LIVE_S3_REGION` defaults to `auto`.) Then:
+
+```
+h2 live serve --blobs s3://h2live \
+  --public-blobs s3://h2live-public --public-blobs-url https://art.forbes.red ...
+```
+
+or the same in `.env` for Docker (`H2_LIVE_BLOBS`, `H2_LIVE_PUBLIC_BLOBS`,
+`H2_LIVE_PUBLIC_BLOBS_URL`; `deploy/live/setup.sh` asks for them). Requests
+are path-style, signed with SigV4 for region `auto`; `s3://BUCKET/PREFIX`
+keeps a server's keys under a prefix. Any S3-compatible store works the
+same way (MinIO, Backblaze B2).
+
+**Published art.** With shared art (`--share-game-art`) and a public
+bucket, the server uploads the art directory once in the background to
+`art/<stamp>/...`, where the stamp is 16 hex digits of a hash over every
+file's path and size and the manifest: a new extraction is a new set of
+addresses. Each object carries its content type and `Cache-Control:
+public, max-age=31536000, immutable`; a file with a `.gz` copy is uploaded
+as that copy with `Content-Encoding: gzip`. An interrupted upload resumes
+on the next start (files already there are skipped), and a published
+extraction costs one request to recognise. Once it is all there, a request
+for `/art/game/<file>` is a `307` to `<public url>/art/<stamp>/<file>`,
+carrying the cache policy the file itself had: a year for a versioned
+`?v=` address, `no-cache` (asked each time) otherwise. Until then, for a
+client that does not take gzip, and on a `--private` server, the server
+serves the files itself. Art that is not shared is never published. Old
+extractions' prefixes stay in the bucket; delete them in the dashboard if
+space matters.
+
+**Cloud save indexes** live beside the saves (`storage/<xuid>/index.json`):
+they cannot be rebuilt from the blobs, so they move with them. In a bucket
+each index write is conditional on the copy the server read (`If-Match`,
+which R2 honours), so two servers on one bucket cannot silently undo each
+other's writes.
+
+### Costs
+
+R2's free tier, per month: 10 GB stored, 1 million Class A operations
+(writes, lists), 10 million Class B operations (reads), and no charge for
+egress, ever. A friends' server stays well inside it: art is a few hundred
+MB and published once, a cloud save write is two Class A operations (the
+bytes and the index), a read one Class B, and Litestream writes at most one
+small object a second while the log is busy (its default sync interval),
+plus a daily snapshot. Past the free tier R2 bills $0.015/GB-month and
+$4.50 per million Class A operations. Published art behind a custom domain
+is served from Cloudflare's cache, so repeat views are not R2 reads at all.
+
+### Backups to R2 (Litestream)
+
+[Litestream](https://litestream.io) copies `live.db`'s WAL to R2 as it is
+written, so a lost machine loses at most the last second. It is a separate
+process, not part of the server: it is battle-tested at exactly this, and
+it reads the database file without the server's help. (A built-in periodic
+`VACUUM INTO` snapshot uploaded to R2 would be simpler to ship but would
+lose up to a whole interval of accounts, friends and games; Litestream is
+one more process for a much better recovery point.) Its settings are
+`deploy/live/litestream.yml`, which takes everything from the environment:
+the same `H2_LIVE_S3_*` keys, `LITESTREAM_BUCKET` (the private bucket) and
+`LITESTREAM_DB` (the database file). Backups go under `litestream/` in the
+bucket, a daily snapshot is kept for a week.
+
+- **Docker**: `COMPOSE_PROFILES=backup` and `LITESTREAM_BUCKET=h2live` in
+  `.env` start the `litestream` service beside the server.
+- **Bare metal or a Mac**: `brew install litestream` (or the release
+  binary), then run, beside the server,
+
+  ```
+  LITESTREAM_DB="$HOME/Library/Application Support/h2recomp/live/server/live.db" \
+  LITESTREAM_BUCKET=h2live H2_LIVE_S3_ENDPOINT=... H2_LIVE_S3_ACCESS_KEY_ID=... \
+  H2_LIVE_S3_SECRET_ACCESS_KEY=... litestream replicate -config deploy/live/litestream.yml
+  ```
+
+  As a launchd agent: a second plist like the server's, with
+  `ProgramArguments` `/opt/homebrew/bin/litestream replicate -config
+  <repo>/deploy/live/litestream.yml`, those variables in
+  `EnvironmentVariables`, `KeepAlive` and `RunAtLoad` true. (Keep the
+  plist's mode 0600: it holds the secret key.)
+- **Restore** (the server stopped, `live.db` absent):
+  `litestream restore -config deploy/live/litestream.yml -if-replica-exists "$LITESTREAM_DB"`,
+  then start the server; with the server key and id from your own backup,
+  it is the same server.
+
+### Moving an existing server
+
+`h2 live store copy` (or `h2-live-server store copy` on a machine without
+`h2`) moves the log between databases and the blobs between the data
+directory and a bucket. The log keeps every event's position, version and
+hash (clients' cursors and checkpoints stay valid) and is checked on the
+way in; the copy is idempotent and resumable: run it again and it carries
+on after what the destination has, and it refuses a destination that holds
+a different log. Blobs already at the destination with the same size are
+skipped. Only `content/` and `storage/` are copied, never the key.
+
+For live.forbes.red (a launchd agent running `h2-live-server --data
+"~/Library/Application Support/h2recomp/live/server" --db
+postgres://localhost/h2live`):
+
+```
+D="$HOME/Library/Application Support/h2recomp/live/server"
+launchctl bootout gui/$(id -u)/red.forbes.h2live.server     # stop it
+h2-live-server store copy --from postgres://localhost/h2live --to "sqlite://$D/live.db"
+# with R2 (the H2_LIVE_S3_* variables set in this shell):
+h2-live-server store copy --from-blobs "$D" --to-blobs s3://h2live
+```
+
+then change the plist's `ProgramArguments`: drop `--db
+postgres://localhost/h2live` (the default is now `live.db` in `--data`;
+or say `--db sqlite://$D/live.db`), and for R2 add `--blobs s3://h2live`
+(and `--public-blobs s3://h2live-public --public-blobs-url
+https://art.forbes.red` for the art) with the three `H2_LIVE_S3_*`
+variables in `EnvironmentVariables`. Start it again (`launchctl bootstrap
+gui/$(id -u) ~/Library/LaunchAgents/red.forbes.h2live.server.plist`); its
+first line says `log at position N (sqlite ...)` with the same N Postgres
+had. Keep the Postgres database until you are happy; running the copy
+again after a mistaken start on Postgres picks up what was added.
 
 ## cloudflared not found, or failing
 
@@ -415,6 +592,20 @@ UDP 3074-3080 reachable for internet play.
   `identity.rs`, `art.rs`: the lasting host, the first-start id and
   `--game-art` checks both binaries share; `crates/cli/src/live_cmd.rs`:
   `serve --behind-cloudflared` names a new server only.
+- `crates/live-server/src/sqlite.rs`, `pg.rs`, `store.rs`: the one
+  event-store conformance suite over SQLite (a temporary file), memory,
+  the file store and Postgres (`H2_LIVE_TEST_DB`), the concurrent-append
+  race on SQLite and Postgres, two handles on one SQLite file, WAL mode.
+- `crates/live-server/src/blobs.rs`: the blob-store conformance suite
+  (put, streamed file uploads, ranged reads, list by prefix, conditional
+  writes) over a directory, memory and a fake S3 endpoint that checks the
+  requests are path-style and signed for region `auto`; `copy.rs`: logs
+  with position gaps, resume after growth, a different log refused, a
+  broken chain refused, the file store into SQLite, blobs without the key
+  or temporary files; `art.rs`: publishing (not when unshared, gzip
+  copies, resumable) and the redirects with their cache policy;
+  `tests/cloud_saves.rs`: saves in a bucket, and an index changed by
+  another writer is not overwritten.
 - `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only
