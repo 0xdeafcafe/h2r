@@ -147,6 +147,26 @@ fn round_trip(disc: &std::ffi::OsStr, stem: &str) -> Res<()> {
             w(0x14),
             tail.len()
         );
+        // Do metadata words point into the uninterpreted index tail?
+        let space = map.metadata_space().unwrap();
+        let meta = map.read_file_range(space.file_offset, space.size.into())?;
+        let (lo, hi) = (0x8006_1000 + entries_end as u32, 0x8006_1000 + h.index_size);
+        let mut pointing = std::collections::BTreeMap::new();
+        for t in map.tags() {
+            let Some(l) = t.location.filter(|l| l.space == space) else {
+                continue;
+            };
+            let at = (l.address - space.virtual_base) as usize;
+            for w in meta[at..at + l.size as usize].as_chunks::<4>().0 {
+                let v = u32::from_le_bytes(*w);
+                if (lo..hi).contains(&v) {
+                    *pointing.entry(t.group.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        println!(
+            "{stem}: aligned metadata words inside the index tail, by tag group: {pointing:?}"
+        );
         let bsps: Vec<_> = map
             .tags()
             .iter()

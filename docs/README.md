@@ -80,6 +80,7 @@ goals, the two-stage plan, the crate table and milestones.
 ## Data formats and tags (`formats/`)
 
 - [map-format.md](formats/map-format.md) (**start here**): the cache file (v8) format and the `map` reader; read before the tag docs
+- [map-builder.md](formats/map-builder.md): writing whole maps from a tag set (`map::build`): layout, fixups, retail round trips
 - [animation.md](formats/animation.md): animation graphs (`jmad`) and frame decompression (`h2 anim`)
 - [bitmaps.md](formats/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`, `h2 bitmap`)
 - [collision.md](formats/collision.md): collision and physics model tags (`h2 collision`)
