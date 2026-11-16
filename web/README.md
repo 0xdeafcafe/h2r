@@ -424,10 +424,14 @@ optional; a frame without them draws as before.
   (docs/live/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
   camera before everything else, moving with it but not turning, its
   additive layers left out; behind it is the sky's clear colour, else its
-  fog colour. The sky's fog is linear, clear up to its start past the
-  point in focus and as thick as the game's at its end, but stretched so
-  the far side of the level is never more fogged than the game's most:
-  an overview fades the far side instead of hiding it. With no sky the
+  fog colour. The sky's atmospheric fog is drawn as the game's, not
+  three's: clear up to its start past the point in focus, thickening
+  linearly to the sky's maximum density at its opaque distance and never
+  thicker beyond, so an overview fades the far side instead of hiding it.
+  `useGameFog` patches three's fog chunks for that (the cap is one shared
+  uniform every material's `onBeforeCompile` gets; a material that sets
+  its own must chain the prototype's). A sky without fog but with a
+  sun-lit glow keeps the exponential haze in the glow's colour. With no sky the
   view keeps its own gradient and haze. The occlusion pass leaves out
   anything see-through that writes no depth (`viewer/aopass.ts`).
 
