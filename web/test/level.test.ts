@@ -138,7 +138,7 @@ describe("a level's sky and fog", () => {
   });
 
   test("the sky model sits beside the map glb", () => {
-    expect(skyUrl("/art/map/lockout/map.glb?v=10", "sky.glb")).toBe("/art/map/lockout/sky.glb");
+    expect(skyUrl("/art/map/lockout/map.glb?v=10", "sky.glb")).toBe("/art/map/lockout/sky.glb?v=10");
     expect(skyUrl("map.glb", "sky.glb")).toBe("sky.glb");
   });
 
