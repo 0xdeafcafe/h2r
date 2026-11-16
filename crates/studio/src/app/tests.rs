@@ -6,7 +6,7 @@ use scenario_edit::{Command, Value, fixture};
 struct Temp(PathBuf);
 impl Temp {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("h2-studio-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("h2-editor-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Temp(dir)
@@ -55,15 +55,15 @@ fn a_loose_map_opens_straight_into_the_scenario_tool() {
     let t = Temp::new("loose");
     let p = t.map("example", &fixture::fixture());
     let mut app = app_with(&t);
-    assert_eq!(app.title(), "h2-studio");
+    assert_eq!(app.title(), "h2-editor");
     app.dispatch(Action::OpenSource(p));
     assert_eq!(app.maps(), ["example".to_string()]);
     assert_eq!(app.loaded_map(), Some("example"));
     assert!(app.session.is_open() && !app.is_dirty());
-    assert_eq!(app.title(), "example - h2-studio");
+    assert_eq!(app.title(), "example - h2-editor");
     assert!(matches!(app.status(), Some(Status::Info(m)) if m.starts_with("opened example")));
     move_flag(&mut app, 9.0);
-    assert_eq!(app.title(), "example * - h2-studio");
+    assert_eq!(app.title(), "example * - h2-editor");
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn the_variant_tool_builds_from_the_fallback_and_undoes_through_actions() {
     for n in ["M", "My", "Mine"] {
         app.dispatch(Action::SetVariantName(n.into()));
     }
-    assert_eq!(app.title(), "Mine * - h2-studio");
+    assert_eq!(app.title(), "Mine * - h2-editor");
     assert!(app.can_undo());
     app.dispatch(Action::Undo);
     assert_eq!(
@@ -446,7 +446,7 @@ fn playlists_open_edit_undo_and_save_through_actions() {
     app.dispatch(Action::OpenHopper(path.clone()));
     assert_eq!(app.tool, ToolKind::Playlists);
     assert!(app.hoppers.is_open() && !app.is_dirty());
-    assert_eq!(app.title(), "multiplayer_hopper.dat - h2-studio");
+    assert_eq!(app.title(), "multiplayer_hopper.dat - h2-editor");
     app.hoppers.edit(|h| h[0].title = "Edited".into());
     assert!(app.tool_dirty(ToolKind::Playlists));
     app.dispatch(Action::Undo);

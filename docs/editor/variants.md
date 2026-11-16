@@ -2,7 +2,7 @@
 
 `crates/variants` is the game variant editor of the editor suite: the
 0x130-byte variant record, the settings schema, saved-variant files and the
-egui panel. No game data is in the repository: the schema and the built-in
+editor's state and commands (`VariantEditor`, drawn by `h2-editor`). No game data is in the repository: the schema and the built-in
 variants are read from the user's disc at run time, tests use synthetic
 bytes, and the checks against the retail XBE and disc are `#[ignore]` tests
 that read `$H2_XBE` (and `halo2.iso` beside it, or `$H2_ISO`).
@@ -172,7 +172,7 @@ Our kernel never fills export 325 (crates/kernel/STOPS.md), so on our
 runtime the key is 16 zero bytes. **Unverified**: no save written by the
 game under our runtime has been compared yet. To check: save one variant
 in the game, then run the ignored test `saved_variant_verifies` with
-`H2_SAVED_VARIANT=<the payload file in its save directory>` (the panel also
+`H2_SAVED_VARIANT=<the payload file in its save directory>` (the editor also
 reports a saved variant whose signature does not match when it is opened). A
 real console derives the key from the certificate's signature key with a
 console secret, so its saves cannot be re-signed here; the key is a
@@ -201,7 +201,7 @@ version, the name and game type for people, and the 0x130 record as hex
 length and lists what the clean-up would reject; the game never sees this
 file, so it carries no signature.
 
-## The panel
+## The editor
 
 `variants::VariantEditor::new(schema, store)` takes a `Schema`
 (`Schema::from_map` on the main menu map, or `Schema::fallback()`) and an
@@ -209,32 +209,27 @@ optional `SaveStore` (`SaveStore::new(SaveStore::default_root()?,
 XbeNames::read(&xbe, language).ok())`; without `XbeNames` saves list and
 update in place, but new saves cannot be named).
 
-- `ui(&mut self, ui: &mut egui::Ui)`: toolbar (Save, Undo, Redo, Revert,
-  New of a type, Export to the clipboard, Delete, Import), the list of
-  saved and built-in variants, and the settings form: the game's pages for
-  the variant's type, a combo of the disc's labelled values per setting
-  (a checkbox or number in the fallback), help and the default on hover,
-  changed settings in bold, the changes from the type's defaults and what
-  the game would reject.
 - `is_dirty`, `save` (refuses records the clean-up would change),
   `undo`/`redo`/`can_undo`/`can_redo`/`revert`, `set_setting`,
   `set_name` (typing a name is one undo step), `copy_builtin(name)`,
   `new_variant(type)`, `open_builtin`/`open_saved`, `delete`,
   `export_current`/`import`, `current`, `origin`, `issues`, `status`.
 
-Built-ins are read-only; the form offers "Copy as <name>", which clears the
-built-in flag like the game's Edit. Picking another variant with unsaved
-changes asks first.
+Built-ins are read-only; `copy_builtin(name)` (the editor's **Copy**)
+makes a named copy and clears the built-in flag like the game's Edit.
+The editor asks before picking another variant over unsaved changes
+(editor.md, "Game variants").
 
 ## Tests
 
 `cargo test -p variants`: synthetic records, files, stores in a temp dir,
-an invented schema, and headless frames of the panel (no window). With the
+an invented schema, and the editor's commands. With the
 disc (`H2_XBE`, `halo2.iso` beside it), `cargo test -p variants --test disc
 -- --ignored` checks the setter descriptors, the schema (every setting has
 a field and values, type pages match `fallback_owner`, every built-in
 built the game's way passes the clean-up and offers only listed values),
-the XBE names in every language, and draws every built-in in the panel.
+the XBE names in every language, and opens every built-in in the editor
+(read-only, with no issues).
 
 ## Open
 

@@ -1,12 +1,12 @@
 //! The 3D viewport: the structure BSP and the placement markers, drawn with
 //! wgpu into the viewport's own colour and depth textures, which the UI
-//! (egui or Dear ImGui) then shows as an image.
+//! (Dear ImGui) then shows as an image.
 //!
 //! Rendering offscreen (instead of inside the UI's render pass) keeps the
 //! viewport independent of the shell's surface: the UI pass may have no
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
-//! toolkit is used here; the egui panel registers [`Viewport::color_view`]
-//! with `egui_wgpu`, `h2-studio` with `dear-imgui-wgpu`.
+//! toolkit is used here; `h2-editor` registers [`Viewport::color_view`]
+//! with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles};
 use crate::scene::{Blend, Scene, SceneVertex};
 use std::ops::Range;

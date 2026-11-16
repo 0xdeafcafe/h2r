@@ -144,9 +144,11 @@ that a removal writes only the slot, the count and the names, and that a
 grown block changes only its root pair and the header sizes and lands
 after the old end of the metadata.
 
-## 4. The panel
+## 4. The session
 
-`ScenarioEditor` (egui 0.37, egui-wgpu 0.37 on wgpu 30):
+`scenario_edit::Session` holds the editor's state and every command, with
+no UI; `h2-editor`'s scenario tool (`crates/studio`,
+[editor.md](editor.md)) draws it:
 
 ```rust
 pub fn new() -> Self
@@ -156,8 +158,7 @@ pub fn set_data_root(&mut self, root: impl Into<PathBuf>) // packages in <root>/
 pub fn save_package(&mut self, form: &PackageForm) -> Result<SavedPackage>
 pub fn packages(&self) -> Vec<content::Package>          // for the open map
 pub fn open_package(&mut self, dir: &str) -> Result<content::MapId>
-pub fn open_disc(&mut self, iso: &Path) -> Result<()>     // fills the map picker
-pub fn ui(&mut self, ui: &mut egui::Ui, render: &egui_wgpu::RenderState)
+pub fn open_disc(&mut self, iso: &Path) -> Result<()>     // fills the map list
 pub fn is_dirty(&self) -> bool
 pub fn save_as(&mut self, path: impl AsRef<Path>) -> Result<u64>
 pub fn undo(&mut self) -> bool
@@ -168,39 +169,37 @@ pub fn add_entry(&mut self, kind: BlockKind, like: Option<usize>) -> Result<usiz
 pub fn remove_refusal(&self, kind: BlockKind) -> Option<&'static str>
 pub fn add_refusal(&self, kind: BlockKind) -> Option<&'static str>
 pub fn set_allow_growth(&mut self, allow: bool)
+pub fn begin_gesture(&mut self)                           // a gizmo drag: one undo step
+pub fn gesture_set(&mut self, position: Vec3, ypr: Vec3) -> Result<()>
+pub fn end_gesture(&mut self)
 ```
 
-- **Toolbar:** a path box (a `.map`, or an `.iso` to list its maps), undo,
-  redo, save-as path (the `.map` export), **Save as package...** and
-  **Open package...** (§5), and the last package's `MapId`. Cmd/Ctrl+Z undoes, Cmd+Shift+Z or Cmd+Y redoes.
 - **Outliner:** blocks, then entries labelled with the base name of their
   palette tag or item, read from the map's own tag names at run time.
-  **Delete** and **Duplicate** buttons act on the selection; right-click
-  an entry for Duplicate / Delete / Add new, or a block header for Add
-  new. A new entry is a copy of the selected one (or zeroed with the
-  palette's first item) placed at the camera focus. Each is one undo
-  step. A refused action is greyed out with its reason on hover.
+  Delete and Duplicate act on the selection; right-click an entry for
+  Duplicate / Delete / Add new, or a block header for Add new. A new entry
+  is a copy of the selected one (or zeroed with the palette's first item)
+  placed at the camera focus. Each is one undo step. A refused action is
+  greyed out with its reason on hover.
 - **Growth:** adding to a block that is full (as many entries as the
-  source) would grow it. That is off in the panel: the engine's limit is
+  source) would grow it. That is off by default: the engine's limit is
   not established (§6), so add works only in the room a removal made.
-  `ScenarioEditor::set_allow_growth(true)` turns growth on for a shell
-  that wants it.
+  `set_allow_growth(true)` (the editor's **Edit > Allow growing full
+  blocks**) turns it on.
 - **Inspector:** each typed field with its offset and evidence (hover);
   vectors and numbers as drag values, palette index and item as pickers.
-- **Viewport:** the structure BSPs (clusters and instanced geometry,
-  through `tags::structure`) and a diamond per placement pointing along its
-  facing, coloured by block. Right-drag orbits, middle-drag pans, scroll
-  zooms, WASD/QE fly. Click selects; dragging the selection moves it on
-  the horizontal plane, Shift-drag moves it vertically. One drag is one
-  undo step.
+- **Viewport:** the structure BSPs (through `tags::structure`), textured,
+  the placed objects' models, and a glyph per placement, coloured by
+  block (editor.md, "What the viewport shows"). Right-drag orbits,
+  middle-drag pans, scroll zooms, WASD/QE fly. Click selects; the
+  selection's gizmo moves or rotates it (`begin_gesture`, `gesture_set`,
+  `end_gesture`), one drag being one undo step.
 
-The viewport renders offscreen into its own colour and depth textures
-and shows the result as an egui image (a native texture registered with
-`egui_wgpu::Renderer`). A paint callback would draw inside egui's render
-pass, whose depth buffer and MSAA count belong to the shell; a pipeline
-has to match both, so the offscreen target keeps the panel independent
-of how the shell configures eframe. The math (camera, rays, picking,
-rotation) and the renderer have unit and headless-GPU tests.
+`render::Viewport` renders offscreen into its own colour and depth
+textures; the editor registers the colour texture with Dear ImGui and
+shows it as an image, so the viewport's pipelines are independent of the
+UI's render pass. The math (camera, rays, picking, rotation) and the
+renderer have unit and headless-GPU tests.
 
 The BSP walk repeats `cli::live_geometry::bsp_triangles` in a few lines
 (the CLI crate is a binary with many dependencies). `crates/viewer` is
@@ -343,7 +342,7 @@ cleared for 100 entries (`0x0015acf4`) and its loops do not check. No
 limit was found for starting locations, netgame flags or starting
 equipment.
 
-**Why growth is off in the panel.** The loader (`0x1228f0`) places the
+**Why growth is off by default.** The loader (`0x1228f0`) places the
 metadata at `base + (+0x1c) - (+0x18)`, so growing both by the same amount
 keeps every tag where it was. It allocates `+0x1c` from the low end of the
 physical arena (`0x30e4000` bytes at `0x61000`, `0x12b400`) and fails only
@@ -380,6 +379,6 @@ after load) avoids rewriting the file and has the same memory question.
 - The AI, device-group and trigger-volume readers have not been checked
   for placement indices (§6, S).
 - The engine's real headroom for a larger `+0x1c`, and whether the pool
-  that loses it degrades (§6). Until then growth is off in the panel.
+  that loses it degrades (§6). Until then growth is off by default.
 - A campaign checkpoint saved before an edit holds runtime placement
   indices that a removal invalidates; only fresh loads are safe.

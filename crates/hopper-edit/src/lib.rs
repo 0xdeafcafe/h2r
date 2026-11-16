@@ -3,7 +3,7 @@
 //! from the user's disc ([`catalog`]), the variant picker's sources
 //! ([`choices`]), historical preset playlists ([`presets`]), and the
 //! editor state with undo and file handling ([`session::HopperSession`]).
-//! h2-editor's egui tool and h2-studio's Dear ImGui tool draw it
+//! h2-editor's playlist tool draws it
 //! (docs/live/live-admin.md, docs/editor/editor.md).
 //!
 //! Nothing here contains game data: map names and variants come from the

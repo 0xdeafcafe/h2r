@@ -1,14 +1,14 @@
 [package]
 name = "studio"
-description = "h2-studio: the editor suite on Dear ImGui (docking) + wgpu + winit"
+description = "h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish = false
-default-run = "h2-studio"
+default-run = "h2-editor"
 
 [[bin]]
-name = "h2-studio"
+name = "h2-editor"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,7 +24,7 @@ anyhow.workspace = true
 rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../editor-core" }
-scenario-edit = { path = "../scenario-edit", default-features = false }
-variants = { path = "../variants", default-features = false }
+scenario-edit = { path = "../scenario-edit" }
+variants = { path = "../variants" }
 hopper-edit = { path = "../hopper-edit" }
 live-proto.workspace = true
