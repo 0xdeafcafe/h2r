@@ -1,8 +1,8 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
 Status: the speaker routing and the mute button are built and unit tested
-end to end, up to the device; they are not yet checked with a real pad
-(see "Checking with a real pad" below). The microphone is a design only.
+end to end, up to the device, and the owner has them working on a DualSense
+(2026-11-17; "Checking with a real pad" below has the list). The microphone is a design only.
 Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 1. the controller's microphone as the Xbox Communicator's;
