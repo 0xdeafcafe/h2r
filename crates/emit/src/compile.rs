@@ -106,19 +106,31 @@ pub fn default_jobs() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
 }
 
+/// What generated code is compiled for: a CPU and the platform it runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
+    /// Apple silicon macOS.
     Arm64,
+    /// Intel macOS.
     X86_64,
+    /// tvOS on an Apple TV (docs/tvos.md). Cross-compiled on a Mac against
+    /// the appletvos SDK; never the host there.
+    Arm64Tvos,
 }
 
+/// The oldest tvOS the generated module (and the app around it) supports.
+/// The Rust side's `TVOS_DEPLOYMENT_TARGET` must match (platform/tvos).
+pub const TVOS_DEPLOYMENT_TARGET: &str = "17.0";
+
 impl Arch {
+    /// The macOS release targets (`--arch all`).
     pub const ALL: [Arch; 2] = [Arch::Arm64, Arch::X86_64];
 
     pub fn name(self) -> &'static str {
         match self {
             Arch::Arm64 => "arm64",
             Arch::X86_64 => "x86_64",
+            Arch::Arm64Tvos => "arm64-tvos",
         }
     }
 
@@ -126,13 +138,90 @@ impl Arch {
         match self {
             Arch::Arm64 => "arm64-apple-macos11",
             Arch::X86_64 => "x86_64-apple-macos11",
+            // Keep in step with TVOS_DEPLOYMENT_TARGET.
+            Arch::Arm64Tvos => "arm64-apple-tvos17.0",
         }
+    }
+
+    /// The Xcode SDK to compile and link against, when it is not the
+    /// default (macOS) one.
+    pub fn sdk(self) -> Option<&'static str> {
+        match self {
+            Arch::Arm64Tvos => Some("appletvos"),
+            Arch::Arm64 | Arch::X86_64 => None,
+        }
+    }
+
+    /// The clang arguments that select this target: `-target` and, for a
+    /// non-macOS SDK, `-isysroot` (found once with `xcrun`).
+    pub fn target_args(self) -> Result<Vec<String>, Error> {
+        let mut v = vec!["-target".to_owned(), self.triple().to_owned()];
+        if let Some(sdk) = self.sdk() {
+            v.push("-isysroot".into());
+            v.push(sdk_path(sdk)?);
+        }
+        Ok(v)
     }
 
     /// The architecture this process runs on.
     pub fn host() -> Arch {
-        if cfg!(target_arch = "x86_64") { Arch::X86_64 } else { Arch::Arm64 }
+        if cfg!(target_os = "tvos") {
+            Arch::Arm64Tvos
+        } else if cfg!(target_arch = "x86_64") {
+            Arch::X86_64
+        } else {
+            Arch::Arm64
+        }
     }
+
+    /// What `h2 build` (`boot::build`) compiles for: `H2_EMIT_TARGET`
+    /// (`tvos`, or `host`/`macos`/unset for the host), see [`Arch::target_from`].
+    pub fn target() -> Result<Arch, Error> {
+        Arch::target_from(std::env::var("H2_EMIT_TARGET").ok().as_deref())
+    }
+
+    /// [`Arch::target`] for a given `H2_EMIT_TARGET` value. `macos` on a
+    /// tvOS host is refused: nothing builds there.
+    pub fn target_from(value: Option<&str>) -> Result<Arch, Error> {
+        match value.unwrap_or("") {
+            "" | "host" => Ok(Arch::host()),
+            "tvos" => Ok(Arch::Arm64Tvos),
+            "macos" if Arch::host() != Arch::Arm64Tvos => Ok(Arch::host()),
+            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos or tvos"))),
+        }
+    }
+
+    /// The `-install_name` of the linked module: its own path for macOS
+    /// (loaded by path from the output directory), and the framework the
+    /// tvOS app embeds it in (platform/tvos), which it is loaded from.
+    pub fn install_name(self, out: &Path) -> OsString {
+        match self {
+            Arch::Arm64Tvos => "@rpath/h2game.framework/h2game".into(),
+            Arch::Arm64 | Arch::X86_64 => out.as_os_str().to_owned(),
+        }
+    }
+}
+
+/// `xcrun --sdk <sdk> --show-sdk-path`, once per process.
+fn sdk_path(sdk: &str) -> Result<String, Error> {
+    static PATHS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    let mut paths = PATHS.lock().unwrap();
+    if let Some((_, p)) = paths.iter().find(|(s, _)| s == sdk) {
+        return Ok(p.clone());
+    }
+    let out = Command::new("xcrun")
+        .args(["--sdk", sdk, "--show-sdk-path"])
+        .output()
+        .map_err(|e| err(format!("xcrun --sdk {sdk}: {e}")))?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !out.status.success() || path.is_empty() {
+        return Err(err(format!(
+            "the {sdk} SDK is not installed (xcrun: {})",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    paths.push((sdk.to_owned(), path.clone()));
+    Ok(path)
 }
 
 /// Architectures selected by the CLI. Iteration builds the host by default;
@@ -143,7 +232,8 @@ pub fn architectures(selection: Option<&str>) -> Result<Vec<Arch>, Error> {
         "all" => Ok(Arch::ALL.to_vec()),
         "arm64" => Ok(vec![Arch::Arm64]),
         "x86_64" => Ok(vec![Arch::X86_64]),
-        value => Err(err(format!("--arch {value}: expected host, all, arm64 or x86_64"))),
+        "tvos" => Ok(vec![Arch::Arm64Tvos]),
+        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64 or tvos"))),
     }
 }
 
@@ -609,6 +699,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     // Largest first, so a big shard doesn't start last.
     let mut order: Vec<usize> = (0..todo.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse(std::fs::metadata(&todo[i].0).map(|m| m.len()).unwrap_or(0)));
+    let target = arch.target_args()?;
     std::thread::scope(|s| {
         for _ in 0..jobs.max(1) {
             s.spawn(|| {
@@ -627,7 +718,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                     let out = Command::new(cc)
                         .args(&flags)
                         .arg(&prefix_map)
-                        .args(["-target", arch.triple(), "-c"])
+                        .args(&target)
+                        .arg("-c")
                         .arg(src_abs.join(src.file_name().unwrap()))
                         .arg("-o")
                         .arg(tmp.path())
@@ -696,6 +788,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
 pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &Path) -> Result<(), Error> {
     let cc = compiler()?;
     let flags = cflags()?;
+    let target = build.arch.target_args()?;
     let mut args: Vec<PathBuf> = build.objects.clone();
     for (name, text) in extra {
         let src = src_dir.join(name);
@@ -704,7 +797,8 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
         let temporary = Temporary::new(&obj).map_err(err)?;
         let o = Command::new(&cc)
             .args(&flags)
-            .args(["-target", build.arch.triple(), "-c"])
+            .args(&target)
+            .arg("-c")
             .arg(&src)
             .arg("-o")
             .arg(temporary.path())
@@ -721,8 +815,9 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     }
     let temporary = Temporary::new(out).map_err(err)?;
     let o = Command::new(&cc)
-        .args(["-target", build.arch.triple(), "-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
-        .arg(out)
+        .args(&target)
+        .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
+        .arg(build.arch.install_name(out))
         .arg("-o")
         .arg(temporary.path())
         .args(&args)
@@ -747,6 +842,67 @@ mod tests {
             &move |k| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
             &move |cmd, args| Some(if args == ["--version"] { version.clone() } else { format!("{cmd} ok") }),
         )
+    }
+
+    #[test]
+    fn the_emit_target_is_the_host_unless_tvos_is_asked_for() {
+        assert_eq!(Arch::target_from(None).unwrap(), Arch::host());
+        assert_eq!(Arch::target_from(Some("")).unwrap(), Arch::host());
+        assert_eq!(Arch::target_from(Some("host")).unwrap(), Arch::host());
+        assert_eq!(Arch::target_from(Some("macos")).unwrap(), Arch::host());
+        assert_eq!(Arch::target_from(Some("tvos")).unwrap(), Arch::Arm64Tvos);
+        assert!(Arch::target_from(Some("ios")).is_err());
+        assert_eq!(architectures(Some("tvos")).unwrap(), vec![Arch::Arm64Tvos]);
+        assert!(!Arch::ALL.contains(&Arch::Arm64Tvos), "--arch all stays the macOS release pair");
+    }
+
+    #[test]
+    fn tvos_objects_are_named_and_keyed_apart_from_macos() {
+        assert_eq!(Arch::Arm64Tvos.triple(), format!("arm64-apple-tvos{TVOS_DEPLOYMENT_TARGET}"));
+        assert_ne!(Arch::Arm64Tvos.name(), Arch::Arm64.name(), "object and pin names");
+        let key = |a| common_key(b"h2gen", b"h2abi", a, &[], "toolchain");
+        assert_ne!(key(Arch::Arm64Tvos), key(Arch::Arm64));
+        assert_eq!(Arch::Arm64.sdk(), None);
+        assert_eq!(Arch::Arm64.target_args().unwrap(), ["-target", "arm64-apple-macos11"]);
+        let out = Path::new("/o/libh2game.dylib");
+        assert_eq!(Arch::Arm64.install_name(out), out.as_os_str());
+        assert_eq!(Arch::Arm64Tvos.install_name(out), "@rpath/h2game.framework/h2game");
+    }
+
+    /// The tvOS arguments compile and link a dylib whose load commands say
+    /// tvOS, with the SDK's headers (generated code includes math.h).
+    #[test]
+    fn tvos_target_args_build_a_tvos_dylib() {
+        let Ok(args) = Arch::Arm64Tvos.target_args() else {
+            eprintln!("SKIPPED tvos_target_args_build_a_tvos_dylib: no appletvos SDK");
+            return;
+        };
+        assert_eq!(&args[..3], ["-target", Arch::Arm64Tvos.triple(), "-isysroot"]);
+        assert!(args[3].contains("AppleTVOS"), "{args:?}");
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED tvos_target_args_build_a_tvos_dylib: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-emit-tvos-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("t.c");
+        std::fs::write(&src, "#include <math.h>\n#include <string.h>\ndouble h2_t(double x) { return sqrt(x) + (double)strlen(\"ab\"); }\n").unwrap();
+        let lib = dir.join("libt.dylib");
+        let o = Command::new(&cc)
+            .args(&args)
+            .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
+            .arg(Arch::Arm64Tvos.install_name(&lib))
+            .arg(&src)
+            .arg("-o")
+            .arg(&lib)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let show = Command::new("xcrun").args(["vtool", "-show-build"]).arg(&lib).output().unwrap();
+        let text = String::from_utf8_lossy(&show.stdout);
+        assert!(text.contains("TVOS"), "{text}");
+        assert!(!text.contains("MACOS"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -87,7 +87,7 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
             None => vfs::Vfs::with_disc(cfg, disc),
         };
     }
-    let disc = vfs::DiscBackend::open(disc)?;
+    let disc = vfs::open_disc(disc)?;
     if let Some(l) = &library {
         eprintln!(
             "map packages: {} package(s) in {}",

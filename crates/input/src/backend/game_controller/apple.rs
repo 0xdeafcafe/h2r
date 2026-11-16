@@ -23,6 +23,10 @@
 //! handles / all / default locality ([`plan_rumble`]). Each engine plays one
 //! long looping continuous event whose intensity is a dynamic parameter.
 //!
+//! An Apple TV remote has no extended profile, only a micro gamepad: it
+//! gets the same treatment with absolute clickpad values, read into a
+//! [`RemoteSnapshot`] (mapped by `super::remote`).
+//!
 //! Not exercised by CI (needs a controller). The mapping above it is.
 //!
 //! [`poll`]: ControllerSource::poll
@@ -46,11 +50,12 @@ use objc2_core_haptics::{
 use objc2_foundation::{NSArray, NSDate, NSDefaultRunLoopMode, NSRunLoop, NSString};
 use objc2_game_controller::{
     GCController, GCControllerButtonInput, GCControllerElement, GCDevice, GCDeviceHaptics,
-    GCExtendedGamepad, GCHapticsLocality, GCHapticsLocalityAll, GCHapticsLocalityDefault,
+    GCExtendedGamepad, GCHapticsLocality, GCMicroGamepad, GCHapticsLocalityAll, GCHapticsLocalityDefault,
     GCHapticsLocalityHandles, GCHapticsLocalityLeftHandle, GCHapticsLocalityRightHandle,
     GCPhysicalInputProfile,
 };
 
+use super::remote::RemoteSnapshot;
 use super::{ControllerSource, Locality, RawPad, RumblePlan, Snapshot, plan_rumble};
 
 /// Longest a CoreHaptics continuous event may last; the player loops it.
@@ -148,8 +153,11 @@ struct Entry {
     controller: Retained<GCController>,
     /// The extended profile our handler is installed on, if the pad has one.
     profile: Option<Retained<GCExtendedGamepad>>,
+    /// A remote's micro gamepad, when there is no extended profile.
+    micro: Option<Retained<GCMicroGamepad>>,
     /// Written on the private handler queue, copied by `poll`.
     snapshot: Arc<Mutex<Snapshot>>,
+    remote: Arc<Mutex<RemoteSnapshot>>,
     plan: Option<RumblePlan>,
     rumbler: Option<Rumbler>,
 }
@@ -160,10 +168,14 @@ impl Drop for Entry {
             // SAFETY: clearing a handler on a live profile.
             unsafe { p.setValueDidChangeHandler(None) };
         }
+        if let Some(p) = &self.micro {
+            // SAFETY: as above.
+            unsafe { p.setValueDidChangeHandler(None) };
+        }
     }
 }
 
-fn lock(m: &Mutex<Snapshot>) -> MutexGuard<'_, Snapshot> {
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -174,6 +186,17 @@ struct OnQueue(Retained<GCExtendedGamepad>);
 unsafe impl Send for OnQueue {}
 impl OnQueue {
     fn get(&self) -> &GCExtendedGamepad {
+        &self.0
+    }
+}
+
+/// [`OnQueue`] for a remote's micro gamepad.
+struct MicroOnQueue(Retained<GCMicroGamepad>);
+// SAFETY: as for OnQueue.
+unsafe impl Send for MicroOnQueue {}
+impl MicroOnQueue {
+    // A method, so the closure captures the wrapper and not its field.
+    fn get(&self) -> &GCMicroGamepad {
         &self.0
     }
 }
@@ -217,6 +240,8 @@ impl AppleSource {
         // stops receiving input when it is not frontmost; the second makes
         // wireless pads show up in `controllers()` (needs the main run loop).
         unsafe {
+            // macOS only: on tvOS the app is frontmost whenever it runs.
+            #[cfg(target_os = "macos")]
             GCController::setShouldMonitorBackgroundEvents(true);
             GCController::startWirelessControllerDiscoveryWithCompletionHandler(None);
         }
@@ -225,6 +250,39 @@ impl AppleSource {
             next_key: 1,
             queue: DispatchQueue::new("h2recomp.input.gamecontroller", DispatchQueueAttr::SERIAL),
         }
+    }
+
+    /// A remote: absolute clickpad positions (a click's side is where the
+    /// finger is), upright whatever the remote's orientation, read into
+    /// `shared` on our queue.
+    fn attach_micro(&self, controller: &GCController, shared: &Arc<Mutex<RemoteSnapshot>>) -> Option<Retained<GCMicroGamepad>> {
+        // SAFETY: property reads and handler installation on live objects;
+        // the handler queue is set before the handler, as Apple asks.
+        let micro = unsafe { controller.microGamepad() }?;
+        unsafe {
+            micro.setReportsAbsoluteDpadValues(true);
+            micro.setAllowsRotation(false);
+        }
+        let to = Arc::clone(shared);
+        let handler = RcBlock::new(
+            move |profile: NonNull<GCPhysicalInputProfile>, _element: NonNull<GCControllerElement>| {
+                // SAFETY: installed only on a micro gamepad, which the
+                // framework passes back, alive for the call, on our queue.
+                let gp = unsafe { profile.cast::<GCMicroGamepad>().as_ref() };
+                *lock(&to) = read_micro(gp);
+            },
+        );
+        // SAFETY: see above.
+        unsafe {
+            controller.setHandlerQueue(&self.queue);
+            micro.setValueDidChangeHandler(Some(&handler));
+        }
+        let to = Arc::clone(shared);
+        let on_queue = MicroOnQueue(micro.clone());
+        self.queue.exec_async(move || {
+            *lock(&to) = read_micro(on_queue.get());
+        });
+        Some(micro)
     }
 
     fn attach(&self, controller: Retained<GCController>) -> (Option<Retained<GCExtendedGamepad>>, Arc<Mutex<Snapshot>>, Option<RumblePlan>) {
@@ -292,11 +350,15 @@ impl AppleSource {
                 .any(|e| Retained::as_ptr(&e.controller) == Retained::as_ptr(&c))
             {
                 let (profile, snapshot, plan) = self.attach(c.clone());
+                let remote = Arc::new(Mutex::new(RemoteSnapshot::default()));
+                let micro = if profile.is_none() { self.attach_micro(&c, &remote) } else { None };
                 self.entries.push(Entry {
                     key: self.next_key,
                     controller: c,
                     profile,
+                    micro,
                     snapshot,
+                    remote,
                     plan,
                     rumbler: None,
                 });
@@ -342,23 +404,40 @@ fn read(gp: &GCExtendedGamepad) -> Snapshot {
     }
 }
 
+fn read_micro(gp: &GCMicroGamepad) -> RemoteSnapshot {
+    // SAFETY: property reads on live objects.
+    unsafe {
+        let dpad = gp.dpad();
+        RemoteSnapshot {
+            touch: (dpad.xAxis().value(), dpad.yAxis().value()),
+            select: gp.buttonA().isPressed(),
+            play_pause: gp.buttonX().isPressed(),
+            back: gp.buttonMenu().isPressed(),
+        }
+    }
+}
+
 impl ControllerSource for AppleSource {
     fn poll(&mut self) -> Vec<RawPad> {
         self.refresh();
         self.entries
             .iter()
-            .filter(|e| e.profile.is_some()) // micro gamepads, remotes: skipped
+            .filter(|e| e.profile.is_some() || e.micro.is_some())
             .map(|e| {
-                // SAFETY: property read on a live object.
-                let name = unsafe { e.controller.vendorName() }.map_or_else(
+                // SAFETY: property read on a live object. A remote gets one
+                // fixed name, which `crate::active::pad_kind` knows.
+                let name = if e.micro.is_some() {
+                    super::remote::NAME.to_string()
+                } else { unsafe { e.controller.vendorName() }.map_or_else(
                     || "Game controller".to_string(),
                     |n: Retained<NSString>| n.to_string(),
-                );
+                ) };
                 RawPad {
                     key: e.key,
                     name,
                     snapshot: *lock(&e.snapshot),
                     supports_rumble: e.plan.is_some(),
+                    remote: e.micro.as_ref().map(|_| *lock(&e.remote)),
                 }
             })
             .collect()

@@ -14,6 +14,8 @@ pub enum DeviceKind {
     /// An Xbox-style pad, or one that could not be told apart.
     Xbox,
     PlayStation,
+    /// The Apple TV remote (tvOS; `backend::game_controller::remote`).
+    Remote,
 }
 
 /// A shared cell holding the last-used device. Clones see the same value.
@@ -26,6 +28,7 @@ impl ActiveDevice {
             DeviceKind::Keyboard => 1,
             DeviceKind::Xbox => 2,
             DeviceKind::PlayStation => 3,
+            DeviceKind::Remote => 4,
         };
         self.0.store(v, Ordering::Relaxed);
     }
@@ -36,6 +39,7 @@ impl ActiveDevice {
             1 => Some(DeviceKind::Keyboard),
             2 => Some(DeviceKind::Xbox),
             3 => Some(DeviceKind::PlayStation),
+            4 => Some(DeviceKind::Remote),
             _ => None,
         }
     }
@@ -44,6 +48,9 @@ impl ActiveDevice {
 /// The kind of a physical pad, from the name its backend reports.
 pub fn pad_kind(name: &str) -> DeviceKind {
     let n = name.to_ascii_lowercase();
+    if n == "apple tv remote" || n.contains("siri remote") {
+        return DeviceKind::Remote;
+    }
     let sony = [
         "dualshock",
         "dualsense",
@@ -121,6 +128,7 @@ mod tests {
             DeviceKind::Keyboard,
             DeviceKind::Xbox,
             DeviceKind::PlayStation,
+            DeviceKind::Remote,
         ] {
             b.set(kind);
             assert_eq!(a.get(), Some(kind));
@@ -138,6 +146,9 @@ mod tests {
         }
         for name in ["Xbox Wireless Controller", "Generic USB Joystick", ""] {
             assert_eq!(pad_kind(name), DeviceKind::Xbox, "{name}");
+        }
+        for name in ["Apple TV Remote", "Siri Remote"] {
+            assert_eq!(pad_kind(name), DeviceKind::Remote, "{name}");
         }
     }
 

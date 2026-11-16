@@ -170,6 +170,26 @@ impl<R: Read + Seek> Xiso<R> {
     }
 }
 
+
+/// Whether `path` (an [`Entry::path`], `/`-separated from the root) is
+/// picked by `patterns`: a pattern names a file (`maps/shared.map`) or,
+/// ending in `/`, everything under a directory (`movie/`). A directory is
+/// picked when it is on the way to a picked file, so the subset keeps its
+/// tree. Case does not matter, as on the disc. Used to cut a trimmed copy
+/// of the disc (docs/tvos.md).
+pub fn subset_matches(path: &str, is_dir: bool, patterns: &[&str]) -> bool {
+    let path = path.trim_start_matches('/').to_ascii_lowercase();
+    patterns.iter().any(|p| {
+        let p = p.trim_start_matches('/').to_ascii_lowercase();
+        if let Some(dir) = p.strip_suffix('/') {
+            // Inside the directory, the directory itself, or a parent of it.
+            path.starts_with(&p) || path == dir || (is_dir && p.starts_with(&format!("{path}/")))
+        } else {
+            path == p || (is_dir && p.starts_with(&format!("{path}/")))
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +316,20 @@ mod tests {
     #[test]
     fn rejects_non_xdvdfs() {
         assert!(matches!(Xiso::open(Cursor::new(vec![0u8; 0x20000])), Err(Error::NotXdvdfs)));
+    }
+
+    #[test]
+    fn subset_picks_files_directories_and_their_parents() {
+        let pats = ["default.xbe", "maps/shared.map", "fonts/", "Maps/MainMenu.map"];
+        assert!(subset_matches("/default.xbe", false, &pats));
+        assert!(subset_matches("/maps", true, &pats), "parent of a picked file");
+        assert!(subset_matches("/maps/shared.map", false, &pats));
+        assert!(subset_matches("/MAPS/mainmenu.map", false, &pats), "case-insensitive");
+        assert!(!subset_matches("/maps/zanzibar.map", false, &pats));
+        assert!(subset_matches("/fonts", true, &pats), "a picked directory");
+        assert!(subset_matches("/fonts/x/y.bin", false, &pats), "under a picked directory");
+        assert!(!subset_matches("/fontsx", true, &pats));
+        assert!(!subset_matches("/movie", true, &pats));
+        assert!(!subset_matches("/maps", false, &pats), "a file named like a parent dir");
     }
 }
