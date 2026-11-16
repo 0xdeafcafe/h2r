@@ -92,7 +92,11 @@ pub fn write_package(
             )));
         }
     }
-    let named = manifest.patches.iter().chain(&manifest.packs).map(|l| &l.file);
+    let named = manifest
+        .patches
+        .iter()
+        .chain(&manifest.packs)
+        .map(|l| &l.file);
     for f in named.chain(&manifest.package.image) {
         if !files.iter().any(|(n, _)| n == f) {
             return Err(StoreError::Io(io::Error::other(format!(

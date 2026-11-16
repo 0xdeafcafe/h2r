@@ -166,10 +166,12 @@ const MIN_READ: usize = 4;
 const MIN_COPY: usize = 16;
 
 fn block_hash(b: &[u8]) -> u64 {
-    b.as_chunks::<8>().0.iter().fold(0x9e37_79b9_7f4a_7c15u64, |h, w| {
-        (h ^ u64::from_le_bytes(*w)).wrapping_mul(0x0100_0000_01b3)
-            ^ (h >> 29)
-    })
+    b.as_chunks::<8>()
+        .0
+        .iter()
+        .fold(0x9e37_79b9_7f4a_7c15u64, |h, w| {
+            (h ^ u64::from_le_bytes(*w)).wrapping_mul(0x0100_0000_01b3) ^ (h >> 29)
+        })
 }
 
 /// The first source position of each `BLOCK`-aligned block, by hash (one
@@ -235,7 +237,10 @@ pub fn bps(source: &[u8], target: &[u8]) -> Vec<u8> {
             continue;
         }
         // Continue the last copy, else look the block up.
-        let mut copy = (cursor, common(source.get(cursor..).unwrap_or(&[]), &target[at..]));
+        let mut copy = (
+            cursor,
+            common(source.get(cursor..).unwrap_or(&[]), &target[at..]),
+        );
         if copy.1 < MIN_COPY && at + BLOCK <= target.len() && source.len() >= BLOCK {
             let index = index.get_or_insert_with(|| Index::new(source));
             if let Some(p) = index.find(&target[at..at + BLOCK]) {
