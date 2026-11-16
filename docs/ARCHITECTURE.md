@@ -102,7 +102,7 @@ Every crate below is on master. "Done" means it does what its row says;
 | `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](runtime/xapi.md)) | done |
 | `asf`     | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) | done |
 | `wma`     | Native WMAv2 decoder ([wma.md](audio/wma.md)) | done |
-| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, opt-in |
+| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, on by default (`h2 run --no-bink` turns it off) |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input/input.md)) | done, foundation only |
 | `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](runtime/app.md)) | done; `h2 play` runs the game in it |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) | done |
@@ -117,10 +117,25 @@ Every crate below is on master. "Done" means it does what its row says;
 | `kernel`  | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md)) | in progress: covers the boot to the menu and the first level |
 | `d3d`     | Guest-facing Direct3D 8 over `gfx`, including push-buffer execution ([d3d.md](graphics/d3d.md)) | in progress: the menu and the first level render |
 | `boot`    | Builds the whole XBE into a dylib and runs it with every HLE crate registered ([BOOT.md](runtime/BOOT.md)) | done |
-| `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; not yet registered with `runtime` |
+| `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
 | `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([perf.md](perf/perf.md)) | done |
 | `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([perf.md](perf/perf.md)) | done |
 | `cli`     | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) | done |
+| `opt`     | IR-to-IR optimisation passes between lifting and emission | done |
+| `feature` | The feature registry: named points, hook chains, switches, the frame and game bridges ([feature-engine.md](engine/feature-engine.md)) | in progress |
+| `settings` | Host settings as a schema: definitions, one store, one writer for `settings.toml` ([feature-engine.md](engine/feature-engine.md), "Settings") | done |
+| `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison ([high-framerate.md](game/high-framerate.md)) | done |
+| `content` | Map packages: manifest, `MapId`, PPF/IPS/BPS patches and the resolver ([maps.md](game/maps.md)) | foundation built |
+| `editor`  | `h2-editor`, the native editor suite (egui + wgpu) and its `Tool` trait ([editor.md](editor/editor.md)) | in progress |
+| `scenario-edit` | Sapien-style scenario placement editor writing patched `.map` files ([scenario-editor.md](editor/scenario-editor.md)) | in progress |
+| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor panel ([variants.md](editor/variants.md)) | in progress |
+| `live-proto` | Wire types, signing and verification shared by the Live clients and server ([live-api.md](live/live-api.md)) | in progress |
+| `live-server` | The Xbox Live replacement service: signed events on Postgres behind axum ([live.md](live/live.md)) | in progress |
+| `live-hle` | Xbox Live public-entry overrides in the game ([live-boundary.md](live/live-boundary.md)) | in progress, opt-in |
+| `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
+| `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
+| `tvos`    | The tvOS app's Rust half, a static library for the UIKit host in `platform/tvos` ([tvos.md](runtime/tvos.md)) | spike |
+| `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
 
 ### Lifter checks
 

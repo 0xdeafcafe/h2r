@@ -30,8 +30,10 @@ What works today:
 - **Tooling.** Deterministic logical-time scheduling, checkpoints, a sampling
   profiler and a benchmark tool.
 
-Speed is the big gap. On current master the main menu runs at about 5-6 fps
-on an unloaded M-series Mac. The target is 30 fps. Three speedups are on by
+Speed is the big gap. On current master the main menu runs at about 11-16
+fps on a quiet M-series Mac ([docs/perf/perf-budget.md](docs/perf/perf-budget.md));
+the in-level budget is in [docs/perf/frame-budget.md](docs/perf/frame-budget.md).
+The target is 30 fps. Three speedups are on by
 default for `h2 build`, `h2 run` and `h2 play`: the inline RAM path
 (`H2_FASTMEM`, [docs/perf/performance.md](docs/perf/performance.md)), which cuts the
 menu's CPU time per frame by about 35%; native binary64 x87
@@ -47,8 +49,9 @@ xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
 logical-time scheduling, checkpoints, and the profiler and benchmarks
 (`h2 profile`, `h2 bench`).
 
-In progress for 30 fps: the rest of fast guest memory access, merged
-render passes by default, and native x87.
+In progress for 30 fps: the rest of fast guest memory access and the
+gameplay frame ([docs/perf/architecture-review.md](docs/perf/architecture-review.md)).
+Merged render passes and native x87 are on by default.
 
 ## Proof
 
@@ -66,8 +69,8 @@ In priority order:
    ("Gaps").
 2. 30 fps. The levers, measured in
    [docs/perf/perf-budget.md](docs/perf/perf-budget.md): faster guest memory access
-   (the first step is in, on by default), merged render passes, native x87
-   (on by default) and
+   (the first step is in, on by default), merged render passes (on by
+   default), native x87 (on by default) and
    push-buffer decode cost. Draw batching, upload rings, IR optimisation and
    sampling render-to-texture levels in place have landed. See
    [docs/perf/perf.md](docs/perf/perf.md) for the tools.
