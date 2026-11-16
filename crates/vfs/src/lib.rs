@@ -10,6 +10,7 @@ mod path;
 mod rewrite;
 mod status;
 mod types;
+mod write_behind;
 
 pub use backend::Backend;
 pub use disc::DiscBackend;

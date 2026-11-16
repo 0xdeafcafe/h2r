@@ -242,19 +242,22 @@ bit are stored:
 
 - at `flush` (NtFlushBuffersFile), final cleanup (close), and backend
   drop, as access times are;
-- by the write path, once the oldest pending entry is older than
-  `vfs::METADATA_STALE` (1 s);
 - by the backend's `vfs-metadata` thread, which checks every 250 ms for
-  entries that old when no write comes;
+  entries older than `vfs::METADATA_STALE` (1 s);
+- by the write path, once the oldest pending entry is that old, but only
+  if the thread could not be spawned. While the game streams writes, a
+  store on the write path once a second (two syncs) was most of what
+  `touch` cost the game thread;
 - by `vfs::flush_pending_metadata()`, which reaches every live backend,
   leaked ones included. `h2 run` calls it when the run ends normally.
 
 **Guarantee:** a crash, `process::exit`, an aborting panic, or a signal
 (SIGINT, SIGTERM, a kill; nothing flushes on a signal)
 loses at most about 1.25 s of write-time, change-time and archive-bit
-updates. It never loses file data a process exit can lose: the data
-went to the host with the write. A host power loss is different: only
-`flush` syncs data, as before. A record lost that way falls back to the
+updates. File data is covered by "Write-behind" below: at most the
+bytes still queued (4 MiB) when the process dies without
+`flush_pending_metadata`, which lands them first. A host power loss is
+different: only `flush` syncs data, as before. A record lost that way falls back to the
 previous record, as a torn one does. The bound relies on the flusher
 thread; if it cannot be spawned (logged), only the write path, flush,
 close and drop store pending metadata. Every record store holds the
@@ -267,6 +270,76 @@ record until the new entry exists. Format holds the lock throughout and
 clears pending metadata once the volume is empty; a format that fails
 partway keeps the pending metadata of the files that survive it and drops
 that of the files it removed, so no flusher recreates their records.
+
+### Write-behind
+
+All guest threads run on one host thread, so a host `write` stalls the
+whole game, not just the guest thread that issued it. While Halo 2 copies
+maps to its cache partition on the main menu (256 KiB NtReadFile and
+NtWriteFile pairs), a 250 Hz profile put 10.8% of that thread in file
+calls, most of it (355 of their samples) in the write syscall itself. `HostBackend` therefore queues the host data write
+on a per-backend `vfs-write-behind` thread and returns.
+
+What stays on the calling thread, exactly as before: path resolution,
+capacity and growth checks (DiskFull, FileTooLarge), allocation and usage
+accounting, the dirty set, write metadata (`touch`), and the returned
+byte count (the whole buffer: the queued write is a `pwrite` loop that
+writes all of it). Only the bytes travel, copied into a reused buffer
+(a fresh 256 KiB allocation is a fresh mapping, and faulting it in cost
+more than the copy), with an `Arc` of the kept-open handle; an evicted
+handle's last copy closes on the writer thread. One FIFO thread writes them, so writes land in issue
+order, per file and overall; overlapping writes resolve as they would
+synchronously.
+
+What the guest sees while bytes are in flight:
+
+- `stat`, directory listings and the EOF/allocation every later call
+  checks use a pending end of file per host path: the furthest byte any
+  queued write to it reaches, combined with the host length (looked up
+  first, so a write landing in between is still counted). Usage is the
+  incrementally updated count, so volume queries agree too.
+- Anything that reads or changes a file's host bytes or identity first
+  waits for that file's queued writes: `read_at`, `set_len` (and
+  `overwrite_allocated`), `flush`, `cleanup` (which flushes a written
+  file), `remove`, `create` at the path, and `host_file` (an outside
+  reader sees the bytes). `format` and backend drop wait for all of them,
+  and so does `vfs::flush_pending_metadata`, so `h2 run`'s normal exit
+  lands queued data before it stores metadata.
+- `flush` keeps its meaning: queued data lands, then the file is synced.
+
+Host write errors: the guest's write already returned success. The first
+failure for a path is logged once and latched; the next operation on
+that file that waits for it (`read_at`, `set_len`, `flush`, `cleanup`,
+`remove`, `create`), or the next `write_at`, returns it, once, and does
+nothing else. Bookkeeping assumed the write landed, so usage and the
+directory indexes are rebuilt from the host at that point. Format drops
+latched errors with the files. A drop logs nothing more: the failure was
+logged when it happened. Nothing below the backend sees the difference
+between a failure reported late and one reported at once, except that
+a failed write's bytes may be partly on the host.
+
+Memory is bounded: at most 4 MiB (`MAX_IN_FLIGHT`) is queued or being
+written; a write that would go over waits for the writer to catch up (one
+write larger than the bound is admitted once the queue is empty). A
+sustained write rate above the host's therefore throttles the caller
+back to synchronous speed, never further.
+
+A crash, `process::exit` without `flush_pending_metadata`, or a signal
+loses at most the queued bytes; a process that exits normally or drops
+its backends loses nothing. `H2_VFS_WRITE_BEHIND=0` (or `off`, `false`,
+`no`) restores synchronous writes; so does
+`HostBackend::with_write_behind(false)`, and a failure to spawn the
+thread (logged). A differential test runs the same random sequence of
+creates, overlapping writes, reads, stats, truncations, flushes,
+cleanups, removals, listings and volume queries with write-behind on and
+off and compares every result and the final host bytes
+(`crates/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs
+--release bench_write_behind -- --ignored --nocapture` measures the
+calling thread's time per 256 KiB write either way, with the caller busy
+for 0, 1 or 5 ms between writes. On a heavily loaded host (load average
+about 130) the median went from 300 to 600 µs synchronously to 33 to
+60 µs queued with room between writes; back to back, backpressure holds
+both to the host's rate (about 270 µs each).
 
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory

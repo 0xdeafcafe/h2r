@@ -4,6 +4,7 @@ use crate::{
     Metadata, Result, Timestamp, VolumeInfo,
     backend::Backend,
     path::{components, validate_fatx_name, validate_fatx_path},
+    write_behind::{self, WriteBehind},
 };
 use std::{
     cell::RefCell,
@@ -11,7 +12,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{
+        Arc, Mutex, MutexGuard, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -66,6 +70,10 @@ const FLUSH_TICK: Duration = Duration::from_millis(250);
 /// so a flusher's store and the backend's own are never reordered.
 struct Written {
     metadata_root: PathBuf,
+    /// The flusher thread runs, so the write path leaves stale entries to
+    /// it: a record store (two syncs) on the game thread once a second
+    /// while the game streams writes was the bulk of `touch`'s cost.
+    flusher: AtomicBool,
     /// [`METADATA_STALE`]; longer in tests that count stores.
     stale: Mutex<Duration>,
     /// Lowercase path: the info and when it first became pending.
@@ -113,11 +121,14 @@ impl Written {
 /// Every live backend's pending write metadata, for [`flush_pending_metadata`].
 static LIVE: Mutex<Vec<Weak<Written>>> = Mutex::new(Vec::new());
 
-/// Store the pending write metadata of every live [`HostBackend`] now,
-/// including backends that were leaked and will never be dropped. For
+/// Land every live [`HostBackend`]'s queued data writes and store its
+/// pending write metadata now, including backends that were leaked and
+/// will never be dropped. For
 /// exit paths: call it before `process::exit` or from a signal-handling
 /// thread. Errors are reported on stderr.
 pub fn flush_pending_metadata() {
+    // Queued data first: it lands before the process goes.
+    write_behind::drain_live();
     let live: Vec<Arc<Written>> = {
         let mut l = LIVE.lock().unwrap_or_else(|e| e.into_inner());
         l.retain(|w| w.strong_count() > 0);
@@ -132,14 +143,16 @@ pub fn flush_pending_metadata() {
 
 /// Run until `written` is dropped, storing what has been pending for
 /// [`METADATA_STALE`] every [`FLUSH_TICK`].
-fn spawn_flusher(written: Weak<Written>) {
+fn spawn_flusher(written: &Arc<Written>) {
+    written.flusher.store(true, Ordering::Relaxed);
+    let weak = Arc::downgrade(written);
     let spawned = std::thread::Builder::new()
         .name("vfs-metadata".into())
         .spawn(move || {
             let mut failed = false;
             loop {
                 std::thread::sleep(FLUSH_TICK);
-                let Some(w) = written.upgrade() else { return };
+                let Some(w) = weak.upgrade() else { return };
                 match w.flush_stale() {
                     Err(e) if !failed => {
                         eprintln!("vfs: storing write metadata failed (retrying): {e:?}");
@@ -151,7 +164,8 @@ fn spawn_flusher(written: Weak<Written>) {
             }
         });
     if let Err(e) = spawned {
-        // The write path still stores stale entries itself.
+        // The write path stores stale entries itself.
+        written.flusher.store(false, Ordering::Relaxed);
         eprintln!("vfs: no metadata flusher thread: {e}");
     }
 }
@@ -218,7 +232,12 @@ pub struct HostBackend {
     /// close(2) a large share of the game thread while the game copies maps
     /// to its cache. Anything that can change which file a host path names
     /// (create, remove, format) drops them, and so do flush and cleanup.
-    handles: Vec<(PathBuf, File)>,
+    /// Shared with queued write-behind jobs, which close their last copy.
+    handles: Vec<(PathBuf, Arc<File>)>,
+    /// Host data writes queued off the calling thread; `None` writes
+    /// synchronously (`H2_VFS_WRITE_BEHIND=0`). docs/storage.md
+    /// "Write-behind".
+    write_behind: Option<WriteBehind>,
     #[cfg(test)]
     next_create_sync_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
@@ -299,12 +318,13 @@ impl HostBackend {
         let written = Arc::new(Written {
             metadata_root: metadata_root.clone(),
             stale: Mutex::new(METADATA_STALE),
+            flusher: AtomicBool::new(false),
             entries: Mutex::new(BTreeMap::new()),
         });
         LIVE.lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Arc::downgrade(&written));
-        spawn_flusher(Arc::downgrade(&written));
+        spawn_flusher(&written);
         Ok(Self {
             written,
             root,
@@ -316,6 +336,11 @@ impl HostBackend {
             serial: 1,
             cache: RefCell::new(Cache::default()),
             handles: Vec::new(),
+            write_behind: if write_behind::enabled_by_env() {
+                WriteBehind::spawn()
+            } else {
+                None
+            },
             #[cfg(test)]
             next_create_sync_error: std::cell::Cell::new(None),
             #[cfg(test)]
@@ -333,6 +358,54 @@ impl HostBackend {
         self.serial = serial;
         self.capacity = capacity / FATX_CLUSTER_SIZE * FATX_CLUSTER_SIZE;
         self
+    }
+    /// Queue host data writes on a background thread (`true`, the default
+    /// unless `H2_VFS_WRITE_BEHIND=0`) or write them on the calling thread.
+    /// Guest-visible results are the same either way.
+    pub fn with_write_behind(mut self, enabled: bool) -> Self {
+        if !enabled {
+            self.settle_all();
+            self.write_behind = None;
+        } else if self.write_behind.is_none() {
+            self.write_behind = WriteBehind::spawn();
+        }
+        self
+    }
+    /// Wait for `host`'s queued writes to land and return the error one of
+    /// them latched. Bookkeeping assumed the failed write landed, so usage
+    /// and listings are rebuilt from the host.
+    fn settle(&self, host: &Path) -> Result<()> {
+        let Some(wb) = &self.write_behind else {
+            return Ok(());
+        };
+        let settled = wb.settle(host);
+        if settled.is_err() {
+            self.forget_host_state();
+        }
+        settled
+    }
+    /// The error latched for `host`, without waiting for its writes.
+    fn take_write_error(&self, host: &Path) -> Result<()> {
+        let Some(wb) = &self.write_behind else {
+            return Ok(());
+        };
+        let taken = wb.take_error(host);
+        if taken.is_err() {
+            self.forget_host_state();
+        }
+        taken
+    }
+    /// Wait for every queued write to land. Latched errors stay latched.
+    fn settle_all(&self) {
+        if let Some(wb) = &self.write_behind {
+            wb.drain();
+        }
+    }
+    fn forget_host_state(&self) {
+        self.settle_all();
+        let mut cache = self.cache.borrow_mut();
+        cache.directories.clear();
+        cache.used_bytes = None;
     }
     /// Cache names, not guest metadata. A directory timestamp change refreshes its index.
     fn children(&self, directory: &Path) -> Result<Arc<BTreeMap<String, Vec<Child>>>> {
@@ -574,9 +647,22 @@ impl HostBackend {
         self.store_basic(path, self.load_basic(path, &metadata)?)
     }
     fn metadata(&self, path: &str, host_path: &Path) -> Result<Metadata> {
+        // Before the host length: a queued write that lands in between is
+        // still covered by the pending end.
+        let pending_end = self
+            .write_behind
+            .as_ref()
+            .and_then(|wb| wb.pending_end(host_path));
         let host = fs::symlink_metadata(host_path)?;
-        if !representable(&host) {
-            return Err(if host.is_file() && host.len() > FATX_MAX_FILE_SIZE {
+        // The end of file once queued writes land, as a synchronous write
+        // would have left it already.
+        let len = if host.is_dir() {
+            0
+        } else {
+            host.len().max(pending_end.unwrap_or(0))
+        };
+        if !representable(&host) || len > FATX_MAX_FILE_SIZE {
+            return Err(if host.is_file() && len > FATX_MAX_FILE_SIZE {
                 Error::FileTooLarge
             } else {
                 Error::AccessDenied
@@ -584,8 +670,13 @@ impl HostBackend {
         }
         Ok(Metadata {
             basic: self.load_basic(path, &host)?,
-            end_of_file: if host.is_dir() { 0 } else { host.len() },
-            allocation_size: allocated(&host).max(
+            end_of_file: len,
+            allocation_size: if host.is_dir() {
+                FATX_CLUSTER_SIZE
+            } else {
+                len.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE
+            }
+            .max(
                 self.cache
                     .borrow()
                     .reservations
@@ -596,7 +687,7 @@ impl HostBackend {
         })
     }
     /// An open writable handle for `host`, reused across calls.
-    fn handle(&mut self, host: &Path) -> Result<&File> {
+    fn handle(&mut self, host: &Path) -> Result<&Arc<File>> {
         if let Some(i) = self.handles.iter().position(|(p, _)| p == host) {
             let entry = self.handles.remove(i);
             self.handles.push(entry);
@@ -605,7 +696,7 @@ impl HostBackend {
             if self.handles.len() >= MAX_HANDLES {
                 self.handles.remove(0);
             }
-            self.handles.push((host.to_path_buf(), file));
+            self.handles.push((host.to_path_buf(), Arc::new(file)));
         }
         Ok(&self.handles.last().expect("just pushed").1)
     }
@@ -624,6 +715,12 @@ impl HostBackend {
     fn used_bytes(&self) -> Result<u64> {
         if let Some(used) = self.cache.borrow().used_bytes {
             return Ok(used);
+        }
+        // Indexed host lengths predate queued writes (write-behind writes
+        // do not refresh them): scan only landed data, freshly listed.
+        if self.write_behind.as_ref().is_some_and(|wb| !wb.idle()) {
+            self.settle_all();
+            self.cache.borrow_mut().directories.clear();
         }
         let mut bytes = 0u64;
         let mut dirs = vec![self.root.clone()];
@@ -685,6 +782,9 @@ impl HostBackend {
             .entry(path.to_ascii_lowercase())
             .and_modify(|e| e.0 = basic)
             .or_insert((basic, at));
+        if self.written.flusher.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         self.written.flush_stale()
     }
     /// Pending write metadata, for tests.
@@ -743,6 +843,7 @@ impl Backend for HostBackend {
     }
     fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
         let host = self.resolve(path, false)?;
+        self.settle(&host)?;
         let info = self.metadata(path, &host)?;
         if info.is_directory() {
             return Err(Error::FileIsADirectory);
@@ -770,6 +871,7 @@ impl Backend for HostBackend {
             return Err(Error::ObjectNameCollision);
         }
         let host = self.resolve(path, true)?;
+        self.settle(&host)?;
         if host.try_exists()? {
             return Err(Error::ObjectNameCollision);
         }
@@ -874,6 +976,7 @@ impl Backend for HostBackend {
     }
     fn write_at(&mut self, path: &str, offset: u64, buffer: &[u8]) -> Result<usize> {
         let (host, info) = self.mutable_file(path)?;
+        self.take_write_error(&host)?;
         if buffer.is_empty() {
             return Ok(0);
         }
@@ -882,8 +985,16 @@ impl Backend for HostBackend {
             .ok_or(Error::FileTooLarge)?;
         self.used_bytes()?;
         self.check_growth(info.allocation_size, end.max(info.end_of_file))?;
-        let written = {
-            let mut file = self.handle(&host)?;
+        let behind = self.write_behind.is_some();
+        let written = if behind {
+            // Everything below is decided now, as if the bytes had landed;
+            // only the host write itself is queued.
+            let file = self.handle(&host)?.clone();
+            let wb = self.write_behind.as_ref().expect("checked");
+            wb.enqueue(&host, file, offset, buffer);
+            buffer.len()
+        } else {
+            let mut file = &**self.handle(&host)?;
             file.seek(SeekFrom::Start(offset))?;
             file.write(buffer)?
         };
@@ -899,12 +1010,18 @@ impl Backend for HostBackend {
             .div_ceil(FATX_CLUSTER_SIZE)
             * FATX_CLUSTER_SIZE;
         self.update_usage(info.allocation_size, after.max(info.allocation_size));
-        self.update_parent(&host, true)?;
+        // A write changes no directory entry the index keys on; it only
+        // refreshes the indexed host length, which a queued write has not
+        // changed yet. `used_bytes` rescans after settling instead.
+        if !behind {
+            self.update_parent(&host, true)?;
+        }
         self.touch(path, info.basic)?;
         Ok(written)
     }
     fn set_len(&mut self, path: &str, size: u64) -> Result<()> {
         let (host, info) = self.mutable_file(path)?;
+        self.settle(&host)?;
         self.used_bytes()?;
         self.check_growth(info.allocation_size, size)?;
         self.handle(&host)?.set_len(size)?;
@@ -941,6 +1058,11 @@ impl Backend for HostBackend {
     /// ancestor path is never consulted.
     #[cfg(unix)]
     fn format(&mut self) -> Result<()> {
+        // Queued writes land in the files about to go; their errors with them.
+        self.settle_all();
+        if let Some(wb) = &self.write_behind {
+            wb.clear_errors();
+        }
         self.handles.clear();
         // Held throughout so no flusher stores a record mid-format. A
         // format that fails partway keeps the pending metadata of the files
@@ -1012,6 +1134,7 @@ impl Backend for HostBackend {
             return Err(Error::AccessDenied);
         }
         let host = self.resolve(path, false)?;
+        self.settle(&host)?;
         let info = self.metadata(path, &host)?;
         if info.is_directory() && !self.read_directory(path)?.is_empty() {
             return Err(Error::DirectoryNotEmpty);
@@ -1061,8 +1184,10 @@ impl Backend for HostBackend {
         Ok(())
     }
     fn flush(&mut self, path: &str) -> Result<()> {
-        self.flush_metadata(path)?;
         let host = self.resolve(path, false)?;
+        // Durability as for a synchronous write: queued data lands first.
+        self.settle(&host)?;
+        self.flush_metadata(path)?;
         self.drop_handle(&host);
         File::open(host)?.sync_all()?;
         #[cfg(test)]
@@ -1114,6 +1239,11 @@ impl Backend for HostBackend {
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let host = self.resolve(path, false).ok()?;
+        // An outside reader sees the bytes; a latched error stays for the
+        // file's next operation.
+        if let Some(wb) = &self.write_behind {
+            drop(wb.wait_for(&host));
+        }
         let meta = fs::metadata(&host).ok().filter(fs::Metadata::is_file)?;
         Some(HostFile {
             path: host,
@@ -1192,6 +1322,9 @@ mod anchor {
 
 impl Drop for HostBackend {
     fn drop(&mut self) {
+        // Every queued write lands before the cleanups sync the files.
+        // A latched error was logged when the write failed.
+        self.settle_all();
         let paths: BTreeSet<_> = self
             .cache
             .borrow()
@@ -1206,6 +1339,10 @@ impl Drop for HostBackend {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "host_write_behind_tests.rs"]
+mod write_behind_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1382,12 +1519,14 @@ mod tests {
         backend.set_basic_info("data", basic).unwrap();
         let record = backend.metadata_path("data");
         let old = fs::read(&record).unwrap();
-        // The write path: with no window, the write that makes the entry
-        // finds it stale and stores it.
+        // The write path, when no flusher thread runs: with no window, the
+        // write that makes the entry finds it stale and stores it.
+        backend.written.flusher.store(false, Ordering::Relaxed);
         backend.set_stale(Duration::ZERO);
         backend.write_at("data", 0, b"x").unwrap();
         assert_eq!(backend.pending_written(), 0);
         assert_ne!(fs::read(&record).unwrap(), old, "stored by the write");
+        backend.written.flusher.store(true, Ordering::Relaxed);
         // The flusher thread: an entry made under a long window, with no
         // write after the window shrinks, is stored by the thread alone.
         backend.set_basic_info("data", basic).unwrap();
