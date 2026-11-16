@@ -142,7 +142,7 @@ pub struct Header {
 }
 
 /// Class inheritance entry from the index's group table.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TagGroup {
     /// Concrete class.
     pub class: FourCC,

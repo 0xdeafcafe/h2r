@@ -14,6 +14,8 @@
 pub mod effects;
 /// Reviewed edits using the lossless cache writer.
 pub mod edit;
+/// Relocatable block trees for the whole-cache builder (`map::build`).
+pub mod rebuild;
 pub mod wire;
 /// Object collision and physics models (`coll`, `phmo`); see `docs/formats/collision.md`.
 pub mod collision;

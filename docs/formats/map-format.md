@@ -838,6 +838,10 @@ the same type on the owner's disc (V): campaign `0xc24000`, multiplayer
 `0x69e000`. [scenario-editor.md](../editor/scenario-editor.md) §6 has the details and
 the open question.
 
+To write a whole map from a set of tags, with every layout-dependent field
+recorded as a fixup, use the builder in [map-builder.md](map-builder.md)
+instead.
+
 This minimal relocation policy deliberately does not resize metadata blocks
 in place, repack raw resources, compact old tables, or rewrite unknown pointer
 fields; a grown block is a new copy at the end, pointed at by its caller.
