@@ -2,14 +2,22 @@
 //! Save As, Undo, Redo), the status line, and the prompts (a path to open
 //! or save, and unsaved changes before they would be lost).
 //!
+//! Paths come from a [`FileDialog`] (the system's, set by `main`) when
+//! there is one; without one, or when it is unavailable, from a typed-path
+//! prompt.
+//!
 //! The decisions (what a request does given the tools' state, what each
 //! prompt answer does next) are plain methods, tested without a window;
 //! [`Shell::ui`] draws them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use crate::dialog::{FileDialog, Filter, Picked, filters_for};
 use crate::source::MapSource;
 use crate::tool::{Status, Tool, ToolContext, ToolError, suggested_path};
+
+/// The extensions the source dialog offers: disc images and loose maps.
+pub const SOURCE_EXTENSIONS: [&str; 3] = ["iso", "xiso", "map"];
 
 /// What waits on an unsaved-changes prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +71,8 @@ pub struct Shell {
     prompt: Option<Prompt>,
     /// The user agreed to close; the next frame closes the window.
     quit: bool,
+    /// Where paths come from; `None` uses the typed-path prompt.
+    dialog: Option<Box<dyn FileDialog>>,
 }
 
 impl Default for Shell {
@@ -83,7 +93,14 @@ impl Shell {
             status: None,
             prompt: None,
             quit: false,
+            dialog: None,
         }
+    }
+
+    /// Asks for paths with `dialog` (the system's file dialog in the app)
+    /// instead of the typed-path prompt.
+    pub fn set_file_dialog(&mut self, dialog: Box<dyn FileDialog>) {
+        self.dialog = Some(dialog);
     }
 
     /// Adds a tool to the sidebar (in order).
@@ -182,6 +199,42 @@ impl Shell {
         Some(f(tool.as_mut(), &mut cx))
     }
 
+    /// Passes the active tool's [`Handoff`](crate::tool::Handoff), if it
+    /// has one, to the first other tool that takes it, and makes that tool
+    /// active. Called after each frame's drawing.
+    pub fn dispatch_handoff(&mut self) {
+        let Some(mut work) = self
+            .tools
+            .get_mut(self.active)
+            .and_then(|t| t.take_handoff())
+        else {
+            return;
+        };
+        let before = self.status.clone();
+        for i in 0..self.tools.len() {
+            if i == self.active {
+                continue;
+            }
+            let mut cx = ToolContext {
+                source: self.source.as_ref(),
+                selected_map: self.selected_map.as_deref(),
+                render_state: self.render_state.as_ref(),
+                status: &mut self.status,
+            };
+            match self.tools[i].receive(work, &mut cx) {
+                Ok(()) => {
+                    self.active = i;
+                    return;
+                }
+                Err(w) => work = w,
+            }
+        }
+        // A tool that refused may have said why; otherwise say so here.
+        if self.status == before {
+            self.error("no tool can take that");
+        }
+    }
+
     fn active_dirty(&self) -> bool {
         self.tools.get(self.active).is_some_and(|t| t.is_dirty())
     }
@@ -236,31 +289,66 @@ impl Shell {
         let Some(tool) = self.tools.get(self.active) else {
             return;
         };
+        let suggested = suggested_path(tool.as_ref());
+        let filters = filters_for(tool.title(), tool.extensions());
+        if let Some(d) = &mut self.dialog {
+            match d.save_file("Save as", &filters, &suggested) {
+                Picked::Path(p) => {
+                    self.go(PathPurpose::SaveAs, p, then);
+                    return;
+                }
+                Picked::Cancelled => return,
+                Picked::Unavailable => {}
+            }
+        }
         self.prompt = Some(Prompt::Path {
             purpose: PathPurpose::SaveAs,
-            text: suggested_path(tool.as_ref()).display().to_string(),
+            text: suggested.display().to_string(),
             then,
         });
     }
 
-    /// Asks for a path for `purpose`.
+    /// Asks for a path for `purpose`: the file dialog when there is one,
+    /// else (or when it is unavailable) the typed-path prompt.
     pub fn ask_path(&mut self, purpose: PathPurpose) {
-        let text = match purpose {
-            PathPurpose::Source => self
-                .source
-                .as_ref()
-                .map(|s| s.path().display().to_string())
-                .unwrap_or_default(),
+        let start = match purpose {
+            PathPurpose::Source => self.source.as_ref().map(|s| s.path().to_owned()),
             _ => self
                 .tools
                 .get(self.active)
                 .and_then(|t| t.path())
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+                .map(Path::to_owned),
         };
+        if let Some(d) = &mut self.dialog {
+            let (title, filters) = match purpose {
+                PathPurpose::Source => (
+                    "Open a disc image or a loose map",
+                    vec![Filter::new("Disc image or map", &SOURCE_EXTENSIONS)],
+                ),
+                _ => match self.tools.get(self.active) {
+                    Some(t) => ("Open", filters_for(t.title(), t.extensions())),
+                    None => ("Open", Vec::new()),
+                },
+            };
+            let answer = match purpose {
+                PathPurpose::SaveAs => {
+                    let suggested = start.clone().unwrap_or_default();
+                    d.save_file("Save as", &filters, &suggested)
+                }
+                _ => d.open_file(title, &filters, start.as_deref()),
+            };
+            match answer {
+                Picked::Path(p) => {
+                    self.go(purpose, p, None);
+                    return;
+                }
+                Picked::Cancelled => return,
+                Picked::Unavailable => {}
+            }
+        }
         self.prompt = Some(Prompt::Path {
             purpose,
-            text,
+            text: start.map(|p| p.display().to_string()).unwrap_or_default(),
             then: None,
         });
     }
@@ -291,6 +379,11 @@ impl Shell {
         if path.as_os_str().is_empty() {
             return;
         }
+        self.go(purpose, path, then);
+    }
+
+    /// Acts on a chosen path, from the dialog or the typed prompt.
+    fn go(&mut self, purpose: PathPurpose, path: PathBuf, then: Option<Pending>) {
         match purpose {
             PathPurpose::Open => self.request_open(path),
             PathPurpose::Source => self.open_source(path),
@@ -396,6 +489,7 @@ impl Shell {
             }
             self.with_tool(|t, cx| t.ui(ui, cx));
         });
+        self.dispatch_handoff();
         self.prompts(&ctx);
 
         if self.quit {

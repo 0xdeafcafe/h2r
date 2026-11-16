@@ -30,6 +30,11 @@
 //! - Anything else (one side faults, or a mismatch) is a disagreement and
 //!   fails the test.
 //!
+//! **Views.** For the lookups a view answers (`datum_try_and_get`,
+//! `datum_get_absolute`, `tag_get_checked`), the view is asked the same
+//! question on the memory the original ran on and must give its answer
+//! (`engine::view`), so the views are checked against real layouts.
+//!
 //! **The game's path.** Every call is also made the way the game makes it
 //! with `impl.engine` on: through `engine::runtime_glue::invoke` (the body
 //! the `engine-leaves` feature installs) on a `runtime::Guest` holding the
@@ -161,6 +166,14 @@ struct Tally {
     disagreed: u64,
     /// Calls whose game path (runtime `invoke`) disagreed with the adapter.
     game_disagreed: u64,
+    /// Calls also answered by a view (`engine::view`), and disagreements.
+    views: u64,
+    view_disagreed: u64,
+}
+
+engine::record! {
+    /// Any element: the views' lookups use the array's own element size.
+    struct Element: 0x4 {}
 }
 
 struct Harness<'a> {
@@ -208,6 +221,33 @@ impl Harness<'_> {
             .write_bytes(addr, data, 1)
             .expect("runtime guest poke");
     }
+    /// The views' answer to the same question as a lookup the original
+    /// just answered, from the memory it ran on: `None` when the function
+    /// has no view, `Some(None)` when they agree, `Some(Some(why))` when not.
+    fn view_check(&mut self, name: &str, r: &Regs, theirs: &Outcome) -> Option<Option<String>> {
+        use engine::view::{Datums, Tags};
+        let m = Eng(&mut self.a);
+        let ours = match name {
+            "datum_try_and_get" => Datums::<Element>::at(r.esi)
+                .get(&m, engine::DatumHandle(r.eax))
+                .map(|e| e.map(|e| e.addr)),
+            "datum_get_absolute" => Datums::<Element>::at(r.esi)
+                .get_absolute(&m, r.edx as i32)
+                .map(|e| e.map(|e| e.addr)),
+            "tag_get_checked" => Tags.get(
+                &m,
+                engine::DatumHandle(r.ecx),
+                engine::tags::GroupTag(r.ebx),
+            ),
+            _ => return None,
+        };
+        Some(match (theirs, ours) {
+            (Outcome::Returned(x), Ok(v)) if x.eax == v.unwrap_or(0) => None,
+            (Outcome::Fault(..), Err(_)) => None,
+            (t, o) => Some(format!("original {t:?}, view {o:?}")),
+        })
+    }
+
     fn c_ram(&self) -> &[u8] {
         &self.c.physical_ram()[self.c_phys..self.c_phys + RAM]
     }
@@ -291,6 +331,7 @@ impl Harness<'_> {
             game_bad.push("memory differs".to_string());
         }
         let theirs = self.original.run(&mut self.a, r, addr);
+        let view_bad = self.view_check(o.name, &r, &theirs);
 
         let mut bad = vec![];
         match (&theirs, &ours) {
@@ -343,6 +384,17 @@ impl Harness<'_> {
             .expect("dead frame");
 
         let t = self.tally.entry(o.name).or_default();
+        if let Some(agreed) = view_bad.as_ref().map(|b| b.is_none()) {
+            t.views += 1;
+            if !agreed {
+                t.view_disagreed += 1;
+                self.failures.push(format!(
+                    "{} {label}: view: {}",
+                    o.name,
+                    view_bad.flatten().unwrap_or_default()
+                ));
+            }
+        }
         if !game_bad.is_empty() {
             t.game_disagreed += 1;
             self.failures.push(format!(
@@ -1235,13 +1287,13 @@ fn overrides_agree_with_the_lifted_original() {
         h.original.steps
     );
     println!(
-        "{:<32} {:>9} {:>8} {:>9} {:>9}",
-        "function", "returned", "faulted", "disagreed", "game-path"
+        "{:<32} {:>9} {:>8} {:>9} {:>9} {:>6} {:>9}",
+        "function", "returned", "faulted", "disagreed", "game-path", "views", "view-bad"
     );
     for (name, t) in &h.tally {
         println!(
-            "{name:<32} {:>9} {:>8} {:>9} {:>9}",
-            t.returned, t.faulted, t.disagreed, t.game_disagreed
+            "{name:<32} {:>9} {:>8} {:>9} {:>9} {:>6} {:>9}",
+            t.returned, t.faulted, t.disagreed, t.game_disagreed, t.views, t.view_disagreed
         );
     }
     for f in h.failures.iter().take(30) {

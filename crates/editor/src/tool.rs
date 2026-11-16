@@ -59,6 +59,16 @@ impl ToolContext<'_> {
     }
 }
 
+/// Work one tool hands to another, through the shell: after drawing the
+/// active tool, the shell takes its [`Tool::take_handoff`] and offers it
+/// to each tool's [`Tool::receive`] in turn; the first to take it becomes
+/// the active tool.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Handoff {
+    /// Open this game variant as a new, unsaved variant to edit.
+    EditVariant(Box<variants::GameVariant>),
+}
+
 /// One tool of the suite. Only [`Tool::title`] and [`Tool::ui`] are
 /// required; the rest default to "not supported".
 pub trait Tool {
@@ -122,6 +132,19 @@ pub trait Tool {
     /// Steps forward one undone edit; false when there is none.
     fn redo(&mut self) -> bool {
         false
+    }
+
+    /// Work for another tool, asked for while drawing ([`Handoff`]).
+    fn take_handoff(&mut self) -> Option<Handoff> {
+        None
+    }
+
+    /// Takes work from another tool. `Err` gives it back: not this tool's
+    /// kind of work, or the tool cannot take it now (the reason goes to
+    /// the status line).
+    fn receive(&mut self, work: Handoff, cx: &mut ToolContext<'_>) -> Result<(), Handoff> {
+        let _ = cx;
+        Err(work)
     }
 }
 

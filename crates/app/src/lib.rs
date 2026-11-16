@@ -69,6 +69,9 @@ pub struct AppConfig {
     /// guest never sees it: 30 is today's shell exactly, and above 30 only
     /// the window's redraw rate changes (no interpolation yet).
     pub fps: fps::FpsTarget,
+    /// Changes `fps` while the window runs (the Video screen's Frame Rate
+    /// row); `None`: fixed for the run.
+    pub fps_control: Option<fps::FpsControl>,
     /// Pause the guest (and audio) while the window is not focused.
     pub pause_on_focus_loss: bool,
     /// Click to capture the mouse for look; Cmd or focus loss releases it.
@@ -117,6 +120,7 @@ impl Default for AppConfig {
             filter: Filter::Linear,
             vsync: true,
             fps: fps::FpsTarget::Thirty,
+            fps_control: None,
             pause_on_focus_loss: false,
             mouse_capture: true,
             gamepads: true,

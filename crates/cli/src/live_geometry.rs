@@ -15,7 +15,7 @@
 //! the facing of the triangle (up-facing is floor) and from generic English
 //! words in its shader's tag name read at run time (`glass`, `water`, ...).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
@@ -31,6 +31,7 @@ use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::StructureRender;
 
 use crate::live_art::{Disc, MapFile};
+use crate::live_features::{Features, read_features};
 use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 
 /// The geometry files' format (contract `GEOMETRY_VERSION`).
@@ -202,6 +203,52 @@ pub fn surface_from_name(name: &str) -> Surface {
         Surface::Class(Class::Metal)
     } else {
         Surface::Unknown
+    }
+}
+
+/// What a shader's template says about the surfaces drawn with it, from
+/// generic rendering words in the template's tag name (its folder and last
+/// path component), read at run time. Decides before the shader's own name:
+///
+/// - sky or cloud templates, additive ones (`add`: glows, light shafts and
+///   volumes, which have no solid surface) and decal or overlay layers
+///   (named for it first: an opaque `..._detail_overlay` blends its detail
+///   map and is a solid surface) are not level geometry: [`Surface::Sky`];
+/// - templates in a `water` folder or named for water or waves are water;
+/// - other templates in a `transparent` folder blend over what is behind
+///   them: glass, unless the shader's name says otherwise.
+pub fn surface_from_template(template: &str) -> Option<Surface> {
+    let mut parts = template.rsplit(['\\', '/']);
+    let own = parts.next().unwrap_or(template).to_ascii_lowercase();
+    let folder = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let words: Vec<&str> = own
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |set: &[&str]| words.iter().any(|w| set.contains(w));
+    let layer = matches!(words.first(), Some(&("decal" | "overlay")));
+    if layer || has(&["sky", "cloud", "clouds", "add"]) {
+        Some(Surface::Sky)
+    } else if folder == "water" || has(&["water", "waves"]) {
+        Some(Surface::Class(Class::Water))
+    } else if folder == "transparent" {
+        Some(Surface::Class(Class::Glass))
+    } else {
+        None
+    }
+}
+
+/// A surface from its shader's name and template: the template's verdict
+/// on sky, effects, decals and water; the name's on anything else; then
+/// the template's on transparency.
+pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
+    let by_template = template.and_then(surface_from_template);
+    let by_name = name.map_or(Surface::Unknown, surface_from_name);
+    match (by_template, by_name) {
+        (Some(t @ (Surface::Sky | Surface::Class(Class::Water))), _) => t,
+        (_, n @ (Surface::Sky | Surface::Class(_))) => n,
+        (Some(t), Surface::Unknown) => t,
+        (None, n) => n,
     }
 }
 
@@ -683,6 +730,7 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
         &[GlbNode::mesh("structure", mesh)],
         mesh.bounds,
         frame(mesh),
+        serde_json::Map::new(),
     )
 }
 
@@ -690,8 +738,14 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
 /// its node, with a primitive per class (POSITION, NORMAL, u16 indices; a
 /// class over [`MAX_PRIMITIVE_VERTICES`] vertices gets several) and
 /// one material per class shared by every mesh. `asset.extras` carries
-/// `bounds` and the views' `frame` (game coordinates).
-pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> {
+/// `bounds` and the views' `frame` (game coordinates), then the keys in
+/// `more`.
+pub fn write_nodes(
+    roots: &[GlbNode],
+    bounds: Bounds,
+    frame: Bounds,
+    more: serde_json::Map<String, serde_json::Value>,
+) -> Vec<u8> {
     use serde_json::{Value, json};
     struct Out {
         bin: Vec<u8>,
@@ -842,6 +896,9 @@ pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> 
         "scenes": [{"nodes": top}],
         "nodes": o.nodes,
     });
+    for (k, v) in more {
+        doc["asset"]["extras"][k] = v;
+    }
     // A file with no geometry has no meshes and no buffer.
     if !o.meshes.is_empty() {
         doc["meshes"] = json!(o.meshes);
@@ -946,6 +1003,8 @@ pub struct MapStats {
     /// BSPs in the scenario, and how many made it into `map.glb`.
     pub scenario_bsps: usize,
     pub bsps: usize,
+    /// Backdrop triangles split off the level (not in `triangles`).
+    pub backdrop_triangles: usize,
     /// Machines placed, and their triangles (not in `triangles`).
     pub machines: usize,
     pub machine_triangles: usize,
@@ -982,7 +1041,7 @@ impl RawSource for Raw<'_> {
     }
 }
 
-type MapReader = Map<BufReader<File>>;
+pub(crate) type MapReader = Map<BufReader<File>>;
 
 /// The scenario's BSP tags: block at +0x210, stride 0x44, BSP tag ID at
 /// +0x14 (as `viewer/src/bin/bsp.rs` reads it).
@@ -1022,19 +1081,44 @@ fn material_shaders(map: &mut MapReader, bsp: TagId) -> Result<Option<Vec<Option
     Ok(Some(out))
 }
 
+/// A shader's template tag name (`shad +0`, tag reference; ID at +4).
+fn shader_template(map: &mut MapReader, shader: TagId) -> Option<String> {
+    let bytes = map.read_tag_bytes(shader).ok()?;
+    let id = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
+    map.tag(TagId(id)).ok().and_then(|t| t.name.clone())
+}
+
+/// Per BSP material, its shader's tag ID, or null.
+fn material_shader_ids(map: &mut MapReader, bsp: TagId) -> Result<Vec<TagId>> {
+    let tag = map.tag(bsp)?.clone();
+    let location = tag.location.context("BSP has no payload")?;
+    let bytes = map.read_tag_bytes(bsp)?;
+    let view = TagView::new(&bytes, location.address);
+    Ok(view
+        .block(view.at(0, 0xac)?, 0xa4, 0x20)?
+        .into_iter()
+        .map(|e| TagId(u32::from_le_bytes([e[0xc], e[0xd], e[0xe], e[0xf]])))
+        .collect())
+}
+
 /// Per BSP material, what its shader's name says, and how many shaders
 /// were found.
 fn material_surfaces(map: &mut MapReader, bsp: TagId) -> (Vec<Surface>, usize) {
-    match material_shaders(map, bsp) {
-        Ok(Some(names)) => (
-            names
-                .iter()
-                .map(|n| n.as_deref().map_or(Surface::Unknown, surface_from_name))
-                .collect(),
-            names.iter().flatten().count(),
-        ),
-        _ => (Vec::new(), 0),
-    }
+    let (Ok(Some(names)), Ok(ids)) = (material_shaders(map, bsp), material_shader_ids(map, bsp))
+    else {
+        return (Vec::new(), 0);
+    };
+    let surfaces = names
+        .iter()
+        .zip(ids)
+        .map(|(n, id)| {
+            let template = (id != TagId::NULL)
+                .then(|| shader_template(map, id))
+                .flatten();
+            surface_of(n.as_deref(), template.as_deref())
+        })
+        .collect();
+    (surfaces, names.iter().flatten().count())
 }
 
 // ---- Machines ------------------------------------------------------------
@@ -1193,8 +1277,8 @@ pub struct PlacedMachine {
 
 /// What a machine's shader name says: as for the level, except an
 /// unnamed surface is metal.
-fn machine_surface(name: Option<&str>) -> Surface {
-    match name.map_or(Surface::Unknown, surface_from_name) {
+fn machine_surface(name: Option<&str>, template: Option<&str>) -> Surface {
+    match surface_of(name, template) {
         Surface::Unknown => Surface::Class(Class::Metal),
         s => s,
     }
@@ -1274,10 +1358,20 @@ fn machine_model(
     files: &mut ResourceFiles,
     mach: TagId,
 ) -> Result<Option<MachineModel>> {
-    let tag = ctx.decode(mach)?;
-    if tag.group != MACH {
+    if ctx.decode(mach)?.group != MACH {
         return Err(anyhow!("palette entry is not a machine"));
     }
+    object_model(map, ctx, files, mach)
+}
+
+/// Any object's model, as [`machine_model`] reads a machine's.
+pub(crate) fn object_model(
+    map: &mut MapReader,
+    ctx: &tags::object::Context,
+    files: &mut ResourceFiles,
+    object: TagId,
+) -> Result<Option<MachineModel>> {
+    let tag = ctx.decode(object)?;
     let obje = tag.layer("obje").context("no object header")?;
     let header = tags::object::ObjectHeader::from_record(obje)?;
     if header.model.id == TagId::NULL {
@@ -1299,7 +1393,8 @@ fn machine_model(
         .iter()
         .map(|m| {
             let name = map.tag(m.shader.id).ok().and_then(|t| t.name.clone());
-            machine_surface(name.as_deref())
+            let template = shader_template(map, m.shader.id);
+            machine_surface(name.as_deref(), template.as_deref())
         })
         .collect();
     let stem = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string();
@@ -1405,6 +1500,14 @@ pub struct Level {
     pub bsp_count: usize,
     /// Every BSP that loaded: its index in the scenario and its mesh.
     pub bsps: Vec<(usize, LevelMesh)>,
+    /// Per BSP index, its backdrop: the huge triangles split off the level
+    /// ([`is_backdrop`]). In `map.glb`, not in the views.
+    pub backdrops: BTreeMap<usize, LevelMesh>,
+    /// BSPs only cinematics use ([`gameplay_bsps`]); empty when unknown or
+    /// for a single-BSP scenario.
+    pub cinematic: BTreeSet<usize>,
+    /// Teleporters and lifts (`asset.extras.features` when not empty).
+    pub features: Features,
     /// The scenario's machine models (model space) and placements.
     pub machine_models: Vec<MachineModel>,
     pub machines: Vec<PlacedMachine>,
@@ -1455,6 +1558,9 @@ impl Level {
             kind,
             bsp_count,
             bsps: kept,
+            backdrops: BTreeMap::new(),
+            cinematic: BTreeSet::new(),
+            features: Features::default(),
             machine_models: Vec::new(),
             machines: Vec::new(),
             mesh,
@@ -1462,6 +1568,25 @@ impl Level {
             shadow,
             skipped,
         })
+    }
+
+    /// Marks the BSPs only cinematics use: flagged in `map.glb` and left
+    /// out of the views and their frame, unless that would leave nothing.
+    /// Call before [`Level::with_machines`].
+    pub fn with_cinematic(mut self, cinematic: BTreeSet<usize>) -> Level {
+        let gameplay: Vec<&LevelMesh> = self
+            .bsps
+            .iter()
+            .filter(|(i, _)| !cinematic.contains(i))
+            .map(|(_, m)| m)
+            .collect();
+        if !gameplay.is_empty() && gameplay.len() < self.bsps.len() {
+            self.mesh = merge(gameplay);
+            self.frame = frame(&self.mesh);
+            self.shadow = live_render::shadow_map(&self.mesh, &self.frame);
+        }
+        self.cinematic = cinematic;
+        self
     }
 
     /// Adds placed machines: kept for `map.glb` and drawn in the views.
@@ -1482,7 +1607,10 @@ impl Level {
     }
 
     /// The `map.glb` nodes: `structure` when the scenario has one BSP,
-    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp`; then,
+    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp` (and
+    /// `extras.cinematic` when only cinematics load it), each with a
+    /// `backdrop_<index>` (`backdrop`) child when it has backdrop
+    /// triangles; then,
     /// when there are any, a `machines` node with a child per placed
     /// machine.
     pub fn nodes(&self) -> Vec<GlbNode<'_>> {
@@ -1490,14 +1618,33 @@ impl Level {
             .bsps
             .iter()
             .map(|(i, m)| {
-                if self.bsp_count == 1 {
-                    GlbNode::mesh("structure", m)
+                let name = if self.bsp_count == 1 {
+                    "structure".to_string()
                 } else {
-                    GlbNode {
-                        extras: Some(serde_json::json!({ "bsp": i })),
-                        ..GlbNode::mesh(format!("bsp_{i}"), m)
+                    format!("bsp_{i}")
+                };
+                let mut node = GlbNode::mesh(name.clone(), m);
+                if self.bsp_count > 1 {
+                    let mut e = serde_json::json!({ "bsp": i });
+                    if self.cinematic.contains(i) {
+                        e["cinematic"] = serde_json::json!(true);
                     }
+                    node.extras = Some(e);
                 }
+                if let Some(b) = self.backdrops.get(i) {
+                    node.children.push(GlbNode {
+                        extras: Some(serde_json::json!({ "backdrop": true })),
+                        ..GlbNode::mesh(
+                            if self.bsp_count == 1 {
+                                "backdrop".to_string()
+                            } else {
+                                format!("backdrop_{i}")
+                            },
+                            b,
+                        )
+                    });
+                }
+                node
             })
             .collect();
         if !self.machines.is_empty() {
@@ -1511,8 +1658,15 @@ impl Level {
                     .iter()
                     .map(|m| {
                         let model = &self.machine_models[m.model];
+                        let [forward, _, up] = m.at.axes();
                         GlbNode {
                             matrix: Some(m.at.gltf_matrix()),
+                            extras: Some(serde_json::json!({
+                                "pos": m.at.position,
+                                "forward": forward,
+                                "up": up,
+                                "scale": m.at.scale(),
+                            })),
                             ..GlbNode::mesh(model.stem.clone(), &model.mesh)
                         }
                         .named(m.name.clone())
@@ -1524,7 +1678,14 @@ impl Level {
     }
 
     pub fn glb(&self) -> Vec<u8> {
-        write_nodes(&self.nodes(), self.mesh.bounds, self.frame)
+        let mut more = serde_json::Map::new();
+        if !self.features.is_empty() {
+            more.insert(
+                "features".into(),
+                serde_json::to_value(&self.features).expect("plain data"),
+            );
+        }
+        write_nodes(&self.nodes(), self.mesh.bounds, self.frame, more)
     }
 }
 
@@ -1551,6 +1712,131 @@ pub fn merge<'a>(meshes: impl IntoIterator<Item = &'a LevelMesh>) -> LevelMesh {
     }
 }
 
+/// A triangle at least this big (world units², half the cross product) is
+/// backdrop: sea floor and distant terrain planes around a campaign level.
+/// The biggest level triangle on a retail multiplayer map is about 1,500;
+/// campaign backdrop planes run from about 5,000 to 100,000.
+pub const BACKDROP_AREA: f32 = 4000.0;
+
+/// Whether a triangle is big enough to seed a backdrop plane. Water is
+/// never backdrop: a sea or lake surface is part of the picture.
+pub fn is_backdrop(t: &Tri) -> bool {
+    let f = cross(sub(t.p[1], t.p[0]), sub(t.p[2], t.p[0]));
+    t.surface != Surface::Class(Class::Water) && dot(f, f).sqrt() / 2.0 >= BACKDROP_AREA
+}
+
+/// Splits a BSP's triangles into (level, backdrop). Backdrop is every
+/// [`is_backdrop`] triangle and, grown from each, every triangle reached
+/// through shared corners that has the same surface and lies in that
+/// seed's plane (normal within about 6 degrees, corners within 0.5
+/// units), so a backdrop plane goes whole, not leaving its smaller
+/// triangles as shards.
+pub fn split_backdrop(tris: Vec<Tri>) -> (Vec<Tri>, Vec<Tri>) {
+    let key = |p: [f32; 3]| p.map(|v| (v * 64.0).round() as i64);
+    let mut at: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (i, t) in tris.iter().enumerate() {
+        for p in t.p {
+            at.entry(key(p)).or_default().push(i);
+        }
+    }
+    let face = |t: &Tri| normalize(cross(sub(t.p[1], t.p[0]), sub(t.p[2], t.p[0])));
+    let mut backdrop = vec![false; tris.len()];
+    for seed in 0..tris.len() {
+        if backdrop[seed] || !is_backdrop(&tris[seed]) {
+            continue;
+        }
+        let (n, origin, surface) = (face(&tris[seed]), tris[seed].p[0], tris[seed].surface);
+        let in_plane = |t: &Tri| {
+            t.surface == surface
+                && dot(face(t), n) >= 0.995
+                && t.p.iter().all(|&p| dot(sub(p, origin), n).abs() <= 0.5)
+        };
+        backdrop[seed] = true;
+        let mut stack = vec![seed];
+        while let Some(i) = stack.pop() {
+            for p in tris[i].p {
+                for &j in &at[&key(p)] {
+                    if !backdrop[j] && in_plane(&tris[j]) {
+                        backdrop[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+    }
+    let (mut level, mut back) = (Vec::new(), Vec::new());
+    for (t, b) in tris.into_iter().zip(backdrop) {
+        if b { back.push(t) } else { level.push(t) }
+    }
+    (level, back)
+}
+
+/// The scenario's BSP switch trigger volumes (`scnr+0x130`, 0xe-byte
+/// entries: trigger volume, source BSP, destination BSP as i16s).
+const BSP_SWITCHES: usize = 0x130;
+const BSP_SWITCH_STRIDE: usize = 0xe;
+
+/// `(source, destination)` of every BSP switch trigger volume.
+fn bsp_switches(map: &mut MapReader) -> Result<Vec<(i16, i16)>> {
+    let scenario = map.scenario().context("no scenario")?.clone();
+    let location = scenario.location.context("scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    Ok(view
+        .block(
+            view.at(0, BSP_SWITCHES + 8)?,
+            BSP_SWITCHES,
+            BSP_SWITCH_STRIDE,
+        )?
+        .into_iter()
+        .map(|e| {
+            (
+                i16::from_le_bytes([e[2], e[3]]),
+                i16::from_le_bytes([e[4], e[5]]),
+            )
+        })
+        .collect())
+}
+
+/// The BSP indices a script switches to by number: `(switch_bsp <n>)` in
+/// the decompiled source. Cinematics switch by BSP name instead.
+pub fn scripted_switches(source: &str) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    for (at, _) in source.match_indices("(switch_bsp ") {
+        let rest = &source[at + "(switch_bsp ".len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let (Ok(n), Some(')' | ' ')) = (digits.parse(), rest[digits.len()..].chars().next()) {
+            out.insert(n);
+        }
+    }
+    out
+}
+
+/// The BSPs gameplay reaches: the first (where a level starts), every end
+/// of a BSP switch trigger volume, and every BSP a script switches to by
+/// number. The rest are only ever loaded by cinematics (by name).
+pub fn gameplay_from(switches: &[(i16, i16)], scripted: &BTreeSet<usize>) -> BTreeSet<usize> {
+    let mut out: BTreeSet<usize> = scripted.clone();
+    out.insert(0);
+    for &(a, b) in switches {
+        out.extend([a, b].into_iter().filter_map(|v| usize::try_from(v).ok()));
+    }
+    out
+}
+
+/// [`gameplay_from`] for a map: its switch volumes and its scripts,
+/// decompiled with the disc's own executable.
+fn gameplay_bsps(disc: &Disc, map: &mut MapReader) -> Result<BTreeSet<usize>> {
+    let switches = bsp_switches(map)?;
+    let bytes = disc.read("/default.xbe")?;
+    let xbe = xbe::Xbe::parse(&bytes)?;
+    let mut catalog = hs::Catalog::from_xbe(&xbe)?;
+    let scripts = hs::Scenario::read(map)?;
+    catalog.observe(&scripts)?;
+    let source = scripts.decompile(&catalog, None)?.source;
+    Ok(gameplay_from(&switches, &scripted_switches(&source)))
+}
+
 /// Opens one map and builds its level, one mesh per scenario BSP. A BSP
 /// that cannot be read is left out (and listed in `Level::skipped`).
 fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> Result<Level> {
@@ -1569,12 +1855,50 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
             stats.failed_sections += failed;
             stats.source_triangles += t.len();
-            Ok(build_mesh(&t))
+            let (level, backdrop) = split_backdrop(t);
+            Ok((build_mesh(&level), build_mesh(&backdrop)))
         })();
         bsps.push((i, mesh));
     }
+    let mut backdrops = BTreeMap::new();
+    let bsps = bsps
+        .into_iter()
+        .map(|(i, r)| {
+            (
+                i,
+                r.map(|(level, backdrop)| {
+                    if !backdrop.primitives.is_empty() {
+                        backdrops.insert(i, backdrop);
+                    }
+                    level
+                }),
+            )
+        })
+        .collect();
     let mut level = Level::build(m.name(), kind, bsps)?;
+    level.backdrops = backdrops;
+    stats.backdrop_triangles = level.backdrops.values().map(LevelMesh::triangles).sum();
+    if level.bsp_count > 1 {
+        match gameplay_bsps(disc, &mut map) {
+            Ok(g) => {
+                let cinematic = (0..level.bsp_count).filter(|i| !g.contains(i)).collect();
+                level = level.with_cinematic(cinematic);
+            }
+            Err(e) => {
+                level
+                    .skipped
+                    .insert(format!("map/{}/cinematic", m.name()), format!("{e:#}"));
+            }
+        }
+    }
     let mut skipped = BTreeMap::new();
+    let lifts = kind == MapKind::Multiplayer;
+    match read_features(&mut map, &mut files, m.name(), lifts, &mut skipped) {
+        Ok(f) => level.features = f,
+        Err(e) => {
+            skipped.insert(format!("map/{}/features", m.name()), format!("{e:#}"));
+        }
+    }
     match load_machines(&mut map, &mut files, m.name(), &mut skipped) {
         Ok((models, placed)) => {
             stats.machines = placed.len();

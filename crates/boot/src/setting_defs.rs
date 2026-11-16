@@ -37,7 +37,8 @@ pub static FOV: Def = Def {
 pub static FPS: Def = Def {
     key: "graphics.fps",
     label: "Frame Rate",
-    help: "How often the window presents: 30 (the game's own), 60, 120 or uncapped.",
+    help: "How often the window presents: 30 (the game's own), 60, 120 or uncapped. \
+           A change applies at the window's next turn.",
     kind: Kind::Choice(&[
         Choice {
             value: 30,
@@ -65,7 +66,7 @@ pub static FPS: Def = Def {
     flag: Some("--fps"),
     aliases: &[("unlimited", Value::Int(0)), ("max", Value::Int(0))],
     parse_env: None,
-    apply: Apply::Restart,
+    apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
     menu: Some(Menu {
@@ -74,22 +75,31 @@ pub static FPS: Def = Def {
     }),
 };
 
+/// The guest's back buffer: always 640x480. Halo 2's 480p mode is an
+/// upscale and its widescreen is anamorphic 640x480 (docs/high-resolution.md
+/// "Terms" and "Prior art"), so no video mode changes it.
+pub const GUEST_FRAME: (u32, u32) = (640, 480);
+
 pub static RENDER_SCALE: Def = Def {
     key: "graphics.render_scale",
     label: "Resolution",
-    help: "Internal resolution as a multiple of 640x480. The row steps 1x to 4x; \
-           the file and H2_RENDER_SCALE take up to 6x.",
+    help: "Internal resolution as a multiple of the game's 640x480; the row shows the \
+           size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
+           H2_RENDER_SCALE take up to 6. A change applies at the next frame.",
     kind: Kind::Int {
         valid: 1..=d3d::scaled::MAX_SCALE as i64,
         steps: &[1, 2, 3, 4],
-        unit: Unit::Times,
+        unit: Unit::Pixels {
+            width: GUEST_FRAME.0,
+            height: GUEST_FRAME.1,
+        },
     },
     default: Value::Int(1),
     env: Some("H2_RENDER_SCALE"),
     flag: None,
     aliases: &[],
     parse_env: None,
-    apply: Apply::Restart,
+    apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
     menu: Some(Menu {
@@ -121,14 +131,14 @@ pub static PAD_MUTE: Def = Def {
     key: "pad.mute_button",
     label: "Mute Button",
     help: "A DualSense's mute button mutes the microphone and its LED shows it. \
-           Read when the controller thread starts, so a change applies from the next launch.",
+           A change reaches the controller thread at once; off unmutes and puts the LED out.",
     kind: Kind::Bool,
     default: Value::Bool(true),
     env: Some("H2_PAD_MUTE"),
     flag: None,
     aliases: &[],
     parse_env: None,
-    apply: Apply::Restart,
+    apply: Apply::Live,
     scope: Scope::Host,
     tier: Tier::User,
     menu: Some(Menu {

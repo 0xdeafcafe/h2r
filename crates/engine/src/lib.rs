@@ -13,6 +13,8 @@
 //! - [`render`]: read-only views of the live lights and scene layers
 //!   (`docs/e3-lighting.md`, phase 0).
 //! - [`points`]: the one table of named guest functions and globals.
+//! - [`view`]: typed views (`record!`, datum arrays, tags, players,
+//!   objects).
 //! - [`testing`]: [`testing::FakeGuest`], sparse guest memory for tests.
 //! - [`abi`]: per-function calling-convention adapters and the table of
 //!   overridable addresses.
@@ -29,6 +31,7 @@ pub mod points;
 pub mod render;
 pub mod tags;
 pub mod testing;
+pub mod view;
 
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;

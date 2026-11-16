@@ -1,11 +1,13 @@
 //! `h2-editor [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>]`
 //!
 //! Opens the editor window. The disc defaults to `H2_DISC`, else
-//! `disc/halo2.iso` in the repository (docs/editor.md).
+//! `disc/halo2.iso` in the repository (docs/editor.md). Paths are chosen in
+//! the system's file dialog; `H2_EDITOR_TYPED_PATHS=1` types them instead.
 
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use editor::dialog::NativeDialog;
 use editor::hopper::HopperTool;
 use editor::scenario::ScenarioTool;
 use editor::shell::Shell;
@@ -42,8 +44,13 @@ fn main() -> Result<()> {
         }
     }
 
+    let native = std::env::var_os("H2_EDITOR_TYPED_PATHS").is_none_or(|v| v.is_empty() || v == "0");
     let mut shell = Shell::new();
     let mut hoppers = HopperTool::new();
+    if native {
+        shell.set_file_dialog(Box::new(NativeDialog));
+        hoppers.set_file_dialog(Box::new(NativeDialog));
+    }
     if let Some(p) = &hopper {
         let bytes = std::fs::read(p)?;
         hoppers

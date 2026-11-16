@@ -541,12 +541,25 @@ with synthetic frames, not captures.
 - **Failures**: a view error is counted (`ScaleStats`), never returned, and
   that frame is shown from the reference (`present_reference` calls the
   view's present hook on the reference's store).
-- **Flag**: `H2_RENDER_SCALE=2..6` in `h2 play` builds the view
-  (`boot::Host::gfx_view`); unset or 1 builds nothing extra. The presenter
-  needed no change: it already fits any frame size into the window.
-  With the variable unset, the Video screen's Resolution row decides
-  (1x to 4x, saved as `[graphics] render_scale` in `<data>/settings.toml`,
-  applied from the next launch; docs/settings-menu.md "Video screen").
+- **Flag**: `H2_RENDER_SCALE=1..6` in `h2 play` sets the scale and locks
+  it; `H2_RENDER_SCALE=1` builds nothing extra (one backend, as before the
+  setting). The presenter needed no change: it already fits any frame size
+  into the window. With the variable unset, the Video screen's Resolution
+  row decides (640x480 to 2560x1920, saved as `[graphics] render_scale` in
+  `<data>/settings.toml`; docs/settings-menu.md "Video screen"), and the
+  view is always built so the row can change it.
+- **Changing the scale during a run**: `ScaledBackend::follow_scale` reads
+  the setting at every present. A new scale is made at that frame boundary,
+  on the thread that presents (the render thread under `ThreadedBackend`):
+  every scaled surface is made again at the new size and filled from the
+  reference's (nearest), and the device's surface handles are mapped onto
+  the new ones, so the guest and the device see nothing. At 1 the view
+  sleeps: it draws nothing and each frame is the reference's
+  (`ScaleStats::reference_frames`, not a fallback). Tests:
+  `crates/d3d/tests/render_scale.rs`, `the_scale_changes_at_a_frame_boundary_with_no_fallback_frames`
+  (1x, 2x, 3x, 1x, 4x, 2x: each frame after a change is at the new size,
+  byte for byte what a run started at that scale draws, with no fallback
+  frame) and `on_the_render_thread_the_change_is_made_there_and_shown_at_once`.
 
 The half-pixel offset is not harmless for geometry, as "Half-pixel and texel
 offsets" first said. D3D-convention geometry puts edges, and the texel corners
@@ -559,6 +572,17 @@ pixel and none on a tie. Then an edge on a pixel centre covers whole blocks,
 the top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift
 of exactly `(s - 1) / (2s)` puts the first sample on the tie and fails at 3x
 through rounding; the extra quarter is what makes it robust.
+
+The shift moves everything up and left by `(2s - 1) / 4` host pixels, so
+geometry that ends on the target's far edge instead of a pixel centre (the
+D3D 1:1 texel mapping, a quad from -0.5 to the size less 0.5, which Halo's
+menus use to composite their blurred level) stopped short of the last
+host columns and rows: one at 2x and 3x, two at 4x, holding whatever the
+target held before, and spreading inwards when a later pass sampled the
+target. A scaled draw therefore holds any position past the last pixel
+centre at least on the far edge (`xvs_fixup`, the built-in shader). At 1x
+those positions all cover the last pixel exactly as the edge does.
+`a_full_screen_pass_reaches_the_far_edges_at_every_scale` checks it.
 
 Measured, by tests in `crates/d3d/tests/render_scale.rs` on a headless Metal
 device:

@@ -114,14 +114,14 @@ describe("a level in several nodes", () => {
       const path = o.name ? [...names, o.name] : names;
       const mesh = o as THREE.Mesh;
       if (mesh.isMesh) {
-        roles.set(path.filter((n) => /^(structure|bsp_\d+|machines|wheel|dish)$/.test(n)).join("/"), meshRole(path));
+        roles.set(path.filter((n) => /^(structure|bsp_\d+|backdrop|machines|wheel|dish)$/.test(n)).join("/"), meshRole(path));
         for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) if (m.name === "shell") shell = m;
       }
       for (const c of o.children) walk(c, path);
     };
     walk(g.scene, []);
     expect(Object.fromEntries(roles)).toEqual({
-      structure: "level", bsp_0: "level", bsp_1: "level", "machines/wheel": "machine", "machines/dish": "machine",
+      structure: "level", bsp_0: "level", bsp_1: "level", bsp_2: "level", backdrop: "level", "machines/wheel": "machine", "machines/dish": "machine",
     });
     // The shell is written double-sided: only the viewer's culling opens it.
     expect(shell!.side).toBe(THREE.DoubleSide);

@@ -26,12 +26,12 @@
 //!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetInfo, TextureInfo};
-use gfx::texture::{DecodedTexture, TextureDesc};
+use gfx::texture::{DecodedTexture, TextureDesc, TextureKind};
 use gfx::{Clear, D3DFormat};
 
 /// Presents so far, for timelines keyed on frames (`H2_BOOT_INPUT`).
@@ -75,22 +75,63 @@ pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -
 }
 
 /// What the wrapper saw over the run.
+///
+/// Counted per draw on the game thread, so the keys are plain values and
+/// the names are only formatted for [`DrawStats::report`].
 #[derive(Default)]
 pub struct DrawStats {
     pub presents: u64,
-    /// (outcome, target WxH format) -> draws.
-    pub by_outcome: BTreeMap<String, u64>,
-    /// Texture formats bound to drawn draws -> draws.
-    pub textures: BTreeMap<String, u64>,
+    /// (outcome, target) -> draws; the outcome is `None` for drawn.
+    by_outcome: HashMap<(Option<String>, Target), u64>,
+    /// Texture (format, kind) bound to drawn draws -> draws.
+    textures: HashMap<(D3DFormat, TextureKind), u64>,
+}
+
+/// A draw target's width, height and format.
+type Target = (u32, u32, D3DFormat);
+
+fn target_name(t: &TargetInfo) -> String {
+    format!("{}x{} {:?}", t.width, t.height, t.format)
 }
 
 impl DrawStats {
+    /// (outcome, target WxH format) -> draws, by name.
+    pub fn by_outcome(&self) -> BTreeMap<String, u64> {
+        let mut m = BTreeMap::new();
+        for ((out, (w, h, f)), v) in &self.by_outcome {
+            let out = out.as_deref().unwrap_or("drawn");
+            *m.entry(format!("{out} -> {w}x{h} {f:?}")).or_default() += v;
+        }
+        m
+    }
+
+    /// Texture formats bound to drawn draws -> draws, by name.
+    pub fn textures(&self) -> BTreeMap<String, u64> {
+        let mut m = BTreeMap::new();
+        for ((f, k), v) in &self.textures {
+            *m.entry(format!("{f:?} {k:?}")).or_default() += v;
+        }
+        m
+    }
+
+    /// Adds one draw.
+    fn add(&mut self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) {
+        let drawn = matches!(r, Ok(DrawOutcome::Drawn));
+        let out = (!drawn).then(|| outcome_name(r));
+        *self.by_outcome.entry((out, (t.width, t.height, t.format))).or_default() += 1;
+        if drawn {
+            for ti in info.iter().flatten() {
+                *self.textures.entry((ti.format, ti.kind)).or_default() += 1;
+            }
+        }
+    }
+
     pub fn report(&self) -> String {
         let mut s = format!("draw diag: {} presents\n", self.presents);
-        for (k, v) in &self.by_outcome {
+        for (k, v) in &self.by_outcome() {
             s += &format!("  draws {v:>8}  {k}\n");
         }
-        for (k, v) in &self.textures {
+        for (k, v) in &self.textures() {
             s += &format!("  texture {v:>8}  {k}\n");
         }
         s
@@ -244,18 +285,13 @@ impl<B> DiagBackend<B> {
     /// Adds a draw's outcome to the stats; returns the outcome's and the
     /// target's names.
     fn count(&self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) -> (String, String) {
-        let out = outcome_name(r);
-        let target = format!("{}x{} {:?}", t.width, t.height, t.format);
-        let mut s = self.stats.lock().unwrap();
-        let kind = out.split(':').next().unwrap_or("").to_string();
-        let key = if kind == "drawn" { format!("drawn -> {target}") } else { format!("{out} -> {target}") };
-        *s.by_outcome.entry(key).or_default() += 1;
-        if kind == "drawn" {
-            for ti in info.iter().flatten() {
-                *s.textures.entry(format!("{:?} {:?}", ti.format, ti.kind)).or_default() += 1;
-            }
-        }
-        (out, target)
+        self.tally(r, t, info);
+        (outcome_name(r), target_name(t))
+    }
+
+    /// [`Self::count`] without the names: the path every draw takes.
+    fn tally(&self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) {
+        self.stats.lock().unwrap().add(r, t, info);
     }
 }
 
@@ -565,7 +601,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
-        self.count(&r, &target, &info);
+        self.tally(&r, &target, &info);
         (r, spare)
     }
     fn frame_stats(&mut self) {
@@ -676,6 +712,45 @@ impl<B: Backend> Backend for DiagBackend<B> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The report names outcomes, targets and textures as the per-draw
+    /// strings did: drawn draws by target, others by their full outcome.
+    #[test]
+    fn report_names_what_it_counted() {
+        let t = |w, h, format| TargetInfo { width: w, height: h, format, depth_format: None };
+        let tex = |format, kind| TextureInfo {
+            header: 0x1000,
+            palette: 0,
+            format,
+            kind,
+            width: 4,
+            height: 4,
+            depth: 1,
+            levels: 1,
+        };
+        let a = t(640, 480, D3DFormat::LinA8R8G8B8);
+        let b = t(320, 240, D3DFormat::A8R8G8B8);
+        let info = [Some(tex(D3DFormat::Dxt1, TextureKind::D2)), None, Some(tex(D3DFormat::Dxt1, TextureKind::D2)), None];
+        let mut s = DrawStats::default();
+        s.add(&Ok(DrawOutcome::Drawn), &a, &info);
+        s.add(&Ok(DrawOutcome::Drawn), &a, &[None; 4]);
+        s.add(&Ok(DrawOutcome::Drawn), &b, &[Some(tex(D3DFormat::A8R8G8B8, TextureKind::Cube)), None, None, None]);
+        s.add(&Ok(DrawOutcome::Skipped("no view".into())), &a, &info);
+        s.add(&Err("lost".into()), &b, &info);
+        s.presents = 2;
+        assert_eq!(
+            s.report(),
+            "draw diag: 2 presents\n\
+             \x20 draws        1  drawn -> 320x240 A8R8G8B8\n\
+             \x20 draws        2  drawn -> 640x480 LinA8R8G8B8\n\
+             \x20 draws        1  error: lost -> 320x240 A8R8G8B8\n\
+             \x20 draws        1  skipped: no view -> 640x480 LinA8R8G8B8\n\
+             \x20 texture        1  A8R8G8B8 Cube\n\
+             \x20 texture        2  Dxt1 D2\n"
+        );
+    }
+
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed
     /// provided method silently falls back to the trait's default.
     #[test]

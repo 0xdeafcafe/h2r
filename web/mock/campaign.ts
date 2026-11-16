@@ -6,8 +6,11 @@
 //
 // About thirty actors wander between the map's waypoints, a mix of sides
 // and species (some with no stand-in model, so the fallbacks run), firing
-// a burst now and then. Two vehicles: one driven by the game's first player
-// with an AI gunner aboard, one driven by an AI. It keeps its own random
+// a burst now and then. Two vehicles in use: one driven by the game's first
+// player with an AI gunner aboard (left empty where it stopped while they
+// are down), one driven by an AI; three more parked with nobody in them.
+// The frames name the zone (`bsp`) the level has loaded, which changes
+// every so often. It keeps its own random
 // numbers, so the world's simulation is the same with or without it.
 
 import type { FrameActor, FrameVehicle } from "../src/api/types";
@@ -25,7 +28,11 @@ const CAST: Array<{ species: string; team: string; weapon: string; count: number
 export const MOCK_ACTORS = CAST.reduce((n, c) => n + c.count, 0) + 2; // and the two aboard vehicles
 
 interface Walker { id: string; species: string; team: string; weapon: string; pos: V3; yaw: number; target: number; speed: number; burst: number }
-interface State { rand: () => number; walkers: Walker[]; ghost: Walker; gunner: Walker; lastTick: number }
+interface State { rand: () => number; walkers: Walker[]; ghost: Walker; gunner: Walker; lastTick: number; parked: FrameVehicle[]; hog: { pos: V3; yaw: number } | null }
+
+/** How long the mock's campaign stays in one zone before the next loads (ticks). */
+export const ZONE_TICKS = 30 * 25;
+export const MOCK_ZONES = 2;
 
 function rng(seed: number) {
   let s = seed >>> 0 || 1;
@@ -57,6 +64,12 @@ export function campaignHook(wants: (game: { mode?: string }) => boolean = (g) =
         ghost: walker("elite", "covenant", "plasma_rifle", 7),
         gunner: walker("marine", "human", "battle_rifle", 0),
         lastTick: game.tick,
+        // Left about the level with nobody in them; one is a kind with no stand-in model.
+        parked: (["warthog", "ghost", "banshee"] as const).map((kind, i) => {
+          const w = wps[Math.floor(rand() * wps.length)]!, yaw = rand() * Math.PI * 2;
+          return { id: "f21" + i.toString().padStart(2, "0"), kind, pos: [r2(w[0] + 1.5), r2(w[1] + 1.5), r2(w[2])], forward: [r4(Math.cos(yaw)), r4(Math.sin(yaw)), 0], up: [0, 0, 1], occupied: false };
+        }),
+        hog: null,
       };
       games.set(game.id, st);
       if (games.size > 8) games.delete(games.keys().next().value!);
@@ -90,7 +103,7 @@ export function campaignHook(wants: (game: { mode?: string }) => boolean = (g) =
       return a;
     };
     const vehicle = (id: string, kind: string, pos: V3, yaw: number): FrameVehicle =>
-      ({ id, kind, pos: [r2(pos[0]), r2(pos[1]), r2(pos[2])], forward: [r4(Math.cos(yaw)), r4(Math.sin(yaw)), 0], up: [0, 0, 1] });
+      ({ id, kind, pos: [r2(pos[0]), r2(pos[1]), r2(pos[2])], forward: [r4(Math.cos(yaw)), r4(Math.sin(yaw)), 0], up: [0, 0, 1], occupied: true });
 
     const actors: FrameActor[] = [], vehicles: FrameVehicle[] = [];
     for (const w of st.walkers) { walk(w); actors.push(actor(w)); }
@@ -107,8 +120,15 @@ export function campaignHook(wants: (game: { mode?: string }) => boolean = (g) =
       st.gunner.yaw = driver.yaw + Math.sin(game.tick / 40) * 1.2;
       if (st.gunner.burst <= 0 && rand() < 0.3 * dt) st.gunner.burst = 6;
       actors.push(actor(st.gunner, "f2000"));
+      st.hog = { pos: driver.pos, yaw: driver.yaw };
+    } else if (st.hog) {
+      // Left where it stopped, empty, until they are back.
+      vehicles.push({ ...vehicle("f2000", "warthog", st.hog.pos, st.hog.yaw), occupied: false });
     }
     frame.actors = actors;
-    frame.vehicles = vehicles;
+    // Every vehicle in the world, the ones in use first.
+    frame.vehicles = [...vehicles, ...st.parked];
+    // The level's zones load one after another.
+    frame.bsp = Math.floor(game.tick / ZONE_TICKS) % MOCK_ZONES;
   };
 }

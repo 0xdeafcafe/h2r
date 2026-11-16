@@ -1,18 +1,31 @@
-//! Our "Video" screen: a "Video" row on Halo 2's Settings, Controls screen
-//! that opens a second Controls screen holding our video rows (Field of
-//! View, Frame Rate, Resolution, Mute Button: every setting whose `Def`
-//! names this screen, through the `ui` model) instead of the retail six. See
-//! docs/settings-menu.md "Video screen" for the trace.
+//! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
+//! (after Player Profiles and Game Variants) that opens a Controls screen
+//! holding our video rows (Field of View, Frame Rate, Resolution, Mute
+//! Button: every setting whose `Def` names this screen, through the `ui`
+//! model) instead of the retail six. See docs/settings-menu.md "Video
+//! screen" for the trace.
 //!
-//! **Opening it.** The Settings screen opens Controls by building a
+//! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
+//! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
+//! "settings list" with two rows and reports `2 + (byte [handler+0x220] !=
+//! 0)` item widgets (slot 19, `0x2b1d60`); the constructor clears that byte
+//! just before the array is made and allocates room for three. The list
+//! hook makes the array three rows and sets the byte, so a third widget is
+//! built. Its text (`0x2b1d6e`) and press (`0x2b1da9`) are wrapped like
+//! the Controls ones; the press opens the Video screen the way the Settings
+//! screen opens Controls. The tag has a pane per retail row only, so the
+//! pane hook keeps the shown pane for row 2 (as the Skulls row does).
+//!
+//! **Opening it.** The player profile screen opens Controls by building a
 //! 0x20-byte screen request and calling the Controls loader through
 //! `0x149f1e(player mask, loader)` (request `+2` the player mask, `+4` 5,
 //! `+8` 4, `+0x1c` the loader, which it then calls with the request). The
 //! loader `0x2b7714` allocates 0x9b4 bytes, runs the screen constructor
 //! `0x2b7752` (base screen `0x230451` with screen id 39, then the Controls
 //! list handler `0x2c84b8` at `screen + 0x614`) and pushes the screen
-//! (`0x147f6d`). Our row makes the very same call, so the new screen sits on
-//! top of Controls like any of Controls' own dialogs and B returns to it.
+//! (`0x147f6d`). Our row makes the very same call with the pressing
+//! player's mask, so the new screen sits on top of Settings like Player
+//! Profiles does and B returns to it.
 //!
 //! **Telling it apart.** The list handler's constructor makes its datum
 //! array through `0x1a480d`, which copies the name it is given into the
@@ -91,10 +104,21 @@ impl Switches {
     }
 }
 
+/// The retail Settings list: its screen id, its datum array's name (VA)
+/// and row count, its row text (thiscall, item at `[esp+4]`, `ret 8`) and
+/// row chosen (thiscall, `[esp+4]` the player chain, `[esp+8]` the row,
+/// `ret 8`), and the handler byte that adds a third item widget.
+pub const SETTINGS_SCREEN_ID: i16 = 19;
+pub const SETTINGS_LIST_NAME: u32 = 0x0045_b128;
+pub const SETTINGS_ROWS: u32 = 2;
+pub const SETTINGS_ROW_TEXT: u32 = 0x002b_1d6e;
+pub const SETTINGS_ROW_CHOSEN: u32 = 0x002b_1da9;
+pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
+
 /// The model of our rows: the Video screen from the settings that name it,
-/// and on the Controls list the Controller Speaker row (with the game's
-/// own On and Off) and the Video row that opens the screen (left out when
-/// the screen has no rows).
+/// the Video row that opens it on the Settings list (left out when the
+/// screen has no rows), and the Controller Speaker row on Controls (with
+/// the game's own On and Off).
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title("Video");
     if on.video_screen {
@@ -108,19 +132,39 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
         controls = controls
             .row(Row::setting(PAD_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID));
     }
-    controls = controls.row(Row::open(SCREEN));
-    Model::new(store, vec![video], vec![controls], MODEL_IDS)
+    let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
+    Model::new(store, vec![video], vec![controls, settings], MODEL_IDS)
 }
 
-/// The Controls list's item count when the game builds the array named
-/// `name` with `retail` rows: ours added for the Controls list, else
+/// The item count when the game builds the array named `name` with
+/// `retail` rows: ours added for the Controls and Settings lists, else
 /// unchanged.
 pub fn list_count(m: &Model, name: u32, retail: u32) -> u32 {
-    if name == speaker_row::LIST_NAME {
-        m.count(List::Controls, retail)
-    } else {
-        retail
+    match name {
+        speaker_row::LIST_NAME => m.count(List::Controls, retail),
+        SETTINGS_LIST_NAME => m.count(List::Settings, retail),
+        _ => retail,
     }
+}
+
+/// Whether the Settings list just built with `count` rows (array `name`)
+/// needs its third item widget: the handler byte at
+/// [`SETTINGS_THIRD_ITEM`] set, so slot 19 reports three.
+pub fn settings_third_item(name: u32, count: u32) -> bool {
+    name == SETTINGS_LIST_NAME && count > SETTINGS_ROWS
+}
+
+/// The pane call for row `row` of screen `id`: `true` for our row on the
+/// Settings list, which has no pane (the shown one stays).
+pub fn skip_settings_pane(id: i16, row: i16) -> bool {
+    id == SETTINGS_SCREEN_ID && row >= SETTINGS_ROWS as i16
+}
+
+/// What a Settings list row text call draws for row `row`: our row's label
+/// (its one text, slot 0), or `None` for a retail row.
+pub fn settings_text(m: &Model, row: Option<i16>) -> Option<(u32, u32)> {
+    let r = m.row(List::Settings, row?)?;
+    Some(m.texts(r)[0])
 }
 
 /// The datum array constructor with name `name` and count `retail` while
@@ -275,7 +319,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(no_fov.rows(LIST).len(), 3);
-        // No Video screen: no Video row on Controls either.
+        assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
+        assert_eq!(m.count(List::Controls, 6), 7, "the speaker row only");
+        // No Video screen: no Video row on Settings either.
         let none = model(
             store(),
             Switches {
@@ -286,6 +332,7 @@ mod tests {
         .unwrap();
         assert!(none.rows(LIST).is_empty());
         assert_eq!(none.count(List::Controls, 6), 7);
+        assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
         let bare = model(
             store(),
             Switches {
@@ -299,17 +346,27 @@ mod tests {
     }
 
     #[test]
-    fn the_video_row_sits_after_the_speaker_row() {
+    fn the_video_row_is_the_settings_lists_third() {
         let m = all();
-        assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), Some(7));
+        assert_eq!(m.index_of(List::Settings, &RowKind::Open(SCREEN)), Some(2));
+        assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), None);
+        assert_eq!(drawn(&m, List::Settings, 2), s("Video", ""));
         assert_eq!(
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
-        assert_eq!(drawn(&m, List::Controls, 7), s("Video", ""));
-        for r in [0i16, 5, 8, -1] {
-            assert_eq!(drawn(&m, List::Controls, r), None, "{r}");
+        for r in [0i16, 1, 3, -1] {
+            assert_eq!(drawn(&m, List::Settings, r), None, "{r}");
         }
+        assert_eq!(drawn(&m, List::Controls, 7), None);
+        // The Settings row text draws one text: the label, in slot 0.
+        let title = m.title_id(SCREEN).unwrap();
+        assert_eq!(settings_text(&m, Some(2)), Some((0, title)));
+        assert_eq!(settings_text(&m, Some(1)), None, "Game Variants is retail");
+        assert_eq!(settings_text(&m, None), None);
+        assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
+        assert_eq!(press(&m, List::Settings, 0), Chosen::Nothing);
+        assert_eq!(press(&m, List::Settings, 1), Chosen::Nothing);
         let no_speaker = model(
             Arc::new(Store::defaults(ALL)),
             Switches {
@@ -319,15 +376,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            no_speaker.index_of(List::Controls, &RowKind::Open(SCREEN)),
-            Some(6)
+            no_speaker.index_of(List::Settings, &RowKind::Open(SCREEN)),
+            Some(2)
         );
+        assert_eq!(no_speaker.count(List::Controls, 6), 6);
+    }
+
+    #[test]
+    fn the_settings_list_gets_a_third_widget_and_no_pane_for_it() {
+        let m = all();
+        let n = list_count(&m, SETTINGS_LIST_NAME, SETTINGS_ROWS);
+        assert_eq!(n, 3);
+        assert!(settings_third_item(SETTINGS_LIST_NAME, n));
+        assert!(!settings_third_item(SETTINGS_LIST_NAME, 2), "not grown");
+        assert!(!settings_third_item(speaker_row::LIST_NAME, 7));
+        // A Settings list built with another count is not the one we know.
+        assert_eq!(list_count(&m, SETTINGS_LIST_NAME, 4), 4);
+        assert!(skip_settings_pane(SETTINGS_SCREEN_ID, 2));
+        assert!(!skip_settings_pane(SETTINGS_SCREEN_ID, 0));
+        assert!(!skip_settings_pane(SETTINGS_SCREEN_ID, 1));
+        assert!(!skip_settings_pane(speaker_row::SCREEN_ID, 2));
+        assert!(!skip_settings_pane(
+            crate::skulls_menu::DIFFICULTY_SCREEN_ID,
+            2
+        ));
     }
 
     #[test]
     fn the_controls_list_grows_by_our_rows() {
         let m = all();
-        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 8);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 7);
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
@@ -385,14 +463,14 @@ mod tests {
         let m = all();
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1x"));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "On"));
         assert_eq!(drawn(&m, LIST, 4), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
     #[test]
-    fn pressing_steps_the_row_saves_it_and_the_text_says_restart() {
+    fn pressing_steps_the_row_saves_it_and_applies_it_at_once() {
         let dir = std::env::temp_dir().join(format!("h2-video-{}-press", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -401,22 +479,27 @@ mod tests {
         let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
         let fov = store.handle::<u32>(FOV.key);
         let fps = store.handle::<u32>(FPS.key);
+        let scale = store.handle::<u32>(RENDER_SCALE.key);
+        let mute = store.handle::<bool>(PAD_MUTE.key);
+        // What the window, the view backend and the HID thread are told.
+        let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for key in [FPS.key, RENDER_SCALE.key, PAD_MUTE.key] {
+            let told = Arc::clone(&told);
+            store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
+        }
         let m = model(Arc::clone(&store), Switches::ALL).unwrap();
         assert_eq!(
             press(&m, LIST, 1),
-            Chosen::Stepped("graphics.fps: 60 from the next launch".into())
+            Chosen::Stepped("graphics.fps: 60".into())
         );
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "60 (restart)"));
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "60"));
+        assert_eq!(fps.get(), 60, "applies at once");
         press(&m, LIST, 1);
         press(&m, LIST, 1);
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "Uncapped (restart)"));
-        assert_eq!(fps.get(), 30, "this run keeps its rate");
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "Uncapped"));
+        assert_eq!(fps.get(), 0);
         press(&m, LIST, 1);
-        assert_eq!(
-            drawn(&m, LIST, 1),
-            s("Frame Rate", "30"),
-            "back to this run's"
-        );
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
             press(&m, LIST, 0),
             Chosen::Stepped("graphics.fov: 75".into())
@@ -424,8 +507,9 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
         press(&m, LIST, 2);
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "2x (restart)"));
-        assert_eq!(press(&m, List::Controls, 7), Chosen::Open(SCREEN));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960"));
+        assert_eq!(scale.get(), 2, "applies at once");
+        assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x3000182")
@@ -435,15 +519,23 @@ mod tests {
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
-        // The mute button is read at launch: saved for the next one.
         assert_eq!(
             press(&m, LIST, 3),
-            Chosen::Stepped("pad.mute_button: false from the next launch".into())
+            Chosen::Stepped("pad.mute_button: false".into())
         );
-        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off (restart)"));
-        assert!(
-            store.handle::<bool>(PAD_MUTE.key).get(),
-            "this run keeps it"
+        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off"));
+        assert!(!mute.get(), "applies at once");
+        // Each change reached its listener, in order, once.
+        assert_eq!(
+            *told.lock().unwrap(),
+            [
+                (FPS.key, Value::Int(60)),
+                (FPS.key, Value::Int(120)),
+                (FPS.key, Value::Int(0)),
+                (FPS.key, Value::Int(30)),
+                (RENDER_SCALE.key, Value::Int(2)),
+                (PAD_MUTE.key, Value::Bool(false)),
+            ]
         );
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 4), Chosen::Nothing);
@@ -479,16 +571,19 @@ mod tests {
         for t in [
             "Video",
             "Uncapped",
-            "60 (restart)",
-            "6x",
-            "6x (restart)",
+            "60",
+            "640x480",
+            "2560x1920",
+            "3840x2880",
+            "Off",
             "150",
             "30",
             "",
         ] {
             assert!(text(t), "{t:?}");
         }
-        assert!(!text("75 (restart)"), "the field of view applies at once");
+        // Every row applies at once: no "(restart)" text at all.
+        assert!(all.iter().all(|(_, s)| !s.contains("(restart)")), "{all:?}");
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
         ids.extend(

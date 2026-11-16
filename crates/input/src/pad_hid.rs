@@ -10,9 +10,11 @@
 //! stay with the other backends.
 //!
 //! [`PadLink`] is the per-device state machine: what to send when the device
-//! opens, when the mute button is pressed and when the speaker is switched.
-//! [`spawn`] runs it on a thread of its own over any [`HidPad`]: the macOS
-//! IOKit one ([`iokit_opener`]), or a fake in tests.
+//! opens, when the mute button is pressed, when the speaker is switched and
+//! when the mute button itself is turned on or off ([`MuteSwitch`], the
+//! Video screen's Mute Button row, applied at once). [`spawn`] runs it on a
+//! thread of its own over any [`HidPad`]: the macOS IOKit one
+//! ([`iokit_opener`]), or a fake in tests.
 
 use std::io;
 use std::sync::Arc;
@@ -128,6 +130,28 @@ impl PadLink {
         self.report(req)
     }
 
+    /// The mute button turned on (`true`) or off during the run. On: the
+    /// LED shows the mute state from now. Off: the microphone is unmuted
+    /// and the LED put out, and presses are ignored. Nothing if it is
+    /// already so.
+    pub fn set_mute_enabled(&mut self, on: bool) -> Option<Vec<u8>> {
+        if on == self.mute_enabled {
+            return None;
+        }
+        self.mute_enabled = on;
+        if !on {
+            self.mic = MicMute::new(false);
+            return self.report(OutputRequest {
+                mute_led: Some(dualsense::MuteLed::Off),
+                speaker: None,
+            });
+        }
+        self.report(OutputRequest {
+            mute_led: self.led(),
+            speaker: None,
+        })
+    }
+
     /// The controller output started (`true`) or stopped: the speaker path
     /// on, or back to the headphone jack. Nothing if it is already so.
     pub fn set_speaker(&mut self, on: bool) -> Option<Vec<u8>> {
@@ -144,6 +168,7 @@ impl PadLink {
 
 enum Cmd {
     Speaker(bool),
+    Mute(bool),
 }
 
 /// What the HID thread has seen.
@@ -174,6 +199,17 @@ impl SpeakerSwitch {
     }
 }
 
+/// Turns the mute button on or off on a running HID thread (the Video
+/// screen's Mute Button row). Cheap to clone.
+#[derive(Clone)]
+pub struct MuteSwitch(Sender<Cmd>);
+
+impl MuteSwitch {
+    pub fn set(&self, on: bool) {
+        let _ = self.0.send(Cmd::Mute(on));
+    }
+}
+
 /// The running HID thread. Dropping it puts the speaker path back (if it
 /// was on and the pad is there) and joins.
 pub struct PadHid {
@@ -185,6 +221,10 @@ pub struct PadHid {
 impl PadHid {
     pub fn speaker_switch(&self) -> SpeakerSwitch {
         SpeakerSwitch(self.tx.clone())
+    }
+
+    pub fn mute_switch(&self) -> MuteSwitch {
+        MuteSwitch(self.tx.clone())
     }
 
     pub fn status(&self) -> PadHidStatus {
@@ -252,7 +292,7 @@ fn send(pad: &mut dyn HidPad, report: Option<Vec<u8>>, shared: &Shared) -> io::R
 
 fn run(
     mut open: HidOpener,
-    config: PadHidConfig,
+    mut config: PadHidConfig,
     timing: Timing,
     rx: Receiver<Cmd>,
     shared: Arc<Shared>,
@@ -260,18 +300,28 @@ fn run(
     let mut speaker = false;
     let mut muted = false;
     let mut last_try: Option<Instant> = None;
+    // With no pad, a command only changes what the next one starts with.
+    fn note(cmd: Cmd, config: &mut PadHidConfig, speaker: &mut bool, muted: &mut bool) {
+        match cmd {
+            Cmd::Speaker(on) => *speaker = on,
+            Cmd::Mute(on) => {
+                config.mute = on;
+                *muted &= on;
+            }
+        }
+    }
     while !shared.stop.load(Ordering::Acquire) {
         // No pad: follow the commands and look again now and then.
         if last_try.is_some_and(|t| t.elapsed() < timing.retry) {
             match rx.recv_timeout(timing.poll) {
-                Ok(Cmd::Speaker(on)) => speaker = on,
+                Ok(cmd) => note(cmd, &mut config, &mut speaker, &mut muted),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {}
             }
             continue;
         }
-        while let Ok(Cmd::Speaker(on)) = rx.try_recv() {
-            speaker = on;
+        while let Ok(cmd) = rx.try_recv() {
+            note(cmd, &mut config, &mut speaker, &mut muted);
         }
         last_try = Some(Instant::now());
         let Some(mut pad) = open() else {
@@ -282,8 +332,15 @@ fn run(
         let r = link.on_open();
         let mut alive = send(pad.as_mut(), r, &shared).is_ok();
         while alive && !shared.stop.load(Ordering::Acquire) {
-            while let Ok(Cmd::Speaker(on)) = rx.try_recv() {
-                let r = link.set_speaker(on);
+            while let Ok(cmd) = rx.try_recv() {
+                let r = match cmd {
+                    Cmd::Speaker(on) => link.set_speaker(on),
+                    Cmd::Mute(on) => {
+                        note(Cmd::Mute(on), &mut config, &mut speaker, &mut muted);
+                        link.set_mute_enabled(on)
+                    }
+                };
+                shared.muted.store(link.muted(), Ordering::Release);
                 alive &= send(pad.as_mut(), r, &shared).is_ok();
             }
             match pad.read(timing.poll) {

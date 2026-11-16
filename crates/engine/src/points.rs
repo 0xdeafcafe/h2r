@@ -244,6 +244,13 @@ points! { ALL;
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";
     /// `locale_string_id_exists`: whether the packed id has a string (AL).
     LOCALE_EXISTS @ 0x001a_0310: [opaque]; "docs/engine/locale_string_id_find.md";
+    /// `ice_cream_flavor_stock`'s worker: turns skull ESI on (byte ESI of
+    /// the 15-byte array at `0x4f55dc`, only when it was 0), then the HUD
+    /// message and sound.
+    SKULL_STOCK @ 0x001d_f3e0: [fn(index: esi) ret 0]; "docs/skulls.md";
+    /// Queue new game options (EAX = the options; `+0` the mode, 1 a
+    /// campaign). The menu's campaign start and level boot both end here.
+    OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/skulls.md";
 }
 
 globals! { GLOBALS;
@@ -252,6 +259,14 @@ globals! { GLOBALS;
     GAME_GLOBALS @ 0x004e_6948; "docs/level-boot.md";
     /// Pointer to the game-time record; `+8` is the tick count.
     GAME_TIME @ 0x0051_0c54; "docs/high-framerate.md";
+    /// Pointer to the players datum array (`0x21c`-byte players).
+    PLAYERS @ 0x004e_8c24; "docs/live-gamestate.md";
+    /// Pointer to the objects datum array (`0xc`-byte headers).
+    OBJECTS @ 0x004e_0300; "docs/objects.md";
+    /// Holds the guest address of the tag-index header.
+    TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
+    /// Holds the guest address of the 16-byte tag-entry table.
+    TAG_ENTRIES @ 0x004e_3b44; "docs/engine/tag_get_checked.md";
 }
 
 /// The point at `base`, if the table names one.

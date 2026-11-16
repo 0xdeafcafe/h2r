@@ -1,7 +1,7 @@
 //! Tests on an invented cache: every byte below is made up here. No layout
 //! value, name or data comes from a game file.
 use crate::Error;
-use crate::edit::{Command, History};
+use crate::edit::{Command, History, Op};
 use crate::geometry::{self, Camera, Ray};
 use crate::layout::{self, BlockKind};
 use crate::save::{self, MapSource};
@@ -40,6 +40,7 @@ const STARTS_AT: usize = 0x500;
 const FLAGS_AT: usize = 0x580;
 const NETGAME_AT: usize = 0x600;
 const SCENERY_AT: usize = 0x700;
+const NAMES_AT: usize = 0x800;
 
 /// A multiplayer cache with globals, a scenario, a weapon and a collection.
 fn fixture() -> Vec<u8> {
@@ -153,6 +154,24 @@ fn fixture() -> Vec<u8> {
         putf(&mut b, e + 0x14 + 4 * k, 0.0);
     }
     putf(&mut b, e + 0x20, 0.0);
+    // Object names: (type, placement) = weapon 1, scenery 0, weapon 0.
+    block(&mut b, 0x48, 3, NAMES_AT);
+    for (i, (ty, p)) in [(2i16, 1i16), (6, 0), (2, 0)].into_iter().enumerate() {
+        let e = sfile(NAMES_AT + i * 0x24);
+        b[e..e + 4].copy_from_slice(b"nm\0\0");
+        b[e + 0x20..e + 0x22].copy_from_slice(&ty.to_le_bytes());
+        b[e + 0x22..e + 0x24].copy_from_slice(&p.to_le_bytes());
+    }
+    b
+}
+
+/// The fixture with its metadata region ending the file, as in retail maps,
+/// so a block can grow.
+fn fixture_at_end() -> Vec<u8> {
+    let mut b = fixture();
+    let end = META_FILE + 0x2000;
+    b.truncate(end);
+    put(&mut b, 8, end as u32);
     b
 }
 
@@ -288,7 +307,7 @@ fn every_block_definition_is_consistent() {
 fn unedited_save_is_byte_identical() {
     let src = fixture();
     let s = read(src.clone());
-    assert!(s.patches().is_empty());
+    assert!(s.changes().is_empty());
     assert_eq!(write(&src, &s), src);
 }
 
@@ -306,9 +325,9 @@ fn moving_a_weapon_patches_only_its_position_and_the_checksum() {
         .unwrap();
     assert_eq!(old, Value::Vec3([10.0, 11.0, 12.0]));
     // Only the y float changed, so one 4-byte patch (or less) is queued.
-    let p = s.patches();
+    let p = s.changes().patches;
     assert_eq!(p.len(), 1);
-    let pos = WEAPONS_AT as u32 + 0x54 + 8;
+    let pos = META + (SCNR + WEAPONS_AT) as u32 + 0x54 + 8;
     assert!(p[0].0 >= pos + 4 && p[0].0 + p[0].1.len() as u32 <= pos + 8);
     let out = write(&src, &s);
     let d = diff(&src, &out);
@@ -351,11 +370,13 @@ fn every_editable_field_writes_only_its_own_bytes() {
                 };
                 s.set(b.def.kind, index, f.name, new).unwrap();
                 let out = write(&src, &s);
-                let at =
-                    sfile(b.start as usize + index * b.def.stride as usize + f.offset as usize);
+                let at = META_FILE
+                    + (b.address - META) as usize
+                    + index * b.def.stride as usize
+                    + f.offset as usize;
                 let d = diff(&src, &out);
                 assert!(
-                    !d.is_empty() || s.patches().is_empty(),
+                    !d.is_empty() || s.changes().is_empty(),
                     "{} {}",
                     b.def.label,
                     f.name
@@ -414,7 +435,7 @@ fn validation_refuses_bad_values() {
     for (k, f, v) in bad {
         assert!(s.set(k, 0, f, v).is_err(), "{k:?} {f} {v:?}");
     }
-    assert!(s.patches().is_empty());
+    assert!(s.changes().is_empty());
     s.set(Weapons, 0, "palette index", Value::Int(-1)).unwrap();
     s.set(NetgameEquipment, 0, "item", Value::Tag(TagRef::NONE))
         .unwrap();
@@ -455,7 +476,7 @@ fn undo_redo_and_drag_merging() {
     h.undo(&mut s).unwrap();
     assert_eq!(pos(&s), Value::Vec3([0.0, 1.0, 2.0]));
     assert!(!h.can_undo());
-    assert!(s.patches().is_empty());
+    assert!(s.changes().is_empty());
     assert_eq!(write(&src, &s), src);
     h.redo(&mut s).unwrap();
     assert_eq!(pos(&s), Value::Vec3([5.0, 1.0, 2.0]));
@@ -467,27 +488,27 @@ fn undo_redo_and_drag_merging() {
     .unwrap();
     assert!(!h.can_redo());
     // A failing command leaves the scenario as it was.
-    let before = s.clone().patches();
+    let before = s.clone().changes();
     let cmd = Command {
         label: "two".into(),
-        sets: vec![
-            crate::SetField {
+        ops: vec![
+            Op::Set(crate::SetField {
                 block: BlockKind::Weapons,
                 index: 0,
                 field: "scale",
                 value: Value::Float(3.0),
-            },
-            crate::SetField {
+            }),
+            Op::Set(crate::SetField {
                 block: BlockKind::Weapons,
                 index: 0,
                 field: "scale",
                 value: Value::Float(-3.0),
-            },
+            }),
         ],
         merge: None,
     };
     assert!(h.apply(&mut s, cmd).is_err());
-    assert_eq!(s.patches(), before);
+    assert_eq!(s.changes(), before);
 }
 
 #[test]
@@ -508,7 +529,7 @@ fn undo_restores_source_values_the_validator_would_refuse() {
         s.get(BlockKind::Weapons, 0, "palette index").unwrap(),
         Value::Int(9)
     );
-    assert!(s.patches().is_empty());
+    assert!(s.changes().is_empty());
 }
 
 #[test]
@@ -846,7 +867,7 @@ fn disc_scenarios_read_and_fields_are_plausible() {
             }
         }
         // No edits: the patch set is empty, so a save would be a pass-through.
-        assert!(s.patches().is_empty());
+        assert!(s.changes().is_empty());
         checked += 1;
     }
     assert!(checked > 0);
@@ -859,4 +880,387 @@ fn disc_scenarios_read_and_fields_are_plausible() {
         outside * 100 <= positions,
         "{outside} of {positions} outside"
     );
+}
+
+fn names(s: &Scenario) -> Vec<(i16, i16)> {
+    (0..s.names.len())
+        .map(|n| s.names.target(n).unwrap())
+        .collect()
+}
+
+#[test]
+fn remove_swaps_the_last_entry_in_and_repoints_names() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    let w = |s: &Scenario, i| s.block(BlockKind::Weapons).entry(i).unwrap().to_vec();
+    let (w0, w1) = (w(&s, 0), w(&s, 1));
+    let removed = s.remove(BlockKind::Weapons, 0).unwrap();
+    assert_eq!(removed.entry, w0);
+    assert_eq!(s.block(BlockKind::Weapons).len(), 1);
+    assert_eq!(w(&s, 0), w1);
+    // The name of weapon 1 follows it to slot 0; weapon 0's names nothing;
+    // the scenery name (another type) is untouched.
+    assert_eq!(names(&s), vec![(2, 0), (6, 0), (2, -1)]);
+
+    let out = write(&src, &s);
+    let d = diff(&src, &out);
+    let slot0 = sfile(WEAPONS_AT);
+    let count = sfile(0x90);
+    let n0 = sfile(NAMES_AT);
+    for &(lo, hi) in &d {
+        let inside = |a: usize, b: usize| lo >= a && hi <= b;
+        assert!(
+            inside(slot0, slot0 + 0x54)
+                || inside(count, count + 4)
+                || inside(n0, n0 + 3 * 0x24)
+                || inside(0x2d0, 0x2d4),
+            "{lo:#x}..{hi:#x}"
+        );
+    }
+    // The old tail slot is left as dead data.
+    let tail = sfile(WEAPONS_AT + 0x54);
+    assert_eq!(out[tail..tail + 0x54], src[tail..tail + 0x54]);
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let again = Scenario::read(&mut m).unwrap();
+    assert_eq!(again.block(BlockKind::Weapons).len(), 1);
+    assert_eq!(again.block(BlockKind::Weapons).entry(0).unwrap(), &w1[..]);
+    assert_eq!(names(&again), vec![(2, 0), (6, 0), (2, -1)]);
+
+    // Undo restores the count, both slots and the names exactly.
+    s.unremove(&removed).unwrap();
+    assert_eq!((w(&s, 0), w(&s, 1)), (w0, w1));
+    assert_eq!(names(&s), vec![(2, 1), (6, 0), (2, 0)]);
+    assert!(s.changes().is_empty());
+}
+
+#[test]
+fn removing_the_last_entry_and_every_block_kind() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    let r = s.remove(BlockKind::Weapons, 1).unwrap();
+    assert_eq!(s.block(BlockKind::Weapons).len(), 1);
+    // Weapon 1's name now names nothing; weapon 0's is unchanged.
+    assert_eq!(names(&s), vec![(2, -1), (6, 0), (2, 0)]);
+    // Only the count and the name change: slot 0 is untouched.
+    let c = s.changes();
+    assert_eq!(c.patches.len(), 2, "{c:x?}");
+    s.unremove(&r).unwrap();
+    assert!(s.changes().is_empty());
+    for b in &read(src.clone()).blocks {
+        let kind = b.def.kind;
+        assert!(s.remove_refusal(kind).is_none(), "{kind:?}");
+        if b.is_empty() {
+            assert!(matches!(s.remove(kind, 0), Err(Error::NoEntry(..))));
+            continue;
+        }
+        let before = s.clone();
+        let r = s.remove(kind, 0).unwrap();
+        assert_eq!(s.block(kind).len(), b.len() - 1);
+        let out = write(&src, &s);
+        assert_eq!(read(out).block(kind).len(), b.len() - 1, "{kind:?}");
+        s.unremove(&r).unwrap();
+        assert_eq!(s.changes(), before.changes());
+    }
+}
+
+#[test]
+fn remove_and_add_through_history_undo_exactly() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    let mut h = History::default();
+    let w1 = s.block(BlockKind::Weapons).entry(1).unwrap().to_vec();
+    h.apply(&mut s, Command::remove(BlockKind::Weapons, 0))
+        .unwrap();
+    // Adding back in place needs no growth: same count, slot 1 rewritten.
+    let e = s
+        .new_entry(BlockKind::Weapons, Some(0), Some([7.0, 8.0, 9.0]))
+        .unwrap();
+    h.apply(&mut s, Command::add(BlockKind::Weapons, e.clone()))
+        .unwrap();
+    assert_eq!(s.block(BlockKind::Weapons).len(), 2);
+    let c = s.changes();
+    assert!(c.grown.is_empty());
+    assert!(
+        !c.patches
+            .iter()
+            .any(|(a, _)| *a == META + (SCNR + 0x90) as u32)
+    );
+    assert_eq!(
+        s.get(BlockKind::Weapons, 1, "position").unwrap(),
+        Value::Vec3([7.0, 8.0, 9.0])
+    );
+    // A copy keeps every other byte of its source entry.
+    assert_eq!(e[..8], w1[..8]);
+    assert_eq!(e[0x14..], w1[0x14..]);
+    let out = write(&src, &s);
+    assert_eq!(read(out).block(BlockKind::Weapons).len(), 2);
+    assert_eq!(h.undo(&mut s).unwrap().as_deref(), Some("add Weapons"));
+    assert_eq!(s.block(BlockKind::Weapons).len(), 1);
+    h.undo(&mut s).unwrap();
+    assert!(s.changes().is_empty());
+    assert_eq!(names(&s), vec![(2, 1), (6, 0), (2, 0)]);
+    h.redo(&mut s).unwrap();
+    h.redo(&mut s).unwrap();
+    assert_eq!(s.changes(), c);
+    // A command that fails part-way is rolled back.
+    let before = s.clone().changes();
+    let bad = Command {
+        label: "bad".into(),
+        ops: vec![
+            Op::Remove {
+                block: BlockKind::Weapons,
+                index: 0,
+            },
+            Op::Remove {
+                block: BlockKind::Weapons,
+                index: 5,
+            },
+        ],
+        merge: None,
+    };
+    assert!(h.apply(&mut s, bad).is_err());
+    assert_eq!(s.changes(), before);
+    assert_eq!(s.block(BlockKind::Weapons).len(), 2);
+}
+
+#[test]
+fn new_entries_and_add_limits() {
+    let mut s = read(fixture());
+    // Zeroed, with the palette's first item and no name.
+    let e = s
+        .new_entry(BlockKind::Weapons, None, Some([1.0, 2.0, 3.0]))
+        .unwrap();
+    assert_eq!(e.len(), 0x54);
+    assert_eq!(&e[..4], &[0, 0, 0xff, 0xff]);
+    assert_eq!(f32::from_le_bytes(e[0xc..0x10].try_into().unwrap()), 2.0);
+    assert!(e[0x14..].iter().all(|&b| b == 0));
+    // No palette: -1.
+    let e = s.new_entry(BlockKind::Vehicles, None, None).unwrap();
+    assert_eq!(&e[..2], &[0xff, 0xff]);
+    // Blocks without a palette or name start zeroed.
+    let e = s.new_entry(BlockKind::NetgameFlags, None, None).unwrap();
+    assert!(e.iter().all(|&b| b == 0));
+    assert!(s.new_entry(BlockKind::Weapons, Some(9), None).is_err());
+    assert!(
+        s.new_entry(BlockKind::Weapons, None, Some([f32::NAN, 0.0, 0.0]))
+            .is_err()
+    );
+    // Wrong length.
+    assert!(s.add(BlockKind::Weapons, vec![0; 4]).is_err());
+    // The engine's entry limit: 100 netgame equipment entries.
+    let e = s
+        .new_entry(BlockKind::NetgameEquipment, Some(0), None)
+        .unwrap();
+    for _ in 1..100 {
+        s.add(BlockKind::NetgameEquipment, e.clone()).unwrap();
+    }
+    assert_eq!(s.block(BlockKind::NetgameEquipment).len(), 100);
+    assert!(s.add_refusal(BlockKind::NetgameEquipment).is_some());
+    assert!(matches!(
+        s.add(BlockKind::NetgameEquipment, e),
+        Err(Error::Refused(_))
+    ));
+    // unadd only takes back the entry that is last.
+    assert!(s.unadd(BlockKind::Weapons, &[0; 0x54]).is_err());
+}
+
+#[test]
+fn a_grown_block_is_appended_and_nothing_else_moves() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    let e = s
+        .new_entry(BlockKind::NetgameEquipment, Some(0), Some([4.0, 5.0, 6.0]))
+        .unwrap();
+    s.add(BlockKind::NetgameEquipment, e.clone()).unwrap();
+    let c = s.changes();
+    assert_eq!(c.grown.len(), 1);
+    assert_eq!(c.grown[0].count, 2);
+    let out = write(&src, &s);
+    // The region, the total and the file grow by one page.
+    assert_eq!(out.len(), src.len() + 0x1000);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(word(&out, 8), word(&src, 8) + 0x1000);
+    assert_eq!(word(&out, 0x18), word(&src, 0x18) + 0x1000);
+    assert_eq!(word(&out, 0x1c), word(&src, 0x1c) + 0x1000);
+    // Every source byte is unchanged except those header fields, the
+    // checksum and the block's (count, address) pair.
+    let root = sfile(0x120);
+    for (lo, hi) in diff(&src, &out[..src.len()]) {
+        let ok = [(8, 12), (0x18, 0x20), (0x2d0, 0x2d4), (root, root + 8)]
+            .iter()
+            .any(|&(a, b)| lo >= a && hi <= b);
+        assert!(ok, "{lo:#x}..{hi:#x}");
+    }
+    // The new copy starts right after the old region's end.
+    let end = META + 0x2000;
+    assert_eq!(word(&out, root), 2);
+    assert_eq!(word(&out, root + 4), end);
+    let old = &src[sfile(NETGAME_AT)..sfile(NETGAME_AT) + 0x90];
+    assert_eq!(&out[src.len()..src.len() + 0x90], old);
+    assert_eq!(&out[src.len() + 0x90..src.len() + 0x120], &e[..]);
+    assert!(out[src.len() + 0x120..].iter().all(|&b| b == 0));
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let mut again = Scenario::read(&mut m).unwrap();
+    let b = again.block(BlockKind::NetgameEquipment);
+    assert_eq!((b.len(), b.address), (2, end));
+    assert_eq!(
+        again
+            .get(BlockKind::NetgameEquipment, 1, "position")
+            .unwrap(),
+        Value::Vec3([4.0, 5.0, 6.0])
+    );
+    // The re-read map edits its grown block in place.
+    again
+        .set(
+            BlockKind::NetgameEquipment,
+            1,
+            "respawn time",
+            Value::Int(5),
+        )
+        .unwrap();
+    let out2 = write(&out, &again);
+    assert_eq!(out2.len(), out.len());
+    let d = diff(&out, &out2);
+    let field = src.len() + 0x90 + 0xe;
+    assert!(covers(&d, field, field + 2), "{d:x?}");
+    // Undoing the add needs no growth again.
+    s.unadd(BlockKind::NetgameEquipment, &e).unwrap();
+    assert_eq!(write(&src, &s), src);
+}
+
+#[test]
+fn growth_is_refused_when_the_metadata_does_not_end_the_file() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    let e = s.new_entry(BlockKind::NetgameFlags, Some(0), None).unwrap();
+    s.add(BlockKind::NetgameFlags, e).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    assert!(save::write_patched(&mut open(src), &s, &mut out).is_err());
+    // A block inside another tag is refused on read.
+    let mut b = fixture_at_end();
+    put(&mut b, sfile(0x11c), META + 0x1100);
+    assert!(Scenario::read(&mut open(b)).is_err());
+}
+
+#[test]
+fn panel_delete_and_duplicate() {
+    let dir = std::env::temp_dir().join(format!("scenario-edit-panel-ar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("fixture.map");
+    std::fs::write(&path, fixture_at_end()).unwrap();
+    let mut ed = crate::ScenarioEditor::new();
+    ed.open(MapSource::file(&path)).unwrap();
+    // Full blocks refuse to grow until growth is allowed.
+    assert_eq!(
+        ed.add_refusal(BlockKind::Weapons),
+        Some(crate::panel::GROWTH_REFUSAL)
+    );
+    assert!(ed.add_entry(BlockKind::Weapons, Some(0)).is_err());
+    ed.remove_entry(BlockKind::Weapons, 0).unwrap();
+    assert_eq!(ed.selected(), Some((BlockKind::Weapons, 0)));
+    assert!(ed.is_dirty());
+    // Room in place again: a duplicate fits without growth.
+    assert_eq!(ed.add_refusal(BlockKind::Weapons), None);
+    assert_eq!(ed.add_entry(BlockKind::Weapons, Some(0)).unwrap(), 1);
+    assert_eq!(ed.selected(), Some((BlockKind::Weapons, 1)));
+    ed.set_allow_growth(true);
+    assert_eq!(ed.add_entry(BlockKind::Weapons, None).unwrap(), 2);
+    assert!(ed.undo());
+    assert!(ed.undo());
+    assert!(ed.undo());
+    assert!(!ed.is_dirty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// On the owner's disc: add a netgame equipment entry to a multiplayer map
+/// (the block grows: appended to the metadata) and remove a weapon (in
+/// place), save to `$TMPDIR`, and re-read the result with the `map`, `tags`
+/// and scenario readers. Only the documented bytes may differ.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_add_and_remove_round_trip() {
+    let iso = std::env::var_os("H2_DISC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../disc/halo2.iso"))
+        });
+    let maps = MapSource::disc_maps(&iso).unwrap();
+    let (mut checked, mut refused) = (0, 0);
+    for (name, source) in maps {
+        let mut m = source.open().unwrap();
+        if m.header().cache_type != map::CacheType::Multiplayer {
+            continue;
+        }
+        let src_len = m.storage_length() as usize;
+        let mut s = Scenario::read(&mut m).unwrap();
+        let kind = BlockKind::NetgameEquipment;
+        let n = s.block(kind).len();
+        let at = [1.0, 2.0, 3.0];
+        let e = s.new_entry(kind, Some(0), Some(at)).unwrap();
+        s.add(kind, e.clone()).unwrap();
+        let weapons = s.block(BlockKind::Weapons).len();
+        if weapons > 0 {
+            s.remove(BlockKind::Weapons, 0).unwrap();
+        }
+        let changes = s.changes();
+        assert_eq!(changes.grown.len(), 1, "{name}");
+        let mut out = Cursor::new(Vec::new());
+        let growth = changes.grown[0].bytes.len().div_ceil(0x1000) as u32 * 0x1000;
+        let limit = map::writer::max_metadata_size(m.header().cache_type).unwrap();
+        if m.header().meta_size + growth > limit {
+            // The largest retail map of its type: growth is refused.
+            assert!(save::write_patched(&mut m, &s, &mut out).is_err(), "{name}");
+            eprintln!("{name}: growth refused at the bound, as expected");
+            refused += 1;
+            continue;
+        }
+        save::write_patched(&mut m, &s, &mut out).unwrap();
+        let out = out.into_inner();
+        assert_eq!(out.len() % 0x1000, src_len % 0x1000, "{name}");
+        assert!(out.len() > src_len);
+        // Every source byte is identical except the header sizes, the
+        // checksum and the scenario patches.
+        let src = m.read_file_range(0, src_len as u64).unwrap();
+        let mut patched: Vec<(usize, usize)> = changes
+            .patches
+            .iter()
+            .map(|(a, b)| {
+                let f = m.file_offset(*a, b.len() as u32).unwrap() as usize;
+                (f, f + b.len())
+            })
+            .collect();
+        let root = m.file_offset(changes.grown[0].root, 8).unwrap() as usize;
+        patched.extend([(8, 12), (0x18, 0x20), (0x2d0, 0x2d4), (root, root + 8)]);
+        for (lo, hi) in diff(&src, &out[..src_len]) {
+            assert!(
+                patched.iter().any(|&(a, b)| lo >= a && hi <= b),
+                "{name}: {lo:#x}..{hi:#x}"
+            );
+        }
+        let mut again = Map::from_reader(Cursor::new(out)).unwrap();
+        again.validate_checksum().unwrap();
+        assert_eq!(
+            again.header().meta_size - m.header().meta_size,
+            again.header().tag_data_size - m.header().tag_data_size
+        );
+        let scnr = again.scenario().unwrap().id;
+        tags::DecodedTag::read(&mut again, scnr).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let r = Scenario::read(&mut again).unwrap();
+        assert_eq!(r.block(kind).len(), n + 1, "{name}");
+        assert_eq!(r.block(kind).entry(n).unwrap(), &e[..]);
+        assert_eq!(r.get(kind, n, "position").unwrap(), Value::Vec3(at));
+        assert_eq!(r.block(BlockKind::Weapons).len(), weapons.saturating_sub(1));
+        assert!(r.changes().is_empty());
+        eprintln!(
+            "{name}: +1 netgame equipment ({n} -> {}), -1 weapon, {} -> {} bytes",
+            n + 1,
+            src_len,
+            again.storage_length()
+        );
+        checked += 1;
+    }
+    eprintln!("{checked} maps grown, {refused} refused at the bound");
+    assert!(checked > 0);
 }

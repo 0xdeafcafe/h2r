@@ -191,3 +191,144 @@ fn the_panel_draws_without_changing_anything() {
     // No source in the context: the catalog set above stays.
     assert!(t.catalog().is_some());
 }
+
+// ---------- game variants ----------
+
+use super::model::tests::good_variant;
+use crate::dialog::{Picked, ScriptedDialog};
+use live_proto::hopper::{RECORD, VARIANT_AT};
+
+#[test]
+fn linking_a_variant_is_one_undo_step_and_saves_byte_exact() {
+    let f = sample();
+    let mut t = HopperTool::new();
+    t.open_bytes(f.image(), None).unwrap();
+    let v = good_variant("Linked");
+    t.set_entry_variant(1, 1, &v).unwrap();
+    assert!(t.is_dirty());
+    assert_eq!(t.entry_variant(1, 1).unwrap(), v);
+    assert!(t.undo());
+    assert!(!t.is_dirty());
+    assert_ne!(t.entry_variant(1, 1).unwrap(), v);
+    assert!(!t.can_undo(), "the link was a single step");
+    assert!(t.redo());
+
+    let path = scratch("linked.dat");
+    let mut st = status();
+    t.save_as(&path, &mut cx!(st)).unwrap();
+    let (back, _) = read_file(&std::fs::read(&path).unwrap()).unwrap();
+    let mut want = f.image().to_vec();
+    let at = 0x6140 + 0x15cb8 + 0x48 + RECORD + VARIANT_AT;
+    want[at..at + 0x130].copy_from_slice(v.bytes());
+    assert_eq!(back.image(), &want[..], "only the variant's bytes changed");
+    // After the save the entry reads back from the new image, unpicked.
+    assert!(t.hoppers().unwrap()[1].records[1].picked.is_none());
+    assert_eq!(t.entry_variant(1, 1).unwrap(), v);
+}
+
+#[test]
+fn a_rejected_variant_leaves_no_trace() {
+    let mut t = HopperTool::new();
+    t.open_bytes(sample().image(), None).unwrap();
+    // Territories with a zero territory count: the clean-up resets it.
+    let bad = variants::GameVariant::blank(variants::GameType::Territories);
+    let err = t.set_entry_variant(0, 0, &bad).unwrap_err();
+    assert!(err.to_string().contains("the game would reject"), "{err}");
+    assert!(!t.is_dirty() && !t.can_undo());
+    assert!(matches!(
+        t.set_entry_variant(0, 9, &good_variant("x")),
+        Err(ToolError::Invalid(_))
+    ));
+}
+
+#[test]
+fn variant_files_load_by_path_or_dialog() {
+    let v = good_variant("Shared");
+    let path = scratch("shared.h2variant");
+    std::fs::write(&path, variants::portable::export(&v)).unwrap();
+    let mut t = HopperTool::new();
+    t.set_variant_sources(&crate::hopper::choices::tests_schema(), None);
+    assert_eq!(t.variant_choices().unwrap().builtins.len(), 2);
+
+    // Typed path.
+    assert_eq!(
+        t.load_variant_file(&path).unwrap(),
+        "Shared - Slayer - teams"
+    );
+    assert!(t.load_variant_file(&scratch("nope.h2variant")).is_err());
+
+    // The dialog: cancelled does nothing, a pick loads, unavailable says
+    // to type the path.
+    let d = ScriptedDialog::new([Picked::Cancelled, Picked::Path(path.clone())]);
+    let asked = d.asked.clone();
+    t.set_file_dialog(Box::new(d));
+    assert_eq!(t.browse_variant_file(), None);
+    assert!(t.browse_variant_file().unwrap().is_ok());
+    assert!(t.browse_variant_file().unwrap().is_err());
+    let asked = asked.borrow();
+    assert_eq!(asked[0].filters[0].extensions, ["h2variant"]);
+    assert_eq!(t.variant_path, path.display().to_string());
+    let c = t.variant_choices().unwrap();
+    assert_eq!(c.files.len(), 1, "the same file twice is one choice");
+    assert_eq!(c.files[0].variant, v);
+}
+
+#[test]
+fn edit_in_variant_editor_hands_the_variant_to_the_variant_tool() {
+    let mut t = HopperTool::new();
+    t.open_bytes(sample().image(), None).unwrap();
+    let v = good_variant("To edit");
+    t.set_entry_variant(0, 1, &v).unwrap();
+    assert!(t.edit_entry_variant(0, 1));
+    let mut shell = crate::shell::Shell::new();
+    shell.add_tool(Box::new(t));
+    shell.add_tool(Box::new(crate::variants::VariantTool::new()));
+    shell.dispatch_handoff();
+    assert_eq!(shell.active(), 1, "the variant editor is shown");
+    assert!(shell.tools()[1].is_dirty(), "holding an unsaved copy");
+    assert!(matches!(shell.status(), Some(crate::tool::Status::Info(m)) if m.contains("To edit")));
+    // Nothing more to hand over.
+    shell.dispatch_handoff();
+    assert_eq!(shell.active(), 1);
+}
+
+#[test]
+fn a_handoff_nobody_takes_is_reported() {
+    let mut t = HopperTool::new();
+    t.open_bytes(sample().image(), None).unwrap();
+    assert!(t.edit_entry_variant(0, 0));
+    assert!(!t.edit_entry_variant(0, 50), "no such entry");
+    let mut shell = crate::shell::Shell::new();
+    shell.add_tool(Box::new(t));
+    shell.dispatch_handoff();
+    assert_eq!(shell.active(), 0);
+    assert!(matches!(
+        shell.status(),
+        Some(crate::tool::Status::Error(_))
+    ));
+}
+
+/// Draws the entries with the picker's sources set, a picked entry among
+/// them, and checks drawing changes nothing.
+#[test]
+fn the_panel_draws_the_picker_without_changing_anything() {
+    let mut t = HopperTool::new();
+    t.open_bytes(sample().image(), None).unwrap();
+    t.set_variant_sources(&crate::hopper::choices::tests_schema(), None);
+    t.set_entry_variant(0, 0, &good_variant("Shown")).unwrap();
+    t.set_file_dialog(Box::new(ScriptedDialog::default()));
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut st = None;
+            t.ui(ui, &mut cx!(st));
+        })
+        .drop_without_applying_deltas();
+    }
+    assert!(t.can_undo());
+    assert!(t.undo());
+    assert!(!t.can_undo(), "drawing added no steps");
+    // Sources set by hand are not re-read from the (absent) disc.
+    assert_eq!(t.variant_choices().unwrap().builtins.len(), 2);
+    assert!(t.entry_variant(0, 0).is_some());
+}

@@ -262,3 +262,73 @@ fn dropping_the_thread_puts_the_speaker_back() {
     );
     assert_eq!(wire.lock().unwrap().opens, 1);
 }
+
+#[test]
+fn the_mute_button_turns_on_and_off_during_a_run() {
+    // Off at launch: presses do nothing.
+    let mut l = PadLink::new(Transport::Usb, OFF, false, false);
+    assert_eq!(l.on_input(&usb_input(true)), None);
+    assert_eq!(l.on_input(&usb_input(false)), None);
+    // Turned on: the LED shows the state (unmuted: off), and presses work.
+    let r = l.set_mute_enabled(true).unwrap();
+    assert_eq!((common(&r)[1] & 0x01, common(&r)[8]), (0x01, 0));
+    assert_eq!(l.set_mute_enabled(true), None, "already on");
+    let r = l.on_input(&usb_input(true)).unwrap();
+    assert_eq!((common(&r)[8], common(&r)[9]), (1, 0x10));
+    assert!(l.muted());
+    // Turned off while muted: unmuted, LED out, the mic back on.
+    let r = l.set_mute_enabled(false).unwrap();
+    let c = common(&r);
+    assert_eq!((c[1] & 0x01, c[8], c[9]), (0x01, 0, 0));
+    assert!(!l.muted());
+    assert_eq!(l.on_input(&usb_input(false)), None);
+    assert_eq!(l.on_input(&usb_input(true)), None, "presses ignored");
+    assert_eq!(l.set_mute_enabled(false), None, "already off");
+}
+
+#[test]
+fn the_thread_applies_the_mute_switch_at_once_and_across_a_replug() {
+    let wire = Arc::new(Mutex::new(Wire::default()));
+    let present = Arc::new(AtomicBool::new(true));
+    let hid = spawn(opener(&wire, Arc::clone(&present)), OFF, FAST);
+    let mute = hid.mute_switch();
+    assert!(wait(|| hid.status().connected));
+    // Mute off and no speaker: nothing sent on open, and a press is ignored.
+    wire.lock()
+        .unwrap()
+        .inputs
+        .extend([usb_input(true), usb_input(false)]);
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(wire.lock().unwrap().written.is_empty());
+    assert!(!hid.status().muted);
+    // The row turns it on: the LED is set at once and a press mutes.
+    mute.set(true);
+    assert!(wait(|| wire.lock().unwrap().written.len() == 1));
+    assert_eq!(summary(&wire.lock().unwrap())[0], (None, Some(0)));
+    wire.lock()
+        .unwrap()
+        .inputs
+        .extend([usb_input(true), usb_input(false)]);
+    assert!(wait(|| hid.status().muted));
+    // Off again: unmuted and the LED out.
+    mute.set(false);
+    assert!(wait(|| !hid.status().muted));
+    assert_eq!(
+        summary(&wire.lock().unwrap()).last(),
+        Some(&(None, Some(0)))
+    );
+    // Turned on while unplugged: the next connection starts with it on.
+    present.store(false, Ordering::Release);
+    wire.lock().unwrap().gone = true;
+    assert!(wait(|| !hid.status().connected));
+    mute.set(true);
+    let before = wire.lock().unwrap().written.len();
+    present.store(true, Ordering::Release);
+    assert!(wait(|| wire.lock().unwrap().written.len() == before + 1));
+    assert_eq!(
+        summary(&wire.lock().unwrap()).last(),
+        Some(&(None, Some(0))),
+        "the LED state sent on open"
+    );
+    drop(hid);
+}

@@ -16,9 +16,13 @@ export interface PlayerModels {
   weapons: Record<string, string>;
   /** glb file by vehicle stem, relative to the manifest. */
   vehicles: Record<string, string>;
+  /** glb file by tag stem for other big movers (machines not in the map glb, a scarab). */
+  objects: Record<string, string>;
+  /** The animation class of each weapon stem (version 2): which clip set a biped holding it plays. */
+  classes: Record<string, string>;
 }
 
-export const MODELS_VERSION = 1;
+export const MODELS_VERSION = 2;
 /** The species drawn for one this server has no model of. */
 export const DEFAULT_SPECIES = "spartan";
 
@@ -39,10 +43,18 @@ function table(raw: unknown): Record<string, string> {
  *  read (then every player is a capsule). */
 export function parseModels(raw: unknown): PlayerModels | null {
   if (!raw || typeof raw !== "object") return null;
-  const r = raw as { version?: unknown; bipeds?: unknown; weapons?: unknown; vehicles?: unknown };
-  if (r.version !== MODELS_VERSION) return null;
-  const bipeds = table(r.bipeds), weapons = table(r.weapons), vehicles = table(r.vehicles);
-  return Object.keys(bipeds).length || Object.keys(weapons).length || Object.keys(vehicles).length ? { bipeds, weapons, vehicles } : null;
+  const r = raw as { version?: unknown; bipeds?: unknown; weapons?: unknown; vehicles?: unknown; objects?: unknown };
+  // Version 2 adds animation clips and weapon classes; its files still read as version 1's.
+  if (r.version !== 1 && r.version !== MODELS_VERSION) return null;
+  const bipeds = table(r.bipeds), weapons = table(r.weapons), vehicles = table(r.vehicles), objects = table(r.objects);
+  const classes: Record<string, string> = {};
+  if (r.weapons && typeof r.weapons === "object") {
+    for (const [id, v] of Object.entries(r.weapons as Record<string, unknown>)) {
+      const c = (v as { class?: unknown } | null)?.class;
+      if (/^[a-z0-9_]{1,32}$/.test(id) && typeof c === "string" && /^[a-z0-9_]{1,32}$/.test(c)) classes[id] = c;
+    }
+  }
+  return [bipeds, weapons, vehicles, objects].some((t) => Object.keys(t).length) ? { bipeds, weapons, vehicles, objects, classes } : null;
 }
 
 /** The glb to draw a player with: their species', else the spartan's.
@@ -77,6 +89,9 @@ export function actorColour(team: string | null | undefined): string {
     default: return "#7f8fa3";
   }
 }
+
+/** How dark a vehicle nobody is in is drawn, beside one in use. */
+export const EMPTY_VEHICLE_SHADE = 0.5;
 
 /** How much of an occupant's colour a vehicle takes: a light wash, so it
  *  still reads as the vehicle it is. */

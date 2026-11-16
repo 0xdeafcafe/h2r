@@ -109,7 +109,32 @@ pub struct BlockDef {
     /// The palette block, if the element's palette index selects from one.
     pub palette: Option<PaletteDef>,
     pub fields: &'static [FieldDef],
+    /// Why entries may not be swap-removed, or `None` when nothing in the
+    /// map refers to them by index (docs/scenario-editor.md §6).
+    pub remove_refusal: Option<&'static str>,
+    /// Why entries may not be added, or `None`.
+    pub add_refusal: Option<&'static str>,
+    /// The most entries the engine accepts. Object placements: the
+    /// per-type maximums at `0x0044074c`, which `0x000d5640` sums into one
+    /// bitmask without checking the index (E). Netgame equipment: the
+    /// runtime array at `[0x4e9ae8]+0x7dc` is cleared for 100 entries
+    /// (`0x0015acf4`) and the index travels as an i8 (`0x0015ac15`) (E).
+    pub max_count: Option<usize>,
+    /// The object type (index into the type table `0x00468630`) of an
+    /// object placement block: scenario object names name a placement by
+    /// (type, index).
+    pub object_type: Option<i16>,
 }
+
+/// Scenario object names: `(count, address)` at `scnr+0x48`, stride `0x24`
+/// (E: `object_create` by name `0x000bb670`, `lea ecx,[eax+eax*8]` on
+/// `[scnr+0x4c]` at `0x000bb702`). Each entry names one placement: object
+/// type i16 at `+0x20`, placement index i16 at `+0x22` (-1: nothing is
+/// created, `0x000bb716`). At most 640 names (`cmp ax,280h`, `0x000bb765`).
+pub const OBJECT_NAMES: u32 = 0x48;
+pub const OBJECT_NAME_STRIDE: u32 = 0x24;
+pub const OBJECT_NAME_TYPE: usize = 0x20;
+pub const OBJECT_NAME_PLACEMENT: usize = 0x22;
 
 /// A palette block: elements start with a tag reference.
 #[derive(Debug)]
@@ -191,6 +216,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0x58, std::slice::from_ref(b"scen")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(2000),
+        object_type: Some(6),
     },
     BlockDef {
         kind: BlockKind::Vehicles,
@@ -200,6 +229,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0x78, std::slice::from_ref(b"vehi")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(256),
+        object_type: Some(1),
     },
     BlockDef {
         kind: BlockKind::Equipment,
@@ -209,6 +242,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0x88, std::slice::from_ref(b"eqip")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(256),
+        object_type: Some(3),
     },
     BlockDef {
         kind: BlockKind::Weapons,
@@ -218,6 +255,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0x98, std::slice::from_ref(b"weap")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(128),
+        object_type: Some(2),
     },
     BlockDef {
         kind: BlockKind::Machines,
@@ -227,6 +268,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0xb0, std::slice::from_ref(b"mach")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(400),
+        object_type: Some(7),
     },
     BlockDef {
         kind: BlockKind::SoundScenery,
@@ -236,6 +281,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0xe0, std::slice::from_ref(b"ssce")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(256),
+        object_type: Some(10),
     },
     BlockDef {
         kind: BlockKind::Crates,
@@ -245,6 +294,10 @@ pub static BLOCKS: &[BlockDef] = &[
         stride_evidence: "E: object type table 0x00468630",
         palette: palette(0x330, std::slice::from_ref(b"bloc")),
         fields: OBJECT,
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(1024),
+        object_type: Some(11),
     },
     BlockDef {
         kind: BlockKind::StartingLocations,
@@ -273,6 +326,10 @@ pub static BLOCKS: &[BlockDef] = &[
                 "E: 0x0014bcb0 compares with -1",
             ),
         ],
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: None,
+        object_type: None,
     },
     BlockDef {
         kind: BlockKind::NetgameFlags,
@@ -294,6 +351,10 @@ pub static BLOCKS: &[BlockDef] = &[
             f("type", 0x10, U16, Plain, true, "V: small values; C"),
             f("team", 0x12, U16, Plain, true, "V: small values; C"),
         ],
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: None,
+        object_type: None,
     },
     BlockDef {
         kind: BlockKind::NetgameEquipment,
@@ -354,6 +415,10 @@ pub static BLOCKS: &[BlockDef] = &[
             ),
             f("item", 0x58, TagRef, Plain, true, "E: 0x0015ac83 itmc/vehc"),
         ],
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: Some(100),
+        object_type: None,
     },
     BlockDef {
         kind: BlockKind::StartingEquipment,
@@ -390,6 +455,10 @@ pub static BLOCKS: &[BlockDef] = &[
                 "E: loop bound 5",
             ),
         ],
+        remove_refusal: None,
+        add_refusal: None,
+        max_count: None,
+        object_type: None,
     },
 ];
 
