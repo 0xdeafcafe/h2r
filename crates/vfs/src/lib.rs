@@ -6,6 +6,7 @@
 mod backend;
 mod disc;
 mod host;
+mod map_override;
 mod path;
 mod rewrite;
 mod status;
@@ -15,6 +16,7 @@ mod write_behind;
 pub use backend::Backend;
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
+pub use map_override::{MapOverrideBackend, MapOverrideNotice};
 pub use rewrite::{MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
@@ -212,6 +214,13 @@ impl Vfs {
         let disc = DiscBackend::open(disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, RewriteBackend::new(disc, rewrite))?;
+        Ok(vfs)
+    }
+    /// Storage plus `disc` as the DVD: [`Vfs::with_disc`] for a disc backend
+    /// already built (for example one wrapped in [`MapOverrideBackend`]).
+    pub fn with_disc_backend(config: Config, disc: impl Backend + 'static) -> Result<Self> {
+        let mut vfs = Self::with_storage(config)?;
+        vfs.mount(CDROM_DEVICE, disc)?;
         Ok(vfs)
     }
     pub fn mount(&mut self, device: &str, backend: impl Backend + 'static) -> Result<()> {
