@@ -45,8 +45,10 @@
 //! reads, writes, copies and snapshots, destruction, present) first encodes
 //! the pending pass and submits everything encoded, so the GPU sees the
 //! same operations in the same order as one pass per draw would give it,
-//! in one submission instead of one per target switch
-//! ([`GfxBackend::set_submit_per_pass`] restores those). The pending pass is encoded as one render pass, except
+//! in one submission instead of one per target switch. That batching is
+//! opt-in ([`GfxBackend::set_submit_after`], `H2_GFX_SUBMIT=batch`): by
+//! default every pass is submitted on its own at a target switch
+//! ([`GfxBackend::set_submit_per_pass`]), which was faster in game. The pending pass is encoded as one render pass, except
 //! that a draw that follows a draw writing only some colour channels starts
 //! a render pass of its own, and under the exact rule so does every draw
 //! whose program can `discard` (see [`GfxBackend::set_merge_passes`] and
@@ -133,6 +135,7 @@ const MAX_ENCODED_PASSES: usize = 1024;
 /// long frame before it ends.
 const SUBMIT_AFTER_PASSES: usize = 128;
 
+
 /// Rendering through `gfx`.
 pub struct GfxBackend {
     /// The GPU context.
@@ -193,6 +196,10 @@ pub struct GfxBackend {
     open: Option<(wgpu::CommandEncoder, usize)>,
     /// [`set_submit_per_pass`](Self::set_submit_per_pass).
     submit_per_pass: bool,
+    /// [`set_submit_after`](Self::set_submit_after).
+    submit_after: Option<std::time::Duration>,
+    /// When the last submission was made.
+    submitted_at: std::time::Instant,
 }
 
 /// What `Swap` with `D3DSWAP_FINISH` waits for.
@@ -286,20 +293,52 @@ impl GfxBackend {
             prev_frame_end: None,
             swap_finish: SwapFinish::from_env(),
             open: None,
-            submit_per_pass: std::env::var("H2_GFX_SUBMIT").is_ok_and(|v| v == "pass"),
+            submit_per_pass: true,
+            submit_after: None,
+            submitted_at: std::time::Instant::now(),
         }
+        .with_submit_policy(std::env::var("H2_GFX_SUBMIT").ok().as_deref())
     }
 
-    /// Submit every pending pass on its own at a target switch (the old
-    /// behaviour; `H2_GFX_SUBMIT=pass`). By default a target switch only
-    /// encodes the pending pass, and the passes go to the GPU in one
-    /// submission when anything else needs them submitted ([`flush`]: a
-    /// read-back, a copy, a write to a surface, a present) or
-    /// [`SUBMIT_AFTER_PASSES`] render passes have built up.
+    /// `H2_GFX_SUBMIT`: `pass` (the default) submits every pass on its own,
+    /// `batch` only when something needs the work or
+    /// [`SUBMIT_AFTER_PASSES`] render passes have built up, and a number
+    /// `N` batches but also submits at the first target switch `N`
+    /// microseconds after the last submission.
+    fn with_submit_policy(mut self, value: Option<&str>) -> Self {
+        match value {
+            Some("batch") => self.set_submit_after(None),
+            Some(v) => match v.parse() {
+                Ok(us) => self.set_submit_after(Some(std::time::Duration::from_micros(us))),
+                Err(_) => self.set_submit_per_pass(true),
+            },
+            None => self.set_submit_per_pass(true),
+        }
+        self
+    }
+
+    /// Batch the passes of several targets into one submission
+    /// (`H2_GFX_SUBMIT=batch`, or a number of microseconds for `after`): a
+    /// target switch only encodes the pending pass, and the passes go to
+    /// the GPU when anything else needs them submitted ([`flush`]: a
+    /// read-back, a copy, a write to a surface, a present), when
+    /// [`SUBMIT_AFTER_PASSES`] render passes have built up, or, with
+    /// `after`, at the first target switch `after` the last submission (so
+    /// the GPU starts on a frame while the render thread is still encoding
+    /// it).
     ///
     /// [`flush`]: Self::flush
+    pub fn set_submit_after(&mut self, after: Option<std::time::Duration>) {
+        self.submit_per_pass = false;
+        self.submit_after = after;
+    }
+
+    /// Submit every pending pass on its own at a target switch (the
+    /// default; `H2_GFX_SUBMIT=pass`). `false` batches with no deadline,
+    /// as [`set_submit_after(None)`](Self::set_submit_after).
     pub fn set_submit_per_pass(&mut self, on: bool) {
         self.submit_per_pass = on;
+        self.submit_after = None;
     }
 
     /// What `Swap` with `D3DSWAP_FINISH` waits for (default
@@ -746,6 +785,7 @@ impl GfxBackend {
             self.ctx.queue.submit(open.into_iter().chain([enc.finish()]))
         };
         self.last_submit = Some(index.clone());
+        self.submitted_at = std::time::Instant::now();
         self.renderer.submitted();
         if let Some(s) = self.shaders.as_mut() {
             s.submitted();
@@ -774,7 +814,8 @@ impl GfxBackend {
 
     /// Encodes the pending pass if it is for another target (submits it
     /// under [`set_submit_per_pass`](Self::set_submit_per_pass), or when
-    /// the passes not yet submitted reach [`SUBMIT_AFTER_PASSES`]). Must run
+    /// the passes not yet submitted reach [`SUBMIT_AFTER_PASSES`] or the
+    /// [`set_submit_after`](Self::set_submit_after) deadline). Must run
     /// before anything for a draw on `color` and `depth` is staged (the
     /// shader provider's uniforms included): a submit lets every ring reuse
     /// what was staged before it.
@@ -788,10 +829,13 @@ impl GfxBackend {
                 self.flush()?;
             } else {
                 self.encode_pending()?;
+                let due = self
+                    .submit_after
+                    .is_some_and(|after| self.submitted_at.elapsed() >= after);
                 if self
                     .open
                     .as_ref()
-                    .is_some_and(|&(_, n)| n >= SUBMIT_AFTER_PASSES)
+                    .is_some_and(|&(_, n)| due || n >= SUBMIT_AFTER_PASSES)
                 {
                     self.submit_open();
                 }
