@@ -1,0 +1,105 @@
+/* Friends and teams: the stats site's team pages and player-page boxes
+   (s-soc-*, s-team-*), and the dashboard's friends and teams screens
+   (dx-social, soc-*). */
+
+/* ---------- shared ---------- */
+
+.team-emblem {
+  position: relative; display: inline-grid; place-items: center; flex: none; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, hsl(var(--team-hue) 55% 42%), hsl(var(--team-hue) 60% 16%));
+}
+.team-emblem .emblem { width: 100%; height: 100%; display: block; mix-blend-mode: normal; }
+.soc-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #7cd04a; }
+.soc-dot--playing { background: #ffd34a; }
+.soc-dot--away { background: #c8a24a; }
+
+/* ---------- stats site ---------- */
+
+.s-soc-box .s-box-head { min-height: 26px; }
+.s-soc-btns { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.stats .s-btn--go { color: #fff; border-color: #6d8fbf; background: linear-gradient(180deg, #3b679f, #1d3a63); }
+.stats .s-btn--go:hover { border-color: #a8c4ec; background: linear-gradient(180deg, #4a79b5, #24477a); }
+.stats .s-btn--bad { border-color: #a35a4a; background: #5a2318; }
+.s-soc-friend { font-size: 10px; color: #b6e08c; white-space: nowrap; }
+.s-soc-err { display: block; padding: 4px 8px; font-size: 10px; color: #ffb59c; }
+.s-soc-cell .s-soc-err { display: inline; padding: 0 0 0 4px; cursor: help; }
+.s-soc-ok { padding: 4px 8px; font-size: 10px; color: #b6e08c; }
+.s-soc-pending { padding: 6px 8px 0; font-size: 11px; }
+.s-soc-pending a { color: #ffd76a !important; }
+.s-soc-more { padding: 0 8px 6px; font-size: 10px; color: var(--s-ink-dim); }
+.s-soc-link { font-size: 10px; }
+.s-soc-motto { font-style: italic; color: #b9c6d8; }
+.s-grid td.s-soc-motto { max-width: 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.s-soc-cell { white-space: nowrap; }
+.s-soc-cell .s-btn { height: 17px; padding: 0 6px; font-size: 10px !important; margin-left: 3px; }
+
+.s-soc-form { display: grid; gap: 3px; padding: 7px 8px 8px; font-size: 11px; color: #d6d6d6; }
+.s-soc-form label { margin-top: 3px; }
+.stats .s-soc-form input:not([type="checkbox"]), .stats .s-soc-form textarea { width: 100%; box-sizing: border-box; }
+.stats .s-soc-form textarea { font: 11px/14px var(--font-ui); padding: 2px 3px; color: #000; background: #fff; border: 1px solid #7f9db9; resize: vertical; }
+.s-soc-form .s-btn { justify-self: start; margin-top: 6px; }
+.s-soc-check { display: flex; gap: 5px; align-items: center; }
+.s-soc-pad { padding: 8px; font-size: 11px; }
+.s-soc-danger { margin: 0 8px 8px; padding-top: 7px; border-top: 1px solid #444; font-size: 11px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+
+.s-team-id .s-team-emblem .team-emblem { border: 1px solid #1a1a1a; }
+.s-team-name { width: 300px; }
+.s-team-name > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-team-you {
+  flex: none; align-self: stretch; width: 112px; display: grid; place-content: center; text-align: center; gap: 2px;
+  border-left: 1px solid #000; background: linear-gradient(180deg, #23354f, #142237);
+}
+.s-team-you small { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #8fa6c6; }
+.s-team-you b { font: 15px/18px var(--font-ui); }
+
+.s-soc-banner {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 6px 0; padding: 7px 10px; font-size: 12px;
+  color: #fff; background: linear-gradient(180deg, #3a5a86, #213a5e); border: 1px solid #6d8fbf;
+}
+.s-soc-banner > span { margin-right: auto; }
+.s-soc-banner .s-soc-ok, .s-soc-banner .s-soc-err { flex-basis: 100%; padding: 0; }
+
+.s-soc-about { padding: 9px 10px; font-size: 12px; line-height: 16px; color: #ddd; }
+.s-soc-about p + p { margin-top: 6px; }
+.stats .s-soc-sub { margin: 10px 0 4px; font: bold 11px/14px var(--font-ui); color: #fff; }
+.s-soc-role--leader { color: #ffd76a; font-weight: bold; }
+.s-soc-role--officer { color: #a9cdf7; }
+.s-soc-combined { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; padding: 9px 10px; }
+.s-soc-combined .s-soc-foot { grid-column: 1 / -1; margin-top: 6px; font-size: 10px; color: var(--s-ink-dim); }
+.s-soc-win { color: #b6e08c !important; }
+.s-soc-live { color: #ffd76a; font-weight: bold; }
+
+@media (max-width: 760px) {
+  .s-team-name { width: auto; flex: 1; min-width: 0; }
+  .s-team-id .s-id-nums, .s-team-you { display: none; }
+  .s-soc-combined { grid-template-columns: 1fr; }
+}
+
+/* ---------- dashboard ---------- */
+
+.dx-social .dx-plate { min-height: calc(var(--u) * 210); }
+.dx-social .dx-plate-body { text-transform: none; }
+.dx-social .dx-plate dl { margin-bottom: calc(var(--u) * 10); }
+.dx-social .bigpod-team, .dx-bigpod-in .team-emblem.dx-emblem { width: 76%; height: 76%; border-radius: 50%; }
+.dx-bigpod-in .team-emblem.dx-emblem { background: radial-gradient(circle at 50% 40%, hsl(var(--team-hue) 60% 34% / .55), transparent 70%); }
+.dx-bigpod-in .team-emblem.dx-emblem .emblem { mix-blend-mode: screen; filter: saturate(1.2) brightness(1.1); }
+.soc-acts { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 8); margin-top: calc(var(--u) * 6); }
+.dx .soc-act {
+  height: calc(var(--u) * 34); padding: 0 calc(var(--u) * 16);
+  font: 600 calc(var(--u) * 17) var(--f-cond); letter-spacing: .08em; text-transform: uppercase;
+  color: #d9f7a8; border-radius: 2px calc(var(--u) * 9) 2px 2px; cursor: pointer;
+  background: linear-gradient(#1f4a12, #12300b); box-shadow: 0 0 0 1px #6fa043, inset 0 1px 0 #ffffff1a;
+  transition: background .12s, color .12s, box-shadow .12s;
+}
+.dx .soc-act.on, .dx .soc-act:focus-visible {
+  color: #1e3d05; outline: none;
+  background: linear-gradient(#ecff96, #bedc38 60%, #d8ee6b); box-shadow: 0 0 0 1px #e8fa9b, 0 0 calc(var(--u) * 12) #cafa5455;
+}
+.dx .soc-act--danger:not(.on) { color: #ffe9a6; box-shadow: 0 0 0 1px #9c8a3b, inset 0 1px 0 #ffffff1a; }
+.dx .soc-act:disabled { filter: saturate(.3) brightness(.7); cursor: default; }
+.dx-pages .soc-form { margin-top: calc(var(--u) * 2); }
+.dx-pages .soc-form .dx-go { grid-column: 2; justify-self: start; }
+.dx-pages .soc-form .dx-error, .dx-pages .soc-form .soc-ok { grid-column: 1 / -1; }
+.dx-pages .soc-ok { padding: calc(var(--u) * 6) calc(var(--u) * 10); border-left: 2px solid #c9f27a; background: #102607; color: #e3ffb5; font-size: max(14px, calc(var(--u) * 16)); }
+.dx-pages .soc-note { color: #cfe6ae; font-size: max(14px, calc(var(--u) * 17)); line-height: 1.35; text-transform: none; letter-spacing: .02em; }
+.soc-glyph { width: 52%; height: 52%; }

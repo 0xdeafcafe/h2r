@@ -12,6 +12,7 @@ import Games from "./stats/Games";
 import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
+import Teams, { TeamPage } from "./stats/Teams";
 import Admin from "./admin/Admin";
 import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
@@ -38,6 +39,8 @@ render(
         <Route path="/players/:tag" component={ServiceRecordPage} />
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
+        <Route path="/teams" component={Teams} />
+        <Route path="/teams/:id" component={TeamPage} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />

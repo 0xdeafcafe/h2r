@@ -33,13 +33,16 @@ import { crossTo, crossing } from "./Veil";
 import { useMotd } from "../state/motd";
 import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
+import SocialScreen from "./Social";
+import "../styles/social.css";
 
-type SectionId = "live" | "friends" | "players" | "history" | "settings" | "signup" | "server";
-type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server";
+type SectionId = "live" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server";
+type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   friends: () => "friends",
+  teams: () => "teams",
   players: () => "players",
   history: () => "game history",
   settings: () => "settings",
@@ -48,12 +51,14 @@ const LABELS: Record<SectionId, () => string> = {
 };
 const SECTION_IDS = Object.keys(LABELS) as SectionId[];
 
-/** The main menu: four items, five once signed in (friends are the people you've played).
+/** The main menu: four items, five once signed in (friends, with teams inside).
  *  Sign up / profile and the server live under settings. */
 const menuItems = (): SectionId[] => (identity.me() ? ["live", "friends", "players", "history", "settings"] : ["live", "players", "history", "settings"]);
-/** The menu item a section belongs under. */
+/** The menu item a section belongs under. Teams live inside friends (inside
+ *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
+  if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
 
@@ -112,6 +117,7 @@ export default function Dashboard() {
     const s = section();
     if (!s) return "menu";
     if (s === "server") return "server";
+    if (s === "friends" || s === "teams") return "social";
     if (s === "settings") return "settings";
     if (s === "signup") return identity.me() ? "player" : "signup";
     return viewed() ? "player" : "list";
@@ -233,6 +239,9 @@ export default function Dashboard() {
     }
   });
 
+  // The friends and teams screens (Social.tsx) take their own input.
+  let socialAct: ((a: Action) => boolean) | null = null;
+
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
   async function useServer(input: string) {
@@ -257,11 +266,13 @@ export default function Dashboard() {
     if (screen() === "menu") return;
     if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
+    else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
   }
 
   function select() {
     switch (screen()) {
+      case "social": socialAct?.("select"); break;
       case "menu": go(`/dash/${items()[menu()]!}`, "deeper"); break;
       case "list": openRow(sel()); break;
       case "signup": (document.getElementById("dash-signup") as HTMLFormElement | null)?.requestSubmit(); break;
@@ -276,6 +287,7 @@ export default function Dashboard() {
   /** One step of input, from the keyboard or a gamepad. Says whether it meant anything here. */
   function act(a: Action): boolean {
     if (leaving()) return false;
+    if (screen() === "social") return socialAct?.(a) ?? false;
     const n = items().length;
     switch (screen()) {
       case "menu":
@@ -509,6 +521,10 @@ export default function Dashboard() {
             </div>
           </Match>
 
+          <Match when={screen() === "social"}>
+            <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+          </Match>
+
           <Match when={screen() === "server"}>
             <div class="dx-screen dx-pods dx-pods--form">
               <div class="dx-centre"><BigPod wire><Glyph name="globe" /></BigPod></div>
@@ -532,7 +548,7 @@ function emptyText(s: SectionId | null): string {
   }
 }
 
-function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: number) => void; onAct: (i: number) => void; empty: string }) {
+export function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: number) => void; onAct: (i: number) => void; empty: string }) {
   let box!: HTMLDivElement;
   const [first, setFirst] = createSignal(0);
   const [pitch, setPitch] = createSignal(0);

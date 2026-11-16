@@ -22,6 +22,7 @@ import { titleCase } from "../lib/format";
 import { gameSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
+import PlayerSocial from "./PlayerSocial";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 
 function useAccount() {
@@ -146,6 +147,7 @@ export function ServiceRecordPage() {
               ]} />
               <RecentGames games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
+              <PlayerSocial account={a()} />
               <PeopleFinder />
             </aside>
             <div class="s-right">
