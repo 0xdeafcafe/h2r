@@ -13,3 +13,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 # The copy-time header checksum repaired after the file layers.
 map.workspace = true
+# Package images decoded for 1.0's map list preview (map_list).
+png = "0.18"
+zune-jpeg = "0.5"
+zune-core = "0.5"
