@@ -643,6 +643,56 @@ fn base_fixtures() -> Vec<(&'static str, Asm)> {
             a.and(eax, 0xfff0)?;
             a.jmp(eax)
         }),
+        // Register homes (emit::c::homes): EBX, ESI, EDI and EBP are only
+        // read, so the C reads them from CpuAbi; partial writes keep EAX,
+        // ECX and EDX in locals. Loads fault part of the time after the
+        // partial writes, mid-block.
+        ("homes-partial", |a| {
+            a.mov(al, byte_ptr(esi))?;
+            a.mov(ah, bl)?;
+            a.mov(cx, word_ptr(edi + 2))?;
+            a.mov(dl, bh)?;
+            a.movzx(ecx, cx)?;
+            a.mov(edx, dword_ptr(ebx + ecx))?; // up to 64 KiB on: often unmapped
+            a.mov(ch, dl)?;
+            a.mov(dword_ptr(ebp - 8), eax)?;
+            a.ret()
+        }),
+        // No flag is read or written: EFLAGS stays in CpuAbi throughout.
+        ("homes-no-flags", |a| {
+            a.mov(eax, dword_ptr(esi))?;
+            a.lea(ecx, ptr(ebx + eax * 4 + 8))?;
+            a.mov(dword_ptr(edi), ecx)?;
+            a.movzx(edx, byte_ptr(ebx + 1))?;
+            a.ret()
+        }),
+        // Flags set in one block, read in later ones past a load that can
+        // fault, with read-only registers on both paths.
+        ("homes-flags-across-blocks", |a| {
+            let mut other = a.create_label();
+            let mut join = a.create_label();
+            a.cmp(eax, ebx)?;
+            a.mov(ecx, dword_ptr(ebx + eax))?; // EAX small (an edge value) or not
+            a.jb(other)?;
+            a.mov(edx, dword_ptr(edi))?;
+            a.jmp(join)?;
+            a.set_label(&mut other)?;
+            a.mov(edx, ebp)?;
+            a.set_label(&mut join)?;
+            a.setz(cl)?;
+            a.adc(edx, 0)?;
+            a.ret()
+        }),
+        // A computed jump through a register the handler only reads, and
+        // one through memory.
+        ("homes-indirect", |a| {
+            let mut mem = a.create_label();
+            a.test(al, 1)?;
+            a.jnz(mem)?;
+            a.jmp(ebx)?;
+            a.set_label(&mut mem)?;
+            a.jmp(dword_ptr(esi))
+        }),
     ]
 }
 
@@ -916,7 +966,7 @@ fn differential(
     let g = common::build(&owners, &header, name);
     // The same module counting its own accesses (h2gen.h, "Access
     // accounting"): it must end the same way and charge the same total.
-    let counting = common::build_with(&owners, &header, &format!("{name}-acc"), emit::Codegen { accounting: true });
+    let counting = common::build_with(&owners, &header, &format!("{name}-acc"), emit::Codegen { accounting: true, ..emit::Codegen::default() });
 
     let mut ends: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut failures = Vec::new();

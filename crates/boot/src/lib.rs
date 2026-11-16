@@ -1048,7 +1048,7 @@ mod tests {
         for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
             assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
         }
-        let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT") });
+        let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT"), reg_homes: on("H2_REG_HOMES") });
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
     }
 
@@ -1056,9 +1056,11 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!("{:?}", emit::Codegen { accounting: true });
+        let on = format!("{:?}", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+        let all_locals = format!("{:?}", emit::Codegen { reg_homes: false, ..emit::Codegen::default() });
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(base, stamp_with(b"synthetic", "all", &on, &flags), "H2_ACCESS_COUNT");
+        assert_ne!(base, stamp_with(b"synthetic", "all", &all_locals, &flags), "H2_REG_HOMES");
         assert_ne!(base, stamp_with(b"synthetic", "none", &off, &flags), "H2_PASSES");
         assert_eq!(base, stamp_with(b"synthetic", "all", &off, &flags));
     }
