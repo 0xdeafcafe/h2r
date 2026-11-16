@@ -192,6 +192,14 @@ impl<const N: usize> Wf<N> {
     }
 
     pub fn add(self, o: Self) -> Self {
+        if N == 2 {
+            return self.add2(o);
+        }
+        self.add_limbs(o)
+    }
+
+    /// [`add`](Self::add) on limbs, for every `N`.
+    fn add_limbs(self, o: Self) -> Self {
         if self.is_zero() {
             return o;
         }
@@ -242,6 +250,14 @@ impl<const N: usize> Wf<N> {
     }
 
     pub fn mul(self, o: Self) -> Self {
+        if N == 2 {
+            return self.mul2(o);
+        }
+        self.mul_limbs(o)
+    }
+
+    /// [`mul`](Self::mul) on limbs, for every `N`.
+    fn mul_limbs(self, o: Self) -> Self {
         if self.is_zero() || o.is_zero() {
             return Self::ZERO;
         }
@@ -351,6 +367,14 @@ impl<const N: usize> Wf<N> {
 
     /// Divide by a small integer, keeping a full-width quotient.
     pub fn div_u64(self, k: u64) -> Self {
+        if N == 2 {
+            return self.div_u64_2(k);
+        }
+        self.div_u64_limbs(k)
+    }
+
+    /// [`div_u64`](Self::div_u64) on limbs, for every `N`.
+    fn div_u64_limbs(self, k: u64) -> Self {
         debug_assert!(k != 0);
         if self.is_zero() {
             return self;
@@ -386,6 +410,141 @@ impl<const N: usize> Wf<N> {
             exp: self.exp - z as i32,
             m,
         }
+    }
+
+    // ---- N = 2 (the fast transcendentals' width) on native u128 ----
+    //
+    // The same operations as the limb loops, step for step: the same guard
+    // limb, the same truncations, the same normalisation. Bit-identical to
+    // them (`tests::two_limb_paths_match_the_limb_loops`).
+
+    fn sig2(&self) -> u128 {
+        ((self.m[1] as u128) << 64) | self.m[0] as u128
+    }
+
+    fn from_sig2(neg: bool, exp: i32, sig: u128) -> Self {
+        let mut m = [0u64; N];
+        m[0] = sig as u64;
+        m[1] = (sig >> 64) as u64;
+        Wf { neg, exp, m }
+    }
+
+    fn add2(self, o: Self) -> Self {
+        let (a, b) = (self.sig2(), o.sig2());
+        if a == 0 {
+            return o;
+        }
+        if b == 0 {
+            return self;
+        }
+        let self_big = match self.exp.cmp(&o.exp) {
+            Ordering::Equal => a >= b,
+            c => c == Ordering::Greater,
+        };
+        let (big, bs, small, ss) = if self_big {
+            (self, a, o, b)
+        } else {
+            (o, b, self, a)
+        };
+        let d = (big.exp as i64 - small.exp as i64).min(u32::MAX as i64) as u32;
+        // The smaller significand above a 64-bit guard limb, shifted right
+        // by `d` with the bits below the guard limb dropped.
+        let (sh, sl): (u128, u64) = match d {
+            0 => (ss, 0),
+            1..=63 => (ss >> d, (ss << (64 - d)) as u64),
+            64..=127 => (ss >> d, (ss >> (d - 64)) as u64),
+            128..=191 => (0, (ss >> (d - 64)) as u64),
+            _ => (0, 0),
+        };
+        if big.neg == small.neg {
+            let (hi, carry) = bs.overflowing_add(sh);
+            if carry {
+                // 193 bits: shift right one, the carry becomes the top bit.
+                return Self::from_sig2(big.neg, big.exp + 1, (hi >> 1) | 1 << 127);
+            }
+            // The big significand was normalised: no shift.
+            return Self::from_sig2(big.neg, big.exp, hi);
+        }
+        let (lo, borrow) = 0u64.overflowing_sub(sl);
+        let hi = bs - sh - borrow as u128;
+        if hi == 0 && lo == 0 {
+            return Self::ZERO;
+        }
+        let z = if hi != 0 {
+            hi.leading_zeros()
+        } else {
+            128 + lo.leading_zeros()
+        };
+        // Shift the 192-bit (hi, lo) left by z and keep the top 128 bits.
+        let top = match z {
+            0 => hi,
+            1..=63 => (hi << z) | ((lo as u128) >> (64 - z)),
+            64..=127 => (hi << z) | ((lo as u128) << (z - 64)),
+            _ => (lo as u128) << (z - 64),
+        };
+        Self::from_sig2(big.neg, big.exp - z as i32, top)
+    }
+
+    fn mul2(self, o: Self) -> Self {
+        let (a, b) = (self.sig2(), o.sig2());
+        if a == 0 || b == 0 {
+            return Self::ZERO;
+        }
+        let (a1, a0) = (a >> 64, a & u64::MAX as u128);
+        let (b1, b0) = (b >> 64, b & u64::MAX as u128);
+        let ll = a0 * b0;
+        let lh = a0 * b1;
+        let hl = a1 * b0;
+        let hh = a1 * b1;
+        // 256-bit product (hi, lo).
+        let (mid, c1) = lh.overflowing_add(hl);
+        let (lo, c2) = ll.overflowing_add(mid << 64);
+        let hi = hh + (mid >> 64) + ((c1 as u128) << 64) + c2 as u128;
+        // Both significands are normalised: the product's top bit is at
+        // 255 or 254.
+        let z = hi.leading_zeros();
+        let top = if z == 0 { hi } else { (hi << 1) | (lo >> 127) };
+        Self::from_sig2(self.neg ^ o.neg, self.exp + o.exp + 128 - z as i32, top)
+    }
+
+    fn div_u64_2(self, k: u64) -> Self {
+        debug_assert!(k != 0);
+        let a = self.sig2();
+        if a == 0 {
+            return self;
+        }
+        // floor((a << 64) / k): a 192-bit quotient (qh, ql).
+        let (qh, ql) = if k <= u32::MAX as u64 {
+            // Native 64/64 divisions on 32-bit digits, as the limb loop.
+            let mut rem = 0u64;
+            let mut q = [0u64; 3];
+            let w = [0u64, a as u64, (a >> 64) as u64];
+            for i in (0..3).rev() {
+                let hi = (rem << 32) | (w[i] >> 32);
+                let (qh, r) = (hi / k, hi % k);
+                let lo = (r << 32) | (w[i] & 0xffff_ffff);
+                q[i] = (qh << 32) | (lo / k);
+                rem = lo % k;
+            }
+            (((q[2] as u128) << 64) | q[1] as u128, q[0])
+        } else {
+            let kk = k as u128;
+            let qh = a / kk;
+            let r = a % kk;
+            (qh, ((r << 64) / kk) as u64)
+        };
+        let z = if qh != 0 {
+            qh.leading_zeros()
+        } else {
+            128 + ql.leading_zeros()
+        };
+        let top = match z {
+            0 => qh,
+            1..=63 => (qh << z) | ((ql as u128) >> (64 - z)),
+            64..=127 => (qh << z) | ((ql as u128) << (z - 64)),
+            _ => (ql as u128) << (z - 64),
+        };
+        Self::from_sig2(self.neg, self.exp - z as i32, top)
     }
 
     /// Square root of a positive value, digit by digit, `64N` root bits.
@@ -484,6 +643,61 @@ impl<const N: usize> Wf<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small xorshift, for operand sweeps.
+    fn rng(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    fn wf2(state: &mut u64) -> Wf<2> {
+        let r = rng(state);
+        if r.is_multiple_of(61) {
+            return Wf::ZERO;
+        }
+        // Mostly full significands, sometimes sparse ones (equal limbs,
+        // single bits) to reach the carry, borrow and cancellation edges.
+        let (hi, lo) = match r % 7 {
+            0 => (1u64 << 63, 0),
+            1 => (u64::MAX, u64::MAX),
+            2 => (1u64 << 63, rng(state) & 0xff),
+            _ => (rng(state) | 1 << 63, rng(state)),
+        };
+        let exp = (rng(state) % 400) as i32 - 200;
+        Wf {
+            neg: rng(state) & 1 == 1,
+            exp,
+            m: [lo, hi],
+        }
+    }
+
+    #[test]
+    fn two_limb_paths_match_the_limb_loops() {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        for i in 0..400_000 {
+            let a = wf2(&mut s);
+            let mut b = wf2(&mut s);
+            // Close exponents and near-equal values for cancellation.
+            if i % 3 == 0 {
+                b.exp = a.exp + (rng(&mut s) % 5) as i32 - 2;
+            }
+            if i % 11 == 0 {
+                b = Wf { neg: !a.neg, ..a };
+                b.m[0] ^= rng(&mut s) & 0xffff;
+            }
+            assert_eq!(a.add2(b), a.add_limbs(b), "add {a:?} {b:?}");
+            assert_eq!(a.mul2(b), a.mul_limbs(b), "mul {a:?} {b:?}");
+            let k = match rng(&mut s) % 4 {
+                0 => rng(&mut s) % 64 + 1,
+                1 => rng(&mut s) & 0xffff_ffff | 1,
+                2 => rng(&mut s) | 1,
+                _ => u64::MAX - (rng(&mut s) % 3),
+            };
+            assert_eq!(a.div_u64_2(k), a.div_u64_limbs(k), "div_u64 {a:?} {k}");
+        }
+    }
 
     type W = Wf<4>;
 
