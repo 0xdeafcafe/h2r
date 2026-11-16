@@ -1,8 +1,8 @@
 # High resolution: 4K and arbitrary internal resolution
 
 A design for rendering above the game's 640x480, as an opt-in setting. Phase 1
-is built (`d3d::scaled`, `H2_RENDER_SCALE`; see "Phase 1 as built" below); the
-rest is design. It was written from the code and docs on master
+is built (`d3d::scaled`, `H2_RENDER_SCALE`; see "Phase 1 as built" below), and
+part of phase 2 ("Phase 2 as built"); the rest is design. It was written from the code and docs on master
 ([d3d.md](d3d.md), [graphics.md](graphics.md), [shaders.md](shaders.md),
 [render-thread.md](render-thread.md)) and from public prior art, without
 building or running the game. Every number under "Cost" is arithmetic or a
@@ -443,7 +443,7 @@ and it is an acceptance check, not a development loop.
 |---|---|---|
 | 0 | Capture replayer and the diff tools. Count, in a real run, which write-backs and counts happen per frame and at which guest call sites. | Nothing |
 | 1 (built) | `ScaledBackend` with integer scales, frame buffers and depth only. Snapshots scale. Depth aliases fall back to the reference's 1x texture. | 0 (built without it) |
-| 2 | Guest-size resolves and mixed-scale sampling. Back-buffer-sized render targets scale. GPU depth-to-colour pass; depth aliases scale. | 1 |
+| 2 (partly built) | Back-buffer-sized render targets scale; depth aliases of the whole buffer scale; per-draw repairs from the reference (see "Phase 2 as built"). Not yet: guest-size resolves for sampling a scaled surface into a small target. | 1 |
 | 3 | Per-axis scale for anamorphic widescreen. Presenter resample to the display. | 2 |
 | 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale, MSAA, fractional scales, lazy reference. | 3 |
 | Later | Single scaled backend with downsampled readbacks, for hosts that cannot run two. Guest-visible values differ from 1x, so it is excluded from deterministic replays and labelled as such. | Phase 0's counts |
@@ -524,7 +524,8 @@ Not measured: CPU or GPU cost in the game, since phase 1 rules out game runs
 here. The design's estimate stands, but it is now an upper bound, since
 offscreen passes are not repeated.
 
-Known gaps in phase 1, all view-only, so the guest cannot tell:
+Known gaps in phase 1, all view-only, so the guest cannot tell (the first
+two are closed in phase 2, below):
 
 - A draw into a guest-size target with the scaled depth buffer bound updates
   only the reference's depth (`ScaleStats::depth_missed`). Clears of that
@@ -535,6 +536,79 @@ Known gaps in phase 1, all view-only, so the guest cannot tell:
 - Per-axis scale and the 16:9 4K size (3840x2400) wait for phase 3.
 - The view runs on the same render thread as the reference, so its CPU cost
   is frame time, not another core.
+
+### Phase 2 as built
+
+The gaps above showed in the game: with the scale on, Ascension's sea and
+terrain below the platforms were a flat grey void and the frame looked
+washed out, while 1x was fine. The likely cause, from the code (no capture
+yet): a pass drawn into a guest-size render-to-texture level with the
+depth buffer bound, writing depth (Halo's texaccum, the size of the back
+buffer), reached only the reference. The view's depth never got that
+geometry, so the pass that composites onto the back buffer with a depth
+test found nothing to draw against, and the fog and sky showed through.
+Phase 1 counted this as `depth_missed` and left the hole.
+
+What phase 2 changes, in `d3d::scaled`:
+
+- **Back-buffer-sized render targets scale.** A render-to-texture level of
+  the frame size gets a scaled view surface
+  (`ScaleView::create_scaled_texture_target`), so passes into it, with the
+  scaled depth buffer, run in the view. Draws that sample it read the
+  scaled surface; the texel-addressing size stays the guest's (it comes
+  from `TextureInfo`), so a 1:1 screen-space read lines up. Smaller levels
+  (bloom, reflections, shadows) stay at 1x in the reference.
+- **A guest-size target with the scaled depth buffer.** A draw that writes
+  depth or stencil is drawn again into the view's depth through a scaled
+  colour surface of the depth's size, colour writes off and the target size
+  set to the depth's (`ScaleStats::proxy_depth_draws`). Without such a
+  surface the view's depth is replaced by the reference's.
+- **Guest bytes into a scaled depth surface** (a frame-sized depth level
+  filled from guest memory, a mirror load) reach the view: the reference's
+  depth is read back as `D24S8`/`D16` words, each repeated into an `s x s`
+  block, and drawn into the view's depth (`fill_from`).
+- **Textures over the whole depth buffer** (Halo's `0x509368` and
+  `0x50936C`, a linear texture of the buffer's size at offset 0) are made
+  by the view from its own scaled depth on the GPU
+  (`ScaleStats::scaled_depth_aliases`). Partial or swizzled aliases, and
+  depth levels (shadow maps, compared texel by texel), stay the
+  reference's 1x textures. A colour surface over the depth buffer's memory
+  (the loading screen's target 3) was already a scaled surface and its
+  texture a scaled snapshot.
+- **No holes: repair from the reference.** A draw into a scaled target that
+  the view cannot make (a texture it cannot sample, a depth surface that is
+  not scaled) or makes with another outcome than the reference's replaces
+  the view's target with the reference's, each guest pixel repeated
+  (`color_resyncs`, and `depth_resyncs` when the draw writes depth). That
+  target is then at 1x until it is drawn again. Each kind of repair is
+  logged once (`d3d: render scale N: ... (repaired from the 1x
+  reference; logged once)`); errors still fall back for the whole frame.
+- **Larger depth than colour.** `GfxBackend` now makes the colour's
+  depth-sized stand-in before recording a draw, not only before a clear or
+  a flush, so a smaller target with the full depth buffer draws at 1x too.
+
+Sampling a scaled surface into a guest-size target needs no resolve in
+this design: the reference draws every guest-size target from its own 1x
+surfaces, and the view samples the reference's result.
+
+`h2 run` with `H2_BOOT_GFX` and `H2_RENDER_SCALE` renders through the
+wrapper headlessly: `frame-NNNNN.png` is the view's image and
+`frame-NNNNN-1x.png` the reference's, and the run report ends with a
+`render scale N:` line of the counts (docs/BOOT.md).
+
+Measured by `crates/d3d/tests/render_scale.rs` on a headless Metal device,
+each scene drawn by a plain backend and the wrapper, the reference equal to
+the plain image and the view box-filtered to the guest size equal to the
+reference, pixel for pixel: a frame-sized level drawn with the depth buffer
+and composited with a depth-equal test (2x, 3x, 4x); the same with a 32x32
+level (proxy depth draws); a frame-sized depth level filled from guest
+bytes; the depth buffer sampled as a colour texture; a colour surface over
+the depth buffer's memory; and a depth level larger than the frame (the
+repair). With phase 1's behaviour the first three leave the view at the
+clear colour where the reference drew.
+
+Not covered yet: stipple by host pixel, per-axis scale, and whether the
+texaccum explanation is the whole story in the game (that needs a run).
 
 Shadow-map scale needs two things first: sampling a depth level in place
 instead of through guest memory (the view can do this without touching the

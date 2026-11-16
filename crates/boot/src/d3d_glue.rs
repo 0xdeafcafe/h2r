@@ -36,7 +36,11 @@ impl Installed {
 /// `H2_BOOT_GFX=<dir>`, on a headless `GfxBackend` with the nv2a shader
 /// translator; then every `Swap` that shows a new image (at most one per
 /// `H2_BOOT_GFX_EVERY` swaps, default 30) is written to `<dir>` as
-/// `frame-NNNNN.png`. Halo's frame wait goes through
+/// `frame-NNNNN.png`. With `H2_RENDER_SCALE=N` (2..6) the frames come
+/// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
+/// docs/high-resolution.md), `frame-NNNNN.png` is the view's image and
+/// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
+/// view's counts. Halo's frame wait goes through
 /// `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
@@ -49,33 +53,36 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 Some("never") => u64::MAX,
                 v => v.and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30),
             };
+            let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
-            let mut swaps = 0u64;
-            let mut backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags, _gamma| {
-                swaps += 1;
-                if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
-                    return;
+            let shots = |suffix: &'static str| {
+                let dir = dir.clone();
+                let mut swaps = 0u64;
+                move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
+                    swaps += 1;
+                    if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
+                        return;
+                    }
+                    if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}{suffix}.png"))) {
+                        eprintln!("boot: gfx screenshot {swaps}: {e}");
+                    }
                 }
-                if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}.png"))) {
-                    eprintln!("boot: gfx screenshot {swaps}: {e}");
-                }
-            });
-            // Merged render passes are the default, with the fast rule
-            // (alpha-tested draws merged too; a few edge pixels can differ
-            // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
-            // gives the exact rule (read by GfxBackend::new) and =0 one
-            // render pass per draw (about 3x slower), as escape hatches.
-            if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-                backend.set_merge_passes(false);
+            };
+            if scale > 1 {
+                // The reference answers the guest at 1x; the view, on the
+                // same device, renders at `scale` and presents.
+                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x")));
+                let view = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
+                let mut b = d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                let report = scale_report(&mut b);
+                return if render_thread_requested() {
+                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                } else {
+                    install_with_report(rt, b, Some(report))
+                };
             }
-            // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
-            // frame N and print what differs.
-            backend.set_merge_check(std::env::var("H2_GFX_MERGE_CHECK").ok().and_then(|v| v.parse().ok()));
-            // The persistent pipeline cache (H2_PIPELINE_CACHE, default in
-            // the user's cache directory): prewarm last run's pipelines.
-            if let Some(path) = d3d::pipeline_store::default_path() {
-                backend = backend.with_pipeline_cache(path);
-            }
+            let backend = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
             // (docs/render-thread.md), unless H2_RENDER_THREAD=0.
@@ -86,6 +93,56 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
         }
     }
 }
+
+/// `h2 run`'s settings for a headless `GfxBackend`.
+fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    // Merged render passes are the default, with the fast rule
+    // (alpha-tested draws merged too; a few edge pixels can differ
+    // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
+    // gives the exact rule (read by GfxBackend::new) and =0 one
+    // render pass per draw (about 3x slower), as escape hatches.
+    if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
+        backend.set_merge_passes(false);
+    }
+    // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
+    // frame N and print what differs.
+    backend.set_merge_check(std::env::var("H2_GFX_MERGE_CHECK").ok().and_then(|v| v.parse().ok()));
+    // The persistent pipeline cache (H2_PIPELINE_CACHE, default in
+    // the user's cache directory): prewarm last run's pipelines.
+    match d3d::pipeline_store::default_path() {
+        Some(path) => backend.with_pipeline_cache(path),
+        None => backend,
+    }
+}
+
+/// Another handle to `ctx`'s device and queue, for a second backend on it.
+fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
+    gfx::GfxContext {
+        instance: ctx.instance.clone(),
+        adapter: ctx.adapter.clone(),
+        device: ctx.device.clone(),
+        queue: ctx.queue.clone(),
+        caps: ctx.caps,
+    }
+}
+
+/// The run report's line for a scaled backend: what the view did
+/// differently, as of the last present (`d3d::scaled::ScaleStats`).
+pub fn scale_report<R, V>(b: &mut d3d::ScaledBackend<R, V>) -> ExtraReport
+where
+    R: d3d::backend::Backend,
+    V: d3d::scaled::ScaleView<R>,
+{
+    let stats = b.shared_stats();
+    let scale = b.scale();
+    Box::new(move || {
+        let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
+        format!("render scale {scale}: {s}")
+    })
+}
+
+/// An extra line for [`describe`].
+pub type ExtraReport = Box<dyn Fn() -> String + Send + Sync>;
 
 /// The GPU backend's work runs on a render thread (`h2 run` with
 /// `H2_BOOT_GFX`, and `h2 play`) unless `H2_RENDER_THREAD=0`. On by
@@ -317,6 +374,15 @@ impl d3d::backend::Backend for Headless {
 /// [`install`] on the caller's backend (a host window's `GfxBackend`, with
 /// its present hook already attached).
 pub fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
+    install_with_report(rt, backend, None)
+}
+
+/// [`install_with`], with `extra` added to the run report ([`describe`]).
+pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+) -> anyhow::Result<Installed> {
     let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
     // goes back to re-reading every resource on every use.
@@ -372,7 +438,8 @@ pub fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Run
             let mut ev: Vec<_> = ev.into_iter().collect();
             ev.sort_by_key(|e| std::cmp::Reverse(e.1));
             let ev: String = ev.iter().take(40).map(|(k, n)| format!("\n  event {n:>8}  {k}")).collect();
-            format!("stats {:?}; last stop {:?}{ev}\n{}", d.stats(), d.last_stop(), draw_stats.lock().unwrap().report())
+            let extra = extra.as_ref().map(|f| format!("\n{}", f())).unwrap_or_default();
+            format!("stats {:?}; last stop {:?}{ev}\n{}{extra}", d.stats(), d.last_stop(), draw_stats.lock().unwrap().report())
         }),
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),
