@@ -49,10 +49,11 @@ always runs at 30; docs/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
 screen (Settings, Controls, Video), saved as [graphics] fps and render_scale
 in <data>/settings.toml and applied from the next launch.
---level MAP (or H2_LEVEL) starts that campaign level instead of the main menu,
-at --difficulty (or H2_DIFFICULTY; normal by default), with one default player:
-no title, profile or menus. MAP is a map file name from the disc
-(03a_oldmombasa); a name the disc lacks lists them (docs/level-boot.md).
+--level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
+default player: no title, profile or menus. MAP is a map file name from the
+disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
+normal by default), or a multiplayer map (ascension) as a local Slayer game
+with the default variant. A name the disc lacks lists them (docs/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
@@ -539,10 +540,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         None => None,
     };
     if let Some(l) = &level {
-        eprintln!(
-            "play: starting {} on {} ({})",
-            l.name, l.difficulty, l.scenario
-        );
+        eprintln!("play: starting {} {} ({})", l.name, l.game(), l.scenario);
     }
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
