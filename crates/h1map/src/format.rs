@@ -89,7 +89,8 @@ pub struct Header {
     pub version: u32,
     /// Decompressed file length, header included (`0x08`).
     pub file_length: u32,
-    /// The u32 at `0x0c`, kept as stored (meaning unconfirmed).
+    /// The u32 at `0x0c`, kept as stored: a padding length in community
+    /// docs (Xbox only), unconfirmed.
     pub field_0c: u32,
     /// File offset of the tag index header in the decompressed file (`0x10`).
     pub index_offset: u32,
