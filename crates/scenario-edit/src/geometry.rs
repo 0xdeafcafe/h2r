@@ -144,45 +144,185 @@ pub fn scenario_bsps<R: Read + Seek>(map: &mut Map<R>) -> crate::Result<Vec<TagI
         .collect())
 }
 
-/// Every drawn triangle of the scenario's BSPs, and how many sections failed.
-pub fn world_triangles<R: Read + Seek>(
+/// One drawn part of a BSP section, placed in the world: its own copy of
+/// the vertices it uses and its triangles over them.
+#[derive(Clone, Debug)]
+pub struct WorldPart {
+    /// The part's shader (`sbsp +0xa4` material, shader at `+0xc`), or null.
+    pub shader: TagId,
+    /// Part kind 4, transparent in the tool's part-type names (glass, water,
+    /// Ascension's cloud deck). Not drawn opaque, framed or picked.
+    pub transparent: bool,
+    pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub uvs: Vec<[f32; 2]>,
+    pub tris: Vec<[u32; 3]>,
+}
+
+impl Default for WorldPart {
+    fn default() -> Self {
+        Self {
+            shader: TagId::NULL,
+            transparent: false,
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            tris: Vec::new(),
+        }
+    }
+}
+
+/// Part kind of transparent geometry. Only "0 and 5 are not drawn" is
+/// engine-backed (docs/formats/structure-bsp.md); 4 is the tool's
+/// "transparent", and on the disc only transparent-template shaders use it.
+pub const PART_TRANSPARENT: u16 = 4;
+
+/// Every drawn part of the scenario's BSPs (clusters and placed instanced
+/// geometry), and how many sections failed.
+pub fn world_parts<R: Read + Seek>(
     map: &mut Map<R>,
     raw: &mut dyn RawSource,
-) -> crate::Result<(Vec<Tri>, usize)> {
+) -> crate::Result<(Vec<WorldPart>, usize)> {
     let mut out = Vec::new();
     let mut failed = 0;
     for id in scenario_bsps(map)? {
+        let shaders = bsp_shaders(map, id).unwrap_or_default();
         match StructureRender::read(map, id) {
-            Ok(bsp) => failed += bsp_triangles(&bsp, raw, &mut out),
+            Ok(bsp) => failed += bsp_parts(&bsp, &shaders, raw, &mut out),
             Err(_) => failed += 1,
         }
     }
     Ok((out, failed))
 }
 
-fn bsp_triangles(bsp: &StructureRender, raw: &mut dyn RawSource, out: &mut Vec<Tri>) -> usize {
+/// Every opaque triangle of the scenario's BSPs (what the camera frames and
+/// a placement drops onto), and how many sections failed. Transparent parts
+/// are left out: Ascension's cloud deck is a 700-unit transparent plane
+/// below the level that would otherwise hide its lower half and swamp the
+/// framing.
+pub fn world_triangles<R: Read + Seek>(
+    map: &mut Map<R>,
+    raw: &mut dyn RawSource,
+) -> crate::Result<(Vec<Tri>, usize)> {
+    let (parts, failed) = world_parts(map, raw)?;
+    Ok((opaque_triangles(&parts), failed))
+}
+
+/// The opaque parts as face-normal triangles.
+pub fn opaque_triangles(parts: &[WorldPart]) -> Vec<Tri> {
+    let mut out = Vec::new();
+    for part in parts.iter().filter(|p| !p.transparent) {
+        for t in &part.tris {
+            let p = t.map(|i| part.positions[i as usize]);
+            let n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+            out.push(Tri { p, n });
+        }
+    }
+    out
+}
+
+/// Per BSP material, its shader's tag ID (`sbsp +0xa4`, stride 0x20, shader
+/// ID at `+0xc`; docs/formats/map-format.md).
+pub fn bsp_shaders<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> crate::Result<Vec<TagId>> {
+    let tag = map.tag(bsp)?.clone();
+    let location = tag
+        .location
+        .ok_or(crate::Error::Invalid("BSP has no payload"))?;
+    let bytes = map.read_tag_bytes(bsp)?;
+    let view = TagView::new(&bytes, location.address);
+    Ok(view
+        .block(view.at(0, 0xac)?, 0xa4, 0x20)?
+        .into_iter()
+        .map(|e| TagId(u32::from_le_bytes([e[0xc], e[0xd], e[0xe], e[0xf]])))
+        .collect())
+}
+
+/// A section's drawn parts, placed by `place` (points) and `turn`
+/// (normals). `None` when its vertices do not decode.
+pub fn section_parts(
+    s: &Section,
+    shaders: &[TagId],
+    place: &dyn Fn(Vec3) -> Vec3,
+    turn: &dyn Fn(Vec3) -> Vec3,
+) -> Option<Vec<WorldPart>> {
+    let v = s.vertices(None).ok()?;
+    if v.positions.len() != s.vertex_count() {
+        return None;
+    }
+    Some(
+        s.parts
+            .iter()
+            .filter(|p| p.is_drawn())
+            .map(|part| {
+                let mut out = WorldPart {
+                    shader: shaders
+                        .get(usize::from(part.material))
+                        .copied()
+                        .unwrap_or(TagId::NULL),
+                    transparent: part.kind == PART_TRANSPARENT,
+                    ..WorldPart::default()
+                };
+                let mut remap = std::collections::HashMap::new();
+                for t in s.part_triangles(part) {
+                    if t.iter().any(|&i| usize::from(i) >= v.positions.len())
+                        || t[0] == t[1]
+                        || t[1] == t[2]
+                        || t[0] == t[2]
+                    {
+                        continue;
+                    }
+                    let tri = t.map(|i| {
+                        *remap.entry(i).or_insert_with(|| {
+                            let i = usize::from(i);
+                            out.positions.push(place(v.positions[i]));
+                            out.normals
+                                .push(v.normals.get(i).map_or([0.0; 3], |&n| normalize(turn(n))));
+                            out.uvs
+                                .push(v.texcoords.get(i).copied().unwrap_or([0.0; 2]));
+                            (out.positions.len() - 1) as u32
+                        })
+                    });
+                    out.tris.push(tri);
+                }
+                if v.normals.is_empty() {
+                    out.normals = vertex_normals(&out.positions, &out.tris);
+                }
+                out
+            })
+            .filter(|p| !p.tris.is_empty())
+            .collect(),
+    )
+}
+
+/// Smooth normals from the faces around each vertex.
+pub fn vertex_normals(positions: &[Vec3], tris: &[[u32; 3]]) -> Vec<Vec3> {
+    let mut n = vec![[0.0; 3]; positions.len()];
+    for t in tris {
+        let p = t.map(|i| positions[i as usize]);
+        let f = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+        for &i in t {
+            n[i as usize] = add(n[i as usize], f);
+        }
+    }
+    n.into_iter().map(normalize).collect()
+}
+
+fn bsp_parts(
+    bsp: &StructureRender,
+    shaders: &[TagId],
+    raw: &mut dyn RawSource,
+    out: &mut Vec<WorldPart>,
+) -> usize {
     let materials = Some(bsp.material_count as usize);
     let mut failed = 0;
-    let push = |s: &Section, place: &dyn Fn(Vec3) -> Vec3, out: &mut Vec<Tri>| -> bool {
-        let Ok(v) = s.vertices(None) else {
-            return false;
-        };
-        if v.positions.len() != s.vertex_count() {
-            return false;
-        }
-        let placed: Vec<Vec3> = v.positions.iter().map(|&p| place(p)).collect();
-        for part in s.parts.iter().filter(|p| p.is_drawn()) {
-            for t in s.part_triangles(part) {
-                let p = t.map(|i| placed[usize::from(i)]);
-                let n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
-                out.push(Tri { p, n });
-            }
-        }
-        true
+    let mut push = |s: &Section, place: &dyn Fn(Vec3) -> Vec3, turn: &dyn Fn(Vec3) -> Vec3| {
+        section_parts(s, shaders, place, turn)
+            .map(|p| out.extend(p))
+            .is_none()
     };
     for c in &bsp.clusters {
         match c.geometry.load(raw, materials) {
-            Ok(Some(s)) => failed += usize::from(!push(&s, &|p| p, out)),
+            Ok(Some(s)) => failed += usize::from(push(&s, &|p| p, &|n| n)),
             Ok(None) => {}
             Err(_) => failed += 1,
         }
@@ -208,7 +348,7 @@ fn bsp_triangles(bsp: &StructureRender, raw: &mut dyn RawSource, out: &mut Vec<T
             failed += 1;
             continue;
         }
-        failed += usize::from(!push(s, &|p| inst.transform(p), out));
+        failed += usize::from(push(s, &|p| inst.transform(p), &|n| inst.rotate(n)));
     }
     failed
 }
@@ -238,6 +378,10 @@ pub struct Marker {
     pub position: Vec3,
     /// Forward, left, up.
     pub axes: [Vec3; 3],
+    /// Uniform scale (the block's scale field; 1 when it has none or 0).
+    pub scale: f32,
+    /// The tag it places (palette entry or item reference), if any.
+    pub object: Option<TagId>,
 }
 
 /// Every element with a position, in block order.
@@ -267,11 +411,23 @@ pub fn markers(scenario: &Scenario) -> Vec<Marker> {
             } else {
                 [0.0; 3]
             };
+            let scale = b
+                .def
+                .role(Role::Scale)
+                .and_then(|f| get(f.name))
+                .and_then(Value::as_f32)
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .unwrap_or(1.0);
             out.push(Marker {
                 block: b.def.kind,
                 index,
                 position,
                 axes: rotation(ypr),
+                scale,
+                object: scenario
+                    .object_tag(b.def.kind, index)
+                    .map(|r| r.id)
+                    .filter(|id| *id != TagId::NULL),
             });
         }
     }
@@ -299,21 +455,91 @@ pub fn block_color(kind: BlockKind) -> Vec3 {
 /// Marker radius in world units (a standing player is under one unit tall).
 pub const MARKER_RADIUS: f32 = 0.25;
 
-/// A marker's triangles: a diamond stretched along its forward axis, so the
-/// facing reads at a glance.
+/// Beyond this distance from the eye, glyphs grow with distance so they
+/// keep their size on screen (about 2.5 % of the view's height for a
+/// spawn point at 60° field of view): readable when the whole map is
+/// framed.
+pub const GLYPH_NATIVE_DISTANCE: f32 = 40.0;
+
+/// How much a glyph at `center` is enlarged when seen from `eye`.
+pub fn glyph_scale(eye: Vec3, center: Vec3) -> f32 {
+    let d = sub(center, eye);
+    (dot(d, d).sqrt() / GLYPH_NATIVE_DISTANCE).max(1.0)
+}
+
+/// The glyph a placement without a model gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Glyph {
+    /// A diamond stretched along the facing.
+    Diamond,
+    /// A standing pawn with an arrow at its feet (player spawns).
+    Spawn,
+    /// A pole with a pennant (netgame flags).
+    Flag,
+}
+
+pub fn glyph_of(kind: BlockKind) -> Glyph {
+    match kind {
+        BlockKind::StartingLocations => Glyph::Spawn,
+        BlockKind::NetgameFlags => Glyph::Flag,
+        _ => Glyph::Diamond,
+    }
+}
+
+/// Where a glyph is picked: a sphere's centre offset up from the
+/// placement, and its radius, at native size.
+pub fn glyph_bounds(glyph: Glyph) -> (f32, f32) {
+    match glyph {
+        Glyph::Diamond => (0.0, MARKER_RADIUS * 1.5),
+        Glyph::Spawn => (0.6, 0.7),
+        Glyph::Flag => (0.8, 0.8),
+    }
+}
+
+/// A marker's triangles at native size, by its block's [`Glyph`].
 pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
-    let r = MARKER_RADIUS;
     let [f, l, u] = m.axes;
-    let at = |v: Vec3, s: f32| add(m.position, scale(v, s));
-    let tip = at(f, 2.0 * r);
-    let back = at(f, -r);
-    let ring = [at(l, r), at(u, r), at(l, -r), at(u, -r)];
+    let at = |base: Vec3, v: Vec3, s: f32| add(base, scale(v, s));
     let mut out = Vec::new();
-    for i in 0..4 {
-        let a = ring[i];
-        let b = ring[(i + 1) % 4];
-        out.push([tip, b, a]);
-        out.push([back, a, b]);
+    // A double pyramid: tip and back along `axis` from `c`, a ring of four
+    // around it across `a` and `b`.
+    let mut bipyramid = |c: Vec3, axis: Vec3, ahead: f32, behind: f32, a: Vec3, b: Vec3, r: f32| {
+        let tip = at(c, axis, ahead);
+        let back = at(c, axis, -behind);
+        let ring = [at(c, a, r), at(c, b, r), at(c, a, -r), at(c, b, -r)];
+        for i in 0..4 {
+            let p = ring[i];
+            let q = ring[(i + 1) % 4];
+            out.push([tip, q, p]);
+            out.push([back, p, q]);
+        }
+    };
+    match glyph_of(m.block) {
+        Glyph::Diamond => {
+            let r = MARKER_RADIUS;
+            bipyramid(m.position, f, 2.0 * r, r, l, u, r);
+        }
+        Glyph::Spawn => {
+            // Body: a tall bipyramid, feet on the placement.
+            let up = [0.0, 0.0, 1.0];
+            let c = at(m.position, up, 0.6);
+            bipyramid(c, up, 0.6, 0.6, f, l, 0.28);
+            // An arrow along the facing at the feet.
+            let foot = at(m.position, up, 0.04);
+            bipyramid(at(foot, f, 0.35), f, 0.6, 0.1, l, up, 0.18);
+        }
+        Glyph::Flag => {
+            let up = [0.0, 0.0, 1.0];
+            // Pole.
+            let c = at(m.position, up, 0.8);
+            bipyramid(c, up, 0.85, 0.85, f, l, 0.06);
+            // Pennant along the facing at the top, both faces.
+            let top = at(m.position, up, 1.6);
+            let low = at(m.position, up, 1.05);
+            let tip = at(at(m.position, up, 1.32), f, 0.75);
+            out.push([top, low, tip]);
+            out.push([top, tip, low]);
+        }
     }
     out
 }
@@ -372,13 +598,25 @@ impl Ray {
     }
 }
 
-/// The nearest marker the ray hits.
-pub fn pick(markers: &[Marker], ray: &Ray) -> Option<(BlockKind, usize)> {
+/// The nearest marker glyph the ray hits, with its distance along the ray.
+/// Glyphs are enlarged with distance from the ray's origin as they are
+/// drawn ([`glyph_scale`]).
+pub fn pick_glyph(markers: &[Marker], ray: &Ray) -> Option<(f32, BlockKind, usize)> {
     markers
         .iter()
-        .filter_map(|m| ray.sphere(m.position, MARKER_RADIUS * 1.5).map(|t| (t, m)))
+        .filter_map(|m| {
+            let (lift, r) = glyph_bounds(glyph_of(m.block));
+            let s = glyph_scale(ray.origin, m.position);
+            let c = add(m.position, [0.0, 0.0, lift * s]);
+            ray.sphere(c, r * s).map(|t| (t, m))
+        })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, m)| (m.block, m.index))
+        .map(|(t, m)| (t, m.block, m.index))
+}
+
+/// The nearest marker the ray hits.
+pub fn pick(markers: &[Marker], ray: &Ray) -> Option<(BlockKind, usize)> {
+    pick_glyph(markers, ray).map(|(_, b, i)| (b, i))
 }
 
 /// The nearest BSP surface the ray hits, for dropping a placement.
@@ -411,9 +649,13 @@ impl Default for Camera {
     }
 }
 impl Camera {
-    /// Frame a bounding box.
+    /// Frame a bounding box, looking down at it more steeply than the
+    /// default so walls in front do not hide the middle.
     pub fn frame(bounds: &Bounds) -> Self {
-        let mut c = Self::default();
+        let mut c = Self {
+            pitch: 0.85,
+            ..Self::default()
+        };
         if !bounds.is_empty() {
             c.target = bounds.center();
             c.distance = (bounds.radius() * 1.8).max(5.0);

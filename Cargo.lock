@@ -4698,6 +4698,7 @@ dependencies = [
 name = "scenario-edit"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "bytemuck",
  "content",
  "egui",

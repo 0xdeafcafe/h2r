@@ -174,14 +174,50 @@ takes no game data.
 
 ## What the viewport shows, and what it does not yet
 
-The world is the structure BSP's triangles (clusters and instanced
-geometry, `scenario_edit::geometry::world_triangles`), shaded by slope,
-with the placements as coloured diamonds pointing along their facing.
-Sections whose raw data lives in a shared cache that is not beside the map
-are skipped and counted in the status bar.
+`scenario_edit::scene` builds the map's art when it opens, from your own
+disc at run time (about 30 to 150 ms for a multiplayer map in a release
+build), and keeps the last four maps' scenes so reopening one is instant.
 
-Not yet: textures and lightmaps on the BSP (the vertices are read without
-UVs, and the shader and bitmap decode from `crates/assets` are not wired
-in), and object models for placements (`crates/viewer` decodes render
-models; the scenario palettes would need resolving through each object's
-`hlmt` to its `mode`).
+- **The structure BSP, textured.** Clusters and instanced geometry
+  (`geometry::world_parts`) carry their vertex UVs and normals; each
+  part's shader (`sbsp +0xa4`) gives its base map, the first bitmap of the
+  compiled postprocess whose name reads as diffuse (the Live site's rule,
+  docs/live/live-art.md). Bitmaps are decoded once by
+  `assets::decode_image`, shrunk to 512 a side, given a mip chain and
+  lifted when very dark (the game draws them under detail maps and
+  lightmaps). One sun and the sky light the scene. Solid surfaces are
+  one-sided, as in the game, so the camera sees into a level through the
+  backs of the cliffs and walls around it.
+- **Blends.** Templates in a `transparent` or `water` folder, plain
+  `overlay` decals and part kind 4 are drawn see-through after everything
+  else and are neither framed nor picked; `alpha_test` templates are cut
+  out.
+- **Object models.** Every palette entry (and netgame equipment's item
+  collection, by its first entry) resolves object → `hlmt` → `mode`
+  through `tags::object`; each region's first permutation at its best LOD
+  is drawn at the placement's position, rotation and scale, instanced per
+  model. Clicking a model picks it (ray against its triangles); the
+  selection is tinted and keeps its marker.
+- **Glyphs.** Placements without a model get a glyph in their block's
+  colour: a standing pawn with an arrow for player spawns, a pole and
+  pennant for netgame flags, a diamond for the rest. Past 40 units from
+  the eye glyphs grow with distance, so they stay readable when the whole
+  map is framed, and their pick spheres grow with them.
+- **Framing.** Frame (Home) frames the placements, padded, when there are
+  a few: distant scenery and sky geometry no longer shrink the level.
+
+Ascension used to draw only "its ground plane and rocks": its BSP has a
+700-unit transparent cloud deck (part kind 4,
+`transparent\sky_two_alpha_clouds`) at z = -14.5 under the structure,
+drawn opaque and framed, which hid the lower half of the structure and
+made the rest a speck. `tests::disc_ascension_frames_its_structure_not_its_cloud_deck`
+(ignored; needs the disc) holds the fix.
+
+Not yet: lightmaps (the `ltmp` groups and their bitmaps are read by
+`tags::structure` but not applied), detail and bump maps, animated or
+self-illuminated shaders, model variants and permutations other than the
+first, and node transforms of skinned models (models are drawn in their
+bind pose). The egui `h2-editor` viewport still draws the grey world.
+
+`h2-studio --screenshot` takes `--select <block>:<index>` (for example
+`vehicles:0`, `netgameflags:3`) to show a placement selected.

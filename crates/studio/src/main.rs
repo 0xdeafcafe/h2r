@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-studio [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--data <dir>] [--tool scenario|variants|playlists] [--pick <map>] [--hopper <file.dat>|default] \
+[--data <dir>] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--playlist <1..16>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
 
 struct Args {
@@ -30,6 +30,7 @@ struct Args {
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
+    select: Option<String>,
 }
 
 fn args() -> Result<Args> {
@@ -44,6 +45,7 @@ fn args() -> Result<Args> {
         hopper: None,
         variant: None,
         playlist: None,
+        select: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -67,6 +69,7 @@ fn args() -> Result<Args> {
             "--hopper" => a.hopper = Some(value()?),
             "--variant" => a.variant = Some(value()?.parse()?),
             "--playlist" => a.playlist = Some(value()?.parse::<usize>()?.clamp(1, 16) - 1),
+            "--select" => a.select = Some(value()?),
             "--scale" => a.scale = value()?.parse()?,
             "--size" => {
                 let v = value()?;
@@ -83,6 +86,21 @@ fn args() -> Result<Args> {
         }
     }
     Ok(a)
+}
+
+/// `<block>:<index>`, the block by its name without case or spaces
+/// (`vehicles:0`, `netgameflags:3`).
+fn parse_selection(v: &str) -> Result<(scenario_edit::BlockKind, usize)> {
+    let (block, index) = v
+        .split_once(':')
+        .ok_or_else(|| anyhow!("--select wants <block>:<index>"))?;
+    let want = block.replace([' ', '_'], "").to_ascii_lowercase();
+    let kind = scenario_edit::layout::BLOCKS
+        .iter()
+        .map(|b| b.kind)
+        .find(|k| format!("{k:?}").to_ascii_lowercase() == want)
+        .ok_or_else(|| anyhow!("--select: no block {block:?}"))?;
+    Ok((kind, index.parse()?))
 }
 
 /// Dear ImGui's errors as anyhow errors (they need not be `Send`).
@@ -119,6 +137,9 @@ fn main() -> Result<()> {
     }
     if let Some(i) = args.playlist {
         app.hopper_selected = i;
+    }
+    if let Some(sel) = &args.select {
+        app.dispatch(Action::Select(Some(parse_selection(sel)?)));
     }
     if let Some(out) = &args.screenshot {
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;
