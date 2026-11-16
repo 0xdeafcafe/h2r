@@ -14,6 +14,7 @@ import { live } from "../state/live";
 import { getHopper, putHopper } from "./api";
 import { ENGINES, loadCatalog, mapById, type Catalog } from "./catalog";
 import { PRESETS, applyPreset, resolvePreset } from "./presets";
+import HopperPins from "./HopperPins";
 import {
   MAX_DESCRIPTION,
   MAX_NAME,
@@ -545,6 +546,7 @@ export default function HopperBuilder() {
                   <button class="s-btn" disabled={h().records.length >= MAX_RECORDS} onClick={addRecord}>
                     Add an entry (copies the last)
                   </button>
+                  <HopperPins hopper={h().index} catalog={catalog()} />
                 </div>
               )}
             </Show>

@@ -178,3 +178,7 @@
 .s-fireteam td:first-child, .s-campaign-table td:first-child { border-left-color: #555; }
 .s-campaign-table tr.s-campaign-total td { color: #fff; background: #000; font-weight: bold; }
 .s-fireteam .who, .s-campaign-table .who { display: inline-flex; align-items: center; gap: 5px; }
+
+/* A game on a custom map: its author, and a report link (Game.tsx). */
+.s-custom-map { color: #c9b36a; }
+.s-linkish { padding: 0; font: inherit; color: var(--s-link); background: none; border: 0; text-decoration: underline; cursor: pointer; }

@@ -1,5 +1,6 @@
 // The Admin area, a stats-site page at /stats/admin shown only to admins:
-// the message-of-the-day editor and the playlist (hopper) builder, plus the
+// the message-of-the-day editor, the playlist (hopper) builder, custom
+// content moderation (map packages, blobs, reports, uploads), plus the
 // one-off import that signs the browser in as an existing CLI account
 // (docs/live-admin.md).
 
@@ -11,11 +12,13 @@ import { adminState } from "./state";
 import MotdEditor from "./MotdEditor";
 import HopperBuilder from "./HopperBuilder";
 import ImportAccount from "./ImportAccount";
+import ContentAdmin from "./ContentAdmin";
 import "../styles/admin.css";
 
 const TABS = [
   { id: "motd", label: "Message of the Day" },
   { id: "hopper", label: "Playlists" },
+  { id: "content", label: "Custom content" },
   { id: "import", label: "Import account" },
 ];
 
@@ -79,6 +82,9 @@ export default function Admin() {
               </Show>
               <Show when={tab() === "hopper"}>
                 <HopperBuilder />
+              </Show>
+              <Show when={tab() === "content"}>
+                <ContentAdmin />
               </Show>
               <Show when={tab() === "import"}>
                 <ImportAccount />
