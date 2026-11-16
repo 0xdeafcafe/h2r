@@ -17,8 +17,10 @@ export interface Session {
   state: string;
   /** When it was opened (ISO time), if the server said. */
   since: string | null;
-  /** `custom`, `hopper` or `ranked`. */
+  /** `custom`, `hopper`, `ranked` or `coop`. */
   flags: string;
+  /** What a co-op session is playing; null for any other kind. */
+  campaign: Campaign | null;
   hopper_id: number | null;
   map: string | null;
   /** The map package the host is playing (docs/game/maps.md §5), when it named
@@ -32,6 +34,53 @@ export interface Session {
   slots: SessionSlots;
   /** The roster the host has reported: XUID to a display slot ("" when none). */
   players: Record<string, string>;
+}
+
+/** The campaign level and difficulty a co-op session is playing. */
+export interface Campaign {
+  /** The level's map file stem, e.g. `03a_oldmombasa`. */
+  level: string;
+  /** The level's name as the game shows it, when the host knew it. */
+  name: string | null;
+  /** 0 easy, 1 normal, 2 heroic, 3 legendary. */
+  difficulty: number;
+}
+
+const DIFFICULTIES = ["easy", "normal", "heroic", "legendary"];
+
+/** The difficulty in words ("heroic"); "unknown" for a number out of range. */
+export function difficultyName(d: number): string {
+  return DIFFICULTIES[d] ?? "unknown";
+}
+
+/** Reads a campaign as the server sends it; null without a level. */
+export function parseCampaign(raw: unknown): Campaign | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const level = text(r.level);
+  if (!level) return null;
+  const d = typeof r.difficulty === "number" && Number.isInteger(r.difficulty) ? r.difficulty : 1;
+  return { level, name: text(r.name), difficulty: d };
+}
+
+/** The level's name for display: the game's name for it, else the map stem
+ *  without its ordering prefix ("03a_oldmombasa" reads "oldmombasa"). */
+export function levelName(c: Pick<Campaign, "level" | "name">): string {
+  return c.name ?? (c.level.replace(/^\d+[a-z]?_/i, "").replace(/[_-]+/g, " ").trim() || c.level);
+}
+
+export const isCoop = (s: Pick<Session, "flags">): boolean => s.flags === "coop";
+
+/** "Outskirts, heroic" for a co-op session; null for any other. */
+export function campaignLine(s: Pick<Session, "flags" | "campaign">): string | null {
+  return isCoop(s) && s.campaign ? `${levelName(s.campaign)}, ${difficultyName(s.campaign.difficulty)}` : null;
+}
+
+/** A co-op session's players by gamertag: the host first, then those who
+ *  joined in XUID order. `tagOf` names an XUID the web may know. */
+export function coopPlayers(s: Pick<Session, "host_xuid" | "host_gamertag" | "players">, tagOf: (xuid: string) => string | undefined = () => undefined): string[] {
+  const guests = Object.keys(s.players).filter((x) => x !== s.host_xuid).sort().map((x) => tagOf(x) ?? "guest");
+  return [s.host_gamertag, ...guests];
 }
 
 export type Visibility = "public" | "friends" | "invite";
@@ -61,6 +110,7 @@ export function parseSession(raw: unknown): Session | null {
     state: text(r.state) ?? "open",
     since: text(r.since),
     flags: text(ad.flags) ?? "custom",
+    campaign: parseCampaign(ad.campaign),
     hopper_id: typeof ad.hopper_id === "number" ? ad.hopper_id : null,
     map: text(ad.map),
     map_id: typeof ad.map_id === "string" && /^[0-9a-f]{64}$/i.test(ad.map_id) ? ad.map_id.toLowerCase() : null,
@@ -98,12 +148,13 @@ export function seats(s: Session): { filled: number; max: number; open: number }
 
 /** What kind of game it is: the host's name for it, else the kind of session. */
 export function gametype(s: Session): string {
+  if (isCoop(s)) return "Co-op campaign";
   return s.name ?? kind(s);
 }
 
 /** How the session was made. */
 export function kind(s: Pick<Session, "flags">): string {
-  return s.flags === "ranked" ? "ranked match" : s.flags === "hopper" ? "matchmaking" : "custom game";
+  return s.flags === "coop" ? "co-op campaign" : s.flags === "ranked" ? "ranked match" : s.flags === "hopper" ? "matchmaking" : "custom game";
 }
 
 /** The map's name for display. `title` turns a file stem into a name (the
@@ -131,6 +182,7 @@ export function sortSessions(list: readonly Session[]): Session[] {
  *  `custom` is a custom map's package name, which replaces the map's. */
 export function sessionRow(s: Session, title?: (stem: string) => string, custom?: string | null): { key: string; label: string; meta: string } {
   const n = seats(s);
+  if (isCoop(s) && s.campaign) return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign)} ${n.filled}/${n.max}` };
   return { key: s.session_id, label: s.host_gamertag, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
 }
 

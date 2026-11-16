@@ -20,7 +20,7 @@ import {
   DAYS, STATS_WINDOWS, clanStandings, heatmap, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
   statsWindow, type Board, type StatsSummary, type StatsWindow, type Totals,
 } from "../lib/statsHome";
-import { gametype, listed, mapName, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
+import { campaignLine, gametype, listed, mapName, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
 import { SKULLS } from "../lib/skulls";
 import { titleCase } from "../lib/format";
 import { now } from "../lib/now";
@@ -104,7 +104,7 @@ function LiveNow() {
                   {(s) => (
                     <tr>
                       <td><Who xuid={s.host_xuid} name={s.host_gamertag} /> <span class="s-dim">{gametype(s)}</span></td>
-                      <td><span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s)}</span></td>
+                      <td><Show when={campaignLine(s)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
                       <td class="hide-s">{sessionKind(s)}</td>
                       <td class="num">{seats(s).filled} of {seats(s).max}</td>
                     </tr>
