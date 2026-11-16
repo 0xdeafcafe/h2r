@@ -16,7 +16,7 @@ pub use event::{
     ActorState, Appearance, GameEvent, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot,
     Weapon,
 };
-pub use hooks::{Telemetry, install};
+pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{actors, game_info, game_tick, object, players, snapshot, team_scores, yaw};
 pub use sink::{JsonlSink, QueuedSink, Sink};

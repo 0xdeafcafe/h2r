@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
+feature = { path = "../feature" }
+engine = { path = "../engine" }
 
 [dev-dependencies]
 xapi = { path = "../xapi" }

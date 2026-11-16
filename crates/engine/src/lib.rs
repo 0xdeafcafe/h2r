@@ -12,6 +12,8 @@
 //! - [`locale`]: localized-string lookup by packed StringID.
 //! - [`render`]: read-only views of the live lights and scene layers
 //!   (`docs/e3-lighting.md`, phase 0).
+//! - [`points`]: the one table of named guest functions and globals.
+//! - [`testing`]: [`testing::FakeGuest`], sparse guest memory for tests.
 //! - [`abi`]: per-function calling-convention adapters and the table of
 //!   overridable addresses.
 //!
@@ -23,8 +25,10 @@ pub mod datum;
 pub mod handle;
 pub mod locale;
 pub mod memory;
+pub mod points;
 pub mod render;
 pub mod tags;
+pub mod testing;
 
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;
