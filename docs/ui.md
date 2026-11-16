@@ -476,6 +476,19 @@ the retail pane set-up, gives the screen one more text widget, whose string
 change (`0x230427`) tears the pane's widgets down (`0x22fba9`) before it
 builds the next.
 
+**A bitmap of our own on a screen** (read for the Skulls screen's
+picture, 2026-11-16, static, **E**). The pane builder's bitmap step
+`0x22fa30` takes ESI the screen and a pointer to a `0x38`-byte bitmap
+block on the stack (`ret 4`): it allocates `0x90` bytes, constructs the
+bitmap widget (`0x2b01eb`), sets `+0x6c` and links it to the screen
+(`0x22eb18`); the widget comes back in EAX. A copy of a retail screen's
+block, found through `0x148098(screen id)` (stdcall, the `wgit` tag's
+datum handle or -1) and the tag entries at `[0x4e3b44]`, keeps that map's
+own `bitm` reference. The bitmap draw (`0x2b0565`) makes its colour from
+the widget's alpha (`+0x64`) and three floats at `+0x28`, `+0x2c` and
+`+0x30` that the widget header (`0x22e27b`) sets to 1, so writing them
+tints the image.
+
 **The focused row.** `0x24c447` (EAX the list, plain `ret`, ECX kept)
 walks the list's children (`0x24bae6`, first child at `+0x14`, next at
 `+0x18`) to the first item for which `0x22ed7a` holds, and returns that
