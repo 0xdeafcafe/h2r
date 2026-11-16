@@ -2,12 +2,14 @@
 // two mask layers coloured on a canvas; otherwise it is one of the art
 // pack's original two-colour symbols. The pick is deterministic from the
 // seed (an XUID or gamertag) until telemetry carries a player's real
-// appearance, which `appearance` (or a ready `emblem`) is for.
+// appearance: `appearance` (or a ready `emblem`) when the caller has it,
+// else the latest one the player's games carried, looked up by XUID.
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { emblemArt } from "../lib/art";
 import { emblemChoice, emblemFromAppearance, type Appearance, type EmblemSpec } from "../lib/gameart";
 import { emblemLayers, emblemUrl } from "../state/gameart";
+import { appearanceOf } from "../state/appearance";
 
 /** A stable index for a seed, spread better than a plain sum. */
 function pick(seed: string): number {
@@ -32,7 +34,7 @@ export default function Emblem(props: {
     const l = emblemLayers();
     if (!l) { setGame(null); return; }
     const spec: EmblemSpec = {
-      ...emblemFromAppearance(l.palette, props.appearance, emblemChoice(props.seed, l.fg, l.bg, l.palette)),
+      ...emblemFromAppearance(l.palette, props.appearance ?? appearanceOf(props.seed), emblemChoice(props.seed, l.fg, l.bg, l.palette)),
       ...props.emblem,
     };
     let current = true;
