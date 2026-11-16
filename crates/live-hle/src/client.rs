@@ -27,12 +27,17 @@ pub(crate) const FILES: [(u32, &str); 2] =
 pub struct ServerOptions {
     pub request_timeout: Duration,
     pub heartbeat_interval: Duration,
+    /// Custom maps (docs/maps.md §5): sessions on a map that cannot be had
+    /// are left out of searches, and finding one by id (a join) downloads
+    /// its missing layers first. None: sessions are taken as they come.
+    pub maps: Option<Arc<crate::maps::MapGate>>,
 }
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(30),
+            maps: None,
         }
     }
 }
@@ -177,6 +182,7 @@ impl Service {
                     .build();
                 let mut worker = Worker {
                     base,
+                    maps: options.maps.clone(),
                     agent,
                     connection: None,
                     active: None,
@@ -282,6 +288,7 @@ struct Active {
 }
 struct Worker {
     base: String,
+    maps: Option<Arc<crate::maps::MapGate>>,
     agent: ureq::Agent,
     connection: Option<Connection>,
     active: Option<Active>,
@@ -613,7 +620,13 @@ impl Worker {
             }
             MatchRequest::Find(id) => match self.fetch_match(user, &id) {
                 Err(Error::Status(404)) => Vec::new(),
-                other => other?,
+                // Finding a session by id is how a join starts: its map is
+                // made ready first, or the session is not found.
+                Ok(items) => items
+                    .into_iter()
+                    .filter(|s| self.map_ready(s, true))
+                    .collect(),
+                Err(e) => return Err(e),
             },
             MatchRequest::Search { limit, attributes } => {
                 let mut query = url::form_urlencoded::Serializer::new(String::new());
@@ -629,7 +642,14 @@ impl Worker {
                 if page.items.len() > limit as usize && limit != 0 {
                     return Err(Error::Protocol);
                 }
-                if limit == 0 { Vec::new() } else { page.items }
+                if limit == 0 {
+                    Vec::new()
+                } else {
+                    page.items
+                        .into_iter()
+                        .filter(|s| self.map_ready(s, false))
+                        .collect()
+                }
             }
         };
         for item in &items {
@@ -646,6 +666,41 @@ impl Worker {
             }
         }
         Ok(items)
+    }
+    /// Whether a session's map can be had (docs/maps.md §5): checked for a
+    /// search result, made ready (downloaded) for a join. A refusal is
+    /// printed with its reason and the session is dropped.
+    fn map_ready(&self, s: &live_proto::session::Session, join: bool) -> bool {
+        let (Some(gate), Some(c)) = (&self.maps, &self.connection) else {
+            return true;
+        };
+        if s.advertisement.map_id.is_none() {
+            return true;
+        }
+        let fetch = crate::maps::HttpFetch {
+            agent: &self.agent,
+            api: &c.api,
+        };
+        let result = if join {
+            gate.prepare(&fetch, &s.advertisement).map(|dir| {
+                if let Some(dir) = dir {
+                    eprintln!(
+                        "live: {}'s map is ready in {}",
+                        s.host_gamertag,
+                        dir.display()
+                    );
+                }
+            })
+        } else {
+            gate.check(&fetch, &s.advertisement).map(|_| ())
+        };
+        match result {
+            Ok(()) => true,
+            Err(why) => {
+                eprintln!("live: not joining {}'s game: {why}", s.host_gamertag);
+                false
+            }
+        }
     }
     fn fetch_match(
         &self,

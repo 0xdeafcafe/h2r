@@ -24,6 +24,7 @@ mod live_models;
 mod live_render;
 mod live_admin;
 mod live_cmd;
+mod live_maps;
 mod live_query;
 mod lockstep_cmd;
 mod mappack_cmd;

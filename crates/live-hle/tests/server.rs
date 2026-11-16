@@ -181,6 +181,7 @@ impl World {
             ServerOptions {
                 request_timeout: Duration::from_secs(2),
                 heartbeat_interval: heartbeat,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1448,6 +1449,36 @@ fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
     );
     assert_eq!(w.wait(w.u32(OUT)), CANNOT_ACCESS_SERVICE);
     assert!(w.hle.local_teams().teams.is_empty());
+}
+
+/// The host's advertisement says exactly which map it has loaded when the
+/// boot's map probe names a package's `MapId` (docs/maps.md §5).
+#[test]
+fn advertisements_carry_the_hosts_map_id() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    host.logon();
+    let id = live_proto::maps::MapId([0x6d; 32]);
+    host.hle
+        .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| Some(id))));
+    attr(&host, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert_eq!(host.hle.local_sessions()[0].map_id, Some(id));
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert_eq!(created.data["advertisement"]["map_id"], id.to_string());
 }
 
 // The same nine match entry points the retail wrappers drive, over two separate

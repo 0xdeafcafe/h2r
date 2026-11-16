@@ -45,6 +45,12 @@ fn text(guest: &Guest, address: u32, capacity: usize) -> ReadResult<String> {
     Ok(String::from_utf8_lossy(&bytes[..len]).into_owned())
 }
 
+/// The loaded map's short name, from the cache header (`lockout`): what
+/// `boot::map_override::map_id` takes.
+pub fn loaded_map_name(guest: &Guest) -> ReadResult<String> {
+    text(guest, layout::CACHE_MAP_NAME, 32)
+}
+
 pub fn game_tick(guest: &Guest) -> ReadResult<u64> {
     let time = ptr(guest, layout::GAME_TIME_PTR)?;
     Ok(u64::from(guest.u32(time + layout::TIME_TICK)?))

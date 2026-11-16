@@ -96,6 +96,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
                           game-art/ in the server directory
+  maps publish DIR [--server URL] [--as GAMERTAG]
+                          upload a map package and publish it (docs/maps.md §5)
+  maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
+                          the map packages the server has
   q <what> [--server URL] [--json|--jsonl]
                           query the service; `h2 live q --help` lists what
 
@@ -122,6 +126,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("friend", Some("remove")) => friend(rest.shift(), FriendAction::Remove),
         ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
         ("team", _) => team_command(rest),
+        ("maps", _) => crate::live_maps::run(rest),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
@@ -982,7 +987,7 @@ pub(crate) fn team_run(
 
 /// The local account to act as on `client`'s server: the one named by
 /// `as_tag`, or the only one there.
-fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
+pub(crate) fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
     let mine: Vec<LocalAccount> = live_accounts::load(accounts)?
         .into_iter()
         .filter(|a| a.is_on(&client.base, &client.discovery.id))

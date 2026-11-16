@@ -242,6 +242,32 @@ geometry is extracted from the patched map.
   may only advertise a retail `MapId` or a pinned one (the server checks on
   create and on update). `custom` and `coop` sessions take any map that is
   not taken down.
+- **The game's side.** The boot names the loaded map's `MapId` with
+  `boot::map_override::map_id(vfs, name)` (the cache header's short name,
+  `0x00547898`): telemetry's `set_map_id_locator` fills `NewGame.map_id`,
+  and live-hle's `set_map_probe` fills each advertisement's `map_id` (and
+  sends it on a lobby update when it changes).
+- **Joining** (`live_hle::maps::MapGate`, given to the HLE through
+  `ServerOptions.maps`). A search result whose map cannot be had is left
+  out of the browser; finding a session by id (how a join starts) makes its
+  map ready first, or the session is not found. Ready means: a package here
+  already has the `MapId`; or the server's manifest is fetched
+  (`GET /v1/maps/{id}`), its base checked against the disc's own map
+  (`Bases`, the SHA-256 of `maps\<map>.map`), the missing layers and image
+  downloaded from `/v1/content/{sha256}`, each checked against its
+  SHA-256, and written as `<data>/maps/live-<first 16 hex of the
+  MapId>/` with its `manifest.toml` last; then `active.toml` names that
+  directory for the map so the choice rule serves it. Refusals, printed
+  with their reason before any map load: the disc lacks the base
+  (`NoBase`), an admin took it down (410: `TakenDown`), the server never
+  saw it and it is not here (`Unpublished`), a `hopper`/`ranked` session on
+  a map that is neither the disc's retail one nor pinned on its hopper
+  (`Ranked`), or a download that failed or did not match its hash.
+- **CLI.** `h2 live maps publish DIR [--as GAMERTAG]` checks the package as
+  the runtime does, uploads each layer and the image (refusing a file
+  whose hash is not the manifest's), signs the manifest with the local
+  account's key and publishes it; `h2 live maps list [--base MAP] [--author
+  GAMERTAG] [--json]` prints the server's packages.
 - **Pictures and viewer** (web): the package's image (served at
   `/v1/maps/{id}/image`), then the base map's art; the 3D viewer uses the
   base map's geometry unless the package has `[result] geometry`, when it
@@ -262,6 +288,17 @@ Deviations from the design above:
 - `coop` sessions are not held to the ranked rule (they are not hoppers).
 - Art option 2 (the patched map's own preview, read client-side) is not
   built.
+- Joining writes `active.toml`: with one package per map name, that is how
+  the session's map is the one served, and it stays chosen afterwards.
+
+Not yet wired: the boot does not give the HLE a `MapGate` yet. It needs
+`Bases` over the disc's own maps (below the package layer, so a package
+cannot vouch for its own base) and `ServerOptions { maps: Some(..) }` in
+`boot::live_glue::install_with_network` (which uses `Hle::with_network`
+today). And `<data>/maps` is scanned once at mount, so a package downloaded
+while the game runs is served from the next boot, until the folder watch
+(§3) or a rescan hook on `vfs::PackageBackend` lands. A `--private`
+server's reads need a token, which the gate's fetches do not send yet.
 
 ## 6. Plan
 
