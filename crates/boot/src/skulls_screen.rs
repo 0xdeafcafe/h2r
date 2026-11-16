@@ -13,15 +13,25 @@
 //! it keeps the press ([`Pending`], in the flow and nowhere else) and opens
 //! the page instead; with none collected the original runs, as retail.
 //!
-//! **Continuing.** X or Start on the page ([`action`]) closes the page as B
-//! does (`0x14800c`) and nothing else; when the stack frees it (our
-//! destructor slot, [`freed`]) the difficulty screen is the top one again,
-//! and the kept press runs on its own list ([`continue_level`]); the hook
-//! lets that call through. The press is never replayed into a closing
+//! **Continuing.** A, X or Start on the page ([`action`]: A through the
+//! row's press, X and Start through the class's event slot) closes the
+//! page as B does (`0x14800c`) and nothing else; when the stack frees it
+//! (our destructor slot, [`freed`]) the difficulty screen is the top one
+//! again, and the kept press runs on its own list ([`continue_level`]); the
+//! hook lets that call through. The press is never replayed into a closing
 //! screen. `H2_SKULLS_CONTINUE=now` (close, then the press at once, the
 //! first build's order) or `=stay` (the press with the page still up) are
 //! for trying other orders in game. B closes the page as on any screen of
 //! ours: back on the difficulty list, where a press opens the page again.
+//! Left and right on a row toggle its skull (`skulls_menu`), so A can be
+//! pressed straight through level, difficulty and page.
+//!
+//! **The press that opened the page** is not taken as a continue: the
+//! game raises a button event only on the frame the button goes down
+//! (`list_class::LEFT_EVENT` has the trace), so a held A raises no second
+//! one, and a continue within [`GUARD`] of the page opening (sooner than
+//! two presses can be made) is dropped as that press seen twice.
+//! `H2_SKULLS_GUARD_MS` changes it.
 //!
 //! **The page** is a [`SkullsScreen`] (rows, strings and descriptions in
 //! [`skulls_menu`]) on a class with the level select's layout
@@ -29,6 +39,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::layout_glue::chosen_row;
 use crate::list_class::{self, Action, ListClass, ListLayout, OnFree, PictureSpec, TextBlock};
@@ -66,8 +77,20 @@ fn difficulty_name(row: i16) -> &'static str {
         .unwrap_or("?")
 }
 
+/// A continue this soon after the page opened is the press that opened it
+/// seen again, not a new one: under two frames at 30 fps, and well under
+/// the gap between two presses of a thumb.
+pub const GUARD: Duration = Duration::from_millis(50);
+
+/// `H2_SKULLS_GUARD_MS`: the guard in milliseconds, else [`GUARD`].
+pub fn guard_from(v: Option<&str>) -> Duration {
+    v.and_then(|v| v.trim().parse().ok())
+        .map_or(GUARD, Duration::from_millis)
+}
+
 /// The page's class: the level select's layout, the picture and the
-/// description; X and Start continue, and the destructor tells the flow.
+/// description; A, X and Start continue, left and right toggle, and the
+/// destructor tells the flow.
 pub fn class(
     screen: Arc<SkullsScreen>,
     block: TextBlock,
@@ -89,6 +112,7 @@ pub fn class(
         .picture(picture)
         .layout(layout)
         .action(act)
+        .sideways()
         .on_free(on_free)
 }
 
@@ -148,18 +172,20 @@ pub enum Decision {
 /// Where the page is, for the kept press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Up (or about to be), waiting for X, Start or B.
+    /// Up (or about to be), waiting for A, X, Start or B.
     Shown,
-    /// X or Start closed this page; the press runs when it is freed.
+    /// A, X or Start closed this page; the press runs when it is freed.
     Closing(u32),
     /// The kept press is running: the difficulty press the hook sees now is
     /// ours, and runs as retail.
     Continuing,
 }
 
-/// What X or Start finds.
+/// What A, X or Start finds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// This soon after the page opened: the press that opened it.
+    TooSoon(Duration),
     /// Close the page; the press runs when it is freed.
     Close(Pending),
     /// Already closing (or running): nothing more to do.
@@ -171,7 +197,7 @@ pub enum Step {
 /// What a freed page means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Freed {
-    /// The page X or Start closed: run this press now.
+    /// The page A, X or Start closed: run this press now.
     Continue(Pending),
     /// Closed some other way (B): the press stays kept until the next
     /// difficulty press replaces it.
@@ -179,11 +205,13 @@ pub enum Freed {
 }
 
 /// The page's state: the one kept difficulty press, where the page is,
-/// and the scratch page the press's arguments are written to. The press
-/// is stored when the hook takes it and only dropped once it has run, so
-/// X or Start always finds it while the page is up.
+/// when it opened, and the scratch page the press's arguments are written
+/// to. The press is stored when the hook takes it and only dropped once it
+/// has run, so A, X or Start always finds it while the page is up.
 pub struct PageFlow {
     kept: Mutex<(Option<Pending>, Phase)>,
+    opened: Mutex<Option<Instant>>,
+    guard: Duration,
     on: AtomicBool,
     scratch: OnceLock<u32>,
 }
@@ -192,6 +220,8 @@ impl Default for PageFlow {
     fn default() -> Self {
         PageFlow {
             kept: Mutex::new((None, Phase::Shown)),
+            opened: Mutex::new(None),
+            guard: GUARD,
             on: AtomicBool::new(true),
             scratch: OnceLock::new(),
         }
@@ -199,8 +229,25 @@ impl Default for PageFlow {
 }
 
 impl PageFlow {
+    /// With the guard read from `H2_SKULLS_GUARD_MS`; the line to log when
+    /// it is set.
+    pub fn from_env() -> (Self, Option<String>) {
+        let v = std::env::var("H2_SKULLS_GUARD_MS").ok();
+        let guard = guard_from(v.as_deref());
+        let line = v.map(|v| format!("skulls page: H2_SKULLS_GUARD_MS={v}: guard {guard:?}"));
+        (
+            PageFlow {
+                guard,
+                ..Self::default()
+            },
+            line,
+        )
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, (Option<Pending>, Phase)> {
         self.kept.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn opened(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+        self.opened.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Whether the page is shown at all (its class is on the plan).
     pub fn set_on(&self, on: bool) {
@@ -236,23 +283,42 @@ impl PageFlow {
             from_select: p.from_select,
         };
         *kept = (Some(pending.clone()), Phase::Shown);
+        *self.opened() = Some(Instant::now());
         Decision::Page(pending)
     }
-    /// X or Start on `page`.
+    /// When the page was last opened for a kept press.
+    pub fn opened_at(&self) -> Option<Instant> {
+        *self.opened()
+    }
+    /// How long after the page opened `now` is, when that is within the
+    /// guard: a continue then is the press that opened the page.
+    pub fn too_soon(&self, now: Instant) -> Option<Duration> {
+        let since = now.saturating_duration_since(self.opened_at()?);
+        (since < self.guard).then_some(since)
+    }
+    /// A, X or Start on `page`, now.
     pub fn start(&self, page: u32) -> Step {
+        self.start_at(page, Instant::now())
+    }
+    /// A, X or Start on `page` at `now`.
+    pub fn start_at(&self, page: u32, now: Instant) -> Step {
         let mut kept = self.lock();
+        let soon = self.too_soon(now);
         match (&kept.0, kept.1) {
             (None, _) => Step::Nothing,
             (Some(_), Phase::Closing(_) | Phase::Continuing) => Step::Busy,
-            (Some(p), Phase::Shown) => {
-                let p = p.clone();
-                kept.1 = Phase::Closing(page);
-                Step::Close(p)
-            }
+            (Some(p), Phase::Shown) => match soon {
+                Some(since) => Step::TooSoon(since),
+                None => {
+                    let p = p.clone();
+                    kept.1 = Phase::Closing(page);
+                    Step::Close(p)
+                }
+            },
         }
     }
-    /// X or Start with the press run at once (`H2_SKULLS_CONTINUE=now` or
-    /// `stay`): the press, now running.
+    /// A, X or Start with the press run at once (`H2_SKULLS_CONTINUE=now`
+    /// or `stay`): the press, now running.
     pub fn begin(&self) -> Option<Pending> {
         let mut kept = self.lock();
         if kept.1 == Phase::Continuing {
@@ -299,7 +365,7 @@ pub fn write_press(
     Ok((at, at + 0x10))
 }
 
-/// When X or Start runs the kept press.
+/// When A, X or Start runs the kept press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Continue {
     /// Close the page; run the press once the stack has freed it.
@@ -335,23 +401,34 @@ async fn close(cx: &Cx, page: u32) -> Result<(), EntryError> {
     Ok(())
 }
 
-/// X or Start on the page `page`.
+fn too_soon_line(since: Duration) -> String {
+    format!(
+        "skulls page: A/X/Start {} ms after the page opened: the press that opened it; ignored",
+        since.as_millis()
+    )
+}
+
+/// A, X or Start on the page `page`.
 pub async fn action(cx: &Cx, flow: &PageFlow, page: u32, mode: Continue) -> Result<(), EntryError> {
     match mode {
         Continue::Freed => match flow.start(page) {
+            Step::TooSoon(since) => {
+                eprintln!("{}", too_soon_line(since));
+                Ok(())
+            }
             Step::Nothing => {
-                eprintln!("skulls page: X/Start with no difficulty kept; nothing to start");
+                eprintln!("skulls page: A/X/Start with no difficulty kept; nothing to start");
                 Ok(())
             }
             Step::Busy => {
                 eprintln!(
-                    "skulls page: X/Start again; already closing, the level starts when the page is freed"
+                    "skulls page: A/X/Start again; already closing, the level starts when the page is freed"
                 );
                 Ok(())
             }
             Step::Close(p) => {
                 eprintln!(
-                    "skulls page: X/Start: starting difficulty {} ({}) once the page is freed",
+                    "skulls page: A/X/Start: starting difficulty {} ({}) once the page is freed",
                     p.row,
                     difficulty_name(p.row)
                 );
@@ -359,9 +436,13 @@ pub async fn action(cx: &Cx, flow: &PageFlow, page: u32, mode: Continue) -> Resu
             }
         },
         Continue::Now | Continue::Stay => {
+            if let Some(since) = flow.too_soon(Instant::now()) {
+                eprintln!("{}", too_soon_line(since));
+                return Ok(());
+            }
             let Some(p) = flow.begin() else {
                 eprintln!(
-                    "skulls page: X/Start with no difficulty kept (or already starting); nothing to start"
+                    "skulls page: A/X/Start with no difficulty kept (or already starting); nothing to start"
                 );
                 return Ok(());
             };
@@ -567,6 +648,15 @@ mod tests {
         ))))
     }
 
+    /// A flow with no guard: a continue right after the open counts (the
+    /// guard has tests of its own).
+    fn unguarded() -> PageFlow {
+        PageFlow {
+            guard: Duration::ZERO,
+            ..PageFlow::default()
+        }
+    }
+
     fn press(row: i16, collected: usize) -> Press {
         Press {
             list: 0x5000,
@@ -590,7 +680,7 @@ mod tests {
 
     #[test]
     fn a_profile_with_no_skulls_goes_straight_to_the_level() {
-        let f = PageFlow::default();
+        let f = unguarded();
         match f.difficulty(press(3, 0)) {
             Decision::Retail(Some(line)) => {
                 assert!(line.contains("no skulls collected"), "{line}")
@@ -606,7 +696,7 @@ mod tests {
     /// nothing is kept.
     #[test]
     fn kept_at_the_press_closed_on_start_run_when_freed() {
-        let f = PageFlow::default();
+        let f = unguarded();
         assert_eq!(f.difficulty(press(2, 1)), Decision::Page(kept(2)));
         assert_eq!(f.pending(), Some(kept(2)));
         assert_eq!(f.start(0x100), Step::Close(kept(2)));
@@ -627,7 +717,7 @@ mod tests {
     /// pressed any number of times finds it.
     #[test]
     fn start_always_finds_the_kept_press_while_the_page_is_up() {
-        let f = PageFlow::default();
+        let f = unguarded();
         f.difficulty(press(3, 1));
         // Presses on rows that are not difficulties, and B's free of
         // another page, leave it.
@@ -639,7 +729,7 @@ mod tests {
 
     #[test]
     fn a_page_freed_by_b_starts_nothing() {
-        let f = PageFlow::default();
+        let f = unguarded();
         f.difficulty(press(1, 1));
         assert_eq!(f.freed(0x100), Freed::Back);
         assert_eq!(f.difficulty(press(0, 1)), Decision::Page(kept(0)));
@@ -652,7 +742,7 @@ mod tests {
     /// again, another difficulty opens the page with that one.
     #[test]
     fn back_then_another_difficulty_keeps_the_new_one() {
-        let f = PageFlow::default();
+        let f = unguarded();
         assert!(matches!(f.difficulty(press(3, 2)), Decision::Page(_)));
         assert!(matches!(f.difficulty(press(0, 2)), Decision::Page(p) if p.row == 0));
         assert!(matches!(f.start(1), Step::Close(p) if p.row == 0));
@@ -660,7 +750,7 @@ mod tests {
 
     #[test]
     fn only_the_four_difficulties_and_a_known_player_open_the_page() {
-        let f = PageFlow::default();
+        let f = unguarded();
         assert_eq!(f.difficulty(press(4, 3)), Decision::Retail(None));
         assert_eq!(f.difficulty(press(-1, 3)), Decision::Retail(None));
         let mut p = press(1, 3);
@@ -756,7 +846,7 @@ mod tests {
     }
 
     fn flow() -> Arc<PageFlow> {
-        let f = Arc::new(PageFlow::default());
+        let f = Arc::new(unguarded());
         f.scratch.set(SCRATCH).unwrap();
         assert!(matches!(
             f.difficulty(Press {
@@ -877,21 +967,129 @@ mod tests {
         assert_eq!(f.pending(), None, "nothing kept after the refusal");
     }
 
+    /// The page is the skulls and nothing else; A on any of them is the
+    /// class's action (on to the level), left and right toggle.
     #[test]
-    fn the_page_is_skulls_only_and_a_toggles() {
+    fn the_page_is_skulls_only_and_a_goes_on() {
         let r = screen();
         assert_eq!(r.count(), skulls::TOTAL, "no Start row");
         for row in 0..r.count() as i16 {
-            assert_ne!(r.press(row), crate::ui::Chosen::Act, "row {row}");
+            assert_eq!(r.press(row), crate::ui::Chosen::Act, "row {row}");
         }
-        assert!(matches!(r.press(0), crate::ui::Chosen::Stepped(m) if m.contains("no profile")));
+        assert!(r.sideways(0, true).unwrap().contains("no profile"));
+    }
+
+    /// A, X and Start take one path (`action`, the class's): A through the
+    /// row's press, X and Start through the event slot; each only closes
+    /// the page, and the level starts when it is freed.
+    #[test]
+    fn a_x_and_start_all_close_the_page_and_start_once_freed() {
+        // A: the row's press is the action.
+        assert_eq!(screen().press(3), crate::ui::Chosen::Act);
+        // X and Start: the event slot's buttons run the same action.
+        assert_eq!(
+            list_class::ACTION_BUTTONS,
+            [list_class::X_BUTTON, list_class::START_BUTTON]
+        );
+        let f = flow();
+        let run = run(&f, guest(DIFFICULTY_LIST_VTABLE), |cx, f| {
+            Box::pin(async move {
+                action(&cx, &f, PAGE, Continue::Freed).await?;
+                // A second press (Start after A) while it closes: nothing more.
+                action(&cx, &f, PAGE, Continue::Freed).await?;
+                freed(&cx, &f, PAGE).await?;
+                Ok(Ret::new(0, 0))
+            })
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        assert_eq!(
+            run.calls,
+            [Gc::new(SCREEN_CLOSE).eax(4).ecx(5), the_press()]
+        );
+        assert_eq!(f.pending(), None);
+    }
+
+    /// The A that opened the page is not a continue: within the guard of
+    /// the open a press is dropped and the page stays; a press after it
+    /// (a second tap of a player spamming A) goes on.
+    #[test]
+    fn the_press_that_opened_the_page_does_not_continue() {
+        let f = PageFlow::default();
+        assert!(matches!(f.difficulty(press(2, 1)), Decision::Page(_)));
+        let opened = f.opened_at().expect("opened");
+        assert!(matches!(f.start_at(0x100, opened), Step::TooSoon(d) if d.is_zero()));
+        assert_eq!(
+            f.start_at(0x100, opened + Duration::from_millis(20)),
+            Step::TooSoon(Duration::from_millis(20))
+        );
+        assert_eq!(f.pending(), Some(kept(2)), "still kept, page still up");
+        assert_eq!(f.freed(0x100), Freed::Back, "not closing");
+        // A new tap, 80 ms on: through.
+        assert_eq!(
+            f.start_at(0x100, opened + Duration::from_millis(80)),
+            Step::Close(kept(2))
+        );
+        // Nothing kept: no guard to speak of.
+        let f = PageFlow::default();
+        assert_eq!(f.start(0x100), Step::Nothing);
+        assert_eq!(
+            too_soon_line(Duration::from_millis(12)),
+            "skulls page: A/X/Start 12 ms after the page opened: the press that opened it; ignored"
+        );
+    }
+
+    /// Through `action` too: right after the open nothing is called; the
+    /// same flow a moment later closes the page.
+    #[test]
+    fn a_continue_right_after_the_open_calls_nothing() {
+        for mode in [Continue::Freed, Continue::Now, Continue::Stay] {
+            let f = Arc::new(PageFlow {
+                guard: Duration::from_secs(3600),
+                ..PageFlow::default()
+            });
+            f.scratch.set(SCRATCH).unwrap();
+            f.difficulty(Press {
+                list: LIST,
+                ..press(1, 1)
+            });
+            let run = testing::run(
+                &{
+                    let f = Arc::clone(&f);
+                    move |cx: Cx| -> EntryFuture {
+                        let f = Arc::clone(&f);
+                        Box::pin(async move {
+                            action(&cx, &f, PAGE, mode).await?;
+                            Ok(Ret::new(0, 0))
+                        })
+                    }
+                },
+                guest(DIFFICULTY_LIST_VTABLE),
+                Regs::default(),
+                |_, _| Regs::default(),
+            );
+            assert_eq!(run.calls, [], "{mode:?}");
+            assert_eq!(f.pending().map(|p| p.row), Some(1), "{mode:?}");
+            assert_eq!(f.freed(PAGE), Freed::Back, "{mode:?}: not closing");
+        }
+    }
+
+    #[test]
+    fn the_guard_comes_from_the_env() {
+        assert_eq!(guard_from(None), GUARD);
+        assert_eq!(guard_from(Some("0")), Duration::ZERO);
+        assert_eq!(guard_from(Some(" 120 ")), Duration::from_millis(120));
+        assert_eq!(guard_from(Some("soon")), GUARD);
+        assert!(
+            GUARD < Duration::from_millis(80),
+            "under a quick second tap"
+        );
     }
 
     #[test]
     fn the_hook_and_the_class_are_on_the_plan() {
         let mut r = feature::Registry::new(feature::Switches::defaults());
         let s = screen();
-        let flow = Arc::new(PageFlow::default());
+        let flow = Arc::new(unguarded());
         let c = class(
             Arc::clone(&s),
             skulls_menu::DESCRIPTION_TEXT,

@@ -36,8 +36,8 @@ use settings::Store;
 
 use crate::layout_glue::{Gm, ID_BASE};
 use crate::setting_defs::{
-    FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_CROUCH, TOUCH_GYRO,
-    TOUCH_LOOK,
+    FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
+    TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
@@ -144,7 +144,11 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
         controls = controls
             .row(Row::setting(TOUCH_LOOK.key))
             .row(Row::setting(TOUCH_CROUCH.key))
-            .row(Row::setting(TOUCH_GYRO.key));
+            .row(Row::setting(TOUCH_GYRO.key))
+            .row(Row::setting(TOUCH_ACCEL.key))
+            .row(
+                Row::setting(TOUCH_AUTO_FIRE.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
+            );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
     Model::new(store, vec![video], vec![controls, settings], MODEL_IDS)
@@ -340,13 +344,15 @@ mod tests {
         let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
         assert_eq!(
             m.count(List::Controls, 6),
-            10,
+            12,
             "the speaker's and the touch rows"
         );
         assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
         assert_eq!(drawn(&m, List::Controls, 8), s("Touch Crouch", "Toggle"));
         assert_eq!(drawn(&m, List::Controls, 9), s("Gyro Aim", "0"));
-        assert_eq!(drawn(&m, List::Controls, 10), None);
+        assert_eq!(drawn(&m, List::Controls, 10), s("Look Acceleration", "5"));
+        assert!(drawn(&m, List::Controls, 11).is_some(), "Touch Auto Fire");
+        assert_eq!(drawn(&m, List::Controls, 12), None);
         assert_eq!(
             m.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
             None

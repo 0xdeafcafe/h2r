@@ -213,7 +213,18 @@ pub fn resolve(item: H2Item, tags: &[(String, String)]) -> Option<&str> {
         H2Item::Vehicle(r) => ("vehc", r),
         H2Item::Dropped => return None,
     };
-    tags.iter()
-        .find(|(g, name)| g == group && h2_name_matches(name, role))
+    // An exact last component first (`warthog`, not `warthog_gauss`).
+    let exact = tags.iter().find(|(g, name)| {
+        g == group
+            && name
+                .rsplit(['\\', '/'])
+                .next()
+                .is_some_and(|l| l.eq_ignore_ascii_case(role))
+    });
+    exact
+        .or_else(|| {
+            tags.iter()
+                .find(|(g, name)| g == group && h2_name_matches(name, role))
+        })
         .map(|(_, name)| name.as_str())
 }

@@ -477,6 +477,51 @@ pub static TOUCH_GYRO: Def = Def {
     menu: None,
 };
 
+/// Look Acceleration for direct touch look (`input::touch_look::accel_gain`):
+/// 0 to 10, 5 the default (1.0).
+pub static TOUCH_ACCEL: Def = Def {
+    key: "touch.look_accel",
+    label: "Look Acceleration",
+    help: "How much farther a fast drag turns than a slow one: 0 is none (every \
+           drag turns the same per point), 5 the default, 10 the most.",
+    kind: Kind::Int {
+        valid: 0..=10,
+        steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_TOUCH_LOOK_ACCEL"),
+    flag: None,
+    aliases: &[("off", Value::Int(0))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// Touch Auto Fire: the touch controls pull the trigger while the reticle is
+/// red over an enemy (`input::touch_layout::fire_mode`).
+pub static TOUCH_AUTO_FIRE: Def = Def {
+    key: "touch.auto_fire",
+    label: "Touch Auto Fire",
+    help: "Fire by itself while the reticle is red over an enemy, so both thumbs \
+           can move and aim. Semi-automatic weapons fire at their own rate; the \
+           sword never lunges by itself.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: Some("H2_TOUCH_AUTO_FIRE"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -493,6 +538,8 @@ pub static ALL: &[&Def] = &[
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
     &TOUCH_GYRO,
+    &TOUCH_ACCEL,
+    &TOUCH_AUTO_FIRE,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -624,8 +671,12 @@ mod tests {
                 ("H2_TOUCH_LOOK", "7"),
                 ("H2_TOUCH_CROUCH", "hold"),
                 ("H2_TOUCH_GYRO", "off"),
+                ("H2_TOUCH_LOOK_ACCEL", "off"),
+                ("H2_TOUCH_AUTO_FIRE", "1"),
             ],
         );
+        assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
+        assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(s.get(TOUCH_LOOK.key), Some(Value::Int(7)));
         assert_eq!(s.get(TOUCH_CROUCH.key), Some(Value::Int(TOUCH_CROUCH_HOLD)));
         assert_eq!(s.get(TOUCH_GYRO.key), Some(Value::Int(0)));

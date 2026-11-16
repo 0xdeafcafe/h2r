@@ -9,8 +9,13 @@
 //! * **Move stick**: the thumb's offset over the stick's radius, a radial
 //!   deadzone with the live range rescaled ([`move_stick`]), screen +y down
 //!   turned into stick +y up.
-//! * **Look**: drag travel is relative motion, like a mouse or the Steam
-//!   Controller's trackpad: it goes through [`LookMotion`], the mouse-look
+//! * **Look, direct** (with the boot's hook installed, [`TouchTuning::direct_look`]):
+//!   drag travel becomes a turn in radians ([`crate::touch_look`]) that the
+//!   hook adds to player one's facing; the gyro's rate times the interval
+//!   too. The stick is not used for touch look.
+//! * **Look, stick** (no hook, the fallback): drag travel is relative motion,
+//!   like a mouse or the Steam Controller's trackpad: it goes through
+//!   [`LookMotion`], the mouse-look
 //!   path, so it is held until the guest reads it and becomes a turn rate
 //!   proportional to the drag's speed, independent of the game's frame rate.
 //!   On top: a small jitter deadzone, acceleration with drag speed
@@ -21,6 +26,9 @@
 //!   to the look stick ([`gyro_stick`]).
 //! * **Buttons**: one bit per pad control ([`bits`]); the triggers report full
 //!   pull. Crouch (the left-stick click) can be a toggle ([`CrouchMode`]).
+//! * **Auto-fire** (Touch Auto Fire): the right trigger is pulled while the
+//!   reticle is red, as [`crate::touch_layout::fire_mode`] decides from the
+//!   [`Context`] the host passes in ([`TouchPad::set_context`]).
 //!
 //! The result is merged into player one by the keyboard pad
 //! (`backend::keyboard::KeyboardMouse::touch_update`), which shares port 0
@@ -31,6 +39,8 @@ use std::time::{Duration, Instant};
 
 use crate::host::{HostButton, HostButtons, HostPadState};
 use crate::look::LookMotion;
+use crate::touch_layout::{AutoFire, Context, FireMode, fire_mode};
+use crate::touch_look;
 
 static SHOWN: AtomicBool = AtomicBool::new(false);
 
@@ -121,6 +131,14 @@ pub struct TouchTuning {
     pub crouch: CrouchMode,
     /// Gyro sensitivity multiplier ([`gyro_stick`]); 0 turns gyro aiming off.
     pub gyro_sensitivity: f64,
+    /// Look turns the camera directly ([`crate::touch_look`]): set while a
+    /// hook takes the turn. Off, look is a stick deflection.
+    pub direct_look: bool,
+    /// Direct look's acceleration ([`touch_look::accel_gain`]; 1.0 default,
+    /// 0 off): Look Acceleration / 5.
+    pub direct_acceleration: f64,
+    /// Fire by itself while the reticle is red (Touch Auto Fire).
+    pub auto_fire: bool,
 }
 
 impl Default for TouchTuning {
@@ -135,6 +153,9 @@ impl Default for TouchTuning {
             invert_y: false,
             crouch: CrouchMode::Toggle,
             gyro_sensitivity: 0.0,
+            direct_look: false,
+            direct_acceleration: 1.0,
+            auto_fire: false,
         }
     }
 }
@@ -260,6 +281,13 @@ pub struct TouchPad {
     gyro: (f32, f32),
     look: LookMotion,
     last_look: Option<Instant>,
+    /// The previous report (the gyro's interval in direct look).
+    last_update: Option<Instant>,
+    /// The turn the last report added in direct look (radians, right/up).
+    last_turn: (f64, f64),
+    /// Player one's state (`touch_layout`), for auto-fire.
+    context: Context,
+    auto_fire: AutoFire,
 }
 
 impl Default for TouchPad {
@@ -278,6 +306,10 @@ impl TouchPad {
             gyro: (0.0, 0.0),
             look: LookMotion::default(),
             last_look: None,
+            last_update: None,
+            last_turn: (0.0, 0.0),
+            context: Context::default(),
+            auto_fire: AutoFire::default(),
         }
     }
 
@@ -290,7 +322,26 @@ impl TouchPad {
         if tuning.crouch == CrouchMode::Hold {
             self.crouched = false;
         }
+        if tuning.direct_look != self.tuning.direct_look {
+            self.look.clear();
+        }
         self.tuning = tuning;
+    }
+
+    /// Player one's state now (for auto-fire).
+    pub fn set_context(&mut self, context: Context) {
+        self.context = context;
+    }
+
+    /// What auto-fire does now.
+    pub fn fire_mode(&self) -> FireMode {
+        fire_mode(self.tuning.auto_fire, &self.context)
+    }
+
+    /// The turn (radians, +x right, +y up) the last report added in direct
+    /// look.
+    pub fn last_turn(&self) -> (f64, f64) {
+        self.last_turn
     }
 
     /// One report from the host at `now`.
@@ -305,19 +356,45 @@ impl TouchPad {
         self.move_stick = f.move_offset.map_or((0.0, 0.0), |o| {
             move_stick(o, t.stick_radius, t.stick_deadzone)
         });
+        let interval = |since: Option<Instant>| {
+            since
+                .map_or(MAX_INTERVAL, |at| now.saturating_duration_since(at))
+                .clamp(MIN_INTERVAL, MAX_INTERVAL)
+                .as_secs_f64()
+        };
+        let (dx, dy) = (f64::from(f.look.0), f64::from(f.look.1));
+        if t.direct_look {
+            // Every point turns: no jitter deadzone on the direct path.
+            self.gyro = (0.0, 0.0);
+            let drag = if dx.is_finite() && dy.is_finite() && (dx, dy) != (0.0, 0.0) {
+                let d = touch_look::drag_turn(
+                    (dx, dy),
+                    interval(self.last_look),
+                    t.look_sensitivity,
+                    t.direct_acceleration,
+                    t.invert_y,
+                );
+                self.last_look = Some(now);
+                d
+            } else {
+                (0.0, 0.0)
+            };
+            let gyro =
+                touch_look::gyro_turn(f.gyro, interval(self.last_update), t.gyro_sensitivity);
+            self.last_update = Some(now);
+            self.last_turn = (drag.0 + gyro.0, drag.1 + gyro.1);
+            touch_look::push(now, self.last_turn);
+            return;
+        }
+        self.last_update = Some(now);
         self.gyro = if t.gyro_sensitivity > 0.0 {
             f.gyro
         } else {
             (0.0, 0.0)
         };
-        let (dx, dy) = (f64::from(f.look.0), f64::from(f.look.1));
         let mag = dx.hypot(dy);
         if mag.is_finite() && mag > t.look_jitter.max(0.0) {
-            let dt = self
-                .last_look
-                .map_or(MAX_INTERVAL, |at| now.saturating_duration_since(at))
-                .clamp(MIN_INTERVAL, MAX_INTERVAL)
-                .as_secs_f64();
+            let dt = interval(self.last_look);
             let gain = look_gain(mag / dt, t.look_acceleration) * t.look_sensitivity.max(0.0);
             self.look.add(now, dx * gain, dy * gain);
             // Updates with no drag in between (the host's per-frame ones)
@@ -330,7 +407,12 @@ impl TouchPad {
     /// Lets go of everything: the controls hid, or the app left the screen.
     /// A toggled crouch stands up.
     pub fn release(&mut self) {
+        let context = self.context;
         *self = Self::new(self.tuning);
+        self.context = context;
+        if self.tuning.direct_look {
+            touch_look::clear();
+        }
     }
 
     /// Whether the left-stick click is down for the game.
@@ -361,12 +443,13 @@ impl TouchPad {
             ry /= mag;
         }
         let pull = |bit: u32| if held & bit != 0 { 1.0 } else { 0.0 };
+        let auto = self.auto_fire.pulled(self.fire_mode());
         HostPadState {
             buttons: buttons(held),
             left_stick: self.move_stick,
             right_stick: (rx as f32, ry as f32),
             left_trigger: pull(bits::LEFT_TRIGGER),
-            right_trigger: pull(bits::RIGHT_TRIGGER),
+            right_trigger: if auto { 1.0 } else { pull(bits::RIGHT_TRIGGER) },
             analog_buttons: None,
             prefiltered: true,
         }
@@ -375,6 +458,8 @@ impl TouchPad {
     /// The guest read the newest state: spend its look motion.
     pub fn read(&mut self, now: Instant) {
         self.look.read(now);
+        let mode = self.fire_mode();
+        self.auto_fire.read(mode);
     }
 
     /// Whether anything is held or moving (the overlay is in use).
@@ -384,6 +469,7 @@ impl TouchPad {
             || self.move_stick != (0.0, 0.0)
             || self.gyro != (0.0, 0.0)
             || self.look.pending() != (0.0, 0.0)
+            || self.last_turn != (0.0, 0.0)
     }
 }
 

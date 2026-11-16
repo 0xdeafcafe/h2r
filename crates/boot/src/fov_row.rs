@@ -99,6 +99,19 @@ pub fn clamp_max(retail: f32, target: Option<f32>) -> f32 {
     target.map_or(retail, |t| t.max(retail))
 }
 
+/// The zoom magnification of the camera `0x187130` returned `result` for:
+/// the unit's unzoomed field of view over it, 1 when unzoomed, with no unit,
+/// or for anything implausible. Direct touch look divides its turn by it
+/// (`input::touch_look::applied`).
+pub fn magnification(result: f32, unzoomed: Option<f32>) -> f32 {
+    match unzoomed {
+        Some(u) if result.is_finite() && result > 0.0 && u.is_finite() && u > result => {
+            (u / result).min(100.0)
+        }
+        _ => 1.0,
+    }
+}
+
 /// After the original `0x187130` returned `result` for player `user`: the
 /// value to return, with the clamp brought in line. Retail with the clamp
 /// already retail changes nothing.
@@ -222,6 +235,15 @@ mod tests {
         assert_eq!(clamp(&f), deg(110.0), "back to retail");
         assert_eq!(clamp_max(deg(110.0), Some(deg(150.0))), deg(150.0));
         assert_eq!(clamp_max(deg(110.0), None), deg(110.0));
+    }
+
+    #[test]
+    fn magnification_is_unzoomed_over_zoomed() {
+        assert_eq!(magnification(deg(35.0), Some(deg(70.0))), 2.0);
+        assert_eq!(magnification(deg(70.0), Some(deg(70.0))), 1.0);
+        assert_eq!(magnification(deg(70.0), None), 1.0, "no unit");
+        assert_eq!(magnification(0.0, Some(deg(70.0))), 1.0);
+        assert_eq!(magnification(f32::NAN, Some(deg(70.0))), 1.0);
     }
 
     #[test]

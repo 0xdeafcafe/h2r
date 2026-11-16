@@ -2298,6 +2298,96 @@ impl ScaleView<GfxBackend> for GfxBackend {
     }
 }
 
+/// The retail-or-E3 A/B capture ([`LightingAb`]): a second view over a
+/// [`ScaledBackend`] used as its reference. The inner backend answers the
+/// guest from its 1x reference and draws its own view (retail); this view
+/// draws the same calls at the same scale with the other lighting. It
+/// takes the inner reference's textures and pixels, as a view over a
+/// plain backend does, so the two views differ only where lighting does.
+impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
+    fn create_scaled_surface(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        depth: bool,
+        scale: u32,
+    ) -> Result<gfx::surface::SurfaceId, String> {
+        <Self as ScaleView<GfxBackend>>::create_scaled_surface(self, format, width, height, depth, scale)
+    }
+
+    fn create_scaled_texture_target(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        scale: u32,
+    ) -> Result<gfx::surface::SurfaceId, String> {
+        <Self as ScaleView<GfxBackend>>::create_scaled_texture_target(self, format, width, height, scale)
+    }
+
+    fn stop_counting(&mut self) {
+        self.count_samples = false;
+    }
+
+    fn set_hard_shadows(&mut self, on: bool) {
+        GfxBackend::set_hard_shadows(self, on);
+    }
+
+    fn share_texture(
+        &mut self,
+        reference: &ScaledBackend<GfxBackend, GfxBackend>,
+        texture: &Tex<GfxBackend, GfxBackend>,
+    ) -> Option<HostTexture> {
+        <Self as ScaleView<GfxBackend>>::share_texture(self, reference.reference(), &texture.reference)
+    }
+
+    fn submit_recorded(&mut self) -> Result<(), String> {
+        self.flush()
+    }
+
+    fn fill_from(
+        &mut self,
+        reference: &mut ScaledBackend<GfxBackend, GfxBackend>,
+        src: Surf<GfxBackend, GfxBackend>,
+        dst: gfx::surface::SurfaceId,
+    ) -> Result<bool, String> {
+        <Self as ScaleView<GfxBackend>>::fill_from(self, reference.reference_mut(), src.reference, dst)
+    }
+
+    fn present_reference(
+        &mut self,
+        reference: &ScaledBackend<GfxBackend, GfxBackend>,
+        surface: Surf<GfxBackend, GfxBackend>,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_from(Some(reference.reference()), surface.reference, flags, gamma)
+    }
+}
+
+/// A same-run A/B of the lighting modes (`H2_BOOT_GFX_LIGHTING_AB`): the
+/// game and its 1x reference once, drawn at the render scale by two views
+/// from the same calls, the inner one retail and the outer one E3.
+pub type LightingAb = ScaledBackend<ScaledBackend<GfxBackend, GfxBackend>, GfxBackend>;
+
+/// [`LightingAb`] over `reference`, a retail view and an E3 view at
+/// `scale` (2 to [`MAX_SCALE`]).
+pub fn lighting_ab(
+    reference: GfxBackend,
+    retail: GfxBackend,
+    e3: GfxBackend,
+    scale: u32,
+) -> Result<LightingAb, String> {
+    if scale < 2 {
+        return Err(format!("the lighting A/B draws at a render scale of 2 or more, not {scale}"));
+    }
+    let inner = ScaledBackend::new(reference, retail, scale)?;
+    let mut outer = ScaledBackend::new(inner, e3, scale)?;
+    outer.set_lighting(Lighting::E3);
+    Ok(outer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
