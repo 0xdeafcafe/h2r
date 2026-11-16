@@ -4420,6 +4420,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-edit"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "map",
+ "pollster",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
