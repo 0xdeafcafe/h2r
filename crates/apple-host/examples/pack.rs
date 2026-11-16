@@ -126,10 +126,12 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> R
     stamp.push(".stamp");
     std::fs::copy(&stamp, fw.join("h2game.stamp"))?;
     std::fs::write(fw.join("Info.plist"), platform.framework_plist())?;
-    // Nothing else in the cache is for the app (the unread-target sets are
-    // written on the device).
+    // Only this build's analysis is for the app: the unread-target sets are
+    // written on the device, and an older analysis (another analyzer or
+    // Cargo.lock) would only be copied over and never match.
+    let current = boot::analysis_cache(&xbe).and_then(|p| p.file_name().map(|n| n.to_owned()));
     for e in std::fs::read_dir(&cache)?.flatten() {
-        if !e.file_name().to_string_lossy().starts_with("analysis-") {
+        if Some(e.file_name()) != current {
             let _ = std::fs::remove_file(e.path());
         }
     }
