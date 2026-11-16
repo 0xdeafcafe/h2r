@@ -801,12 +801,12 @@ fn stub_ok(
     Ok(stub_converted(s))
 }
 
-fn stub_mopp(
+fn stub_too_big(
     _: &[u8],
     _: Vec<u8>,
     _: ConvertSandbox,
 ) -> Result<h1convert::convert::Converted, h1convert::Error> {
-    Err(h1convert::Error::MoppNotMerged)
+    Err(h1convert::Error::TooManySurfaces(70_000))
 }
 
 /// A Halo 2 folder with `beavercreek` (the base) and a Halo 1 disc, with
@@ -860,14 +860,17 @@ fn converting_writes_the_package_lists_it_and_opens_the_variant() {
 
 #[test]
 fn a_refused_conversion_says_why_and_writes_nothing() {
-    let t = Temp::new("convertmopp");
+    let t = Temp::new("convertrefused");
     let mut app = convert_ready(&t);
-    app.set_converter(stub_mopp);
+    app.set_converter(stub_too_big);
     app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
     app.wait_convert();
     let e = app.convert_error().unwrap();
-    assert!(e.starts_with("Conversion isn't available yet"), "{e}");
-    assert!(matches!(app.status(), Some(Status::Error(m)) if m.contains("collision builder")));
+    assert!(
+        e.starts_with("This level has 70,000 surfaces; Halo 2 holds at most 65,536"),
+        "{e}"
+    );
+    assert!(matches!(app.status(), Some(Status::Error(m)) if m.contains("70,000 surfaces")));
     assert!(!t.0.join("data/maps/h1_bloodgulch").exists());
     assert_eq!(app.loaded_halo1(), Some("bloodgulch"), "still on show");
     // The Halo 1 sandbox's refusal reads plainly too.
@@ -901,36 +904,87 @@ fn converting_needs_the_base_map_from_a_halo2_disc() {
     assert!(app.convert_error().unwrap().contains("beavercreek"));
 }
 
-/// Blood Gulch from the owner's Halo 1 disc onto Beaver Creek from the
-/// Halo 2 one: a map, or the refusal while the MOPP writer is missing.
+/// Blood Gulch and Battle Creek from the owner's Halo 1 disc, converted
+/// through the editor's own flow into a scratch data root: listed with
+/// their origin, loaded by the content resolver, opened in the scenario
+/// session with a BSP and placements, and their Halo 1 source found by
+/// hash for the overlay.
 #[test]
 #[ignore = "needs disc/halo1.iso and disc/halo2.iso (or $H1_ISO, $H2_DISC)"]
-fn disc_bloodgulch_converts_or_waits_for_the_mopp_writer() {
+fn disc_maps_convert_open_and_find_their_source() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let disc = |var: &str, file: &str| {
         std::env::var_os(var).map_or_else(|| root.join("disc").join(file), PathBuf::from)
     };
-    let h1 = editor_core::halo1::H1Source::open(&disc("H1_ISO", "halo1.iso")).unwrap();
-    let h2 = editor_core::MapSource::open(&disc("H2_DISC", "halo2.iso")).unwrap();
-    let (path, region) = h2.location("beavercreek").unwrap();
-    let base = scenario_edit::MapSource::region(path, region)
-        .read_base()
-        .unwrap();
-    match h1convert_convert(
-        &h1.read_raw("bloodgulch").unwrap(),
-        base,
-        ConvertSandbox::Halo2,
-    ) {
-        Ok(done) => {
-            assert_eq!(done.name, "h1_bloodgulch");
-            assert_eq!(done.manifest.variants.len(), 1);
-            let t = Temp::new("convertdisc");
-            let w = crate::app::convert::write(&t.0, &done).unwrap();
-            assert_eq!(w.key, "h1_bloodgulch#H2");
-            let listed = editor_core::packages::list(&t.0);
-            assert_eq!(listed[0].label(), "Blood Gulch (H2 sandbox)");
-        }
-        Err(h1convert::Error::MoppNotMerged) => eprintln!("waiting for the MOPP writer"),
-        Err(e) => panic!("{e}"),
+    for name in ["bloodgulch", "beavercreek"] {
+        let t = Temp::new(&format!("convertdisc-{name}"));
+        let mut app = app_with(&t);
+        app.session.build_scenes = false;
+        app.dispatch(Action::OpenSource(disc("H2_DISC", "halo2.iso")));
+        app.dispatch(Action::OpenSource(disc("H1_ISO", "halo1.iso")));
+        app.dispatch(Action::SelectHalo1Map(name.into()));
+        let started = std::time::Instant::now();
+        app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+        app.wait_convert();
+        assert_eq!(app.convert_error(), None, "{name}");
+        let secs = started.elapsed().as_secs_f32();
+        let dir = format!("h1_{name}");
+        let key = format!("{dir}#H2");
+        assert_eq!(app.opened_package(), Some(key.as_str()));
+
+        // Listed by its origin.
+        let maps = app.session.maps_dir();
+        let entry = app.packages().iter().find(|e| e.key() == key).unwrap();
+        let origin = entry.halo1.as_ref().unwrap();
+        assert_eq!(origin.map, name);
+        assert_eq!(origin.sandbox, Some(editor_core::packages::Sandbox::Halo2));
+        // Loaded by the content resolver.
+        let lib = content::Library::open(&maps);
+        let p = lib
+            .packages()
+            .iter()
+            .find(|p| p.dir_name() == dir)
+            .unwrap_or_else(|| panic!("the resolver refused {dir}"));
+        let resolved = lib.resolve_package(p, &mut &[][..]).unwrap();
+        let bytes = resolved.read_all(&mut &[][..]).unwrap();
+
+        // Open in the scenario session: a BSP and the placements.
+        assert!(app.session.is_derived());
+        let (world, failed) = app.session.world();
+        let scenario = app.session.scenario().unwrap();
+        let count = |k: BlockKind| scenario.block(k).len();
+        let (spawns, flags, items) = (
+            count(BlockKind::StartingLocations),
+            count(BlockKind::NetgameFlags),
+            count(BlockKind::NetgameEquipment),
+        );
+        assert!(!world.is_empty(), "{name}: no BSP triangles");
+        assert_eq!(failed, 0, "{name}: BSP sections not loaded");
+        assert!(spawns > 0 && flags > 0 && items > 0, "{name}");
+
+        // The overlay finds the Halo 1 source by hash.
+        let c = app.compare().unwrap();
+        let h1 = c.view.as_ref().unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(app.overlay().is_some());
+        use editor_core::halo1::H1Kind;
+        let h1_spawns = h1.of(H1Kind::StartingLocation).count();
+        let h1_kinds = format!(
+            "{} flags, {} netgame equipment, {} vehicles",
+            h1.of(H1Kind::NetgameFlag).count(),
+            h1.of(H1Kind::NetgameEquipment).count(),
+            h1.of(H1Kind::Vehicle).count()
+        );
+        eprintln!(
+            "{name}: converted in {secs:.1} s, {} bytes (resolver {} bytes); \
+             {} BSP triangles; {spawns} spawns, {flags} flags, {items} netgame equipment; \
+             Halo 1 source {} triangles, {h1_spawns} spawns, {h1_kinds}, {} placements",
+            std::fs::metadata(maps.join(&dir).join(format!("h2/{dir}.map")))
+                .unwrap()
+                .len(),
+            bytes.len(),
+            world.len(),
+            h1.tris.len(),
+            h1.placements.len(),
+        );
     }
 }

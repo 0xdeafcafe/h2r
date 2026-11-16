@@ -320,9 +320,8 @@ Halo 2 map:
    example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
 
 If it can't convert, the inspector says `Not converted` and why, and the
-log says the same. For now every conversion stops with `Conversion isn't
-available yet: the collision builder (the MOPP writer) hasn't landed, so
-no map was written.`: the part that makes the level solid isn't finished.
+log says the same: for example `This level has 70,000 surfaces; Halo 2
+holds at most 65,536, so it can't be converted.`
 
 ![Halo 1's Blood Gulch, read only: the plain grey canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
 
