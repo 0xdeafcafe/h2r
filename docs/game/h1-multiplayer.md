@@ -201,9 +201,11 @@ The base's old BSP region stays in the file, unused.
   coordinates, which both games store alike) and its triangles from the
   render surfaces. Triangles are turned to Halo 2's winding, decided once
   per level by majority against the packed normals: Halo 1's beavercreek
-  needed flipping. Meshes are packed into sections of at most 65535
-  vertices and indices (the section's `u16` counts), so a large level
-  becomes several clusters; parts never span sections. Streams written:
+  needed flipping. Meshes are packed into sections by lightmap page (a
+  cluster has one page, its render info's; unlit meshes last), each of
+  at most 65535 vertices and indices (the section's `u16` counts), so a
+  level becomes one cluster or more per page (Beaver Creek 14, Blood
+  Gulch 16); parts never span sections. Streams written:
   `01` position, `18` texture coordinate, `1b` frame, `1f` lightmap
   coordinate. Part kind 2 (a drawn kind; which drawn kind means what is
   unknown), triangle-list flag, one subpart per part.
@@ -240,12 +242,29 @@ The base's old BSP region stays in the file, unused.
   Waterworks (snow, and a wraith) would suit Sidewinder and Ice Fields,
   but Sidewinder's placements grow Waterworks' metadata past the engine's
   tag memory, so they take Coagulation too.
-- **Lightmap.** One group, the structure checksum (FNV-1a of the
-  positions), no bitmap, a render info entry `{-1, -1}` per cluster.
-  Levels render unlit (the default texture path) until Halo 1's lightmap
-  pages are converted. The pages now convert (`h1bitmaps::lightmap_pages`
-  and `convert_bitmap`, byte-identical on a30); what this writer must add
-  to use them is in [h1-bitmaps.md](../formats/h1-bitmaps.md#lightmaps-for-the-structure-writer).
+- **Lightmap** (Halo 1's own). One group, the structure checksum (FNV-1a
+  of the positions), the bitmap reference `+0x18` naming Halo 1's
+  lightmap bitmap converted (`h1bitmaps::convert_bitmap`: one R5G6B5
+  image per page, Halo 1's bytes unchanged), and per cluster a render
+  info `{page, -1}` (`{-1, -1}` for unlit clusters). The bitmap takes the
+  slot of the base's own lightmap bitmap, which nothing else names
+  ([Freed slots](#vehicles)), through `h1models::Converted::install_at`.
+  The lightmap coordinates (stream `1f`, in every cluster section as on
+  retail maps) are page-relative, in [0, 1]. Retail lightmaps also carry
+  per-vertex lighting buckets (`+0x40`, streams `30` and `2f`); clusters
+  read none (`+0x60` empty, as on Coagulation).
+
+  **Colour pages with no palette (E).** Retail pages are P8 with a
+  palette per cluster; Halo 1's are R5G6B5. Nothing in the engine needs
+  P8: the structure renderer stores the cluster's page whatever its
+  palette, and binds a palette at stage 3 only when one is named (E
+  `0x0004d3ff`..`0x0004d420`: `cmp edx, -1` skips the bind, the page goes
+  to `[0x485a60]` either way), and the texture sampler returns a colour
+  for both. The CPU lightmap query that lights objects (E `0x000d2f90`)
+  samples the page through the general pixel reader (`0x001362b0`) and
+  looks the value up in a palette only when the image's format is P8
+  (`cmp word [esi+0Ch], 12h` at `0x000d309a`); otherwise the sample is the
+  colour. So the pages stay as Halo 1 stored them: no quantizing.
 
 **Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
 and a 30,000-triangle one into an invented map and reads them back with
@@ -498,7 +517,17 @@ convert` lists each with its position (`not placed: ...`):
 All 13 multiplayer maps on the Halo 1 disc convert
 (`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
 build), each map reads back with a valid checksum, and its bitmaps are
-the base's, pixel for pixel. Per map (placed / Halo 1; items include
+the base's, pixel for pixel, but for the lightmap. The test also checks,
+on every map: each drawn part's material names the shader `shaders::pick`
+chose, none of those shaders' bitmaps is an `unwrapped` one, the texture
+and lightmap coordinates read back as written; the lightmap names the
+converted bitmap, every lit cluster's page is one of its images, and each
+page decodes (Halo 2's decoder, the converted map's own raw data) to the
+Halo 1 page's pixels. Lightmap pages (clusters): beavercreek 13 (14),
+bloodgulch 15 (16), boardingaction 25 (26), carousel 28 (29), chillout 9
+(10), damnation 10 (11), hangemhigh 2 (3), longest 1 (2), prisoner 2 (3),
+putput 9 (10), ratrace 11 (12), sidewinder 23 (24), wizard 11 (12); the
+extra cluster holds the unlit surfaces. Per map (placed / Halo 1; items include
 vehicles, which Halo 2 places as items):
 
 | Map | Base | Triangles | Spawns | Flags | Items | Vehicles | Left out |
@@ -527,9 +556,9 @@ disc.
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. **Decals, lights, decorators** of the base (above).
-3. **Lightmaps** from Halo 1's lightmap pages, then **Halo 1's own
-   textures** on per-shader Halo 2 shaders (base shaders are chosen by
-   name until then).
+3. ~~**Lightmaps**~~: done (above). Next, **Halo 1's own textures** on
+   per-shader Halo 2 shaders (base shaders are chosen by name until then;
+   `h2 h1 convert` marks each as the base's stand-in).
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at

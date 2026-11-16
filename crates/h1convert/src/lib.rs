@@ -60,6 +60,12 @@ pub enum Error {
     /// The placements couldn't be written.
     #[error(transparent)]
     Apply(#[from] apply::ApplyError),
+    /// The lightmap bitmap couldn't be converted.
+    #[error("lightmap bitmap: {0}")]
+    Bitmap(#[from] h1bitmaps::Error),
+    /// A converted tag couldn't be installed.
+    #[error("installing a converted tag: {0}")]
+    Install(#[from] h1models::Error),
 }
 
 /// Result alias for this crate.

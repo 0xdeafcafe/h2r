@@ -158,6 +158,12 @@ pub struct Prepared {
     pub trigger_volumes: usize,
     /// World bounds.
     pub bounds: [f32; 6],
+    /// The converted lightmap: Halo 1's lightmap bitmap as a Halo 2 one
+    /// (one image per page, colour) and the slot it takes (the base's own
+    /// lightmap bitmap's, free once the lightmap is replaced). `None` when
+    /// the Halo 1 structure has no lightmap bitmap or the base none to
+    /// replace: then every cluster is unlit.
+    pub lightmap: Option<Lightmap>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -175,6 +181,21 @@ impl std::fmt::Debug for Prepared {
             .field("materials", &self.materials.len())
             .finish_non_exhaustive()
     }
+}
+
+/// The converted lightmap bitmap and where it goes.
+#[derive(Debug, Clone)]
+pub struct Lightmap {
+    /// The Halo 1 bitmap's tag name.
+    pub source: String,
+    /// Pages (images).
+    pub pages: usize,
+    /// The converted tag.
+    pub bitmap: h1models::Converted,
+    /// The base tag whose slot it takes, and that tag's name.
+    pub slot: TagId,
+    /// The name of the tag in that slot before.
+    pub replaces: String,
 }
 
 /// A finished conversion.
@@ -364,6 +385,20 @@ pub fn prepare<R: Read + Seek>(
     // the shaders the converted one still names and the base's lightmap
     // bitmap, kept for the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
+    let pages = h1bitmaps::lightmap_pages(h1, &src)?;
+    let lightmap = match (&pages.tag, lightmap_slot) {
+        (Some(tag), Some(slot)) => {
+            let (bm, bitmap, _) = h1bitmaps::convert_bitmap(h1, tag)?;
+            Some(Lightmap {
+                source: tag.name.clone(),
+                pages: bm.images.len(),
+                bitmap,
+                slot,
+                replaces: base.tag(slot)?.name.clone().unwrap_or_default(),
+            })
+        }
+        _ => None,
+    };
     let mut keep: Vec<TagId> = material_shaders
         .iter()
         .map(|(i, _)| templates.shader(*i))
@@ -389,6 +424,7 @@ pub fn prepare<R: Read + Seek>(
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
+        lightmap,
         scenario,
         sbsp,
         ltmp,
@@ -498,6 +534,15 @@ impl Prepared {
         let slot = (set.scenario.0 & 0xffff) as usize;
         set.slots[slot].name = Some(set.scenario_path.clone());
 
+        let lightmap_bitmap = match &self.lightmap {
+            Some(l) => l.bitmap.clone().install_at(
+                &mut set,
+                l.slot,
+                &format!("{}_lightmap", scenario_path(&self.h1_name)),
+            )?,
+            None => TagId::NULL,
+        };
+
         let mut geometry = Vec::new();
         for s in &self.sections {
             s.vertices.iter().for_each(|v| {
@@ -519,6 +564,7 @@ impl Prepared {
             mopp,
             checksum: fnv(&geometry),
             templates: &self.templates,
+            lightmap_bitmap,
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 

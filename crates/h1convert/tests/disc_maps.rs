@@ -193,6 +193,81 @@ fn check_structure_texturing(
     );
 }
 
+/// The converted lightmap: the lightmap names the converted bitmap, every
+/// lit cluster's page is one of its images, every cluster's lightmap
+/// coordinates lie in its page, and each page decodes (through Halo 2's
+/// decoder, from the converted map's own raw data) to the pixels of the
+/// Halo 1 page. Returns the number of pages.
+fn check_lightmap(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    files: &mut ResourceFiles,
+    h1: &H1Map,
+    p: &h1convert::convert::Prepared,
+) -> usize {
+    use tags::structure::{Lightmap, StructureRender};
+    let l = p
+        .lightmap
+        .as_ref()
+        .unwrap_or_else(|| panic!("{name}: no lightmap"));
+    let ltmp = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"ltmp"))
+        .unwrap()
+        .id;
+    let sbsp = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"sbsp"))
+        .unwrap()
+        .id;
+    let light = Lightmap::read(m, ltmp).unwrap();
+    let g = &light.groups[0];
+    assert_eq!(g.bitmap, Some(l.slot), "{name}: lightmap bitmap");
+    let render = StructureRender::read(m, sbsp).unwrap();
+    assert_eq!(g.cluster_render_info.len(), render.clusters.len());
+    let d = DecodedTag::read(m, l.slot).unwrap();
+    let TagData::Bitmap(b) = d.data else {
+        panic!("{name}: the lightmap bitmap isn't a bitmap")
+    };
+    assert_eq!(b.images.len(), l.pages, "{name}: pages");
+    let mut lit = 0;
+    for (info, s) in g.cluster_render_info.iter().zip(&p.sections) {
+        assert_eq!(info.palette_index, -1);
+        match s.page {
+            Some(page) => {
+                lit += 1;
+                assert_eq!(info.bitmap_index, page as i16, "{name}");
+                assert!(usize::from(page) < b.images.len(), "{name}: page {page}");
+            }
+            None => assert_eq!(info.bitmap_index, -1, "{name}"),
+        }
+        for v in &s.vertices {
+            assert!(v.lightmap.iter().all(|c| (0.0..=1.0).contains(c)));
+        }
+    }
+    assert!(lit > 0, "{name}: no lit cluster");
+    // Halo 1 names a level's lightmap bitmap after its scenario.
+    let tag = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == l.source && t.group.to_string() == "bitm")
+        .unwrap()
+        .clone();
+    let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
+    for (i, im) in b.images.iter().enumerate() {
+        let got = assets::decode_image(im, files).unwrap();
+        let want =
+            h1bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap()).unwrap();
+        assert_eq!(
+            got.levels[0].rgba, want[0].rgba,
+            "{name}: lightmap page {i}"
+        );
+    }
+    b.images.len()
+}
+
 /// Every vehicle spawn of a converted map: the collection's role (last
 /// name component), the vehicle its single entry spawns (last name
 /// component), its variant name, and the netgame type. Asserts each
@@ -405,9 +480,25 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let base_region = h2.region(base_name);
         let mut base_files = h2.files(base_region);
         let mut base_map = Map::from_reader(Cursor::new(h2.read(base_name))).unwrap();
+        let pages = check_lightmap(name, &mut m, &mut converted_files, &h1, &p);
+        eprintln!(
+            "    lightmap: {pages} pages from {}, in the slot of {}",
+            p.lightmap.as_ref().unwrap().source,
+            p.lightmap.as_ref().unwrap().replaces
+        );
         let want = bitmaps(&mut base_map, &mut base_files);
         let got = bitmaps(&mut m, &mut converted_files);
         std::fs::remove_file(&path).unwrap();
+        // The converted lightmap took the base's lightmap bitmap's slot:
+        // every other image is the base's.
+        let slot_name = p.lightmap.as_ref().map(|l| l.replaces.clone());
+        let lightmap_name = slot_name.clone().unwrap_or_default();
+        let want: Vec<_> = want.into_iter().filter(|w| w.0 != lightmap_name).collect();
+        let converted_lightmap = format!("{}_lightmap", h1convert::convert::scenario_path(name));
+        let got: Vec<_> = got
+            .into_iter()
+            .filter(|g| g.0 != converted_lightmap)
+            .collect();
         assert_eq!(got.len(), want.len(), "{name}: image count");
         let differ: Vec<_> = got
             .iter()

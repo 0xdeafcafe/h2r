@@ -224,13 +224,12 @@ do to show them, from [lighting.md](lighting.md) and
 4. Lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit surfaces)
    keep `{-1, -1}`.
 
-Open for that lane: whether Halo 2's structure shaders sample a non-P8
-lightmap correctly with palette `-1` (the renderer binds the palette at
-stage 3 only when one is named, E `0x0004d40f`; what the combiner does
-with an R5G6B5 sample instead of a palette lookup is unread). If it needs
-P8, the pages must be quantized to 256 colours per page plus a palette in
-the group's palette block (`+0x08`, `0x400` bytes each): a lossy step this
-crate does not do yet.
+Done in `h1convert` (docs/game/h1-multiplayer.md, "Lightmap"). The open
+question is settled from the executable: nothing needs P8. The renderer
+stores the page whatever the palette and binds one only when named (E
+`0x0004d40a`), and the CPU query that lights objects looks a sample up in
+a palette only when the image is P8 (E `0x000d309a`). The pages go in as
+R5G6B5, unquantized.
 
 ## Tests
 

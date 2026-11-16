@@ -652,6 +652,13 @@ fn convert(args: &[String]) -> Result<()> {
         "  base: {} placements removed, {} trigger volumes moved out of the level",
         p.applied.removed, p.trigger_volumes
     );
+    match &p.lightmap {
+        Some(l) => println!(
+            "  lightmap: {} pages from Halo 1's {}, in the unused slot of {}",
+            l.pages, l.source, l.replaces
+        ),
+        None => println!("  lightmap: none, the level is unlit"),
+    }
     for (h1s, (_, b)) in p.materials.iter().zip(&p.material_shaders) {
         println!("  shader {h1s} -> {b} (the base's, a stand-in)");
     }
