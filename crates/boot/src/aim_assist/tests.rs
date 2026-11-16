@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::*;
 
 #[derive(Default, Clone, PartialEq, Debug)]
-struct Fake(BTreeMap<u32, u8>);
+pub(super) struct Fake(BTreeMap<u32, u8>);
 
 impl Gm for Fake {
     fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
@@ -25,10 +25,10 @@ impl Gm for Fake {
     }
 }
 
-fn f32_at(m: &Fake, a: u32) -> f32 {
+pub(super) fn f32_at(m: &Fake, a: u32) -> f32 {
     f32::from_bits(m.u32(a).unwrap())
 }
-fn set_f32(m: &mut Fake, a: u32, v: f32) {
+pub(super) fn set_f32(m: &mut Fake, a: u32, v: f32) {
     m.set_u32(a, v.to_bits());
 }
 

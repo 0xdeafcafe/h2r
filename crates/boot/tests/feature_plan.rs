@@ -43,7 +43,8 @@ fn the_full_plan_builds_and_reads_as_expected() {
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
     r.add(&feature::leaves::EngineLeaves).unwrap();
-    // The aim assist's map-load hook (docs/game/aim-assist.md).
+    // The aim assist's map-load hook and its per-player multiplayer hooks
+    // (docs/game/aim-assist.md).
     let settings = settings::Store::defaults(boot::setting_defs::ALL);
     r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
     let plan = r.build(&feature::Base).unwrap();
@@ -64,9 +65,11 @@ feature aim-assist: on
 0x00137fe0 GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash]
 0x001389c0 GAME_END: original -> observe_after [live-telemetry:end]
 0x0015ce70 PLAYER_KILLED: observe_before [live-telemetry:kill] -> original
+0x00185be0 PLAYER_CONTROL_UPDATE: before [aim-assist:touch player's aim assist (open)] -> original -> after [aim-assist:touch player's aim assist (close)]
 0x0018f000 GAME_ACTIVATE: before [aim-assist:weapon aim assist] -> original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
+0x001a50a0 AIM_ASSIST_PARAMS: original -> after [aim-assist:touch player's weapon cone]
 0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original
 0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original
 0xa0f01000 entry video-screen:loader
@@ -80,7 +83,7 @@ warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast
     );
     // Shadows only where something runs after the original.
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
-    assert_eq!(shadows, 3);
+    assert_eq!(shadows, 5);
 }
 
 /// With the Rust locale lookup switched off, our strings go back to one
