@@ -1,0 +1,27 @@
+/* "Find a game" (dash/Sessions.tsx): the session list's plate and one
+   session's own screen. Sizes are in the dashboard's stage unit (--u). */
+
+.dx-sessions .dx-plate { min-height: calc(var(--u) * 210); }
+.dx-session-pic { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+
+/* Seats: a row of pips, the taken ones lit. */
+.dx-seats { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 4); margin-top: calc(var(--u) * 9); max-width: calc(var(--u) * 300); }
+.dx-seats i { width: calc(var(--u) * 13); height: calc(var(--u) * 13); border-radius: 50%; border: calc(var(--u) * 1.5) solid rgba(159, 226, 92, .55); background: rgba(8, 40, 6, .5); }
+.dx-seats i.on { border-color: #e9ffb0; background: radial-gradient(circle at 40% 35%, #f6ff9a, #9fe25c 55%, #3a9c14); box-shadow: 0 0 calc(var(--u) * 6) rgba(170, 255, 90, .65); }
+
+.dx-session-note { margin: calc(var(--u) * 9) 0 0; font-size: calc(var(--u) * 15.5); line-height: calc(var(--u) * 19); letter-spacing: .04em; text-transform: none; color: #c9f0a0; }
+.dx-sessions .dx-session-note:first-child { margin-top: 0; }
+
+/* One session: the plate carries the roster too, so it starts higher. */
+.dx-session .dx-plate--main { top: calc(var(--u) * 318); width: calc(var(--u) * 500); left: calc(var(--u) * 390); }
+.dx-session .dx-centre { transform: translateY(calc(var(--u) * -62)) scale(.8); }
+.dx-roster { list-style: none; margin: calc(var(--u) * 9) 0 0; padding: calc(var(--u) * 7) 0 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: calc(var(--u) * 14); border-top: calc(var(--u) * 1) solid rgba(159, 226, 92, .35); font-size: calc(var(--u) * 16); line-height: calc(var(--u) * 20); letter-spacing: .03em; text-transform: none; color: #fff; }
+.dx-roster li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dx-roster li.host { color: #f6ff9a; }
+.dx-roster small { margin-left: calc(var(--u) * 6); font-size: .78em; letter-spacing: .08em; text-transform: uppercase; color: #9fe25c; }
+
+@media (max-width: 720px) {
+  .dx-session .dx-plate--main { left: calc(var(--u) * 6); top: calc(var(--u) * 262); width: calc(var(--u) * 388); }
+  .dx-session .dx-centre { transform: translateY(calc(var(--u) * -40)) scale(.8); }
+  .dx-roster { grid-template-columns: 1fr 1fr; font-size: calc(var(--u) * 15); }
+}

@@ -34,13 +34,15 @@ import { useMotd } from "../state/motd";
 import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
+import SessionsScreen from "./Sessions";
 import "../styles/social.css";
 
-type SectionId = "live" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server";
-type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social";
+type SectionId = "live" | "sessions" | "friends" | "teams" | "players" | "history" | "settings" | "signup" | "server";
+type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
+  sessions: () => "find a game",
   friends: () => "friends",
   teams: () => "teams",
   players: () => "players",
@@ -53,7 +55,7 @@ const SECTION_IDS = Object.keys(LABELS) as SectionId[];
 
 /** The main menu: four items, five once signed in (friends, with teams inside).
  *  Sign up / profile and the server live under settings. */
-const menuItems = (): SectionId[] => (identity.me() ? ["live", "friends", "players", "history", "settings"] : ["live", "players", "history", "settings"]);
+const menuItems = (): SectionId[] => (identity.me() ? ["live", "sessions", "friends", "players", "history", "settings"] : ["live", "sessions", "players", "history", "settings"]);
 /** The menu item a section belongs under. Teams live inside friends (inside
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
@@ -118,6 +120,7 @@ export default function Dashboard() {
     if (!s) return "menu";
     if (s === "server") return "server";
     if (s === "friends" || s === "teams") return "social";
+    if (s === "sessions") return "sessions";
     if (s === "settings") return "settings";
     if (s === "signup") return identity.me() ? "player" : "signup";
     return viewed() ? "player" : "list";
@@ -239,8 +242,10 @@ export default function Dashboard() {
     }
   });
 
-  // The friends and teams screens (Social.tsx) take their own input.
+  // The friends and teams screens (Social.tsx) and the session screens
+  // (Sessions.tsx) take their own input.
   let socialAct: ((a: Action) => boolean) | null = null;
+  const ownInput = () => screen() === "social" || screen() === "sessions";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -272,7 +277,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "social": socialAct?.("select"); break;
+      case "social": case "sessions": socialAct?.("select"); break;
       case "menu": go(`/dash/${items()[menu()]!}`, "deeper"); break;
       case "list": openRow(sel()); break;
       case "signup": (document.getElementById("dash-signup") as HTMLFormElement | null)?.requestSubmit(); break;
@@ -287,7 +292,7 @@ export default function Dashboard() {
   /** One step of input, from the keyboard or a gamepad. Says whether it meant anything here. */
   function act(a: Action): boolean {
     if (leaving()) return false;
-    if (screen() === "social") return socialAct?.(a) ?? false;
+    if (ownInput()) return socialAct?.(a) ?? false;
     const n = items().length;
     switch (screen()) {
       case "menu":
@@ -523,6 +528,10 @@ export default function Dashboard() {
 
           <Match when={screen() === "social"}>
             <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
+          </Match>
+
+          <Match when={screen() === "sessions"}>
+            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
           </Match>
 
           <Match when={screen() === "server"}>
