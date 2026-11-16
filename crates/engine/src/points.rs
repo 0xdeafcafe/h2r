@@ -251,6 +251,17 @@ points! { ALL;
     /// Queue new game options (EAX = the options; `+0` the mode, 1 a
     /// campaign). The menu's campaign start and level boot both end here.
     OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/skulls.md";
+    /// The top-level Settings list's row text (thiscall on the list, the
+    /// item and a word).
+    SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The top-level Settings list's row chosen (thiscall on the list, the
+    /// player chain and a pointer to the row).
+    SETTINGS_ROW_CHOSEN @ 0x002b_1da9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The campaign difficulty list's row text.
+    DIFFICULTY_ROW_TEXT @ 0x002c_9ce7: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
+    /// The campaign difficulty list's row chosen: clamps the row to 0..3,
+    /// stores the difficulty and starts the campaign.
+    DIFFICULTY_ROW_CHOSEN @ 0x002c_9d38: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
     /// Open a screen: build a 0x20-byte request for the player mask and
     /// call `loader` with it (stdcall).
     OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";
