@@ -68,7 +68,7 @@ function Header(props: { game: GameState }) {
     <>
       <Title class="s-title--bar" back={["see all games", "/stats"]}>Game Details</Title>
       <div class="s-overview">
-        <MapThumb game={g()} />
+        <MapThumb game={g()} top />
         <ul class="s-summary">
           <li class="first"><GametypeIcon variant={g().variant} size={28} /><span>{gameTitle(g())}<small>on {titleCase(g().map)}</small></span></li>
           <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>

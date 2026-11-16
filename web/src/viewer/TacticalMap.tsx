@@ -11,7 +11,7 @@ import { titleCase } from "../lib/format";
 import { geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import ViewMap, { ViewPicker } from "../map/ViewMap";
-import { defaultView } from "../map/views";
+import { pickView, viewParam } from "../map/views";
 import { outlineFor } from "../state/outlines";
 import type { GameState } from "../state/reducer";
 import ViewerWindow from "./ViewerWindow";
@@ -45,20 +45,17 @@ export default function TacticalMap(props: {
   const outline = outlineFor(() => props.game.map);
   const geometry = geometryFor(() => props.game.map);
   const [layer, setLayer] = createSignal<number | null>(null);
-  const [view, setView] = createSignal<string | null>(null);
   const [broken, setBroken] = createSignal(false);
   const [params, setParams] = useSearchParams<{ view?: string; map?: string }>();
   const open = () => params.view === "3d";
   const setOpen = (on: boolean) => setParams({ view: on ? "3d" : undefined }, { replace: true });
-  createEffect(on(() => props.game.map, () => { setView(null); setBroken(false); }, { defer: true }));
+  createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
 
   const views = () => (broken() ? null : geometry()?.views ?? null);
-  const viewId = () => {
-    const v = views();
-    if (!v) return "";
-    const want = view() ?? params.map;
-    return v.views.find((x) => x.id === want)?.id ?? defaultView(v).id;
-  };
+  // The chosen view lives in the URL (`?map=iso-ne`), so it can be linked
+  // to; changing it replaces the entry rather than adding history.
+  const viewId = () => { const v = views(); return v ? pickView(v, params.map).id : ""; };
+  const setView = (id: string) => { const v = views(); if (v) setParams({ map: viewParam(v, id) }, { replace: true }); };
 
   return (
     <>

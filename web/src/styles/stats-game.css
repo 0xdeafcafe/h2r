@@ -170,3 +170,5 @@
   .s-3d-button { min-height: 24px; }
   .map-zoom button { width: 28px; height: 28px; }
 }
+.s-thumb--top { background: radial-gradient(120% 90% at 50% 40%, #16293c 0, #0a1622 60%, #060d15 100%); }
+.s-thumb--top .map-canvas { position: absolute; inset: 0; }

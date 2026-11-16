@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  clampPan, defaultView, depthOf, easePanZoom, fitPicture, gameToGl, glToGame, mapStem, parseMapFiles, parseViews,
+  clampPan, defaultView, depthOf, pickView, topView, viewParam, easePanZoom, fitPicture, gameToGl, glToGame, mapStem, parseMapFiles, parseViews,
   viewAxis, viewImageFile, viewLabel, viewScale, worldToPixel, yawOnView, yawToGl, zoomAbout, type Mat2x4,
 } from "../src/map/views";
 import { parseManifest } from "../src/lib/gameart";
@@ -95,6 +95,39 @@ describe("views.json", () => {
     expect(viewLabel("top")).toBe("Top");
     expect(viewLabel("iso-sw")).toBe("SW");
     expect(mapStem("maps\\Tea Cup.map")).toBe("tea cup");
+  });
+});
+
+describe("choosing a view", () => {
+  const view = (id: string) => ({ id, kind: "ortho", width: 8, height: 8, world_to_pixel: TOP });
+  const base = { geometry_version: 1, map: "m", bounds: { min: [0, 0, 0], max: [1, 1, 1] } };
+  const all = parseViews({ ...base, views: ["top", "iso-ne", "iso-sw"].map(view) })!;
+  const isoOnly = parseViews({ ...base, views: ["iso-ne", "iso-sw"].map(view) })!;
+
+  test("?map= picks a view the map has, and anything else is the default", () => {
+    expect(pickView(all, "iso-sw").id).toBe("iso-sw");
+    expect(pickView(all, undefined).id).toBe("top");
+    expect(pickView(all, "iso-nw").id).toBe("top");
+    expect(pickView(isoOnly, "top").id).toBe("iso-ne");
+  });
+
+  test("the URL names a chosen view, and says nothing for the default or an unknown one", () => {
+    expect(viewParam(all, "iso-ne")).toBe("iso-ne");
+    expect(viewParam(all, "top")).toBeUndefined();
+    expect(viewParam(all, "iso-nw")).toBeUndefined();
+    expect(viewParam(isoOnly, "iso-ne")).toBeUndefined();
+    expect(viewParam(isoOnly, "iso-sw")).toBe("iso-sw");
+    // What is written is what is read back.
+    for (const v of all.views) expect(pickView(all, viewParam(all, v.id)).id).toBe(v.id);
+  });
+
+  test("a thumbnail wants the straight-down view, or nothing", () => {
+    expect(topView(all)!.id).toBe("top");
+    expect(topView(isoOnly)).toBeNull();
+    expect(topView(null)).toBeNull();
+    // The mock's maps have one, and its picture is beside views.json.
+    const mock = parseViews(viewsJson(buildArena("orchard")!))!;
+    expect(viewImageFile("map/orchard/views.json", topView(mock)!)).toBe("map/orchard/views/top.png");
   });
 });
 

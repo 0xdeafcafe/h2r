@@ -14,6 +14,9 @@ import { colourFor, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { ago, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
+import { geometryFor } from "../map/geometry";
+import ViewMap from "../map/ViewMap";
+import { topView } from "../map/views";
 import { Panel } from "./Layout";
 import { randomStart, stepIndex } from "../lib/motd";
 
@@ -86,22 +89,41 @@ function stillFrame(g: GameState): (t: number) => MapFrame {
 
 /** A small picture of a game. With the server's game art it is the map's
  *  preview (a live game's blips drawn over it); otherwise a top-down view:
- *  live blips, or where a finished game's knockouts fell. */
-export function MapThumb(props: { game: GameState; class?: string; large?: boolean }) {
+ *  live blips, or where a finished game's knockouts fell. With `top` (the
+ *  game page's header) it is the map's pre-drawn top view when the server
+ *  has one, with the same blips or knockouts plotted on it. */
+export function MapThumb(props: { game: GameState; class?: string; large?: boolean; top?: boolean }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
   const liveSrc = liveFrameSource(props.game.game_id, roster);
   const still = stillFrame(props.game);
   const frame = (t: number) => (props.game.status === "live" ? liveSrc(t) : still(t));
   const preview = () => gameImage(mapKey(props.game.map));
+  // Only a `top` thumbnail asks for the map's views (a views.json per map).
+  const geometry = props.top ? geometryFor(() => props.game.map) : () => null;
+  const [broken, setBroken] = createSignal(false);
+  createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
+  const top = () => (broken() ? null : topView(geometry()?.views));
   return (
-    <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
-      <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${titleCase(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
-      <Show when={!preview() || props.game.status === "live"}>
-        <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${titleCase(props.game.map)}`} />
-      </Show>
-      <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
-    </span>
+    <Show
+      when={top()}
+      fallback={
+        <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
+          <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${titleCase(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
+          <Show when={!preview() || props.game.status === "live"}>
+            <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${titleCase(props.game.map)}`} />
+          </Show>
+          <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
+        </span>
+      }
+    >
+      {(v) => (
+        <span class={`s-thumb s-thumb--top ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live" }}>
+          <ViewMap mini frame={frame} roster={roster} views={geometry()!.views!} view={v().id} image={geometry()!.image} label={`Map of ${titleCase(props.game.map)}`} onError={() => setBroken(true)} />
+          <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
+        </span>
+      )}
+    </Show>
   );
 }
 
