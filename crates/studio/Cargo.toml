@@ -22,6 +22,8 @@ winit = "0.30"
 pollster = "1"
 png = "0.18"
 anyhow.workspace = true
+# The Dock icon for the unbundled editor (art/app-icon).
+app-icon = { path = "../app-icon" }
 rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../editor-core" }

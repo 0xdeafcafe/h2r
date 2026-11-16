@@ -175,6 +175,10 @@ impl Shell {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // No bundle carries an .icns, so the Dock shows a generic icon
+        // unless the app sets one (art/app-icon).
+        #[cfg(target_os = "macos")]
+        app_icon::set_dock_icon();
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;

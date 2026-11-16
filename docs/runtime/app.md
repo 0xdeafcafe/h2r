@@ -45,6 +45,10 @@ not stopped within `shutdown_timeout`). `ExitReport` holds the `GuestExit`
 (`Returned`, `Failed(msg)`, `Panicked(msg)`, `StillRunning`, `NotStarted`),
 frame counters and pacing counters.
 
+`h2 play` has no `.app` bundle, so on macOS the shell sets the Dock icon
+itself once the window is open (`app_icon::set_dock_icon`, the plated Mac
+icon from [art/app-icon](../../art/app-icon/README.md)).
+
 `GuestHost` (moved into the guest thread; `Send`):
 
 | method | what it is for |

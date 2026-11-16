@@ -10,7 +10,9 @@ a game-tool look (Unreal, RenderDoc, Tracy). It is a Rust app on Dear
 ImGui's docking branch: `dear-imgui-rs` for the UI, `dear-imgui-wgpu` on
 the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
-web views, no scripting. It hosts three tools:
+web views, no scripting. It runs unbundled, so it sets its own Dock icon
+(`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
+It hosts three tools:
 
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D

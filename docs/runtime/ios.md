@@ -13,6 +13,7 @@ device (arm64, iOS 17 or later); there is no simulator build. Landscape only.
 | `h2game.framework` | the generated module built for `arm64-apple-ios17.0`, embedded and signed by Xcode, loaded with `dlopen` | `boot::build` with `H2_EMIT_TARGET=ios` (`crates/apple-host/examples/pack.rs --platform ios`) |
 | `disc/`, `bootcache/` | the same disc subset and analysis as tvOS (`h2host::layout::DISC_FILES`) | `pack` |
 | `platform/ios/H2iOS` | a UIKit host: a view controller whose view is a `CAMetalLayer`, a 30 Hz `CADisplayLink`, the on-screen controls and the keyboard | Xcode |
+| `H2iOS/Assets.xcassets` | the app icon: `AppIcon.appiconset`, one 1024 universal image with dark and tinted appearances (iOS 18 and later use them; 17 shows the default) ([art/app-icon](../../art/app-icon/README.md)) | Xcode (actool), named by `ASSETCATALOG_COMPILER_APPICON_NAME` in `project.yml` |
 | `platform/apple` | what both apps share: the C API (`h2host.h`), the keyboard view (`GameKeyInput.swift`) and `build.sh` | |
 
 As on tvOS, the winit shell is compiled out and the Swift host hands its layer
@@ -197,7 +198,9 @@ tvOS `build/disc`, clone it first to skip the extraction:
 `cp -cR platform/tvos/build/disc platform/ios/build/disc`.
 
 `H2iOS.xcodeproj` is generated from `project.yml` with `xcodegen generate` (in
-`platform/ios`); both are committed.
+`platform/ios`); both are committed. Regenerate it after adding or removing
+files under `H2iOS` (xcodegen needs `build/disc` and `build/bootcache` to
+exist, even empty).
 
 ## Signing and installing
 
