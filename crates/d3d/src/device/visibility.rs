@@ -7,10 +7,24 @@
 //!    inline (`0x20cec`, an inlined `BeginVisibilityTest`), draws through a
 //!    callback whose return value is the pixel count it expects
 //!    (`0x20d07`), and calls `EndVisibilityTest` (`0x3f85d0` at `0x20d0f`);
-//! 2. on a later frame (the index rotates through three sets, `frame % 3`),
-//!    calls `GetVisibilityTestResult` (`0x3f8630` at `0x20cbb` and
-//!    `0x20840`) and divides the count by the expected one (`0x20861`),
-//!    clamped to `[0, 1]`. `D3DERR_TESTINCOMPLETE` keeps last frame's value.
+//! 2. on a later frame, reads the result. The index rotates through three
+//!    sets (`frame % 3`; object `i` of set `s` is index `s + 3 * i`), and a
+//!    bit per slot (`0x5233F0`, set at `0x20d51`) says a test was ended
+//!    there. Two places read it:
+//!    - the reader `0x207b0` (call at `0x20840`) reads set `(frame + 1) % 3`,
+//!      the tests ended two frames before, divides the count by the
+//!      expected one (`0x20861`) and clamps it to `[0, 1]`, then smooths
+//!      the object's visibility byte towards it. On `D3DERR_TESTINCOMPLETE`
+//!      (any non-zero `EAX`, `0x20847`) it skips the object: the byte keeps
+//!      its last value.
+//!    - the writer `0x20bb0` (call at `0x20cbb`), before it begins a new
+//!      test in a slot that had one (set `frame % 3`, ended three frames
+//!      before), asks for that test's result and throws the count away. On
+//!      `D3DERR_TESTINCOMPLETE` (`0x20cc4`) it skips the object this frame:
+//!      no new test, the old one stays in the slot.
+//!
+//!    Neither retries in a loop: an incomplete answer costs one frame of
+//!    staleness for that object and nothing else.
 //!
 //! On the Xbox, `EndVisibilityTest` (`EAX` = index; `ret`) finds the
 //! 16-byte report slot `index & 0xFF` of page `index >> 8` (64 pages at
@@ -20,29 +34,51 @@
 //! count, status 0}` there when it gets that far. `GetVisibilityTestResult`
 //! (`EAX` = index, `EDX` = optional `ULONGLONG*` timestamp out, `[esp+4]` =
 //! `UINT*` count out; `ret 4`) returns `D3DERR_TESTINCOMPLETE` while the
-//! status word is still `0xFFFFFFFF` (kicking a fence when nothing has
-//! moved since the end), and otherwise copies the count and timestamp out
-//! and returns 0.
+//! status word is still `0xFFFFFFFF`, writing nothing, and first calls
+//! `D3D_SetFence(0)` (`0x3f8660`) when the GPU time has not moved since
+//! the end (`0x3f8659`), so the work reaches the GPU. Otherwise it copies
+//! the count and timestamp out and returns 0.
 //!
 //! The pages are D3D-private: only `0x3f8570`, `0x3f8630` and the teardown
 //! (`0x3fc69d`) touch `+0x7D4` (checked by the ignored image test in
 //! `tests/round7.rs`). So the device keeps the slots itself, by index,
 //! and never allocates guest pages.
 //!
-//! **Synchronous results.** The device runs the push buffer synchronously
-//! (see "GPU model" in `docs/d3d.md`): by the time `GetVisibilityTestResult`
-//! runs, everything queued before it has executed. So a test that has been
-//! ended always has its result, and the call waits for the host GPU
-//! ([`Backend::read_pixel_count`]) instead of answering "incomplete". That
-//! is what the hardware would answer once caught up, and the game cannot
-//! tell a fast GPU from a slow one. `D3DERR_TESTINCOMPLETE` is never
-//! returned.
+//! **Results.** The device runs the push buffer synchronously (see "GPU
+//! model" in `docs/d3d.md`), so a test that has been ended is in the
+//! backend's queue. Whether its count is back depends on the backend: a
+//! render thread ([`crate::ThreadedBackend`]) may not have reached it yet,
+//! and a GPU may not have finished it.
+//!
+//! - **Polling** (the default). The device asks the backend without waiting
+//!   ([`Backend::try_pixel_count`]). A count that is back is answered. One
+//!   that is not, for a test ended at most [`VISIBILITY_PENDING_SWAPS`]
+//!   `Swap`s ago, is answered `D3DERR_TESTINCOMPLETE`, with the original's
+//!   fence kick. Older tests wait ([`Backend::read_pixel_count`]): the
+//!   hardware's GPU is never that far behind, so the game never sees an
+//!   older test incomplete. Halo reads at two and three frames, so in
+//!   steady state the count is back and nothing waits; when the render
+//!   thread lags, the reader keeps last frame's value as on the hardware.
+//!   Which calls answer incomplete depends on host timing.
+//! - **Waiting** (`H2_D3D_VISIBILITY_POLL=0`, [`Device::set_visibility_poll`]).
+//!   Every call waits for the count, so `D3DERR_TESTINCOMPLETE` is never
+//!   returned and the answers do not depend on host timing. With a render
+//!   thread the wait is for everything queued before it.
+//!
+//! Either way, a count once answered is kept, so asking again answers the
+//! same, as the slot would.
 
 use super::*;
 
 /// `D3DERR_TESTINCOMPLETE`: what the original returns while the report is
-/// not written. The device never does (see the module docs).
+/// not written (see the module docs).
 pub const D3DERR_TESTINCOMPLETE: u32 = 0x8876_0828;
+
+/// Polling answers `D3DERR_TESTINCOMPLETE` only for a test ended at most
+/// this many `Swap`s ago; an older one waits for its count. Halo's reader
+/// asks after two (so it may see incomplete, and keeps last frame's value),
+/// its writer after three (so it never does).
+pub const VISIBILITY_PENDING_SWAPS: u32 = 2;
 
 /// Visibility-test indices: 64 report pages of 256 slots
 /// (`0x3fc69d..0x3fc6bd` frees 0x40 pages).
@@ -54,6 +90,8 @@ pub(crate) struct VisibilityTest {
     /// GPU time (`+0x2C`) when it ended: the original stamps the slot with
     /// it, and the device reports it as the timestamp.
     pub time: u32,
+    /// The device's swap count when it ended.
+    pub swap: u32,
     /// The count.
     pub result: VisibilityResult,
 }
@@ -132,6 +170,7 @@ impl<B: Backend> Device<B> {
             index,
             VisibilityTest {
                 time,
+                swap: self.swap_count,
                 result: VisibilityResult::Ticket(ticket),
             },
         );
@@ -146,16 +185,17 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// `D3DDevice_GetVisibilityTestResult` (`0x3f8630`). Always complete
-    /// (see the module docs): waits for the backend's count the first time
-    /// and keeps it, so asking again answers the same, as the slot would.
-    /// An index that was never ended stops: the original would read a slot
-    /// of a page that may not exist.
+    /// `D3DDevice_GetVisibilityTestResult` (`0x3f8630`). `None` is
+    /// `D3DERR_TESTINCOMPLETE`: polling, a recent test whose count is not
+    /// back (see the module docs). A count once answered is kept, so asking
+    /// again answers the same, as the slot would. An index that was never
+    /// ended stops: the original would read a slot of a page that may not
+    /// exist.
     pub fn get_visibility_test_result(
         &mut self,
         mem: &mut dyn GuestMemory,
         index: u32,
-    ) -> Result<VisibilityAnswer, D3dError> {
+    ) -> Result<Option<VisibilityAnswer>, D3dError> {
         const E: &str = "D3DDevice_GetVisibilityTestResult";
         self.live(E)?;
         Self::check_index(E, index)?;
@@ -169,10 +209,22 @@ impl<B: Backend> Device<B> {
         let count = match test.result {
             VisibilityResult::Count(c) => c,
             VisibilityResult::Ticket(t) => {
-                let samples = self
-                    .backend
-                    .read_pixel_count(t)
-                    .map_err(D3dError::Backend)?;
+                let recent = self.swap_count.wrapping_sub(test.swap) <= VISIBILITY_PENDING_SWAPS;
+                let back = if self.visibility_poll && recent {
+                    self.backend.try_pixel_count(t)
+                } else {
+                    self.backend.read_pixel_count(t).map(Some)
+                };
+                let Some(samples) = back.map_err(D3dError::Backend)? else {
+                    // 0x3f8657..0x3f8660: a fence when nothing has moved
+                    // since the end, so the work reaches the GPU.
+                    let dev = self.cfg.layout.device;
+                    if mem.read_u32(dev + field::GPU_TIME)? == test.time {
+                        self.set_fence(mem)?;
+                    }
+                    self.stats.visibility_incomplete += 1;
+                    return Ok(None);
+                };
                 let c = u32::try_from(samples).unwrap_or(u32::MAX);
                 self.visibility.insert(
                     index,
@@ -184,10 +236,19 @@ impl<B: Backend> Device<B> {
                 c
             }
         };
-        Ok(VisibilityAnswer {
+        Ok(Some(VisibilityAnswer {
             count,
             timestamp: test.time as u64,
-        })
+        }))
+    }
+
+    /// Whether `GetVisibilityTestResult` polls (on by default;
+    /// `H2_D3D_VISIBILITY_POLL=0` turns it off): a recent test whose count
+    /// is not back answers `D3DERR_TESTINCOMPLETE` instead of waiting for
+    /// it (see the module docs). Off, every call waits, and the answers do
+    /// not depend on host timing.
+    pub fn set_visibility_poll(&mut self, on: bool) {
+        self.visibility_poll = on;
     }
 
     /// Forgets every visibility test (teardown frees the report pages).

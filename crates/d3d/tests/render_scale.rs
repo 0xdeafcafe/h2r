@@ -158,6 +158,9 @@ struct Answers {
 /// holds it.
 fn frame<B: Backend>(backend: B) -> (Device<B>, SparseMemory, Answers) {
     let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    // The test is read in the frame it ends: waiting makes the answer
+    // the same at every scale whatever the GPU's timing.
+    d.set_visibility_poll(false);
     d.set_rtt_direct(true);
     set_states(&mut d, &mut m);
     level(&mut m);

@@ -14,7 +14,12 @@
 //!
 //! - **Reads** (`read_surface`, `read_depth`, `read_pixel_count`) run on
 //!   the render thread after everything queued before them, and the guest
-//!   waits for the bytes. These were GPU round trips already.
+//!   waits for the bytes. These were GPU round trips already. A pixel
+//!   count already back is answered without the queue, and
+//!   `try_pixel_count` never waits: it answers from the counts the render
+//!   thread has landed, or "not back yet" (which the device turns into
+//!   `D3DERR_TESTINCOMPLETE` only for a recent test; docs/d3d.md,
+//!   "Visibility tests").
 //! - **Handles** (`create_surface`, `upload_texture`, `snapshot_surface`,
 //!   `surface_texture`, `report_pixel_count`) are proxies made on the
 //!   guest's side at once; the render thread maps them to the inner
@@ -41,7 +46,9 @@
 //! the guest never waits for it except at the reads above and the
 //! frame-in-flight limit, which wait on wall time only. So logical time,
 //! and everything the guest computes, is the same as with the synchronous
-//! backend; only wall-clock overlap changes.
+//! backend; only wall-clock overlap changes. The one exception is opt-out:
+//! a polled pixel count ([`Backend::try_pixel_count`]) may not be back
+//! yet, and a polling device answers that as `D3DERR_TESTINCOMPLETE`.
 //!
 //! Commands run in the order they were issued, on one queue, so the GPU
 //! sees exactly the submissions the synchronous backend makes.
@@ -55,7 +62,7 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -137,7 +144,9 @@ pub struct Worker<B: Backend> {
     inner: B,
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
-    tickets: HashMap<u64, u64>,
+    /// Pixel-count tickets not yet landed: proxy to the inner backend's,
+    /// in report order.
+    tickets: BTreeMap<u64, u64>,
     /// The depth buffer read back for depth-alias textures: surface,
     /// device depth generation, guest words.
     depth_words: Option<(u32, u64, Vec<u8>)>,
@@ -166,10 +175,13 @@ struct Shared {
     /// Wall time the render thread spent in the inner backend (ns).
     busy_ns: AtomicU64,
     /// Pixel counts already back from the GPU, by proxy ticket: the render
-    /// thread asks the inner backend after each present
+    /// thread asks the inner backend after each present and each batch
     /// ([`Backend::try_pixel_count`]), so a read of an older report answers
     /// without waiting for the queue.
     landed: Mutex<HashMap<u64, u64>>,
+    /// A [`Backend::try_pixel_count`] miss has queued a batch the render
+    /// thread has not run yet (one at a time).
+    land_kick: std::sync::atomic::AtomicBool,
 }
 
 static READS: AtomicU64 = AtomicU64::new(0);
@@ -178,6 +190,7 @@ static THROTTLES: AtomicU64 = AtomicU64::new(0);
 static THROTTLE_NS: AtomicU64 = AtomicU64::new(0);
 static BUSY_NS: AtomicU64 = AtomicU64::new(0);
 static LANDED_COUNTS: AtomicU64 = AtomicU64::new(0);
+static PENDING_COUNTS: AtomicU64 = AtomicU64::new(0);
 
 /// [`Waits`] summed over every render thread in the process so far (for
 /// a measurement window: take it twice and subtract).
@@ -190,6 +203,7 @@ pub fn total_waits() -> Waits {
         throttle_wait: d(&THROTTLE_NS),
         busy: d(&BUSY_NS),
         landed_counts: LANDED_COUNTS.load(Ordering::Relaxed),
+        pending_counts: PENDING_COUNTS.load(Ordering::Relaxed),
     }
 }
 
@@ -206,9 +220,12 @@ pub struct Waits {
     pub throttle_wait: std::time::Duration,
     /// Wall time the render thread spent running backend work.
     pub busy: std::time::Duration,
-    /// Pixel-count reads answered from a report already back, without a
-    /// wait (every thread's, in [`total_waits`]).
+    /// Pixel-count reads and polls answered from a report already back,
+    /// without a wait (every thread's, in [`total_waits`]).
     pub landed_counts: u64,
+    /// Pixel-count polls ([`Backend::try_pixel_count`]) answered "not back
+    /// yet" without a wait (every thread's, in [`total_waits`]).
+    pub pending_counts: u64,
 }
 
 impl Shared {
@@ -237,11 +254,13 @@ impl<B: Backend> Worker<B> {
     }
     /// Moves the pixel counts the GPU has written into
     /// [`Shared::landed`]. Same values as a read: only the wait goes.
+    /// Reports finish in order, so it stops at the first not back.
     fn land_pixel_counts(&mut self) -> Result<(), String> {
         let mut landed = Vec::new();
         for (&proxy, &t) in &self.tickets {
-            if let Some(c) = self.inner.try_pixel_count(t)? {
-                landed.push((proxy, c));
+            match self.inner.try_pixel_count(t)? {
+                Some(c) => landed.push((proxy, c)),
+                None => break,
             }
         }
         if landed.is_empty() {
@@ -385,7 +404,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     inner,
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
-                    tickets: HashMap::new(),
+                    tickets: BTreeMap::new(),
                     depth_words: None,
                     shared: s,
                     exit: false,
@@ -409,6 +428,11 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                         if w.exit {
                             break 'batches;
                         }
+                    }
+                    // Counts back since the last present are there for
+                    // the guest's next poll, not one present later.
+                    if !w.tickets.is_empty() {
+                        w.run(|w| w.land_pixel_counts());
                     }
                     let ns = t.elapsed().saturating_sub(slept).as_nanos() as u64;
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
@@ -467,9 +491,10 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         self
     }
 
-    /// Waits until the render thread has run everything queued so far.
+    /// Waits until the render thread has run everything queued so far,
+    /// and has landed the pixel counts back by then.
     pub fn finish(&mut self) -> Result<(), String> {
-        self.call(|_| Ok(()))
+        self.call(|w| w.land_pixel_counts())
     }
 
     /// Runs `f` on the inner backend after everything queued, and waits for
@@ -926,6 +951,28 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))?;
             w.inner.read_pixel_count(t)
         })
+    }
+
+    /// From [`Shared::landed`], without waiting for the queue. A count not
+    /// there yet answers `None` at once and kicks the render thread: the
+    /// pending batch goes over, and the counts back at its end land.
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        self.check()?;
+        if let Some(c) = self.shared.landed.lock().unwrap().remove(&ticket) {
+            LANDED_COUNTS.fetch_add(1, Ordering::Relaxed);
+            self.waits.landed_counts += 1;
+            return Ok(Some(c));
+        }
+        PENDING_COUNTS.fetch_add(1, Ordering::Relaxed);
+        self.waits.pending_counts += 1;
+        if !self.shared.land_kick.swap(true, Ordering::AcqRel) {
+            self.post(|w| {
+                w.shared.land_kick.store(false, Ordering::Release);
+                Ok(())
+            });
+        }
+        self.flush();
+        Ok(None)
     }
 
     fn drop_pixel_count(&mut self, ticket: u64) {

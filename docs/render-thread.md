@@ -46,6 +46,9 @@ runner):
   (`NV_PFIFO_CACHE1_DMA_PUT/GET` equal, `NV_PGRAPH_STATUS` idle).
 - **Push-buffer callbacks** (`0x24970`): drain, write back, call.
 - **Pixel counters**: `read_pixel_count` waits for its report.
+  `GetVisibilityTestResult` now polls instead (`try_pixel_count`) and
+  answers `D3DERR_TESTINCOMPLETE` for a recent test whose count is not
+  back (docs/d3d.md, "Visibility tests").
 - **Depth aliases** (`0x509368`, the menu's fog pass): decoded from the
   depth buffer on the GPU (`GfxBackend`, 2026-11-15); before that
   `read_depth` of the depth buffer, cached by depth generation.
@@ -90,6 +93,11 @@ Each `Backend` method falls in one of three classes
    and the runner waits for the answer. Everything queued before has run,
    so the bytes are what a synchronous backend returns. These were full
    GPU round trips already, so the wait adds the queue's backlog, no more.
+   `try_pixel_count` is the exception: it answers from the counts already
+   landed and never waits. A count is the same either way; only whether
+   it is back yet depends on timing, and the device turns that into
+   `D3DERR_TESTINCOMPLETE` only where the hardware could (docs/d3d.md,
+   "Visibility tests"; `H2_D3D_VISIBILITY_POLL=0` waits instead).
 2. **Handles** (`create_surface`, `create_texture_target`,
    `upload_texture`, `snapshot_surface`, `surface_texture`,
    `report_pixel_count`): the guest side hands out a proxy id at once; the
@@ -341,12 +349,17 @@ wrote last, was the next fix: the alias mirror (2026-11-15, docs/d3d.md
   levels and sampled through a texture the render thread makes on the
   GPU (`Backend::depth_level_texture`, docs/d3d.md "Lazy depth levels").
   Pixel-count reads of a report already back are answered on the guest's
-  side without the queue: after each present the render thread moves the
-  counts the GPU has written (`Backend::try_pixel_count`) into a shared
-  map (`Waits::landed_counts` counts them). A count read before the
-  render thread reached the present after its report still waits for the
-  queue; with the guest up to two presents ahead that can happen, so the
-  gain depends on which side is slower.
+  side without the queue: after each present and each batch the render
+  thread moves the counts the GPU has written (`Backend::try_pixel_count`,
+  in report order up to the first not back) into a shared map
+  (`Waits::landed_counts` counts them). `GetVisibilityTestResult` polls
+  that map (`try_pixel_count`) and, for a test ended at most two `Swap`s
+  before whose count has not landed, answers `D3DERR_TESTINCOMPLETE`
+  without waiting (`Waits::pending_counts`), as the hardware may; the
+  miss hands the pending batch over so the count lands. Halo keeps last
+  frame's value for that flare. An older test, or every test with
+  `H2_D3D_VISIBILITY_POLL=0`, still waits for the queue. In the Old
+  Mombasa profile at `183781e` that wait was 8.3% of the game thread.
 - **Memory and latency.** At most two presents in flight. Under load the
   limit is what holds the guest (6.30 fps run).
 - **`h2 play`** is wired but has not been run with it (no game runs on
