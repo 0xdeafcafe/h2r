@@ -1136,7 +1136,11 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         for line in lines {
             eprintln!("{line}");
         }
-        let flow = Arc::new(crate::skulls_screen::PageFlow::default());
+        let (flow, line) = crate::skulls_screen::PageFlow::from_env();
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        let flow = Arc::new(flow);
         let class = crate::skulls_screen::class(Arc::clone(&screen), block, layout, picture, Arc::clone(&flow));
         match registry.add(&class) {
             Ok(true) => {}

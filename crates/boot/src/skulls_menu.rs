@@ -3,17 +3,19 @@
 //! profile has collected any, before the level starts.
 //!
 //! **The flow** is `crate::skulls_screen`'s: a press on a difficulty opens
-//! this page instead of starting, and X or Start on the page runs the
+//! this page instead of starting, and A, X or Start on the page runs the
 //! difficulty's own press, which starts the level.
 //!
 //! **The screen** is our own list class (`crate::list_class`, as the Video
 //! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: every
 //! skull, gold first, each its name and the profile's On,
 //! Off or Locked in one label; a description text widget of ours with the
-//! focused skull's effect and where it is found. A press on a collected
-//! skull flips it in the store at once ([`skulls::toggle`]); the next
-//! campaign start turns on exactly the On ones ([`skulls::selection`]). B
-//! returns to the difficulty list.
+//! focused skull's effect and where it is found. Left or right on a
+//! collected skull flips it in the store at once ([`skulls::toggle`]), and
+//! its row reads "< On >" or "< Off >" as a value to step; the next
+//! campaign start turns on exactly the On ones ([`skulls::selection`]). A
+//! goes on to the level. B returns to the difficulty list. (The
+//! multiplayer instance keeps A as its toggle.)
 //!
 //! **The layout** is the campaign level select's
 //! (`ui\screens\game_shell\load_level\load_level`, screen 11): its list
@@ -74,16 +76,22 @@ const FOUND: Range<u32> = SKULLS_ID_BASE + 0xc0..SKULLS_ID_BASE + 0x100;
 /// Each row's label, one per skull and state: the list skin has one text
 /// per row, so the state goes in the label ("Mythic: On"). A base of its
 /// own (another top byte; `is_ours` reads the middle bytes), three ids per
-/// skull.
-const ROW_LABEL_BASE: u32 = ID_BASE + 0x0200_0000;
+/// skull, then the campaign page's stepped forms ([`ARROW_LABELS`]). The
+/// top byte is clear of the campaign picker's (`campaign_menu::ID_BASE`,
+/// `ID_BASE + 0x0200_0000`).
+const ROW_LABEL_BASE: u32 = ID_BASE + 0x0300_0000;
+/// The campaign page's On and Off labels, two per skull: "Mythic: < On >",
+/// a value left and right step.
+const ARROW_LABELS: u32 = ROW_LABEL_BASE + 0x80;
 pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
 /// The campaign page's buttons, under every description: the font's
-/// button glyphs (U+E100 A, U+E101 B, U+E102 X, as retail's own button
-/// legends write them). X or Start starts the level
-/// (`skulls_screen::continue_level`).
-pub const PROMPT: &str = "\u{e100} Toggle   \u{e102} Start Level   \u{e101} Back";
+/// button glyphs (U+E10A and U+E10B the d-pad's left and right, U+E100 A,
+/// U+E101 B, as retail's own button legends write them; each icon set
+/// draws its own). Left or right toggles the focused skull; A (or X or
+/// Start) starts the level (`skulls_screen::continue_level`).
+pub const PROMPT: &str = "\u{e10a}\u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back";
 
 /// The reference layout: the campaign level select
 /// (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map,
@@ -167,19 +175,32 @@ pub fn row_label_id(i: usize, state: State) -> u32 {
     ROW_LABEL_BASE + 3 * i as u32 + state_index(state)
 }
 
+/// The campaign page's label id of skull `i`'s row in `state`: On and Off
+/// as a stepped value ("Mythic: < On >"), Locked as on every screen.
+pub fn arrow_label_id(i: usize, state: State) -> u32 {
+    match state {
+        State::Locked => row_label_id(i, state),
+        State::On | State::Off => ARROW_LABELS + 2 * i as u32 + state_index(state),
+    }
+}
+
 static ROW_LABELS: LazyLock<Vec<(u32, String)>> = LazyLock::new(|| {
+    let word = |st: State| STATE_WORDS[state_index(st) as usize];
     (0..TOTAL)
         .flat_map(|i| {
-            [State::On, State::Off, State::Locked].map(|st| {
+            let plain = [State::On, State::Off, State::Locked].map(|st| {
                 (
                     row_label_id(i, st),
-                    format!(
-                        "{}: {}",
-                        SKULLS[i].label,
-                        STATE_WORDS[state_index(st) as usize]
-                    ),
+                    format!("{}: {}", SKULLS[i].label, word(st)),
                 )
-            })
+            });
+            let stepped = [State::On, State::Off].map(|st| {
+                (
+                    arrow_label_id(i, st),
+                    format!("{}: < {} >", SKULLS[i].label, word(st)),
+                )
+            });
+            plain.into_iter().chain(stepped)
         })
         .collect()
 });
@@ -469,7 +490,22 @@ impl SkullsScreen {
             .and_then(|p| skulls::state(&self.store, &p, i))
             .unwrap_or(State::Locked)
     }
-    /// A press on row `row`: what to log, `None` for no such row.
+    /// Left or right on campaign row `row`: either flips a collected skull
+    /// (two values, so both directions step to the other, as a value row
+    /// with arrows on both sides wraps). What to log, `None` for no such
+    /// row or the multiplayer screen (whose A toggles).
+    pub fn step_line(&self, row: i16, right: bool) -> Option<String> {
+        if self.mode() == Mode::Multiplayer {
+            return None;
+        }
+        let line = self.press_line(row)?;
+        Some(format!(
+            "skulls page: {} on row {row}: {line}",
+            if right { "right" } else { "left" }
+        ))
+    }
+    /// A toggle of row `row` (A on the multiplayer screen, left or right
+    /// on the campaign page): what to log, `None` for no such row.
     pub fn press_line(&self, row: i16) -> Option<String> {
         if self.mode() == Mode::Multiplayer {
             let r = usize::try_from(row)
@@ -518,11 +554,21 @@ impl Rows for SkullsScreen {
         let Some(i) = Self::skull(row) else {
             return Vec::new();
         };
-        vec![(LABEL_SLOT, row_label_id(i, self.state(i)))]
+        vec![(LABEL_SLOT, arrow_label_id(i, self.state(i)))]
     }
+    /// A on the campaign page goes on to the level (the class's action,
+    /// as X and Start), whatever the row; on the multiplayer screen it
+    /// toggles.
     fn press(&self, row: i16) -> Chosen {
-        self.press_line(row)
-            .map_or(Chosen::Nothing, Chosen::Stepped)
+        match self.mode() {
+            Mode::Campaign => Self::skull(row).map_or(Chosen::Nothing, |_| Chosen::Act),
+            Mode::Multiplayer => self
+                .press_line(row)
+                .map_or(Chosen::Nothing, Chosen::Stepped),
+        }
+    }
+    fn sideways(&self, row: i16, right: bool) -> Option<String> {
+        self.step_line(row, right)
     }
     fn description(&self, row: i16) -> Option<u32> {
         if self.mode() == Mode::Multiplayer {
@@ -549,7 +595,8 @@ impl Rows for SkullsScreen {
 const _: () = assert!(TOTAL as u32 <= LABELS.end - LABELS.start);
 const _: () = assert!(TOTAL as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
 const _: () = assert!(TOTAL as u32 <= FOUND.end - FOUND.start);
-const _: () = assert!(3 * TOTAL as u32 <= 0x100);
+const _: () = assert!(3 * TOTAL as u32 <= ARROW_LABELS - ROW_LABEL_BASE);
+const _: () = assert!(ARROW_LABELS - ROW_LABEL_BASE + 2 * TOTAL as u32 <= 0x100);
 const _: () =
     assert!(crate::skulls_mp::MP.len() as u32 <= MP_DESCRIPTIONS.end - MP_DESCRIPTIONS.start);
 
@@ -606,6 +653,14 @@ mod tests {
                 assert_eq!(t[0].0, LABEL_SLOT);
                 let label = text(t[0].1);
                 let (name, state) = label.rsplit_once(": ").expect("Name: State");
+                // The campaign page's On and Off read as a stepped value.
+                let state = match s.mode() {
+                    Mode::Campaign if state != LOCKED => state
+                        .strip_prefix("< ")
+                        .and_then(|v| v.strip_suffix(" >"))
+                        .expect("< On > or < Off >"),
+                    _ => state,
+                };
                 (name.to_string(), state.to_string())
             })
             .collect()
@@ -851,7 +906,7 @@ mod tests {
         // Labels and descriptions for all, a found message for each of ours.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 3 + 3 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 3 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
@@ -862,6 +917,12 @@ mod tests {
         assert!(
             ids.iter().all(|i| *i >= ID_BASE + 0x100),
             "clear of the other rows' ids"
+        );
+        let picker = crate::campaign_menu::ID_BASE
+            ..=crate::campaign_menu::ID_BASE + crate::campaign_menu::MAX_ROWS as u32;
+        assert!(
+            ids.iter().all(|i| !picker.contains(i)),
+            "clear of the campaign picker's ids"
         );
         let n = ids.len();
         ids.sort();
@@ -1040,16 +1101,88 @@ mod tests {
 
     /// Each row's label carries its state, and fits the list skin's 190
     /// units: the longest renders about 180 wide in conduit-12.
+    /// The campaign page's On and Off are a value to step ("< On >"),
+    /// Locked is not; the longest, "Grunt Birthday Party: < Off >", is a
+    /// character more than its Locked label, and its brackets and spaces are
+    /// narrower than "Locked"'s letters.
     #[test]
     fn row_labels_carry_the_state() {
         assert_eq!(text(row_label_id(12, State::On)), "Mythic: On");
         assert_eq!(text(row_label_id(12, State::Off)), "Mythic: Off");
         assert_eq!(text(row_label_id(12, State::Locked)), "Mythic: Locked");
-        let longest = (0..TOTAL)
-            .map(|i| text(row_label_id(i, State::Locked)).len())
-            .max()
-            .unwrap();
-        assert!(longest <= 28, "{longest}");
+        assert_eq!(text(arrow_label_id(12, State::On)), "Mythic: < On >");
+        assert_eq!(text(arrow_label_id(12, State::Off)), "Mythic: < Off >");
+        assert_eq!(
+            arrow_label_id(12, State::Locked),
+            row_label_id(12, State::Locked)
+        );
+        let longest = |f: fn(usize, State) -> u32, st| {
+            (0..TOTAL).map(|i| text(f(i, st)).len()).max().unwrap()
+        };
+        assert!(longest(row_label_id, State::Locked) <= 28);
+        assert!(longest(arrow_label_id, State::Off) <= 29);
+    }
+
+    /// The campaign page: left and right flip a collected skull (either
+    /// way, both steps), its row then reads the new value; a locked one
+    /// stays locked. A goes on (the class's action) on any skull row. The
+    /// multiplayer screen keeps A as its toggle and has no sideways step.
+    #[test]
+    fn left_and_right_toggle_and_a_goes_on() {
+        let st = store();
+        let s = SkullsScreen::new(Arc::clone(&st));
+        s.open("Chief".into());
+        skulls::record_pickup(&st, &names(&["Chief"]), 12);
+        let mythic = row_of(12).unwrap();
+        let label = |row: i16| text(s.texts(row)[0].1);
+        assert_eq!(label(mythic), "Mythic: < On >");
+        assert_eq!(
+            s.sideways(mythic, true).as_deref(),
+            Some(&*format!(
+                "skulls page: right on row {mythic}: skulls: Mythic off for Chief"
+            ))
+        );
+        assert_eq!(s.state(12), State::Off);
+        assert_eq!(label(mythic), "Mythic: < Off >");
+        assert!(
+            s.sideways(mythic, true)
+                .unwrap()
+                .ends_with("Mythic on for Chief")
+        );
+        assert_eq!(s.state(12), State::On, "right again: back on");
+        assert!(
+            s.sideways(mythic, false)
+                .unwrap()
+                .ends_with("Mythic off for Chief")
+        );
+        assert!(
+            s.sideways(mythic, false)
+                .unwrap()
+                .ends_with("Mythic on for Chief")
+        );
+        assert_eq!(s.state(12), State::On);
+        // Locked: says so, stays.
+        let iron = row_of(11).unwrap();
+        assert!(
+            s.sideways(iron, true)
+                .unwrap()
+                .contains("Iron is locked for Chief")
+        );
+        assert_eq!(s.state(11), State::Locked);
+        assert_eq!(label(iron), "Iron: Locked");
+        assert_eq!(s.sideways(TOTAL as i16, true), None);
+        assert_eq!(s.sideways(-1, false), None);
+        // A: on to the level, from a collected row or a locked one, and
+        // nothing toggled.
+        assert_eq!(s.press(mythic), Chosen::Act);
+        assert_eq!(s.press(iron), Chosen::Act);
+        assert_eq!(s.press(TOTAL as i16), Chosen::Nothing);
+        assert_eq!(s.state(12), State::On);
+        // The multiplayer screen.
+        let m = SkullsScreen::multiplayer(Arc::clone(&st));
+        m.open("Chief".into());
+        assert_eq!(m.sideways(0, true), None);
+        assert!(matches!(m.press(0), Chosen::Stepped(_)));
     }
 
     /// The tier table: gold is the MCC multiplier above 1.0, and the
