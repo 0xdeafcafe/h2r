@@ -158,15 +158,27 @@ is a switch inside a big function needs the whole function wrapped.
    help-text id, then point the screen's pane block at the larger array. Pane
    and block layouts are in `docs/ui.md`. Patch at first use of screen 40 by
    wrapping the screen finder `0x148098`; do it once.
-9. Persistence (traced as far as static reading goes). The profile record's
-   settings block is saved and loaded as one block copy (`0x215367` copies
-   0x4c dwords from the save buffer to the record at `+0x114`; the signature
-   check at `0x212f10` covers the whole blob), and no field is range-checked on
-   the way in or out. The only consumer of the layout byte is `0x190c34`, which
-   ignores unknown values. So a byte of 4 to 6 should round-trip, but the
-   Controls edit buffer (`0x54e6d4`) is never block-copied by an immediate
-   address, so the commit from it into the profile was not found. Unverified
-   in the game.
+9. Persistence (traced statically, 2026-11-16; unverified in the game).
+   The Controls edit buffer is the whole 0x1e0-byte settings block at
+   `0x54e5d8` (0x78 dwords): `0x54e6d4` is its `+0xfc` flags word (the
+   toggles' bits) and `0x54e6d8` its `+0x100` layout byte. `0x148ad8` fills
+   it from a profile (player index at `0x54e5d0`, profile handle at
+   `0x54e5d4`). The commit is `0x148b8c`, called from each row handler when
+   the screen applies at once (`[handler+0x188]`/`+0x288`) and from the
+   close path `0x148bff`. For a player 0 to 3 signed in with that profile it
+   calls `0x18fd20(player, 0x54e5d8, profile)`, which, when the block
+   differs, runs `0x18fb34`: a `rep movsd` of the 0x78 dwords into the
+   player's block (`0x54e8e0 + player * 0xc70 + 0x18`, so the layout byte
+   lands at `+0x118 = 0x54e9f8`, our `SETTINGS_BASE + 4`) and then
+   `0x190c34` with EAX = player, the action table build we hook. It then
+   calls `0x2153dd(profile, 0x54e5d8, player, 0)`, which copies the same
+   0x78 dwords to the profile record at `+0x114` and marks it for saving
+   (`0x2154cd`, `0x2154b4`). With no signed-in player for that profile, the
+   commit calls `0x2153dd` directly. The byte is copied verbatim each
+   step; nothing range-checks it. The profile save and load copy the
+   record's settings block whole (`0x215367`; the signature at `0x212f10`
+   covers the blob). So a layout byte of 4 to 6 reaches the live player's
+   table at once and the saved profile on the next save.
 10. Retail behaviour of 0 to 3: every hook above must pass those through to the
     original, and a test must prove it.
 
@@ -204,6 +216,37 @@ A run that opens Settings, Controls, Button Layout should print the list,
 row text, pane and screen tag lines; any of them missing names the next
 place to look.
 
+## Guards after the in-game crash (2026-11-16)
+
+Opening the in-game Button Layout screen with Recon saved crashed inside
+D3D (a write through a garbage pointer while drawing; the faults before it
+at `0x336f0` and `0x33980` are jump-table switches in the renderer's state
+flush that the fallback interpreter handles). Read statically: that screen
+also has id 40, but its tag is not the one `extend_panes` grows (it needs
+exactly 8 panes and a 13-text default pane, and says nothing otherwise;
+the run printed no "panes extended"). The pane hook still sent rows 4 to 6
+to panes 8 to 13, past the tag's 8. So each hook now acts only when what it
+relies on is there:
+
+- **Pane** (`0x230427`): for an added row on screen 40, the hook first calls
+  the screen-tag function (`0x22f871`, EAX = screen; our hook on it extends
+  the tag on first sight) and moves the row's pane only when that tag has
+  14 panes (`pane_row(row, base, panes)`). Otherwise the row keeps its
+  retail pane, and stderr says once `layouts: pane for row N left retail
+  (tag has M panes)`. A tag the screen-tag hook could not extend also says
+  once how many panes it has.
+- **Row text, row chosen, initial row** (`0x2c6512`, `0x2c6567`,
+  `0x2b463d`): only for a row below the list's real datum count
+  (`[handler+0x70]`, the count at `+0x20`, which the constructors loop
+  over; `row_listed`). The row text and row chosen are thiscall methods of
+  the list handler (the handler's vtable `0x45cdc0` holds `0x2c6512` in slot
+  20, and its press record at `+0x28c` points at `0x2c6567`); the initial
+  row is the screen's, with its list handler at `this + 0x614` (what it
+  hands `0x24c591`). A list that did not grow keeps its retail behaviour.
+- **Action table** (`0x190c34`): only for players 0 to 3. The settings
+  blocks and tables hold four, and the commit path checks the same range
+  (`0x148b8c`).
+
 ## Risks
 
 - The profile is a signed save. A profile saved with layout 4 and up and then
@@ -228,7 +271,11 @@ otherwise (so retail 0 to 3 give the original table); pane rows leave retail
 rows alone and land ours on panes 8 to 13; our string ids do not collide; the
 strings are written NUL-terminated; relabelling moves each label to the slot
 at its new button; the pane array grows from 8 to 14 once, leaves the eight
-retail panes byte for byte, and ignores other screens and odd tags; and
+retail panes byte for byte, and ignores other screens and odd tags; panes
+move only on a tag with 14 panes, and every pane handed out exists; the row
+hooks act only on rows the list's datum array has (a four-row list leaves
+4 to 6 alone); the action table is left alone for a player past 3; choosing
+the speaker and Field of View rows saves both to `<data>/settings.toml`; and
 `install` returns on a synthetic runtime (`resolve_original` must run before
 `edit_dispatch`, which holds the dispatch lock).
 
@@ -251,7 +298,8 @@ retail panes byte for byte, and ignores other screens and odd tags; and
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
 7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
    layouts off (the Controller Speaker row on the Controls screen has its own
-   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md).
+   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md, and so has the
+   Field of View row after it, `H2_NO_FOV_ROW=1`; docs/settings-menu.md).
 8. The hooks install with no stall at boot.
 
 ## Known gaps

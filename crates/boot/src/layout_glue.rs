@@ -22,12 +22,18 @@
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
+//! It also registers the "Field of View" row after it and the first-person
+//! camera hook that applies it (`crate::fov_row`, `H2_NO_FOV_ROW=1` skips
+//! both), through the same entries.
+//!
 //! Each hook says once on stderr when it first runs ("layouts: <name>
 //! active"), so one run shows which hooks the game reaches.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::fov_row;
+use crate::fov_setting::FovSetting;
 use crate::speaker_row;
 use crate::speaker_setting::SpeakerSetting;
 
@@ -67,6 +73,13 @@ pub const LIST_NAME: u32 = 0x0045_ce18;
 const VANILLA_ROWS: u32 = 4;
 const SCREEN_ID: i16 = 40;
 const VANILLA_PANES: u32 = 8;
+/// The pane count once `extend_panes` grew a tag: the eight, then one clone
+/// per added layout for each thumbstick diagram.
+const EXTENDED_PANES: u32 = VANILLA_PANES + 2 * ADDED.len() as u32;
+/// Where the screen of `INITIAL_ROW` keeps its list handler.
+const SCREEN_LIST: u32 = 0x614;
+/// Local players: the settings blocks and action tables hold four.
+const MAX_PLAYERS: u32 = 4;
 const PANE_SIZE: u32 = 0x4c;
 const TEXT_SIZE: u32 = 0x2c;
 /// Offset of the edit-profile screen's profile copy and the layout byte in it.
@@ -76,9 +89,10 @@ const PROFILE_COPY_LAYOUT: u32 = 0x176c + 0x104;
 const DATA_BASE: u32 = 0xa2f0_0000;
 const DATA_SIZE: u32 = 0x1_0000;
 const SHADOW_BASE: u32 = 0xa2f1_0000;
-/// The Controls screen's seventh item widgets, one slot per open screen.
+/// The Controls screen's added item widgets (one per added row), one slot
+/// per open screen (`speaker_row::extra_slot`).
 const EXTRA_BASE: u32 = 0xa2f2_0000;
-const EXTRA_SLOTS: u32 = 0x1000 / speaker_row::ITEM_SIZE;
+const EXTRA_SIZE: u32 = 0x1000;
 
 pub const ADDED: [Layout; 3] = [Layout::BumperJumper, Layout::Recon, Layout::WalkieTalkie];
 
@@ -158,8 +172,14 @@ pub fn chosen_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 }
 
 /// After the original built player `player`'s action table: overwrite it for
-/// an added layout. Retail bytes (and bytes nothing knows) are left alone.
+/// an added layout. Retail bytes (and bytes nothing knows) are left alone,
+/// and so is anything for a player index past the four local players (EAX
+/// is not checked by the caller's contract we know of, and a stray index
+/// would write far outside the tables).
 pub fn apply_action_table<M: Gm>(m: &mut M, player: u32) -> bool {
+    if player >= MAX_PLAYERS {
+        return false;
+    }
     let Some(byte) = m.u8(SETTINGS_BASE + SETTINGS_STRIDE.wrapping_mul(player) + 4) else { return false };
     match Layout::from_preset(byte) {
         Some(l) if !l.is_retail() => m.wr(TABLE_BASE + TABLE_STRIDE.wrapping_mul(player) + TABLE_SLOTS, &l.action_map()),
@@ -168,13 +188,37 @@ pub fn apply_action_table<M: Gm>(m: &mut M, player: u32) -> bool {
 }
 
 /// The pane to show for list row `row` when the screen's pane base is `base`
-/// (0, or 4 for the Legacy thumbstick diagram): the row value to hand the
-/// game so that `base + value` lands on our pane. `None` leaves it alone.
-pub fn pane_row(row: i16, base: i8) -> Option<i16> {
+/// (0, or 4 for the Legacy thumbstick diagram) and the screen's tag has
+/// `panes` panes: the row value to hand the game so that `base + value`
+/// lands on our pane. `None` leaves it alone, and always does unless the tag
+/// was extended to [`EXTENDED_PANES`]: a tag we did not extend (the in-game
+/// Button Layout screen's, say) has no pane 8 to 13 to land on.
+pub fn pane_row(row: i16, base: i8, panes: u32) -> Option<i16> {
+    if panes != EXTENDED_PANES {
+        return None;
+    }
     let l = layout_of_row(row)?;
     let slot = i16::from(l.preset()) - 4;
     let group = i16::from(base != 0);
     Some(VANILLA_PANES as i16 + slot + ADDED.len() as i16 * group - i16::from(base))
+}
+
+/// The number of rows a list handler's datum array holds (`[handler+0x70]`,
+/// the count at `+0x20`, as the screen constructors loop over it).
+pub fn list_rows<M: Gm>(m: &M, handler: u32) -> Option<u32> {
+    let array = m.u32(handler.wrapping_add(0x70))?;
+    let n = m.u32(array.wrapping_add(0x20))? as i32;
+    u32::try_from(n).ok()
+}
+
+/// Whether `row` is a row the list `handler` really has. The row hooks act
+/// on an added row only when it is: a list that did not grow (another
+/// screen's, or the hook skipped) keeps its retail behaviour.
+pub fn row_listed<M: Gm>(m: &M, handler: u32, row: i16) -> bool {
+    match (u32::try_from(row), list_rows(m, handler)) {
+        (Ok(r), Some(n)) => r < n,
+        _ => false,
+    }
 }
 
 /// Our strings. Ids live in an index range no real string uses.
@@ -388,24 +432,36 @@ fn announce(seen: &AtomicBool, name: &str) {
 }
 
 /// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
-/// and the Controller Speaker row when `speaker` is given and
-/// `H2_NO_SPEAKER_ROW` is not set. A missing original (an image with other
-/// entries) skips that hook and says so.
-pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> anyhow::Result<()> {
+/// the Controller Speaker row when `speaker` is given and
+/// `H2_NO_SPEAKER_ROW` is not set, and the Field of View row and camera
+/// hook when `fov` is given and `H2_NO_FOV_ROW` is not set. A missing
+/// original (an image with other entries) skips that hook and says so.
+pub fn install(
+    rt: &runtime::Runtime,
+    speaker: Option<Arc<SpeakerSetting>>,
+    fov: Option<Arc<FovSetting>>,
+) -> anyhow::Result<()> {
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
     let speaker = speaker.filter(|_| std::env::var_os("H2_NO_SPEAKER_ROW").is_none());
-    if !layouts && speaker.is_none() {
+    let fov = fov.filter(|_| std::env::var_os("H2_NO_FOV_ROW").is_none());
+    if !layouts && speaker.is_none() && fov.is_none() {
         return Ok(());
     }
     let with_speaker = speaker.is_some();
+    let with_fov = fov.is_some();
+    let fov_index = fov_row::row(with_speaker);
+    let extra_rows = speaker_row::extra_rows(with_speaker, with_fov);
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
-        if with_speaker {
-            mem.map_zeroed(EXTRA_BASE, 0x1000, Permissions::RW)?;
+        if extra_rows > 0 {
+            mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
         }
-        let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served_strings(layouts, with_speaker))
+        let mut served = served_strings(layouts, with_speaker);
+        let fov_strings = if with_fov { fov_row::strings() } else { Vec::new() };
+        served.extend(fov_strings.iter().map(|(i, t)| (*i, t.as_str())));
+        let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
@@ -419,11 +475,12 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
     let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND, SCREEN_TAG];
     let speaker_hooks = [
         speaker_row::ROW_CHOSEN,
-        speaker_row::ADD_ITEMS,
         speaker_row::SMALL_CTOR,
         speaker_row::SMALL_ROW_TEXT,
         speaker_row::SMALL_ROW_CHOSEN,
     ];
+    let fov_hooks = [speaker_row::ROW_CHOSEN, fov_row::PLAYER_FOV];
+    let controls_hooks = [speaker_row::ADD_ITEMS];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -431,6 +488,8 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         .into_iter()
         .chain(layout_hooks.into_iter().filter(|_| layouts))
         .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
+        .chain(fov_hooks.into_iter().filter(|_| with_fov))
+        .chain(controls_hooks.into_iter().filter(|_| extra_rows > 0))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
         wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
@@ -460,6 +519,7 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                     let mem = ctx.runtime().memory();
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
+                let n = if with_fov { fov_row::list_count(name, cpu.eax, n) } else { n };
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -479,7 +539,7 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 let mut mem = rt.memory();
                 let widget = mem.u32(cpu.esp + 4)?;
                 let row = mem.u16(widget + 0x70).map_or(0, |v| v as i16);
-                let Some(l) = layout_of_row(row) else {
+                let Some(l) = layout_of_row(row).filter(|_| row_listed(&*mem, cpu.ecx, row)) else {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, ROW_TEXT));
                 };
@@ -492,12 +552,13 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
             let seen = AtomicBool::new(false);
             d.register_override(ROW_SELECTED, "layouts:row-selected", move |cpu, ctx, _| {
                 announce(&seen, "layouts: row chosen");
-                let row = {
+                let (row, listed) = {
                     let mem = ctx.runtime().memory();
-                    chosen_row(&*mem, cpu.esp).unwrap_or(0)
+                    let row = chosen_row(&*mem, cpu.esp).unwrap_or(0);
+                    (row, row_listed(&*mem, cpu.ecx, row))
                 };
                 call_then(cpu, ctx, sh, move |_, ctx| {
-                    if let Some(l) = layout_of_row(row) {
+                    if let Some(l) = layout_of_row(row).filter(|_| listed) {
                         ctx.runtime().memory().set_u8(EDIT_LAYOUT, l.preset())?;
                     }
                     Ok(())
@@ -512,12 +573,14 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let byte = mem.u8(EDIT_LAYOUT)?;
-                let Some(l) = Layout::from_preset(byte).filter(|l| !l.is_retail()) else {
+                let this = cpu.ecx;
+                let Some(l) = Layout::from_preset(byte)
+                    .filter(|l| !l.is_retail() && row_listed(&*mem, this + SCREEN_LIST, i16::from(l.preset())))
+                else {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, INITIAL_ROW));
                 };
-                let this = cpu.ecx;
-                cpu.eax = this + 0x614;
+                cpu.eax = this + SCREEN_LIST;
                 push(&mut mem, cpu, u32::from(l.preset()))?;
                 ctx.call_guest(cpu, &mut mem, LIST_SELECT, move |cpu, _| {
                     cpu.ecx = this;
@@ -525,23 +588,46 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 })
             });
         }
-        // Pane for a row.
+        // Pane for a row: ours only on a tag `extend_panes` grew. The tag
+        // comes from the screen-tag function, ours included, so a first
+        // visit extends it before the pane is set.
         if let Some(o) = originals.remove(&PANE_SET) {
+            let sh = alias(d, &mut next_shadow, &o, PANE_SET);
             let seen = AtomicBool::new(false);
+            let declined = Arc::new(AtomicBool::new(false));
             d.register_override(PANE_SET, "layouts:pane", move |cpu, ctx, _| {
                 announce(&seen, "layouts: pane");
-                {
-                    let mut mem = ctx.runtime().memory();
-                    if mem.u16(cpu.ecx + 0x70)? as i16 == SCREEN_ID {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let screen = cpu.ecx;
+                let added = mem.u16(screen + 0x70)? as i16 == SCREEN_ID
+                    && layout_of_row(mem.u16(mem.u32(cpu.esp + 4)?)? as i16).is_some();
+                if !added {
+                    drop(mem);
+                    return Ok(o.invoke(cpu, ctx, PANE_SET));
+                }
+                let eax = cpu.eax;
+                cpu.eax = screen;
+                let declined = Arc::clone(&declined);
+                ctx.call_guest(cpu, &mut mem, SCREEN_TAG, move |cpu, ctx| {
+                    let tag = cpu.eax;
+                    {
+                        let mut mem = ctx.runtime().memory();
+                        let panes = if tag == 0 { 0 } else { mem.u32(tag + 0x20).unwrap_or(0) };
                         let p = mem.u32(cpu.esp + 4)?;
                         let row = mem.u16(p)? as i16;
-                        let base = mem.u8(cpu.ecx + 0x5f3)? as i8;
-                        if let Some(r) = pane_row(row, base) {
-                            mem.set_u16(p, r as u16)?;
+                        let base = mem.u8(screen + 0x5f3)? as i8;
+                        match pane_row(row, base, panes) {
+                            Some(r) => mem.set_u16(p, r as u16)?,
+                            None if !declined.swap(true, Ordering::Relaxed) => {
+                                eprintln!("layouts: pane for row {row} left retail (tag has {panes} panes)")
+                            }
+                            None => {}
                         }
                     }
-                }
-                Ok(o.invoke(cpu, ctx, PANE_SET))
+                    (cpu.ecx, cpu.eax) = (screen, eax);
+                    Ok(TransferAbi::jump(sh))
+                })
             });
         }
         // The screen's tag: the Button Layout screen gets its added panes
@@ -551,27 +637,29 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
             let o2 = Arc::clone(&o);
             let seen = AtomicBool::new(false);
             let grown = Arc::new(AtomicBool::new(false));
+            let odd = Arc::new(AtomicBool::new(false));
             d.register_override(SCREEN_TAG, "layouts:panes", move |cpu, ctx, _| {
                 announce(&seen, "layouts: screen tag");
                 let id = {
                     let mem = ctx.runtime().memory();
                     mem.u16(cpu.eax + 0x70).map_or(-1, |v| v as i16)
                 };
-                let wanted = (layouts && id == SCREEN_ID) || (with_speaker && id == speaker_row::SCREEN_ID);
+                let wanted = (layouts && id == SCREEN_ID) || (extra_rows > 0 && id == speaker_row::SCREEN_ID);
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
                 }
                 let grown = Arc::clone(&grown);
+                let odd = Arc::clone(&odd);
                 call_then(cpu, ctx, sh, move |cpu, ctx| {
                     if cpu.eax == 0 {
                         return Ok(());
                     }
                     let mut mem = ctx.runtime().memory();
                     if id == speaker_row::SCREEN_ID {
-                        match speaker_row::grow_visible(&mut *mem, cpu.eax) {
+                        match speaker_row::grow_visible(&mut *mem, cpu.eax, extra_rows) {
                             Some(0) => {}
                             Some(_) if !grown.swap(true, Ordering::Relaxed) => {
-                                eprintln!("speaker row: controls list shows seven rows")
+                                eprintln!("speaker row: controls list shows {} rows", speaker_row::VANILLA_ROWS + extra_rows)
                             }
                             Some(_) => {}
                             None => eprintln!("speaker row: could not grow the controls list"),
@@ -584,7 +672,12 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                             ALLOC.store(alloc, Ordering::SeqCst);
                             eprintln!("layouts: button layout panes extended");
                         }
-                        Some(false) => {}
+                        Some(false) => {
+                            let panes = mem.u32(cpu.eax + 0x20).unwrap_or(0);
+                            if panes != EXTENDED_PANES && !odd.swap(true, Ordering::Relaxed) {
+                                eprintln!("layouts: a button layout tag has {panes} panes, not extended; its added rows keep the retail panes");
+                            }
+                        }
                         None => eprintln!("layouts: could not extend the layout panes"),
                     }
                     Ok(())
@@ -627,10 +720,22 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
             let speaker = speaker.clone();
+            let fov = fov.clone();
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
+            let fov_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
+                if let Some(s) = &fov {
+                    let shown = s.shown();
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    if let Some(texts) = fov_row::row_texts(&*mem, cpu.esp, fov_index, shown) {
+                        announce(&fov_drawn, "fov row: row text");
+                        let item = mem.u32(cpu.esp + 4)?;
+                        return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
+                    }
+                }
                 if let Some(s) = &speaker {
                     // The setting's lock is never taken with guest memory held.
                     let on = s.enabled();
@@ -654,7 +759,9 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         }
         // The Controls row chosen: ours toggles in place; the original would
         // open the vibration dialog for it.
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::ROW_CHOSEN), speaker.clone()) {
+        if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
+            let speaker = speaker.clone();
+            let fov = fov.clone();
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: row chosen");
@@ -664,15 +771,23 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 };
                 // Guest memory is not held here: the toggle takes DirectSound's
                 // lock, which the audio output takes with guest memory.
-                if speaker_row::chosen(row, &s) {
+                if let Some(s) = &speaker
+                    && speaker_row::chosen(row, s)
+                {
                     eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                if let Some(s) = &fov
+                    && fov_row::chosen(row, fov_index, s)
+                {
+                    eprintln!("fov: {} degrees", s.shown());
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
             });
         }
-        // The Controls list's seventh item widget.
-        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), with_speaker) {
+        // The Controls list's added item widgets, one per added row.
+        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::ADD_ITEMS);
             let seen = AtomicBool::new(false);
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
@@ -687,41 +802,22 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    let item = {
+                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE {
+                        return Ok(TransferAbi::ret(ret_pc));
+                    }
+                    let slot = {
                         let mut g = slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
-                        speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SLOTS)
+                        speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
                     };
-                    let Some(build) = speaker_row::extra_item_needed(&*mem, handler, item) else {
-                        return Ok(TransferAbi::ret(ret_pc));
-                    };
+                    let items: Vec<u32> = (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect();
+                    let player = u32::from(mem.u16(handler + 8)?);
                     let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
-                    let finish = move |cpu: &mut CpuAbi| {
+                    let finish: Finish = Box::new(move |cpu| {
                         (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = saved;
                         Ok(TransferAbi::ret(ret_pc))
-                    };
-                    // Append (or move back to the end) our item.
-                    let link = move |cpu: &mut CpuAbi, ctx: &mut ExecCtx| {
-                        let rt = Arc::clone(ctx.runtime());
-                        let mut mem = rt.memory();
-                        cpu.eax = item;
-                        cpu.esi = handler;
-                        ctx.call_guest(cpu, &mut mem, speaker_row::ADD_CHILD, move |cpu, _| finish(cpu))
-                    };
-                    if !build {
-                        drop(mem);
-                        return link(cpu, ctx);
-                    }
-                    mem.write_bytes(item, &[0; speaker_row::ITEM_SIZE as usize], 1)?;
-                    let player = u32::from(mem.u16(handler + 8)?);
-                    cpu.ecx = item;
-                    ctx.call_guest(cpu, &mut mem, speaker_row::ITEM_CTOR, move |cpu, ctx| {
-                        let rt = Arc::clone(ctx.runtime());
-                        let mut mem = rt.memory();
-                        push(&mut mem, cpu, player)?;
-                        cpu.ecx = item;
-                        ctx.call_guest(cpu, &mut mem, speaker_row::SET_PLAYER, move |cpu, ctx| link(cpu, ctx))
-                    })
+                    });
+                    add_items(cpu, ctx, &mut mem, handler, player, items, finish)
                 })
             });
         }
@@ -778,6 +874,23 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
+            });
+        }
+        // The first-person camera's field of view: the original, then ours.
+        if let (Some(o), Some(s)) = (originals.remove(&fov_row::PLAYER_FOV), fov.clone()) {
+            let sh = alias(d, &mut next_shadow, &o, fov_row::PLAYER_FOV);
+            let seen = AtomicBool::new(false);
+            d.register_override(fov_row::PLAYER_FOV, "fov:camera", move |cpu, ctx, _| {
+                announce(&seen, "fov: camera");
+                let user = cpu.eax;
+                let target = s.target();
+                call_then(cpu, ctx, sh, move |cpu, ctx| {
+                    let lo: [u8; 4] = cpu.xmm[0][..4].try_into().unwrap_or_default();
+                    let result = f32::from_bits(u32::from_le_bytes(lo));
+                    let out = fov_row::apply(&mut *ctx.runtime().memory(), user, result, target);
+                    cpu.xmm[0][..4].copy_from_slice(&out.to_bits().to_le_bytes());
+                    Ok(())
+                })
             });
         }
         // Our strings.
@@ -862,6 +975,53 @@ fn next_text(
             let rt = Arc::clone(ctx.runtime());
             let mut mem = rt.memory();
             next_text(cpu, ctx, &mut mem, widget, texts, finish)
+        })
+    })
+}
+
+/// Link each of `items` as a child of the Controls list `handler`, in
+/// order, after the retail six: build an item first (zeroed, the item
+/// constructor, then the local player) when it is not a child yet, else just
+/// move it back to the end (the original re-appends the six retail items).
+fn add_items(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mem: &mut Guest,
+    handler: u32,
+    player: u32,
+    mut items: Vec<u32>,
+    finish: Finish,
+) -> Result<TransferAbi, GuestFault> {
+    if items.is_empty() {
+        return finish(cpu);
+    }
+    let item = items.remove(0);
+    let Some(build) = speaker_row::extra_item_needed(&*mem, handler, item) else {
+        return finish(cpu);
+    };
+    let link = move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, mem: &mut Guest| {
+        cpu.eax = item;
+        cpu.esi = handler;
+        ctx.call_guest(cpu, mem, speaker_row::ADD_CHILD, move |cpu, ctx| {
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            add_items(cpu, ctx, &mut mem, handler, player, items, finish)
+        })
+    };
+    if !build {
+        return link(cpu, ctx, mem);
+    }
+    mem.write_bytes(item, &[0; speaker_row::ITEM_SIZE as usize], 1)?;
+    cpu.ecx = item;
+    ctx.call_guest(cpu, mem, speaker_row::ITEM_CTOR, move |cpu, ctx| {
+        let rt = Arc::clone(ctx.runtime());
+        let mut mem = rt.memory();
+        push(&mut mem, cpu, player)?;
+        cpu.ecx = item;
+        ctx.call_guest(cpu, &mut mem, speaker_row::SET_PLAYER, move |cpu, ctx| {
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            link(cpu, ctx, &mut mem)
         })
     })
 }
@@ -952,15 +1112,104 @@ mod tests {
 
     #[test]
     fn pane_rows_leave_retail_alone_and_map_ours_past_the_retail_panes() {
+        assert_eq!(EXTENDED_PANES, 14);
         for base in [0i8, 4] {
             for row in 0..4 {
-                assert_eq!(pane_row(row, base), None);
+                assert_eq!(pane_row(row, base, EXTENDED_PANES), None);
             }
         }
         // Standard diagram: panes 8, 9, 10. Legacy diagram: 11, 12, 13.
         for (k, row) in [4i16, 5, 6].into_iter().enumerate() {
-            assert_eq!(i16::from(0i8) + pane_row(row, 0).unwrap(), 8 + k as i16);
-            assert_eq!(i16::from(4i8) + pane_row(row, 4).unwrap(), 11 + k as i16);
+            assert_eq!(i16::from(0i8) + pane_row(row, 0, EXTENDED_PANES).unwrap(), 8 + k as i16);
+            assert_eq!(i16::from(4i8) + pane_row(row, 4, EXTENDED_PANES).unwrap(), 11 + k as i16);
+        }
+    }
+
+    #[test]
+    fn panes_are_only_moved_on_a_tag_we_extended() {
+        // A tag left at its eight retail panes (or any other count, or no
+        // tag at all) has nothing at 8 to 13: every row keeps its pane.
+        for panes in [0, 1, VANILLA_PANES, 13, 15, u32::MAX] {
+            for base in [0i8, 4] {
+                for row in -1..10 {
+                    assert_eq!(pane_row(row, base, panes), None, "row {row} base {base} panes {panes}");
+                }
+            }
+        }
+        // And on the extended tag every pane it hands out exists.
+        for base in [0i8, 4] {
+            for row in 4..7 {
+                let pane = i16::from(base) + pane_row(row, base, EXTENDED_PANES).unwrap();
+                assert!((0..EXTENDED_PANES as i16).contains(&pane));
+            }
+        }
+    }
+
+    /// A list handler at `0x9000` whose datum array holds `rows` rows.
+    fn listed(rows: u32) -> (Fake, u32) {
+        let mut f = Fake::default();
+        let (handler, array) = (0x9000u32, 0xa000u32);
+        put(&mut f, handler + 0x70, &array.to_le_bytes());
+        put(&mut f, array + 0x20, &rows.to_le_bytes());
+        (f, handler)
+    }
+
+    #[test]
+    fn row_hooks_act_only_on_rows_the_list_has() {
+        // The grown list: all seven rows are its own.
+        let (f, h) = listed(7);
+        assert_eq!(list_rows(&f, h), Some(7));
+        for row in 0..7 {
+            assert!(row_listed(&f, h, row));
+        }
+        assert!(!row_listed(&f, h, 7));
+        assert!(!row_listed(&f, h, -1));
+        // A list that kept four rows (another screen's, or the list hook
+        // skipped): rows 4 to 6 are not there, so no hook acts on them.
+        let (f, h) = listed(4);
+        for row in 4..7 {
+            assert!(!row_listed(&f, h, row), "row {row}");
+        }
+        assert!(row_listed(&f, h, 3));
+        // Unreadable handler or array, or a negative count: nothing is ours.
+        assert!(!row_listed(&Fake::default(), 0x9000, 4));
+        let (mut f, h) = listed(0);
+        put(&mut f, 0xa000 + 0x20, &(-1i32).to_le_bytes());
+        assert_eq!(list_rows(&f, h), None);
+        assert!(!row_listed(&f, h, 0));
+    }
+
+    #[test]
+    fn the_initial_row_reads_the_screens_own_list() {
+        // `0x2b463d` hands `this + 0x614` to the list select; the guard reads
+        // that list's rows.
+        let (f, h) = listed(7);
+        let screen = h - SCREEN_LIST;
+        for l in ADDED {
+            assert!(row_listed(&f, screen + SCREEN_LIST, i16::from(l.preset())));
+        }
+        let (f, h) = listed(4);
+        for l in ADDED {
+            assert!(!row_listed(&f, h, i16::from(l.preset())));
+        }
+    }
+
+    #[test]
+    fn the_action_table_is_left_alone_past_the_fourth_player() {
+        for player in [4u32, 5, 0xff, u32::MAX] {
+            let mut f = Fake::default();
+            // Even with a layout byte of 4 readable where that player's
+            // settings would be (wrapping included), nothing is written.
+            put(&mut f, SETTINGS_BASE.wrapping_add(SETTINGS_STRIDE.wrapping_mul(player)) + 4, &[4]);
+            let before = f.0.clone();
+            assert!(!apply_action_table(&mut f, player), "player {player}");
+            assert_eq!(f.0, before);
+        }
+        for player in 0..MAX_PLAYERS {
+            let mut f = Fake::default();
+            put(&mut f, SETTINGS_BASE + SETTINGS_STRIDE * player + 4, &[4]);
+            put(&mut f, TABLE_BASE + TABLE_STRIDE * player + TABLE_SLOTS, &[0; 16]);
+            assert!(apply_action_table(&mut f, player), "player {player}");
         }
     }
 
@@ -1156,6 +1405,42 @@ mod tests {
     }
 
     #[test]
+    fn choosing_the_rows_saves_settings_toml_under_the_data_root() {
+        use crate::{fov_setting, speaker_setting};
+        // `h2 play`'s data root (`$TMPDIR/h2boot-data` by default) is where
+        // the settings land, as `<data>/settings.toml`.
+        let data = std::env::temp_dir().join(format!("h2-rows-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).unwrap();
+        let path = speaker_setting::settings_path(&data);
+        assert_eq!(path, data.join("settings.toml"));
+        assert!(!path.exists());
+
+        let speaker = SpeakerSetting::new(None, Some(path.clone()));
+        let fov = FovSetting::new(None, Some(path.clone()));
+        let with_speaker = true;
+        // Choosing the speaker row (row 6) toggles and saves.
+        assert!(speaker_row::chosen(Some(speaker_row::ROW), &speaker));
+        assert_eq!(speaker_setting::load(&path), Ok(Some(false)));
+        // Choosing the Field of View row (row 7 under it) steps and saves,
+        // and keeps the speaker's key.
+        let row = fov_row::row(with_speaker);
+        assert_eq!(row, 7);
+        assert!(fov_row::chosen(Some(row), row, &fov));
+        assert_eq!(fov_setting::load(&path), Ok(Some(fov.degrees())));
+        assert_eq!(speaker_setting::load(&path), Ok(Some(false)));
+        // A retail row saves nothing new.
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(!speaker_row::chosen(Some(5), &speaker));
+        assert!(!fov_row::chosen(Some(5), row, &fov));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // The next run reads both back.
+        assert!(!SpeakerSetting::new(None, Some(path.clone())).enabled());
+        assert_eq!(FovSetting::new(None, Some(path.clone())).degrees(), fov.degrees());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
     fn install_returns_on_a_runtime_without_the_game() {
         // `resolve_original` inside `edit_dispatch` deadlocks on the dispatch
         // lock; run the install on its own thread so a regression fails the
@@ -1165,7 +1450,8 @@ mod tests {
         let r = Arc::clone(&rt);
         std::thread::spawn(move || {
             let s = Arc::new(SpeakerSetting::new(None, None));
-            tx.send(install(&r, Some(s)).is_ok()).ok();
+            let fov = Arc::new(FovSetting::new(None, None));
+            tx.send(install(&r, Some(s), Some(fov)).is_ok()).ok();
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
         // Nothing generated, so every hook was skipped and ours own no entry.

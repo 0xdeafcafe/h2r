@@ -86,10 +86,11 @@ pub fn chosen(row: Option<i16>, setting: &SpeakerSetting) -> bool {
 // visible count in the tag's list block (`0x24bc12` lays them out, one
 // item height apart). The Controls handler embeds six item widgets
 // (`0x2c84b8`, vector constructor at `+0x88`) and links them as children in
-// its "add items" method (`0x24bb60`, vtable slot 17). So for seven rows at
-// once we add a seventh item widget of our own after the six, and raise the
-// tag's visible count from six to seven. The list then lays it out below
-// the sixth, the same distance apart, and never scrolls.
+// its "add items" method (`0x24bb60`, vtable slot 17). So for all rows at
+// once we add one item widget of our own per added row after the six (the
+// Controller Speaker row and the Field of View row: eight rows with both),
+// and raise the tag's visible count from six by as many. The list then lays
+// them out below the sixth, the same distance apart, and never scrolls.
 
 /// The Controls screen.
 pub const SCREEN_ID: i16 = 39;
@@ -108,6 +109,12 @@ pub const ADD_CHILD: u32 = 0x0022_eb18;
 pub const ITEM_SIZE: u32 = 0x80;
 const VISIBLE: u32 = 6;
 
+/// How many rows the Controls list gets past the retail six: one for the
+/// Controller Speaker row, one for the Field of View row.
+pub fn extra_rows(speaker: bool, fov: bool) -> u32 {
+    u32::from(speaker) + u32::from(fov)
+}
+
 /// A widget's children, in order (`+0x14` first child, `+0x18` next
 /// sibling). At most 64; `None` if a link cannot be read.
 pub fn children<M: Gm>(m: &M, widget: u32) -> Option<Vec<u32>> {
@@ -121,12 +128,13 @@ pub fn children<M: Gm>(m: &M, widget: u32) -> Option<Vec<u32>> {
 }
 
 /// Raises the visible count of the Controls screen's list in its tag from
-/// six to seven, in every pane. Returns how many lists changed (0 for any
-/// other screen, or once done). Tag layout as in `layout_glue::extend_panes`;
-/// a pane's lists are counted at `+0xc` and pointed to by `+0x10`, and a
-/// list block's visible count is the `i16` at `+6`.
-pub fn grow_visible<M: Gm>(m: &mut M, wgit: u32) -> Option<u32> {
-    if m.u16(wgit.wrapping_add(4))? as i16 != SCREEN_ID {
+/// six to six plus `extra`, in every pane. Returns how many lists changed (0
+/// for any other screen, with nothing to add, or once done). Tag layout as
+/// in `layout_glue::extend_panes`; a pane's lists are counted at `+0xc` and
+/// pointed to by `+0x10`, and a list block's visible count is the `i16` at
+/// `+6`.
+pub fn grow_visible<M: Gm>(m: &mut M, wgit: u32, extra: u32) -> Option<u32> {
+    if extra == 0 || m.u16(wgit.wrapping_add(4))? as i16 != SCREEN_ID {
         return Some(0);
     }
     let (count, panes) = (m.u32(wgit + 0x20)?, m.u32(wgit + 0x24)?);
@@ -138,7 +146,7 @@ pub fn grow_visible<M: Gm>(m: &mut M, wgit: u32) -> Option<u32> {
         }
         let block = m.u32(pane + 0x10)?;
         if u32::from(m.u16(block + 6)?) == VISIBLE {
-            if !m.set_u16(block + 6, VISIBLE as u16 + 1) {
+            if !m.set_u16(block + 6, (VISIBLE + extra) as u16) {
                 return None;
             }
             changed += 1;
@@ -158,13 +166,15 @@ pub fn extra_item_needed<M: Gm>(m: &M, handler: u32, item: u32) -> Option<bool> 
     Some(!children(m, handler)?.contains(&item))
 }
 
-/// The slot for `handler`'s extra item: the one it had, else the next of
-/// `slots` in turn (a screen closed long ago gives its slot up).
-pub fn extra_slot(table: &mut Vec<(u32, u32)>, next: &mut u32, handler: u32, base: u32, slots: u32) -> u32 {
+/// The slot for `handler`'s extra items, `extra` items of [`ITEM_SIZE`]
+/// each: the one it had, else the next of the slots that fit in `size`
+/// bytes at `base`, in turn (a screen closed long ago gives its slot up).
+pub fn extra_slot(table: &mut Vec<(u32, u32)>, next: &mut u32, handler: u32, base: u32, size: u32, extra: u32) -> u32 {
     if let Some((_, a)) = table.iter().find(|(h, _)| *h == handler) {
         return *a;
     }
-    let a = base + (*next % slots) * ITEM_SIZE;
+    let stride = extra.max(1) * ITEM_SIZE;
+    let a = base + (*next % (size / stride).max(1)) * stride;
     *next += 1;
     table.retain(|(_, s)| *s != a);
     table.push((handler, a));
@@ -188,8 +198,8 @@ pub const SMALL_ROW_CHOSEN: u32 = 0x002b_4a4d;
 /// Datum array: new datum (EDX = array, EAX = handle).
 pub const DATUM_NEW: u32 = 0x0016_b840;
 pub const SMALL_VALUE: u16 = 6;
-pub const SMALL_ON_ID: u32 = crate::layout_glue::ID_BASE + 0x21;
-pub const SMALL_OFF_ID: u32 = crate::layout_glue::ID_BASE + 0x22;
+pub const SMALL_ON_ID: u32 = crate::layout_glue::ID_BASE + 0x30;
+pub const SMALL_OFF_ID: u32 = crate::layout_glue::ID_BASE + 0x31;
 pub const SMALL_ON_TEXT: &str = "Controller Speaker: On";
 pub const SMALL_OFF_TEXT: &str = "Controller Speaker: Off";
 
@@ -375,29 +385,49 @@ mod tests {
     fn the_controls_list_shows_seven_rows_once() {
         let mut f = Fake::default();
         let wgit = tag(&mut f, SCREEN_ID, 1, 6);
-        assert_eq!(grow_visible(&mut f, wgit), Some(1));
+        assert_eq!(grow_visible(&mut f, wgit, 1), Some(1));
         assert_eq!(f.u16(0x12_0000 + 6), Some(7));
         assert_eq!(f.u16(0x12_0000 + 4), Some(2), "the skin stays");
         // Again: already seven, nothing changes.
-        assert_eq!(grow_visible(&mut f, wgit), Some(0));
+        assert_eq!(grow_visible(&mut f, wgit, 1), Some(0));
         assert_eq!(f.u16(0x12_0000 + 6), Some(7));
+    }
+
+    #[test]
+    fn with_both_rows_the_controls_list_shows_eight_in_every_pane() {
+        assert_eq!(extra_rows(true, true), 2);
+        assert_eq!(extra_rows(true, false), 1);
+        assert_eq!(extra_rows(false, true), 1);
+        assert_eq!(extra_rows(false, false), 0);
+        let mut f = Fake::default();
+        let wgit = tag(&mut f, SCREEN_ID, 3, 6);
+        assert_eq!(grow_visible(&mut f, wgit, 2), Some(3));
+        for p in 0..3 {
+            assert_eq!(f.u16(0x12_0000 + p * 0x20 + 6), Some(8));
+        }
+        assert_eq!(grow_visible(&mut f, wgit, 2), Some(0), "once");
+        // Nothing to add: the tag is untouched.
+        let mut f = Fake::default();
+        let wgit = tag(&mut f, SCREEN_ID, 1, 6);
+        assert_eq!(grow_visible(&mut f, wgit, 0), Some(0));
+        assert_eq!(f.u16(0x12_0000 + 6), Some(6));
     }
 
     #[test]
     fn other_screens_and_other_counts_keep_their_lists() {
         let mut f = Fake::default();
         let wgit = tag(&mut f, 40, 1, 6);
-        assert_eq!(grow_visible(&mut f, wgit), Some(0));
+        assert_eq!(grow_visible(&mut f, wgit, 2), Some(0));
         assert_eq!(f.u16(0x12_0000 + 6), Some(6));
         let mut f = Fake::default();
         let wgit = tag(&mut f, SCREEN_ID, 2, 5);
-        assert_eq!(grow_visible(&mut f, wgit), Some(0));
+        assert_eq!(grow_visible(&mut f, wgit, 2), Some(0));
         assert_eq!(f.u16(0x12_0000 + 6), Some(5));
         // A pane without a list is skipped.
         let mut f = Fake::default();
         let wgit = tag(&mut f, SCREEN_ID, 1, 6);
         f.set_u32(0x11_0000 + 0xc, 0);
-        assert_eq!(grow_visible(&mut f, wgit), Some(0));
+        assert_eq!(grow_visible(&mut f, wgit, 2), Some(0));
         assert_eq!(f.u16(0x12_0000 + 6), Some(6));
     }
 
@@ -432,15 +462,29 @@ mod tests {
     #[test]
     fn each_open_screen_gets_its_own_slot() {
         let (mut table, mut next) = (Vec::new(), 0);
-        let a = extra_slot(&mut table, &mut next, 0x100, 0x1000, 2);
+        let size = 2 * ITEM_SIZE;
+        let a = extra_slot(&mut table, &mut next, 0x100, 0x1000, size, 1);
         assert_eq!(a, 0x1000);
-        assert_eq!(extra_slot(&mut table, &mut next, 0x100, 0x1000, 2), a, "same handler, same slot");
-        let b = extra_slot(&mut table, &mut next, 0x200, 0x1000, 2);
+        assert_eq!(extra_slot(&mut table, &mut next, 0x100, 0x1000, size, 1), a, "same handler, same slot");
+        let b = extra_slot(&mut table, &mut next, 0x200, 0x1000, size, 1);
         assert_eq!(b, 0x1000 + ITEM_SIZE);
         // A third screen takes the oldest slot back.
-        assert_eq!(extra_slot(&mut table, &mut next, 0x300, 0x1000, 2), a);
+        assert_eq!(extra_slot(&mut table, &mut next, 0x300, 0x1000, size, 1), a);
         assert_eq!(table.len(), 2);
         assert!(!table.iter().any(|(h, _)| *h == 0x100));
+    }
+
+    #[test]
+    fn a_slot_holds_every_extra_item_and_slots_do_not_overlap() {
+        let (mut table, mut next) = (Vec::new(), 0);
+        let size = 0x1000;
+        let slots: Vec<u32> = (0..16).map(|h| extra_slot(&mut table, &mut next, 0x100 + h, 0x8000, size, 2)).collect();
+        for (i, a) in slots.iter().enumerate() {
+            assert_eq!(*a, 0x8000 + i as u32 * 2 * ITEM_SIZE);
+            assert!(a + 2 * ITEM_SIZE <= 0x8000 + size, "inside the mapping");
+        }
+        // The seventeenth wraps to the first.
+        assert_eq!(extra_slot(&mut table, &mut next, 0x999, 0x8000, size, 2), 0x8000);
     }
 
     /// The smaller screen: a datum array at `ARRAY` with data at `DATA`

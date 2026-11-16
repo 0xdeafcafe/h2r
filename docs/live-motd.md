@@ -9,12 +9,17 @@ Abbreviations: filo = the game's 0x110-byte file-request struct (signature
 dword `0x66696c6f` at +0x00, flags at +0x04, ASCII path at +0x08).
 
 
-> **Settled (2026-11-15).** §2's fetch chain is wrong: both files arrive as
-> Live message attachments (`XOnlineMessageEnumerate` → `XOnlineMessageDetails`
-> → `XOnlineMessageDetailsGetResultsProperty` → `XOnlineMessageDownloadAttachmentToMemory`,
-> property tag `0x9c1`, file selected by property `0x4c5`: 1 = MOTD, 4 = hopper,
-> compressed size at most 18,842 bytes). See [live-motd-fetch.md](live-motd-fetch.md).
-> The file formats in §3 and §5 stand.
+> **Corrected (2026-11-16).** Both files come from **title storage**,
+> pulled by the signed-in resource manager: facility 4 (per-title), paths
+> `//title.4d530064/t:4d530064/9809/message_of_the_day.dat` and
+> `.../9809/multiplayer_hopper.dat`, download buffers 0x8000 / 0x20000
+> bytes, and a **validated 16-byte header** (CRC, version, size). §2 below
+> is rewritten from that trace (§2.0-§2.4); the older subsections are kept
+> for their addresses but their reading of the XONLINE calls is
+> superseded. The 2026-11-15 "message attachment" verdict
+> ([live-motd-fetch.md](live-motd-fetch.md)) was wrong: that path is the
+> game's voice/text message playback screen. The body formats in §3 and §5
+> stand, from offset 0x10.
 
 ## 1. The .data descriptors
 
@@ -80,7 +85,79 @@ downloaded file overrides.
 Only the filename field is read by absolute address (`0x00193fd9`); the rest
 of the descriptor is consumed indirectly (see §5).
 
-## 2. Fetch: game → XONLINE call chain
+## 2. Fetch: title storage (corrected 2026-11-16)
+
+Static analysis of the retail image; no game run.
+
+### 2.0 Channels and arming
+
+- Sign-in `0x0006bff0` queues the MOTD channel `0x00479780` (at
+  `0x0006c11f`) and the hopper channel `0x0047d8f4` (at `0x0006c101`):
+  `0x00080f70` → `0x0008e580` puts each into the 16-slot table at
+  `0x004d8c28` (0x14 bytes per slot; download queue at `0x004d8be8`).
+- `0x0006bff0` runs on the signed-in transition (`0x0006c323`) and on
+  `XONLINE_S_LOGON_USER_CHANGE_COMPLETE` `0x1513f1` (`0x0006c402`).
+  `0x00080f70` skips a channel that already holds data (word +8 != 0,
+  flags & 2, !(flags & 8)), so a user change does not re-fetch. Sign-out
+  (`0x0006cbf7`) clears bit 1, so the next sign-in fetches again.
+- **No periodic or notification re-arm exists for these two channels.**
+  (`0x0008c660`'s re-arm, §2.1 below, covers only the bungienet_user.dat
+  channel `0x00479750`.) A file published mid-session is fetched at the
+  next sign-in.
+- Channel class objects: MOTD `0x004672bc`, hopper `0x0046dd64`, laid out
+  {facility selector 0, wide name, version (MOTD 1, hopper 4), 0, fallback
+  (`0x000a45d0` / `0x00194160`), 0, handler (`0x0008c790` / `0x00194260`)}.
+
+### 2.1' The download
+
+- Each network update `0x0008df50` → resource manager `0x0008e240`, at most
+  one transfer per queue (limits at `0x004402a4`); for these channels it
+  allocates the buffer (`0x00080e10`: channel +0x24 pointer, +0x28 cap from
+  +0x2c — **MOTD 0x8000, hopper 0x20000 bytes**) and starts the download
+  `0x0008e3f5` → `0x000b4450`.
+- XOnlineStorageCreateServerPath (`0x003ab6b1`): facility 4 (PER_TITLE,
+  from selector 0 via `0x000b4450`/`0x000b4120`), user and team 0, a
+  0x100-wide-char buffer. The file name is wide `"%s/%s"` (`0x004530b0`) of
+  a prefix and the name: the prefix is `"9809"` (`%d` of 0x2651), or
+  `"test"` when byte `0x0050944e` is set (`0x0006bfa0` compares a 6-byte
+  console value at `0x004cf7cc` against a 2-entry table at `0x0043ff84`;
+  what that value is: medium confidence). Path:
+  `//title.4d530064/t:4d530064/9809/message_of_the_day.dat`.
+- XOnlineStorageDownloadToMemory (`0x003ab6ea`): (4, the user index from
+  arming, the path, the buffer, the cap, flags 0, event 0, &task).
+
+### 2.2' Completion and the checks
+
+- `0x0006c4a0` maps the task HRESULT to an index → `0x0008e5e0`. On success
+  (0 or `0x1500f0`), `0x000b45f0` → DownloadToMemoryGetResults
+  (`0x003ab6f9`); received must not exceed the cap (status 9) and must
+  equal total (status 7, which re-queues at once, `0x000810fa`).
+- Header validator `0x00081230`, §2.4. Pass is status 1; `0x0008e0f0` →
+  `0x00081050` sets channel +0xe = 1 and flags = (flags & 0xffe3) | 2, then
+  calls the handler with the channel object (+0x24 buffer, **+0x28 the
+  cap, not the received size**). The buffer is freed after the callback.
+- FILE_NOT_FOUND (`0x8015c004`, also `0x8015c007`) and other errors: status
+  6 path, flags |= 4, the handler sees +0xe != 1 and returns false, the
+  fallback runs (MOTD's does nothing and returns true; the hopper's loads
+  the compiled-in defaults), flags |= 2|8, **no retry for the session**. The
+  gate `0x0008ca50` is still true after a fallback, so the screens read
+  whatever cache file exists.
+
+### 2.4 The 16-byte header (validated)
+
+| offset | field | check, failure status |
+|---|---|---|
+| — | file size | at least 0x10 (10); at most the cap (9) |
+| +0x00 | u32 LE | CRC register over bytes [4, size): reflected polynomial 0xedb88320, init 0xffffffff, **no final xor** (the bitwise NOT of standard CRC-32; routine `0x00163ba0` via `0x000812a0`) (8) |
+| +0x04 | u32 LE | equals the class version exactly: MOTD 1, hopper 4 (11 if lower, 12 if higher) |
+| +0x08 | u32 LE | equals the received size (10) |
+| +0x0c | u32 | not checked |
+
+Our builders (`live_proto::title_file::seal`, used by `Motd::build` and
+`HopperFile::build`) write it; files published earlier with 16 zero bytes
+are republished with a real header at server start.
+
+## 2 (superseded). Fetch: game → XONLINE call chain, first reading
 
 XONLINE is entered through thunks at the head of the section that load the
 global context `ecx = [0x0048480c]` and jump into the library. The relevant
@@ -117,7 +194,8 @@ exports:
 - Storage-change notifications also re-arm downloads: `0x0008c660` (called
   from the per-frame pump at `0x0006c0ba`) reads four 0x70-byte records via
   `0x3a0671` and re-queues fetches through `0x00080f70` /
-  `0x0018fe9e` for files whose subscription fired.
+  `0x0018fe9e` for files whose subscription fired. *(Corrected: this
+  covers only the bungienet_user.dat channel, not MOTD or hopper; §2.0.)*
 
 ### 2.2 The download itself
 
@@ -167,8 +245,8 @@ Download-complete handler `0x0008c790(task_result)`:
 - task result struct: `word +0x08` = flags (must be nonzero),
   `byte +0x04 bit 1` = completed-ok, `word +0x0e` = must be 1,
   `dword +0x24` = data ptr, `dword +0x28` = size.
-- If data != null and size > 0x10: **skip a 16-byte header** (contents never
-  inspected by the game).
+- If data != null and size > 0x10: skip the 16-byte header (the handler
+  does not read it; the validator `0x00081230` already checked it, §2.4).
 - Read `u32` at offset 0x10, **big-endian** (`bswap`, helper `0x00199560`):
   it is the inflated size and must equal exactly `0x25224` (152,100).
 - Allocate 0x25224 bytes (retry loop up to 90 tries with a sleep
@@ -183,8 +261,8 @@ Download-complete handler `0x0008c790(task_result)`:
 ### 3.1 message_of_the_day.dat — wire format
 
 ```
-+0x00  16 bytes   header (not interpreted by the game; likely version/
-                  signature material — UNKNOWN)
++0x00  16 bytes   header: u32 LE CRC register over [4, size), u32 LE
+                  version 1, u32 LE size, u32 unchecked (§2.4)
 +0x10  u32 BE     inflated size, must be 0x25224 (152100)
 +0x14  zlib deflate stream
 ```
@@ -250,7 +328,7 @@ Same envelope as the MOTD, validated by the download-complete callback
 
 - result struct checks: `[+0x04] & 2` (complete), `[+0x08]` u16 != 0,
   `[+0x0e]` u16 == 1 (version 1); payload at `[+0x24]`, size `[+0x28]`.
-- Skip a 16-byte header (never interpreted).
+- Skip the 16-byte header (validated before, §2.4: version 4).
 - `u32` BE at offset 0x10 = inflated size, must equal exactly
   **`0x162cc0`** (1,457,344) (`cmp`/`jne` at `0x001942cf`) — the only content
   validation on the downloaded bytes.
@@ -344,28 +422,26 @@ meaning unconfirmed.
 
 ## 6. What our server must do (summary)
 
-1. At logon, hand the client a service directory containing a type-9
-   (title storage) service record with id `0xc1` (and the other ids implied
-   by the `0x0008eda0` enum table), each carrying the wide server path of
-   the file to fetch.
-2. Serve `POST /stfd/readfile.ashx` with the raw file bytes (chunked into
-   the client's 0x8200-byte receive buffer; 60 s task timeout).
-3. `message_of_the_day.dat`: 16-byte header (any bytes pass) + BE u32
+1. Answer XOnlineStorageDownloadToMemory for facility 4 at
+   `//title.4d530064/t:4d530064/9809/<name>` (and the `test/` prefix) with
+   the published file, reporting received == total; FILE_NOT_FOUND for
+   anything else (§2.0-§2.2'). Under the HLE this is
+   `crates/live-hle/src/storage_api.rs`; no legacy endpoint is contacted.
+2. The game fetches at sign-in only; a publish shows at the next sign-in.
+3. `message_of_the_day.dat`: 16-byte header (§2.4, version 1) + BE u32
    `0x00025224` + zlib stream inflating to the 152,100-byte payload of §3.1.
-4. `multiplayer_hopper.dat`: 16-byte header + BE u32 `0x00162cc0` + zlib
-   stream inflating to the 1,457,344-byte image of §5.2. Record ids must
+4. `multiplayer_hopper.dat`: 16-byte header (§2.4, version 4) + BE u32
+   `0x00162cc0` + zlib stream inflating to the 1,457,344-byte image of §5.2. Record ids must
    match the `matchmaking_hopper_descriptions` tag records or the slot is
    marked error.
-5. No client-side signature/hash check exists beyond the exact inflated-size
-   equality and zlib integrity. (XONLINE may additionally enforce content
-   signing via `/xsig` for services flagged signed in the service directory
-   — not verified here.)
+5. The header's CRC, version and size are checked (§2.4), and the file
+   must fit the channel's buffer (0x8000 MOTD, 0x20000 hopper); beyond
+   that only the exact inflated-size equality and zlib integrity.
 6. On failure the game silently keeps defaults / last cached copy; there is
    no user-visible error path to satisfy.
 
 ## Open questions
 
-- Contents of the 16-byte file header (never read by the game).
 - Which language/locale mapping `0x0011ca80` implements (9 MOTD slots).
 - Descriptor field +0x10 (=1 MOTD, =4 hopper): file-class id, meaning
   unconfirmed; the {1, -1, 1} dwords at 0x0046dd48..0x0046dd50 are

@@ -114,6 +114,21 @@ fn audio_sink(audio: bool) -> boot::dsound_glue::SinkOpener {
     })
 }
 
+/// The first-person field of view behind the Controls screen's Field of
+/// View row, saved in `<data>/settings.toml` (`[graphics] fov`).
+/// `H2_FOV=<degrees>` locks it for the run; `H2_FOV=0` locks the retail
+/// camera. A bad value is reported and ignored (docs/settings-menu.md).
+fn fov_setting(data: &std::path::Path) -> Arc<boot::fov_setting::FovSetting> {
+    let forced = boot::fov_setting::forced_by_env(std::env::var("H2_FOV").ok().as_deref())
+        .map_err(|e| eprintln!("play: {e}; ignored"))
+        .unwrap_or(None);
+    let setting = boot::fov_setting::FovSetting::new(forced, Some(boot::speaker_setting::settings_path(data)));
+    if setting.target().is_some() {
+        eprintln!("play: field of view {} degrees", setting.shown());
+    }
+    Arc::new(setting)
+}
+
 /// What [`pad_speaker`] sets up: the output, the HID thread and the switch.
 type PadParts = (
     Option<boot::dsound_glue::PadSpeaker>,
@@ -135,7 +150,7 @@ fn pad_speaker(audio: bool, data: &std::path::Path) -> PadParts {
     let forced = boot::speaker_setting::forced_by_env(env("H2_PAD_SPEAKER").as_deref(), config.as_ref(), audio);
     let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(
         forced,
-        Some(data.join(boot::speaker_setting::SETTINGS_FILE)),
+        Some(boot::speaker_setting::settings_path(data)),
     ));
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
@@ -218,6 +233,7 @@ fn hosted(
         audio_sink: Some(audio_sink(audio)),
         pad_speaker,
         speaker_setting: Some(speaker_setting),
+        fov_setting: Some(fov_setting(data)),
         trace_limit: Some(TRACE_LIMIT),
         input,
         keyboard,
