@@ -943,6 +943,7 @@ dependencies = [
  "emit",
  "font",
  "gltf",
+ "h1map",
  "hs",
  "iced-x86",
  "image",
@@ -2195,6 +2196,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
 dependencies = [
  "euclid",
+]
+
+[[package]]
+name = "h1map"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "sha2",
+ "thiserror 2.0.21",
+ "xbe",
+ "xiso",
 ]
 
 [[package]]

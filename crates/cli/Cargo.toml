@@ -18,6 +18,8 @@ font = { path = "../font" }
 assets.workspace = true
 map.workspace = true
 xiso.workspace = true
+# Halo 1 maps and disc (`h2 h1`, `h2 import halo1`).
+h1map = { path = "../h1map" }
 movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true
