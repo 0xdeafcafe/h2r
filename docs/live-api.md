@@ -292,6 +292,10 @@ extract`; nothing of it is in this repo). Clients must work without it.
 - `GET /art/game/catalog.json`: the playlist builder's catalog of the
   game's maps, playlist texts and built-in variants
   ([live-admin.md](live-admin.md), "The catalog"), 404 likewise.
+- `GET /art/game/map/<stem>/map.glb` (`model/gltf-binary`),
+  `.../views.json` (`application/json`) and `.../views/<id>.png`: a
+  multiplayer map's level geometry and pre-drawn views, named by the
+  manifest's `maps` ([live-art.md](live-art.md)), 404 likewise.
 
 ```json
 { "version": 1,
@@ -300,7 +304,9 @@ extract`; nothing of it is in this repo). Clients must work without it.
   "aliases": { "gametype/slayer": "gametype/0" },
   "emblem":  { ...colouring rules, below... },
   "palette": ["#ffffff", "..."],
-  "skipped": { "<key or prefix>": "why it is missing" } }
+  "skipped": { "<key or prefix>": "why it is missing" },
+  "maps":    { "<stem>": { "geometry": "map/<stem>/map.glb",
+                           "views": "map/<stem>/views.json" } } }
 ```
 
 `version` is the manifest format; it changes only when a client could no

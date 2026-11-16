@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 3;
+pub const EXTRACTOR_VERSION: u32 = 4;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -364,6 +364,10 @@ pub struct Manifest {
     pub palette: Vec<String>,
     /// What was looked for and not found or not decoded, by key or prefix.
     pub skipped: BTreeMap<String, String>,
+    /// Per multiplayer map stem, its level geometry and pre-drawn views
+    /// (docs/live-art.md); absent when none were extracted.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub maps: BTreeMap<String, crate::live_geometry::MapEntry>,
 }
 
 /// How emblem layers are coloured; see docs/live-api.md. Measured on the
@@ -411,6 +415,7 @@ pub fn build_manifest(
         emblem: emblem_rules(),
         palette,
         skipped,
+        maps: BTreeMap::new(),
     }
 }
 
@@ -823,6 +828,8 @@ pub struct Report {
     pub counts: BTreeMap<String, usize>,
     /// The playlist builder's catalog, written beside the manifest.
     pub catalog: crate::live_catalog::Catalog,
+    /// Per-map geometry counts and timings.
+    pub geometry: Vec<crate::live_geometry::MapStats>,
 }
 
 /// Decodes every category from `disc` into `out` (replacing what was
@@ -870,7 +877,11 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
     let images = write_pieces(&pieces, &staging)?;
-    let manifest = build_manifest(disc.key.clone(), images, palette, skipped);
+    // Level geometry and views of every multiplayer map (docs/live-art.md).
+    let geometry = crate::live_geometry::extract(disc, &staging);
+    skipped.extend(geometry.skipped);
+    let mut manifest = build_manifest(disc.key.clone(), images, palette, skipped);
+    manifest.maps = geometry.maps;
     // The playlist builder's catalog rides along (docs/live-admin.md).
     let catalog = crate::live_catalog::extract(disc);
     fs::write(
@@ -898,6 +909,7 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
         manifest,
         counts,
         catalog,
+        geometry: geometry.stats,
     })
 }
 
@@ -909,6 +921,20 @@ pub fn run(disc: PathBuf, out: PathBuf) -> Result<()> {
         println!("  {prefix:<10} {n}");
     }
     println!("  {:<10} {}", "palette", report.manifest.palette.len());
+    let tris: usize = report.geometry.iter().map(|g| g.triangles).sum();
+    println!(
+        "  {:<10} {} maps, {tris} triangles",
+        "geometry",
+        report.manifest.maps.len()
+    );
+    for g in &report.geometry {
+        println!(
+            "    {:<14} {:>7} triangles, {:>5} KiB",
+            g.stem,
+            g.triangles,
+            g.glb_bytes / 1024
+        );
+    }
     let c = &report.catalog;
     println!(
         "catalog: {} maps, {} playlists, {} variants",

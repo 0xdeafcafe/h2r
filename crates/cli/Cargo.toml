@@ -55,6 +55,10 @@ perf = { path = "../perf", optional = true }
 
 [dev-dependencies]
 time = "0.3"
+# live_geometry tests: an independent glTF reader for map.glb, and PNG
+# decoding for the disc check's contact sheet.
+gltf = { version = "1", default-features = false, features = ["names"] }
+png = "0.18"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -111,4 +111,29 @@ mod tests {
         assert!(allowed(true, Some(lan), &proxied));
         assert!(allowed(true, None, &none));
     }
+
+    /// Map geometry (docs/live-art.md) goes out with glTF and JSON types.
+    #[tokio::test]
+    async fn geometry_files_have_their_content_types() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let dir = std::env::temp_dir().join(format!("h2-art-types-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("map/x/views")).unwrap();
+        std::fs::write(dir.join(MANIFEST), "{}").unwrap();
+        std::fs::write(dir.join("map/x/map.glb"), b"glTF").unwrap();
+        std::fs::write(dir.join("map/x/views.json"), "{}").unwrap();
+        std::fs::write(dir.join("map/x/views/top.png"), b"png").unwrap();
+        let app = routes(&GameArt::found(&dir, true).unwrap());
+        for (path, ty) in [
+            ("/art/game/map/x/map.glb", "model/gltf-binary"),
+            ("/art/game/map/x/views.json", "application/json"),
+            ("/art/game/map/x/views/top.png", "image/png"),
+        ] {
+            let req = axum::http::Request::get(path).body(Body::empty()).unwrap();
+            let r = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(r.status(), axum::http::StatusCode::OK, "{path}");
+            assert_eq!(r.headers()[axum::http::header::CONTENT_TYPE], ty, "{path}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
