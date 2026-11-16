@@ -11,6 +11,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod coop_probe;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -699,6 +700,11 @@ pub fn run_hosted_with_live(
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
+    // (docs/live-coop.md section 9). Added last, so it can see every
+    // override placed outside the plan and refuse instead of failing it.
+    let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
