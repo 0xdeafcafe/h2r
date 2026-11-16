@@ -241,6 +241,8 @@ pub const END_REASONS: [&str; 3] = ["finished", "quit", "lost"];
 pub struct FramePlayer {
     pub index: u32,
     pub alive: bool,
+    /// Where they are; while dead, where their body lies (where they fell
+    /// once the game has cleared it away; the origin from older senders).
     pub pos: [f64; 3],
     pub yaw: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,8 +322,10 @@ pub struct Frame {
     /// hold the matching `id`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vehicles: Vec<FrameVehicle>,
-    /// AI-controlled bipeds, alive ones only, at most [`MAX_FRAME_ACTORS`]
-    /// (nearest to any player first).
+    /// AI-controlled bipeds, at most [`MAX_FRAME_ACTORS`]: the living
+    /// (nearest to any player first), then the dead bodies that are not
+    /// players' (stance `dead`, nearest first, a few dozen at most), each
+    /// until the game clears it away.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actors: Vec<FrameActor>,
     /// Damage dealt since the previous frame, oldest first, at most

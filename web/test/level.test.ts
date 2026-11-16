@@ -5,7 +5,7 @@ import { SEE_MAX, nextSee, seeTargets, seeThroughHidesAny, type SeeThrough } fro
 import { dressLayer, layerLook, layerOf } from "../src/viewer/layers3d";
 import { LevelLook } from "../src/viewer/level3d";
 import { fogRange, skyColour, skyOf, skyUrl } from "../src/viewer/sky3d";
-import { isBackdrop, layerNode, zoneInPlay, zoneLabel, zoneList, zoneVisibility } from "../src/viewer/zones";
+import { ZONE_DWELL_MS, ZoneFollower, isBackdrop, layerNode, zoneInPlay, zoneLabel, zoneList, zoneVisibility, zoneWanted, type ZoneBox } from "../src/viewer/zones";
 
 describe("picking a level's zone", () => {
   test("zones are named for their BSP, or numbered from 1 when the name says nothing", () => {
@@ -176,6 +176,24 @@ describe("the level's look", () => {
     return { root, decals, effects };
   };
 
+  test("measures each zone's extent in game coordinates", () => {
+    const look = new LevelLook(new THREE.Scene(), new THREE.Texture(), () => {});
+    const root = new THREE.Group();
+    const z = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 6));
+    z.name = "bsp_1";
+    // gl (10, 20, 30) is game (10, -30, 20).
+    z.position.set(10, 20, 30);
+    root.add(z);
+    look.adopt(root, {}, "/m/map.glb");
+    expect(look.zoneBoxes()).toEqual([{ bsp: 1, cinematic: false, min: [9, -33, 18], max: [11, -27, 22] }]);
+    expect(look.zoneBox(1)?.bsp).toBe(1);
+    expect(look.setActive(1)).toBe(true);
+    expect(look.setActive(1)).toBe(false);
+    expect(look.following()).toBe(true);
+    look.setPick(1);
+    expect(look.following()).toBe(false);
+  });
+
   test("finds the zones and layers, follows the zone in play, and flips each switch", () => {
     const scene = new THREE.Scene();
     const gradient = new THREE.Texture();
@@ -253,5 +271,48 @@ describe("cutting through to the players", () => {
     expect(nextSee("off")).toBe("auto");
     expect(nextSee("auto")).toBe("always");
     expect(nextSee("always")).toBe("off");
+  });
+});
+
+describe("the zone in play", () => {
+  const box = (bsp: number, x0: number, x1: number, cinematic = false): ZoneBox => ({ bsp, min: [x0, -10, -5], max: [x1, 10, 5], cinematic });
+  // Zones 0 and 1 share the corridor from 90 to 100; zone 2 is a cutscene's.
+  const boxes = [box(0, 0, 100), box(1, 90, 200), box(2, 1000, 1100, true)];
+  const at = (x: number) => ({ x, y: 0, z: 0 });
+
+  test("the game's loaded zone, where the players are in it", () => {
+    expect(zoneWanted(boxes, { reported: 1, focus: null, players: [at(95)] }, 0)).toBe(1);
+    expect(zoneWanted(boxes, { reported: 0, focus: null, players: [at(150)] }, 0)).toBe(1);
+  });
+
+  test("a cutscene's zone, a missing report or nobody inside: where the players stand", () => {
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [at(50)] }, 1)).toBe(0);
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [at(50)] }, 1, true)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(150), at(160), at(20)] }, null)).toBe(1);
+    // In the shared corridor the zone shown stays.
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(95)] }, 0)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(95)] }, 1)).toBe(1);
+    // The followed player decides over the rest.
+    expect(zoneWanted(boxes, { reported: null, focus: at(20), players: [at(150), at(160), at(20)] }, 1)).toBe(0);
+    // No players: the game's word, else what is shown.
+    expect(zoneWanted(boxes, { reported: 1, focus: null, players: [] }, 0)).toBe(1);
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [] }, 0)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(5000)] }, 1)).toBe(1);
+    expect(zoneWanted([], { reported: 1, focus: null, players: [] }, null)).toBeNull();
+  });
+
+  test("a new zone has to stay wanted a moment, except the first and on a seek", () => {
+    const z = new ZoneFollower();
+    const m = (x: number) => ({ reported: null, focus: null, players: [at(x)] });
+    expect(z.update(0, boxes, m(50))).toBe(0);
+    expect(z.update(100, boxes, m(150))).toBe(0);
+    // Back over the line before the dwell is up: no flick.
+    expect(z.update(200, boxes, m(50))).toBe(0);
+    expect(z.update(300, boxes, m(150))).toBe(0);
+    expect(z.update(300 + ZONE_DWELL_MS - 1, boxes, m(150))).toBe(0);
+    expect(z.update(300 + ZONE_DWELL_MS, boxes, m(150))).toBe(1);
+    expect(z.update(2000, boxes, m(20), { snap: true })).toBe(0);
+    z.reset();
+    expect(z.current).toBeNull();
   });
 });

@@ -2156,12 +2156,41 @@ const STATES: &[(&str, Want)] = &[
     ("crouch", Want::Action("crouch", None, "idle")),
     ("airborne", Want::Action("combat", None, "airborne")),
     ("land", Want::Action("combat", None, "land_soft")),
+    ("land_hard", Want::Action("combat", None, "land_hard")),
     ("grenade", Want::Named(&["throw_grenade"])),
     ("melee", Want::Named(&["melee_strike_1", "melee"])),
     ("reload", Want::Named(&["reload_1"])),
     ("fire", Want::Named(&["fire_1"])),
     ("switch", Want::Named(&["ready"])),
-    ("die", Want::Action("combat", Some("any"), "landing_dead")),
+];
+
+/// The class every class shares: its clips are written once, as
+/// `any:<state>`, and a reader falls back to them for any weapon class.
+pub const SHARED_CLASS: &str = "any";
+
+/// Where a shared state's animation is found.
+#[derive(Clone, Copy, Debug)]
+enum Shared {
+    /// An animation by its whole name, any of these, maybe with `:varN`
+    /// (the first variant by name).
+    Named(&'static [&'static str]),
+    /// An action of mode `combat`, class and type `any`.
+    Action(&'static str),
+}
+
+/// The states every weapon class shares: dying (a death animation of the
+/// graph's damage table, `s_kill` a soft kill from the front, else a hard
+/// one, else the dead pose) and lying dead (`landing_dead`: the body on the
+/// ground, held). Each state takes the first source the graph has.
+const SHARED_STATES: &[(&str, &[Shared])] = &[
+    (
+        "die",
+        &[
+            Shared::Named(&["s_kill:front:gut", "h_kill:front:gut"]),
+            Shared::Action("landing_dead"),
+        ],
+    ),
+    ("dead", &[Shared::Action("landing_dead")]),
 ];
 
 /// Where a clip's animation is.
@@ -2179,6 +2208,21 @@ pub enum ClipFrom {
 /// the graph are left out.
 pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, ClipFrom)> {
     let mut out = Vec::new();
+    // The shared clips first, so dropping classes for size never takes them.
+    for (state, sources) in SHARED_STATES {
+        let from = sources.iter().find_map(|source| match *source {
+            Shared::Named(names) => whole_name(animations, names).map(ClipFrom::Animation),
+            Shared::Action(action) => stances
+                .iter()
+                .position(|s| {
+                    s[0] == POSE_MODE && s[1] == SHARED_CLASS && s[2] == POSE_TYPE && s[3] == action
+                })
+                .map(ClipFrom::Action),
+        });
+        if let Some(from) = from {
+            out.push((format!("{SHARED_CLASS}:{state}"), from));
+        }
+    }
     for class in CLIP_CLASSES {
         for (state, want) in STATES {
             let from = match *want {
@@ -2201,6 +2245,23 @@ pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, Cli
         }
     }
     out
+}
+
+/// The animation named one of `names` (in that order of preference),
+/// itself or a `:varN` of it, the first by name.
+fn whole_name(animations: &[String], names: &[&str]) -> Option<usize> {
+    names.iter().find_map(|base| {
+        animations
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.as_str() == *base
+                    || n.strip_prefix(base)
+                        .is_some_and(|rest| rest.starts_with(":var"))
+            })
+            .min_by(|a, b| a.1.cmp(b.1))
+            .map(|(i, _)| i)
+    })
 }
 
 /// The combat animation of `class` doing one of `actions`: the class's own

@@ -440,11 +440,23 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                 {
                     ridden.insert(parent);
                 }
+                let Ok(depleted) = guest
+                    .u16(body + layout::BODY_DAMAGE_FLAGS)
+                    .map(|f| f & layout::BODY_DEPLETED != 0)
+                else {
+                    continue;
+                };
+                // A dead biped stays in the world as a body until the game
+                // clears it away; whose it was is the session's business.
+                if depleted {
+                    if let Ok(Some(object)) = object(guest, datum) {
+                        out.bodies.push(ActorState { datum, object });
+                    }
+                    continue;
+                }
                 let ai = || -> ReadResult<bool> {
                     Ok(guest.u32(body + layout::UNIT_ACTOR)? != u32::MAX
-                        && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX
-                        && guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED
-                            == 0)
+                        && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX)
                 };
                 if !ai().unwrap_or(false) {
                     continue;
@@ -697,6 +709,7 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         vehicles: Vec::new(),
         machines: Vec::new(),
         placed: Vec::new(),
+        bodies: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
     })
@@ -1386,6 +1399,13 @@ mod tests {
             found.iter().map(|a| a.datum).collect::<Vec<_>>(),
             [fixture::object_datum(2), fixture::object_datum(6)]
         );
+        // The dead marine is a body, not an actor.
+        let bodies = world(&guest).unwrap().bodies;
+        assert_eq!(
+            bodies.iter().map(|a| a.datum).collect::<Vec<_>>(),
+            [fixture::object_datum(3)]
+        );
+        assert_eq!(bodies[0].object.team, Some(2));
         let grunt = &found[0].object;
         assert_eq!(grunt.pos, [5.0, 6.0, 7.0]);
         assert_eq!(grunt.team, Some(3));

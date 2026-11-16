@@ -108,3 +108,77 @@ export function zoneInPlay(info: { active: number | null; zones: readonly ZoneEn
   const z = info?.active != null ? info.zones.find((e) => e.bsp === info.active) : undefined;
   return z ? `Zone in play: ${z.label}` : "Zone in play";
 }
+
+// ---- the zone in play ----
+
+/** A zone's extent, game coordinates (z up). */
+export interface ZoneBox {
+  bsp: number;
+  min: [number, number, number];
+  max: [number, number, number];
+  cinematic: boolean;
+}
+
+/** How long a different zone has to be the one in play before the view
+ *  moves to it (ms): a player stepping back and forth over the line where
+ *  two zones meet doesn't flick the level between them. */
+export const ZONE_DWELL_MS = 800;
+/** How far outside its box a point still counts as in a zone (game units):
+ *  zones meet in shared corridors, and feet stand on the floor's edge. */
+export const ZONE_MARGIN = 1;
+
+type Point = { x: number; y: number; z: number };
+
+const inside = (b: ZoneBox, p: Point, m = ZONE_MARGIN) =>
+  p.x >= b.min[0] - m && p.x <= b.max[0] + m && p.y >= b.min[1] - m && p.y <= b.max[1] + m && p.z >= b.min[2] - m && p.z <= b.max[2] + m;
+
+/** What the zone in play is worked out from, at one moment. */
+export interface ZoneMoment {
+  /** The zone the game says it has loaded (`Frame.bsp`), if it says. */
+  reported: number | null;
+  /** The player the view is about (followed, else highlighted), alive. */
+  focus: Point | null;
+  /** Every living player (and nothing else: AI stand in zones not loaded). */
+  players: readonly Point[];
+}
+
+/** The zone the view should show for a moment, before any dwell: the one
+ *  the game has loaded when it is a playable zone and the players are in
+ *  it (a cutscene's zone, or one nobody is in, is not where play is); else
+ *  the one the focus player is in, else the one most players are in; the
+ *  zone already shown wins any tie, so overlapping zones don't swap. Null
+ *  when nothing says. */
+export function zoneWanted(boxes: readonly ZoneBox[], m: ZoneMoment, current: number | null, cinematic = false): number | null {
+  const playable = boxes.filter((b) => !b.cinematic || cinematic);
+  if (!playable.length) return null;
+  const by = (n: number | null) => (n === null ? undefined : playable.find((b) => b.bsp === n));
+  const who = m.focus ? [m.focus] : m.players;
+  const reported = by(m.reported);
+  if (!who.length) return reported ? reported.bsp : current;
+  const count = (b: ZoneBox) => who.filter((p) => inside(b, p)).length;
+  if (reported && count(reported) > 0 && count(reported) >= Math.max(...playable.map(count))) return reported.bsp;
+  const cur = by(current);
+  let best: ZoneBox | null = cur && count(cur) > 0 ? cur : null;
+  for (const b of playable) if (count(b) > (best ? count(best) : 0)) best = b;
+  if (best) return best.bsp;
+  // Nobody is inside any zone (falling, or a sender's odd position): the game's word, else stay.
+  return reported ? reported.bsp : current;
+}
+
+/** The zone in play over time: `zoneWanted`, held until a new one has
+ *  been wanted for `ZONE_DWELL_MS` (at once the first time, and on a seek). */
+export class ZoneFollower {
+  current: number | null = null;
+  private next: { bsp: number | null; since: number } | null = null;
+
+  update(now: number, boxes: readonly ZoneBox[], m: ZoneMoment, opts: { cinematic?: boolean; snap?: boolean } = {}): number | null {
+    const want = zoneWanted(boxes, m, this.current, opts.cinematic);
+    if (want === this.current) { this.next = null; return this.current; }
+    if (this.current === null || opts.snap) { this.current = want; this.next = null; return want; }
+    if (!this.next || this.next.bsp !== want) this.next = { bsp: want, since: now };
+    if (now - this.next.since >= ZONE_DWELL_MS) { this.current = want; this.next = null; }
+    return this.current;
+  }
+
+  reset() { this.current = null; this.next = null; }
+}

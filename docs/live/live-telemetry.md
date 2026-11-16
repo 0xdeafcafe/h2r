@@ -69,6 +69,13 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   is read like a player's unit (position, or its vehicle's; aim; held
   weapon). Nearest to any player first, at most 128. A fault on one biped
   skips it; a failed scan sends no actors.
+- Bodies: the same scan keeps every biped with the body-depleted flag (the
+  game leaves a body in the world until it clears it away). A body that
+  was never a player's unit (an AI's, or one the level starts with) is
+  sent after the living actors as an actor with stance `dead` (no aim,
+  weapon or actions), nearest first, at most 32 and within the 128; it
+  keeps the id it had alive. A dead player's `pos` and `yaw` are their
+  body's while it lasts, then where they fell (the origin before this).
 - `team` is the unit's `+0x138`; in campaign it is named (likely names),
   elsewhere sent as the number.
 - `species` is the biped tag's directory; vehicles' `kind` the `vehi`

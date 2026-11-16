@@ -31,10 +31,11 @@ import type { SampledVehicle } from "../state/frames";
 import { Projectiles, lookFor, shotEnd, type Look } from "./projectiles";
 import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
-import { BipedAnim, SpeedMeter, actionShot, aimAngles, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { BipedAnim, HELD, SpeedMeter, actionShot, aimAngles, actorAim, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
-import { bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
@@ -92,8 +93,19 @@ interface PlayerObj {
   legs: number;
   /** The last one-shot started on the model. */
   shotId: number;
-  /** When they were first seen dead; null while alive. */
-  diedAt: number | null;
+  /** Whether they were alive at the last update (null: not seen yet). */
+  wasAlive: boolean | null;
+  /** Where they last stood alive, for a body a sender doesn't place. */
+  lastAlive: Place | null;
+}
+
+/** A dead player's model left lying (viewer/bodies.ts). */
+interface BodyObj {
+  group: THREE.Group;
+  biped: BipedInstance;
+  anim: BipedAnim;
+  /** The weapon class they died holding: which dying clip. */
+  cls: string;
 }
 
 /** A vehicle: its model, or a box of about its size; darker when nobody is in it. */
@@ -198,6 +210,10 @@ export class ViewerScene {
   private tween: { t0: number; ms: number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
   private lastNow = 0;
   private lowZ = Infinity;
+  /** Dead players' bodies, left where they fell. */
+  private bodies = new Bodies<BodyObj>();
+  /** Which zone is in play (viewer/zones.ts). */
+  private zone = new ZoneFollower();
   private dirty = true;
   private slow = 0;
   private w = 1; private h = 1;
@@ -591,6 +607,8 @@ export class ViewerScene {
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
     this.map = null;
+    for (const b of this.bodies.clear()) this.dropBody(b.obj);
+    this.zone.reset();
     this.look.clear();
     this.machineNodes.clear();
     this.features = null;
@@ -820,7 +838,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, diedAt: -Infinity };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }
@@ -883,18 +901,19 @@ export class ViewerScene {
   private animate(p: PlayerObj, s: SmoothPlayer, now: number, dt: number) {
     const measured = p.meter.update(s.x, s.y, dt);
     const speed = s.speed ?? measured;
-    const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed });
+    const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed, z: s.z });
     const squat = st.loop === "crouch" ? 0.7 : 1;
     if (p.body.scale.y !== squat) { p.body.scale.y = squat; this.dirty = true; }
     const an = p.biped?.animator;
     if (!an || this.opts.reducedMotion) return;
     this.aimBody(p, s, an, st.loop === "walk" || st.loop === "run" ? p.meter.heading : null, dt);
     const cls = this.clipClass(s);
-    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), st.loop === "die");
+    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), HELD.has(st.loop));
     if (st.shotId !== p.shotId) {
       p.shotId = st.shotId;
       // Anything but landing is done with the arms: unless they stand still, the legs carry on with the loop.
-      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), st.shot !== "land" && st.loop !== "idle");
+      const landing = st.shot === "land" || st.shot === "land_hard";
+      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), !landing && st.loop !== "idle");
     }
     an.update(dt);
     this.dirty = true;
@@ -906,19 +925,94 @@ export class ViewerScene {
    *  along it. The body's turn is `turn.rotation.y`, the facing plus `legs`. */
   private aimBody(p: PlayerObj, s: SmoothPlayer, an: BipedAnimator, heading: number | null, dt: number) {
     const { yaw, pitch } = aimAngles(s.aim);
-    const want = s.alive ? legTwist(yaw, heading) : 0;
+    const up = s.alive && s.stance !== "dead";
+    const want = up ? legTwist(yaw, heading) : 0;
     p.legs += (want - p.legs) * Math.min(1, dt / 220);
-    const body = s.yaw + p.legs;
+    // An AI's body is drawn facing where it aims, as the game turns it
+    // (its own facing lags behind); a player's faces as they do, which is
+    // their aim.
+    const body = (p.actor && up ? yaw : s.yaw) + p.legs;
     p.turn.rotation.y = yawToGl(body);
-    an.aim(s.alive ? pitch : 0, s.alive ? wrapAngle(yaw - body) : 0);
+    if (!up) { an.aim(0, 0); return; }
+    const twist = wrapAngle(yaw - body);
+    const aim = p.actor ? actorAim(pitch, twist) : { pitch, twist };
+    an.aim(aim.pitch, aim.twist);
   }
 
-  /** How long a dead player's model stays to play its dying clip (ms); 0 when it has none. */
-  private dyingFor(p: PlayerObj, s: SmoothPlayer): number {
-    const an = p.biped?.animator;
-    if (!an || this.opts.reducedMotion) return 0;
-    const d = an.duration(clipFor(an.names, this.clipClass(s), "die"));
-    return d === null ? 0 : d + 700;
+  /** Shows the zone in play: the game's loaded zone where the players are
+   *  in it, else the one the followed player (or most players) stands in,
+   *  held a moment against flicker (viewer/zones.ts). When it changes and
+   *  the camera isn't following anyone, the camera moves to frame it. */
+  private followZone(now: number, reported: number | null, highlight: number | null, seeking: boolean) {
+    const players: Array<{ x: number; y: number; z: number }> = [];
+    for (const s of this.shown.values()) if (!s.actor && s.alive) players.push(s);
+    const fi = this.followIndex ?? highlight;
+    const f = fi !== null ? this.shown.get(fi) : undefined;
+    const focus = f && f.alive && !f.actor ? f : null;
+    const bsp = this.zone.update(now, this.look.zoneBoxes(), { reported, focus, players }, { cinematic: this.look.cinematicOn(), snap: seeking });
+    if (!this.look.setActive(bsp) || bsp === null || !this.look.following() || this.mode === "follow") return;
+    const box = this.look.zoneBox(bsp);
+    // A level with one zone was framed whole at load.
+    if (!box || this.look.zoneBoxes().length < 2) return;
+    const fit = cameraFit(box, this.camera.fov, this.camera.aspect);
+    const target = new THREE.Vector3(...gameToGl(...fit.centre));
+    const pos = this.mode === "top"
+      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
+      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
+    this.moveCamera(pos, target, seeking);
+  }
+
+  /** Leaves a player's body where they fell: a copy of their model, made
+   *  when they die, lying where the frames put them until they respawn,
+   *  then staying behind (viewer/bodies.ts). */
+  private playerBody(index: number, p: PlayerObj, s: SmoothPlayer, now: number, seeking: boolean) {
+    const place: Place = { x: s.x, y: s.y, z: s.z, yaw: s.yaw };
+    if (s.alive) {
+      if (p.wasAlive === false) this.bodies.release(index);
+      p.lastAlive = place;
+    } else if (p.wasAlive && !seeking && p.biped && this.models && p.bipedUrl) {
+      const template = this.library.biped(p.bipedUrl);
+      if (template?.clips.size) {
+        const biped = this.library.instantiateBiped(template, p.colour);
+        const group = new THREE.Group();
+        group.add(biped.object);
+        this.scene.add(group);
+        const at = bodyPlace(place, p.lastAlive);
+        const cls = weaponClass(this.models.table.classes, p.weaponName);
+        for (const old of this.bodies.add(index, at, now, { group, biped, anim: new BipedAnim(true), cls })) this.dropBody(old.obj);
+        this.dirty = true;
+      }
+    } else if (!s.alive) {
+      const b = this.bodies.following(index);
+      if (b) Object.assign(b, bodyPlace(place, p.lastAlive));
+    }
+    p.wasAlive = s.alive;
+  }
+
+  private dropBody(b: BodyObj) {
+    this.scene.remove(b.group);
+    b.biped.animator?.dispose();
+    this.dirty = true;
+  }
+
+  /** Places and animates the bodies; old ones go, and a seek clears them all. */
+  private updateBodies(now: number, dt: number, seeking: boolean) {
+    for (const b of seeking ? this.bodies.clear() : this.bodies.expire(now)) this.dropBody(b.obj);
+    for (const b of this.bodies.list) {
+      const o = b.obj, an = o.biped.animator;
+      const [x, y, z] = gameToGl(b.x, b.y, b.z);
+      o.group.position.set(x, y, z);
+      o.group.rotation.y = yawToGl(b.yaw);
+      o.group.scale.setScalar(MODEL_SCALE);
+      if (!an) continue;
+      const dieMs = an.duration(clipFor(an.names, o.cls, "die")) ?? 0;
+      const st = o.anim.update(now, { alive: false });
+      if (this.opts.reducedMotion) { an.setLoop(clipFor(an.names, o.cls, "dead"), 1, true); an.update(0); continue; }
+      an.setLoop(clipFor(an.names, o.cls, st.loop), 1, true);
+      an.update(dt);
+      // Still once the death clip has run (or while it is being followed).
+      if (now - b.bornAt < dieMs + 1000 || b.following) this.dirty = true;
+    }
   }
 
   /** Where a player's shots leave from, in the scene: the weapon's muzzle,
@@ -1050,7 +1144,7 @@ export class ViewerScene {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
     }
-    this.look.setActive(frame.bsp ?? null);
+    this.followZone(now, frame.bsp ?? null, highlight, seeking);
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
@@ -1100,14 +1194,16 @@ export class ViewerScene {
         if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
         continue;
       }
+      // An AI's body comes in the frames (the `dead` stance) and is drawn
+      // as it lies; a player's is left behind as a body of its own, made
+      // from the model they had alive (the dead have no species or weapon).
+      const dead = !s.alive || s.stance === "dead";
+      if (!p.actor) this.playerBody(index, p, s, now, seeking);
       this.dress(p, s);
-      if (s.alive) p.diedAt = null;
-      else if (p.diedAt === null) p.diedAt = seeking ? -Infinity : now;
-      // A model with a dying clip stays to play it; anything else is gone at once.
-      const show = s.alive || now - p.diedAt! < this.dyingFor(p, s);
+      const show = s.alive || (p.actor && dead);
       p.turn.visible = true;
-      p.ring.visible = s.alive;
-      p.ray.visible = s.alive && !p.actor;
+      p.ring.visible = !dead;
+      p.ray.visible = !dead && !p.actor;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
@@ -1119,7 +1215,7 @@ export class ViewerScene {
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.visible = show;
-      p.label.visible = s.alive && (!p.actor || this.actorNames);
+      p.label.visible = !dead && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
       turn.scale.setScalar(k);
@@ -1128,7 +1224,7 @@ export class ViewerScene {
       p.label.position.y = p.biped ? p.biped.height * k * 1.08 + 0.12 * S : 1.15 * k;
       p.el.classList.toggle("on", big);
       if (show) this.animate(p, s, now, dt);
-      if (!s.alive || p.actor) continue;
+      if (dead || p.actor) continue;
       // The aim ray: from the eye point, along the eased aim. Reduced motion
       // has no flashes; the ray itself says "firing" for a moment instead.
       g.updateWorldMatrix(false, true);
@@ -1155,6 +1251,7 @@ export class ViewerScene {
       this.players.delete(index);
       this.dirty = true;
     }
+    this.updateBodies(now, dt, seeking);
     this.drawShots(now);
     if (this.projectiles.update(now)) this.dirty = true;
     if (this.effects.update(this.feed.liveHits(now), still ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
@@ -1274,6 +1371,7 @@ export class ViewerScene {
     this.controls.dispose();
     for (const p of this.players.values()) this.removePlayer(p);
     this.players.clear();
+    for (const b of this.bodies.clear()) this.dropBody(b.obj);
     for (const o of this.vehicles.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
     this.vehicles.clear();
     for (const o of this.looseMachines.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }

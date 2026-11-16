@@ -108,6 +108,33 @@ describe("scenario objects", () => {
     expect(batches(scenario).every((m) => !m.visible)).toBe(true);
   });
 
+  test("the level's vehicles (placed, and multiplayer vehicle spawns) hide while the frames draw vehicles", () => {
+    const { root, scenario, a } = level();
+    const hog = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 1), new THREE.MeshStandardMaterial());
+    hog.name = "vehi_0";
+    hog.userData = { kind: "vehi", index: 0, tag: "warthog" };
+    const ghost = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 2), new THREE.MeshStandardMaterial());
+    ghost.name = "netgame_7";
+    ghost.userData = { kind: "netgame", index: 7, tag: "ghost", item: "vehi" };
+    scenario.add(hog, ghost);
+    root.updateMatrixWorld(true);
+    const objects = new ScenarioObjects();
+    objects.adopt(root);
+    const shown = () => batches(scenario).filter((m) => m.visible).map((m) => m.geometry);
+    expect(shown()).toContain(hog.geometry);
+    expect(shown()).toContain(ghost.geometry);
+    objects.setVehiclesHidden(true);
+    expect(shown()).not.toContain(hog.geometry);
+    expect(shown()).not.toContain(ghost.geometry);
+    // The weapon spawn and the crates stay; a vehicle handed out stays hidden too.
+    expect(shown()).toContain(a.geometry);
+    expect(shown().length).toBe(4);
+    expect(objects.find("netgame", 7)!.visible).toBe(false);
+    objects.setVehiclesHidden(false);
+    expect(shown()).toContain(hog.geometry);
+    expect(objects.find("netgame", 7)!.visible).toBe(true);
+  });
+
   test("find hands out a placement's node, out of its batch; apply moves and hides from frames", () => {
     const { root, scenario, b } = level();
     let changes = 0;
