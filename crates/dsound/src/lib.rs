@@ -10,6 +10,7 @@
 //! - [`abi`]: constants and guest structure layouts.
 //! - [`state`]: the object model and every API implementation.
 //! - [`overrides`]: address table and dispatcher for the override layer.
+//! - [`mixbins`]: a voice's mix-bin list and per-bin volumes, as the library keeps them.
 //! - [`register`]: installs [`overrides`] into a runtime `Dispatch`.
 //! - [`padroute`]: recognising sounds by their bytes and routing chosen ones to a controller speaker.
 //! - [`output`]: the output thread, the one consumer that takes the mixer to a sink.
@@ -18,6 +19,7 @@
 
 pub mod abi;
 pub mod host;
+pub mod mixbins;
 pub mod output;
 pub mod overrides;
 pub mod padroute;

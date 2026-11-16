@@ -30,6 +30,7 @@ feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
 feature engine-leaves: on
+0x000d9640 DAMAGE_REPORT: observe_before [live-telemetry:hits] -> original
 0x00104150 WEAPON_FIRE: observe_before [live-telemetry:shots] -> original
 0x00137fe0 GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash]
 0x001389c0 GAME_END: original -> observe_after [live-telemetry:end]

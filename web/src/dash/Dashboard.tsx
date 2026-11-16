@@ -4,7 +4,7 @@
 //     turns to bring the selected one into focus;
 //   - list screens (live now, friends, players, game history): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, server): one big pod,
+//   - pod screens (settings, a player, sign up, server, invites): one big pod,
 //     four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
@@ -27,7 +27,10 @@ function rowType(g: GameState): string {
 import { isCampaign } from "../state/reducer";
 import { mapPicture } from "../components/MapPicture";
 import { accountsFile, createAccount, gamertagError, SignUpError } from "../state/account";
-import { defaultBase, fetchWellKnown, forget, normalizeBase, recentServers } from "../api/server";
+import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
+import { ConnectPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
+import { serverPods } from "../admin/server";
+import "../styles/dash-server.css";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Emblem from "../components/Emblem";
 import { presenceKind } from "../components/bits";
@@ -202,6 +205,11 @@ export default function Dashboard() {
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
+  // The server screens (Server.tsx): /dash/server, /dash/server/invites, /dash/server/connect.
+  const serverSub = () => (section() === "server" ? params.tag ?? null : null);
+  const serverInfo = createServerInfo(() => section() === "server");
+  let inviteControls: InviteControls | null = null;
+
   // The four small pods of a pod screen.
   const [sat, setSat] = createSignal(0);
   createEffect(() => { screen(); params.tag; setSat(0); });
@@ -239,6 +247,13 @@ export default function Dashboard() {
           { label: "h2 import", glyph: "download" }, { label: "this browser", glyph: "store" },
         ];
       case "server": {
+        const sub = serverSub();
+        if (sub !== "connect") {
+          return serverPods(sub === "invites" ? "invites" : "overview", serverInfo.admin()).map((p): Sat => ({
+            label: p.label, glyph: p.glyph,
+            act: p.run ? () => (p.run === "create" ? inviteControls?.create() : inviteControls?.copy()) : () => go(p.to!, p.back ? "back" : "deeper"),
+          }));
+        }
         const here = live.server().base;
         const list = [
           ...(here !== defaultBase() ? [{ base: defaultBase(), id: "this site" }] : []),
@@ -281,6 +296,7 @@ export default function Dashboard() {
     const s = section();
     if (screen() === "menu") return;
     if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
+    else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
     else go("/", "back");
@@ -295,7 +311,7 @@ export default function Dashboard() {
       default: {
         const s = sats()[sat()];
         if (s?.act) s.act();
-        else if (screen() === "server") (document.getElementById("dash-server-form") as HTMLFormElement | null)?.requestSubmit();
+        else if (screen() === "server" && serverSub() === "connect") (document.getElementById("dash-server-form") as HTMLFormElement | null)?.requestSubmit();
       }
     }
   }
@@ -545,12 +561,30 @@ export default function Dashboard() {
             <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { socialAct = f; }} />
           </Match>
 
-          <Match when={screen() === "server"}>
+          <Match when={screen() === "server" && serverSub() === "connect"}>
             <div class="dx-screen dx-pods dx-pods--form">
+              <div class="dx-centre"><BigPod wire><Glyph name="server" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <ConnectPlate onUse={useServer} busy={serverBusy()} err={serverErr()} />
+              <Prompts onA={select} onB={back} aLabel="connect" />
+            </div>
+          </Match>
+
+          <Match when={screen() === "server" && serverSub() === "invites"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-server">
+              <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <InvitesPlate info={serverInfo} bind={(c) => { inviteControls = c; }} />
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={screen() === "server"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-server" classList={{ "dx-server--admin": !!serverInfo.status() }}>
               <div class="dx-centre"><BigPod wire><Glyph name="globe" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <ServerPlate onUse={useServer} busy={serverBusy()} err={serverErr()} />
-              <Prompts onA={select} onB={back} aLabel="connect" />
+              <ServerPlate info={serverInfo} />
+              <Prompts onA={select} onB={back} />
             </div>
           </Match>
         </Switch>
@@ -751,26 +785,6 @@ function SignUpPlate() {
           Your account key is saved in this browser for {live.wellKnown()?.id ?? "this server"}. Anyone with access to this browser profile can use it.
           After signing up, choose “download for h2” to take your account into the game.
         </p>
-      </form>
-    </Plate>
-  );
-}
-
-function ServerPlate(props: { onUse: (input: string) => Promise<void>; busy: boolean; err: string | null }) {
-  const [input, setInput] = createSignal("");
-  const [tick, setTick] = createSignal(0);
-  const others = () => { tick(); return recentServers().filter((r) => r.base !== live.server().base); };
-  return (
-    <Plate small={live.status() === "live" ? "connected" : live.status()} title={live.wellKnown()?.id ?? new URL(live.server().base).host} main>
-      <form id="dash-server-form" class="dx-form" onSubmit={(e) => { e.preventDefault(); if (input().trim()) void props.onUse(input()).then(() => setInput("")); }}>
-        <dl><dt>address</dt><dd>{live.server().base}</dd></dl>
-        <label for="dash-server">another server</label>
-        <input id="dash-server" placeholder="live.example.net" value={input()} onInput={(e) => setInput(e.currentTarget.value)} autocomplete="off" spellcheck={false} />
-        <button type="submit" class="dx-go" disabled={props.busy || !input().trim()}>{props.busy ? "connecting" : "connect"}</button>
-        <Show when={props.err}><p class="dx-error" role="alert">{props.err}</p></Show>
-        <Show when={others().length}>
-          <button type="button" class="dx-forget" onClick={() => { for (const r of others()) forget(r.base); setTick(tick() + 1); }}>forget other servers</button>
-        </Show>
       </form>
     </Plate>
   );

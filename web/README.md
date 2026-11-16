@@ -47,7 +47,9 @@ inward-facing shell, partition walls, an upper floor, pillars and two
 "machines", over `bsp_<n>` and `machines` nodes), for trying the 3D view's
 cutaways. `H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
 `mock/models.ts`) to the art manifest, so the 3D view's model path runs;
-without it players are capsules, as on a server with no models.
+without it players are capsules, as on a server with no models. `H2_MOCK_ADMIN=1` makes every account
+signed up in the browser an admin, so the dashboard's server screen shows "your server"
+and its invites, and the stats site shows the admin area (`mock/admin.ts`).
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real

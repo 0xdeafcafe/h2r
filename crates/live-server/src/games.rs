@@ -3,7 +3,7 @@
 //! the presence and game managers that write `PresenceExpired` and
 //! `GameEnded {reason: "lost"}` when clients go quiet.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -36,30 +36,14 @@ struct FrameClock {
     last_sent: Instant,
     /// Unix second of the last recorded `GameFrame`.
     last_recorded: i64,
-    /// Shots of throttled frames by shooter, added to the next frame sent
-    /// so none are lost.
-    unsent_shots: Vec<(game::Shooter, u32)>,
-    /// Shots of sent frames since the last recorded one, by shooter, added
-    /// to the next recorded frame so a replay's `shots` cover its second.
-    unrecorded_shots: Vec<(game::Shooter, u32)>,
-}
-
-/// How many shooters a clock keeps shots for: a few frames' worth.
-const MAX_CARRIED_SHOOTERS: usize = 4 * (game::MAX_PLAYERS + game::MAX_FRAME_ACTORS);
-
-/// Adds `shots` to `into`, one entry per shooter, each capped at
-/// [`game::MAX_FRAME_SHOTS`]; new shooters past the bound are dropped.
-fn carry_shots(
-    into: &mut Vec<(game::Shooter, u32)>,
-    shots: impl IntoIterator<Item = (game::Shooter, u32)>,
-) {
-    for (shooter, n) in shots {
-        if let Some((_, total)) = into.iter_mut().find(|(s, _)| *s == shooter) {
-            *total = total.saturating_add(n).min(game::MAX_FRAME_SHOTS);
-        } else if into.len() < MAX_CARRIED_SHOOTERS {
-            into.push((shooter, n.min(game::MAX_FRAME_SHOTS)));
-        }
-    }
+    /// What throttled frames carried (shots, actions, hits, machines),
+    /// handed to the next frame sent so none is lost.
+    unsent: game::FrameCarry,
+    /// What sent frames carried since the last recorded one, handed to the
+    /// next recorded frame so a replay covers its whole second.
+    unrecorded: game::FrameCarry,
+    /// Every machine's latest state, by id: recorded frames carry them all.
+    machines: BTreeMap<String, game::FrameMachine>,
 }
 
 impl FrameClock {
@@ -67,30 +51,38 @@ impl FrameClock {
         FrameClock {
             last_sent: now - FRAME_INTERVAL,
             last_recorded: 0,
-            unsent_shots: Vec::new(),
-            unrecorded_shots: Vec::new(),
+            unsent: game::FrameCarry::default(),
+            unrecorded: game::FrameCarry::default(),
+            machines: BTreeMap::new(),
         }
     }
 
-    /// Throttles a validated frame: `None` when it is dropped (its shots
-    /// carried to the next sent frame), else `Some` with the frame to record
-    /// if this is the first sent in a new second. The sent frame's `shots`
-    /// cover the frames dropped before it; the recorded one's every frame
-    /// since the last recorded.
+    /// Throttles a validated frame: `None` when it is dropped (what it
+    /// carried goes to the next sent frame), else `Some` with the frame to
+    /// record if this is the first sent in a new second. The sent frame's
+    /// shots, actions and hits cover the frames dropped before it; the
+    /// recorded one's every frame since the last recorded, and it lists
+    /// every machine seen so far.
     fn admit(&mut self, frame: &mut Frame, now: Instant, now_s: i64) -> Option<Option<Frame>> {
+        for m in &frame.machines {
+            if self.machines.len() < game::MAX_FRAME_MACHINES || self.machines.contains_key(&m.id) {
+                self.machines.insert(m.id.clone(), m.clone());
+            }
+        }
         if now.duration_since(self.last_sent) < FRAME_INTERVAL {
-            carry_shots(&mut self.unsent_shots, frame.shots());
+            self.unsent.add(frame);
             return None;
         }
         self.last_sent = now;
-        frame.add_shots(std::mem::take(&mut self.unsent_shots));
+        frame.absorb(std::mem::take(&mut self.unsent));
         if self.last_recorded >= now_s {
-            carry_shots(&mut self.unrecorded_shots, frame.shots());
+            self.unrecorded.add(frame);
             return Some(None);
         }
         self.last_recorded = now_s;
         let mut recorded = frame.clone();
-        recorded.add_shots(std::mem::take(&mut self.unrecorded_shots));
+        recorded.absorb(std::mem::take(&mut self.unrecorded));
+        recorded.machines = self.machines.values().cloned().collect();
         Some(Some(recorded))
     }
 }
@@ -593,5 +585,66 @@ mod tests {
         let mut f = frame(0, 0);
         let recorded = clock.admit(&mut f, at(2000), 12).unwrap().unwrap();
         assert_eq!(shots(&recorded), (Some(64), Some(64)));
+    }
+
+    fn machine(id: &str, position: f64) -> live_proto::game::FrameMachine {
+        live_proto::game::FrameMachine {
+            node: None,
+            id: id.into(),
+            kind: "door".into(),
+            pos: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            position: Some(position),
+        }
+    }
+
+    #[test]
+    fn recorded_frames_carry_the_seconds_actions_hits_and_every_machine() {
+        use live_proto::game::FrameHit;
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let hit = |amount| FrameHit {
+            amount: Some(amount),
+            ..FrameHit::default()
+        };
+
+        // Second 10: the first frame is recorded with both machines.
+        let mut f = frame(0, 0);
+        f.machines = vec![machine("a", 0.0), machine("b", 0.0)];
+        let recorded = clock.admit(&mut f, at(0), 10).unwrap().unwrap();
+        assert_eq!(recorded.machines.len(), 2);
+        // A sent frame with a reload, one hit and door a moving.
+        let mut f = frame(0, 0);
+        f.players[0].actions = Some(vec!["reload".into()]);
+        f.hits = vec![hit(0.1)];
+        f.machines = vec![machine("a", 0.5)];
+        assert_eq!(clock.admit(&mut f, at(100), 10), Some(None));
+        // A throttled one with a jump and a hit: carried into the next sent.
+        let mut f = frame(0, 0);
+        f.actors[0].actions = Some(vec!["jump".into()]);
+        f.hits = vec![hit(0.2)];
+        assert_eq!(clock.admit(&mut f, at(120), 10), None);
+        let mut f = frame(0, 0);
+        assert_eq!(clock.admit(&mut f, at(200), 10), Some(None));
+        assert_eq!(f.actors[0].actions, Some(vec!["jump".into()]));
+        assert_eq!(f.hits, [hit(0.2)]);
+
+        // Second 11's recorded frame has all of it, and both machines' latest
+        // state though neither moved in it.
+        let mut f = frame(0, 0);
+        f.hits = vec![hit(0.3)];
+        let recorded = clock.admit(&mut f, at(1000), 11).unwrap().unwrap();
+        assert_eq!(f.hits, [hit(0.3)], "the live frame keeps its own");
+        assert_eq!(recorded.players[0].actions, Some(vec!["reload".into()]));
+        assert_eq!(recorded.actors[0].actions, Some(vec!["jump".into()]));
+        assert_eq!(recorded.hits, [hit(0.1), hit(0.2), hit(0.3)]);
+        let machines: Vec<_> = recorded
+            .machines
+            .iter()
+            .map(|m| (m.id.as_str(), m.position))
+            .collect();
+        assert_eq!(machines, [("a", Some(0.5)), ("b", Some(0.0))]);
     }
 }

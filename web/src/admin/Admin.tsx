@@ -20,7 +20,9 @@ const TABS = [
 ];
 
 export default function Admin() {
-  const [tab, setTab] = createSignal("motd");
+  // ?tab=hopper opens the playlists (the dashboard's server screen links here).
+  const asked = typeof location !== "undefined" ? new URLSearchParams(location.search).get("tab") : null;
+  const [tab, setTab] = createSignal(TABS.some((t) => t.id === asked) ? asked! : "motd");
   const admin = adminState.isMeAdmin;
   return (
     <div class="s-full">

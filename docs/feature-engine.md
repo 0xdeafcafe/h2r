@@ -1314,7 +1314,7 @@ All on tests; nothing here was run in the game.
 - `engine::points`: `Point` (name, base address, `Sig`, `Class`, `hot`,
   doc page), `Global`, and the `points!` and `globals!` macros. The table
   holds what phase 1 hooks: `GAME_TICK`, `GAME_ACTIVATE`, `GAME_END`,
-  `PLAYER_KILLED`, `WEAPON_FIRE` (optional), `LOCALE_FIND` (hot), and the
+  `PLAYER_KILLED`, `WEAPON_FIRE` and `DAMAGE_REPORT` (optional), `LOCALE_FIND` (hot), and the
   globals `GAME_GLOBALS` and `GAME_TIME`. The macro grammar is
   `NAME @ 0x...: [fn(arg: loc, ..) -> loc ret n] | [opaque], Hot, Optional; "docs/page.md";`
   with `stack n` as the n-th dword argument. Telemetry's layout, the level

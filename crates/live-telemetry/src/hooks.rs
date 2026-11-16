@@ -18,6 +18,8 @@ use crate::tags::{MapLocator, TagNames};
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
 const MAX_FIRING_WEAPONS: usize = 256;
+/// Damage reports kept between samples (one tick).
+const MAX_PENDING_HITS: usize = 256;
 
 pub struct Telemetry {
     session: Mutex<Session>,
@@ -27,6 +29,9 @@ pub struct Telemetry {
     /// Shots by weapon object datum since the last sample, from the weapon
     /// fire hook.
     shots: Mutex<BTreeMap<u32, u32>>,
+    /// Damage reports since the last sample, from the damage hook (oldest
+    /// dropped past [`MAX_PENDING_HITS`]).
+    hits: Mutex<Vec<crate::event::HitRecord>>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -40,6 +45,7 @@ impl Telemetry {
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::new(BTreeMap::new()),
+            hits: Mutex::new(Vec::new()),
             maps: Mutex::new(None),
         }
     }
@@ -96,6 +102,18 @@ impl Telemetry {
         }
         let count = shots.entry(weapon).or_insert(0);
         *count = count.saturating_add(1);
+    }
+
+    /// The damage hook: one damage report.
+    fn damaged(&self, hit: crate::event::HitRecord) {
+        if self.disabled() {
+            return;
+        }
+        let mut hits = self.hits.lock().unwrap();
+        if hits.len() >= MAX_PENDING_HITS {
+            hits.remove(0);
+        }
+        hits.push(hit);
     }
 
     pub fn disabled(&self) -> bool {
@@ -159,6 +177,7 @@ impl Telemetry {
             }
         }
         self.shots.lock().unwrap().clear();
+        self.hits.lock().unwrap().clear();
         *self.last_tick.lock().unwrap() = Some(info.tick);
         self.publish()
     }
@@ -174,10 +193,14 @@ impl Telemetry {
             *last = Some(snapshot.tick);
         }
         snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
-        // Actors only go out in frames (every second tick); a failed scan
-        // sends none rather than stopping telemetry.
+        snapshot.hits = std::mem::take(&mut *self.hits.lock().unwrap());
+        // Actors, vehicles and machines only go out in frames (every second
+        // tick); a failed scan sends none rather than stopping telemetry.
         if snapshot.tick.is_multiple_of(2) {
-            snapshot.actors = memory::actors(guest).unwrap_or_default();
+            let world = memory::world(guest).unwrap_or_default();
+            snapshot.actors = world.actors;
+            snapshot.vehicles = world.vehicles;
+            snapshot.machines = world.machines;
         }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()
@@ -256,6 +279,22 @@ impl feature::Feature for TelemetryFeature {
             .observe_before(&points::WEAPON_FIRE, "shots", move |o| {
                 if let Some(weapon) = o.arg_u32("weapon") {
                     t.fired(weapon);
+                }
+            })
+            .optional();
+        // Custom ABI: EDI = the damage report, the victim object datum on
+        // the stack; read before the original applies it. Optional: without
+        // it frames carry no `hits`.
+        let t = Arc::clone(&self.0);
+        b.raw()
+            .observe_before(&points::DAMAGE_REPORT, "hits", move |o| {
+                let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim"))
+                else {
+                    return;
+                };
+                let hit = memory::hit(&o.guest(), report, victim);
+                if let Ok(hit) = hit {
+                    t.damaged(hit);
                 }
             })
             .optional();
@@ -528,12 +567,28 @@ mod tests {
         fixture::put_player(&mut guest, 0, "Chief", 1, true, fixture::object_datum(1));
         fixture::put_object(&mut guest, 1, u32::MAX);
         fixture::put_actor(&mut guest, 2, 3, [4.0, 0.0, 0.0]);
+        fixture::put_vehicle(&mut guest, 3);
+        fixture::put_machine(&mut guest, 4, 2, 0.5);
+        guest
+            .set_u16(fixture::GLOBALS + layout::GLOBALS_ACTIVE_BSP, 1)
+            .unwrap();
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 2).unwrap();
         telemetry.protect(|| telemetry.sample(&guest));
         // A checkpoint revert re-activates the same map.
         telemetry.protect(|| telemetry.start(&guest));
         guest.set_u32(fixture::TIME + layout::TIME_TICK, 4).unwrap();
+        // The AI hits the player for a fifth of their body.
+        telemetry.damaged(crate::event::HitRecord {
+            code: 7,
+            effect: 0,
+            owner_player: u32::MAX,
+            owner_object: fixture::object_datum(2),
+            victim: fixture::object_datum(1),
+            pos: Some([0.0, 0.0, 0.0]),
+            body: 0.2,
+            shield: 0.0,
+        });
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -558,6 +613,21 @@ mod tests {
         assert_eq!(actor["team"], "covenant");
         assert_eq!(actor["pos"], serde_json::json!([4.0, 0.0, 0.0]));
         assert_eq!(actor["species"], "unknown", "no map file in tests");
+        let data = &frame["data"];
+        assert_eq!(data["bsp"], 1);
+        assert_eq!(data["vehicles"][0]["occupied"], false);
+        // Machines go out in the game's first frame (and then only when they
+        // move); the sink may have folded that frame into a later one.
+        let machines = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"]["machines"];
+        assert_eq!(machines[0]["position"], 0.5);
+        assert_eq!(machines[0].get("node"), None, "no name, no node");
+        assert_eq!(
+            data["hits"][0]["from"],
+            format!("{:08x}", fixture::object_datum(2))
+        );
+        assert_eq!(data["hits"][0]["to"], "p0");
+        assert_eq!(data["hits"][0]["weapon"], "needler");
+        assert_eq!(data["players"][0]["stance"], "stand");
         let _ = std::fs::remove_file(path);
     }
 
@@ -633,6 +703,9 @@ mod tests {
             (&points::GAME_END, 0x40_3000),
             (&points::PLAYER_KILLED, 0x40_4000),
             (&points::WEAPON_FIRE, fire),
+            // Not an entry of the fixture module: the optional damage point
+            // is dropped with a note.
+            (&points::DAMAGE_REPORT, 0x40_6000),
         ];
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);
@@ -668,9 +741,11 @@ mod tests {
                 Some("plan:GAME_END[live-telemetry]".into()),
                 Some("plan:PLAYER_KILLED[live-telemetry]".into()),
                 Some("plan:WEAPON_FIRE[live-telemetry]".into()),
+                None,
             ]
         );
-        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("hits dropped"), "{notes:?}");
     }
 
     /// The weapon fire hook is optional: an image without that entry still
@@ -680,7 +755,10 @@ mod tests {
         let (names, notes) = install_on_fixture(0x40_5000);
         assert!(names[..4].iter().all(Option::is_some), "{names:?}");
         assert_eq!(names[4], None);
-        assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("shots dropped"), "{notes:?}");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.contains("shots dropped")),
+            "{notes:?}"
+        );
     }
 }

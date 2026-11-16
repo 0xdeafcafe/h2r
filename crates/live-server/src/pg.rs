@@ -100,6 +100,10 @@ fn decode(row: &PgRow) -> Result<RecordedEvent, StoreError> {
 
 #[async_trait]
 impl EventStore for PostgresStore {
+    fn kind(&self) -> &'static str {
+        "postgres"
+    }
+
     async fn append(
         &self,
         events: Vec<NewEvent>,

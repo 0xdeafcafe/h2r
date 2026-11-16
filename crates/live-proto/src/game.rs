@@ -247,11 +247,44 @@ pub struct FramePlayer {
     /// is sent as absent.
     #[serde(default, skip_serializing_if = "no_shots")]
     pub shots: Option<u32>,
+    /// `stand`, `crouch`, `airborne` (jumping or falling), `vehicle` or
+    /// `dead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance: Option<String>,
+    /// Horizontal speed, game units a second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// One-shot actions started since the previous frame, oldest first, at
+    /// most [`MAX_FRAME_ACTIONS`]: see [`ACTIONS`].
+    #[serde(default, skip_serializing_if = "no_actions")]
+    pub actions: Option<Vec<String>>,
+    /// The selected grenade type: `frag` or `plasma`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grenade: Option<String>,
 }
 
 fn no_shots(shots: &Option<u32>) -> bool {
     shots.is_none_or(|n| n == 0)
 }
+
+fn no_actions(actions: &Option<Vec<String>>) -> bool {
+    actions.as_ref().is_none_or(Vec::is_empty)
+}
+
+/// The values `stance` may take.
+pub const STANCES: [&str; 5] = ["stand", "crouch", "airborne", "vehicle", "dead"];
+/// The values `actions` may hold.
+pub const ACTIONS: [&str; 6] = ["grenade", "melee", "reload", "jump", "switch", "pickup"];
+/// The values `grenade` may take.
+pub const GRENADES: [&str; 2] = ["frag", "plasma"];
+/// Most actions one player or actor carries in a frame.
+pub const MAX_FRAME_ACTIONS: usize = 8;
+/// Most hits one frame may carry.
+pub const MAX_FRAME_HITS: usize = 64;
+/// Most machines one frame may carry.
+pub const MAX_FRAME_MACHINES: usize = 128;
+/// Fastest `speed` accepted, game units a second.
+pub const MAX_FRAME_SPEED: f64 = 1000.0;
 
 /// Most shots one frame may report (frames are 15 Hz).
 pub const MAX_FRAME_SHOTS: u32 = 64;
@@ -269,14 +302,75 @@ pub struct Frame {
     pub game_id: String,
     pub tick: u64,
     pub players: Vec<FramePlayer>,
-    /// Vehicles with someone in them (players or AI). `FramePlayer.vehicle`
-    /// and `FrameActor.vehicle` hold the matching `id`.
+    /// Every vehicle in the world, occupied ones first, at most
+    /// [`MAX_FRAME_VEHICLES`]. `FramePlayer.vehicle` and `FrameActor.vehicle`
+    /// hold the matching `id`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vehicles: Vec<FrameVehicle>,
     /// AI-controlled bipeds, alive ones only, at most [`MAX_FRAME_ACTORS`]
     /// (nearest to any player first).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actors: Vec<FrameActor>,
+    /// Damage dealt since the previous frame, oldest first, at most
+    /// [`MAX_FRAME_HITS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<FrameHit>,
+    /// The structure BSP the game has loaded (campaign switches between
+    /// zones).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bsp: Option<u32>,
+    /// Machines (doors, elevators, the scarab, ...) that moved since the
+    /// previous frame; all of them in a game's first frame and in every
+    /// recorded frame. At most [`MAX_FRAME_MACHINES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<FrameMachine>,
+}
+
+/// Damage one object took.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameHit {
+    /// Attacker: `p<index>` for a player, else an object datum in hex;
+    /// absent when nobody (falls, the world).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Victim, the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// The weapon's tag file stem when known, else the damage effect's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    /// The victim's position.
+    pub pos: [f64; 3],
+    /// Body plus shield damage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    /// `bullet`, `explosion`, `grenade`, `melee`, `fall`, `collision`,
+    /// `vehicle`, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// A device machine or other big scripted mover.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameMachine {
+    /// map.glb's `machines` child for it: `<tag stem>_<scenario placement
+    /// index>`; absent for objects the scenario did not place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// The object datum in hex.
+    pub id: String,
+    /// The tag file stem, lower case.
+    pub kind: String,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+    /// Device position, 0 to 1 (door or elevator travel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<f64>,
+}
+
+fn occupied_by_default() -> bool {
+    true
 }
 
 /// An occupied vehicle.
@@ -292,6 +386,10 @@ pub struct FrameVehicle {
     pub forward: [f64; 3],
     /// Unit length; banshees roll and pitch.
     pub up: [f64; 3],
+    /// Someone (player or AI) is in it. Old senders listed only occupied
+    /// vehicles, so absent reads as true.
+    #[serde(default = "occupied_by_default")]
+    pub occupied: bool,
 }
 
 /// An AI-controlled biped.
@@ -316,6 +414,20 @@ pub struct FrameActor {
     pub team: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<String>,
+    /// `stand`, `crouch`, `airborne` (jumping or falling), `vehicle` or
+    /// `dead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance: Option<String>,
+    /// Horizontal speed, game units a second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// One-shot actions started since the previous frame, oldest first, at
+    /// most [`MAX_FRAME_ACTIONS`]: see [`ACTIONS`].
+    #[serde(default, skip_serializing_if = "no_actions")]
+    pub actions: Option<Vec<String>>,
+    /// The selected grenade type: `frag` or `plasma`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grenade: Option<String>,
 }
 
 /// Most actors one frame may carry.
@@ -551,6 +663,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         if p.vehicle.as_deref().is_some_and(|id| !valid_model_id(id)) {
             return Err("vehicle ids must be [a-z0-9_]{1,32}".into());
         }
+        validate_motion(&p.stance, p.speed, &p.actions, &p.grenade)?;
     }
     if frame.vehicles.len() > MAX_FRAME_VEHICLES {
         return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
@@ -587,6 +700,72 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         if a.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
             return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
         }
+        validate_motion(&a.stance, a.speed, &a.actions, &a.grenade)?;
+    }
+    if frame.hits.len() > MAX_FRAME_HITS {
+        return Err(format!("at most {MAX_FRAME_HITS} hits"));
+    }
+    for h in &frame.hits {
+        let ids = [&h.from, &h.to, &h.weapon, &h.kind];
+        if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
+            return Err("hit from, to, weapon and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if !h.pos.iter().all(|c| c.is_finite()) {
+            return Err("hit pos must be finite".into());
+        }
+        if h.amount.is_some_and(|a| !a.is_finite() || a < 0.0) {
+            return Err("hit amount must be finite and not negative".into());
+        }
+    }
+    if frame.machines.len() > MAX_FRAME_MACHINES {
+        return Err(format!("at most {MAX_FRAME_MACHINES} machines"));
+    }
+    for m in &frame.machines {
+        if !valid_model_id(&m.id) || !valid_model_id(&m.kind) {
+            return Err("machine id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if m.node.as_deref().is_some_and(|n| !valid_node(n)) {
+            return Err("machine node must be [a-z0-9_]{1,64}".into());
+        }
+        if !m.pos.iter().all(|c| c.is_finite()) || !direction(m.forward) || !direction(m.up) {
+            return Err("machine pos must be finite, forward and up finite and non-zero".into());
+        }
+        if m.position.is_some_and(|p| !(0.0..=1.0).contains(&p)) {
+            return Err("machine position must be 0 to 1".into());
+        }
+    }
+    Ok(())
+}
+
+/// A map.glb node name: `[a-z0-9_]{1,64}`.
+pub fn valid_node(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn validate_motion(
+    stance: &Option<String>,
+    speed: Option<f64>,
+    actions: &Option<Vec<String>>,
+    grenade: &Option<String>,
+) -> Result<(), String> {
+    if stance.as_deref().is_some_and(|s| !STANCES.contains(&s)) {
+        return Err("stance must be stand, crouch, airborne, vehicle or dead".into());
+    }
+    if speed.is_some_and(|s| !(0.0..=MAX_FRAME_SPEED).contains(&s)) {
+        return Err(format!("speed must be 0 to {MAX_FRAME_SPEED}"));
+    }
+    if let Some(actions) = actions {
+        if actions.len() > MAX_FRAME_ACTIONS {
+            return Err(format!("at most {MAX_FRAME_ACTIONS} actions"));
+        }
+        if !actions.iter().all(|a| ACTIONS.contains(&a.as_str())) {
+            return Err("actions are grenade, melee, reload, jump, switch or pickup".into());
+        }
+    }
+    if grenade.as_deref().is_some_and(|g| !GRENADES.contains(&g)) {
+        return Err("grenade must be frag or plasma".into());
     }
     Ok(())
 }
@@ -595,7 +774,117 @@ fn length(v: [f64; 3]) -> f64 {
     v.iter().map(|c| c * c).sum::<f64>().sqrt()
 }
 
+/// What a dropped frame (coalesced in a queue or throttled by the server)
+/// hands on to the next delivered one so nothing one-shot is lost: shots,
+/// actions, hits, and the latest state of each machine.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FrameCarry {
+    shots: Vec<(Shooter, u32)>,
+    actions: Vec<(Shooter, Vec<String>)>,
+    hits: Vec<FrameHit>,
+    machines: Vec<FrameMachine>,
+}
+
+/// How many shooters a carry keeps shots and actions for.
+const MAX_CARRIED_SHOOTERS: usize = 4 * (MAX_PLAYERS + MAX_FRAME_ACTORS);
+
+impl FrameCarry {
+    /// Adds a frame that will not be delivered (or whose one-shot data a
+    /// later frame must repeat, as a recorded frame does).
+    pub fn add(&mut self, frame: &Frame) {
+        for (shooter, n) in frame.shots() {
+            if let Some((_, total)) = self.shots.iter_mut().find(|(s, _)| *s == shooter) {
+                *total = total.saturating_add(n).min(MAX_FRAME_SHOTS);
+            } else if self.shots.len() < MAX_CARRIED_SHOOTERS {
+                self.shots.push((shooter, n.min(MAX_FRAME_SHOTS)));
+            }
+        }
+        for (shooter, actions) in frame.actions() {
+            if let Some((_, kept)) = self.actions.iter_mut().find(|(s, _)| *s == shooter) {
+                kept.extend(actions.iter().cloned());
+                let over = kept.len().saturating_sub(MAX_FRAME_ACTIONS);
+                kept.drain(..over);
+            } else if self.actions.len() < MAX_CARRIED_SHOOTERS {
+                self.actions.push((shooter, actions.to_vec()));
+            }
+        }
+        self.hits.extend(frame.hits.iter().cloned());
+        let over = self.hits.len().saturating_sub(MAX_FRAME_HITS);
+        self.hits.drain(..over);
+        for m in &frame.machines {
+            if let Some(kept) = self.machines.iter_mut().find(|k| k.id == m.id) {
+                *kept = m.clone();
+            } else if self.machines.len() < MAX_FRAME_MACHINES {
+                self.machines.push(m.clone());
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.shots.is_empty()
+            && self.actions.is_empty()
+            && self.hits.is_empty()
+            && self.machines.is_empty()
+    }
+}
+
 impl Frame {
+    /// Each player's and actor's actions, for carrying.
+    fn actions(&self) -> impl Iterator<Item = (Shooter, &[String])> + '_ {
+        let players = self.players.iter().filter_map(|p| {
+            let a = p.actions.as_deref().filter(|a| !a.is_empty())?;
+            Some((Shooter::Player(p.index), a))
+        });
+        let actors = self.actors.iter().filter_map(|x| {
+            let a = x.actions.as_deref().filter(|a| !a.is_empty())?;
+            Some((Shooter::Actor(x.id.clone()), a))
+        });
+        players.chain(actors)
+    }
+
+    /// Takes in what earlier, undelivered frames carried: their shots are
+    /// added, their actions and hits go before this frame's (the oldest
+    /// dropped past the caps), and their machines are kept where this frame
+    /// has no newer state. Players and actors not in this frame lose theirs.
+    pub fn absorb(&mut self, carry: FrameCarry) {
+        self.add_shots(carry.shots);
+        for (shooter, earlier) in carry.actions {
+            let slot = match &shooter {
+                Shooter::Player(index) => self
+                    .players
+                    .iter_mut()
+                    .find(|p| p.index == *index)
+                    .map(|p| &mut p.actions),
+                Shooter::Actor(id) => self
+                    .actors
+                    .iter_mut()
+                    .find(|a| a.id == *id)
+                    .map(|a| &mut a.actions),
+            };
+            if let Some(slot) = slot {
+                let mut all = earlier;
+                all.extend(slot.take().unwrap_or_default());
+                let over = all.len().saturating_sub(MAX_FRAME_ACTIONS);
+                all.drain(..over);
+                *slot = Some(all);
+            }
+        }
+        if !carry.hits.is_empty() {
+            let mut hits = carry.hits;
+            hits.append(&mut self.hits);
+            let over = hits.len().saturating_sub(MAX_FRAME_HITS);
+            hits.drain(..over);
+            self.hits = hits;
+        }
+        for m in carry.machines {
+            if self.machines.len() < MAX_FRAME_MACHINES
+                && !self.machines.iter().any(|k| k.id == m.id)
+            {
+                self.machines.push(m);
+            }
+        }
+    }
+
     /// Each player's and actor's shot count, for carrying into a later
     /// frame when this one is not delivered.
     pub fn shots(&self) -> impl Iterator<Item = (Shooter, u32)> + '_ {
@@ -645,6 +934,10 @@ pub fn normalize_frame(frame: &mut Frame) {
             v.iter_mut().for_each(|c| *c /= len);
         }
     }
+    for m in &mut frame.machines {
+        unit(&mut m.forward);
+        unit(&mut m.up);
+    }
     for v in &mut frame.vehicles {
         unit(&mut v.forward);
         unit(&mut v.up);
@@ -656,8 +949,14 @@ pub fn normalize_frame(frame: &mut Frame) {
         if a.shots == Some(0) {
             a.shots = None;
         }
+        if a.actions.as_ref().is_some_and(Vec::is_empty) {
+            a.actions = None;
+        }
     }
     for p in &mut frame.players {
+        if p.actions.as_ref().is_some_and(Vec::is_empty) {
+            p.actions = None;
+        }
         if let Some(aim) = &mut p.aim {
             let len = length(*aim);
             if len > 0.0 {
@@ -844,7 +1143,7 @@ mod tests {
         "players": [{"index": 0, "alive": true, "pos": [1.0, 2.0, 3.0], "yaw": 0.5,
                      "vehicle": "90040004"}],
         "vehicles": [{"id": "90040004", "kind": "warthog", "pos": [1.0, 2.0, 3.0],
-                      "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0]}],
+                      "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0], "occupied": true}],
         "actors": [
             {"id": "90070007", "species": "grunt", "pos": [5.0, 6.0, 7.0], "yaw": 1.0,
              "aim": [0.0, 1.0, 0.0], "weapon": "plasma_pistol", "shots": 2,
@@ -1140,5 +1439,143 @@ mod tests {
         for g in &bad {
             assert!(validate_new(g).is_err(), "{g:?}");
         }
+    }
+
+    fn motion_frame() -> Frame {
+        Frame {
+            game_id: "g1".into(),
+            tick: 30,
+            players: vec![FramePlayer {
+                index: 0,
+                alive: true,
+                stance: Some("crouch".into()),
+                speed: Some(4.5),
+                actions: Some(vec!["reload".into()]),
+                grenade: Some("frag".into()),
+                ..FramePlayer::default()
+            }],
+            actors: vec![FrameActor {
+                id: "90070007".into(),
+                species: "grunt".into(),
+                stance: Some("airborne".into()),
+                actions: Some(vec!["jump".into()]),
+                ..FrameActor::default()
+            }],
+            hits: vec![FrameHit {
+                from: Some("p0".into()),
+                to: Some("90070007".into()),
+                weapon: Some("battle_rifle".into()),
+                pos: [1.0, 2.0, 3.0],
+                amount: Some(0.4),
+                kind: Some("bullet".into()),
+            }],
+            bsp: Some(2),
+            machines: vec![FrameMachine {
+                node: Some("scarab_3".into()),
+                id: "90080008".into(),
+                kind: "scarab".into(),
+                pos: [0.0; 3],
+                forward: [2.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                position: Some(0.5),
+            }],
+            ..Frame::default()
+        }
+    }
+
+    #[test]
+    fn stance_actions_hits_bsp_and_machines() {
+        let good = motion_frame();
+        assert_eq!(validate_frame(&good), Ok(()));
+        let v = serde_json::to_value(&good).unwrap();
+        assert_eq!(v["bsp"], 2);
+        assert_eq!(v["players"][0]["actions"], json!(["reload"]));
+        assert_eq!(serde_json::from_value::<Frame>(v).unwrap(), good);
+
+        let bad: [fn(&mut Frame); 12] = [
+            |f| f.players[0].stance = Some("prone".into()),
+            |f| f.players[0].speed = Some(f64::NAN),
+            |f| f.players[0].speed = Some(-1.0),
+            |f| f.players[0].actions = Some(vec!["dance".into()]),
+            |f| f.actors[0].actions = Some(vec!["jump".into(); 9]),
+            |f| f.actors[0].grenade = Some("spike".into()),
+            |f| f.hits[0].from = Some("P 0".into()),
+            |f| f.hits[0].amount = Some(-0.1),
+            |f| f.hits = vec![f.hits[0].clone(); MAX_FRAME_HITS + 1],
+            |f| f.machines[0].position = Some(1.5),
+            |f| f.machines[0].node = Some("Scarab 3".into()),
+            |f| f.machines[0].up = [0.0; 3],
+        ];
+        for (i, change) in bad.iter().enumerate() {
+            let mut f = motion_frame();
+            change(&mut f);
+            assert!(validate_frame(&f).is_err(), "case {i}");
+        }
+
+        let mut f = motion_frame();
+        f.players[0].actions = Some(Vec::new());
+        normalize_frame(&mut f);
+        assert_eq!(f.players[0].actions, None);
+        assert_eq!(f.machines[0].forward, [1.0, 0.0, 0.0]);
+
+        // Old senders listed only occupied vehicles.
+        let old: FrameVehicle = serde_json::from_value(json!({
+            "id": "a", "kind": "ghost", "pos": [0, 0, 0], "forward": [1, 0, 0], "up": [0, 0, 1]
+        }))
+        .unwrap();
+        assert!(old.occupied);
+    }
+
+    #[test]
+    fn dropped_frames_carry_actions_hits_and_machines() {
+        let older = motion_frame();
+        let mut newer = motion_frame();
+        newer.players[0].actions = Some(vec!["switch".into()]);
+        newer.hits[0].amount = Some(0.1);
+        newer.machines[0].position = Some(0.75);
+        let mut carry = FrameCarry::default();
+        assert!(carry.is_empty());
+        carry.add(&older);
+        newer.absorb(carry);
+        assert_eq!(
+            newer.players[0].actions,
+            Some(vec!["reload".into(), "switch".into()]),
+            "oldest first"
+        );
+        assert_eq!(
+            newer.actors[0].actions,
+            Some(vec!["jump".into(), "jump".into()])
+        );
+        let amounts: Vec<_> = newer.hits.iter().map(|h| h.amount).collect();
+        assert_eq!(amounts, [Some(0.4), Some(0.1)]);
+        assert_eq!(newer.machines.len(), 1);
+        assert_eq!(
+            newer.machines[0].position,
+            Some(0.75),
+            "the newer state wins"
+        );
+
+        // Caps: the oldest go.
+        let mut carry = FrameCarry::default();
+        for _ in 0..10 {
+            carry.add(&older);
+        }
+        let mut f = motion_frame();
+        f.hits = vec![f.hits[0].clone(); MAX_FRAME_HITS];
+        f.absorb(carry);
+        assert_eq!(
+            f.players[0].actions.as_ref().unwrap().len(),
+            MAX_FRAME_ACTIONS
+        );
+        assert_eq!(f.hits.len(), MAX_FRAME_HITS);
+        assert_eq!(validate_frame(&f), Ok(()));
+
+        // A machine only the dropped frame had is kept.
+        let mut carry = FrameCarry::default();
+        carry.add(&older);
+        let mut f = motion_frame();
+        f.machines[0].id = "90090009".into();
+        f.absorb(carry);
+        assert_eq!(f.machines.len(), 2);
     }
 }

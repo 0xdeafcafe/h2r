@@ -172,7 +172,122 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("unit.aiming_vector", UNIT_AIM),
     ("campaign_team.names", 0),
     ("weapon_fire.one_call_per_shot", WEAPON_FIRE),
+    ("biped.physics_mode", BIPED_PHYSICS_MODE),
+    ("grenade.type_names", UNIT_GRENADE_INDEX),
+    ("object.scenario_placement_index", BODY_PLACEMENT_INDEX),
+    ("object_type.machine", OBJECT_TYPE_MACHINE as u32),
+    ("device.position", DEVICE_POSITION),
+    ("damage_report.reporting_type_names", 0),
 ];
+
+/// Active structure-BSP index in the game globals (`i16`, confirmed:
+/// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
+pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
+
+/// Translational velocity (`f32[3]`, confirmed, docs/live-gamestate.md).
+/// Telemetry uses only its sign (a jump goes up); `speed` comes from
+/// positions.
+pub const BODY_VELOCITY: u32 = 0x88;
+/// likely: the scenario placement index (`i16`, -1 for objects the scenario
+/// did not place): `object_new` (`0x000b7c87`) copies it from the placement
+/// data's `+0x10` beside the object identifier (`+0xa4`, `+0xa8`).
+pub const BODY_PLACEMENT_INDEX: u32 = 0x1a;
+/// likely: object type 7 is a machine (the engine's type order: biped,
+/// vehicle, weapon, equipment, garbage, projectile, scenery, machine, ...;
+/// 0 to 2 are confirmed). The scarab of `03a`/`03b` is a `mach` tag.
+pub const OBJECT_TYPE_MACHINE: u8 = 7;
+/// likely: a device's position, `f32` 0..1. The machine network-state
+/// builder `0x000a3df0` copies it (flag `0x400`) next to the desired value
+/// of the device group at `+0x13c` (flag `0x800`); the object function
+/// evaluator compares it with 0.9 at `0x00106e24`.
+pub const DEVICE_POSITION: u32 = 0x140;
+
+/// Crouch amount, `f32` 0 (standing) to 1 (crouched); confirmed: the crouch
+/// update at `0x000dd83f` moves it toward 1 while unit flags (`+0x134`) bit
+/// 23 is set and toward 0 otherwise, by a rate times the tick length.
+pub const UNIT_CROUCH: u32 = 0x2c4;
+/// The selected grenade type (`i8`, -1 none); confirmed: `0x000cdff0` and
+/// the HUD at `0x002759cf` index `UNIT_GRENADE_COUNTS` with it. likely: 0
+/// frag, 1 plasma.
+pub const UNIT_GRENADE_INDEX: u32 = 0x23c;
+/// Grenades carried by type, `i8[2]`; confirmed as above.
+pub const UNIT_GRENADE_COUNTS: u32 = 0x23e;
+/// likely: the biped's physics mode byte: 1 ground, 2 flying (airborne), 3
+/// dead, 4 posture, 5 climbing, 6 melee. `biped_new` (`0x000de5f6`) clears
+/// it; the crouch update tests it against 6 (`0x000dd897`) and other biped
+/// code against 1, 2, 3 and 5. Names from Project Cartographer's
+/// `e_biped_physics_mode`.
+pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
+pub const BIPED_MODE_GROUND: u8 = 1;
+pub const BIPED_MODE_FLYING: u8 = 2;
+pub const BIPED_MODE_MELEE: u8 = 6;
+/// The first magazine's reserve and loaded rounds (`i16`), weapon body;
+/// confirmed (docs/live-gamestate.md, `0x00101a10`).
+pub const WEAPON_MAGAZINE_RESERVE: u32 = 0x22a;
+pub const WEAPON_MAGAZINE_LOADED: u32 = 0x22c;
+
+// The damage report (`engine::points::DAMAGE_REPORT`, `0x000d9640`): custom
+// ABI, `EDI` = the report, one stack argument (the victim object datum),
+// `ret 4`. Called for every damage instance applied to an object (four
+// callers: `0x0009c76e`, `0x000d8292`, `0x000d87a2`, `0x000dc211`); it adds
+// the report's amounts to the victim's recent-damage accumulators (`+0xf8`,
+// `+0x100`). The report's fields:
+pub const REPORT_CODE: u32 = 0x0; // u8: low 6 bits damage reporting type
+pub const REPORT_EFFECT: u32 = 0x8; // jpt! tag datum
+pub const REPORT_OWNER_PLAYER: u32 = 0xc;
+pub const REPORT_OWNER_OBJECT: u32 = 0x10;
+pub const REPORT_BODY: u32 = 0x44; // likely: f32, fraction of body vitality
+pub const REPORT_SHIELD: u32 = 0x48; // likely: f32, fraction of shield vitality
+
+/// likely: the damage reporting type (the report code's low 6 bits) as a
+/// hit `kind` and, for hand weapons, the weapon's tag stem. The order is the
+/// multiplayer kill-feed list (Project Cartographer's
+/// `e_damage_reporting_type`), not checked against the executable.
+pub const fn damage_reporting_type(code: u8) -> (&'static str, Option<&'static str>) {
+    match code & 0x3f {
+        0 => ("guardians", None),
+        1 => ("fall", None),
+        2 => ("collision", None),
+        3 => ("melee", None),
+        4 => ("explosion", None),
+        5 => ("bullet", Some("magnum")),
+        6 => ("bullet", Some("plasma_pistol")),
+        7 => ("bullet", Some("needler")),
+        8 => ("bullet", Some("smg")),
+        9 => ("bullet", Some("plasma_rifle")),
+        10 => ("bullet", Some("battle_rifle")),
+        11 => ("bullet", Some("covenant_carbine")),
+        12 => ("bullet", Some("shotgun")),
+        13 => ("bullet", Some("sniper_rifle")),
+        14 => ("bullet", Some("beam_rifle")),
+        15 => ("explosion", Some("rocket_launcher")),
+        16 => ("explosion", Some("flak_cannon")),
+        17 => ("explosion", Some("brute_shot")),
+        18 => ("bullet", None),
+        19 => ("bullet", Some("brute_plasma_rifle")),
+        20 => ("melee", Some("energy_blade")),
+        21 | 22 => ("grenade", None),
+        23 => ("melee", Some("flag")),
+        24 => ("melee", Some("assault_bomb")),
+        25 => ("explosion", Some("assault_bomb")),
+        26 => ("melee", Some("ball")),
+        27 | 28 => ("turret", None),
+        29..=38 => ("vehicle", None),
+        39 | 40 => ("sentinel", None),
+        41 => ("teleporter", None),
+        _ => ("unknown", None),
+    }
+}
+
+/// likely (Project Cartographer's `e_unit_grenade_type`): grenade type
+/// names by index.
+pub const fn grenade_name(index: i8) -> Option<&'static str> {
+    match index {
+        0 => Some("frag"),
+        1 => Some("plasma"),
+        _ => None,
+    }
+}
 
 /// likely: campaign team names by index, from the tag-definition enum
 /// (`unit` default team, `+0xc0`); not checked against the executable. Other

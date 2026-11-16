@@ -236,6 +236,9 @@ points! { ALL;
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live-gamestate.md";
+    /// A damage report is applied to its victim: the report in EDI, the
+    /// victim object datum on the stack. Called once per damage instance.
+    DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live-gamestate.md";
     /// `locale_string_id_find`: the string for the packed id in EDI, its
     /// address in EAX.
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";
