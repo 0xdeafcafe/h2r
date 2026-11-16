@@ -17,6 +17,7 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod content;
 pub mod default_motd;
 pub mod dispatch;
 pub mod filestore;

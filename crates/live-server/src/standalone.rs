@@ -34,7 +34,12 @@ pub const USAGE: &str = "usage: h2-live-server --data DIR [options]
                           names the client, and the URL's host is the id on
                           first start
   --tls-cert PEM --tls-key PEM | --insecure-http
+  --content-layer-mib N   largest uploaded patch, pack or image (default 32)
+  --content-map-mib N     largest uploaded whole map (default 100)
+  --content-quota-mib N   content one account may store (default 1024)
 
+Retail map hashes the content store refuses: DIR/retail-maps.sha256
+(sha256sum output; docs/live-admin.md, \"Custom content\").
 The web app is served from $H2_LIVE_WEB (a built web/dist).";
 
 /// What `h2-live-server` was asked to run, and the lines to print first.
@@ -85,6 +90,12 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         invite_only: args.flag("--invite-only"),
         admins: crate::admin::Admins::from_flags_and_env(&admin_flags)
             .map_err(|e| anyhow::anyhow!("--admin/H2_LIVE_ADMINS: {e}"))?,
+        content: crate::content::ContentLimits::from_flags(
+            args.take("--content-layer-mib")?,
+            args.take("--content-map-mib")?,
+            args.take("--content-quota-mib")?,
+        )
+        .map_err(anyhow::Error::msg)?,
         ..Policy::default()
     };
     let insecure_http = args.flag("--insecure-http");

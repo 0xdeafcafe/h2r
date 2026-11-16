@@ -1,0 +1,1446 @@
+//! The content store for custom and modded maps (docs/maps.md §5,
+//! docs/live-api.md "Custom maps", docs/live-admin.md "Custom content").
+//!
+//! - **Blobs** (patches, packs, user-made maps, preview images) are kept by
+//!   SHA-256 under `<data>/content/<aa>/<sha256>`: checked on upload,
+//!   stored once, never changed. `PUT /v1/content/{sha256}` is the
+//!   author's, with a per-account rate limit, a size cap (larger for whole
+//!   maps) and a per-account quota.
+//! - **Packages**: `PUT /v1/maps` takes a manifest signed by its author
+//!   (a `MapPublished` event); the server checks it, computes its `MapId`
+//!   and refuses it while any layer is missing.
+//! - **Retail bytes are never kept**: blobs whose hash is in
+//!   `<data>/retail-maps.sha256` are refused, and so is a manifest that is
+//!   only a retail base.
+//! - **Moderation**: admins hide, delete and block blobs and packages,
+//!   switch an account's uploads off, and read reports. Hidden, deleted or
+//!   blocked content answers 410, and sessions on it are refused.
+//!
+//! The metadata is the log's: server-signed `ContentStored`,
+//! `ContentModerated`, `ContentReported`, `ContentUploadsSet` and
+//! `HopperPinsSet` events, and the author's own `MapPublished`, projected
+//! here by [`Catalog`]. So it is kept by whichever store the server runs
+//! on (the `events` table in Postgres), and replayed at startup.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
+
+use axum::body::{Body, Bytes, HttpBody};
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{Path as UrlPath, Query, Request, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use live_proto::maps::{
+    self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
+    CONTENT_UPLOADS_SET, ContentStored, HOPPER_PINS_SET, HopperPin, LayerInfo, MAP_PUBLISHED,
+    MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated, Reported, Sha256, Standing,
+    Target, UploadsSet, Who,
+};
+use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
+use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error};
+use crate::dispatch::Subscriber;
+use crate::model::nonce_key;
+use crate::store::{NewEvent, RecordedEvent};
+
+/// The retail hash list's file name in the data directory: `sha256sum`
+/// output (`<hex>  <name>.map`, one per line; the name is optional, `#`
+/// starts a comment). Absent or empty by default.
+pub const RETAIL_FILE: &str = "retail-maps.sha256";
+/// The blob directory's name in the data directory.
+pub const CONTENT_DIR: &str = "content";
+/// The largest preview image.
+pub const MAX_IMAGE_BYTES: u64 = ::content::manifest::MAX_IMAGE_BYTES;
+const MIB: u64 = 1024 * 1024;
+
+/// Sizes and rates for uploads (docs/live-admin.md, "Custom content").
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContentLimits {
+    /// A patch, pack or image.
+    pub layer_bytes: u64,
+    /// A whole map file (a user-made map's one layer).
+    pub map_bytes: u64,
+    /// Everything one account has stored, deleted blobs not counted.
+    pub quota_bytes: u64,
+    /// Uploads and publishes per account: per second, burst.
+    pub upload_rate: (f64, u32),
+}
+
+impl Default for ContentLimits {
+    fn default() -> Self {
+        ContentLimits {
+            layer_bytes: 32 * MIB,
+            map_bytes: 100 * MIB,
+            quota_bytes: 1024 * MIB,
+            upload_rate: (0.5, 20),
+        }
+    }
+}
+
+impl ContentLimits {
+    /// The defaults with `--content-layer-mib`, `--content-map-mib` and
+    /// `--content-quota-mib` applied (whole MiB, at least 1).
+    pub fn from_flags(
+        layer: Option<String>,
+        map: Option<String>,
+        quota: Option<String>,
+    ) -> Result<Self, String> {
+        let mut l = ContentLimits::default();
+        for (flag, value, field) in [
+            ("--content-layer-mib", layer, &mut l.layer_bytes),
+            ("--content-map-mib", map, &mut l.map_bytes),
+            ("--content-quota-mib", quota, &mut l.quota_bytes),
+        ] {
+            if let Some(v) = value {
+                let n: u64 = v
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=1 << 20).contains(n))
+                    .ok_or_else(|| format!("{flag} takes a whole number of MiB, got {v:?}"))?;
+                *field = n * MIB;
+            }
+        }
+        Ok(l)
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+fn gone(m: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorCode::Gone, m)
+}
+fn too_large(m: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorCode::TooLarge, m)
+}
+fn unavailable(m: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorCode::Unavailable, m)
+}
+
+/// A stored blob.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blob {
+    pub size: u64,
+    pub uploader: Xuid,
+    pub stored_at: String,
+}
+
+/// A published package.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Package {
+    pub doc: MapDocument,
+    pub author: Xuid,
+    pub published_at: String,
+    pub position: u64,
+}
+
+/// A report, as admins read them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Report {
+    pub target: Target,
+    pub id: String,
+    pub by: Xuid,
+    pub reason: String,
+    pub at: String,
+}
+
+/// What the content events say, in memory.
+#[derive(Debug, Default)]
+pub struct CatalogState {
+    pub blobs: HashMap<Sha256, Blob>,
+    pub maps: HashMap<MapId, Package>,
+    /// Moderated targets (blocks may come before any upload); absent: ok.
+    pub standings: HashMap<(Target, String), Standing>,
+    pub reports: Vec<Report>,
+    pub uploads_off: BTreeSet<Xuid>,
+    pub pins: BTreeMap<u32, Vec<MapId>>,
+}
+
+impl CatalogState {
+    pub fn standing(&self, target: Target, id: &str) -> Standing {
+        self.standings
+            .get(&(target, id.to_string()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn blob_standing(&self, h: &Sha256) -> Standing {
+        self.standing(Target::Content, &h.to_string())
+    }
+
+    pub fn map_standing(&self, id: &MapId) -> Standing {
+        self.standing(Target::Map, &id.to_string())
+    }
+
+    /// A blob that is stored and served.
+    pub fn servable(&self, h: &Sha256) -> bool {
+        self.blobs.contains_key(h) && self.blob_standing(h).is_ok()
+    }
+
+    /// Bytes `xuid` has stored (hidden ones count; deleted ones do not).
+    pub fn used_by(&self, xuid: Xuid) -> u64 {
+        self.blobs
+            .iter()
+            .filter(|(h, b)| {
+                b.uploader == xuid
+                    && matches!(self.blob_standing(h), Standing::Ok | Standing::Hidden)
+            })
+            .map(|(_, b)| b.size)
+            .sum()
+    }
+
+    pub fn reports_of(&self, target: Target, id: &str) -> usize {
+        self.reports
+            .iter()
+            .filter(|r| r.target == target && r.id == id)
+            .count()
+    }
+
+    /// Why a session may not be on `id`, if an admin took it or one of its
+    /// layers down. A `MapId` the server never saw is not refused here
+    /// (retail maps and local edits have ids too).
+    pub fn refusal(&self, id: &MapId) -> Option<String> {
+        match self.map_standing(id) {
+            Standing::Ok => {}
+            Standing::Hidden => return Some(format!("map {id} is hidden by an admin")),
+            Standing::Deleted => return Some(format!("map {id} was deleted by an admin")),
+            Standing::Blocked => return Some(format!("map {id} is blocked by an admin")),
+        }
+        let p = self.maps.get(id)?;
+        let m = &p.doc.manifest;
+        m.patches
+            .iter()
+            .chain(&m.packs)
+            .find(|l| {
+                matches!(
+                    self.blob_standing(&l.sha256),
+                    Standing::Hidden | Standing::Blocked
+                )
+            })
+            .map(|l| format!("map {id} uses content {} that an admin took down", l.sha256))
+    }
+
+    fn apply(&mut self, e: &RecordedEvent) {
+        let b = &e.body;
+        match b.kind.as_str() {
+            CONTENT_STORED => {
+                if let Ok(d) = serde_json::from_value::<ContentStored>(b.data.clone()) {
+                    self.standings
+                        .remove(&(Target::Content, d.sha256.to_string()));
+                    self.blobs.entry(d.sha256).or_insert(Blob {
+                        size: d.size,
+                        uploader: d.uploader,
+                        stored_at: b.at.clone(),
+                    });
+                }
+            }
+            MAP_PUBLISHED => {
+                let Some(Author::Account { xuid, .. }) = Author::parse(&b.author) else {
+                    return;
+                };
+                if let Ok(doc) = serde_json::from_value::<MapDocument>(b.data.clone()) {
+                    let id = MapId::of(&doc.manifest);
+                    self.standings.remove(&(Target::Map, id.to_string()));
+                    self.maps.insert(
+                        id,
+                        Package {
+                            doc,
+                            author: xuid,
+                            published_at: b.at.clone(),
+                            position: e.position,
+                        },
+                    );
+                }
+            }
+            CONTENT_MODERATED => {
+                if let Ok(d) = serde_json::from_value::<Moderated>(b.data.clone()) {
+                    let key = (d.target, d.id.clone());
+                    let next = self.standings.get(&key).copied().unwrap_or_default().after(d.action);
+                    if next == Standing::Ok {
+                        self.standings.remove(&key);
+                    } else {
+                        self.standings.insert(key, next);
+                    }
+                    if d.target == Target::Map
+                        && matches!(next, Standing::Deleted | Standing::Blocked)
+                        && let Ok(id) = d.id.parse::<MapId>()
+                    {
+                        self.maps.remove(&id);
+                    }
+                }
+            }
+            CONTENT_REPORTED => {
+                if let Ok(d) = serde_json::from_value::<Reported>(b.data.clone()) {
+                    self.reports.push(Report {
+                        target: d.target,
+                        id: d.id,
+                        by: d.by,
+                        reason: d.reason,
+                        at: b.at.clone(),
+                    });
+                }
+            }
+            CONTENT_UPLOADS_SET => {
+                if let Ok(d) = serde_json::from_value::<UploadsSet>(b.data.clone()) {
+                    if d.allowed {
+                        self.uploads_off.remove(&d.xuid);
+                    } else {
+                        self.uploads_off.insert(d.xuid);
+                    }
+                }
+            }
+            HOPPER_PINS_SET => {
+                if let Ok(d) = serde_json::from_value::<HopperPin>(b.data.clone()) {
+                    if d.map_ids.is_empty() {
+                        self.pins.remove(&d.hopper_id);
+                    } else {
+                        self.pins.insert(d.hopper_id, d.map_ids);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The content events' projection.
+#[derive(Default)]
+pub struct Catalog {
+    state: RwLock<CatalogState>,
+}
+
+impl Catalog {
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, CatalogState> {
+        self.state.read().unwrap()
+    }
+}
+
+impl Subscriber for Catalog {
+    fn name(&self) -> &str {
+        "content"
+    }
+
+    fn apply(&self, event: &RecordedEvent) {
+        if maps::KINDS.contains(&event.body.kind.as_str()) {
+            self.state.write().unwrap().apply(event);
+        }
+    }
+}
+
+/// The operator's list of retail map hashes ([`RETAIL_FILE`]).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Retail {
+    pub hashes: HashSet<Sha256>,
+    /// `MapId::retail(name, hash)` of each line that names its map.
+    pub ids: HashSet<MapId>,
+}
+
+impl Retail {
+    /// Parses `sha256sum` output. Lines that do not start with 64 hex
+    /// digits are skipped.
+    pub fn parse(text: &str) -> Self {
+        let mut r = Retail::default();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (hex, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+            let Ok(h) = hex.parse::<Sha256>() else {
+                continue;
+            };
+            r.hashes.insert(h);
+            let name = rest.trim().trim_start_matches('*');
+            let stem = Path::new(name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if ::content::manifest::is_map_name(stem) {
+                r.ids.insert(MapId::retail(stem, h));
+            }
+        }
+        r
+    }
+
+    /// Reads `<data>/retail-maps.sha256`; none when it is absent.
+    pub fn load(data_dir: &Path) -> Self {
+        std::fs::read_to_string(data_dir.join(RETAIL_FILE))
+            .map(|t| Self::parse(&t))
+            .unwrap_or_default()
+    }
+}
+
+/// `<data>/content/<aa>/<sha256>`.
+pub fn blob_path(root: &Path, h: &Sha256) -> PathBuf {
+    let hex = h.to_string();
+    root.join(&hex[..2]).join(hex)
+}
+
+/// What an upload turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stored {
+    pub sha256: Sha256,
+    pub size: u64,
+    /// A whole map file (the larger cap applied).
+    pub whole_map: bool,
+    /// False when the server already had it.
+    pub stored: bool,
+}
+
+/// Reads a request body into a temporary file, hashing as it goes, and
+/// stops at the cap: `layer` bytes, or `map` bytes when it starts as a
+/// whole map does.
+async fn receive(
+    body: Body,
+    tmp: &Path,
+    layer: u64,
+    map: u64,
+) -> ApiResult<(Sha256, u64, bool)> {
+    let mut body = body;
+    let mut file = std::fs::File::create(tmp).map_err(|e| {
+        eprintln!("live: content: {}: {e}", tmp.display());
+        unavailable("the content store cannot write")
+    })?;
+    let mut hasher = ::content::Hasher::default();
+    let mut head = Vec::new();
+    let mut size = 0u64;
+    let over = |whole: bool| {
+        too_large(if whole {
+            format!("a whole map is at most {} MiB", map / MIB)
+        } else {
+            format!("a patch, pack or image is at most {} MiB", layer / MIB)
+        })
+    };
+    while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        let frame = frame.map_err(|_| invalid("the upload was cut off"))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if head.len() < 4 {
+            head.extend_from_slice(&data[..data.len().min(4 - head.len())]);
+        }
+        size += data.len() as u64;
+        let whole = maps::is_whole_map(&head);
+        if size > map || (size > layer && head.len() >= 4 && !whole) {
+            return Err(over(whole));
+        }
+        hasher.update(&data);
+        file.write_all(&data)
+            .map_err(|_| unavailable("the content store cannot write"))?;
+    }
+    let whole = maps::is_whole_map(&head);
+    if !whole && size > layer {
+        return Err(over(false));
+    }
+    file.sync_data()
+        .map_err(|_| unavailable("the content store cannot write"))?;
+    Ok((hasher.finish(), size, whole))
+}
+
+impl Live {
+    pub(crate) fn content_root(&self) -> ApiResult<PathBuf> {
+        self.data_dir()
+            .map(|d| d.join(CONTENT_DIR))
+            .ok_or_else(|| unavailable("this server keeps no custom content (no data directory)"))
+    }
+
+    pub fn retail(&self) -> Retail {
+        self.data_dir().map(Retail::load).unwrap_or_default()
+    }
+
+    /// An account allowed to upload, within its rate.
+    fn uploader(&self, bearer: Option<&str>) -> ApiResult<(Author, Xuid)> {
+        let author = self.authenticate(bearer, lxm::CONTENT_WRITE)?;
+        let Author::Account { xuid, .. } = author else {
+            return Err(forbidden("content is uploaded by an account"));
+        };
+        if self.catalog.read().uploads_off.contains(&xuid) {
+            return Err(forbidden("an admin has switched off uploads for this account"));
+        }
+        if !self.uploads.allow(&author.to_string()) {
+            return Err(ApiError::new(ErrorCode::RateLimited, "slow down"));
+        }
+        Ok((author, xuid))
+    }
+
+    /// `PUT /v1/content/{sha256}`.
+    pub async fn put_content(
+        &self,
+        bearer: Option<&str>,
+        sha256: &str,
+        length: Option<u64>,
+        body: Body,
+    ) -> ApiResult<(StatusCode, Stored)> {
+        let (_, xuid) = self.uploader(bearer)?;
+        let h: Sha256 = sha256
+            .parse()
+            .map_err(|_| invalid("the path is a SHA-256 in hex"))?;
+        let root = self.content_root()?;
+        let limits = self.policy().content.clone();
+        let known = |s: &CatalogState| -> ApiResult<Option<Stored>> {
+            match s.blob_standing(&h) {
+                Standing::Hidden | Standing::Blocked => {
+                    return Err(gone("an admin took this content down"));
+                }
+                Standing::Ok | Standing::Deleted => {}
+            }
+            Ok(s.blobs.get(&h).filter(|_| s.servable(&h)).map(|b| Stored {
+                sha256: h,
+                size: b.size,
+                whole_map: false,
+                stored: false,
+            }))
+        };
+        if let Some(have) = known(&self.catalog.read())? {
+            return Ok((StatusCode::OK, have));
+        }
+        if self.retail().hashes.contains(&h) {
+            return Err(forbidden(
+                "that is a retail map: players use their own disc for it, it is never shared",
+            ));
+        }
+        let quota = |extra: u64| -> ApiResult<()> {
+            let used = self.catalog.read().used_by(xuid);
+            if used + extra > limits.quota_bytes {
+                return Err(too_large(format!(
+                    "over this account's quota ({} of {} MiB used)",
+                    used / MIB,
+                    limits.quota_bytes / MIB
+                )));
+            }
+            Ok(())
+        };
+        if let Some(n) = length {
+            if n > limits.map_bytes {
+                return Err(too_large(format!(
+                    "a whole map is at most {} MiB",
+                    limits.map_bytes / MIB
+                )));
+            }
+            quota(n)?;
+        }
+        let tmp_dir = root.join("tmp");
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+            eprintln!("live: content: {}: {e}", tmp_dir.display());
+            unavailable("the content store cannot write")
+        })?;
+        let tmp = tmp_dir.join(live_proto::sign::random_id());
+        let got = receive(body, &tmp, limits.layer_bytes, limits.map_bytes).await;
+        let result = async {
+            let (actual, size, whole) = got?;
+            if actual != h {
+                return Err(invalid(format!(
+                    "the body's SHA-256 is {actual}, not the path's"
+                )));
+            }
+            if size == 0 {
+                return Err(invalid("empty content"));
+            }
+            quota(size)?;
+            let _guard = self.content_writes.lock().await;
+            if let Some(have) = known(&self.catalog.read())? {
+                return Ok((StatusCode::OK, have));
+            }
+            let path = blob_path(&root, &h);
+            std::fs::create_dir_all(path.parent().expect("has a parent"))
+                .and_then(|_| std::fs::rename(&tmp, &path))
+                .map_err(|e| {
+                    eprintln!("live: content: {}: {e}", path.display());
+                    unavailable("the content store cannot write")
+                })?;
+            let data = ContentStored {
+                sha256: h,
+                size,
+                uploader: xuid,
+            };
+            let event = self.server_event(
+                maps::content_stream(&h),
+                CONTENT_STORED,
+                serde_json::to_value(&data).expect("serializes"),
+            );
+            let recorded = self.store.append(vec![event], &[]).await?;
+            self.wait_applied(recorded[0].position).await?;
+            Ok((
+                StatusCode::CREATED,
+                Stored {
+                    sha256: h,
+                    size,
+                    whole_map: whole,
+                    stored: true,
+                },
+            ))
+        }
+        .await;
+        let _ = std::fs::remove_file(&tmp);
+        result
+    }
+
+    /// `GET /v1/content/{sha256}`.
+    pub async fn content(&self, sha256: &str) -> ApiResult<(Sha256, Vec<u8>)> {
+        let h: Sha256 = sha256
+            .parse()
+            .map_err(|_| not_found("no such content"))?;
+        {
+            let s = self.catalog.read();
+            match s.blob_standing(&h) {
+                Standing::Ok => {}
+                Standing::Hidden | Standing::Blocked => {
+                    return Err(gone("an admin took this content down"));
+                }
+                Standing::Deleted => return Err(gone("an admin deleted this content")),
+            }
+            if !s.blobs.contains_key(&h) {
+                return Err(not_found("no such content"));
+            }
+        }
+        let path = blob_path(&self.content_root()?, &h);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => Ok((h, bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(not_found("no such content"))
+            }
+            Err(e) => {
+                eprintln!("live: content: {}: {e}", path.display());
+                Err(unavailable("the content store cannot read"))
+            }
+        }
+    }
+
+    fn who(&self, xuid: Xuid) -> Who {
+        Who {
+            xuid,
+            gamertag: self
+                .model
+                .read()
+                .accounts
+                .get(&xuid)
+                .map(|a| a.gamertag.to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn map_summary(&self, s: &CatalogState, id: &MapId, p: &Package) -> MapSummary {
+        let m = &p.doc.manifest;
+        let layers: Vec<LayerInfo> = m
+            .patches
+            .iter()
+            .map(|l| (l, "patch"))
+            .chain(m.packs.iter().map(|l| (l, "pack")))
+            .map(|(l, kind)| LayerInfo {
+                sha256: l.sha256,
+                size: s.blobs.get(&l.sha256).map_or(0, |b| b.size),
+                kind: kind.into(),
+            })
+            .collect();
+        MapSummary {
+            map_id: *id,
+            name: m.package.name.clone(),
+            description: m.package.description.clone(),
+            author: self.who(p.author),
+            base: BaseInfo {
+                map: m.base.map.clone(),
+                sha256: m.base.sha256,
+                derived: m.base.derived,
+            },
+            size: layers.iter().map(|l| l.size).sum(),
+            layers,
+            image: p.doc.image,
+            geometry: m.result.as_ref().and_then(|r| r.geometry),
+            published_at: p.published_at.clone(),
+        }
+    }
+
+    /// `PUT /v1/maps`: a `MapPublished` event signed by the package's
+    /// author.
+    pub async fn publish_map(&self, bearer: Option<&str>, jws: &str) -> ApiResult<(StatusCode, MapAnswer)> {
+        let (author, xuid) = self.uploader(bearer)?;
+        let event = SignedEvent::open(jws).map_err(sign_error)?;
+        let body = &event.body;
+        if body.author != author.to_string() {
+            return Err(forbidden("the manifest's author is not the token's issuer"));
+        }
+        let key = self
+            .key_for(&author, &body.kid)
+            .ok_or_else(|| crate::app::unauthorized("the manifest's key is unknown or revoked"))?;
+        event.verify(&key).map_err(sign_error)?;
+        if body.kind != MAP_PUBLISHED {
+            return Err(invalid(format!("a package is a {MAP_PUBLISHED} event")));
+        }
+        let clock = now();
+        let at = parse_time(&body.at)
+            .ok_or_else(|| invalid("at is not an RFC 3339 time"))?
+            .unix_timestamp();
+        if (at - clock).abs() > MAX_EVENT_SKEW_S {
+            return Err(invalid("at is more than 5 minutes from the server's clock"));
+        }
+        let doc: MapDocument = serde_json::from_value(body.data.clone())
+            .map_err(|e| invalid(format!("manifest: {e}")))?;
+        let m = &doc.manifest;
+        m.validate().map_err(|e| invalid(e.to_string()))?;
+        if m.package.image.is_some() != doc.image.is_some() {
+            return Err(invalid(
+                "image: give the image's SHA-256 exactly when the manifest names one",
+            ));
+        }
+        let id = MapId::of(m);
+        if body.stream != maps::package_stream(&id) {
+            return Err(invalid(format!(
+                "the stream is {}, the manifest's MapId says {}",
+                body.stream,
+                maps::package_stream(&id)
+            )));
+        }
+        let retail = self.retail();
+        if !m.base.derived && m.patches.is_empty() && m.packs.is_empty() {
+            return Err(forbidden(
+                "a manifest with only a retail base is the retail map: there is nothing to share",
+            ));
+        }
+        if let Some(l) = m
+            .patches
+            .iter()
+            .chain(&m.packs)
+            .find(|l| retail.hashes.contains(&l.sha256))
+        {
+            return Err(forbidden(format!(
+                "layer {} is a retail map: it is never shared",
+                l.file
+            )));
+        }
+        let _guard = self.content_writes.lock().await;
+        {
+            let s = self.catalog.read();
+            match s.map_standing(&id) {
+                Standing::Hidden | Standing::Blocked => {
+                    return Err(gone("an admin took this map down"));
+                }
+                Standing::Ok | Standing::Deleted => {}
+            }
+            if let Some(p) = s.maps.get(&id) {
+                if p.author != xuid {
+                    return Err(conflict(format!(
+                        "this map is already published by {}",
+                        self.who(p.author).gamertag
+                    )));
+                }
+                let answer = self.answer(&s, &id, p);
+                return Ok((StatusCode::OK, answer));
+            }
+            let missing: Vec<String> = m
+                .patches
+                .iter()
+                .chain(&m.packs)
+                .filter(|l| !s.servable(&l.sha256))
+                .map(|l| format!("{} ({})", l.file, l.sha256))
+                .collect();
+            if !missing.is_empty() {
+                return Err(conflict(format!(
+                    "upload these layers first: {}",
+                    missing.join(", ")
+                )));
+            }
+            if let Some(img) = &doc.image {
+                if !s.servable(img) {
+                    return Err(conflict(format!("upload the image first ({img})")));
+                }
+                if s.blobs[img].size > MAX_IMAGE_BYTES {
+                    return Err(too_large(format!(
+                        "the image is over {} KiB",
+                        MAX_IMAGE_BYTES / 1024
+                    )));
+                }
+            }
+        }
+        if let Some(img) = &doc.image {
+            let path = blob_path(&self.content_root()?, img);
+            let mut head = [0u8; 8];
+            let n = std::fs::File::open(&path)
+                .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+                .map_err(|_| unavailable("the content store cannot read"))?;
+            if !maps::is_image(&head[..n]) {
+                return Err(invalid("the image is not a PNG or JPEG"));
+            }
+        }
+        if !self
+            .model
+            .nonces
+            .insert_new(nonce_key(&body.author, &body.nonce), at + MAX_EVENT_SKEW_S, clock)
+        {
+            return Err(conflict("nonce already used"));
+        }
+        let new = NewEvent {
+            jws: jws.to_string(),
+            jws_index: None,
+            body: event.body.clone(),
+        };
+        let recorded = self.store.append(vec![new], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        let s = self.catalog.read();
+        let p = s.maps.get(&id).ok_or_else(|| unavailable("not applied"))?;
+        Ok((StatusCode::CREATED, self.answer(&s, &id, p)))
+    }
+
+    fn answer(&self, s: &CatalogState, id: &MapId, p: &Package) -> MapAnswer {
+        let m = &p.doc.manifest;
+        MapAnswer {
+            map: MapDetail {
+                summary: self.map_summary(s, id, p),
+                manifest: m.clone(),
+            },
+            missing: m
+                .patches
+                .iter()
+                .chain(&m.packs)
+                .map(|l| l.sha256)
+                .filter(|h| !s.servable(h))
+                .collect(),
+            position: self.position(),
+        }
+    }
+
+    /// `GET /v1/maps/{map_id}`.
+    pub fn map(&self, id: &str) -> ApiResult<MapAnswer> {
+        let id: MapId = id.parse().map_err(|_| not_found("no such map"))?;
+        let s = self.catalog.read();
+        if let Some(why) = s.refusal(&id) {
+            return Err(gone(why));
+        }
+        let p = s.maps.get(&id).ok_or_else(|| not_found("no such map"))?;
+        Ok(self.answer(&s, &id, p))
+    }
+
+    /// `GET /v1/maps/{map_id}/image`.
+    pub async fn map_image(&self, id: &str) -> ApiResult<(&'static str, Vec<u8>)> {
+        let img = self
+            .map(id)?
+            .map
+            .summary
+            .image
+            .ok_or_else(|| not_found("this map has no image"))?;
+        let (_, bytes) = self.content(&img.to_string()).await?;
+        let kind = maps::image_type(&bytes).ok_or_else(|| not_found("this map has no image"))?;
+        Ok((kind, bytes))
+    }
+
+    /// `GET /v1/maps`: published maps, newest first; the cursor is a
+    /// position to list before.
+    pub fn maps(
+        &self,
+        base: Option<&str>,
+        author: Option<&str>,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Page<MapSummary> {
+        let position = self.position();
+        let s = self.catalog.read();
+        let author = author.and_then(|a| {
+            Gamertag::new(a)
+                .ok()
+                .map(|t| self.model.read().account_by_tag(&t).map(|a| a.xuid))
+        });
+        let mut all: Vec<(&MapId, &Package)> = s
+            .maps
+            .iter()
+            .filter(|(id, p)| {
+                s.refusal(id).is_none()
+                    && before.is_none_or(|b| p.position < b)
+                    && base.is_none_or(|m| p.doc.manifest.base.map.eq_ignore_ascii_case(m))
+                    && author.is_none_or(|a| a == Some(p.author))
+            })
+            .collect();
+        all.sort_by_key(|(_, p)| std::cmp::Reverse(p.position));
+        all.truncate(limit);
+        let next = (all.len() == limit)
+            .then(|| all.last().map(|(_, p)| p.position.to_string()))
+            .flatten();
+        Page {
+            items: all.iter().map(|(id, p)| self.map_summary(&s, id, p)).collect(),
+            next,
+            position,
+        }
+    }
+
+    /// `POST /v1/maps/{map_id}/report`, `POST /v1/content/{sha256}/report`.
+    pub async fn report(
+        &self,
+        bearer: Option<&str>,
+        target: Target,
+        id: &str,
+        reason: &str,
+    ) -> ApiResult<u64> {
+        let author = self.authenticate(bearer, lxm::CONTENT_WRITE)?;
+        let Author::Account { xuid, .. } = author else {
+            return Err(forbidden("reports come from accounts"));
+        };
+        self.rate_limit(&author, lxm::CONTENT_WRITE)?;
+        let reason = reason.trim();
+        if reason.chars().count() > maps::MAX_REASON || reason.contains('\0') {
+            return Err(invalid(format!(
+                "a reason is at most {} characters",
+                maps::MAX_REASON
+            )));
+        }
+        let (stream, id) = {
+            let s = self.catalog.read();
+            match target {
+                Target::Map => {
+                    let id: MapId = id.parse().map_err(|_| not_found("no such map"))?;
+                    if !s.maps.contains_key(&id) {
+                        return Err(not_found("no such map"));
+                    }
+                    (maps::package_stream(&id), id.to_string())
+                }
+                Target::Content => {
+                    let h: Sha256 = id.parse().map_err(|_| not_found("no such content"))?;
+                    if !s.blobs.contains_key(&h) {
+                        return Err(not_found("no such content"));
+                    }
+                    (maps::content_stream(&h), h.to_string())
+                }
+            }
+        };
+        let data = Reported {
+            target,
+            id,
+            by: xuid,
+            reason: reason.into(),
+        };
+        let event = self.server_event(
+            stream,
+            CONTENT_REPORTED,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        Ok(recorded[0].position)
+    }
+
+    /// An admin (or the operator) with a `content.moderate` token.
+    fn moderator(&self, bearer: Option<&str>) -> ApiResult<Option<Xuid>> {
+        let author = self.authenticate(bearer, lxm::CONTENT_MODERATE)?;
+        crate::admin::require_admin(self, &author)
+            .map_err(|_| forbidden("moderating content needs the operator or an admin"))?;
+        self.rate_limit(&author, lxm::CONTENT_MODERATE)?;
+        Ok(match author {
+            Author::Account { xuid, .. } => Some(xuid),
+            Author::Server(_) => None,
+        })
+    }
+
+    /// `POST /v1/admin/{maps|content}/{id}/{action}`.
+    pub async fn moderate(
+        &self,
+        bearer: Option<&str>,
+        target: Target,
+        id: &str,
+        action: &str,
+    ) -> ApiResult<u64> {
+        let by = self.moderator(bearer)?;
+        let action = Action::parse(action)
+            .ok_or_else(|| invalid("the action is hide, unhide, delete, block or unblock"))?;
+        let _guard = self.content_writes.lock().await;
+        let (stream, id, known) = {
+            let s = self.catalog.read();
+            match target {
+                Target::Map => {
+                    let id: MapId = id.parse().map_err(|_| invalid("a MapId is 64 hex digits"))?;
+                    let known = s.maps.contains_key(&id)
+                        || s.standings.contains_key(&(Target::Map, id.to_string()));
+                    (maps::package_stream(&id), id.to_string(), known)
+                }
+                Target::Content => {
+                    let h: Sha256 = id.parse().map_err(|_| invalid("a SHA-256 is 64 hex digits"))?;
+                    let known = s.blobs.contains_key(&h)
+                        || s.standings.contains_key(&(Target::Content, h.to_string()));
+                    (maps::content_stream(&h), h.to_string(), known)
+                }
+            }
+        };
+        // A block may come first (a hash an admin knows is bad); the rest
+        // need something to act on.
+        if !known && action != Action::Block {
+            return Err(not_found("no such content"));
+        }
+        if target == Target::Content && matches!(action, Action::Delete | Action::Block) {
+            let h: Sha256 = id.parse().expect("checked");
+            if let Ok(root) = self.content_root() {
+                let _ = std::fs::remove_file(blob_path(&root, &h));
+            }
+        }
+        let data = Moderated {
+            target,
+            id,
+            action,
+            by,
+        };
+        let event = self.server_event(
+            stream,
+            CONTENT_MODERATED,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        Ok(recorded[0].position)
+    }
+
+    /// `PUT /v1/admin/uploads/{gamertag}`.
+    pub async fn set_uploads(
+        &self,
+        bearer: Option<&str>,
+        tag: &str,
+        allowed: bool,
+    ) -> ApiResult<u64> {
+        self.moderator(bearer)?;
+        let tag = Gamertag::new(tag).map_err(|_| not_found("no such account"))?;
+        let xuid = self
+            .model
+            .read()
+            .account_by_tag(&tag)
+            .map(|a| a.xuid)
+            .ok_or_else(|| not_found("no such account"))?;
+        let event = self.server_event(
+            streams::account(xuid),
+            CONTENT_UPLOADS_SET,
+            serde_json::to_value(UploadsSet { xuid, allowed }).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        Ok(recorded[0].position)
+    }
+
+    /// `PUT /v1/hoppers/{hopper_id}/pins`.
+    pub async fn set_pins(
+        &self,
+        bearer: Option<&str>,
+        hopper_id: u32,
+        map_ids: Vec<MapId>,
+    ) -> ApiResult<u64> {
+        self.moderator(bearer)?;
+        let pin = HopperPin { hopper_id, map_ids };
+        pin.validate().map_err(invalid)?;
+        let event = self.server_event(
+            maps::hopper_stream(hopper_id),
+            HOPPER_PINS_SET,
+            serde_json::to_value(&pin).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        Ok(recorded[0].position)
+    }
+
+    /// Whether a session may advertise `map_id` (docs/maps.md §5): not on
+    /// content an admin took down, and with ranked flags only a retail map
+    /// (from [`RETAIL_FILE`]) or one pinned on the hopper.
+    pub(crate) fn check_session_map(
+        &self,
+        flags: &str,
+        hopper_id: Option<u32>,
+        map_id: Option<&MapId>,
+    ) -> ApiResult<()> {
+        let Some(id) = map_id else {
+            return Ok(());
+        };
+        let s = self.catalog.read();
+        if let Some(why) = s.refusal(id) {
+            return Err(gone(why));
+        }
+        if maps::ranked_flags(flags) {
+            let pinned = hopper_id
+                .and_then(|h| s.pins.get(&h))
+                .is_some_and(|p| p.contains(id));
+            if !pinned && !self.retail().ids.contains(id) {
+                return Err(forbidden(
+                    "a matchmaking session is on a retail map or one pinned on its hopper",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The admin's view (`GET /v1/admin/content`).
+#[derive(Debug, Serialize)]
+struct AdminView {
+    maps: Vec<AdminMap>,
+    blobs: Vec<AdminBlob>,
+    reports: Vec<AdminReport>,
+    uploads_off: Vec<String>,
+    position: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminMap {
+    #[serde(flatten)]
+    summary: MapSummary,
+    state: Standing,
+    reports: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminBlob {
+    sha256: Sha256,
+    size: u64,
+    uploader: Who,
+    state: Standing,
+    reports: usize,
+    stored_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminReport {
+    target: Target,
+    id: String,
+    by: String,
+    reason: String,
+    at: String,
+}
+
+impl Live {
+    fn admin_view(&self) -> AdminView {
+        let position = self.position();
+        let s = self.catalog.read();
+        let mut maps: Vec<(&MapId, &Package)> = s.maps.iter().collect();
+        maps.sort_by_key(|(_, p)| std::cmp::Reverse(p.position));
+        let maps = maps
+            .into_iter()
+            .map(|(id, p)| AdminMap {
+                summary: self.map_summary(&s, id, p),
+                state: s.map_standing(id),
+                reports: s.reports_of(Target::Map, &id.to_string()),
+            })
+            .collect();
+        let mut blobs: Vec<AdminBlob> = s
+            .blobs
+            .iter()
+            .map(|(h, b)| AdminBlob {
+                sha256: *h,
+                size: b.size,
+                uploader: self.who(b.uploader),
+                state: s.blob_standing(h),
+                reports: s.reports_of(Target::Content, &h.to_string()),
+                stored_at: b.stored_at.clone(),
+            })
+            .collect();
+        blobs.sort_by(|a, b| b.stored_at.cmp(&a.stored_at).then(a.sha256.cmp(&b.sha256)));
+        let reports = s
+            .reports
+            .iter()
+            .rev()
+            .map(|r| AdminReport {
+                target: r.target,
+                id: r.id.clone(),
+                by: self.who(r.by).gamertag,
+                reason: r.reason.clone(),
+                at: r.at.clone(),
+            })
+            .collect();
+        let uploads_off = s
+            .uploads_off
+            .iter()
+            .map(|x| self.who(*x).gamertag)
+            .collect();
+        AdminView {
+            maps,
+            blobs,
+            reports,
+            uploads_off,
+            position,
+        }
+    }
+}
+
+// ---------- route handlers ----------
+
+type Shared = State<Arc<Live>>;
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    crate::http::bearer(headers)
+}
+
+fn ok(position: u64) -> Response {
+    crate::http::json(StatusCode::OK, &json!({"ok": true, "position": position}))
+}
+
+fn body_text(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
+    body.map_err(|e| match e.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => too_large("request body too large"),
+        _ => invalid(e.body_text()),
+    })
+}
+
+pub(crate) async fn put_content(
+    State(live): Shared,
+    UrlPath(sha256): UrlPath<String>,
+    req: Request,
+) -> ApiResult<Response> {
+    let headers = req.headers().clone();
+    let length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let (status, stored) = live
+        .put_content(bearer(&headers), &sha256, length, req.into_body())
+        .await?;
+    Ok(crate::http::json(status, &stored))
+}
+
+pub(crate) async fn get_content(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(sha256): UrlPath<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let (h, bytes) = live.content(&sha256).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::ETAG, format!("\"{h}\"")),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+pub(crate) async fn put_map(
+    State(live): Shared,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let jws = std::str::from_utf8(&bytes)
+        .map_err(|_| invalid("the body must be a compact JWS"))?
+        .trim();
+    let (status, answer) = live.publish_map(bearer(&headers), jws).await?;
+    Ok(crate::http::json(status, &answer))
+}
+
+pub(crate) async fn get_map(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(crate::http::json(StatusCode::OK, &live.map(&id)?))
+}
+
+pub(crate) async fn get_map_image(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let (kind, bytes) = live.map_image(&id).await?;
+    Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
+}
+
+pub(crate) async fn list_maps(
+    State(live): Shared,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let limit = q
+        .get("limit")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<usize>())
+        .transpose()
+        .map_err(|_| invalid("invalid limit"))?
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let before = q
+        .get("cursor")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<u64>())
+        .transpose()
+        .map_err(|_| invalid("bad cursor"))?;
+    let page = live.maps(
+        q.get("base").map(String::as_str),
+        q.get("author").map(String::as_str),
+        before,
+        limit,
+    );
+    Ok(crate::http::json(StatusCode::OK, &page))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReportBody {
+    #[serde(default)]
+    reason: String,
+}
+
+async fn report(
+    live: &Live,
+    headers: &HeaderMap,
+    target: Target,
+    id: &str,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let r: ReportBody = if bytes.iter().all(u8::is_ascii_whitespace) {
+        ReportBody {
+            reason: String::new(),
+        }
+    } else {
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("report: {e}")))?
+    };
+    let pos = live.report(bearer(headers), target, id, &r.reason).await?;
+    Ok(crate::http::json(
+        StatusCode::CREATED,
+        &json!({"ok": true, "position": pos}),
+    ))
+}
+
+pub(crate) async fn report_map(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    report(&live, &headers, Target::Map, &id, body).await
+}
+
+pub(crate) async fn report_content(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    report(&live, &headers, Target::Content, &id, body).await
+}
+
+pub(crate) async fn admin_content(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    live.moderator(bearer(&headers))?;
+    Ok(crate::http::json(StatusCode::OK, &live.admin_view()))
+}
+
+pub(crate) async fn moderate_map(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath((id, action)): UrlPath<(String, String)>,
+) -> ApiResult<Response> {
+    Ok(ok(live
+        .moderate(bearer(&headers), Target::Map, &id, &action)
+        .await?))
+}
+
+pub(crate) async fn moderate_content(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath((id, action)): UrlPath<(String, String)>,
+) -> ApiResult<Response> {
+    Ok(ok(live
+        .moderate(bearer(&headers), Target::Content, &id, &action)
+        .await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadsBody {
+    allowed: bool,
+}
+
+pub(crate) async fn put_uploads(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(tag): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let b: UploadsBody =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("uploads: {e}")))?;
+    Ok(ok(live.set_uploads(bearer(&headers), &tag, b.allowed).await?))
+}
+
+pub(crate) async fn get_pins(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let pins: Vec<HopperPin> = live
+        .catalog
+        .read()
+        .pins
+        .iter()
+        .map(|(h, ids)| HopperPin {
+            hopper_id: *h,
+            map_ids: ids.clone(),
+        })
+        .collect();
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &json!({"pins": pins, "position": live.position()}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinsBody {
+    map_ids: Vec<MapId>,
+}
+
+pub(crate) async fn put_pins(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(hopper): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let hopper: u32 = hopper
+        .parse()
+        .map_err(|_| invalid("a hopper id is a number"))?;
+    let bytes = body_text(body)?;
+    let b: PinsBody = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("pins: {e}")))?;
+    Ok(ok(live.set_pins(bearer(&headers), hopper, b.map_ids).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retail_lists_read_sha256sum_output() {
+        let a = "aa".repeat(32);
+        let b = "BB".repeat(32);
+        let text = format!(
+            "# retail maps\n{a}  lockout.map\n{b} *maps/Midship.map\n\nnot a hash line\n{}\n",
+            "cc".repeat(32)
+        );
+        let r = Retail::parse(&text);
+        assert_eq!(r.hashes.len(), 3);
+        let ha: Sha256 = a.parse().unwrap();
+        let hb: Sha256 = b.parse().unwrap();
+        assert!(r.ids.contains(&MapId::retail("lockout", ha)));
+        assert!(r.ids.contains(&MapId::retail("midship", hb)), "names match any case");
+        assert_eq!(r.ids.len(), 2, "a bare hash names no map");
+        assert_eq!(Retail::parse(""), Retail::default());
+    }
+
+    #[test]
+    fn limits_from_flags() {
+        let d = ContentLimits::default();
+        assert_eq!(d.layer_bytes, 32 * MIB);
+        assert_eq!(d.map_bytes, 100 * MIB);
+        let l = ContentLimits::from_flags(Some("8".into()), None, Some("2048".into())).unwrap();
+        assert_eq!(
+            (l.layer_bytes, l.map_bytes, l.quota_bytes),
+            (8 * MIB, 100 * MIB, 2048 * MIB)
+        );
+        assert!(ContentLimits::from_flags(Some("0".into()), None, None).is_err());
+        assert!(ContentLimits::from_flags(None, Some("lots".into()), None).is_err());
+    }
+
+    #[test]
+    fn blobs_fan_out_by_their_first_byte() {
+        let h = Sha256([0xab; 32]);
+        assert_eq!(
+            blob_path(Path::new("/d/content"), &h),
+            Path::new("/d/content/ab").join("ab".repeat(32))
+        );
+    }
+}

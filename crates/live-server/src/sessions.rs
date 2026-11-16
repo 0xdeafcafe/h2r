@@ -36,6 +36,7 @@ impl Live {
             return Err(forbidden("a session host must be an account"));
         };
         new.validate().map_err(invalid)?;
+        self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
         let seen = observed.and_then(|ip| match ip {
             IpAddr::V4(v) => Some(v),
             _ => None,
@@ -181,6 +182,13 @@ impl Live {
                 {
                     return Err(invalid("unknown player or invalid slot"));
                 }
+            }
+            if b.kind == session::UPDATED
+                && let Some(id) = b.data.get("map_id").and_then(|v| v.as_str())
+            {
+                let id = id.parse().map_err(|_| invalid("invalid map_id"))?;
+                let ad = &item.advertisement;
+                self.check_session_map(&ad.flags, ad.hopper_id, Some(&id))?;
             }
             if b.kind == session::DELETED && i + 1 != bodies.len() {
                 return Err(invalid("SessionDeleted must be last"));

@@ -34,6 +34,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
+        [--content-layer-mib N] [--content-map-mib N] [--content-quota-mib N]
         [--tunnel | --tunnel-name NAME [--hostname HOST]
          | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
@@ -215,6 +216,12 @@ fn serve(mut args: Args) -> Result<()> {
         invite_only: args.flag("--invite-only"),
         admins: live_server::admin::Admins::from_flags_and_env(&admin_flags)
             .map_err(|e| anyhow::anyhow!("--admin/H2_LIVE_ADMINS: {e}"))?,
+        content: live_server::content::ContentLimits::from_flags(
+            args.take("--content-layer-mib")?,
+            args.take("--content-map-mib")?,
+            args.take("--content-quota-mib")?,
+        )
+        .map_err(anyhow::Error::msg)?,
         ..live_server::Policy::default()
     };
     let insecure_http = args.flag("--insecure-http");
