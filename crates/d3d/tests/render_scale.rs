@@ -817,3 +817,180 @@ fn a_draw_the_view_cannot_repeat_shows_the_reference_not_a_hole() {
         assert_eq!(stats.color_resyncs, 1, "{stats:?}");
     }
 }
+
+// The frame's far edges (docs/high-resolution.md, "Half-pixel and texel
+// offsets"). A full-screen pass drawn the D3D way for a 1:1 texel mapping,
+// a quad from -0.5 to the size less 0.5 (window 0 to the size), covers
+// every pixel at 1x. Halo's menus composite their blurred, darkened level
+// like that. At scale the view shifts positions by `window_shift`, which
+// once left the last host columns and rows of such a quad unwritten (one
+// at 2x and 3x, two at 4x) with whatever the target held before, and a
+// later pass sampling that target spread it inwards.
+
+/// Stage 0 filters bilinearly and clamps, like a blur's upsample.
+fn linear_clamp(m: &mut SparseMemory) {
+    // D3DTSS_ADDRESSU/V = CLAMP, D3DTSS_MAGFILTER/MINFILTER = LINEAR.
+    for (state, value) in [(0, 3), (1, 3), (3, 2), (4, 2)] {
+        m.write_u32(L.texture_state_slot(0, state), value).unwrap();
+    }
+}
+
+/// A quad over `r` sampling a linear texture from texel `(0, 0)` to
+/// `texels`.
+fn uv_quad<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    r: (f32, f32, f32, f32),
+    texels: (f32, f32),
+) {
+    let mut vb = Vec::new();
+    for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [r.0 + (r.2 - r.0) * u, r.1 + (r.3 - r.1) * v, 0.5, 1.0] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for f in [texels.0 * u, texels.1 * v] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, vb.len() as u32);
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    d.set_vertex_shader(m, fvf::XYZRHW | fvf::DIFFUSE | 0x100)
+        .unwrap();
+    d.set_stream_source(m, 0, VB_HEADER, 28).unwrap();
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EdgePass {
+    /// A flat quad (gfx's built-in pre-transformed shader).
+    Flat,
+    /// A 32x32 render-to-texture level (guest size: only the reference
+    /// draws it) upsampled over the frame (a translated program).
+    SmallBlur,
+    /// A frame-sized level (scaled) drawn by a flat quad over stale
+    /// contents, then sampled bilinearly over the frame.
+    FrameChain,
+}
+
+/// The stale colour every target holds before the pass.
+const STALE: u32 = 0xFF10_2030;
+/// What the pass draws.
+const PASS: u32 = 0xFFFF_8000;
+/// A full-screen quad with a 1:1 texel mapping: window 0 to the size.
+const FULL: (f32, f32, f32, f32) = (-0.5, -0.5, W as f32 - 0.5, H as f32 - 0.5);
+
+fn edge_scene<B: Backend>(backend: B, pass: EdgePass) -> Device<B> {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    set_states(&mut d, &mut m);
+    let back = device_field(&m, d3d::layout::device_field::RENDER_TARGET);
+    d.clear(&mut m, 0, 0, 0xF0, STALE, 1.0, 0).unwrap();
+    match pass {
+        EdgePass::Flat => flat_quad(&mut d, &mut m, FULL, PASS),
+        EdgePass::SmallBlur | EdgePass::FrameChain => {
+            let (level, tex, n) = match pass {
+                EdgePass::SmallBlur => {
+                    level(&mut m);
+                    (LEVEL_A, TEX_A, SIZE)
+                }
+                _ => {
+                    square_level(
+                        &mut m,
+                        TEX_B,
+                        LEVEL_B,
+                        0x12,
+                        DATA_B,
+                        W,
+                        &[0x30; FRAME_LEN as usize],
+                    );
+                    (LEVEL_B, TEX_B, W)
+                }
+            };
+            d.set_render_target(&mut m, level, 0).unwrap();
+            set_states(&mut d, &mut m);
+            d.clear(&mut m, 0, 0, 0xF0, STALE, 1.0, 0).unwrap();
+            let n = n as f32;
+            flat_quad(&mut d, &mut m, (-0.5, -0.5, n - 0.5, n - 0.5), PASS);
+            d.set_render_target(&mut m, back, 0).unwrap();
+            set_states(&mut d, &mut m);
+            linear_clamp(&mut m);
+            d.set_texture(&mut m, 0, tex).unwrap();
+            uv_quad(&mut d, &mut m, FULL, (n, n));
+            d.set_texture(&mut m, 0, 0).unwrap();
+        }
+    }
+    let skipped: Vec<_> = d
+        .take_events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::DrawSkipped { .. } | Event::BadState(_)))
+        .collect();
+    assert!(skipped.is_empty(), "{pass:?}: {skipped:?}");
+    d
+}
+
+#[test]
+fn a_full_screen_pass_reaches_the_far_edges_at_every_scale() {
+    let Some(ctx) = context() else { return };
+    for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
+        let mut plain = edge_scene(GfxBackend::new(share(&ctx)), pass);
+        let bb = plain.back_buffer().unwrap();
+        let (plain_px, _) = pixels(&mut plain.backend, bb);
+        // Not vacuous: at 1x the pass covers the whole frame.
+        for (x, y) in [
+            (0, 0),
+            (W - 1, 0),
+            (0, H - 1),
+            (W - 1, H - 1),
+            (W / 2, H / 2),
+        ] {
+            assert_eq!(argb(&plain_px, x, y), PASS, "{pass:?} 1x ({x}, {y})");
+        }
+        for scale in [2, 3, 4] {
+            let mut d = edge_scene(scaled(&ctx, scale), pass);
+            let bb = d.back_buffer().unwrap();
+            let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+            assert!(ref_px == plain_px, "{pass:?} {scale}x: the reference");
+            let (view_px, size) = pixels(d.backend.view_mut(), bb.view.expect("scaled"));
+            assert_eq!(size, (W * scale, H * scale));
+            // The view against the reference upscaled, host pixel by host
+            // pixel, counted by host column and row.
+            let mut cols = vec![0u32; size.0 as usize];
+            let mut rows = vec![0u32; size.1 as usize];
+            for y in 0..size.1 {
+                for x in 0..size.0 {
+                    let i = ((y * size.0 + x) * 4) as usize;
+                    if view_px[i..i + 4] != pixel(&ref_px, x / scale, y / scale) {
+                        cols[x as usize] += 1;
+                        rows[y as usize] += 1;
+                    }
+                }
+            }
+            let total: u32 = cols.iter().sum();
+            // Lines of the view that are mostly wrong.
+            let lines = |counts: &[u32], len: u32| -> Vec<usize> {
+                (0..counts.len()).filter(|&i| counts[i] * 2 > len).collect()
+            };
+            let i = ((size.1 * size.0 - 1) * 4) as usize;
+            assert!(
+                total == 0,
+                "{pass:?} {scale}x ({}x{}): {total} host pixels differ from the reference \
+                 upscaled, filling host columns {:?} and rows {:?}; the last pixel is {:?}",
+                size.0,
+                size.1,
+                lines(&cols, size.1),
+                lines(&rows, size.0),
+                &view_px[i..i + 4],
+            );
+            let s = d.backend.stats();
+            assert_eq!(
+                (s.view_errors, s.mismatches),
+                (0, 0),
+                "{pass:?} {scale}x: {s:?}"
+            );
+        }
+    }
+}

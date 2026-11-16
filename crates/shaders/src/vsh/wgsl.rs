@@ -282,8 +282,18 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // pushed to at least the float after 1. The comparison is on the bits
 // (Zmax > 0, so for non-NaN z, int order is float order above it): a float
 // compare lets fast math fold the select into a bare min(zn, 1).
+//
+// At a render scale (`viewport.w`, the shift, above 0) a position past the
+// last pixel centre is held at least on the surface's far edge: the shift
+// would otherwise pull a quad ending on that edge (a 1:1 texel mapping, the
+// usual full-screen pass) off the last host columns and rows. It is off at
+// 1x (no shift), where such a position covers the last pixel as the edge
+// does: holding it there changes no coverage the guest would see.
 fn xvs_fixup(p: vec4f) -> vec4f {
-    let xy = trunc(p.xy * 16.0) / 16.0 - xvs.viewport.w;
+    let t = trunc(p.xy * 16.0) / 16.0;
+    let size = xvs.viewport.xy;
+    let far = vec2<bool>(xvs.viewport.w > 0.0) & (t > size - 0.5);
+    let xy = select(t - xvs.viewport.w, max(t - xvs.viewport.w, size), far);
     let w = xvs_clamp_away(p.w);
     let zn = p.z / xvs.viewport.z;
     let over = bitcast<i32>(p.z) > bitcast<i32>(xvs.viewport.z);

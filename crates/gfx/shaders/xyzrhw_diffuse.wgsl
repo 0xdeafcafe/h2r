@@ -42,11 +42,19 @@ fn vs_main(in: VsIn) -> VsOut {
         rhw = 1.0;
     }
     let w = 1.0 / rhw;
+    // D3D8 puts pixel centres on integer coordinates (half-pixel offset;
+    // to be verified on the Xbox), wgpu on +0.5.
+    let t = in.position.xy + 0.5;
+    let shift = vec2<f32>(viewport.shift_x, viewport.shift_y);
+    // Scaled, a position past the last pixel centre stays at least on the
+    // window's far edge, as at 1x, where it covers the last pixel as the
+    // edge does: the shift would leave the last host columns and rows out
+    // of a quad ending on that edge (see `Draw::window` in renderer.rs).
+    let far = (shift > vec2<f32>(0.0)) & (t > viewport.size - 0.5);
+    let xy = select(t - shift, max(t - shift, viewport.size), far);
     let ndc = vec2<f32>(
-        // D3D8 puts pixel centres on integer coordinates (half-pixel offset;
-        // to be verified on the Xbox), wgpu on +0.5.
-        (in.position.x + 0.5 - viewport.shift_x) / viewport.size.x * 2.0 - 1.0,
-        1.0 - (in.position.y + 0.5 - viewport.shift_y) / viewport.size.y * 2.0,
+        xy.x / viewport.size.x * 2.0 - 1.0,
+        1.0 - xy.y / viewport.size.y * 2.0,
     );
     // Scaling by w keeps perspective-correct interpolation identical to the
     // original rhw-based interpolation.

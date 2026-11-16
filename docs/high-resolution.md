@@ -503,6 +503,17 @@ the top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift
 of exactly `(s - 1) / (2s)` puts the first sample on the tie and fails at 3x
 through rounding; the extra quarter is what makes it robust.
 
+The shift moves everything up and left by `(2s - 1) / 4` host pixels, so
+geometry that ends on the target's far edge instead of a pixel centre (the
+D3D 1:1 texel mapping, a quad from -0.5 to the size less 0.5, which Halo's
+menus use to composite their blurred level) stopped short of the last
+host columns and rows: one at 2x and 3x, two at 4x, holding whatever the
+target held before, and spreading inwards when a later pass sampled the
+target. A scaled draw therefore holds any position past the last pixel
+centre at least on the far edge (`xvs_fixup`, the built-in shader). At 1x
+those positions all cover the last pixel exactly as the edge does.
+`a_full_screen_pass_reaches_the_far_edges_at_every_scale` checks it.
+
 Measured, by tests in `crates/d3d/tests/render_scale.rs` on a headless Metal
 device:
 
