@@ -37,6 +37,7 @@ fn new() -> NewSession {
         visibility: Default::default(),
         map_id: None,
         skulls: None,
+        campaign: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {

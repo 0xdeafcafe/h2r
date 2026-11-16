@@ -90,6 +90,59 @@ pub enum BitmapRole {
     Other,
 }
 
+/// One part of art read outside a Halo 2 map (a Halo 1 BSP) for
+/// [`reference_scene`]: its geometry and what it draws with.
+#[derive(Clone, Debug)]
+pub struct ReferencePart {
+    pub part: WorldPart,
+    /// Index into the scene's textures.
+    pub texture: Option<usize>,
+    /// Index into the scene's lightmap pages.
+    pub lightmap: Option<usize>,
+    pub blend: Blend,
+}
+
+/// A scene from pictures and parts read outside a Halo 2 map, drawn as a
+/// Halo 2 BSP is: base maps fitted, mipmapped and lifted like
+/// [`SceneBuilder`]'s (those a [`Blend::Mask`] part uses have their alpha
+/// stretched), lightmap pages unlifted. `shaders` and `textured` are for
+/// the status bar.
+pub fn reference_scene(
+    textures: Vec<Image>,
+    lightmaps: Vec<Image>,
+    parts: &[ReferencePart],
+    shaders: usize,
+    textured: usize,
+) -> Scene {
+    let mut scene = Scene::default();
+    let cutouts: std::collections::HashSet<usize> = parts
+        .iter()
+        .filter(|p| p.blend == Blend::Mask)
+        .filter_map(|p| p.texture)
+        .collect();
+    for (i, mut image) in textures.into_iter().enumerate() {
+        if cutouts.contains(&i) {
+            image.stretch_alpha();
+        }
+        let image = image.fit(MAX_TEXTURE);
+        scene.lifts.push(image.lift_factor());
+        scene.textures.push(image);
+    }
+    let pages = scene.textures.len();
+    scene.stats.lightmap_pages = lightmaps.len();
+    for page in lightmaps {
+        scene.lifts.push(1.0);
+        scene.textures.push(page);
+    }
+    for p in parts {
+        let lightmap = p.lightmap.map(|l| pages + l);
+        scene.world.push(p.texture, lightmap, p.blend, &p.part);
+    }
+    scene.stats.shaders = shaders;
+    scene.stats.textured = textured;
+    scene
+}
+
 /// The rule of `cli::live_models::bitmap_role`, reduced to "is this the
 /// diffuse map": not an engine, change-colour, self-illumination, bump,
 /// detail, reflection or mask map.
@@ -778,6 +831,73 @@ pub fn decode_bitmap<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference art: base maps first, then lightmap pages (unlifted), a
+    /// part's page index shifted past the base maps, cut-out alpha
+    /// stretched, and the counts carried to the stats.
+    #[test]
+    fn reference_parts_index_their_textures_and_pages() {
+        let pic = |c: u8, a: u8| Image {
+            width: 2,
+            height: 2,
+            rgba: [c, c, c, a].repeat(4),
+        };
+        let part = |lit: bool| WorldPart {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0; 2]; 3],
+            lightmap_uvs: if lit { vec![[0.5; 2]; 3] } else { Vec::new() },
+            tris: vec![[0, 1, 2]],
+            ..WorldPart::default()
+        };
+        let parts = [
+            ReferencePart {
+                part: part(true),
+                texture: Some(1),
+                lightmap: Some(0),
+                blend: Blend::Mask,
+            },
+            ReferencePart {
+                part: part(false),
+                texture: Some(0),
+                lightmap: Some(0),
+                blend: Blend::Opaque,
+            },
+        ];
+        let s = reference_scene(
+            vec![pic(40, 255), pic(200, 64)],
+            vec![pic(90, 255)],
+            &parts,
+            3,
+            2,
+        );
+        assert_eq!(s.textures.len(), 3);
+        assert_eq!(s.lifts[2], 1.0);
+        assert_eq!(
+            s.textures[1].rgba[3], 255,
+            "the cut-out's alpha is stretched"
+        );
+        let lit = s
+            .world
+            .batches
+            .iter()
+            .find(|b| b.texture == Some(1))
+            .unwrap();
+        assert_eq!(lit.lightmap, Some(2));
+        assert_eq!(lit.vertices[0].lightmap_uv, [0.5; 2]);
+        // A part without lightmap coordinates is not lit by the page.
+        let unlit = s
+            .world
+            .batches
+            .iter()
+            .find(|b| b.texture == Some(0))
+            .unwrap();
+        assert_eq!(unlit.lightmap, None);
+        assert_eq!(
+            (s.stats.shaders, s.stats.textured, s.stats.lightmap_pages),
+            (3, 2, 1)
+        );
+    }
 
     #[test]
     fn templates_and_bitmap_names_choose_blend_and_base_map() {

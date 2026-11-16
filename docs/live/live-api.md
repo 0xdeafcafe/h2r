@@ -48,7 +48,7 @@ Event types so far (payload fields):
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
-| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?` |
+| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
@@ -226,7 +226,8 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
-| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
+| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}` |
+| `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
@@ -329,7 +330,7 @@ with one call:
 { "friends": [
     { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete",
       "friends_since": "2026-11-15T20:14:03.120Z",
-      "presence": { "state": "playing", "game_id": "7f3c...", "since": "..." } } ],
+      "presence": { "state": "playing", "game_id": "7f3c...", "activity": "Co-op: Outskirts", "since": "..." } } ],
   "requests_in":  [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
   "requests_out": [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
   "position": 1042 }
@@ -340,6 +341,13 @@ presence and is absent when the friend is offline; a pending request
 carries no presence (the two are not friends yet), just the other account
 and when the request was made. `friends_since` is the `FriendAccepted`
 event's `at`.
+
+`activity` is an optional short line the game sets on a presence event
+("Co-op: Outskirts"): 1 to 64 characters, not blank, no control
+characters (`live_proto::valid_activity`); a bad one refuses the event with
+400. It rides `SignedIn` and `PresenceChanged`, is served in `GET
+/v1/presence` and in a friend's `presence`, and is absent when unset. A
+presence event without it clears the previous one.
 
 The game side's friends enumeration makes exactly this call with the
 signed-in account's gamertag and reads `friends` (gamertag, xuid,
@@ -495,11 +503,49 @@ from a non-loopback IPv4, the observed address replaces any declared one
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
 
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
-(author or canonical gamertag), `visibility`, and `attributes` (URL-encoded
+(author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
+`coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
+
+A `coop` session may carry a `campaign` (`{level, name?, difficulty}`: the
+map file stem, the level's name as the game shows it, and 0 easy to 3
+legendary); no other kind may. A `SessionUpdated` with `campaign` makes the
+session co-op, and one with `flags: "custom"` drops it. Co-op sessions are
+listed, filtered and hidden by `visibility` like any other (the game creates
+them `friends` by default).
+
+### Co-op games
+
+Campaign co-op posts no game result, so finished co-op games are derived
+from session events. A `coop` session that closed (`SessionDeleted` or
+`SessionExpired`) after at least one guest joined is one finished game; a
+session nobody joined is not. Nothing new is written.
+
+`GET /v1/coop/games` (public, or `read` on a private server) returns
+`{items, next, position}`, newest closed first. `limit` is 1..1000
+(default 100); `cursor` is the previous `next`, the log position of the
+closing event. `player` (an XUID or a gamertag) keeps the games that
+account hosted or joined; an unknown gamertag gives an empty page. An item:
+
+```json
+{ "session_id": "8f3a09c2d1e47b65",
+  "host": { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete" },
+  "players": [ { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete" },
+               { "xuid": "0009a1b2c3d4e5f7", "gamertag": "Moss" } ],
+  "campaign": { "level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2 },
+  "started": "2026-11-16T10:05:41.220Z",
+  "ended": "2026-11-16T10:47:09.004Z",
+  "end_reason": "closed" }
+```
+
+`players` is the host first, then every guest that ever joined in join
+order, including ones who left before the end. `started` is the first
+guest's join time, `ended` the closing event's. `end_reason` is `closed`,
+`host_left` or `expired`. `gamertag` is null for an account the server no
+longer knows. The campaign is the one on the session when it closed.
 
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP

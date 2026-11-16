@@ -1765,6 +1765,139 @@ fn guests_read_the_skulls_their_host_advertises() {
         }
     );
 }
+/// Co-op over Live (docs/live/live-coop.md, "Co-op over Live built"): the
+/// co-op screen arms a campaign on the host, so its lobby advertises as a
+/// friends-only `coop` session naming the level and difficulty and presence
+/// says "Co-op: <level>"; the screen's friends list and Invite send a game
+/// invitation to that lobby; the invited guest finds the lobby and, once
+/// joined, reads the campaign for its join screen. Leaving the co-op screen
+/// turns the lobby back into a custom one.
+#[test]
+fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
+    use live_hle::Joined;
+    use live_proto::session::{Campaign, Visibility};
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let c = s.account("Stranger");
+    friend_pair(&s, &a, &b);
+    let port = game_port();
+    let mut peer_port = game_port();
+    while peer_port.abs_diff(port) <= 6 {
+        peer_port = game_port();
+    }
+    let mut host = World::raw_network(
+        &s.embedded.url,
+        json!([a.json()]),
+        Duration::from_secs(30),
+        port,
+    );
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_secs(30),
+        peer_port,
+    );
+    let mut stranger = World::new(&s.embedded.url, &[&c]);
+    host.logon();
+    guest.logon();
+    stranger.logon();
+    let campaign = Campaign {
+        level: "03a_oldmombasa".into(),
+        name: Some("Outskirts".into()),
+        difficulty: 2,
+    };
+    host.hle.set_coop(Some(campaign.clone()), Some(vec![0, 4]));
+    assert_eq!(host.hle.coop(), Some(campaign.clone()));
+    assert_eq!(host.hle.activity().as_deref(), Some("Co-op: Outskirts"));
+    // The lobby the game advertises is a coop session, friends-only.
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let local = &host.hle.local_sessions()[0];
+    assert_eq!(local.campaign, Some(campaign.clone()));
+    assert_eq!(local.visibility, Visibility::Friends);
+    assert_eq!(local.skulls, Some(vec![0, 4]), "the campaign skulls, not multiplayer ones");
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert_eq!(created.data["advertisement"]["flags"], json!("coop"));
+    assert_eq!(
+        created.data["advertisement"]["campaign"],
+        json!({"level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2})
+    );
+    assert_eq!(created.data["advertisement"]["visibility"], json!("friends"));
+    let local_id = local.id;
+    let session = live_proto::sign::hex(&local_id);
+    // A stranger's browser does not list it; the friend's does.
+    let cap = stranger.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    assert_eq!(match_search(&mut stranger, 1, 0, cap).2, 0);
+    // The co-op screen's friends list, then Invite.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let friends = loop {
+        let f = host.hle.friends(0);
+        if f.iter().any(|f| f.xuid == b.xuid && f.online) {
+            break f;
+        }
+        assert!(Instant::now() < deadline, "the friends list never filled");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(friends[0].gamertag, "Guest");
+    assert_eq!(host.hle.friends(4), vec![], "no such controller");
+    assert_eq!(host.hle.invite_to_lobby(0, b.xuid), Ok(session.clone()));
+    assert_eq!(host.hle.invite_to_lobby(1, b.xuid).unwrap_err(), INVALID_USER);
+    assert_eq!(guest.call("XOnlineFriendsStartup", &[0, OUT]), 0);
+    let background = guest.u32(OUT);
+    guest_until(&mut guest, |w| {
+        w.call("XOnlineTaskContinue", &[background]) == TASK_RESULTS_AVAILABLE
+    });
+    let f = invited_friend(&mut guest, a.xuid);
+    assert_eq!(f[40..48], local_id, "the invite names the co-op lobby");
+    // The guest joins (registers the lobby's key) and reads the campaign.
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.joined(wait), Joined::NotJoined);
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let joined = guest.hle.joined(wait);
+    assert_eq!(joined.campaign(), Some(&campaign));
+    let Joined::Known { session: read, .. } = &joined else {
+        panic!("{joined:?}")
+    };
+    assert_eq!(read.host_gamertag, "Host");
+    assert_eq!(read.advertisement.skulls, Some(vec![0, 4]));
+    // Presence says what the host is doing.
+    s.until(|| {
+        s.presence()
+            .iter()
+            .any(|p| p.xuid == a.xuid && p.activity.as_deref() == Some("Co-op: Outskirts"))
+    });
+    // Leaving co-op turns the lobby back into a custom game.
+    host.hle.set_coop(None, None);
+    s.until(|| {
+        s.events().into_iter().any(|e| {
+            e.kind == "SessionUpdated"
+                && e.stream == format!("session-{session}")
+                && e.data["flags"] == json!("custom")
+        })
+    });
+    assert_eq!(host.hle.local_sessions()[0].campaign, None);
+    assert_eq!(host.hle.activity(), None);
+    assert!(guest.hle.joined(wait).campaign().is_none());
+}
 /// The custom games browser (docs/live/live-custom-games.md) is the retail
 /// System Link browser in its Live mode: its search is `0x0008fa80`'s
 /// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly

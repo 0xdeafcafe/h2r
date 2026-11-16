@@ -157,7 +157,7 @@ export type KillKind = "kill" | "suicide" | "betrayal" | "world";
 export interface AccountCreated { xuid: Xuid; gamertag: string }
 export interface GamertagReserved { xuid: Xuid }
 export interface TitleFilePublished { title_id: string; name: string; sha256: string; size: number }
-export interface PresenceData { xuid: Xuid; state?: string; game_id?: GameId | null }
+export interface PresenceData { xuid: Xuid; state?: string; game_id?: GameId | null; /** What the player is doing, e.g. "Co-op: Outskirts". */ activity?: string | null }
 /** What kind of game it was, all optional (older senders leave them out;
  *  `gameKind` infers the kind). */
 export interface GameKindFields {
@@ -228,7 +228,7 @@ export interface ListResponse<T> { items: T[]; next: string | null; position: nu
 
 export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean }
 
-export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; since: string }
+export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; activity?: string | null; since: string }
 
 export interface GameSummary extends GameKindFields {
   game_id: GameId;

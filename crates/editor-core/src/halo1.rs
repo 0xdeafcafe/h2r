@@ -229,6 +229,8 @@ pub struct H1View {
     pub name: String,
     pub tris: Vec<H1Tri>,
     pub placements: Vec<H1Placement>,
+    /// The BSPs' base maps, lightmap pages and the parts drawn with them.
+    pub art: crate::halo1_art::H1Art,
     /// What could not be read (the rest is still shown).
     pub notes: Vec<String>,
 }
@@ -250,15 +252,22 @@ pub fn view(name: &str, map: &H1Map) -> H1View {
         name: name.to_owned(),
         ..H1View::default()
     };
+    let mut art = crate::halo1_art::ArtBuilder::new(map);
     match map.structure_bsps() {
         Ok(bsps) => {
             for b in bsps {
-                let r = map
-                    .structure_bsp(&b)
-                    .and_then(|s| Ok((s.render_surfaces()?, s.lightmaps()?)));
+                let r = map.structure_bsp(&b).and_then(|s| {
+                    // A lightmap bitmap that does not read leaves the BSP unlit.
+                    let pages = h1bitmaps::lightmap_pages(map, &s).ok();
+                    Ok((s.render_surfaces()?, s.lightmaps()?, pages))
+                });
                 match r {
-                    Ok((surfaces, lightmaps)) => {
-                        v.tris.extend(bsp_triangles(&surfaces, &lightmaps))
+                    Ok((surfaces, lightmaps, pages)) => {
+                        v.tris.extend(bsp_triangles(&surfaces, &lightmaps));
+                        let (bitmap, pages) = pages
+                            .map(|p| (p.tag.map(|t| t.id), p.pages))
+                            .unwrap_or_default();
+                        art.bsp(&surfaces, &lightmaps, bitmap, &pages);
                     }
                     Err(e) => v.notes.push(format!("structure BSP {}: {e}", b.name)),
                 }
@@ -266,6 +275,7 @@ pub fn view(name: &str, map: &H1Map) -> H1View {
         }
         Err(e) => v.notes.push(format!("structure BSPs: {e}")),
     }
+    v.art = art.finish();
     match map.multiplayer() {
         Ok(mp) => {
             v.placements = placements(&mp, &|r: &TagRef| tag_label(map, r.id));

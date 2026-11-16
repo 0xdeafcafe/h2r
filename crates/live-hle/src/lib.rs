@@ -33,6 +33,7 @@ pub use sessions::{
     Visibility, VisibilityProbe,
 };
 mod state;
+pub use state::coop_activity;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod storage_api;
@@ -124,6 +125,46 @@ pub enum HostSkulls {
         skulls: Vec<u8>,
         refreshed: bool,
     },
+}
+
+/// A friend, as the co-op screen's friends list shows them
+/// ([`Hle::friends`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Friend {
+    pub xuid: live_proto::Xuid,
+    pub gamertag: String,
+    pub online: bool,
+    pub playing: bool,
+    pub activity: Option<String>,
+}
+
+/// The session this console joined, as the server last described it
+/// ([`Hle::joined`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Joined {
+    /// No session joined: no key registered but this console's own.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read (a System Link
+    /// game, or no server).
+    Unknown { session: String },
+    /// Joined it, and this is what its host advertised; `refreshed` when
+    /// read just now rather than at the join.
+    Known {
+        session: Box<live_proto::session::Session>,
+        refreshed: bool,
+    },
+}
+
+impl Joined {
+    /// The co-op campaign of the joined session, when it is one.
+    pub fn campaign(&self) -> Option<&live_proto::session::Campaign> {
+        match self {
+            Joined::Known { session, .. } if session.advertisement.is_coop() => {
+                session.advertisement.campaign.as_ref()
+            }
+            _ => None,
+        }
+    }
 }
 
 pub struct Hle {
@@ -253,16 +294,16 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_skulls_probe(probe)
     }
-    /// What the host of the session this console joined advertised as its
-    /// skulls: asked of the server again (waiting at most `wait`), else as
-    /// last read (the search or find that led to the join). Call with no
-    /// guest memory held; it never takes guest memory.
-    pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
+    /// The session this console joined, asked of the server again (waiting
+    /// at most `wait`), else as last read (the search, find or invite that
+    /// led to the join). Call with no guest memory held; it never takes
+    /// guest memory.
+    pub fn joined(&self, wait: std::time::Duration) -> Joined {
         let keys = self.network.registered_keys();
         let (id, pending, seen) = {
             let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(id) = s.joined_session(&keys) else {
-                return HostSkulls::NotJoined;
+                return Joined::NotJoined;
             };
             let (pending, seen) = s.refresh_session(&id);
             (id, pending, seen)
@@ -288,13 +329,81 @@ impl Hle {
                 .cloned()
         });
         match known {
-            Some(skulls) => HostSkulls::Known {
-                session: id,
-                skulls: skulls.unwrap_or_default(),
+            Some(session) => Joined::Known {
+                session: Box::new(session),
                 refreshed,
             },
-            None => HostSkulls::Unknown { session: id },
+            None => Joined::Unknown { session: id },
         }
+    }
+    /// What the host of the session this console joined advertised as its
+    /// skulls: [`Hle::joined`]'s answer, for the skulls.
+    pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
+        match self.joined(wait) {
+            Joined::NotJoined => HostSkulls::NotJoined,
+            Joined::Unknown { session } => HostSkulls::Unknown { session },
+            Joined::Known { session, refreshed } => HostSkulls::Known {
+                session: session.session_id.clone(),
+                skulls: session.advertisement.skulls.clone().unwrap_or_default(),
+                refreshed,
+            },
+        }
+    }
+    /// Arms (Some) or leaves (None) a co-op campaign on this console's lobby
+    /// (docs/live/live-coop.md, "Co-op over Live"): its advertisements become
+    /// `coop` sessions naming the campaign, friends-only unless the host
+    /// made them invite-only, carrying the host's campaign `skulls`
+    /// (engine indices) in place of the multiplayer ones, and presence says
+    /// "Co-op: <level>". Open advertisements are updated at once. No guest
+    /// memory access.
+    pub fn set_coop(
+        &self,
+        campaign: Option<live_proto::session::Campaign>,
+        skulls: Option<Vec<u8>>,
+    ) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_coop(campaign, skulls)
+    }
+    /// The co-op campaign armed with [`Hle::set_coop`], if any.
+    pub fn coop(&self) -> Option<live_proto::session::Campaign> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).coop()
+    }
+    /// Presence's activity in words; None clears it. No guest memory access.
+    pub fn set_activity(&self, activity: Option<&str>) -> Result<(), u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_activity(activity)
+    }
+    pub fn activity(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .activity()
+            .map(str::to_owned)
+    }
+    /// Controller `controller`'s friends as last read, online first; asks
+    /// the server again in the background. No guest memory access.
+    pub fn friends(&self, controller: usize) -> Vec<Friend> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .friend_list(controller)
+    }
+    /// Sends `to` a game invitation to this console's advertised lobby from
+    /// controller `controller`'s player; the session id on success. No
+    /// guest memory access.
+    pub fn invite_to_lobby(&self, controller: usize, to: live_proto::Xuid) -> Result<String, u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .invite_to_lobby(controller, to)
+    }
+    /// The signed-in player on controller `controller`, 0 for none.
+    pub fn user(&self, controller: usize) -> u64 {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).user(controller)
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state

@@ -14,6 +14,7 @@ pub mod account_screen;
 pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
+pub mod coop_live;
 pub mod coop_probe;
 pub mod campaign_menu;
 pub mod campaigns;
@@ -866,7 +867,21 @@ pub fn run_hosted_with_live(
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    let probe_on = coop_probe.is_some();
     coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
+    // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
+    // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
+    // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
+    // probe holds those hooks and the screens only advertise and invite.
+    if _live.is_some() && std::env::var_os("H2_NO_COOP_ROW").is_none() {
+        let arm = if probe_on {
+            None
+        } else {
+            coop_probe::install_live(&loaded.runtime, &mut features, &opts.data_root)?
+        };
+        let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
+        custom_games::set_coop_row(on);
+    }
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

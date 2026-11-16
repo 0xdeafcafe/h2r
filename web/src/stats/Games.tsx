@@ -23,6 +23,7 @@ import { skullSummary } from "./skullSummary";
 import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, fireteam, gameTitle, hostName, playlist } from "./Side";
 import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
+import CoopGames from "./CoopGames";
 import { agoWords, dotDate, num, usDate } from "./fmt";
 
 type Tab = SpotlightTab;
@@ -322,6 +323,10 @@ export default function Games() {
                 {(g) => <GameItem game={g} />}
               </For>
               <Show when={pages() > 1}><div class="s-items-pager"><Pager page={pg()} pages={pages()} total={list().length} per={PER} onPage={setPage} /></div></Show>
+              <Show when={active() === "campaign"}>
+                <div class="s-items-more"><span>Co-op campaign games, played together</span></div>
+                <CoopGames />
+              </Show>
             </div>
           </div>
         </div>

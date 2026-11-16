@@ -727,6 +727,7 @@ fn halo1_placements_become_markers_in_their_blocks() {
             label: "CTF flag 2".into(),
             fields: Vec::new(),
         }],
+        art: Default::default(),
         notes: Vec::new(),
     };
     let m = library_markers(&v);
@@ -740,6 +741,7 @@ fn halo1_placements_become_markers_in_their_blocks() {
         name: v.name.clone(),
         world: library_tris(&v),
         markers: m,
+        scene: None,
     });
     app.dispatch(Action::Select(Some((BlockKind::NetgameFlags, 2))));
     app.dispatch(Action::FocusSelected);

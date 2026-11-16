@@ -178,22 +178,24 @@ any more: the list is retail's four rows.
 The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
 `skulls-screen` for the screen's class):
 
-- **Start** is the first row. A on it, or the Start button anywhere on
-  the page, starts the level on the difficulty chosen, with the skulls
-  marked On. A on a collected skull flips it On or Off (the store is
+- **Buttons**: A on a collected skull flips it On or Off (the store is
   written at once); A on a locked one does nothing and says why on
-  stderr. B goes back to the difficulty list (the generic back handler,
-  as on every screen of ours); choosing a difficulty there opens the
-  page again.
-- **Rows**: Start, then every skull, gold first ("Gold and silver"
+  stderr. **X or Start** starts the level on the difficulty chosen, with
+  the skulls marked On. B goes back to the difficulty list (the generic
+  back handler, as on every screen of ours); choosing a difficulty there
+  opens the page again. There is no Start row: the list is the skulls
+  only. Every description ends with the prompt "Ⓐ Toggle Ⓧ Start Level
+  Ⓑ Back" in the font's button glyphs (U+E100, U+E102, U+E101; the
+  screen's own button bar is still the Controls screen's).
+- **Rows**: every skull, gold first ("Gold and silver"
   below), then our six ("Our skulls"), each one label with its state:
   "Mythic: On", "Mythic: Off", "Mythic: Locked". The list skin the page
   uses has one text per row, so the state is in the label.
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
   description: tier, what it does, where it is found and whether only on
-  Legendary (for a locked skull that is how to unlock it). The Start
-  row's description says what Start, A and B do.
+  Legendary (for a locked skull that is how to unlock it), then the
+  button prompt.
 
 How the flow is made (static reading, not seen running):
 
@@ -208,22 +210,31 @@ How the flow is made (static reading, not seen running):
 - A `before` hook on `0x2c9d38` (`skulls_screen::DifficultyPage`) reads
   the row, the pressing player and its profile, and asks
   `skulls_screen::PageFlow`. For rows 0 to 3 with a skull collected it
-  keeps the press (the list, the row, the player) and opens the page
-  with `0x149f1e(1 << player, loader)`, never running the original.
-  Otherwise the original runs.
-- The page's Start (`skulls_screen::start`): checks the kept list is
-  still a difficulty list (vtable `0x45d688`), closes the page with
-  `0x14800c` on its own window and slot, writes a player chain and the
-  row to a page of ours, and calls `0x2c9d38` on the kept list; the
-  hook lets that one call through. So the start is retail's own, from
-  either loader. `H2_SKULLS_PAGE_CLOSE=0` skips the close (the page then
-  stays up under whatever the start shows).
-- The Start button: our class's screen vtable has its own slot 10
-  (`list_class::event`): event kind 5 with button 12 runs Start;
-  everything else goes to `0x2300ea`. Button 12 is Start by the order
-  the generic handler's 1 (B) and 13 (Back) imply; not seen running.
-- A row whose press is `Chosen::Act` runs the class's action
-  (`list_class::ListClass::action`); Start is the page's.
+  keeps the press (the list, the row, the player, the list's mode byte)
+  in the flow, logs `skulls page: kept difficulty <n> (<name>) for level
+  <...>, player <p> (<profile>), list 0x...`, and opens the page with
+  `0x149f1e(1 << player, loader)`, never running the original.
+  Otherwise the original runs. The kept press is only replaced by the
+  next difficulty press and only dropped once it has run.
+- X or Start (`skulls_screen::action`): our class's screen vtable has its
+  own slot 10 (`list_class::event`): event kind 5 with button 2 (X) or 12
+  (Start) runs the class's action; everything else goes to `0x2300ea`.
+  Buttons 2 and 12 are by the order the generic handler's 1 (B) and 13
+  (Back) imply, and the squad settings screen's X (`0x2bbed1`, button 2);
+  not seen running. The action only closes the page with `0x14800c` on
+  its own window and slot, as B does.
+- The page freed (`skulls_screen::freed`): our class's slot 0
+  (`list_class::destructor`) runs the Controls destructor, then tells the
+  flow. The stack calls slot 0 when the closed screen's out transition
+  has ended (`0x235233`), so the difficulty screen is the top one again.
+  For the page X or Start closed, `skulls_screen::continue_level` checks
+  the kept list is still a difficulty list (vtable `0x45d688`), writes a
+  player chain and the row to a page of ours, and calls `0x2c9d38` on the
+  kept list; the hook lets that one call through. So the start is
+  retail's own, from either loader, and never runs into a closing screen.
+- `H2_SKULLS_CONTINUE=now` runs the press right after the close (the
+  first build's order, which stuck); `=stay` runs it with the page still
+  up. For trying other orders in game only.
 
 **The layout** is the campaign level select's
 (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map;
@@ -264,8 +275,8 @@ Env overrides, read at boot, each logged when set:
 
 The multiplayer screen uses the same layout, picture and description.
 
-- **Strings** are served by the locale hook: the title, "Locked", Start
-  and its description, 15 + 6 names and descriptions from ids
+- **Strings** are served by the locale hook: the title, "Locked",
+  15 + 6 names and descriptions from ids
   `0x21fff000` up; the row labels with their state from `0x22fff000`
   (three per skull). `is_ours` reads only the middle bytes, so both are
   clear of the `0x20fff0xx` ids the other rows and the `ui` model take.
@@ -778,27 +789,31 @@ The page (step numbers kept for the multiplayer steps below):
 8. With a profile that has a skull: pick a difficulty. A page titled
    "Skulls" opens instead of the level. stderr, in order: `skulls page:
    difficulty chosen; the Skulls page comes first`, `skulls page:
-   opening the Skulls page for <profile> (player 0, difficulty <n>)`,
-   `skulls-screen: opened with 22 rows (our list class)`, `list class: a
+   kept difficulty <n> (<name>) for level New Campaign's first, player 0
+   (<profile>), list 0x...` ("chosen on Select Level" from there),
+   `skulls-screen: opened with 21 rows (our list class)`, `list class: a
    screen of ours gets its own layout (tag copy at 0x...)`,
    `skulls-screen: row text`. If the layout line is missing, the list is
    still full width: report it.
 9. **Look at the layout** (the point of this change; it can only be seen
    in game). It should match Select Level's screen:
    - the list on the **left**, rows about as wide as Select Level's
-     (each row ends left of the screen's centre), first row **Start**,
-     then Assassins, Thunderstorm, Famine, Blind, Black Eye, Catch, Iron,
+     (each row ends left of the screen's centre), **no Start row**: first
+     row Assassins, then Thunderstorm, Famine, Blind, Black Eye, Catch, Iron,
      Mythic, Angry, Envy, Grunt Birthday Party, IWHBYD, Ghost, Sputnik,
      Bandana, Fall Damage, Acrophobia, Low Gravity, Unlimited Ammo,
      Unlimited Grenades, Invincible; each "Name: On", "Name: Off" or
-     "Name: Locked". Scroll to the end and back: all 22 reachable.
+     "Name: Locked". Scroll to the end and back: all 21 reachable.
    - on the **right**, a large skull in Select Level's picture box,
      **gold** on a gold skull, **silver** on a silver one, dimmer while
      locked, changing as the cursor moves.
    - **under the skull**, inside the right column, the description,
      wrapped to the picture's width: "Gold skull:" or "Silver skull:",
      the effect, "Found on <level>, Legendary only" (Blind: "any
-     difficulty"). Nothing over the frame art; no frame art bottom right.
+     difficulty"), then a blank line and "Ⓐ Toggle Ⓧ Start Level Ⓑ
+     Back" with the controller's button pictures (if they show as boxes
+     or blanks, report it). Nothing over the frame art; no frame art
+     bottom right.
    If something sits wrong, try without a rebuild and say which values
    look right: `H2_SKULLS_LIST_AT=x,y` (default `-215,130`),
    `H2_SKULLS_LIST_SKIN=n` (default 0), `H2_SKULLS_PICTURE_AT=x,y`
@@ -814,15 +829,26 @@ The page (step numbers kept for the multiplayer steps below):
     only)`.
 11. B: back on the difficulty list. Pick a difficulty again: the page
     opens again.
-12. A on Start: the page closes and the level starts on the difficulty
-    picked. stderr `skulls page: starting on difficulty <n> for
-    <profile> with <skulls on>`, then the campaign start's `skulls:
-    campaign start for <profile>: ...` with exactly the On skulls. Then
-    try the Start button on the page instead of the Start row: the same.
-    If the level does not start, or the page stays up, report the last
-    `skulls page:` lines; then try `H2_SKULLS_PAGE_CLOSE=0`.
-13. Select Level: pick a level, then a difficulty: the same page, and
-    Start loads that level (the other loader, `0x2bb432`).
+12. X on the page: the page animates out like B, and the level starts on
+    the difficulty picked. stderr, in order: `skulls page: X/Start:
+    starting difficulty <n> (<name>) once the page is freed`, `skulls
+    page: close requested for the page 0x... (window 5, slot 4)`,
+    `skulls page: the page 0x... is freed; back on the difficulty list`,
+    `skulls page: starting: the difficulty press (<name> for <profile>,
+    list 0x...) with <skulls on>`, `skulls page: the difficulty press
+    returned (0x...); the level should be loading`, then the campaign
+    start's `skulls: campaign start for <profile>: ...` with exactly the
+    On skulls. Then again with the Start button instead of X: the same.
+    Pressing X twice quickly: `X/Start again; already closing`, nothing
+    more. If it sticks, report every `skulls page:` line. Which line is
+    last says where: no "freed" line (the stack did not call our
+    destructor: the page is back on the difficulty list and nothing
+    starts), or "returned" with no level (the press ran but did
+    nothing from there). Then try `H2_SKULLS_CONTINUE=now` and
+    `H2_SKULLS_CONTINUE=stay` and say which starts the level. B after
+    picking: `the page 0x... is freed (B); nothing started`.
+13. Select Level: pick a level, then a difficulty: the same page (the
+    kept line says "chosen on Select Level"), and X loads that level (the other loader, `0x2bb432`).
 14. Co-op (two named profiles): each player's difficulty press opens the
     page for their own profile. Note which difficulty screen co-op shows;
     if it has no page, it is the lobby one (screen 1).

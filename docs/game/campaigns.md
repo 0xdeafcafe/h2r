@@ -51,6 +51,9 @@ Pieces:
 - **`crates/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
   Halo 2 `mode` and `jmad` block trees for the builder
   ([h1-models.md](../formats/h1-models.md)).
+- **`crates/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
+  with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
+  trees, pixels copied as they are ([h1-bitmaps.md](../formats/h1-bitmaps.md)).
 - **The converter** (`crates/h1convert`, planned) works one tag group at a
   time, in the order of §3.
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, runs the
@@ -65,7 +68,7 @@ Pieces:
 | `sbsp` structure BSP | `sbsp` + `ltmp` | collision BSP is close to Halo 2's shape. Render geometry becomes cluster sections. Halo 1 lightmap pages become Halo 2 lightmap bitmaps |
 | pathfinding | `sbsp` pathfinding data | Halo 1 maps don't contain the sectors, links and refs that Halo 2's AI needs, so we generate them from the collision BSP |
 | `shdr` family (`senv`, `soso`, `schi`, `scex`, `swat`, `sgla`, `smet`, `spla`) | `shad` on existing `stem` templates | each Halo 1 shader type maps to the closest Halo 2 template in the shared maps, with its parameters. The look will be close, not exact |
-| `bitm` | `bitm` | mostly the same Xbox texture formats |
+| `bitm` | `bitm` | the same Xbox formats and layouts: pixels copy unchanged (**Built**, [h1-bitmaps.md](../formats/h1-bitmaps.md)) |
 | `mod2` + `coll` + `phys` | `mode` + `coll` + `phmo` under an `hlmt` | physics uses Halo 2's (decision 1) |
 | `antr` | `jmad` | animation codecs differ: decode, then re-encode |
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |

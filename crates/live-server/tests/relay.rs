@@ -54,6 +54,7 @@ async fn session(h: &Harness, host: &User, flags: &str) -> String {
         visibility: Default::default(),
         map_id: None,
         skulls: None,
+        campaign: None,
     };
     let r = h
         .call(

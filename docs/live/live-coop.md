@@ -1,11 +1,13 @@
-# Campaign co-op over Live (design; first slice of phase 0 and the phase 2 probe built)
+# Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)
 
 Retail Halo 2 plays campaign co-op only in split screen on one console.
 This page answers "can we add co-op over our Live service?" and lays out
 the options. The owner has since decided
 ([section 6](#6-decisions-made-2026-11-16)), and the first slice of phase 0
 is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)), as is
-the probe of the retail path ([section 9](#9-probe-phase-2)).
+the probe of the retail path ([section 9](#9-probe-phase-2)) and, on the
+assumption that the probe's path works, Co-op over Live itself
+([section 10](#10-co-op-over-live-built)).
 **No game was built or run for this page or either of those.**
 
 In short:
@@ -1020,3 +1022,214 @@ players move, did it freeze, crash or drop back to the menu, and when).
 Not tested, because only the game can: whether the lobby ticks, whether
 the setters take in a System Link lobby, whether the bypassed start runs,
 and everything after it.
+
+## 10. Co-op over Live (built)
+
+Built on tests, on the owner's decision to assume the probe's approach
+(the retail synchronous campaign path, two consoles, one player each)
+works and to test it all at the end. **No game was built or run for it.**
+If the retail path breaks, only the start part (10.3) is redone; the
+screens, the session plumbing, the text and the web stay.
+
+### 10.1 What a player sees
+
+**Host.** Xbox Live menu: Quickmatch, OptiMatch, Custom Game, Custom Game
+Browser, **Co-op Campaign**, Content Download. The list still has five item
+widgets, so with six rows it scrolls: Content Download comes into view
+below the fifth row. Co-op Campaign has its own pane (the Custom Game
+picture, our help text). It opens the co-op screen:
+
+| row | value | press |
+|---|---|---|
+| Level | the level's name as the level select shows it (read from the disc's `mainmenu.map` at boot), else its map stem | the next level |
+| Difficulty | Easy, Normal, Heroic, Legendary | the next one |
+| Invite a Friend | | opens the friends screen |
+| Status | `Invite a friend`, `Waiting for <gamertag>`, `<gamertag> is in; ready`, `... the lobby holds the level`, or what blocks Start | logs the status |
+| Start | Ready / Not ready | when ready: the campaign menu's setters put the level and difficulty on the session (as the probe's tick setup does) and the screen closes, back to the lobby; otherwise logs why not |
+
+Start is enabled when the squad session is in a lobby or game state with
+exactly two consoles and at most two players, and the level has campaign
+and map ids. The friends screen lists the host's friends (online first, at
+most 20) with Online, Playing, their presence activity or Invited; a press
+on an online friend sends a Live game invitation to the host's advertised
+lobby. B on any of these screens closes it as on every screen of ours.
+Another Live menu row ends hosting: the lobby becomes a custom game again
+and the hooks disarm.
+
+**Guest.** A console that joined a host's co-op session (an accepted
+invite, joining a friend from the friends list, or the custom games
+browser, which lists co-op sessions too) is a co-op guest. A watcher asks
+the HLE once a second, while the squad session has a second console and
+this one is not its host, which session it joined; when the server says it
+is a `coop` session, the console arms (10.3), takes the host's skulls for
+the campaign start, and opens the join screen at the next tick
+(`H2_COOP_JOIN_SCREEN=0` leaves that to the Co-op Campaign row, which opens
+the join screen for a guest): Host, Level, Difficulty, Skulls (`N from the
+host`), Handshake (`OK: the lobby holds the host's campaign`, or `Waiting
+for the host's campaign`, `The lobby's difficulty differs`, `N consoles in
+the lobby`, `No lobby`) and Ready (closes the screen; the guest waits for
+the host's start in the lobby).
+
+**Text.** While a console hosts or joined a co-op session, the retail
+lobby line about co-op needing two players on one console (string id
+`0x0e0001ec`, `coop_takes_two` in `mainmenu.map`'s strings) reads:
+
+```text
+Co-op over Xbox Live: 2 players, one per console.
+Invite a friend from Co-op Campaign.
+```
+
+Split screen keeps the game's own text: the locale source answers that id
+only in a co-op session. Every text of the co-op screens is ours: guest
+memory slots of 128 bytes under ids `0x20ffe000` up, rewritten when a row
+is drawn and every tick.
+
+**Skulls.** The host's own campaign selection (collected and on, for the
+signed-in profiles: the Skulls page's rule, so the host has them unlocked)
+is advertised on the co-op session in place of the multiplayer set, and the
+host's campaign start applies it as for any campaign. A co-op guest's
+campaign start applies exactly the host's engine skulls instead of its own
+profiles' (`skulls::coop_start`); our own skulls (from 15) are not carried.
+
+### 10.2 Session plumbing
+
+- **Advertising.** Opening the co-op screen calls `Hle::set_coop(campaign,
+  skulls)`. The lobby the game advertises (and any it already advertised,
+  through a signed `SessionUpdated`) becomes `flags: "coop"` with a
+  `campaign` (`live_proto::session::Campaign`: `level` stem, `name`,
+  `difficulty` 0 to 3) and the host's campaign skulls. A public lobby is
+  made friends-only (`coop_visibility`); invite-only stays invite-only.
+  Leaving sends `flags: "custom"`, which drops the campaign.
+- **Presence.** The HLE sends `activity: "Co-op: <level>"` with every
+  presence change while armed (`live_proto::valid_activity`, at most 64
+  characters); the server keeps and serves it ([live-api.md](live-api.md)).
+- **Invites.** `Hle::invite_to_lobby` sends the same social `Send` the
+  title's `XOnlineGameInviteSend` does, for this console's advertised
+  session. The guest accepts with the retail invite flow and joins through
+  the existing XNet/session path.
+- **The guest's read.** `Hle::joined` (what `host_skulls` now uses too)
+  returns the joined session as the server last described it, asking again.
+- **Server and web.** `GET /v1/sessions?flags=coop`; finished co-op games
+  at `GET /v1/coop/games` (a closed `coop` session that a guest joined: the
+  host and everyone who joined, the campaign, start and end), shown on the
+  web's Games page (Campaign) and a player's Co-op tab; co-op sessions show
+  as "Co-op campaign" with level, difficulty and players in Find a game;
+  friends' activity shows in the friends lists.
+
+### 10.3 The hooks (the probe as a feature)
+
+The probe's hooks of 9.1 are now also the feature `coop-live`, on the plan
+whenever Live is on (`H2_FEATURES=-coop-live` takes them out), armed only
+for a co-op session (`coop_probe::Arm`): the host arms with its level, a
+guest with none. Disarmed, every hook lets the game run as retail and
+nothing is logged or hashed. Armed, they are exactly the probe's: the
+peer-count window on the session start `0x6ec80` / `OPTIONS_NEW`
+`0x138110`, the peer limit back to 2 after `0x6e720`, the joinable
+predicate `0x63e00`, the campaign setters `0x19a6f2` and `0x19a76d` on the
+host's lobby once a second console is in (three attempts, reset when the
+host changes level or difficulty), and all of 9.2's logging, with the hash
+files in `<data>/coop-probe/`. `H2_COOP_PROBE=1` still forces the probe on
+for the whole run (System Link), and then the co-op screens only advertise
+and invite.
+
+### 10.4 Your test (two instances, or two Macs)
+
+Same build on both; nothing here needs a build of ours beyond your usual
+`h2`. One Live server for both. Make the two accounts friends.
+
+```sh
+# Terminal 1: a server for both.
+h2 live serve --db file --listen 0.0.0.0:8074
+IP=$(ipconfig getifaddr en0)
+h2 live account create Alpha --server http://$IP:8074
+h2 live account create Bravo --server http://$IP:8074
+h2 live friend add Bravo --as Alpha --server http://$IP:8074
+h2 live friend accept Alpha --as Bravo --server http://$IP:8074
+
+# Terminal 2: the host.
+H2_XNET_ADDR=$IP:31000 H2_XNET_LOOPBACK_PEERS=$IP:31010 \
+h2 play disc/halo2.iso --data ~/h2-coop/host --live-server http://$IP:8074 \
+  --gamertag Alpha 2> >(tee ~/h2-coop/host.log)
+
+# Terminal 3, once the host is up: the guest.
+H2_XNET_ADDR=$IP:31010 H2_XNET_LOOPBACK_PEERS=$IP:31000 \
+h2 play disc/halo2.iso --data ~/h2-coop/guest --live-server http://$IP:8074 \
+  --gamertag Bravo --no-audio 2> >(tee ~/h2-coop/guest.log)
+```
+
+On two Macs: drop `H2_XNET_LOOPBACK_PEERS`, use each Mac's own address with
+port 3074 (`H2_XNET_ADDR=<this Mac's IP>:3074`), point both at the server
+Mac (`--live-server http://<server IP>:8074`), and open UDP 3074 to 3080.
+`h2 play --live` (the default service) works the same way when both
+accounts are on it and friends there; `--live-local` runs a server inside
+one instance, which the other cannot reach unless it listens
+(`--live-listen 0.0.0.0:8074` on the host, `--live-server
+http://<host IP>:8074` on the guest).
+
+Checklist (stderr lines in brackets):
+
+1. Both: sign in to Live. stderr: `coop-live: N campaign levels (M named)`
+   (N about 15 on the retail disc; 0 means the disc read failed and the
+   Level row says None).
+2. Host: Xbox Live menu. Six rows, Co-op Campaign above Content Download,
+   which scrolls into view. Moving onto Co-op Campaign shows the Custom Game
+   picture and our help line. [`custom games: xbox live menu tag has 6
+   panes and room for 5 rows`]
+3. Host: Co-op Campaign. The screen shows Level, Difficulty, Invite a
+   Friend, Status, Start. [`coop-live: hosting a co-op campaign`]. Step the
+   level and difficulty [`coop-live: level ...`, `coop-live: difficulty
+   ...`]. On the web, Find a game shows a Co-op campaign session once the
+   game advertises its lobby; the friends list shows Alpha's activity
+   `Co-op: <level>`.
+4. Host: Invite a Friend, press Bravo [`coop-live: invited Bravo to session
+   <id>`]. `could not invite ... is the lobby advertised yet?` means the
+   game had not advertised a lobby at that moment: note where you were.
+5. Guest: accept the invitation (retail invite flow). The join screen opens
+   [`coop-live: guest: joined Alpha's co-op session ...`, `coop-live:
+   guest: opening the join screen`]. Check its rows. Press Ready.
+6. Host: Status says `Bravo is in; ready`, Start says Ready. Press Start
+   [`coop-live: host: LOBBY_SET_MAP returned 1`, `... LOBBY_SET_DIFFICULTY
+   returned 1`, `coop-live: host: start <level> on <difficulty>; back to the
+   lobby`]. `returned 0 (refused)` is the first thing to send back: the
+   setters' own host check (`0x63f00`, session class at `+0x4980`) may
+   refuse a Live (not System Link) session.
+7. The lobby line about co-op on one console reads ours on both.
+8. Host: start the game from the lobby. From here it is section 9's
+   probe: `coop-probe: session start ...`, `campaign with 2 peers: showing
+   the start 1 peer`, `session start returned 1`, then `game start: options
+   mode 1, simulation mode sync-server (3)` on the host and `sync-client
+   (2)` on the guest, and the hash files. 9.4 says what each failure looks
+   like. Play a few minutes: both move, a fight, a checkpoint, a cutscene.
+9. Skulls: with a skull on in the host's profile, the guest's stderr says
+   `skulls: co-op campaign start with the host's skulls: ...`.
+10. Afterwards the web's Games page (Campaign) lists the co-op game with
+    both players once the host's lobby closes.
+
+What to send back: `host.log` and `guest.log` (or `grep -E
+'coop-(live|probe)|skulls:|custom games' *.log`), the newest `.hashes` from
+each `<data>/coop-probe/`, `h2 coop-probe diff <host>.hashes
+<guest>.hashes`, and a sentence on what you saw and where it stopped.
+
+### 10.5 What is tested
+
+`cargo test -p boot --lib coop_live` and the custom games tests: the
+level list (start order, Halo 2's campaign only, the level select's
+names, from synthetic globals; `#[ignore]` against `$H2_DISC`), the text
+slots, the host flow (arming, advertising level, difficulty and skulls,
+stepping, leaving), Start's checks and the status lines, the friends screen
+and invites, the guest's arming, join screen and handshake lines, a custom
+session or the host itself never being a guest, the lobby line only in a
+co-op session, the guest's skulls at the campaign start, the six-row Live
+menu and its sixth pane on a synthetic tag, and the hooks on the plan, off
+until armed. `cargo test -p live-hle --test server
+a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it`
+against the embedded server: a friends-only `coop` advertisement with the
+campaign and the campaign skulls, a stranger's browser not listing it, the
+friends list, the invitation reaching the guest, the guest's join reading
+the campaign, presence activity, and leaving back to `custom`. Server and
+web: `crates/live-server/tests/coop_sessions.rs`, `web/test/coop.test.ts`.
+
+Not tested, because only the game can: whether our screens open over the
+Live lobby and look right, whether the join screen opens cleanly from the
+tick, whether the setters take on a Live session (10.4, step 6), and
+everything from the session start on (section 9).
