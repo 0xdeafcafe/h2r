@@ -276,7 +276,13 @@ fn hosted(
         .get()
         .clamp(1, d3d::scaled::MAX_SCALE);
     let locked = store.state(key).is_some_and(|s| s.locked);
-    let view = (scale > 1 || !locked).then(|| {
+    // E3 lighting (the Lighting row, H2_LIGHTING) draws in the view too,
+    // at 1x as well: a view unless both are locked off.
+    let light = boot::setting_defs::LIGHTING.key;
+    let e3 = boot::setting_defs::lighting_of(store.handle::<u32>(light).get())
+        != d3d::Lighting::Retail;
+    let light_locked = store.state(light).is_some_and(|s| s.locked);
+    let view = (scale > 1 || !locked || e3 || !light_locked).then(|| {
         (
             configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
             scale,

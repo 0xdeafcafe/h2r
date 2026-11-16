@@ -40,7 +40,9 @@ impl Installed {
 /// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
 /// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
 /// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
-/// view's counts. Halo's frame wait goes through
+/// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
+/// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
+/// too when the scale is 1. Halo's frame wait goes through
 /// `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
@@ -54,6 +56,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 v => v.and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30),
             };
             let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
+            let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             let shots = |suffix: &'static str| {
                 let dir = dir.clone();
@@ -68,13 +71,14 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     }
                 }
             };
-            if scale > 1 {
+            if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The reference answers the guest at 1x; the view, on the
                 // same device, renders at `scale` and presents.
                 let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x")));
                 let view = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
                 let mut b = d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                b.set_lighting(lighting);
+                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference");
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
                     install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))

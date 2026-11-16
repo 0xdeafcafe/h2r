@@ -56,7 +56,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
-- [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting (not built)
+- [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phase 1 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
 
 ## Audio and movies (`audio/`)
 

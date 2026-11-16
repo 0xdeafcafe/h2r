@@ -27,7 +27,7 @@
 //! (`crate::video_screen`, `H2_NO_VIDEO_SCREEN=1` skips both): a Controls
 //! screen whose rows are Field of View (with the first-person camera hook
 //! that applies it, `crate::fov_row`; `H2_NO_FOV_ROW=1` skips both), Frame
-//! Rate, Resolution and Mute Button, through the same entries plus the
+//! Rate, Resolution, Lighting and Mute Button, through the same entries plus the
 //! screen header builder and the Settings list's row text and row chosen.
 //!
 //! Each hook says once on stderr when it first runs ("layouts: <name>

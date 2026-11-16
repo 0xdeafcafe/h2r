@@ -264,7 +264,7 @@ fps = 30              # 30, 60, 120 (future)
 
 [graphics]
 merge_passes = true
-lighting = "retail"   # "retail" or "e3" (future)
+lighting = "retail"   # "retail" or "e3" (built: the Video screen's Lighting row)
 fov = 0               # 0 = the game's value; otherwise degrees (future)
 
 [input]
@@ -295,6 +295,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | live (the window follows it at its next turn) |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](../graphics/high-resolution.md)) | live (the next frame is at the new size) |
+| lighting | **Built (phase 1):** a "Lighting" row on the Video screen (Retail, E3), saved as `[graphics] lighting` (`"retail"` or `"e3"`). E3 draws the game's shadow maps at the render scale (at least 2x) in the shown image only and compares them with one tap; the guest sees retail. `H2_LIGHTING` locks it when set ([e3-lighting.md](../graphics/e3-lighting.md), "Phase 1 as built") | live (the next frame) |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](../audio/playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](../live/live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](../input/input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
@@ -321,11 +322,10 @@ Not every flag belongs in a menu. They fall in four groups.
 input and the rest of the boot runner's variables. They are for reproduction
 and measurement. The settings file has no keys for them.
 
-**New settings with no existing flag.** E3 lighting has no control today
-(FOV, frame rate and resolution scale are built, above). It needs its own
-design before the menu can switch it on (see phases). Until then the menu
-shows it greyed out with a one-line reason, so the list is honest about what
-exists.
+**New settings with no existing flag.** None left: E3 lighting's phase 1
+(sharper retail shadows) is the Lighting row above, and its later phases
+(stencil shadows, per-pixel lights) will change what "E3" draws, not add a
+row.
 
 Notes on specific settings:
 
@@ -360,8 +360,10 @@ Notes on specific settings:
   ([Vice](https://www.vice.com/en/article/halo-2s-legendary-e3-demo-has-leaked-after-22-years/))
   says the leaked build includes it. A Steam comment claims retail removed the
   stencil buffer use entirely; that is unverified. We have not checked what
-  the retail renderer can do here. This is a research item, so the first menu
-  shows it only as "coming".
+  the retail renderer can do here. Since then phase 0 of
+  [e3-lighting.md](../graphics/e3-lighting.md) found no stencil-shadow path
+  in retail, and phase 1, harder and sharper retail shadows, is the Lighting
+  row (above).
 - **FOV.** Community H2V code applies a scale to the camera's vertical field of
   view after the game computes it
   ([`render_cameras.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/render/render_cameras.cpp),
@@ -374,13 +376,14 @@ Notes on specific settings:
 ## Video screen (built)
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with up to four rows:
+row, **Video**. A on it opens a screen titled "Video" with up to five rows:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next frame | `H2_RENDER_SCALE` |
+| Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | Mute Button | On, Off | `[pad] mute_button` | at once | `H2_PAD_MUTE` |
 
 A steps the row's value and saves it to `<data>/settings.toml` at once,
@@ -388,15 +391,17 @@ keeping every other key, and every row applies at once, so none says
 "(restart)": the window follows the frame rate at its next turn
 (`app::fps::FpsControl`), the view backend makes its targets again at the
 next frame boundary on the render thread (`ScaledBackend::follow_scale`,
-[high-resolution.md](../graphics/high-resolution.md)), and the HID thread gets the mute
+[high-resolution.md](../graphics/high-resolution.md)), and so does the lighting
+(`ScaledBackend::follow_lighting`, [e3-lighting.md](../graphics/e3-lighting.md)),
+and the HID thread gets the mute
 button (`PadHid::mute_switch`). A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is
 used (before this, a bad `H2_RENDER_SCALE` meant 1x). Above 30, the frame
 rate only redraws the newest game frame more often until high-fps phase 2
 ([high-framerate.md](high-framerate.md)). `H2_NO_VIDEO_SCREEN=1` removes
 the row and the screen; `H2_NO_FOV_ROW=1` removes the field of view row and
-the camera hook. Headless runs (`h2 run`) have none of it. Lighting gets a
-row once there is a lighting option to toggle.
+the camera hook. Headless runs (`h2 run`) have none of it (`H2_LIGHTING=e3`
+works there as a variable).
 
 Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
 the screen; `boot::video_screen::model` builds the screen as
@@ -404,8 +409,12 @@ the screen; `boot::video_screen::model` builds the screen as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema-built));
 the hooks registered by `layout_glue::install` ask that model for counts,
-texts and presses. `h2 play` reads the saved frame rate, scale and mute
-button when no flag or variable sets them.
+texts and presses. `h2 play` reads the saved frame rate, scale, lighting
+and mute button when no flag or variable sets them. Tests:
+`setting_defs::tests::lighting_is_retail_unless_asked_and_has_a_video_row`
+(default Retail, the row on this screen, live, the file's names, the
+variable's lock) and `video_screen`'s row tests (the row between
+Resolution and Mute Button, showing Retail, then E3 after a press, saved).
 
 ### How the screen is made (Local, static reading of the retail XBE)
 
@@ -457,8 +466,8 @@ skipped.
    up. stderr: `video screen: settings row text active`. If only two rows
    show, the third item widget did not appear (`+0x220`).
 2. A on Video opens a screen titled "Video" with Field of View, Frame
-   Rate, Resolution, Mute Button, and no retail row. stderr: `video
-   screen: opening`, `video screen: list built with 4 rows`, `video
+   Rate, Resolution, Lighting, Mute Button, and no retail row. stderr: `video
+   screen: opening`, `video screen: list built with 5 rows`, `video
    screen: header active`, `video screen: row text active`. If the title
    still says Controls, the header id differs from `0x06000233` on this
    screen. The empty item widgets below the rows must not draw anything.
@@ -475,10 +484,16 @@ skipped.
    and back down to 640x480 (the view sleeps; the run report's
    `render scale` line counts `1x frames`, not fallback frames). The run
    report's `fallback frames` stays 0. `H2_RENDER_SCALE=2` locks it.
-6. Mute Button (DualSense): Off puts the mute LED out and the button stops
+6. Lighting: A steps Retail, E3, Retail. stderr `d3d: lighting Retail ->
+   E3` at the next frame; in a level with dynamic-light shadows (below
+   "Phase 1 as built" in [e3-lighting.md](../graphics/e3-lighting.md)) the
+   shadow edges turn hard and sharp, with no flash. At 640x480 E3 wakes the
+   view (the run report counts view frames, not `1x frames`).
+   `H2_LIGHTING=e3` locks it.
+7. Mute Button (DualSense): Off puts the mute LED out and the button stops
    doing anything; On makes the button toggle again, at once, with no
    relaunch. Turning it Off while muted unmutes.
-7. Field of View: as below, now on this screen.
+8. Field of View: as below, now on this screen.
 
 ## Field of view (built)
 

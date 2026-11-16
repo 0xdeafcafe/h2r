@@ -777,6 +777,10 @@ and allocations are bounded before anything is read:
     and a sweep of `f32` depths with the values next to each rounding tie;
     `gpu_lazy_depth_levels_sample_and_write_back_as_the_eager_ones` checks
     pixels and guest bytes at the wait against the eager device.
+    With E3 lighting a render-scale view keeps its own scaled copy of each
+    such level and answers this call for itself from the copy
+    (`d3d::scaled`, [e3-lighting.md](e3-lighting.md) "Phase 1 as built");
+    the device and the guest only ever see the reference's.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
     way), or whose format does not match how it is bound, stops too.

@@ -722,6 +722,13 @@ behaviour follows xemu's `psh_append_shadowmap`:
   indices.
 - `s/q` and `t/q` are multiplied by `tex_scale`, as for colour textures,
   so linear (texel-addressed) shadow maps work.
+- **Hard shadows** (`PixelOptions::hard_shadow`, E3 lighting phase 1,
+  [e3-lighting.md](e3-lighting.md)): a stage with a non-zero mask
+  compares once at the nearest texel, whatever its filter, at the mean of
+  the coordinates of the stages in its mask (the stages that sample the
+  same map), so taps spread over stages collapse to one. Only the
+  render-scale view sets it; all zero is the retail code byte for byte
+  (`tests/shadow.rs`, golden files in `tests/golden/`).
 
 abaire's nxdk_pgraph_tests check the comparison on hardware
 (`texture_shadow_comparator_tests.cpp`, with results in

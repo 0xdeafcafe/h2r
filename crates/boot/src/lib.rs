@@ -727,9 +727,14 @@ pub fn run_hosted_with_live(
                 eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
+                // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
+                // changes the view's shadows there too.
                 if let Some(store) = &host.settings {
                     let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
                     b.follow_scale(move || wanted.get());
+                    let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
+                    b.set_lighting(setting_defs::lighting_of(lighting.get()));
+                    b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {

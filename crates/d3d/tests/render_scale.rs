@@ -1301,3 +1301,425 @@ fn a_deferred_draw_sees_a_level_it_samples_as_it_was() {
     assert!(lazy == eager, "{stats:?}");
     assert!(stats.reference_deferred > 0, "{stats:?}");
 }
+
+// --- E3 lighting, phase 1 (docs/graphics/e3-lighting.md) ----------------
+//
+// A 32x32 `LIN_D24S8` shadow map (a depth level bound as `pNewZStencil`
+// with a 32x32 colour level) gets a slanted caster triangle; the back
+// buffer then samples it over the whole frame with PROJECT3D and
+// `GREATER`, the first level's lookup, each guest pixel at half its
+// coordinates (a shadow texel covers 2x2 guest pixels). Lit is white,
+// shadowed black. With E3 lighting the view draws the map at the render
+// scale (at least 2) and compares it with one tap; the reference, and so
+// the guest, stays retail.
+
+/// The shadow map's texture header, its level, and its texels.
+const SMAP_TEX: u32 = MISC + 0x5600;
+const SMAP_LEVEL: u32 = MISC + 0x5620;
+const SMAP_DATA: u32 = 0x0036_0000;
+/// The colour level drawn with it.
+const SMAP_COLOR: u32 = MISC + 0x5640;
+const SMAP_COLOR_DATA: u32 = 0x0036_8000;
+const SMAP: u32 = 32;
+const SMAP_LEN: usize = (SMAP * SMAP * 4) as usize;
+/// The pixel shader whose output is t0.
+const SMAP_PSDEF: u32 = MISC + 0x5700;
+const SMAP_PS: u32 = MISC + 0x57F0;
+const RS_SHADOWFUNC: u32 = 156;
+/// The caster, in the shadow map's window coordinates: every edge slanted.
+const CASTER: [(f32, f32); 3] = [(3.3, 2.2), (29.7, 9.9), (8.4, 30.1)];
+/// The receiver's reference depth: half the D24 range, so the cleared
+/// map (1.0) passes `GREATER` and the caster (near 0) does not.
+const SMAP_R: f32 = 8_388_608.0;
+
+fn smap_headers(m: &mut SparseMemory) {
+    use d3d::resource::SurfaceHeader;
+    m.map(0x8000_0000 | SMAP_DATA, SMAP_LEN as u32);
+    m.write(0x8000_0000 | SMAP_DATA, &vec![0xFF; SMAP_LEN])
+        .unwrap();
+    m.map(0x8000_0000 | SMAP_COLOR_DATA, SMAP_LEN as u32);
+    let pitch = SMAP * 4;
+    let fmt = (2 << 4) | (0x2E << 8) | (1 << 16);
+    let size = (SMAP - 1) | ((SMAP - 1) << 12) | ((pitch / 64 - 1) << 24);
+    for (i, w) in [0x0004_0001, SMAP_DATA, 0, fmt, size].iter().enumerate() {
+        m.write_u32(SMAP_TEX + 4 * i as u32, *w).unwrap();
+    }
+    let mut h = SurfaceHeader::linear(gfx::D3DFormat::LinD24S8, SMAP, SMAP, pitch, SMAP_DATA);
+    h.pixels.format = fmt;
+    h.pixels.size = size;
+    h.parent = SMAP_TEX;
+    h.write(m, SMAP_LEVEL).unwrap();
+    SurfaceHeader::linear(
+        gfx::D3DFormat::LinA8R8G8B8,
+        SMAP,
+        SMAP,
+        pitch,
+        SMAP_COLOR_DATA,
+    )
+    .write(m, SMAP_COLOR)
+    .unwrap();
+}
+
+/// Stage 0 in PROJECT3D, the output its result.
+fn smap_shader<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
+    use shaders::psh::bits::*;
+    let def = shaders::psh::PixelShaderDef {
+        texture_modes: texture_modes([TEX_PROJECT3D, 0, 0, 0]),
+        final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+        final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+        ..Default::default()
+    };
+    m.write(SMAP_PSDEF, &def.to_bytes()).unwrap();
+    for (i, w) in [1, 0, SMAP_PSDEF].iter().enumerate() {
+        m.write_u32(SMAP_PS + 4 * i as u32, *w).unwrap();
+    }
+    d.set_pixel_shader(m, SMAP_PS).unwrap();
+}
+
+/// The receiver: the whole frame, texture coordinate (x/2, y/2, r, 1) in
+/// the map's texels.
+fn receiver<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        let (x, y) = (W as f32 * x, H as f32 * y);
+        for v in [x, y, 0.5, 1.0] {
+            vb.extend_from_slice(&v.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for v in [x / 2.0, y / 2.0, SMAP_R, 1.0] {
+            vb.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, vb.len() as u32);
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    // TEX1 with D3DFVF_TEXCOORDSIZE4(0).
+    d.set_vertex_shader(m, fvf::XYZRHW | fvf::DIFFUSE | 0x100 | (2 << 16))
+        .unwrap();
+    d.set_stream_source(m, 0, VB_HEADER, 36).unwrap();
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+}
+
+/// One frame's shadow pass and receiver. `linear`: the stage filters
+/// linearly (retail's 2x2 percentage-closer filter).
+fn shadow_pass<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, linear: bool) {
+    let back = device_field(m, d3d::layout::device_field::RENDER_TARGET);
+    // Shadow generate: clear the map's depth and stencil, draw the caster.
+    d.set_render_target(m, SMAP_COLOR, SMAP_LEVEL).unwrap();
+    set_states(d, m);
+    d.clear(m, 0, 0, 0x03, 0, 1.0, 0).unwrap();
+    z_state(m, true, true, Z_LESS);
+    let mut bytes = Vec::new();
+    for (x, y) in CASTER {
+        bytes.extend(vertex(x, y, 0xFF00_0000));
+    }
+    m.write(0x8000_0000 | VB_DATA, &bytes).unwrap();
+    d.note_write(0x8000_0000 | VB_DATA, bytes.len() as u32);
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    bind_quad(d, m);
+    d.draw_vertices(m, 5 /* TRIANGLELIST */, 0, 3).unwrap();
+    // Shadow apply: the back buffer samples it.
+    d.set_render_target(m, back, 0).unwrap();
+    set_states(d, m);
+    z_state(m, false, false, Z_ALWAYS);
+    d.clear(m, 0, 0, 0xF0, 0xFF10_2030, 1.0, 0).unwrap();
+    let filter = if linear { 2 } else { 1 };
+    // CLAMP, and the filter.
+    for (state, value) in [(0, 3), (1, 3), (3, filter), (4, filter)] {
+        m.write_u32(L.texture_state_slot(0, state), value).unwrap();
+    }
+    smap_shader(d, m);
+    m.write_u32(L.render_state_slot(RS_SHADOWFUNC), 0x204)
+        .unwrap();
+    d.set_texture(m, 0, SMAP_TEX).unwrap();
+    receiver(d, m);
+    d.set_texture(m, 0, 0).unwrap();
+    d.set_pixel_shader(m, 0).unwrap();
+    let skipped: Vec<_> = d
+        .take_events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::DrawSkipped { .. } | Event::BadState(_)))
+        .collect();
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
+fn shadow_scene<B: Backend>(backend: B, linear: bool) -> (Device<B>, SparseMemory) {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    smap_headers(&mut m);
+    shadow_pass(&mut d, &mut m, linear);
+    (d, m)
+}
+
+/// What the guest can read after the scene: the map's and the colour
+/// level's bytes once written back, and the device's memory.
+fn shadow_answers<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) -> [Vec<u8>; 3] {
+    d.flush_render_targets(m).unwrap();
+    [
+        m.read_vec(0x8000_0000 | SMAP_DATA, SMAP_LEN).unwrap(),
+        m.read_vec(0x8000_0000 | SMAP_COLOR_DATA, SMAP_LEN).unwrap(),
+        m.read_vec(0x0040_4000, 0x5000).unwrap(),
+    ]
+}
+
+fn e3(ctx: &GfxContext, scale: u32) -> Scaled {
+    let mut b = scaled(ctx, scale);
+    b.set_lighting(d3d::Lighting::E3);
+    b
+}
+
+/// Whether guest point `(x, y)` of the frame is in the caster's shadow:
+/// its map point `(x/2, y/2)` inside the caster.
+fn in_shadow(x: f32, y: f32) -> bool {
+    let p = (x / 2.0, y / 2.0);
+    let side = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+    let [a, b, c] = CASTER;
+    let s = [side(a, b), side(b, c), side(c, a)];
+    s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0)
+}
+
+/// Host pixels of a `w`-wide image at `scale` (`at(x, y)` reads one)
+/// whose light disagrees with the caster's exact shadow at their centre;
+/// and the pixels that are neither black nor white.
+fn shadow_error(w: u32, h: u32, scale: u32, at: impl Fn(u32, u32) -> [u8; 4]) -> (u32, u32) {
+    let (mut wrong, mut grey) = (0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            let p = at(x, y);
+            if p[..3].iter().any(|&c| c != 0 && c != 0xFF) {
+                grey += 1;
+            }
+            let dark = p[0] < 0x80;
+            let s = scale as f32;
+            if dark != in_shadow((x as f32 + 0.5) / s, (y as f32 + 0.5) / s) {
+                wrong += 1;
+            }
+        }
+    }
+    (wrong, grey)
+}
+
+/// With E3 lighting the shadow map is made at the render scale in the
+/// view, and drawn there; the guest's answers (the map's written-back
+/// bytes, the colour level's, device memory) and the reference's frame
+/// are the plain backend's, byte for byte.
+#[test]
+fn e3_shadow_maps_scale_in_the_view_and_the_guest_reads_retail_bytes() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    let (mut plain, mut pm) = shadow_scene(GfxBackend::new(share(&ctx)), true);
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    // Not vacuous: lit and shadowed both.
+    assert_eq!(argb(&plain_px, 60, 60), 0xFFFF_FFFF);
+    assert_eq!(argb(&plain_px, 20, 24), 0);
+    let plain_answers = shadow_answers(&mut plain, &mut pm);
+    for scale in [1, 2, 3, 4] {
+        let (mut d, mut m) = shadow_scene(e3(&ctx, scale), true);
+        let bb = d.back_buffer().unwrap();
+        let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+        assert!(
+            ref_px == plain_px,
+            "{scale}x: the reference is not the plain image"
+        );
+        let factor = scale.max(2);
+        let copies = d.backend.shadow_copies();
+        assert_eq!(copies.len(), 1, "{scale}x");
+        let (size, copy) = copies[0];
+        assert_eq!(size, (SMAP, SMAP));
+        let desc = *d.backend.view().store.get(copy).unwrap().desc();
+        assert_eq!(
+            (desc.width, desc.height),
+            (SMAP * factor, SMAP * factor),
+            "{scale}x: the view's copy"
+        );
+        let s = d.backend.stats();
+        assert_eq!(s.shadow_scale, factor);
+        assert_eq!(
+            (s.shadow_draws, s.shadow_textures),
+            (1, 1),
+            "{scale}x: {s:?}"
+        );
+        assert_eq!(
+            (
+                s.view_errors,
+                s.fallback_frames,
+                s.mismatches,
+                s.shadow_refills
+            ),
+            (0, 0, 0, 0),
+            "{scale}x: {s:?}"
+        );
+        assert_eq!(
+            shadow_answers(&mut d, &mut m),
+            plain_answers,
+            "{scale}x: what the guest reads"
+        );
+    }
+}
+
+/// Retail lighting through the wrapper: no shadow copy, no shadow draw in
+/// the view, and every frame byte for byte what it was.
+#[test]
+fn retail_lighting_leaves_shadow_maps_to_the_reference() {
+    let Some(ctx) = context() else { return };
+    let (mut plain, mut pm) = shadow_scene(GfxBackend::new(share(&ctx)), true);
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    let plain_answers = shadow_answers(&mut plain, &mut pm);
+    for scale in [1, 2] {
+        let (mut d, mut m) = shadow_scene(scaled(&ctx, scale), true);
+        assert_eq!(d.backend.lighting(), d3d::Lighting::Retail);
+        let bb = d.back_buffer().unwrap();
+        let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+        assert!(ref_px == plain_px, "{scale}x: the reference");
+        if let Some(v) = d.backend.view_surface(&bb) {
+            // The view samples the reference's 1x map, filtered as retail.
+            let (view_px, size) = pixels(d.backend.view_mut(), v);
+            let (_, grey) = shadow_error(size.0, size.1, scale, |x, y| {
+                let i = ((y * size.0 + x) * 4) as usize;
+                [view_px[i], view_px[i + 1], view_px[i + 2], view_px[i + 3]]
+            });
+            assert!(grey > 0, "{scale}x: retail's filtered edges");
+        } else {
+            assert_eq!(scale, 1, "only 1x sleeps");
+        }
+        assert!(d.backend.shadow_copies().is_empty());
+        let s = d.backend.stats();
+        assert_eq!(
+            (
+                s.shadow_scale,
+                s.shadow_draws,
+                s.shadow_textures,
+                s.shadow_refills
+            ),
+            (1, 0, 0, 0),
+            "{s:?}"
+        );
+        assert_eq!(shadow_answers(&mut d, &mut m), plain_answers, "{scale}x");
+    }
+}
+
+/// E3's shadows are hard (every pixel black or white: one comparison
+/// tap) and sharper: against the caster's exact outline they are wrong
+/// at fewer host pixels than retail's at the same scale, point sampled or
+/// filtered and thresholded.
+#[test]
+fn e3_shadows_are_one_tap_and_follow_the_caster_closer() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    for scale in [2, 4] {
+        let error = |backend: Scaled, linear: bool| {
+            let (mut d, _) = shadow_scene(backend, linear);
+            let bb = d.back_buffer().unwrap();
+            let v = d.backend.view_surface(&bb).expect("scaled");
+            let (px, size) = pixels(d.backend.view_mut(), v);
+            assert_eq!(size, (W * scale, H * scale));
+            shadow_error(size.0, size.1, scale, |x, y| {
+                let i = ((y * size.0 + x) * 4) as usize;
+                [px[i], px[i + 1], px[i + 2], px[i + 3]]
+            })
+        };
+        let (e3_wrong, e3_grey) = error(e3(&ctx, scale), true);
+        let (point_wrong, point_grey) = error(scaled(&ctx, scale), false);
+        let (pcf_wrong, pcf_grey) = error(scaled(&ctx, scale), true);
+        eprintln!(
+            "{scale}x: host pixels off the caster's outline: E3 {e3_wrong}, retail point \
+             {point_wrong}, retail filtered {pcf_wrong} ({pcf_grey} grey)"
+        );
+        assert_eq!(e3_grey, 0, "{scale}x: E3 compares once");
+        assert_eq!(point_grey, 0, "{scale}x: retail point sampling");
+        assert!(pcf_grey > 0, "{scale}x: retail's 2x2 filter");
+        assert!(
+            e3_wrong * 3 < point_wrong * 2 && e3_wrong * 3 < pcf_wrong * 2,
+            "{scale}x: E3 {e3_wrong} host pixels off the outline, retail point {point_wrong}, \
+             retail filtered {pcf_wrong}"
+        );
+        // The E3 image filtered with point sampling is the same: the
+        // stage's filter no longer matters.
+        let (e3_point, _) = error(e3(&ctx, scale), false);
+        assert_eq!(e3_point, e3_wrong, "{scale}x");
+    }
+}
+
+/// The Lighting row changes at a frame boundary, both ways, with no
+/// restart and no fallback frame; at render scale 1 E3 wakes the view
+/// (frame at 1x, shadow map at 2x) and retail puts it back to sleep. The
+/// guest's answers stay the plain backend's throughout.
+#[test]
+fn lighting_changes_at_a_frame_boundary() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    // The same frames on a plain backend.
+    let (mut plain, mut pm) = shadow_scene(GfxBackend::new(share(&ctx)), true);
+    for _ in 0..3 {
+        plain.swap(&mut pm, 0).unwrap();
+        shadow_pass(&mut plain, &mut pm, true);
+    }
+    let plain_answers = shadow_answers(&mut plain, &mut pm);
+    for scale in [1, 2] {
+        let wanted = Arc::new(AtomicU32::new(0));
+        let mut b = scaled(&ctx, scale);
+        let w = Arc::clone(&wanted);
+        b.follow_lighting(move || {
+            if w.load(Ordering::Relaxed) == 1 {
+                d3d::Lighting::E3
+            } else {
+                d3d::Lighting::Retail
+            }
+        });
+        let (mut d, mut m) = shadow_scene(b, true);
+        for (step, e3_on) in [true, false, true].into_iter().enumerate() {
+            wanted.store(e3_on as u32, Ordering::Relaxed);
+            d.swap(&mut m, 0).unwrap();
+            let want = if e3_on {
+                d3d::Lighting::E3
+            } else {
+                d3d::Lighting::Retail
+            };
+            assert_eq!(d.backend.lighting(), want, "{scale}x step {step}");
+            shadow_pass(&mut d, &mut m, true);
+            let bb = d.back_buffer().unwrap();
+            let s = d.backend.stats();
+            match d.backend.view_surface(&bb) {
+                Some(v) => {
+                    let (px, size) = pixels(d.backend.view_mut(), v);
+                    assert_eq!(size, (W * scale, H * scale), "{scale}x step {step}");
+                    let (_, grey) = shadow_error(size.0, size.1, scale, |x, y| {
+                        let i = ((y * size.0 + x) * 4) as usize;
+                        [px[i], px[i + 1], px[i + 2], px[i + 3]]
+                    });
+                    assert_eq!(grey == 0, e3_on, "{scale}x step {step}: {grey} grey pixels");
+                }
+                None => assert!(scale == 1 && !e3_on, "{scale}x step {step}: asleep"),
+            }
+            assert_eq!(s.shadow_scale, if e3_on { scale.max(2) } else { 1 });
+            assert_eq!(
+                d.backend.shadow_copies().len(),
+                e3_on as usize,
+                "{scale}x step {step}"
+            );
+            assert_eq!(
+                (s.fallback_frames, s.view_errors, s.mismatches),
+                (0, 0, 0),
+                "{scale}x step {step}: {s:?}"
+            );
+        }
+        let s = d.backend.stats();
+        assert_eq!(s.shadow_draws, 2, "{scale}x: the two E3 frames: {s:?}");
+        assert_eq!(shadow_answers(&mut d, &mut m), plain_answers, "{scale}x");
+    }
+}

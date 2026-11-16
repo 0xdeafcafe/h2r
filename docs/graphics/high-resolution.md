@@ -114,7 +114,7 @@ The cost of the second backend is CPU, not GPU, and is under "Cost".
 | Textures and the colour surface over the depth buffer (`0x509368`, `0x50936C`, `0x509370`) | Scale: built from the view's depth buffer | The menu's fog and distortion pass reads depth per pixel. Needs the GPU depth-to-colour pass (below). |
 | A render-to-texture level the size of the back buffer | Scale | Halo-2-HD reports one intermediate target, texaccum, that follows the back-buffer size (see "Prior art"). A full-screen intermediate left at 640x480 would undo the whole feature. Not yet confirmed in our own captures. |
 | Fixed-size square targets (the `0x14850` 64x64 pair, the 128x128 and 512x512 targets seen in the first level) | Do not scale in the first phases | Bloom and blur kernels are measured in texels. Scaling the target shrinks the blur on screen. |
-| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | Do not scale at first; optional later | They are sampled through guest memory today, and the comparison indexes texels. |
+| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x, sampled with one tap ([e3-lighting.md](e3-lighting.md), "Phase 1 as built") | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
 | Ordinary textures | Never | They are the game's assets. |
 
 The rule for classifying a render-to-texture level is its guest size against
@@ -548,7 +548,7 @@ and it is an acceptance check, not a development loop.
 | 1 (built) | `ScaledBackend` with integer scales, frame buffers and depth only. Snapshots scale. Depth aliases fall back to the reference's 1x texture. | 0 (built without it) |
 | 2 (partly built) | Back-buffer-sized render targets scale; depth aliases of the whole buffer scale; per-draw repairs from the reference (see "Phase 2 as built"). Not yet: guest-size resolves for sampling a scaled surface into a small target. | 1 |
 | 3 | Per-axis scale for anamorphic widescreen. Presenter resample to the display. | 2 |
-| 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale, MSAA, fractional scales, lazy reference. | 3 |
+| 4 | Optional extras, each its own flag: anisotropy override, shadow-map scale (built as E3 lighting's phase 1, the Lighting row), MSAA, fractional scales, lazy reference (built). | 3 |
 | Later | Single scaled backend with downsampled readbacks, for hosts that cannot run two. Guest-visible values differ from 1x, so it is excluded from deterministic replays and labelled as such. | Phase 0's counts |
 
 ### Phase 1 as built
@@ -737,7 +737,10 @@ clear colour where the reference drew.
 Not covered yet: stipple by host pixel, per-axis scale, and whether the
 texaccum explanation is the whole story in the game (that needs a run).
 
-Shadow-map scale needs two things first: sampling a depth level in place
+Shadow-map scale is built as E3 lighting's phase 1 ([e3-lighting.md](e3-lighting.md),
+"Phase 1 as built"): the view keeps a scaled copy of each `D24S8` depth
+level and samples it with one tap, and with E3 the view is awake at 1x
+too. The original note follows. Shadow-map scale needs two things first: sampling a depth level in place
 instead of through guest memory (the view can do this without touching the
 reference), and the comparison indexing host texels. A sharper shadow map
 also narrows the 2x2 percentage-closer filter on screen, so shadow edges get

@@ -178,6 +178,8 @@ pub struct Nv2aShaders {
     warm: Option<Warm>,
     /// [`ShaderProvider::set_render_scale`].
     render_scale: u32,
+    /// [`ShaderProvider::set_hard_shadows`].
+    hard_shadows: bool,
 }
 
 /// Recording to the pipeline cache.
@@ -220,6 +222,7 @@ impl Nv2aShaders {
             persist: None,
             warm: None,
             render_scale: 1,
+            hard_shadows: false,
         }
     }
 
@@ -831,6 +834,10 @@ impl ShaderProvider for Nv2aShaders {
         self.render_scale = scale.max(1);
     }
 
+    fn set_hard_shadows(&mut self, on: bool) {
+        self.hard_shadows = on;
+    }
+
     fn prepare(
         &mut self,
         ctx: &gfx::GfxContext,
@@ -851,6 +858,11 @@ impl ShaderProvider for Nv2aShaders {
         let mut key = key;
         if self.render_scale > 1 {
             key.pixel_options.glyph = draw.glyph_cache & 0xF;
+        }
+        // E3 lighting's one-tap shadow lookup (view only, like the glyph
+        // filter): the reference never sets it.
+        if self.hard_shadows {
+            key.pixel_options.hard_shadow = hard_shadow_groups(draw, &key.pixel_options.shadow);
         }
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
@@ -1354,6 +1366,20 @@ fn shadow_stages(
         });
     }
     Ok(out)
+}
+
+/// [`PixelOptions::hard_shadow`] for a draw's shadow stages `shadow`: per
+/// shadow stage, the shadow stages bound to the same texture header
+/// (itself included), so taps a pass spreads over stages of one map
+/// collapse onto one. Zero for every other stage.
+pub fn hard_shadow_groups(draw: &ResolvedDraw, shadow: &[Option<Shadow>; 4]) -> [u8; 4] {
+    let header = |n: usize| shadow[n].and(draw.texture_info[n]).map(|info| info.header);
+    std::array::from_fn(|n| {
+        let Some(h) = header(n) else { return 0 };
+        (0..4)
+            .filter(|&m| header(m) == Some(h))
+            .fold(0u8, |mask, m| mask | 1 << m)
+    })
 }
 
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
