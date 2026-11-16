@@ -513,6 +513,16 @@ pub struct FrameVehicle {
     /// vehicles, so absent reads as true.
     #[serde(default = "occupied_by_default")]
     pub occupied: bool,
+    /// The vehicle it is mounted on, when it is a turret riding another
+    /// (the Warthog's chaingun, the Scorpion's cannon): that one's `id`.
+    /// Its `pos`, `forward` and `up` are then the game's parent-relative
+    /// ones; a reader places it on its parent instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The vehicle's own aiming vector (it is a unit): where a turret
+    /// points. Unit length, game coordinates; absent when not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<[f64; 3]>,
 }
 
 /// An AI-controlled biped.
@@ -813,6 +823,15 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         if !v.pos.iter().all(|c| c.is_finite()) || !direction(v.forward) || !direction(v.up) {
             return Err("vehicle pos must be finite, forward and up finite and non-zero".into());
+        }
+        if v.parent
+            .as_deref()
+            .is_some_and(|id| !valid_model_id(id) || id == v.id)
+        {
+            return Err("vehicle parent must be another [a-z0-9_]{1,32} id".into());
+        }
+        if v.aim.is_some_and(|a| !direction(a)) {
+            return Err("vehicle aim must be a finite, non-zero vector".into());
         }
     }
     for a in &frame.actors {
@@ -1117,6 +1136,11 @@ pub fn normalize_frame(frame: &mut Frame) {
         }
         if a.actions.as_ref().is_some_and(Vec::is_empty) {
             a.actions = None;
+        }
+    }
+    for v in &mut frame.vehicles {
+        if let Some(aim) = &mut v.aim {
+            unit(aim);
         }
     }
     for p in &mut frame.players {

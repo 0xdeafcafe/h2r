@@ -313,14 +313,21 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
     let mut up = vector(guest, body + layout::BODY_UP)?;
     let mut vehicle_definition = None;
+    let mut mount = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
     let vehicle = match object_body(guest, parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
-            pos = vector(guest, parent_body + layout::BODY_POSITION)?;
-            forward = vector(guest, parent_body + layout::BODY_FORWARD)?;
-            up = vector(guest, parent_body + layout::BODY_UP)?;
             vehicle_definition =
                 Some(guest.u32(parent_body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
+            // A gunner rides a turret, itself parented to the vehicle it is
+            // mounted on, its transform relative to that one: the mount's is
+            // where the gunner is in the world.
+            let mounted = vehicle_mount(guest, parent_body)?;
+            let at = mounted.map_or(parent_body, |(_, b)| b);
+            mount = mounted.map(|(m, _)| m);
+            pos = vector(guest, at + layout::BODY_POSITION)?;
+            forward = vector(guest, at + layout::BODY_FORWARD)?;
+            up = vector(guest, at + layout::BODY_UP)?;
             Some(parent)
         }
         _ => None,
@@ -332,6 +339,7 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         pos,
         forward,
         vehicle,
+        mount,
         definition,
         aim,
         weapon,
@@ -340,6 +348,16 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         team,
         motion,
     }))
+}
+
+/// The vehicle a vehicle (body at `body`) is mounted on, and that one's
+/// body: a turret's parent, when the parent is a vehicle.
+fn vehicle_mount(guest: &Guest, body: u32) -> ReadResult<Option<(u32, u32)>> {
+    let parent = guest.u32(body + layout::BODY_PARENT)?;
+    Ok(match object_body(guest, parent)? {
+        Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => Some((parent, parent_body)),
+        _ => None,
+    })
 }
 
 /// A unit's movement and inventory state; each field independently `None`
@@ -467,6 +485,8 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
             }
             layout::OBJECT_TYPE_VEHICLE => {
                 if let Ok((definition, [pos, forward, up])) = transform(guest, body) {
+                    // Turret detail only adds: a fault drops it, not the vehicle.
+                    let parent = vehicle_mount(guest, body).ok().flatten().map(|(p, _)| p);
                     out.vehicles.push(VehicleState {
                         datum,
                         definition,
@@ -474,6 +494,8 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                         forward,
                         up,
                         occupied: false,
+                        parent,
+                        aim: aim(guest, body).ok().flatten(),
                     });
                 }
             }
@@ -1533,6 +1555,61 @@ mod tests {
         assert_eq!(world.machines[1].placement, None, "not placed");
         assert_eq!(world.machines[1].position, None, "not a 0..1 position");
         assert_eq!(world.machines[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_turret_knows_its_vehicle_and_aim_and_its_gunner_is_where_the_vehicle_is() {
+        let mut guest = fixture::memory();
+        // Vehicle 1 (the Warthog) carries turret 2 (its chaingun), whose
+        // transform is relative to the Warthog; actor 3 mans the turret.
+        fixture::put_vehicle(&mut guest, 1);
+        fixture::put_vehicle(&mut guest, 2);
+        let turret = fixture::BODY + 2 * 0x1000;
+        guest
+            .set_u32(turret + layout::BODY_PARENT, fixture::object_datum(1))
+            .unwrap();
+        for (i, v) in [-0.6f32, 0.0, 0.75].into_iter().enumerate() {
+            guest
+                .set_f32(turret + layout::BODY_POSITION + 4 * i as u32, v)
+                .unwrap();
+        }
+        for (i, v) in [0.0f32, 0.6, 0.8].into_iter().enumerate() {
+            guest
+                .set_f32(turret + layout::UNIT_AIM + 4 * i as u32, v)
+                .unwrap();
+        }
+        fixture::put_actor(&mut guest, 3, 3, [0.0; 3]);
+        guest
+            .set_u32(
+                fixture::BODY + 3 * 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(2),
+            )
+            .unwrap();
+        let world = world(&guest).unwrap();
+        let by = |slot| {
+            world
+                .vehicles
+                .iter()
+                .find(|v| v.datum == fixture::object_datum(slot))
+                .unwrap()
+        };
+        assert_eq!(by(1).parent, None);
+        assert_eq!(by(2).parent, Some(fixture::object_datum(1)));
+        let aim = by(2).aim.unwrap();
+        for (got, want) in aim.into_iter().zip([0.0, 0.6, 0.8]) {
+            assert!((got - want).abs() < 1e-6, "{aim:?}");
+        }
+        // A vehicle with no aim written has none (zero is not a direction).
+        assert_eq!(by(1).aim, None);
+        let gunner = &world.actors[0].object;
+        assert_eq!(gunner.vehicle, Some(fixture::object_datum(2)));
+        assert_eq!(gunner.mount, Some(fixture::object_datum(1)));
+        assert_eq!(
+            gunner.pos,
+            [10.0, 20.0, 30.0],
+            "the Warthog's, not the turret's own"
+        );
+        assert_eq!(gunner.forward, [-1.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -88,7 +88,13 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   sent actor rides uses the transform the rider read. A vehicle whose
   vectors are not finite and non-zero is left out. A vehicle parented to
   another object (a turret on the scarab or a dropship) is sent with its
-  parent-relative `+0x64`.
+  parent-relative `+0x64`. A turret (a vehicle whose parent is a vehicle:
+  the Warthog's chaingun, the Scorpion's cannon, the Wraith's mortar) also
+  sends `parent`, that vehicle's id, and every vehicle its own `aim`, the
+  unit aiming vector at `+0x168` (vehicles are units; dropped unless
+  finite and near unit length): where a turret points. A gunner's
+  `vehicle` is the turret; their position and the turret's as a rider
+  reads it are the vehicle the turret is mounted on.
 
 And, from the same scan and the units' own memory
 ([live-gamestate.md](live-gamestate.md), "Unit stance, actions, damage and
@@ -374,7 +380,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 1 |
+| version | `u(4)`, 2 (1 still reads: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -407,7 +413,7 @@ change in its quantised value, so jitter below the quantum costs nothing.
 | list | fields (key in bold) |
 |---|---|
 | player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade |
-| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)` |
+| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string |
 | machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
@@ -429,7 +435,10 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Recorded `GameFrame` events written before packed frames hold the
+know. Version 2 (vehicles' parent and aim) is written now; decoders still
+read version 1 (recorded frames, an older game's stream), and a delta only
+applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
+is a version 1 stream both decoders are tested on. Recorded `GameFrame` events written before packed frames hold the
 JSON frame (no `packed` field) and stay readable: the server's
 `?format=json` returns them as they are, `?format=packed` packs them on
 the fly, and the web's `recordedFrame` reads both. The ingest socket takes

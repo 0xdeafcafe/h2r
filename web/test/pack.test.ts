@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -18,6 +18,16 @@ describe("packed frames", () => {
       expect(frames).toEqual(json);
     });
   }
+
+  test("a turret keeps its parent and aim; version 1 vehicles have neither", () => {
+    const turret = load("multiplayer").json[0].vehicles.find((v: { kind: string }) => v.kind === "chaingun");
+    expect(turret.parent).toBe("90040004");
+    expect(turret.aim).toHaveLength(3);
+    const d = new FrameDecoder();
+    const v1 = records(load("v1-multiplayer").bin).map((r) => d.decode(r).frame);
+    expect(v1[0]!.vehicles!.length).toBeGreaterThan(0);
+    expect(v1.flatMap((f) => f.vehicles ?? []).every((v) => v.parent === undefined && v.aim === undefined)).toBe(true);
+  });
 
   test("a dropped delta waits for the next keyframe", () => {
     // multiplayer.bin: keyframe every 4 frames, six frames.

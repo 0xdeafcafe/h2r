@@ -499,3 +499,65 @@ fn measure_cpu_per_frame() {
         );
     }
 }
+
+/// Version 1 frames (recorded before vehicles carried a parent and aim, or
+/// sent by an older game) still decode: `v1-multiplayer` is the golden
+/// stream version 1's encoder wrote. A version 1 delta never applies to a
+/// version 2 frame.
+#[test]
+fn version_one_frames_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    let bin = std::fs::read(dir.join("v1-multiplayer.bin")).unwrap();
+    let want: Vec<Frame> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("v1-multiplayer.json")).unwrap())
+            .unwrap();
+    let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+    assert_eq!(recs[0][0] & 0xf, 1, "a version 1 stream");
+    let mut d = Decoder::new();
+    let got: Vec<Frame> = recs.iter().map(|r| d.decode(r).unwrap().frame).collect();
+    assert_eq!(got, want);
+    assert!(
+        got.iter()
+            .flat_map(|f| &f.vehicles)
+            .all(|v| v.parent.is_none() && v.aim.is_none())
+    );
+    // The same stream id moving to version 2 needs a keyframe of its own.
+    let mut e = Encoder::new(5, 100);
+    let mut d = Decoder::new();
+    d.decode(recs[0]).unwrap();
+    let frames = samples::multiplayer(2);
+    let _ = e.encode(&frames[0]).unwrap();
+    let (delta, key) = e.encode(&frames[1]).unwrap();
+    assert!(!key);
+    assert!(matches!(d.decode(&delta), Err(PackError::Gap { .. })));
+}
+
+#[test]
+fn a_turret_keeps_its_parent_and_aim() {
+    let frames = samples::multiplayer(3);
+    let mut e = Encoder::new(1, 100);
+    let mut d = Decoder::new();
+    for f in &frames {
+        let back = d.decode(&e.encode(f).unwrap().0).unwrap().frame;
+        let turret = back.vehicles.iter().find(|v| v.kind == "chaingun").unwrap();
+        let sent = f.vehicles.iter().find(|v| v.kind == "chaingun").unwrap();
+        assert_eq!(turret.parent.as_deref(), Some("90040004"));
+        let (a, b) = (turret.aim.unwrap(), sent.aim.unwrap());
+        assert!((0..3).all(|k| (a[k] - b[k]).abs() < 2e-3), "{a:?} {b:?}");
+        assert!(
+            back.vehicles
+                .iter()
+                .filter(|v| v.kind != "chaingun")
+                .all(|v| v.parent.is_none() && v.aim.is_none())
+        );
+    }
+    assert_eq!(validate_frame(&frames[0]), Ok(()));
+    let mut bad = frames[0].clone();
+    let t = bad
+        .vehicles
+        .iter_mut()
+        .find(|v| v.kind == "chaingun")
+        .unwrap();
+    t.parent = Some(t.id.clone());
+    assert!(validate_frame(&bad).is_err(), "its own parent");
+}
