@@ -341,7 +341,8 @@ Halo 1's render geometry, no portals, no instanced geometry.
 | `+0x84`, `+0x8c` weather | Empty; cluster `+0x76` = -1 | E `0x36cb8`, `0x385a3` |
 | `+0x9c` clusters (0xb0) | One: geometry header and raw block, bounds, `+0x6e` = `+0x6f` = -1, `+0x70` = `+0x71` = 0xff, `+0x72` = `+0x74` = `+0x76` = -1, `+0x7c` = -1 and `+0x7e` = 0, its blocks empty | E, see the reading notes |
 | `+0xa4` materials (0x20) | One per part material: shader reference at `+0x08`/`+0x0c`, `+0x1c` = 0xff | Indexed unchecked (E `0x45dee..0x45e08`) |
-| `+0xac`, `+0xb4`, `+0xc4` (pathfinding), `+0xd4`, `+0xdc`, `+0xf4`, `+0x138`, `+0x140`, `+0x154`, `+0x20c`, `+0x214`, `+0x224`, `+0x22c` | Empty | Each count-checked (E `0x3eb4e`, `0x181ddd`, every `+0xc8` site, `0x11bf56`, `0x18ddf4`, `0x23aa7d`, `0x183f6a`, `0x1e1dd`, `0x184214`, `0x3bec6`, `0x221ac7`, `0xbfd63`) |
+| `+0xac`, `+0xb4`, `+0xc4` (pathfinding), `+0xd4`, `+0xdc`, `+0xf4`, `+0x138`, `+0x140`, `+0x154`, `+0x20c`, `+0x214`, `+0x22c` | Empty | Each count-checked (E `0x3eb4e`, `0x181ddd`, every `+0xc8` site, `0x11bf56`, `0x18ddf4`, `0x23aa7d`, `0x183f6a`, `0x1e1dd`, `0x184214`, `0x3bec6`, `0xbfd63`) |
+| `+0x224` audibility (0x34) | One element: no doors, `+0x04`/`+0x08` distance range, `+0x1c` a deafening bit per cluster pair `i < j` (all clear), `+0x24` a distance byte per pair (all 0: near) | Count-checked only at E `0x221ac7`; the pair readers (E `0x249d60`, called every tick from `0x18cb77`, and `0x249c20`) fall back without it to the sound PAS data at `+0xe4`, empty in every retail map, and read its null pointer (E `0x249f03`) as soon as there are two clusters. Every retail MP map has the element, 0 doors, `n(n-1)/2` distance bytes |
 | `+0x21c` | One zeroed element | Element 0 dereferenced unchecked (E `0x210f0f`) |
 | `+0x234` | One zeroed element (size Guess `0x30`) | Read every frame, `[elem+0x20]` unchecked (E `0x3f927`) |
 | `+0x1e0` | MOPP code (above) | |

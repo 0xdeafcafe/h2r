@@ -413,6 +413,21 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
+        // The engine compares every pair of clusters every tick: the
+        // audibility element must cover them (the first Blood Gulch's crash).
+        {
+            let sbsp = m
+                .tags()
+                .iter()
+                .find(|t| t.group == FourCC(*b"sbsp"))
+                .unwrap()
+                .clone();
+            let bytes = m.read_tag_bytes(sbsp.id).unwrap();
+            let at = sbsp.location.unwrap().address;
+            if let Err(e) = h1convert::structure::check_audibility(&bytes, at) {
+                failures.push(format!("{name}: audibility: {e}"));
+            }
+        }
         // Every vehicle spawn names a collection whose entry is the right
         // vehicle and variant, with its class's netgame type.
         let vehicles = vehicle_spawns(&mut m);

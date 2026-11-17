@@ -331,6 +331,49 @@ fn large_geometry_splits_into_clusters_that_see_each_other() {
     let vis = (word(&p, 0x58) - at) as usize;
     assert_eq!(word(&p, 0x54), 8);
     assert_eq!([word(&p, vis), word(&p, vis + 4)], [3, 3]);
+    // Two clusters: one pair, near (distance byte 0) and not deafened.
+    check_audibility(&p, at).unwrap();
+    let e = (word(&p, 0x228) - at) as usize;
+    assert_eq!(word(&p, e + 0x24), 1);
+    assert_eq!(p[(word(&p, e + 0x28) - at) as usize], 0);
+}
+
+/// The crash of the first converted Blood Gulch (16 clusters): the engine
+/// compares clusters every tick through `sbsp+0x224`, and without it reads
+/// the null sound PAS data at `+0xe8` (E `0x00249f03`). Every retail map
+/// has one element, no doors, a distance byte and a deafening bit per pair.
+#[test]
+fn every_cluster_pair_has_an_audibility_distance() {
+    for n in [1, 2, 16, 47] {
+        let sections = vec![Section::default(); n];
+        let b = build(&sections);
+        let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+        let at = map.tag(b.sbsp).unwrap().location.unwrap().address;
+        let p = map.read_tag_bytes(b.sbsp).unwrap();
+        assert_eq!(word(&p, 0x9c) as usize, n);
+        check_audibility(&p, at).unwrap_or_else(|e| panic!("{n} clusters: {e}"));
+        assert_eq!(word(&p, 0x224), 1, "{n} clusters");
+        let e = (word(&p, 0x228) - at) as usize;
+        assert_eq!(word(&p, e), 0, "no doors");
+        let pairs = n * (n - 1) / 2;
+        assert_eq!(word(&p, e + 0x24) as usize, pairs);
+        assert_eq!(word(&p, e + 0x1c) as usize, pairs.div_ceil(32));
+        if pairs > 0 {
+            let d = (word(&p, e + 0x28) - at) as usize;
+            assert!(p[d..d + pairs].iter().all(|&x| x == 0), "every pair near");
+            let w = (word(&p, e + 0x20) - at) as usize;
+            assert!(p[w..w + 4 * pairs.div_ceil(32)].iter().all(|&x| x == 0));
+        }
+        // The engine's own index for the last pair lands in the table.
+        if n > 1 {
+            let (i, j) = (n - 2, n - 1);
+            assert!((n - 1) * i - i * (i + 1) / 2 + j - 1 < pairs);
+        }
+    }
+    // Without the element the check fails, as the engine would.
+    let mut p = vec![0u8; 0x240];
+    p[0x9c..0xa0].copy_from_slice(&16u32.to_le_bytes());
+    assert!(check_audibility(&p, 0).is_err());
 }
 
 #[test]
