@@ -91,12 +91,23 @@ pub struct Microcode {
 impl Microcode {
     /// Shares `words`, hashing them once.
     pub fn new(words: std::sync::Arc<[u32]>) -> Self {
-        // FNV-1a over the dwords: only in-process maps use it.
+        let hash = Self::hash_words(&words);
+        Self { words, hash }
+    }
+
+    /// The hash [`new`](Self::new) gives `words`: FNV-1a over the dwords
+    /// (only in-process maps use it).
+    pub fn hash_words(words: &[u32]) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        for w in words.iter() {
+        for w in words {
             hash = (hash ^ *w as u64).wrapping_mul(0x0000_0100_0000_01b3);
         }
-        Self { words, hash }
+        hash
+    }
+
+    /// The words' hash, as [`hash_words`](Self::hash_words) gives it.
+    pub fn words_hash(&self) -> u64 {
+        self.hash
     }
 
     /// Whether `self` and `other` share their words (not only equal ones).
