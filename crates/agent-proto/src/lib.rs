@@ -518,6 +518,11 @@ pub struct Object {
     /// Players only: the unit they control, as an object datum (8 hex).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    /// Vehicles only: the vehicle it is mounted on (a turret), as an
+    /// object id. Its `pos` and `forward` are then relative to that
+    /// vehicle, not the world.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounted_on: Option<String>,
     /// Vehicles only: someone is in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupied: Option<bool>,
@@ -545,6 +550,7 @@ pub const OBJECT_FIELDS: &[&str] = &[
     "name",
     "local_user",
     "unit",
+    "mounted_on",
     "occupied",
     "placement",
     "position",

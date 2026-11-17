@@ -11,6 +11,10 @@ use std::thread;
 
 use crate::Agent;
 
+/// Lines queued for a client before it counts as not reading and is
+/// dropped.
+const OUT_QUEUE: usize = 4096;
+
 /// Longest request line accepted (1 MiB); longer closes the connection.
 const MAX_LINE: usize = 1 << 20;
 
@@ -84,7 +88,7 @@ fn serve(stream: UnixStream, agent: Agent) {
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::sync_channel::<String>(OUT_QUEUE);
     let conn = agent.connect(tx);
     let _ = thread::Builder::new()
         .name(format!("agent-out-{conn}"))
@@ -98,6 +102,8 @@ fn serve(stream: UnixStream, agent: Agent) {
                     break;
                 }
             }
+            // Dropped (or done): close both ways, which also ends the reader.
+            let _ = out.shutdown(std::net::Shutdown::Both);
         });
     let _ = thread::Builder::new()
         .name(format!("agent-in-{conn}"))

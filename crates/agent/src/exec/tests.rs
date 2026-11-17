@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread;
 
 use serde_json::json;
@@ -57,7 +57,7 @@ fn level() -> Fake {
 }
 
 fn client(a: &Agent) -> (ConnId, Receiver<String>) {
-    let (tx, rx) = channel();
+    let (tx, rx) = sync_channel(1024);
     (a.connect(tx), rx)
 }
 
@@ -776,4 +776,62 @@ fn map_ticks_count_from_each_map_load() {
         ),
         (json!(1), json!(4))
     );
+}
+
+// ---- from the real-game runs ----
+
+/// A read between slices while the game ticks could catch a tick half done
+/// (seen: a BSP switch read as 0, none, 3): answers keep the last tick's.
+#[test]
+fn slices_while_ticking_keep_the_last_ticks_state() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    ask(&a, c, 1, method::SUBSCRIBE, json!({"events": ["bsp"]}));
+    let mut g = level();
+    a.on_tick(&mut g);
+    next(&rx);
+    g.status.bsp = None;
+    ask(&a, c, 2, method::STATUS, Value::Null);
+    a.between_slices(&mut g, 5);
+    let v = next(&rx);
+    assert_eq!(v["result"]["at"]["bsp"], 0);
+    assert_eq!(v["result"]["at"]["boundary"], "tick");
+    assert_eq!(v["result"]["at"]["present"], 5);
+    none(&rx);
+}
+
+#[test]
+fn a_maps_first_tick_says_one_in_its_events() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    ask(&a, c, 1, method::SUBSCRIBE, json!({"events": ["map"]}));
+    a.between_slices(&mut Fake::default(), 0);
+    next(&rx);
+    a.on_tick(&mut level());
+    let v = next(&rx);
+    assert_eq!(v["params"]["kind"], "map");
+    assert_eq!(v["params"]["at"]["map_ticks"], 1);
+}
+
+#[test]
+fn a_client_that_stops_reading_is_dropped() {
+    let a = Agent::new();
+    let (tx, rx) = sync_channel(1);
+    let c = a.connect(tx);
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    for id in 2..6 {
+        ask(&a, c, id, method::STATUS, Value::Null);
+    }
+    // The game thread never blocks on the full queue.
+    a.between_slices(&mut level(), 0);
+    assert_eq!(next(&rx)["id"], 1);
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    ));
+    // Its control went with it.
+    let (c2, rx2) = client(&a);
+    ask(&a, c2, 7, method::CLAIM, Value::Null);
+    a.between_slices(&mut level(), 0);
+    assert_eq!(next(&rx2)["result"]["controller"], true);
 }
