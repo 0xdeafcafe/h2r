@@ -70,7 +70,9 @@ pub(crate) struct DirectState {
     depth: u32,
     cap: u32,
     frames_len: u32,
-    _pad: u32,
+    /// A hold on the C RAM gate lent with `view`, or handed back to a
+    /// direct caller (h2gen.h `H2_DIRECT_GATE`); 0 outside generated code.
+    gate: u32,
     frames: [Frame; MAX_DEPTH as usize],
     slots: [Slot; SLOTS],
     /// The inline RAM view a direct caller lends its callee (module feature
@@ -129,7 +131,7 @@ impl Direct {
             depth: 0,
             cap: DEFAULT_DEPTH,
             frames_len: 0,
-            _pad: 0,
+            gate: 0,
             frames: [Frame::default(); MAX_DEPTH as usize],
             slots: [Slot::default(); SLOTS],
             view: std::ptr::null_mut(),
@@ -183,7 +185,9 @@ impl ExecCtx {
     /// whatever a direct call into a handler that does not take one left.
     #[inline]
     pub(crate) fn direct_clear_view(&mut self) {
-        self.direct.state().view = std::ptr::null_mut();
+        let s = self.direct.state();
+        s.view = std::ptr::null_mut();
+        s.gate = 0;
     }
     /// The runner is about to invoke a handler with `remaining` transfers
     /// left.

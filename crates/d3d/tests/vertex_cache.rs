@@ -372,3 +372,35 @@ fn the_gpu_renders_the_same_pixels_with_the_cache_on_and_off() {
     assert!(on_gpu.index_hits > 8 * 2, "{on_gpu:?}");
     assert!(on_gpu.index_uploads < 4 * 2, "{on_gpu:?}");
 }
+
+/// Snapshots in slab regions (the default) and in a buffer each
+/// (`H2_GFX_VERTEX_SLABS=0`) draw the same pixels, frame by frame.
+#[test]
+fn the_gpu_renders_the_same_pixels_with_slab_regions_and_own_buffers() {
+    if context().is_none() {
+        return;
+    }
+    let run = |slabs: bool| {
+        let ctx = context().expect("available above");
+        let mut backend = GfxBackend::new(ctx);
+        backend.renderer.set_vertex_slabs(slabs);
+        let (mut d, mut m) = setup(backend, true, UploadPolicy::Tracked);
+        let mut frames = Vec::new();
+        for f in 0..FRAMES {
+            let vb = mutate(&mut d, &mut m, f);
+            draw_frame(&mut d, &mut m, vb);
+            let back = d.back_buffer().unwrap();
+            frames.push(d.backend.read_color(back).unwrap().0);
+            d.swap(&mut m, 0).unwrap();
+        }
+        (frames, d.backend.renderer.persistent_buffers())
+    };
+    let (own, own_buffers) = run(false);
+    let (slabs, slab_buffers) = run(true);
+    for (f, (a, b)) in own.iter().zip(&slabs).enumerate() {
+        let differ = a.chunks(4).zip(b.chunks(4)).filter(|(x, y)| x != y).count();
+        assert_eq!(differ, 0, "frame {f}: {differ} pixels differ");
+    }
+    assert_eq!(slab_buffers, 1);
+    assert!(own_buffers > 2, "{own_buffers}");
+}

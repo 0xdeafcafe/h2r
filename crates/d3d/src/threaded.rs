@@ -157,6 +157,9 @@ pub struct Worker<B: Backend> {
     /// Stream buffers of the draws run in this batch, returned to
     /// [`Shared::spent`] at its end.
     spent: Vec<Vec<StreamBytes>>,
+    /// Constant blocks of the draws run in this batch, kept for the
+    /// device's next draws at its end ([`crate::shader::recycle_constants`]).
+    spent_constants: Vec<crate::shader::Constants>,
 }
 
 #[derive(Default)]
@@ -303,6 +306,7 @@ impl<B: Backend> Worker<B> {
                 // go back to be refilled.
                 streams.retain(|s| s.data.cache_id().is_none());
                 self.spent.push(streams);
+                self.spent_constants.push(draw.shader.constants);
             }
         }
     }
@@ -332,6 +336,9 @@ impl<B: Backend> Worker<B> {
     /// Returns this batch's stream buffers to the guest's side (one lock
     /// per batch), within the pool's limits; the rest are freed here.
     fn return_spent(&mut self) {
+        if !self.spent_constants.is_empty() {
+            crate::shader::recycle_constants(&mut self.spent_constants);
+        }
         if self.spent.is_empty() {
             return;
         }
@@ -431,6 +438,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     exit: false,
                     jitter: None,
                     spent: Vec::new(),
+                    spent_constants: Vec::new(),
                 };
                 'batches: while let Ok(batch) = rx.recv() {
                     let t = std::time::Instant::now();

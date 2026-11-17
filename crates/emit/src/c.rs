@@ -489,7 +489,7 @@ impl Emitter<'_> {
         }
         self.line(1, "default: break;");
         self.line(1, "}");
-        self.line(1, "{ uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
+        self.line(1, "{ H2_GATE_DROP(); uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
         for b in f.blocks.values() {
             self.line(0, format!("L_{:08x}:;", b.start));
             if let Some(l) = &self.lazy {
