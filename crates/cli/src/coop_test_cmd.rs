@@ -31,8 +31,9 @@ const USAGE: &str = "usage:
 Co-op over Live on this Mac (docs/live/live-coop.md section 12). Starts a
 Live server in this process on 127.0.0.1:--server-port (8075), keeping its
 data under --root; makes an account per game (Alpha hosts; Bravo, then
-Charlie and Delta, join) that are friends with the host; and opens one
-`h2 play` window per game (--players, 2 by default, at most 4), each with
+Charlie, Delta and on to Papa, join) that are friends with the host; and opens one
+`h2 play` window per game (--players, 2 by default, at most 16; past 2 the host gets
+H2_COOP_MAX_PLAYERS), each with
 its own data and Live directory under --root, its own XNet ports (--port,
 31000, then 10 up per game, on --ip, this Mac's LAN address by default) and
 its own agent socket (`h2 agent --socket <path> status`). The host's window
@@ -61,7 +62,10 @@ into each game's data as `h2 play` does (off: co-op needs neither).
 --dry-run prints what would run and starts nothing.";
 
 /// Gamertags in game order: the host first.
-pub const TAGS: [&str; 4] = ["Alpha", "Bravo", "Charlie", "Delta"];
+pub const TAGS: [&str; 16] = [
+    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliett",
+    "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+];
 const DEFAULT_PORT: u16 = 31000;
 const PORT_STEP: u16 = 10;
 const DEFAULT_SERVER_PORT: u16 = 8075;
@@ -268,6 +272,11 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                 ("H2_XNET_LOOPBACK_PEERS".into(), peers.join(",")),
                 (agent_proto::ENV.into(), agent.display().to_string()),
             ];
+            if host && tags.len() > 2 {
+                // Past two players the host's co-op limit must let them in
+                // (coop.max_players); guests take the host's limit.
+                env.push(("H2_COOP_MAX_PLAYERS".into(), tags.len().to_string()));
+            }
             if opts.auto {
                 if host {
                     env.push(("H2_COOP_AUTO_INVITE".into(), tags[1..].join(",")));

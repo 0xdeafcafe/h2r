@@ -1402,8 +1402,9 @@ It:
    `~/Library/Application Support/h2recomp/coop-test`), so accounts,
    friends and profiles last between runs. The web app is served there
    too when it is built.
-2. Makes an account per game: Alpha hosts, Bravo joins (`--players 3` or
-   `4` adds Charlie and Delta). Each game's key goes in its own Live
+2. Makes an account per game: Alpha hosts, Bravo joins (`--players N`, up
+   to 16, adds Charlie, Delta and on through the NATO alphabet to Papa;
+   past 2 the host is started with `H2_COOP_MAX_PLAYERS=N`, §13). Each game's key goes in its own Live
    directory (`<root>/<gamertag>/live`, given to the game as
    `H2_LIVE_DIR`), never in your own `accounts.json`. Every guest is made
    the host's friend. A second run reuses them; `--fresh` forgets the

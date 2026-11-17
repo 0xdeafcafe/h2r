@@ -82,8 +82,8 @@ fn defaults_and_flags() {
 #[test]
 fn bad_arguments_say_why() {
     let err = |s: &[&str]| format!("{:#}", parse(args(s), env).unwrap_err());
-    assert!(err(&["test", "--players", "1"]).contains("2 to 4"));
-    assert!(err(&["test", "--players", "5"]).contains("2 to 4"));
+    assert!(err(&["test", "--players", "1"]).contains("2 to 16"));
+    assert!(err(&["test", "--players", "17"]).contains("2 to 16"));
     assert!(err(&["test", "--pad", "both"]).contains("host or guest"));
     assert!(err(&["test", "--ip", "nope"]).contains("IPv4"));
     assert!(err(&["test", "--port", "65530"]).contains("65530 to 65546"));
@@ -344,4 +344,14 @@ fn the_supervisor_merges_two_games_and_the_verdict_reads_the_log() {
     assert_eq!(v.steps[7].seen, Seen::Yes, "accepted");
     assert_eq!(v.stopped_at().unwrap().n, 2, "Bravo read no levels");
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn players_go_up_to_sixteen_and_the_host_gets_the_limit() {
+    use super::*;
+    assert_eq!(TAGS.len(), 16);
+    let tags = &TAGS[..3];
+    assert_eq!(tags, ["Alpha", "Bravo", "Charlie"]);
+    let mut seen = std::collections::HashSet::new();
+    assert!(TAGS.iter().all(|t| seen.insert(*t)), "gamertags are unique");
 }
