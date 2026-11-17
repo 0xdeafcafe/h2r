@@ -237,9 +237,33 @@ pub const BSP_SIZE: usize = 0x44;
 pub struct Permutation {
     pub name: StringId,
     pub bsps: Vec<Bsp>,
-    /// `+0xc`: number of 0x70-byte runtime Havok slots the engine pairs with
-    /// the first `n` BSPs (zero in nearly every tag; contents are not decoded).
+    /// `+0xc`: number of 0x70-byte Havok slots the engine pairs with the
+    /// first `n` BSPs. Retail fills one per BSP exactly on the `coll`s of
+    /// scenery with no physics model (docs/formats/collision.md, "BSP
+    /// physics").
     pub bsp_physics_count: u32,
+    /// The slots' tag-time fields, one per slot.
+    pub bsp_physics: Vec<BspPhysics>,
+}
+
+/// Element size of a BSP physics slot (permutation `+0xc`).
+pub const BSP_PHYSICS_SIZE: usize = 0x70;
+
+/// A BSP physics slot: a Havok shape over its collision BSP, wrapped in a
+/// MOPP tree (docs/formats/collision.md). Only the fields the tag carries;
+/// the engine writes the rest at load (`0x00246c60`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BspPhysics {
+    /// `+0x10`: centre of the BSP's bounding box (the shape's `getAabb`,
+    /// `0x001ef040`, reads `+0x10` and `+0x20`).
+    pub center: [f32; 3],
+    /// `+0x20`: half extents of the box.
+    pub half_extents: [f32; 3],
+    /// `+0x30`: a datum (retail: a tool-time tag datum; not read here).
+    pub owner: u32,
+    /// `+0x64`: the MOPP code object (docs/formats/mopp.md), keyed by
+    /// surface index, as its byte block holds it.
+    pub mopp: Vec<u8>,
 }
 /// 12 bytes: `{name, permutations}`.
 #[derive(Clone, Debug, PartialEq)]
@@ -369,17 +393,27 @@ fn decode_bsp_blocks(p: &Payload, blocks: usize, unknown_00: u32) -> Result<Bsp>
 impl Collision {
     /// Decode from a `coll` payload loaded at virtual address `base`.
     pub fn decode(bytes: &[u8], base: u32) -> Result<Self> {
-        if bytes.len() < COLL_ROOT_SIZE {
+        Self::decode_at(bytes, base, 0)
+    }
+
+    /// Decode the `coll` whose root is at offset `root` of `bytes` (loaded
+    /// at `base`): a whole metadata region, for tags whose blocks lie
+    /// outside their own payload.
+    pub fn decode_at(bytes: &[u8], base: u32, root: usize) -> Result<Self> {
+        if bytes.len().saturating_sub(root) < COLL_ROOT_SIZE {
             return Err(Error::RecordSize {
-                actual: bytes.len(),
+                actual: bytes.len().saturating_sub(root),
                 expected: COLL_ROOT_SIZE,
             });
         }
         let p = Payload::new(bytes, base);
-        let reserved = std::array::from_fn(|i| u32_at(bytes, i * 4));
-        let materials = p.chunks(0x14, 4)?.map(|c| StringId(u32_at(c, 0))).collect();
+        let reserved = std::array::from_fn(|i| u32_at(bytes, root + i * 4));
+        let materials = p
+            .chunks(root + 0x14, 4)?
+            .map(|c| StringId(u32_at(c, 0)))
+            .collect();
         let mut regions = Vec::new();
-        for r in p.chunks(0x1c, 12)? {
+        for r in p.chunks(root + 0x1c, 12)? {
             let name = StringId(u32_at(r, 0));
             let (pc, pb) = block_of(&p, r, 4, 0x14)?;
             let mut permutations = Vec::with_capacity(pc);
@@ -392,17 +426,29 @@ impl Collision {
                     let at = bb.as_ptr() as usize - bytes.as_ptr() as usize + i * BSP_SIZE;
                     bsps.push(decode_bsp(&p, at)?);
                 }
-                let phys = block_of(&p, pe, 0xc, 0x70)?.0 as u32;
+                let (phys, slots) = block_of(&p, pe, 0xc, BSP_PHYSICS_SIZE)?;
+                let bsp_physics = slots
+                    .chunks_exact(BSP_PHYSICS_SIZE)
+                    .map(|c| {
+                        Ok(BspPhysics {
+                            center: f32s(c, 0x10),
+                            half_extents: f32s(c, 0x20),
+                            owner: u32_at(c, 0x30),
+                            mopp: block_of(&p, c, 0x64, 1)?.1.to_vec(),
+                        })
+                    })
+                    .collect::<Result<_>>()?;
                 permutations.push(Permutation {
                     name,
                     bsps,
-                    bsp_physics_count: phys,
+                    bsp_physics_count: phys as u32,
+                    bsp_physics,
                 });
             }
             regions.push(Region { name, permutations });
         }
         let pathfinding_spheres = p
-            .chunks(0x24, 0x14)?
+            .chunks(root + 0x24, 0x14)?
             .map(|c| PathfindingSphere {
                 node: i16_at(c, 0),
                 flags: u16_at(c, 2),
@@ -411,7 +457,7 @@ impl Collision {
             })
             .collect();
         let nodes = p
-            .chunks(0x2c, 12)?
+            .chunks(root + 0x2c, 12)?
             .map(|c| CollNode {
                 name: StringId(u32_at(c, 0)),
                 region: i16_at(c, 4),
@@ -439,7 +485,23 @@ impl Collision {
             return Err(Error::UnsupportedGroup(tag.group));
         }
         let (id, address) = (tag.id, tag.location.ok_or(map::Error::NoTagData)?.address);
-        Self::decode(&map.read_tag_bytes(id)?, address)
+        match Self::decode(&map.read_tag_bytes(id)?, address) {
+            // A block shared with another tag (converted Halo 1 objects
+            // place identical BSP blocks once) lies outside this payload:
+            // decode against the whole metadata from the tag's address.
+            Err(Error::Bounds { .. }) => {
+                let s = map
+                    .metadata_space()
+                    .ok_or(Error::Invalid("map has no ordinary metadata"))?;
+                let bytes = map.read_file_range(s.file_offset, u64::from(s.size))?;
+                let start = address
+                    .checked_sub(s.virtual_base)
+                    .filter(|o| (*o as usize) < bytes.len())
+                    .ok_or(Error::Invalid("collision tag outside the metadata"))?;
+                Self::decode_at(&bytes, s.virtual_base, start as usize)
+            }
+            r => r,
+        }
     }
 
     pub fn bsps(&self) -> impl Iterator<Item = &Bsp> {
