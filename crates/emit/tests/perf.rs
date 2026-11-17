@@ -858,14 +858,15 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         mem
     };
-    for accounting in [false, true] {
-        let (_lib, dispatch) = compile_module_with(
-            "held-gate",
+    for (accounting, gate) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (_lib, dispatch) = compile_module_defines(
+            if gate { "held-gate-lent" } else { "held-gate" },
             held_gate_functions(),
             false,
             true,
             emit::opt::Passes::ALL,
             emit::Codegen { accounting, ..emit::Codegen::default() },
+            if gate { "#define H2_DIRECT_GATE 1\n" } else { "" },
         );
         let rt = Runtime::new(memory(), dispatch);
         for fault in [false, true] {
@@ -896,7 +897,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                         ctx.arm_preemption(slice);
                         t = next;
                     };
-                    let key = format!("accounting {accounting} fault {fault} fast {fast} slice {slice}");
+                    let key = format!("accounting {accounting} gate {gate} fault {fault} fast {fast} slice {slice}");
                     assert_eq!(end.kind, if fault { abi::FAULT } else { abi::STOP }, "{key}: {:?}", ctx.events());
                     let spent = stops.iter().map(|s| s.1).sum::<u64>() + ctx.take_slice_spent();
                     let p = ctx.take_profile().unwrap();
@@ -937,7 +938,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                 }
                 stops
             };
-            assert!(run(false) == run(true), "accounting {accounting} slice {slice}: stops differ");
+            assert!(run(false) == run(true), "accounting {accounting} gate {gate} slice {slice}: stops differ");
         }
     }
 }
@@ -994,6 +995,15 @@ fn cold_accesses_by_cause() {
         assert_eq!(c[1], 39, "{table:?}");
         assert_eq!(c[2], 39, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
+        // H2_DIRECT_GATE lends the hold across the calls: the leaves and
+        // main after them start inline, but for the calls a tick ended the
+        // hold before (one in 32 trips, calls and loop headers alike).
+        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), "#define H2_DIRECT_GATE 1\n");
+        let gt: Vec<_> = COLD_CAUSES.iter().zip(g).map(|(k, n)| format!("{k} {n}")).collect();
+        println!("accounting {accounting} H2_DIRECT_GATE: {}", gt.join(", "));
+        assert_eq!(g[0], c[0], "{gt:?}");
+        assert!(g[1] + g[2] <= 2, "{gt:?}");
+        assert!(g.iter().sum::<u64>() + 60 <= c.iter().sum::<u64>(), "{gt:?} against {table:?}");
     }
 }
 
@@ -1412,12 +1422,26 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_dirty_inline_code_size() {
+    image_switch_code_size("H2_DIRTY_INLINE", emit::Codegen::default());
+}
+
+/// As [`image_dirty_inline_code_size`], for `H2_DIRECT_GATE=1` in a module
+/// that counts its accesses (as the game's build does).
+/// `cargo test -p emit --release --test perf image_direct_gate_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_direct_gate_code_size() {
+    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+}
+
+fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
+    let name = format!("{switch} code size");
     let Some(path) = common::xbe_path() else {
-        common::skip("image_dirty_inline_code_size", "no XBE (set H2_XBE)");
+        common::skip(&name, "no XBE (set H2_XBE)");
         return;
     };
     let Some(header) = common::abi_header() else {
-        common::skip("image_dirty_inline_code_size", "no h2abi.h");
+        common::skip(&name, "no h2abi.h");
         return;
     };
     let data = std::fs::read(path).unwrap();
@@ -1425,10 +1449,10 @@ fn image_dirty_inline_code_size() {
     let analysis = analyze::analyze(&x).unwrap();
     let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
     let sample: Vec<_> = owners.into_iter().step_by(16).collect();
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("dirty-inline-size");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{switch}-size"));
     let src = dir.join("src");
     let _ = std::fs::remove_dir_all(&dir);
-    emit::write_module_with(&sample, &src, emit::Codegen::default()).unwrap();
+    emit::write_module_with(&sample, &src, codegen).unwrap();
     emit::compile::install_header(&src, &header).unwrap();
     let cc = emit::compile::compiler().unwrap();
     let mut sources: Vec<_> = std::fs::read_dir(&src)
@@ -1456,7 +1480,7 @@ fn image_dirty_inline_code_size() {
             c.args(emit::compile::CFLAGS);
             c.args(["-O2", "-DH2_FASTMEM=1", "-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1", "-DH2_DIRECT_CALLS=1"]);
             if inline {
-                c.arg("-DH2_DIRTY_INLINE=1");
+                c.arg(format!("-D{switch}=1"));
             }
             let status = c.arg("-c").arg("-I").arg(&src).arg(s).arg("-o").arg(&obj).status().unwrap();
             assert!(status.success(), "{}", s.display());
@@ -1464,7 +1488,7 @@ fn image_dirty_inline_code_size() {
         }
     }
     println!(
-        "{} of the image's owners in {} files: __text {} bytes, {} with H2_DIRTY_INLINE ({:+.2}%)",
+        "{} of the image's owners in {} files: __text {} bytes, {} with {switch} ({:+.2}%)",
         sample.len(),
         sources.len(),
         sizes[0],

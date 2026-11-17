@@ -78,7 +78,8 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`; store
 /// sites testing the dirty bit before marking a page (`H2_DIRTY_INLINE`,
 /// `h2fastmem.h`) is off unless set to `1`; so is counting cold guest
-/// accesses by cause (`H2_COLD_STATS`, printed to stderr).
+/// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
+/// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`).
 pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -91,6 +92,7 @@ pub fn cflags() -> Result<Vec<String>, Error> {
         ("H2_DIRECT_CALLS", true),
         ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),
+        ("H2_DIRECT_GATE", false),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -1256,6 +1258,8 @@ mod tests {
         assert_eq!(flags.contains(&"-DH2_DIRTY_INLINE=1".to_string()), inline);
         let stats = std::env::var("H2_COLD_STATS").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
+        let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
+        assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
     }
 
     #[test]
