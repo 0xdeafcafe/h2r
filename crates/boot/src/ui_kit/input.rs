@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crate::list_class::{BUTTON_EVENT, DOWN_EVENT, LEFT_EVENT, RIGHT_EVENT, UP_EVENT};
 
 /// One input a screen of ours handles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Input {
     Up,
     Down,
@@ -87,7 +87,7 @@ impl Input {
 /// A button picture in the fonts' icon range (docs/input/button-icons.md:
 /// every disc font maps the same pictures at the same code points; the
 /// runner swaps the pictures for the device in use).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Glyph {
     A,
     B,
@@ -172,7 +172,7 @@ impl Glyph {
 }
 
 /// One prompt of a legend: its pictures, then what it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Prompt {
     pub glyphs: Vec<Glyph>,
     pub text: String,
