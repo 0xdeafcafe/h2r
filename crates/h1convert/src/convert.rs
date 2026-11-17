@@ -160,6 +160,8 @@ pub struct Prepared {
     /// Halo 1's own textures on copies of those shaders
     /// ([`crate::textures`]), added when the map is built.
     pub textures: crate::textures::Retexture,
+    /// The level's own skies ([`crate::sky`]), in place of the base's.
+    pub skies: crate::sky::Skies,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
@@ -242,6 +244,34 @@ fn bsp_descriptor(scnr: &[u8], address: u32) -> Result<(u32, TagId, TagId)> {
     let at = word(0x214)?;
     let off = at.wrapping_sub(address) as usize;
     Ok((at, TagId(word(off + 0x14)?), TagId(word(off + 0x1c)?)))
+}
+
+/// Base scenario blocks of things placed for the base's own level that no
+/// converted map wants, emptied ([`clear_base_blocks`]): `(offset, what)`.
+/// D (Coagulation, every element's references by group): `+0x250` names
+/// 3 `lsnd` (the background sound palette), `+0x258` 4 `snde` (the sound
+/// environment palette), `+0x378` 2 `DECR` (decorator sets: the base's
+/// grass and rocks, placed by its own clusters). The converted clusters
+/// name no background sound or sound environment (palette entry -1,
+/// [`crate::structure`]) and no decorator.
+pub const BASE_BLOCKS: [(usize, &str); 3] = [
+    (0x250, "background sounds"),
+    (0x258, "sound environments"),
+    (0x378, "decorators"),
+];
+
+/// Empties each of [`BASE_BLOCKS`] in a scenario payload: count and
+/// pointer zero. Returns the elements dropped, per block.
+pub fn clear_base_blocks(scnr: &mut [u8]) -> Result<[u32; 3]> {
+    let mut dropped = [0; 3];
+    for (k, (at, _)) in BASE_BLOCKS.iter().enumerate() {
+        let field = scnr
+            .get_mut(*at..*at + 8)
+            .ok_or(Error::Invalid("scenario root too small"))?;
+        dropped[k] = u32::from_le_bytes(field[..4].try_into().expect("4"));
+        field.fill(0);
+    }
+    Ok(dropped)
 }
 
 /// Scenario trigger volumes: count at `scnr+0x108`, elements at `+0x10c`,
@@ -451,6 +481,7 @@ pub fn prepare<R: Read + Seek>(
         materials,
         material_shaders,
         textures,
+        skies: crate::sky::read(h1),
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
@@ -616,6 +647,7 @@ impl Prepared {
         let (templates, materials) =
             self.textures
                 .install(&mut set, &self.templates, &self.texture_picks())?;
+        let skies = self.skies.install(&mut set)?;
         let structure = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
@@ -640,6 +672,8 @@ impl Prepared {
             return Err(Error::Invalid("the base scenario should be pinned"));
         };
         park_trigger_volumes(bytes, *address)?;
+        crate::sky::patch_scenario(bytes, *address, &skies)?;
+        clear_base_blocks(bytes)?;
         let (at, _, _) = bsp_descriptor(bytes, *address)?;
         let off = at.wrapping_sub(*address) as usize;
         bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());

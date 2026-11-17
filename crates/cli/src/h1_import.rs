@@ -41,7 +41,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 4;
+pub const CONVERTER_VERSION: u32 = 5;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -320,6 +320,8 @@ struct DiscConverter {
     scripting: Option<Result<Option<h1campaign::Scripting>, String>>,
     /// Read once, for the first campaign level.
     donors: Option<h1campaign::donor::Donors>,
+    /// The disc's `ui.map` (the multiplayer maps' cards), read once.
+    card_ui: Option<Option<H1Map>>,
 }
 
 impl DiscConverter {
@@ -370,9 +372,19 @@ impl Converter for DiscConverter {
                 let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
                 let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
                 let mopp = structure_mopp(&p.collision)?;
-                let done = p.build(&mut base, &mopp)?;
+                // Fresh: nothing of the base pinned.
+                let f = p.build_fresh(&mut base, &mopp)?;
+                let done = h1convert::convert::Converted { manifest: p.manifest(&f.bytes), name: f.name, bytes: f.bytes };
+                if self.card_ui.is_none() {
+                    self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
+                }
+                let card = self
+                    .card_ui
+                    .as_ref()
+                    .and_then(|ui| ui.as_ref())
+                    .and_then(|ui| h1convert::ui::mp_card(ui, name).ok().flatten());
                 let root = content::store::maps_dir(&self.data);
-                h1_cmd::write_mp_package(&self.out(root.clone())?, &root, sandbox, &done)?;
+                h1_cmd::write_mp_package(&self.out(root.clone())?, &root, sandbox, &done, card.as_ref())?;
             }
         }
         Ok(())
@@ -452,6 +464,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         data: r.data.to_path_buf(),
         scripting: None,
         donors: None,
+            card_ui: None,
     };
     let data = r.data.to_path_buf();
     let mut sum = run_jobs(&todo, &mut stamp, &mut conv, &mut |s| s.write(&data), say);

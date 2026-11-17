@@ -23,7 +23,7 @@ const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
        h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips] [--force]
        h2 h1 sound <iso|map> [map] <tag> --out DIR [--force]
        h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
-                     [--disc halo2.iso] [--fresh] [--dry-run] [--force]
+                     [--disc halo2.iso] [--pinned] [--dry-run] [--force]
 
 info: with a disc and no map, the disc's title and each map's header; with a
 map (a .map file, or a disc and a map name such as a30), its header, tag index
@@ -47,9 +47,10 @@ multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
 (manifest.toml and h1_<map>.map). --base picks the base (default per map,
-mostly beavercreek). --fresh (multiplayer only) builds the map with nothing
-of the base pinned: every tag laid out anew, raw data copied
-(docs/formats/tag-schema.md, \"Fresh maps\"). --dry-run does everything but
+mostly beavercreek). A multiplayer map is built with nothing of the base
+pinned: every tag laid out anew, raw data copied (docs/formats/tag-schema.md,
+\"Fresh maps\"); --pinned keeps the base's file and metadata instead. From a
+disc, the map's name, description and picture come from Halo 1's ui.map. --dry-run does everything but
 write and prints what it would write. See docs/game/h1-multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--disc halo2.iso]
@@ -474,7 +475,11 @@ pub fn parse_import(args: &[String], default_iso: PathBuf) -> Result<ImportArgs,
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--data" => a.data = Some(PathBuf::from(it.next().ok_or("--data needs a directory")?)),
-            "--disc" => a.disc = Some(PathBuf::from(it.next().ok_or("--disc needs the Halo 2 disc")?)),
+            "--disc" => {
+                a.disc = Some(PathBuf::from(
+                    it.next().ok_or("--disc needs the Halo 2 disc")?,
+                ))
+            }
             "--force" => a.force = true,
             "--dry-run" => a.dry_run = true,
             "--copy-source" => a.copy_source = true,
@@ -626,7 +631,9 @@ pub struct ConvertArgs {
     pub disc: Option<PathBuf>,
     pub dry_run: bool,
     pub force: bool,
-    pub fresh: bool,
+    /// `--fresh` (`Some(true)`) or `--pinned` (`Some(false)`); multiplayer
+    /// maps are fresh unless `--pinned`.
+    pub fresh: Option<bool>,
 }
 
 pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
@@ -639,7 +646,7 @@ pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
         disc: None,
         dry_run: false,
         force: false,
-        fresh: false,
+        fresh: None,
     };
     let mut path = None;
     let mut it = args.iter();
@@ -662,7 +669,8 @@ pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
             }
             "--dry-run" => a.dry_run = true,
             "--force" => a.force = true,
-            "--fresh" => a.fresh = true,
+            "--fresh" => a.fresh = Some(true),
+            "--pinned" => a.fresh = Some(false),
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
             _ if path.is_none() => path = Some(PathBuf::from(arg)),
             _ if a.map.is_none() => a.map = Some(arg.clone()),
@@ -734,8 +742,8 @@ fn convert(args: &[String]) -> Result<()> {
         .iter()
         .any(|l| l.eq_ignore_ascii_case(&h1_name))
     {
-        if a.fresh {
-            bail!("--fresh is for multiplayer maps only, for now");
+        if a.fresh.is_some() {
+            bail!("--fresh and --pinned are for multiplayer maps only, for now");
         }
         return convert_campaign(&a, &h1);
     }
@@ -846,7 +854,7 @@ fn convert(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let mopp = mopp?;
-    let done = if a.fresh {
+    let done = if a.fresh.unwrap_or(true) {
         let f = p.build_fresh(&mut base, &mopp)?;
         let r = &f.report;
         println!(
@@ -877,10 +885,36 @@ fn convert(args: &[String]) -> Result<()> {
     };
     let out_root = a.out.clone().expect("checked");
     let out = OutDir::new(&out_root, a.force)?.protecting(&a.path);
-    let (map_file, manifest) = write_mp_package(&out, &out_root, a.sandbox, &done)?;
+    let card = mp_card(&a.path, a.map.is_some(), &h1_name);
+    match &card {
+        Some(c) => println!("  card: {} ({}), Halo 1's picture", c.name, c.description),
+        None => println!("  card: none (no ui.map beside the map), the base's picture"),
+    }
+    let (map_file, manifest) = write_mp_package(&out, &out_root, a.sandbox, &done, card.as_ref())?;
     println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
     println!("wrote {}", manifest.display());
     Ok(())
+}
+
+/// A converted multiplayer map's picture in its package.
+pub(crate) const PREVIEW_FILE: &str = "preview.png";
+
+/// The Halo 1 map's own card from `ui.map`: on the disc `path` when the
+/// map came from one (`from_disc`), else a `ui.map` beside the map file.
+/// `None` (the base's picture) when there is none.
+pub(crate) fn mp_card(path: &Path, from_disc: bool, h1_name: &str) -> Option<h1convert::ui::Card> {
+    let ui = if from_disc {
+        read_source(path, Some("ui")).ok()?.1
+    } else {
+        read_source(&path.parent()?.join("ui.map"), None).ok()?.1
+    };
+    match h1convert::ui::mp_card(&ui, h1_name) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  card: {e}");
+            None
+        }
+    }
 }
 
 /// A Halo 2 map from the Halo 2 disc, opened.
@@ -921,11 +955,10 @@ pub(crate) fn write_mp_package(
     out_root: &Path,
     sandbox: Sandbox,
     done: &h1convert::convert::Converted,
+    card: Option<&h1convert::ui::Card>,
 ) -> Result<(PathBuf, PathBuf)> {
     let name = done.name.clone();
-    let manifest_path = out_root
-        .join(&name)
-        .join(content::manifest::MANIFEST_FILE);
+    let manifest_path = out_root.join(&name).join(content::manifest::MANIFEST_FILE);
     let mut manifest = done.manifest.clone();
     if let Some(old) = std::fs::read_to_string(&manifest_path)
         .ok()
@@ -946,6 +979,14 @@ pub(crate) fn write_mp_package(
         .chain(file.split('/').map(str::to_owned))
         .collect();
     let map_file = out.write(&parts, &done.bytes)?;
+    if let Some(c) = card {
+        let mut png = Vec::new();
+        assets::png::write_rgba(&mut png, c.width, c.height, &c.rgba)?;
+        out.write(&[name.clone(), PREVIEW_FILE.to_owned()], &png)?;
+        manifest.package.name = c.name.clone();
+        manifest.package.description = Some(c.description.clone());
+        manifest.package.image = Some(PREVIEW_FILE.to_owned());
+    }
     let manifest = out.write(
         &[name, content::manifest::MANIFEST_FILE.to_owned()],
         manifest.to_toml().as_bytes(),
@@ -1031,7 +1072,11 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
     }
     let out = OutDir::new(out_dir, a.force)?.protecting(&a.path);
     let written = write_campaign_level(&out, out_dir, &level, &done.bytes)?;
-    println!("wrote {} ({} bytes)", written[0].display(), done.bytes.len());
+    println!(
+        "wrote {} ({} bytes)",
+        written[0].display(),
+        done.bytes.len()
+    );
     for p in &written[1..] {
         println!("wrote {}", p.display());
     }
@@ -1105,11 +1150,19 @@ mod tests {
         assert_eq!(a.map.as_deref(), Some("beavercreek"));
         assert_eq!(a.out, Some(PathBuf::from("o")));
         assert_eq!(a.sandbox, Sandbox::Halo2);
-        assert!(!a.dry_run && !a.force && !a.fresh && a.base.is_none() && a.disc.is_none());
-        assert!(
+        assert!(!a.dry_run && !a.force && a.base.is_none() && a.disc.is_none());
+        assert_eq!(a.fresh, None, "fresh unless --pinned");
+        assert_eq!(
             parse_convert(&s(&["x.map", "--out", "o", "--fresh"]))
                 .unwrap()
-                .fresh
+                .fresh,
+            Some(true)
+        );
+        assert_eq!(
+            parse_convert(&s(&["x.map", "--out", "o", "--pinned"]))
+                .unwrap()
+                .fresh,
+            Some(false)
         );
         let a = parse_convert(&s(&[
             "x.map",
@@ -1204,7 +1257,10 @@ mod tests {
             }
         );
         let a = parse_import(&s(&["--disc", "h2.iso", "--copy-source"]), d.clone()).unwrap();
-        assert_eq!((a.disc, a.copy_source), (Some(PathBuf::from("h2.iso")), true));
+        assert_eq!(
+            (a.disc, a.copy_source),
+            (Some(PathBuf::from("h2.iso")), true)
+        );
         assert!(parse_import(&s(&["--disc"]), d.clone()).is_err());
         let a = parse_import(&s(&["my.iso", "--dry-run"]), d.clone()).unwrap();
         assert_eq!((a.iso, a.dry_run), (PathBuf::from("my.iso"), true));

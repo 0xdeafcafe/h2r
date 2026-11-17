@@ -94,6 +94,15 @@ fn bitmaps<R: std::io::Read + std::io::Seek>(
     out
 }
 
+/// Tags the skies add: each sky and its model.
+fn sky_tags(p: &h1convert::convert::Prepared) -> usize {
+    p.skies
+        .skies
+        .iter()
+        .map(|s| 1 + usize::from(s.model.is_some()))
+        .sum()
+}
+
 struct Mem(Vec<u8>);
 impl tags::geometry::RawSource for Mem {
     fn read_raw(&mut self, p: map::RawPointer, size: u32) -> tags::Result<Vec<u8>> {
@@ -281,6 +290,49 @@ fn check_h1_textures(
         }
     }
     (p.textures.bitmaps.len(), images)
+}
+
+/// The level's own skies: every element of the scenario's skies block
+/// names a `sky ` the conversion added from Halo 1 (none of the base's).
+/// Returns the names.
+fn check_skies(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    p: &h1convert::convert::Prepared,
+) -> Vec<String> {
+    let scnr = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"scnr"))
+        .unwrap()
+        .clone();
+    let b = m.read_tag_bytes(scnr.id).unwrap();
+    let at = scnr.location.unwrap().address;
+    let w = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    for (o, what) in h1convert::convert::BASE_BLOCKS {
+        assert_eq!(w(o), 0, "{name}: the base's {what} stay");
+    }
+    // Chiron TL34 (putput) and Rat Race are indoors: Halo 1 names no
+    // sky, and the base's stays (nothing shows it).
+    if p.skies.skies.is_empty() {
+        assert!(p.skies.notes.is_empty(), "{name}: {:?}", p.skies.notes);
+        return Vec::new();
+    }
+    let count = w(h1convert::sky::SKIES) as usize;
+    assert!(count > 0, "{name}: the scenario has no sky");
+    let start = (w(h1convert::sky::SKIES + 4) - at) as usize;
+    let want: Vec<&str> = p.skies.skies.iter().map(|s| s.name.as_str()).collect();
+    let mut names = Vec::new();
+    for k in 0..count {
+        let e = start + k * h1convert::sky::SKY;
+        assert_eq!(w(e), FourCC(*b"sky ").as_u32(), "{name}: sky {k}");
+        let t = m.tag(map::TagId(w(e + 4))).unwrap();
+        assert_eq!(t.group, FourCC(*b"sky "), "{name}: sky {k}");
+        let n = t.name.clone().unwrap_or_default();
+        assert!(want.contains(&n.as_str()), "{name}: sky {k} is {n}");
+        names.push(n);
+    }
+    names
 }
 
 /// The converted lightmap: the lightmap names the converted bitmap, every
@@ -535,10 +587,16 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         // shader per copy.
         assert_eq!(
             m.index_slots() as usize,
-            base_slots + collections.len() + p.textures.bitmaps.len() + p.textures.copies.len(),
+            base_slots
+                + collections.len()
+                + p.textures.bitmaps.len()
+                + p.textures.copies.len()
+                + sky_tags(&p),
             "{name}"
         );
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
+        let skies = check_skies(name, &mut m, &p);
+        eprintln!("    skies: {skies:?}");
         // The engine compares every pair of clusters every tick: the
         // audibility element must cover them (the first Blood Gulch's crash).
         {
@@ -673,4 +731,60 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(seen > 0, "no Halo 1 multiplayer maps found on {h1_iso}");
     assert_eq!(failures, Vec::<String>::new());
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn every_map_has_its_halo1_card() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = disc.map("ui").expect("ui.map").clone();
+    let ui = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+    let check = |what: &str, c: &h1convert::ui::Card| {
+        assert!(!c.name.is_empty() && !c.description.is_empty(), "{what}");
+        assert_eq!((c.width, c.height), h1convert::ui::PICTURE, "{what}");
+        assert_eq!(c.rgba.len(), (c.width * c.height * 4) as usize);
+        // A picture: lit pixels along its right and bottom edges too.
+        let lit = |x: u32, y: u32| {
+            let at = ((y * c.width + x) * 4) as usize;
+            c.rgba[at..at + 3]
+                .iter()
+                .map(|&v| u32::from(v))
+                .sum::<u32>()
+                > 24
+        };
+        assert!(
+            (0..c.height).any(|y| lit(c.width - 1, y)),
+            "{what}: right edge"
+        );
+        assert!(
+            (0..c.width).any(|x| lit(x, c.height - 1)),
+            "{what}: bottom edge"
+        );
+        assert!(!c.name.contains('\r') && !c.description.contains('\r'));
+        eprintln!("{what}: {} / {}", c.name, c.description);
+    };
+    for m in h1convert::ui::MP_ORDER {
+        let c = h1convert::ui::mp_card(&ui, m).unwrap().unwrap();
+        check(m, &c);
+    }
+    assert_eq!(
+        h1convert::ui::mp_card(&ui, "bloodgulch")
+            .unwrap()
+            .unwrap()
+            .name,
+        "Blood Gulch"
+    );
+    for l in h1convert::ui::CAMPAIGN_ORDER {
+        let c = h1convert::ui::campaign_card(&ui, l).unwrap().unwrap();
+        check(l, &c);
+    }
+    assert_eq!(
+        h1convert::ui::campaign_card(&ui, "a10")
+            .unwrap()
+            .unwrap()
+            .name,
+        "The Pillar of Autumn"
+    );
 }
