@@ -23,7 +23,7 @@ pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
 pub use packages::PackageBackend;
-pub use rewrite::{MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
+pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
 pub use types::*;

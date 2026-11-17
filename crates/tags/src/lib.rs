@@ -16,6 +16,8 @@ pub mod effects;
 pub mod edit;
 /// Relocatable block trees for the whole-cache builder (`map::build`).
 pub mod rebuild;
+/// A new `bitm` from RGBA pixels, shaped like an existing one.
+pub mod rgba_bitmap;
 /// Tag layout schemas inferred from retail maps; relocation of any tag.
 pub mod schema;
 /// The loose tag repository: one position-independent file per tag, extracted

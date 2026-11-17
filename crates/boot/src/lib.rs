@@ -18,6 +18,7 @@ pub mod coop_jip;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
+pub mod campaign_cards;
 pub mod campaign_menu;
 pub mod campaigns;
 pub mod custom_games;
@@ -742,7 +743,16 @@ pub fn run_hosted_with_live(
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), Some(halo1_sandbox), disc_hashes, &campaign_maps);
+    // Our campaigns' level pictures, added to mainmenu as the VFS serves it
+    // (docs/game/multiple-campaigns.md, "Pictures").
+    let cards = campaigns.as_ref().and_then(|s| {
+        let levels: Vec<(String, String)> =
+            s.built.iter().flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone()))).collect();
+        campaign_cards::CardRewrite::new(campaign_cards::read_cards(&opts.data_root, &levels), s.cards.clone())
+    });
+    let rewrites = vfs::Chain(icons.as_ref().map(|i| i.font_rewrite()), cards);
+    let rewrites = (rewrites.0.is_some() || rewrites.1.is_some()).then_some(rewrites);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, rewrites, maps.as_deref(), Some(&packages), Some(halo1_sandbox), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }

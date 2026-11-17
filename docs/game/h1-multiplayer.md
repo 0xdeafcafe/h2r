@@ -966,6 +966,26 @@ group, with a render model (`tags::object::Context`). 68 tags are added:
 and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
 73 in all.
 
+**A fresh map rehomes the templates' blocks.** A converted object is its
+template's root bytes with Halo 1's values written over, so every block
+field it doesn't rebuild still holds the template's address in the
+pinned map. A fresh map lays the base's tags out anew, so those
+addresses hold other bytes there. In a vehicle that meant `+0x2f8`
+(elements of `0x2a0`), whose element `+0x38` count the load-time loop
+`0x205550` (from `0x11c8f3`, resource preparation `0x11c840`) runs over,
+writing `0x90`-byte entries from element `+0x60` with room for 4. The
+junk counts (`0x290000b`, `0x3f800000`, `0xffffffff` on Blood Gulch)
+wrote past the element: pc `0x205574` on Blood Gulch and Sidewinder. The
+cyborg (10 fields), its model (4) and every
+weapon, projectile and powerup were stale too. `build_fresh` now walks
+each built tag with the schema and copies every block field that still
+holds a pinned metadata address as a tree of its own
+(`Unpinner::rehome`, `FreshReport::rehomed`; refusals in
+`FreshReport::stale`). `sandbox_disc.rs` checks every multiplayer map on
+the disc in both sandboxes: every vehicle's `+0x2f8` counts are at most
+4 and nothing is stale. It also checks that every starting location is
+in open space with the converted floor within 2 units below.
+
 **The player is the cyborg (Built, `h1convert::globals`).** The engine
 picks a player's unit in `0x0014f040` (E): the player's representation
 byte (player `+0x88`), clamped to the globals' player representation
