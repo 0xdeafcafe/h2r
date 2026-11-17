@@ -9,6 +9,8 @@ the probe of the retail path ([section 9](#9-probe-phase-2)) and, on the
 assumption that the probe's path works, Co-op over Live itself
 ([section 10](#10-co-op-over-live-built)).
 The owner has Co-op over Live working in the game (2026-11-17).
+More than two players (up to 16, behind `coop.max_players`) is built on
+tests and traced in [section 13](#13-more-than-two-players).
 
 In short:
 
@@ -1502,3 +1504,168 @@ against an embedded server, reused on a second run, and a lost key saying
 the host's sign-in starting the next; the checklist from canned logs (a
 whole run, a run that stopped, a run without `--auto`); `H2_LIVE_DIR`; and
 the automatic invite and acceptance between two HLEs and a server.
+
+## 13. More than two players
+
+Co-op over Live (sections 10 and 11) takes two consoles. This section is
+what holds a campaign at two, what is lifted, and what is left. Built on
+tests only; **no game was built or run for it**. Evidence as at the top:
+**[local]** read in `h2 disasm`, counted on the disc, or in this repo;
+**[guess]** inferred.
+
+### 13.1 Where the game assumes two
+
+The session and lobby:
+
+| what | where | bound | evidence |
+|---|---|---|---|
+| a new session's limits | `0x59d0d`, `0x59d13` (and `0x6102e`): peers and players 16 | 16 | [local] |
+| join check | `0x5af70` (called at `0x6304a`): peers + 1 within `S+0x4990`, players + n within `S+0x4994` | the limits | [local] |
+| Live presence "joinable" | `0x63e00`: players under `S+0x4994` (`0x63e4f`), never for a campaign (`0x63e7a`) | campaign: none | [local] |
+| max-players setter | `0x5c490`: writes only in states 5 to 8, so a lobby keeps 16 | | [local] |
+| the host's game-start limits | `0x6e720`: a campaign gets player limit 2 (`0x6e8aa`) and peer limit 1 (`0x6e8eb`) | 2 | [local] |
+| session start | `0x6ec80`: player count read once at `0x6ee69`; more than two refuses (`0x6ee9b`), more than one peer refuses (`0x6eea5`); the options' co-op byte is `count > 1` (`0x6ef61`); 16 session players copied into 16 options players (`0x6ee12`, `0x6efc8`) | 2 | [local] |
+| lobby start check | `0x19a2ce`: the co-op check `0x19a3ed`..`0x19a41c` loops 16 slots, present (`0x19a951`) and local (`0x19ab77`), and wants exactly 2, both local | 2 on one console | [local] |
+| lobby text | `coop_takes_two` (`0x0e0001ec`) for start state 7 in co-op mode (`0x2500ab`) | | [local] |
+| lobby player table | 16 cells (11.1) | 16 | [local] |
+
+The game itself:
+
+| what | where | bound | evidence |
+|---|---|---|---|
+| players table | `PLAYERS` (`0x4e8c24`): 16 datums of `0x21c`; `players_globals` (`0x4e8c20`) holds 4 *local* player handles at `+0xc` (loops `0x12b8c0`, `0x138b70`) | 16 players, 4 local | [local] |
+| per-tick player update | `0x14d3a0` (from `game_tick`, `0x13801f`): every player; a first spawn pending (flags `+2` bit 3) goes to the spawn each tick until it succeeds | 16 | [local] |
+| spawn | `0x14f2e0`: unit type, location, unit; clears bit 3 (`0x14f6c1`); AL 0 when no location was free | | [local] |
+| location pick | `0x14ef00`: best of `scnr+0x100` (`0x34` each) that passes the collision test `0x23bb70`, so a spot a biped stands on is skipped; `0xffff` when all are; no wrap | | [local] |
+| starting locations | 00a: 1; every other campaign level: 2 | **2** | [local], counted on the disc |
+| a third player at the start | waits, retried each tick, until P1 or P2 steps off a spot; nothing crashes | | [local] behaviour, [guess] timing |
+| character | `0x14bc80`, `0x14f040`: every campaign player gets the representation of the first typed starting location (`matg+0x138`), so players 3+ are the same Chief or Arbiter as P1 | none | [local] |
+| starting profile | `0x1529a0`: the 16 options players | 16 | [local] |
+| co-op respawn | gates `0x138820` (co-op byte) and `0x1388a0` (not Iron, not Legendary); `0x14cdd0` walks every player: blocked while a delay (3), a game flag (2), the lost timer (8), `0xcc170` (4) or `0x1ca670` (5) holds; otherwise the anchor is the last player in table order whose unit is not busy, and every dead player is spawned then placed next to it with `0x14e970` (`0x14cfeb`, `0x14cffd`) | 16 | [local] |
+| respawn "reason 6" | written in the anchor loop for a busy player (`0x14cf9a`), but the loop goes on and the respawn runs if *any* player can anchor; it only says why when none can. One busy player does not block the others | 16 | [local] |
+| dead flags and game over | `0x152340`: `players_globals+4` all dead, `+5` some dead, over all 16; `0x138e40`: co-op loses when all are dead, solo, Iron and Legendary when any is | 16 | [local] |
+| checkpoint safe | `game_safe_to_save` (`0x2a9bb0`) is `0x226190`: a run of checks, among them `0xcc170` (combat, as respawn reason 4), `0x14df40` and `0x14deb0` (each walks every player; `0x14deb0` refuses when any unit has object flag `+0x10a` bit 3), `players_globals+5` (some player dead) and the lost timer | every player | [local] |
+| BSP switch volumes | `0x14d8b0` (from `0x138078`): every player's unit is tested against `scnr+0x130`; any player can switch | 16 | [local] |
+| hs `players` | `0x2a0d10` calls `0x29f480`: every player *with a unit*, in table order | 16 | [local] |
+| `volume_teleport_players_not_inside` | `0x2a0df0` calls `0x29f5b0`: every player outside the volume goes to the flag (`0x29ffb0`) | 16 | [local] |
+| `object_teleport` | `0x2a24e0` calls `0x29ffb0` for its one object | 1 | [local] |
+| the scripts' players | `player0` and `player1` in all 15 levels, `player2`/`player3` in none; `players` in 15, `player_count` in 13, `game_is_cooperative` in 11. Cutscene teleports (`object_teleport (player0) ...`, flags like `bridge_player0/1`, `boss_player0/1` in 04b, 05a, 05b, 08b) move two players | **2** | [local] tokens; [guess] that `playerN` is `(list_get (players) N)`, so with player 1 dead the script's `player1` is player 2 |
+| `cinematic_stash_players` | 01b only | | [local] tokens |
+| synchronous update | actions: 16 entries of `0x5c` (`0x138db0`; `0x14d6c3`); per-player entries 16 of `0x7c` at `+0x610` (1.3) | 16 | [local] |
+| bandwidth | 16 × `0x5c` × 30 ticks ≈ 44 KB/s from the host to *each* client, ~0.66 MB/s up for 15 clients, if the encoder `0xb2710` sends entries raw; ~5.5 KB/s at 2 | | [guess] |
+| difficulty, HUD by player count | none seen; only the co-op byte and difficulty are read on these paths | | [local], absence only |
+| AI targeting | unread | | |
+
+So the engine runs 16 players already. What holds at two is the data
+(two starting locations) and the scripts (`player0`, `player1`).
+
+### 13.2 What is built
+
+**Stage 1a** (`coop.max_players`, `H2_COOP_MAX_PLAYERS`, 2 to 16, default
+2, the host's value counts; `coop_probe`, `coop_live`):
+
+- the session start's window shows one peer and, for more than two
+  players, two players until `OPTIONS_NEW`, then puts both back (the
+  co-op byte `count > 1` comes out the same);
+- after `0x6e720`, a campaign's peer and player limits go to N;
+- the joinable answer, the host setup and the lobby's co-op check take 2
+  to N consoles with one player each; the blocker and the lobby line say
+  "up to N";
+- a guest takes the limit as 16: the host's lobby already held the start.
+
+**Stage 1b** (feature `coop-players`, `crates/boot/src/coop_players.rs`,
+on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`):
+
+- *Spawn.* A first spawn of a player of index 2 or more runs the spawn,
+  and when its location pick found every spot taken, the pick answers
+  spot `index % count`; the spawn is then followed by `0x14e970` next to
+  player 0's unit (player 1's when player 0 is in a vehicle), all inside
+  the one spawn call, as the co-op respawn does after its own spawn.
+- *Stragglers.* A teleport (`0x29ffb0`) of the scripts' `player0` or
+  `player1` (the first two players with a unit), a BSP switch or a
+  cinematic's end marks the squad; at the next player update, outside a
+  cinematic, every player of index 2 or more on foot and more than 8
+  world units from the anchor is placed next to it with `0x14e970`.
+- The hooks never read a per-console setting, only the game: they act on
+  players of index 2 or more, who exist only when the host let a third
+  console in. Every console runs them alike, which lockstep needs.
+
+New points: `PLAYER_UPDATE` `0x14d3a0`, `PLAYER_SPAWN` `0x14f2e0`,
+`PLAYER_SPAWN_LOCATION` `0x14ef00`, `PLAYER_PLACE_NEAR` `0x14e970`,
+`SCRIPT_TELEPORT` `0x29ffb0`; global `SCENARIO` `0x4e0350`.
+
+Tests (`cargo test -p boot --lib coop`): the fallback spot for players
+3+ only; the tables read (players, objects, campaign, start count); the
+anchor (player 0 on foot, else player 1); who straggles (index 2+, on
+foot, past the leash; not player 1, not a driver, not the dead); the
+scripts' `player0`/`player1` as the first two with units; the spawn
+entry (original with the fallback armed, then the placement at player
+0's position, nothing when the spawn failed); the gathering entry (the
+stragglers placed, then the update); nothing moves with two players; the
+feature on the plan with the co-op hooks.
+
+### 13.3 What needs a game run
+
+Three consoles (or instances), `H2_COOP_MAX_PLAYERS=3` on the host,
+section 10.4's setup with a third account. Expect, besides 10.4's lines:
+
+- host: `coop-live: co-op takes up to 3 players (coop.max_players)`;
+  `coop-live: lobby start state 7 (co-op wants one console) answered 9 for 3 consoles`;
+- every console: `coop-probe: session start: campaign with 3 peers: showing the start 1 peer until OPTIONS_NEW`,
+  `coop-probe: session start: 3 players: showing the start 2 until OPTIONS_NEW`,
+  `... peer count back to 3 before OPTIONS_NEW`, `... player count back to 3 before OPTIONS_NEW`,
+  `session start returned 1 (the game starts)`;
+- host: `coop-probe: game limits: campaign peer limit 1 -> 3`, `... campaign player limit 2 -> 3`;
+- at the start of the level, every console:
+  `coop-players: player 2: every starting location is taken; spawning on 0 and moving it`,
+  `coop-players: player 2 spawned; placing it next to the anchor`,
+  `coop-players: player 2 placed next to the anchor` (`REFUSED` means
+  `0x14e970` found no room: it stays on the spot);
+- after a cutscene or a script teleport, when the third player was far:
+  `coop-players: 1 player(s) of index 2 or more left behind; bringing them over`.
+
+Then: does the third player appear next to player 0, does a dead third
+player respawn (retail's co-op respawn, no line of ours), do all three
+stay in sync (`OUT OF SYNC`, `h2 coop-probe diff` on three hash files,
+pairwise), and do 03a's and 05a's opening cutscenes leave anyone behind.
+Players 3+ are the same character as player 1.
+
+### 13.4 Staged plan
+
+1. **2 to 4 (now).** Stage 1a and 1b. Run 13.3 on 01a, 03a, 05a.
+   The harness's `h2 coop test --players` (section 12) can allow up to `coop.max_players` once this lands.
+2. **4, done properly.** Script handling for players 3+: for each
+   level, the cutscene teleports of `player0`/`player1` and the
+   `bridge_`/`boss_` flags (04b, 05a, 05b, 08b) get a third and fourth
+   flag generated beside the first two (or the hook teleports players 3+
+   to the same flag through `0x14e970`, which searches around it). The
+   checkpoint rule below. Which of the two characters each player is
+   (a per-player representation, `player+0x88` read by `0x14f040`).
+3. **8 to 16.** Measure the synchronous update's encoded size at 16
+   (the encoder `0xb2710`); the host's upstream decides the cap. Pace:
+   the slowest console gates every tick. AI targeting with many players
+   (unread). Respawn anchors and leash in big open levels.
+
+### 13.5 Risks and open items
+
+- **Checkpoints get rarer with every player.** `0x226190` refuses a save
+  while any player is dead (`players_globals+5`) or any unit is in an
+  unsafe state (`0x14deb0`). At 16 a save may wait a long time. A bounded
+  rule (not built): count only players 0 and 1 and players 2+ who are
+  alive and near the anchor, or force a save after a fixed number of
+  seconds of refusals. It changes when the game saves, so it must run on
+  every console alike, as `coop-players` does.
+- **The scripts know two players.** The leash covers being left behind;
+  it does not put players 3+ into cutscene positions, and a script that
+  checks `(volume_test_objects ... (players))` counts every player, so a
+  straggler inside a volume can trigger it (as retail with two).
+- **Two start spots.** Players 3+ start inside player 0's spot for no
+  tick at all (placed within the spawn call), but if `0x14e970` refuses
+  they stay overlapped until they move.
+- **Respawn anchor** is the last player in table order who is not busy,
+  so a respawn can land next to player 15 rather than player 0. Retail
+  behaviour, now with more choices.
+- **Bandwidth at 16** (13.1) and the lockstep pace.
+- **Unread:** AI targeting with many players, the engine's handling of
+  stragglers outside a new BSP, cinematic player handling beyond the
+  stash, the update encoder.
