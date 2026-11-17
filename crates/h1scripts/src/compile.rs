@@ -470,7 +470,10 @@ impl Compiler<'_> {
             return Ok(self.literal(expected, source, bits, &text));
         }
         let token = token()?;
-        if h1_source == types::STRING && expected != h2t::STRING_ID {
+        // A string stays a string only where the interpreter can cast one
+        // (`hs::castable`: string, boolean, void, passthrough, the object
+        // and name types); anywhere else it becomes a hook below.
+        if h1_source == types::STRING && hs::castable(expected, h2t::STRING) {
             let at = self.intern(&token);
             return Ok(self.push(New {
                 opcode: h2t::STRING,
@@ -481,16 +484,34 @@ impl Compiler<'_> {
             }));
         }
         // Symbolic: the converter supplies the value. A string where Halo 2
-        // wants a string ID becomes a string ID literal.
+        // wants a string ID becomes a string ID literal; any other string
+        // takes the expected type (b30: a seat name where Halo 2 wants a
+        // `unit_seat_mapping`, which no cast makes from a string). The
+        // source type is always one the interpreter casts to `expected`.
         let source = if h1_source == types::STRING {
-            h2t::STRING_ID
+            if expected == h2t::STRING_ID {
+                h2t::STRING_ID
+            } else {
+                expected
+            }
         } else {
             match self.table.ty(h1_source) {
-                Some(t) if t == expected || !is_scalar(expected) => t,
+                Some(t) if (t == expected || !is_scalar(expected)) && hs::castable(expected, t) => {
+                    t
+                }
                 _ => expected,
             }
         };
-        let d = self.literal(expected, source, NONE, &token);
+        // A seat mapping is `count << 16 | first` into the scenario's
+        // mapping table (retail: `0x10004` names one seat); 0 names none,
+        // so an unresolved one moves nobody instead of indexing past it.
+        let seats = self.h2.types.get(source as usize).map(String::as_str);
+        let empty = if seats == Some("unit_seat_mapping") {
+            0
+        } else {
+            NONE
+        };
+        let d = self.literal(expected, source, empty, &token);
         let text = String::from_utf8_lossy(&token).into_owned();
         self.hook(d, source, h1_source, &text);
         Ok(d)

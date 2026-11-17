@@ -670,3 +670,66 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let text = h1campaign::manifest::manifest_for(None, "a30").unwrap();
     h1campaign::manifest::check(&text, "a30").unwrap();
 }
+
+/// Every Halo 1 level's converted scripts only ask the retail interpreter
+/// for casts and builtins it has (`hs::Scenario::unrunnable`, checked clean
+/// on every retail scenario by `hs`'s `casts_disc`). b30's first fault was a
+/// string literal where Halo 2 wants a `unit_seat_mapping`: the cast table
+/// has no entry, and the interpreter called address 0. `$H1_LEVELS` (comma
+/// separated) limits the levels.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_level_s_scripts_run_on_the_retail_interpreter() {
+    let s = scripting();
+    let mut iso = h2_iso();
+    let e = iso.find("default.xbe").unwrap();
+    let xbe_bytes = iso.read(&e).unwrap();
+    let mut catalog = hs::Catalog::from_xbe(&xbe::Xbe::parse(&xbe_bytes).unwrap()).unwrap();
+    for e in iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+    {
+        let mut m = Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+        catalog
+            .observe(&hs::Scenario::read(&mut m).unwrap())
+            .unwrap();
+    }
+    let levels = std::env::var("H1_LEVELS")
+        .unwrap_or_else(|_| "a10,a30,a50,b30,b40,c10,c20,c40,d20,d40".into());
+    let mut bad = Vec::new();
+    for level in levels.split(',') {
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::BASE);
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+        };
+        let done = match h1campaign::convert(&h1, &mut base, &opts) {
+            Ok(d) => d,
+            // Not this test's subject (a50 and b40 overflow the base's tag
+            // memory today); the levels that build are checked.
+            Err(e) => {
+                println!("{level}: skipped, does not convert: {e}");
+                continue;
+            }
+        };
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let sc = hs::Scenario::read(&mut m).unwrap();
+        let found = sc.unrunnable(&catalog).unwrap();
+        println!(
+            "{level}: {} reached nodes, {} unrunnable",
+            sc.reachable(sc.roots()).unwrap().len(),
+            found.len()
+        );
+        bad.extend(
+            found
+                .into_iter()
+                .map(|u| format!("{level} node {}: {}", u.slot, u.what)),
+        );
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
