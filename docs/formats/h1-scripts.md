@@ -221,6 +221,14 @@ retail compiler writes them; literals keep their source type.
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
   `missing_globals` (4 across the campaign).
+- **Indexed values**: a cutscene flag, camera point, title or device group
+  atom is an index the engine reads without a check (b40 faulted at
+  `0x002a003f` in `object_teleport` on flag -1). `compile_with`'s
+  `resolves(type, token)` says which will get a value; a builtin call with a
+  direct argument of one of these types (`compile::INDEXED`) that will not
+  is compiled as its type's zero and listed in `Compiled::unindexed`. The
+  converter resolves these names without case, as HaloScript does (b30's
+  `shaftA_control_teleflag`, d40's `enc7_7_L1`).
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes

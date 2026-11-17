@@ -113,6 +113,18 @@ pub const DONE_VALUES: &[(&str, i32)] = &[
     ("game_safe_to_speak", 1),
 ];
 
+/// Halo 2 value types whose value indexes a scenario block the engine
+/// reads without a check: `none` there reads before the block (b40:
+/// `object_teleport` read cutscene flag -1 at `0x002a003f`). A call with a
+/// direct argument of one of these types that will not resolve is stubbed
+/// ([`compile_with`]'s `resolves`), and listed in [`Compiled::unindexed`].
+pub const INDEXED: &[&str] = &[
+    "cutscene_flag",
+    "cutscene_camera_point",
+    "cutscene_title",
+    "device_group",
+];
+
 /// A value the converter must supply: write it into node `slot`'s data word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
@@ -158,6 +170,9 @@ pub struct Compiled {
     pub missing: Vec<Unresolved>,
     /// Engine globals Halo 2 lacks (compiled as literals).
     pub missing_globals: Vec<Unresolved>,
+    /// Calls stubbed like a missing builtin because an [`INDEXED`]
+    /// argument would not resolve: the builtin, then the type and token.
+    pub unindexed: Vec<Unresolved>,
 }
 
 /// Compiles every global and script of `t`.
@@ -169,10 +184,24 @@ pub fn compile(
     policy: Missing,
     reference_names: &[String],
 ) -> Result<Compiled> {
-    compile_with(t, h1, table, h2, policy, Cutscenes::Play, reference_names)
+    compile_with(
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        Cutscenes::Play,
+        &|_, _| true,
+        reference_names,
+    )
 }
 
-/// [`compile`], with Halo 1's cutscenes and tutorials played or skipped.
+/// [`compile`], with Halo 1's cutscenes and tutorials played or skipped,
+/// and `resolves(type, token)` saying whether a hook of an [`INDEXED`]
+/// type will get a value: a call with a direct argument that will not is
+/// compiled as its type's zero, like a missing builtin under
+/// [`Missing::Stub`].
+#[allow(clippy::too_many_arguments)]
 pub fn compile_with(
     t: &Tables,
     h1: &Catalog,
@@ -180,6 +209,7 @@ pub fn compile_with(
     h2: &Target,
     policy: Missing,
     cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
     reference_names: &[String],
 ) -> Result<Compiled> {
     let mut c = Compiler {
@@ -189,6 +219,7 @@ pub fn compile_with(
         h2,
         policy,
         cutscenes,
+        resolves,
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
@@ -329,6 +360,7 @@ struct Compiler<'a> {
     h2: &'a Target,
     policy: Missing,
     cutscenes: Cutscenes,
+    resolves: &'a dyn Fn(&str, &str) -> bool,
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
@@ -481,6 +513,32 @@ impl Compiler<'_> {
         Some((to, u16::try_from(i).ok()?))
     }
 
+    /// The first of `args` that is an atom of an [`INDEXED`] type which
+    /// will not resolve: its Halo 2 type name and token.
+    fn unindexed_argument(&self, args: &[Datum]) -> Result<Option<(String, String)>> {
+        for &a in args {
+            let n = self.t.node(a)?;
+            if !n.atom() || n.global() {
+                continue;
+            }
+            let Some(ty) = self
+                .table
+                .ty(n.opcode())
+                .and_then(|t| self.h2.types.get(t as usize))
+            else {
+                continue;
+            };
+            if !INDEXED.contains(&ty.as_str()) {
+                continue;
+            }
+            let token = self.t.string(n.string_offset())?;
+            if !(self.resolves)(ty, token) {
+                return Ok(Some((ty.clone(), token.to_owned())));
+            }
+        }
+        Ok(None)
+    }
+
     /// Compiles node `d` where its parent expects Halo 2 type `expected`.
     fn expr(&mut self, d: Datum, expected: u16) -> Result<Datum> {
         let n = *self.t.node(d)?;
@@ -539,6 +597,13 @@ impl Compiler<'_> {
                 }
             };
         };
+        if let Some((ty, token)) = self.unindexed_argument(&args)? {
+            self.out.unindexed.push(Unresolved {
+                definition: self.definition.clone(),
+                name: format!("{h2_name} ({ty} {token})"),
+            });
+            return Ok(self.default(expected));
+        }
         let mut out = Vec::new();
         match tr.adapter {
             Some(Adapter::Negate) => {

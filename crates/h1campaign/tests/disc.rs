@@ -896,6 +896,49 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         let bytes = m.read_tag_bytes(scnr.id).unwrap();
         let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
         assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());
+        // Every reached atom naming a cutscene flag, camera point, title or
+        // device group indexes its converted block: the engine reads these
+        // unchecked (b40 faulted in `object_teleport` on flag -1).
+        {
+            use h1scripts::level::h2 as blk;
+            let count = |at: u32| {
+                u32::from_le_bytes(bytes[at as usize..at as usize + 4].try_into().unwrap())
+            };
+            let indexed: Vec<(u16, &str, u32)> = [
+                ("cutscene_flag", blk::FLAGS.0),
+                ("cutscene_camera_point", blk::CAMERA_POINTS.0),
+                ("cutscene_title", blk::TITLES.0),
+                ("device_group", blk::DEVICE_GROUPS.0),
+            ]
+            .into_iter()
+            .filter_map(|(name, at)| {
+                let ty = s.target.types.iter().position(|t| t == name)? as u16;
+                Some((ty, name, count(at)))
+            })
+            .collect();
+            assert_eq!(indexed.len(), 4);
+            let reached = sc.reachable(sc.roots()).unwrap();
+            let mut n = 0;
+            for d in reached {
+                let node = sc.node(d).unwrap();
+                if !node.atom() || node.global() {
+                    continue;
+                }
+                let Some(&(_, name, len)) = indexed.iter().find(|i| i.0 == node.value_type())
+                else {
+                    continue;
+                };
+                n += 1;
+                if node.data() & 0xffff >= len {
+                    bad.push(format!(
+                        "{level}: {name} {:?} is {:#x}, block of {len}",
+                        sc.string(node.string_offset()).unwrap_or("?"),
+                        node.data()
+                    ));
+                }
+            }
+            println!("{level}: {n} flag, camera point, title and device group atoms checked");
+        }
         let t = h1scripts::layout::Tables::read(&h1).unwrap();
         let src = h1scripts::decompile::decompile(&t, &s.catalog)
             .unwrap()

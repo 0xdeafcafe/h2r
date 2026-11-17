@@ -917,8 +917,17 @@ fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     ];
     let t = read(&scenario(&b, &scripts, &[])).unwrap();
     let table = Table::build(&c, &h2);
-    let out =
-        crate::compile::compile_with(&t, &c, &table, &h2, Missing::Stub, cutscenes, &[]).unwrap();
+    let out = crate::compile::compile_with(
+        &t,
+        &c,
+        &table,
+        &h2,
+        Missing::Stub,
+        cutscenes,
+        &|_, _| true,
+        &[],
+    )
+    .unwrap();
     let bytes = out.scenario_bytes(BASE);
     let s = hs::Scenario::decode(&bytes, BASE).unwrap();
     s.verify_codec_symmetry(&bytes, BASE).unwrap();
@@ -968,4 +977,73 @@ fn skipped_cutscenes_take_halo1_s_skip_path() {
         assert!(status.atom());
         assert_eq!((status.opcode(), status.data()), (SHORT, 5));
     }
+}
+
+/// `(script startup main (begin (object_teleport obj f_known)
+/// (object_teleport obj f_missing)))`: only `f_known` resolves, so the
+/// second call is stubbed (the engine indexes cutscene flags unchecked).
+#[test]
+fn calls_naming_an_unresolved_flag_are_stubbed() {
+    const FLAG: u16 = 14;
+    let mut types = h1_types();
+    types.push("cutscene_flag".into());
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("object_teleport", VOID, ORDINARY, &[OBJECT, FLAG]),
+            // The commonest parse marks fixed signatures.
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        types,
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types.push("cutscene_flag".into());
+    h2.builtins.insert(
+        "object_teleport".into(),
+        H2Builtin {
+            index: 40,
+            return_type: VOID,
+            parameters: vec![H2_OBJECT, FLAG],
+            special: false,
+        },
+    );
+    let mut b = Builder::default();
+    let teleport = |b: &mut Builder, flag: &str| {
+        let obj = b.atom(OBJECT, OBJECT, "obj", 0);
+        let f = b.atom(FLAG, FLAG, flag, 0);
+        b.call(1, VOID, "object_teleport", &[obj, f])
+    };
+    let known = teleport(&mut b, "f_known");
+    let missing = teleport(&mut b, "f_missing");
+    let main = b.call(0, VOID, "begin", &[known, missing]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, main)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = crate::compile::compile_with(
+        &t,
+        &c,
+        &table,
+        &h2,
+        Missing::Stub,
+        crate::compile::Cutscenes::Play,
+        &|ty, token| ty == "cutscene_flag" && token == "f_known",
+        &[],
+    )
+    .unwrap();
+    assert!(out.missing.is_empty(), "{:?}", out.missing);
+    assert_eq!(out.unindexed.len(), 1);
+    assert_eq!(
+        out.unindexed[0].name,
+        "object_teleport (cutscene_flag f_missing)"
+    );
+    assert!(out.hooks.iter().any(|h| h.token == "f_known"));
+    assert!(!out.hooks.iter().any(|h| h.token == "f_missing"));
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let body = main_body(&s);
+    assert!(!body[0].atom());
+    assert!(body[1].atom() && body[1].opcode() == VOID);
 }
