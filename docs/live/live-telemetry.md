@@ -604,6 +604,29 @@ KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 407 B (357 KiB),
 `campaign100` 1330 B (1.2 MiB a minute; JSON 30 MiB). The worker packs a
 frame in 13, 20 and 63 µs.
 
+The third lane moved the frame build to a worker thread (see "Threads"),
+so the game thread's tick is the guest reads and a queue push. Same
+fixture; before is master at bbbbfe40, both at a load average
+of 60 to 120 (p99 is mostly preemption at that load: master's own swings
+from 0.1 to 4 ms between runs):
+
+| scene | frame tick before | after | allocs before | after | other tick before | after | allocs before | after | µs per second at 30 Hz before | after | worker per frame |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| mp16 | 22.8 | 10.6 | 219 | 4 | 5.9 | 4.9 | 20 | 4 | 431 | 233 | 14.7 |
+| mp16_1000 | 47.3 | 21.2 | 279 | 4 | 6.1 | 4.7 | 20 | 4 | 801 | 389 | 22.2 |
+| campaign100 | 78.4 | 25.6 | 883 | 4 | 1.2 | 1.0 | 13 | 4 | 1194 | 399 | 54.8 |
+
+Also in that lane: a body's position, forward and up are one guest read
+and a placed object's parent and placement index another; placed kinds
+come from a table; and the frame's placed-object test skips normalising
+an object that is in place beyond doubt (a squared-cosine test with a
+1e-9 margin; near the edge the exact test decides, so frames are
+unchanged). The world scan, timed into kept lists: 4.6, 15.5 and 22.4 µs.
+What is left on the game thread is reading the guest: the snapshot (about
+5 µs for 16 players) and the scan, which in the fixture is mostly the
+first touch of each object's body (the fixture spaces bodies 4 KiB apart;
+the game packs them).
+
 ## Runtime validation needed first
 
 Unit tests use synthetic guest memory and do not execute the game. Before
