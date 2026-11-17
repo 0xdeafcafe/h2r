@@ -120,13 +120,7 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
-    let flags = emit::compile::cflags().and_then(|mut flags| {
-        if let Some(t) = emit::compile::Tiers::from_env()? {
-            flags.push(format!("tiers {}", t.spec()));
-        }
-        Ok(flags)
-    });
-    match flags {
+    match stamp_flags(stamp_target()) {
         Ok(flags) => stamp_with(
             xbe_bytes,
             &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
@@ -138,8 +132,23 @@ pub fn build_stamp(xbe_bytes: &[u8]) -> String {
 }
 
 fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -> String {
-    let target = emit::compile::Arch::target().unwrap_or(emit::compile::Arch::host());
-    stamp_for(xbe_bytes, passes, codegen, flags, target)
+    stamp_for(xbe_bytes, passes, codegen, flags, stamp_target())
+}
+
+/// The compiler flags a stamp for `target` records: the target's own flags
+/// and default level (`emit::compile::cflags_for`), so a Windows module
+/// cross-built on a Mac and the app on the console agree, and the tiers.
+fn stamp_flags(target: emit::compile::Arch) -> Result<Vec<String>, emit::compile::Error> {
+    let mut flags = emit::compile::cflags_for(target)?;
+    if let Some(t) = emit::compile::Tiers::from_env()? {
+        flags.push(format!("tiers {}", t.spec()));
+    }
+    Ok(flags)
+}
+
+/// The target a stamp is for: `H2_EMIT_TARGET`'s, else the host.
+fn stamp_target() -> emit::compile::Arch {
+    emit::compile::Arch::target().unwrap_or(emit::compile::Arch::host())
 }
 
 /// The stamp for a module compiled for `target`. A macOS stamp is the same
@@ -1489,6 +1498,22 @@ mod tests {
         // What `h2 run`/`h2 play` look for is what `build` writes on this host.
         assert_eq!(DYLIB, Arch::host().module_file_name());
         assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
+    }
+
+    /// The console computes its stamp with `H2_OPT` unset (`pack` refuses
+    /// it), so a Windows module's stamp records the target's own default
+    /// level and flags, and the Mac's stays as it was.
+    #[test]
+    fn a_windows_stamp_records_its_default_level_and_cpu_flags() {
+        use emit::compile::Arch;
+        let win = stamp_flags(Arch::X86_64Windows).unwrap();
+        let mac = stamp_flags(Arch::Arm64).unwrap();
+        assert!(win.iter().any(|f| f == "-march=x86-64-v3"), "{win:?}");
+        assert!(!mac.iter().any(|f| f.starts_with("-march")), "{mac:?}");
+        if std::env::var_os("H2_OPT").is_none() {
+            assert!(win.iter().any(|f| f == "-O2"), "{win:?}");
+            assert!(mac.iter().any(|f| f == "-O1"), "{mac:?}");
+        }
     }
 
     #[test]
