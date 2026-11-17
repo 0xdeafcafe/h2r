@@ -4,7 +4,9 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod state;
+mod view;
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
+pub use view::{FrozenRam, HandBack, LINE_SIZE, WrittenPage};
 
 pub const RAM_SIZE: usize = 64 * 1024 * 1024;
 pub const PAGE_SIZE: u32 = 4096;
@@ -143,7 +145,7 @@ pub(crate) struct FastPage {
 }
 
 pub struct Guest {
-    ram: Box<[u8]>,
+    ram: crate::cow::Ram,
     mappings: Vec<Mapping>,
     // Hints only: every hit rechecks the current mapping's virtual range.
     // Never cache permissions or RAM pointers. Atomics retain Guest: Sync.
@@ -160,6 +162,9 @@ pub struct Guest {
     /// The access trap, when a research observer installed one
     /// ([`crate::trap`]).
     trap: Option<Box<crate::trap::AccessTrap>>,
+    /// For a copy-on-write view ([`Guest::cow_refresh`]): the source's
+    /// layout its mappings and page table were last copied under (0: none).
+    cow_source_layout: u64,
 }
 
 /// Layout identities, unique across every [`Guest`] in the process, so a
@@ -188,7 +193,7 @@ impl Guest {
     /// RAM starts zeroed and entirely unmapped, including guest address zero.
     pub fn new() -> Self {
         Self {
-            ram: vec![0; RAM_SIZE].into_boxed_slice(),
+            ram: crate::cow::Ram::zeroed(RAM_SIZE),
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| AtomicUsize::new(usize::MAX)),
             fast_pages: None,
@@ -200,6 +205,7 @@ impl Guest {
             watch: Default::default(),
             layout: fresh_layout(),
             trap: None,
+            cow_source_layout: 0,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
