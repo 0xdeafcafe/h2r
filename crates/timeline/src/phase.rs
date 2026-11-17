@@ -544,6 +544,7 @@ impl WorkerFrame {
     /// Takes this worker's phase/counter deltas and joins them to the game
     /// sample. Idle time between jobs (`Guest`) is deliberately excluded.
     pub fn finish(self) {
+        crate::host::sample_thread(crate::host::Role::Render);
         if self.generation != GENERATION.load(Ordering::Relaxed) {
             // This marker precedes new-session work on the same FIFO.
             // Discard old work even if it executed after collection restarted.
@@ -771,6 +772,57 @@ pub fn window_summary() -> Option<Summary> {
     global().as_ref()?.window_summary()
 }
 
+/// The frames published since the last call (or since collection started),
+/// with each phase's sum and maximum; clears them. `None` while stats are
+/// off. The host perf line (`boot::host_perf`) reads it once an interval.
+pub fn take_interval() -> Option<Interval> {
+    global().as_mut().map(|r| std::mem::take(&mut r.interval))
+}
+
+/// Frames over an interval: sums and per-frame maxima, for averages and
+/// worst cases of each phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Interval {
+    pub frames: u64,
+    /// Sum and maximum of the frames' wall times.
+    pub total_sum_ns: u64,
+    pub total_max_ns: u64,
+    /// Per phase: sum over the frames, and the largest one frame had.
+    pub phase_sum_ns: [u64; PHASES],
+    pub phase_max_ns: [u64; PHASES],
+    pub count_sum: [u64; COUNTERS],
+}
+
+impl Interval {
+    pub fn add(&mut self, s: &FrameSample) {
+        self.frames += 1;
+        self.total_sum_ns += s.total_ns;
+        self.total_max_ns = self.total_max_ns.max(s.total_ns);
+        for i in 0..PHASES {
+            self.phase_sum_ns[i] += s.phase_ns[i];
+            self.phase_max_ns[i] = self.phase_max_ns[i].max(s.phase_ns[i]);
+        }
+        for (a, b) in self.count_sum.iter_mut().zip(s.counts) {
+            *a += b;
+        }
+    }
+
+    /// Mean ms per frame in `phase` (0 with no frames).
+    pub fn avg_ms(&self, phase: Phase) -> f64 {
+        self.phase_sum_ns[phase as usize] as f64 / 1e6 / self.frames.max(1) as f64
+    }
+
+    /// The most one frame spent in `phase`, ms.
+    pub fn max_ms(&self, phase: Phase) -> f64 {
+        self.phase_max_ns[phase as usize] as f64 / 1e6
+    }
+
+    /// Mean of `counter` per frame.
+    pub fn per_frame(&self, counter: Counter) -> f64 {
+        self.count_sum[counter as usize] as f64 / self.frames.max(1) as f64
+    }
+}
+
 static GLOBAL: Mutex<Option<Recorder>> = Mutex::new(None);
 
 fn global() -> MutexGuard<'static, Option<Recorder>> {
@@ -798,6 +850,8 @@ pub struct Recorder {
     phase_sum: [u64; PHASES],
     count_sum: [u64; COUNTERS],
     worst: Vec<FrameSample>,
+    /// Since the last [`take_interval`].
+    interval: Interval,
 }
 
 /// The window never holds more frames than this.
@@ -816,6 +870,7 @@ impl Recorder {
             phase_sum: [0; PHASES],
             count_sum: [0; COUNTERS],
             worst: Vec::new(),
+            interval: Interval::default(),
         }
     }
 
@@ -861,6 +916,7 @@ impl Recorder {
             );
         }
         self.window.push_back(s);
+        self.interval.add(&s);
         let window_ns = if self.config.window_ns == 0 {
             Config::DEFAULT_WINDOW_NS
         } else {
@@ -1087,6 +1143,31 @@ mod tests {
         assert!((s.phase_ms[0] - 21.0).abs() < 1e-9);
         assert!(s.short_line().len() <= 96, "{}", s.short_line());
         assert!(Summary::of([].iter()).is_none());
+    }
+
+    #[test]
+    fn the_interval_keeps_sums_and_the_worst_frame_of_each_phase() {
+        let mut r = Recorder::new(Config::default(), None);
+        for (i, (cpu, wait)) in [(100u64, 5u64), (140, 1), (120, 30)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut f = frame(i as u64, i as u64 * 150, 150);
+            f.phase_ns[Phase::Guest as usize] = cpu * 1_000_000;
+            f.phase_ns[Phase::RenderWait as usize] = wait * 1_000_000;
+            f.counts[Counter::Draws as usize] = 300;
+            r.push(f);
+        }
+        let iv = std::mem::take(&mut r.interval);
+        assert_eq!(iv.frames, 3);
+        assert!((iv.avg_ms(Phase::Guest) - 120.0).abs() < 1e-9);
+        assert_eq!(iv.max_ms(Phase::Guest), 140.0);
+        assert_eq!(iv.max_ms(Phase::RenderWait), 30.0);
+        assert!((iv.avg_ms(Phase::RenderWait) - 12.0).abs() < 1e-9);
+        assert_eq!(iv.per_frame(Counter::Draws), 300.0);
+        assert_eq!(iv.total_max_ns, 150_000_000);
+        assert_eq!(r.interval, Interval::default(), "taken");
+        assert_eq!(Interval::default().avg_ms(Phase::Guest), 0.0);
     }
 
     #[test]

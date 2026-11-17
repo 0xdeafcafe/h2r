@@ -21,6 +21,7 @@
 //! assert!(String::from_utf8(json).unwrap().contains("\"slice\""));
 //! ```
 
+pub mod host;
 pub mod phase;
 
 use std::cell::Cell;

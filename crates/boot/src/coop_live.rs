@@ -157,24 +157,13 @@ pub fn levels(start: &[(u32, u32, String)], names: &[(u32, u32, String)]) -> Vec
         .collect()
 }
 
-/// The disc's co-op levels, from `mainmenu.map`'s globals.
+/// The disc's co-op levels, from `mainmenu.map`'s globals. `disc` is a
+/// disc image, or a directory of the disc's files: the trimmed disc the
+/// Xbox and Apple apps carry, which the game reads through
+/// `vfs::DirDiscBackend`.
 pub fn disc_levels(disc: &Path) -> anyhow::Result<Vec<Level>> {
     use anyhow::Context;
-    let open = || std::fs::File::open(disc).with_context(|| format!("opening {}", disc.display()));
-    let mut iso = xiso::Xiso::open(std::io::BufReader::new(open()?)).context("reading the disc")?;
-    let base = iso.partition_offset();
-    let e = iso
-        .entries()?
-        .iter()
-        .find(|e| e.path.to_ascii_lowercase().ends_with("maps/mainmenu.map"))
-        .cloned()
-        .context("the disc has no mainmenu.map")?;
-    let mut m = map::Map::from_region(
-        std::io::BufReader::new(open()?),
-        base + u64::from(e.sector) * xiso::SECTOR,
-        e.size.into(),
-    )
-    .context("parsing mainmenu.map")?;
+    let mut m = open_mainmenu(disc)?;
     let tag = m
         .globals()
         .map(|t| t.id)
@@ -187,6 +176,60 @@ pub fn disc_levels(disc: &Path) -> anyhow::Result<Vec<Level>> {
     let start = crate::level_boot::campaign_levels(&matg, &mut read);
     let names = level_names(&matg, &mut read);
     Ok(levels(&start, &names))
+}
+
+/// `mainmenu.map` on the disc, an image or a directory.
+///
+/// A directory is read file by file, as `vfs::DirDiscBackend` reads it.
+/// It is never opened itself: in the Xbox app's container, opening a
+/// directory handle is refused (ERROR_ACCESS_DENIED), even for the app's
+/// own package, while listing it and opening its files work
+/// (docs/runtime/xbox.md, "Files").
+fn open_mainmenu(disc: &Path) -> anyhow::Result<map::Map<std::io::BufReader<std::fs::File>>> {
+    use anyhow::Context;
+    if disc.is_dir() {
+        let path = dir_disc_file(disc, &["maps", "mainmenu.map"])
+            .with_context(|| format!("the disc {} has no maps/mainmenu.map", disc.display()))?;
+        let file =
+            std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+        let len = file.metadata()?.len();
+        return map::Map::from_region(std::io::BufReader::new(file), 0, len)
+            .context("parsing mainmenu.map");
+    }
+    let open = || std::fs::File::open(disc).with_context(|| format!("opening {}", disc.display()));
+    let mut iso = xiso::Xiso::open(std::io::BufReader::new(open()?)).context("reading the disc")?;
+    let base = iso.partition_offset();
+    let e = iso
+        .entries()?
+        .iter()
+        .find(|e| e.path.to_ascii_lowercase().ends_with("maps/mainmenu.map"))
+        .cloned()
+        .context("the disc has no mainmenu.map")?;
+    map::Map::from_region(
+        std::io::BufReader::new(open()?),
+        base + u64::from(e.sector) * xiso::SECTOR,
+        e.size.into(),
+    )
+    .context("parsing mainmenu.map")
+}
+
+/// The file at `parts` under the disc directory `root`, each name matched
+/// without regard to case, as on the disc (`vfs::DirDiscBackend`). Each
+/// directory is listed (`read_dir`), never opened.
+pub fn dir_disc_file(root: &Path, parts: &[&str]) -> Option<std::path::PathBuf> {
+    let mut at = root.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
+        let e = std::fs::read_dir(&at)
+            .ok()?
+            .flatten()
+            .find(|e| e.file_name().eq_ignore_ascii_case(part))?;
+        at = e.path();
+        let last = i + 1 == parts.len();
+        if at.is_file() != last {
+            return None;
+        }
+    }
+    Some(at)
 }
 
 // ---- texts that change ----

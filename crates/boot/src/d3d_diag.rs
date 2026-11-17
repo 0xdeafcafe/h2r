@@ -695,6 +695,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
             }
             times.push(now);
         }
+        // H2_HOST_PERF: where the frame time went (host_perf.rs), on the
+        // game thread before the backend presents.
+        crate::host_perf::on_present(n);
         self.in_frame += 1;
         if let Some(l) = &mut self.log {
             let _ = l.flush();

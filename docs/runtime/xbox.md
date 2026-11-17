@@ -80,6 +80,10 @@ platform seam, unchanged.
   `File::open` on a directory, even inside the app's own LocalState
   (ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
   therefore uses absolute paths as they are and skips directory syncs.
+  The co-op screen's level list (`boot::coop_live::disc_levels`) reads a
+  disc directory's `maps/mainmenu.map` file, found by listing, instead of
+  opening the disc path as an image (it logged `opening ...\disc: Access
+  is denied` and offered no levels).
   File syncs open the file for writing, because `FlushFileBuffers` needs
   write access. If the game cannot start, the log lists each file-system
   step with its OS error (`h2uwp: check ...`).
@@ -260,6 +264,90 @@ loading a level.
   an empty LocalState means the process died or hung before the view ran.
   Bisect with a tiny exe in its own package that only writes a file to
   LocalState; a package can list several `Application`s, one per exe.
+
+## Where frame time goes
+
+The app logs one **host perf line** every 100 guest frames or 5 s
+(`boot::host_perf`), on by default. A UWP app gets no environment, so the
+switch is a file: an empty `LocalState\host-perf-off` turns it off (and
+`host-perf-on` turns it on if the default in `uwp_host::switches` is ever
+off). The app sets `H2_HOST_PERF=1` for the game, which works the same way
+for `h2 run`, `h2 play` and the Apple apps, so a Mac run gives the same line
+to compare.
+
+It reuses frame stats (`timeline::phase`, [app.md](app.md) "Frame stats"),
+started quietly (no line a second, but the whole-run report at exit), and
+adds `timeline::host`: the UI thread's swap-chain waits, the pacer's sleeps,
+and each thread's CPU time. Off, every hook is a relaxed load. On, it is two
+clock reads per timed call.
+
+Once at start-up:
+
+```
+app: dx12 presentation ..., frame latency waitable object Wait
+app: present mode AutoVsync (surface offers [Fifo, ...]), max frame latency 2, alpha ..., 6 logical CPUs
+host perf: on (H2_HOST_PERF), ...; 6 logical CPUs; render thread on; ...; host timer: a 1 ms condvar wait took 1.05-1.20 ms, a 1 ms thread::sleep 1.01-1.10 ms
+```
+
+The host timer probe answers whether Windows' 15.6 ms timer tick rounds
+waits up: on a timer at its default rate the condvar wait (what the pacer
+sleeps on) takes about 15.6 ms instead of 1. `logical CPUs` is what the
+process may use (App mode gets a share of the console; Game mode more).
+
+Then, each interval:
+
+```
+host perf: frames 100 in 13.91 s, 7.19 fps; frame ms 139.1/152.0
+  | game cpu 118.2/131.0 d3d 4.1/6.0 decode 0.3/0.6 render-wait 9.0/30.1 pace 0.0/0.0 input 0.05/0.30
+  | render encode 21.0/25.2 submit 2.1/3.0 gpu-wait 70.2/80.1
+  | ui 60.0/s acquire 15.1/16.9 missed 0 submit 0.1/0.4 present 0.4/1.2
+  | sleeps 0 0.0 ms over 0.0/0.0
+  | fallback 2.0/frame, 310 insns/frame
+  | draws 300 submits 26 read 1.2 KB/frame
+  | cpu game 97% (kernel 3%) render 61% ui 9% process 180% of 6
+```
+
+(one line in the log). `a/b` is mean/max in ms.
+
+| part | what it is |
+| --- | --- |
+| `frame ms` | wall time per guest frame (present to present) |
+| `game cpu` | the game thread running guest code, the runtime, the kernel and HLE: the guest's CPU time per frame |
+| `game d3d`, `decode` | our D3D entries and the push-buffer decode on the game thread: the D3D translation |
+| `game render-wait` | the game thread blocked on the render thread: a read-back, or the frame-in-flight limit (two presents ahead) |
+| `game pace` | the game thread sleeping because the guest is ahead of wall time (the shell's pacer). Slack, not cost |
+| `game input` | the input pump between slices, per frame (sum), and its longest call |
+| `render encode`, `submit`, `gpu-wait` | the render thread per frame: wgpu recording and uploads, `queue.submit`, and blocking GPU waits (`D3DSWAP_FINISH`, read-backs, fences). `backend (game thread)` instead when the render thread is off |
+| `ui` | redraws a second, then per call: swap-chain acquire (`get_current_texture`; with vsync, the wait for the display), acquires that gave no texture, the compositor's submit, `present` |
+| `sleeps` | pacing sleeps in the interval, their total, and the oversleep (taken minus asked) per sleep: the host timer's granularity |
+| `fallback` | fallback interpreter entries and instructions per frame. Compare with a Mac run: hot here and not there would point at the module |
+| `draws`, `submits`, `read` | per frame: draws, `queue.submit`s, file bytes the guest read |
+| `cpu` | each thread's CPU time over the interval's wall time (`GetThreadTimes`; the process's with `GetProcessTimes`), and the CPUs available. `kernel` is the game thread's kernel-mode share (system calls, page faults), Windows only |
+
+How to read it:
+
+- `cpu game` near 100% and `game cpu` near `frame ms`: the game thread is
+  busy all frame. The guest's CPU work is the limit (a slower CPU, or a
+  smaller CPU share in App mode).
+- `cpu game` well under 100% with `game cpu` near `frame ms`: the thread
+  waits somewhere frame stats does not time (a lock, the OS taking the core
+  away). Check `process` against the CPU count.
+- `render-wait` large: the render thread is the limit. Its `encode` and
+  `gpu-wait` say whether that is CPU recording or the GPU.
+- `pace` or `sleeps` with large `over`: timer granularity is stretching the
+  pacer's sleeps.
+- `ui acquire` near 16.7 ms is the display's vsync on the UI thread. It does
+  not hold the game thread up by itself, but wgpu holds the device's locks
+  across a DX12 present, so a slow `present` can stall the render thread's
+  submits.
+
+Guest waits (`KeWaitForSingleObject` timeouts, `KeDelayExecutionThread`,
+timers, the vblank and `D3DDevice_Present`'s frame wait) run on the
+kernel's logical clock: the scheduler jumps the clock to the next deadline
+when every thread waits, so they never wait on a host timer. The only
+host-timed waits on the game thread are the pacer's sleep (`pace`, which
+only sleeps when the guest is ahead of wall time) and the render thread's
+replies (`render-wait`).
 
 ## Known gaps
 
