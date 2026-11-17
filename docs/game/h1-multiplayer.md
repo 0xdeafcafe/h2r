@@ -250,7 +250,10 @@ The base's old BSP region stays in the file, unused.
   out as the pass reads them. `h1campaign/tests/disc.rs`
   (`every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them`)
   checks the same layout, the mask count and every predicted resource on
-  all ten converted campaign levels.
+  all ten converted campaign levels, and their ambient sound: each
+  structure's palettes name the scenario's, every cluster's indices
+  and the scenario's cluster data agree, and every collision leaf plays
+  its Halo 1 cluster's pair (all 700,932 leaves).
 - **Bitmap images say "not cached".** Every converted image (Halo 1's
   textures, its lightmap) wrote 0 at `+0x20..+0x33`; every retail image
   has `0xffffffff` there: LOD pointers 1 and 2, and the texture cache's
@@ -354,6 +357,25 @@ The base's old BSP region stays in the file, unused.
   looks the value up in a palette only when the image's format is P8
   (`cmp word [esi+0Ch], 12h` at `0x000d309a`); otherwise the sample is the
   colour. So the pages stay as Halo 1 stored them: no quantizing.
+
+  **Open: a10 at version 14 draws dark ("no lighting").** Not yet
+  explained offline. What the engine does, so far (E): the render key's
+  lighting mode (top 3 bits, `0x0002cf29` → `0x0002d000`) is 2 for an
+  object with no lightmap bucket, 1 for a loaded bucket, 3 with no
+  usable lightmap; a cluster (`[key+4]` -1, bucket reference `0x7ff`,
+  as ours) takes the page path at `0x0004d3e2`, which stores the render
+  info page in `[0x485a60]`, and source `0x0b` then binds image
+  `[page]` of the group's bitmap (`0x00018bfe`..`0x00018d06`). With no
+  page it falls back to the global bitmap at `[0x485a80]+0x64`. Retail
+  groups also carry what ours leaves empty: a per-cluster block at
+  `+0x20`, buckets `+0x40` with per-cluster references `+0x60` (every
+  Beaver Creek cluster, 10 of Zanzibar's 55), probes `+0x38`, and P8
+  pages with palettes. Still to rule out: what the structure pass's
+  pixel shader does with stage 3 (the `spas` combiners), the incident
+  vector (stream `30`, Halo 1's lightmap vertex direction here), and
+  whether the lit permutation needs the `+0x20` block or buckets. A
+  frame capture of a10 deciding between "page bound, combiner darkens"
+  and "fallback texture bound" settles it.
 
 **Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
 and a 30,000-triangle one into an invented map and reads them back with
@@ -503,11 +525,24 @@ it holds (Coagulation 3 and 4, Beaver Creek 2 and 3; every Halo 1
 multiplayer level has 1 and 1), and the count shrinks to that. Halo 1 has
 no cutoff distance or interpolation speed; the values written are ones
 retail uses. Blood Gulch gets `sound\sfx\ambience\multiplayer\bloodgultch`
-(its one track plays `countryday2`) and `mountains`. Clusters still name
-neither palette (-1), so nothing plays until the structure writes the
-indices (Halo 1's cluster `+0x04` and `+0x06`, `i16`: 0 on every
-cluster of Blood Gulch and a10, whose palettes have one entry each; to
-confirm). A gestalt that gains sounds is built, not pinned, and a fresh
+(its one track plays `countryday2`) and `mountains`. Each cluster names
+its sound (`structure::sound_zones`). Halo 1's cluster keeps its
+background sound and sound environment at `+0x04` and `+0x06` (`i16`
+indices into the structure's palettes, -1 none; clusters at
+`sbsp +0x134`, `0x68` each), and each structure leaf (`+0xe0`, `0x10`
+each, one per collision leaf) its cluster at `+0x08`
+(`h1convert/tests/h1_clusters.rs` checks both on every level). Halo 2
+reads the listener's cluster (its collision leaf's) and that cluster's
+`+0x72` and `+0x74`, indices into the structure's own copies of the
+palettes (`sbsp +0xd4` and `+0xdc`, which equal the scenario's on all
+160 retail structures; [structure-bsp.md](../formats/structure-bsp.md)).
+The converter maps each Halo 1 pair through the written palettes
+(`Ambience::index`; anything not written, or past the engine's 64, is
+-1), splits the largest sections until there is a cluster per distinct
+pair (most clusters are one pair: Blood Gulch and a10 have one; b30 has
+up to 14 per structure), and writes each collision leaf the cluster of
+its Halo 1 cluster's pair. `check_sound_clusters` checks the ranges on
+every converted map. A gestalt that gains sounds is built, not pinned, and a fresh
 build now copies its base chunks from the pinned file too
 (`fresh::sound_gestalt`). `h1sounds/tests/looping_disc.rs`: all 734
 looping sounds (829 tracks, 52 detail sounds, 1261 sounds) and 63 sound
@@ -743,11 +778,10 @@ disc.
 2. ~~**Decals and lights** of the base~~: lights emptied, no placed
    decals (above); the base's unreachable tags are dropped in fresh
    builds (`fresh::prune`, above); Halo 1's background sounds and sound
-   environments fill the scenario's palettes ("Ambient sound"). Left:
-   each cluster's palette indices (the structure, with the render
-   lane's next round), `h1campaign` calling `h1sounds::looping` for its
-   scripts' `looping_sound` references, and the scenery palette at
-   `+0x58`.
+   environments fill the scenario's palettes ("Ambient sound"). Each
+   cluster names its pair (above), on campaign levels too. Left:
+   `h1campaign` calling `h1sounds::looping` for its scripts'
+   `looping_sound` references, and the scenery palette at `+0x58`.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models
    (item 6). Next: Halo 1's tiling scales.
@@ -776,9 +810,16 @@ disc.
 6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
    model per variant are built (below), and Halo 1's skies. Next a HUD
    with the health meter. Halo 1's textures on the converted object
-   models are built (below). Neither the structure nor converted models
-   list predicted resources yet; whether the copies' bitmaps need to be
-   listed is for the render lane's next round and a game run.
+   models are built (below). The structure lists predicted resources
+   (above). Converted object models don't need them: prediction only
+   prefetches. A model's geometry block is loaded when drawn
+   (`0x0012de70` → `0x00223c70`, from the draw paths) and a bitmap image
+   when sampled with no cache handle (`0x0012c9fb` → `0x0012d5a0`); the
+   lists (`obje +0xb4`, read at `0x000bbe00`..`0x000bbeb6` →
+   `0x0016e5e0`, type 2 a render model at `0x0016e950`) only start those
+   loads early. A converted object keeps its template's list, which
+   prefetches the template's model; the cost is a possible first-frame
+   hitch, not a missing model.
 
 ## Importing (**Built**: `cli::h1_import`)
 

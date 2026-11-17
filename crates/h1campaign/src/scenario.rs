@@ -18,7 +18,8 @@
 //! | AI fields (`h1ai::convert::ScenarioBlocks`) | | Halo 1's AI, or empty |
 //! | script fields (`h1scripts::compile::field`) | | Halo 1's scripts, or empty |
 //! | `+0x210` BSP descriptors | `0x44` | one per Halo 1 BSP, in Halo 1's order: its region (`FixupKind::Bsp`), `sbsp` and `ltmp` |
-//! | `+0x290` cluster data | `0x34` | one per BSP: per cluster no background sound or sound environment, its centroid; the BSP's checksum |
+//! | `+0x250`, `+0x258` background sounds, sound environments | `0x64`, `0x48` | Halo 1's (`h1convert::ambience`), the palettes the clusters name |
+//! | `+0x290` cluster data | `0x34` | one per BSP: per cluster its background sound and sound environment (as the structure's cluster names them), its centroid; the BSP's checksum |
 //! | `+0x388` per-BSP points | `0x10` | one per BSP, no points |
 
 use std::collections::HashMap;
@@ -58,6 +59,10 @@ pub const BSP_SWITCH: usize = 0xe;
 /// the BSP's checksum at `+0x18` (`sbsp+0x08`).
 pub const CLUSTER_DATA: u32 = 0x290;
 pub const CLUSTER_DATUM: usize = 0x34;
+/// Background sound and sound environment palettes
+/// (`h1convert::ambience`).
+pub const BACKGROUND_SOUNDS: u32 = h1convert::ambience::BACKGROUND_SOUNDS as u32;
+pub const SOUND_ENVIRONMENTS: u32 = h1convert::ambience::SOUND_ENVIRONMENTS as u32;
 /// One element per BSP too: a null `sbsp` reference and a block of
 /// points (`0xc`), often empty.
 pub const BSP_POINTS: u32 = 0x388;
@@ -74,11 +79,21 @@ pub struct BspSlot {
     pub checksum: u32,
     /// One per cluster.
     pub centroids: Vec<[f32; 3]>,
+    /// Per cluster: background sound and sound environment (-1 none).
+    pub sounds: Vec<[i16; 2]>,
 }
 
 /// The `+0x290` element of `b`.
 fn cluster_datum(b: &BspSlot) -> Block {
     let n = b.centroids.len();
+    let sound = |which: usize| {
+        let mut c = Block::zeroed(4 * n);
+        for k in 0..n {
+            let v = b.sounds.get(k).map_or(-1, |s| s[which]);
+            c.put_u16(4 * k, v as u16);
+        }
+        c
+    };
     let none = || {
         let mut c = Block::zeroed(4 * n);
         for k in 0..n {
@@ -95,8 +110,8 @@ fn cluster_datum(b: &BspSlot) -> Block {
             centroids.put_f32(0xc * k + 4 * j, *v);
         }
     }
-    e.block(0x08, n as u32, none())
-        .block(0x10, n as u32, none())
+    e.block(0x08, n as u32, sound(0))
+        .block(0x10, n as u32, sound(1))
         .put_u32(0x18, b.checksum)
         .block(0x1c, n as u32, centroids)
         .block(0x24, n as u32, none())
@@ -549,6 +564,8 @@ pub fn replaced_fields() -> Vec<u32> {
         BSPS,
         CLUSTER_DATA,
         BSP_POINTS,
+        BACKGROUND_SOUNDS,
+        SOUND_ENVIRONMENTS,
     ];
     for t in tags::object::OBJECT_TYPES.iter() {
         if let Some((at, pal, _)) = t.placement {
@@ -582,6 +599,7 @@ pub fn write(
     set: &mut TagSet,
     base: &BaseScenario,
     bsps: &[BspSlot],
+    sounds: &h1convert::ambience::Installed,
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: u8,
@@ -636,6 +654,30 @@ pub fn write(
         })
         .collect();
     put_block(&mut root, BSP_POINTS, BSP_POINT, points);
+    for (at, stride, entries, entry) in [
+        (
+            BACKGROUND_SOUNDS,
+            h1convert::ambience::BACKGROUND_SOUND,
+            &sounds.backgrounds,
+            h1convert::ambience::background_entry as fn(&str, TagId) -> Vec<u8>,
+        ),
+        (
+            SOUND_ENVIRONMENTS,
+            h1convert::ambience::SOUND_ENVIRONMENT,
+            &sounds.environments,
+            h1convert::ambience::environment_entry,
+        ),
+    ] {
+        let elements = entries
+            .iter()
+            .map(|(n, id)| {
+                let mut e = Block::new(entry(n, *id));
+                e.tag_ref(0x20, *id);
+                e
+            })
+            .collect();
+        put_block(&mut root, at, stride, elements);
+    }
     put_block(&mut root, BSPS, BSP, desc);
 
     // Skies.
