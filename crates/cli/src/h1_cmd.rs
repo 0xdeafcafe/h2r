@@ -22,7 +22,7 @@ const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
        h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips] [--force]
        h2 h1 sound <iso|map> [map] <tag> --out DIR [--force]
        h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
-                     [--disc halo2.iso] [--dry-run] [--force]
+                     [--disc halo2.iso] [--fresh] [--dry-run] [--force]
 
 info: with a disc and no map, the disc's title and each map's header; with a
 map (a .map file, or a disc and a map name such as a30), its header, tag index
@@ -46,8 +46,10 @@ multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
 (manifest.toml and h1_<map>.map). --base picks the base (default per map,
-mostly beavercreek). --dry-run does everything but write and prints what it
-would write. See docs/game/h1-multiplayer.md.";
+mostly beavercreek). --fresh (multiplayer only) builds the map with nothing
+of the base pinned: every tag laid out anew, raw data copied
+(docs/formats/tag-schema.md, \"Fresh maps\"). --dry-run does everything but
+write and prints what it would write. See docs/game/h1-multiplayer.md.";
 
 const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--force] [--dry-run]
 
@@ -568,6 +570,7 @@ pub struct ConvertArgs {
     pub disc: Option<PathBuf>,
     pub dry_run: bool,
     pub force: bool,
+    pub fresh: bool,
 }
 
 pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
@@ -580,6 +583,7 @@ pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
         disc: None,
         dry_run: false,
         force: false,
+        fresh: false,
     };
     let mut path = None;
     let mut it = args.iter();
@@ -602,6 +606,7 @@ pub fn parse_convert(args: &[String]) -> Result<ConvertArgs, String> {
             }
             "--dry-run" => a.dry_run = true,
             "--force" => a.force = true,
+            "--fresh" => a.fresh = true,
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
             _ if path.is_none() => path = Some(PathBuf::from(arg)),
             _ if a.map.is_none() => a.map = Some(arg.clone()),
@@ -673,6 +678,9 @@ fn convert(args: &[String]) -> Result<()> {
         .iter()
         .any(|l| l.eq_ignore_ascii_case(&h1_name))
     {
+        if a.fresh {
+            bail!("--fresh is for multiplayer maps only, for now");
+        }
         return convert_campaign(&a, &h1);
     }
     let base_name = a
@@ -771,7 +779,35 @@ fn convert(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let mopp = mopp?;
-    let done = p.build(&mut base, &mopp)?;
+    let done = if a.fresh {
+        let f = p.build_fresh(&mut base, &mopp)?;
+        let r = &f.report;
+        println!(
+            "  fresh: nothing pinned; {} tags laid out anew ({} aliases), {} raw resources \
+             ({} bytes) copied, {} shared-cache pointers kept, {} sound chunks; scenario \
+             built from {} blocks ({} grown ones copied flat){}",
+            r.unpinned,
+            r.aliases,
+            r.raw.0,
+            r.raw.1,
+            r.external,
+            r.sound_chunks,
+            r.scenario_blocks.len(),
+            r.scenario_flat.len(),
+            if r.scenario_skipped.is_empty() {
+                String::new()
+            } else {
+                format!(", left empty: {:x?}", r.scenario_skipped)
+            }
+        );
+        h1convert::convert::Converted {
+            manifest: p.manifest(&f.bytes),
+            name: f.name,
+            bytes: f.bytes,
+        }
+    } else {
+        p.build(&mut base, &mopp)?
+    };
     let out = OutDir::new(a.out.clone().expect("checked"), a.force)?.protecting(&a.path);
     // One package per map; this run's variant beside any other already
     // there (docs/game/h1-multiplayer.md, "Package").
@@ -917,7 +953,12 @@ mod tests {
         assert_eq!(a.map.as_deref(), Some("beavercreek"));
         assert_eq!(a.out, Some(PathBuf::from("o")));
         assert_eq!(a.sandbox, Sandbox::Halo2);
-        assert!(!a.dry_run && !a.force && a.base.is_none() && a.disc.is_none());
+        assert!(!a.dry_run && !a.force && !a.fresh && a.base.is_none() && a.disc.is_none());
+        assert!(
+            parse_convert(&s(&["x.map", "--out", "o", "--fresh"]))
+                .unwrap()
+                .fresh
+        );
         let a = parse_convert(&s(&[
             "x.map",
             "--dry-run",

@@ -393,6 +393,15 @@ pub struct TagSet {
     pub salt_base: u16,
     /// Verbatim parts of a decomposed map, if any.
     pub pinned: Option<PinnedImage>,
+    /// With nothing pinned: the 0x800-byte header to start from (fields
+    /// the builder owns are overwritten), instead of zeros. A map assembled
+    /// from a retail one keeps its header values (dependency identities,
+    /// say) without keeping any of its file.
+    pub header_template: Option<Vec<u8>>,
+    /// The low-detail bitmap region (header `+0x158` offset, `+0x15c`
+    /// size), placed as this raw resource. Bitmaps hold low-detail ranges
+    /// relative to it.
+    pub low_detail: Option<RawId>,
     /// Place built tags first-fit into metadata no pinned bytes use (default).
     /// When false, every built tag goes after the original region.
     pub reuse_free_space: bool,
@@ -481,6 +490,8 @@ impl TagSet {
             bsps: Vec::new(),
             salt_base: 0xe174,
             pinned: None,
+            header_template: None,
+            low_detail: None,
             reuse_free_space: true,
             reverse_built: false,
             check_tag_memory: true,
@@ -702,6 +713,8 @@ impl TagSet {
             reuse_free_space: true,
             reverse_built: false,
             check_tag_memory: true,
+            header_template: None,
+            low_detail: None,
             pinned: Some(PinnedImage {
                 header,
                 file,
@@ -1411,10 +1424,21 @@ impl<'a> Builder<'a> {
         }
 
         // String-ID tables: fixed 128-byte slots, offsets, blob.
-        let mut header = match pin {
-            Some(p) => p.header.clone(),
-            None => vec![0; HEADER],
+        let mut header = match (pin, &set.header_template) {
+            (Some(p), _) => p.header.clone(),
+            (None, Some(h)) if h.len() == HEADER => h.clone(),
+            (None, Some(_)) => return Err(Error::Invalid("a header template is 0x800 bytes")),
+            (None, None) => vec![0; HEADER],
         };
+        if let Some(id) = set.low_detail {
+            let (at, len) = raw_offsets
+                .get(id.0)
+                .zip(set.raw.get(id.0))
+                .map(|(&at, r)| (at, r.bytes.len() as u32))
+                .ok_or(Error::Invalid("unknown low-detail raw resource"))?;
+            put(&mut header, 0x158, at);
+            put(&mut header, 0x15c, len);
+        }
         let mut string_blob = Vec::new();
         let mut string_index = Vec::new();
         let mut fixed = vec![0u8; self.strings.len() * FIXED_STRING_SLOT];

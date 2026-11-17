@@ -739,3 +739,23 @@ fn an_alias_follows_its_target() {
         .unwrap();
     assert!(t.set.build().is_err());
 }
+
+#[test]
+fn a_header_template_and_low_detail_raw_reach_the_header() {
+    let mut t = tiny();
+    let mut template = vec![0u8; 0x800];
+    template[0x180..0x188].copy_from_slice(&[7; 8]);
+    t.set.header_template = Some(template);
+    let low = t.set.add_raw(b"low detail bitmaps".to_vec(), 0x200);
+    t.set.low_detail = Some(low);
+    let bytes = t.set.build().unwrap().0;
+    assert_eq!(bytes[0x180..0x188], [7; 8], "uninterpreted bytes kept");
+    let (at, len) = (word(&bytes, 0x158) as usize, word(&bytes, 0x15c) as usize);
+    assert_eq!(&bytes[at..at + len], b"low detail bitmaps");
+    // The builder's own fields are written over the template.
+    let map = read(bytes);
+    assert_eq!(map.header().scenario_path, "invented\\scenarios\\tiny");
+
+    t.set.header_template = Some(vec![0; 0x10]);
+    assert!(t.set.build().is_err(), "a template is a whole header");
+}

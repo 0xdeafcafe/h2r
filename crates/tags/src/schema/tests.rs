@@ -348,3 +348,56 @@ fn a_tag_tree_transplants_into_another_map() {
     assert_eq!(refused[0].detail.refusal, Refusal::UnknownPointer);
     assert_eq!(dst.slots.len(), before);
 }
+
+#[test]
+fn a_whole_map_unpins_with_its_raw_copied_and_reads_back_the_same() {
+    let (mut map, ids) = invented(4, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let mut u = transplant::Unpinner::new(&schema, &mut map).unwrap();
+
+    // One block field on its own: thing1's 0x8 block (two elements).
+    let (count, block) = u.relocator().block_field(ids[1], 8).unwrap().unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(block.bytes.len(), 2 * 0x14);
+    assert!(
+        u.relocator().block_field(ids[1], 0x18).is_err(),
+        "not a block"
+    );
+
+    assert_eq!(
+        u.unpin(&mut map, &ids, &mut set).unwrap().unwrap(),
+        ids.len()
+    );
+    assert!(
+        ids.iter()
+            .all(|&id| matches!(set.tag(id).unwrap().payload, TagPayload::Built(_)))
+    );
+    // Two local resources, each copied once. Their size isn't stored, so
+    // each runs to the next known start (padding included).
+    assert_eq!(u.raw.0, 2);
+    assert!(u.raw.1 >= 0x80);
+    let mut out = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    let (old, new) = (Memory::of(&mut map).unwrap(), Memory::of(&mut out).unwrap());
+    for (t, &id) in ids.iter().enumerate() {
+        let a = map.tag(id).unwrap().location.unwrap().address;
+        let b = out.tag(id).unwrap().location.unwrap().address;
+        let (mut x, mut y) = (
+            read_tree(&expected(), a, &old).unwrap(),
+            read_tree(&expected(), b, &new).unwrap(),
+        );
+        let p =
+            map::RawPointer::decode(u32::from_le_bytes(y.bytes[0x20..0x24].try_into().unwrap()))
+                .unwrap();
+        assert_eq!(
+            out.read_file_range(p.offset.into(), 0x40).unwrap(),
+            vec![1 + (t % 2) as u8; 0x40]
+        );
+        for tr in [&mut x, &mut y] {
+            tr.bytes[0x20..0x24].fill(0);
+        }
+        assert_eq!(x, y, "same tree, same datums and strings");
+    }
+}
