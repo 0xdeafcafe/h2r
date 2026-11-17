@@ -88,7 +88,10 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
 /// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
 /// pointers invoking the handler in the target's direct slot
-/// (`H2_INDIRECT_CALLS`). Profile-guided optimisation (`H2_PGO`) and the
+/// (`H2_INDIRECT_CALLS`), taking the RAM gate at a handler's start
+/// (`H2_ENTRY_GATE`, `h2fastmem.h`) and spending a counting handler's
+/// accesses in the RAM view instead of calling the runtime to charge them
+/// (`H2_VIEW_CHARGE`). Profile-guided optimisation (`H2_PGO`) and the
 /// target CPU (`H2_CPU`, arm64 only: see [`pgo::for_arch`]) are off unless
 /// set ([`pgo`]).
 ///
@@ -117,6 +120,8 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_VIEW_BUDGET", false),
         ("H2_DIRECT_COUNT", false),
         ("H2_INDIRECT_CALLS", false),
+        ("H2_ENTRY_GATE", false),
+        ("H2_VIEW_CHARGE", false),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -1354,7 +1359,7 @@ mod tests {
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
         let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
-        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_INDIRECT_CALLS"] {
+        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_INDIRECT_CALLS", "H2_ENTRY_GATE", "H2_VIEW_CHARGE"] {
             let on = std::env::var(name).as_deref() == Ok("1");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }

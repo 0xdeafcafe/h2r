@@ -221,7 +221,7 @@ uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align,
     let mut dispatch = Dispatch::default();
     unsafe {
         let install: libloading::Symbol<unsafe extern "C" fn(*const *const (), usize) -> u32> =
-            lib.get(b"h2bridge_install_v2").unwrap();
+            lib.get(b"h2bridge_install_v3").unwrap();
         let callbacks = [
             runtime::ffi::h2abi_v1_read as *const (),
             runtime::ffi::h2abi_v1_write as *const (),
@@ -238,9 +238,11 @@ uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align,
             runtime::ffi::h2abi_v1_write_counted as *const (),
             runtime::ffi::h2abi_v1_charge as *const (),
             runtime::ffi::h2abi_v1_budget as *const (),
+            // As the image's bridge: one exit call, not the pair.
+            runtime::ffi::h2abi_v1_exit as *const (),
         ];
         let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
-            lib.get(b"h2bridge_layout_v2").unwrap();
+            lib.get(b"h2bridge_layout_v3").unwrap();
         assert_eq!(layout(callbacks.len() as u32), size_of_val(&callbacks));
         assert_eq!(install(std::ptr::null(), 0), 0);
         assert_eq!(install(callbacks.as_ptr(), size_of_val(&callbacks)), 1);
@@ -397,6 +399,100 @@ fn runner_transfer_benchmark() {
         println!(
             "runner transfers, {targets} targets: n={n}x{}, trials={trials}, min={:.2} median={:.2} max={:.2} ns/transfer",
             2 * SITES,
+            times[0],
+            times[trials / 2],
+            times[trials - 1]
+        );
+    }
+}
+
+/// A handler's first access after it is entered, as most of the game's
+/// handlers make it: callees with a frame (push, a load and a store of
+/// data, pop, ret), eight a loop trip, entered either by the runner (an
+/// indirect call, `runner`) or directly by the caller's handler (a static
+/// call, `direct`). Every callee starts with its stack store, so each
+/// entry pays whatever it takes to start a gate hold (`H2_ENTRY_GATE`), and
+/// a counting module settles its count at every exit (`H2_VIEW_CHARGE`).
+///
+/// `cargo test -p emit --release --test perf entry_access_benchmark -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark; run release with --nocapture"]
+fn entry_access_benchmark() {
+    const CALLEES: u32 = 64;
+    const CALLEE_BASE: u32 = A + 0x1000;
+    const TABLE: u32 = 0x0020_0000;
+    const BENCH_STACK: u32 = 0x0030_0ff0;
+    const SITES: u32 = 8;
+    let n: u32 = std::env::var("H2_PERF_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(200_000);
+    let trials: usize = std::env::var("H2_PERF_TRIALS").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
+    let callee = |i: u32| {
+        function(CALLEE_BASE + i * 32, move |a| {
+            a.push(ebp)?;
+            a.mov(ebp, esp)?;
+            a.mov(eax, dword_ptr(edi + i * 4))?;
+            a.add(eax, 1)?;
+            a.mov(dword_ptr(edi + i * 4), eax)?;
+            a.pop(ebp)?;
+            a.ret()
+        })
+    };
+    for how in ["runner", "direct"] {
+        if std::env::var("H2_PERF_KIND").is_ok_and(|k| k != how) {
+            continue;
+        }
+        let mut funcs = vec![function(A, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, n)?;
+            a.mov(esi, TABLE)?;
+            a.mov(edi, TABLE + 0x1000)?;
+            a.set_label(&mut l)?;
+            for s in 0..SITES {
+                if how == "runner" {
+                    a.lea(eax, dword_ptr(ecx + s * 37))?;
+                    a.and(eax, CALLEES - 1)?;
+                    a.call(dword_ptr(esi + eax * 4))?;
+                } else {
+                    a.call((CALLEE_BASE + s * 32) as u64)?;
+                }
+            }
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        })];
+        funcs.extend((0..CALLEES).map(callee));
+        let (_lib, dispatch) = compile_module_with(
+            &format!("entry-access-{how}"),
+            funcs,
+            false,
+            std::env::var_os("H2_FASTMEM").is_none_or(|v| v != "0"),
+            emit::opt::Passes::from_env().unwrap(),
+            emit::Codegen::from_env().unwrap(),
+        );
+        let mut mem = Guest::new();
+        mem.map_zeroed(A, 0x20000, Permissions::RX).unwrap();
+        mem.map_zeroed(TABLE, 0x2000, Permissions::RW).unwrap();
+        mem.map_zeroed(BENCH_STACK & !0xfff, 0x1000, Permissions::RW).unwrap();
+        for i in 0..CALLEES {
+            mem.set_u32(TABLE + i * 4, CALLEE_BASE + i * 32).unwrap();
+        }
+        mem.set_u32(BENCH_STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        let rt = Runtime::new(mem, dispatch);
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut times = Vec::new();
+        for _ in 0..trials {
+            let mut cpu = CpuAbi { esp: BENCH_STACK, ..CpuAbi::default() };
+            let start = Instant::now();
+            let t = Runner { max_transfers: 2 * SITES as u64 * n as u64 + 10 }.run(&mut cpu, &mut ctx, A);
+            times.push(start.elapsed().as_secs_f64() * 1e9 / (SITES * n) as f64);
+            assert_eq!(t.kind, runtime::abi::STOP, "{t:?}, {:?}", ctx.events());
+            assert_eq!(cpu.eip, runtime::exec::HARNESS_EXIT);
+        }
+        // Every call ran its callee once: the counters add up.
+        let total: u64 = (0..CALLEES).map(|i| rt.memory().u32(TABLE + 0x1000 + i * 4).unwrap() as u64).sum();
+        assert_eq!(total, (SITES * n) as u64 * trials as u64);
+        times.sort_by(f64::total_cmp);
+        println!(
+            "entry access, {how}: n={n}x{SITES}, trials={trials}, min={:.2} median={:.2} max={:.2} ns/call",
             times[0],
             times[trials / 2],
             times[trials - 1]
@@ -941,11 +1037,27 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
     // The switches that change how a direct call settles the gate and the
     // count: none, the lent gate, the view's budget with the lent count,
     // and all three.
+    // Then the handler's own entry and exit: the gate taken at entry, the
+    // count spent in the view, both, and everything at once.
     const GATE: &str = "#define H2_DIRECT_GATE 1\n";
     const COUNT: &str = "#define H2_VIEW_BUDGET 1\n#define H2_DIRECT_COUNT 1\n";
-    let switches = [("", String::new()), ("-lent", GATE.into()), ("-count", COUNT.into()), ("-both", format!("{GATE}{COUNT}"))];
+    const ENTRY: &str = "#define H2_ENTRY_GATE 1\n";
+    const CHARGE: &str = "#define H2_VIEW_CHARGE 1\n";
+    let switches = [
+        ("", String::new()),
+        ("-lent", GATE.into()),
+        ("-count", COUNT.into()),
+        ("-both", format!("{GATE}{COUNT}")),
+        ("-entry", ENTRY.into()),
+        ("-charge", CHARGE.into()),
+        ("-entry-charge", format!("{ENTRY}{CHARGE}")),
+        ("-all", format!("{GATE}{COUNT}{ENTRY}{CHARGE}")),
+    ];
     for (accounting, (tag, defines)) in [false, true].into_iter().flat_map(|a| switches.clone().map(|s| (a, s))) {
         let gate = tag;
+        // A counting handler with H2_VIEW_CHARGE spends its whole count in
+        // the view, so the runtime settles all of it from there.
+        let view_charge = accounting && (defines.contains(CHARGE) || std::env::var("H2_VIEW_CHARGE").as_deref() == Ok("1"));
         let (_lib, dispatch) = compile_module_defines(
             &format!("held-gate{tag}"),
             held_gate_functions(),
@@ -990,8 +1102,13 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                     let p = ctx.take_profile().unwrap();
                     assert_eq!(p.memory_accessors, spent, "{key}");
                     // Only the page-crossing read and the faulting store miss
-                    // (a counting module does not report its inline accesses).
-                    let inline = if fast && !accounting { spent - 1 - u64::from(fault) } else { 0 };
+                    // (a counting module does not report its inline accesses,
+                    // unless it spends its count in the view).
+                    let inline = match (fast, accounting) {
+                        (true, false) => spent - 1 - u64::from(fault),
+                        (true, true) if view_charge => spent,
+                        _ => 0,
+                    };
                     assert_eq!(p.fast_memory_accesses, inline, "{key}");
                     let mut out = vec![0; 8192];
                     rt.memory().read_bytes(DATA, &mut out, 1).unwrap();
@@ -1071,8 +1188,11 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
 /// it. `--nocapture` prints the table.
 #[test]
 fn cold_accesses_by_cause() {
+    // The counts below are the default build's: whatever the environment
+    // asks for, the entry gate and the view charge are off here.
+    const OFF: &str = "#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 0\n#undef H2_VIEW_CHARGE\n#define H2_VIEW_CHARGE 0\n";
     for accounting in [false, true] {
-        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), "");
+        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), OFF);
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
         // main, then the first call (through the dispatcher: the leaf and
@@ -1085,12 +1205,28 @@ fn cold_accesses_by_cause() {
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
         // hold before (one in 32 trips, calls and loop headers alike).
-        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), "#define H2_DIRECT_GATE 1\n");
+        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), &format!("{OFF}#define H2_DIRECT_GATE 1\n"));
         let gt: Vec<_> = COLD_CAUSES.iter().zip(g).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting} H2_DIRECT_GATE: {}", gt.join(", "));
         assert_eq!(g[0], c[0], "{gt:?}");
         assert!(g[1] + g[2] <= 2, "{gt:?}");
         assert!(g.iter().sum::<u64>() + 60 <= c.iter().sum::<u64>(), "{gt:?} against {table:?}");
+        // H2_ENTRY_GATE: every handler takes the gate as it starts, whether
+        // the runner or a direct caller invoked it, and main takes it again
+        // as each call returns inline. No access is cold for those causes;
+        // the cross-page read still is.
+        for (extra, name) in [("", "H2_ENTRY_GATE"), ("#define H2_VIEW_CHARGE 1\n", "H2_ENTRY_GATE+H2_VIEW_CHARGE")] {
+            let e = cold_counts(
+                accounting,
+                &format!("cold-stats-entry-{}-{accounting}", extra.len()),
+                &format!("#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 1\n#undef H2_VIEW_CHARGE\n{extra}"),
+            );
+            let et: Vec<_> = COLD_CAUSES.iter().zip(e).map(|(k, n)| format!("{k} {n}")).collect();
+            println!("accounting {accounting} {name}: {}", et.join(", "));
+            assert_eq!(e[..3], [0, 0, 0], "{et:?}");
+            assert!(e[6] >= 1, "the cross-page read: {et:?}");
+            assert!(e.iter().sum::<u64>() + 80 <= c.iter().sum::<u64>(), "{et:?} against {table:?}");
+        }
     }
 }
 

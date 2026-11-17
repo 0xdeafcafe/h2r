@@ -270,10 +270,39 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #ifndef H2_ACCOUNTING
 #define H2_ACCOUNTING 0
 #endif
+/* H2_VIEW_CHARGE (h2fastmem.h): with a view, the charge, the budget and
+ * the exit's charge are inline spends in it (h2_view_spend, h2_view_left),
+ * and the exit settles nothing else: the runner does. */
+#ifndef H2_VIEW_CHARGE
+#define H2_VIEW_CHARGE 0
+#endif
+#if H2_VIEW_CHARGE && H2_FASTMEM && H2_ACCOUNTING
+#define H2_VIEW_CHARGE_ 1
+#else
+#define H2_VIEW_CHARGE_ 0
+#endif
 #if H2_ACCOUNTING
 /* From 0, or the count a direct caller lent (H2_ACC_START_, below). */
 #define H2_ACC_LOCALS() uint64_t h2acc = H2_ACC_START_()
 #define H2_ACC_ONE() (h2acc += 1u)
+#if H2_VIEW_CHARGE_
+/* No call, so the gate stays held. */
+#define H2_ACC_FLUSH()                                                          \
+    do {                                                                        \
+        if (h2acc) {                                                            \
+            if (h2_mem_) {                                                      \
+                h2_view_spend(h2_mem_, h2acc);                                  \
+            } else {                                                            \
+                H2_GATE_DROP();                                                 \
+                H2_COLD_WHY(h2g_, H2C_FLUSH);                                   \
+                h2abi_v1_charge(ctx, h2acc);                                    \
+            }                                                                   \
+            h2acc = 0;                                                          \
+        }                                                                       \
+    } while (0)
+/* A charge that may run under the gate (none takes guest memory). */
+#define H2_ACC_CHARGE_(n) (h2_mem_ ? h2_view_spend(h2_mem_, (n)) : h2abi_v1_charge(ctx, (n)))
+#else
 #define H2_ACC_FLUSH()                                                          \
     do {                                                                        \
         if (h2acc) {                                                            \
@@ -283,13 +312,17 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
             h2acc = 0;                                                          \
         }                                                                       \
     } while (0)
+#define H2_ACC_CHARGE_(n) h2abi_v1_charge(ctx, (n))
+#endif
 /* The budget left after this handler's own count, cached for the polls.
  * H2_VIEW_BUDGET=1 reads it from the inline RAM view when that has no
  * count of its own to settle (h2_acc_budget). */
 #ifndef H2_VIEW_BUDGET
 #define H2_VIEW_BUDGET 0
 #endif
-#if H2_VIEW_BUDGET && H2_FASTMEM
+#if H2_VIEW_CHARGE_
+#define H2_BUDGET_() (h2_mem_ ? h2_view_left(h2_mem_) : h2abi_v1_budget(ctx))
+#elif H2_VIEW_BUDGET && H2_FASTMEM
 /* What h2abi_v1_budget answers, without the call: it settles the view's
  * own count (none here), then gives the slice's accesses left, or all ones
  * when nothing would expire. The runtime keeps the view's budget the same
@@ -404,6 +437,11 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_GATE_DROP() h2_gate_drop(h2_mem_, &h2g_)
 #endif
 
+/* At the start of a handler with inline accesses (the emitter writes it
+ * after the entry's calls), and after a direct call returns inline: take
+ * the gate now (H2_ENTRY_GATE, h2fastmem.h), not at the first access. */
+#define H2_GATE_ENTER() H2_GATE_ENTER_(h2_mem_, h2g_)
+
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
  * single spill per handler (instead of one per possible fault) is most of
@@ -499,24 +537,38 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #else
 #define H2_ACC_COUNT_() 0u
 #endif
+/* The exit's settling call, h2abi_v1_exit(ctx, n). With H2_VIEW_CHARGE_
+ * and a view, `n` is spent in the view instead and nothing is called: the
+ * view's count, this one included, is settled by the runner as soon as the
+ * handler returns to it (and by any Rust helper before then). */
+#if H2_VIEW_CHARGE_
+#define H2_EXIT_SETTLE_(n)                                                      \
+    do {                                                                        \
+        uint64_t n_ = (n);                                                      \
+        if (!h2_mem_) h2abi_v1_exit(ctx, n_);                                   \
+        else if (n_) h2_view_spend(h2_mem_, n_);                                \
+    } while (0)
+#else
+#define H2_EXIT_SETTLE_(n) h2abi_v1_exit(ctx, (n))
+#endif
 #if H2_LEND_COUNT_
 /* A lent handler hands its count back; the runner's charges it all. */
 #define H2_EXIT_EARLY_() ((void)0)
 #define H2_EXIT_LATE_()                                                         \
     do {                                                                        \
         if (H2_LENT_()) h2_direct(ctx)->acc = h2acc;                            \
-        else h2abi_v1_exit(ctx, h2acc);                                         \
+        else H2_EXIT_SETTLE_(h2acc);                                            \
     } while (0)
 #elif H2_EXIT_CALL && H2_LEND_VIEW_
 /* A lent view is the caller's to settle: only a count of its own to charge. */
 #define H2_EXIT_EARLY_() ((void)0)
 #define H2_EXIT_LATE_()                                                         \
     do {                                                                        \
-        if (!H2_LENT_() || H2_ACC_COUNT_()) h2abi_v1_exit(ctx, H2_ACC_COUNT_()); \
+        if (!H2_LENT_() || H2_ACC_COUNT_()) H2_EXIT_SETTLE_(H2_ACC_COUNT_()); \
     } while (0)
 #elif H2_EXIT_CALL && H2_FASTMEM
 #define H2_EXIT_EARLY_() ((void)0)
-#define H2_EXIT_LATE_() h2abi_v1_exit(ctx, H2_ACC_COUNT_())
+#define H2_EXIT_LATE_() H2_EXIT_SETTLE_(H2_ACC_COUNT_())
 #elif H2_EXIT_CALL
 /* No view to settle: the charge alone, after the spill. */
 #define H2_EXIT_EARLY_() ((void)0)
@@ -551,7 +603,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_HANDUP_RELEASE_()                                                    \
     do {                                                                        \
         if (H2_LENT_()) h2_direct(ctx)->acc = h2acc;                            \
-        else h2abi_v1_exit(ctx, h2acc);                                         \
+        else H2_EXIT_SETTLE_(h2acc);                                            \
     } while (0)
 #elif H2_LEND_VIEW_
 #define H2_HANDUP_RELEASE_()                                                    \
@@ -948,7 +1000,7 @@ static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
     do {                                                                        \
         H2_GATE_TICK_();                                                        \
         if (h2acc) {                                                            \
-            h2abi_v1_charge(ctx, h2acc);                                        \
+            H2_ACC_CHARGE_(h2acc);                                              \
             h2acc = 0;                                                          \
         }                                                                       \
     } while (0)
@@ -1008,7 +1060,11 @@ static inline uint64_t h2_acc_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
 #define H2_LEND_ACC_(d) ((d)->acc = h2acc, h2acc = 0u)
 #define H2_TAKE_BACK_ACC_(d) (h2acc += (d)->acc, (d)->acc = 0u)
 /* Would the charge have left the slice bit clear? */
+#if H2_VIEW_CHARGE_
+#define H2_COUNT_FITS_() (!h2acc || h2acc < h2_view_left(h2_mem_))
+#else
 #define H2_COUNT_FITS_() (!h2acc || h2acc < h2_mem_->budget)
+#endif
 #else
 #define H2_ACC_START_() 0u
 #define H2_LEND_ACC_(d) ((void)0)
@@ -1114,6 +1170,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
                 reload;                                                         \
                 refresh;                                                        \
                 H2_COLD_WHY(h2g_, H2C_AFTER_DCALL);                             \
+                H2_GATE_ENTER();                                                \
                 goto label;                                                     \
             }                                                                   \
             H2_DIRECT_HANDUP(r_);                                               \

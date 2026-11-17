@@ -223,6 +223,20 @@ pub fn dirty_at_exits(f: &IrFunction, home: u32) -> BTreeMap<u32, u32> {
     masks
 }
 
+/// Whether `f` has a guest load or store on the inline RAM path (an
+/// atomic's go through its runtime helper instead).
+fn accesses_memory(f: &IrFunction) -> bool {
+    fn any(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            Stmt::Load { .. } | Stmt::Store { .. } => true,
+            Stmt::If { then, otherwise, .. } => any(then) || any(otherwise),
+            Stmt::Repeat { body, .. } => any(body),
+            _ => false,
+        })
+    }
+    f.insns().any(|i| i.atomic.is_none() && any(&i.stmts))
+}
+
 /// The C symbol of an owner's handler.
 pub fn symbol(entry: u32) -> String {
     format!("h2fn_{entry:08x}")
@@ -480,6 +494,11 @@ impl Emitter<'_> {
         let headers = &self.shape.loops.headers;
         if self.polled {
             self.line(1, "H2_PREEMPT_LOCALS();");
+        }
+        // After every call the entry makes (acquire, the budget): a handler
+        // that loads or stores may take the RAM gate now (H2_ENTRY_GATE).
+        if accesses_memory(f) {
+            self.line(1, "H2_GATE_ENTER();");
         }
         self.line(1, "switch (start) {");
         for s in self.shape.selectors {
