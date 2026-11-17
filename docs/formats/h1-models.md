@@ -24,6 +24,9 @@ run time and print only counts and error figures.
   read pass the stated checks.
 - **V2:** checked on retail Halo 2 `mode` tags (`lockout.map`) by the
   ignored test `retail_h2_mode_layouts`.
+- **V3:** checked against the `jmad` mode/class/type/action trees of every
+  map on the owner's retail disc (30 maps, 2,268 graphs) by the ignored test
+  `retail_h2_animation_names` in `crates/h1models/src/names.rs` (2026-11-17).
 - **S:** field order and meaning recalled from general Halo modding
   knowledge (the Halo 1 and Halo 2 editing kits' field names), then checked
   against the data where a V label says so. No community code or
@@ -234,32 +237,43 @@ the cyborg).
 
 | Halo 1 | Halo 2 | Status |
 |---|---|---|
-| unit `stand` | mode `combat` | S |
-| unit `alert` | mode `combat` (no alert mode assumed) | S; collides with `stand`, variants result |
-| unit `crouch` | `crouch` | S |
-| `W-driver`, `W-gunner`, `W-passenger` | `warthog_d`, `warthog_g`, `warthog_p` | S |
-| `G-driver`, `B-driver`, `scorpion-driver` | `ghost_d`, `banshee_d`, `scorpion_d` | S |
-| weapon `unarmed`, `pistol`, `rifle`, `missile`, `fixed` | the same class | S |
-| third word before the action (`stand rifle ar reload`) | weapon type | S |
-| action `reload` | `reload_1` | S |
-| action `melee` | `melee_strike_1` | S |
-| action `throw-grenade` | `throw_grenade` | S |
-| `%n` | `:var<n>` on the action | Design |
+| unit `stand` | mode `combat` | V3 (`combat:rifle:any:idle` and the movement actions on the retail masterchief/elite graphs) |
+| unit `alert` | mode `combat` (no alert mode exists in retail) | V3; collides with `stand`, variants result |
+| unit `crouch` | `crouch` | V3 (`crouch:rifle:any:idle`) |
+| `W-driver`, `W-gunner`, `W-passenger` | `warthog_d`, `warthog_g`, `warthog_p` | V3 (`warthog_g:fixed:any:idle` proves the gunner seat and the `fixed` class together) |
+| `G-driver`, `B-driver`, `scorpion-driver` | `ghost_d`, `banshee_d`, `scorpion_d` | V3 (all three are modes of the retail biped graphs) |
+| `CT-driver` | `c_turret_ap_d` | V3 for the name (`c_turret_ap` is the retail covenant turret, its jmad on every multiplayer map); the choice between it and the rarer `c_turret_mp_d` is S |
+| `GT-gunner` | `guntower_d` | V3 for the name (03a elite graph); the choice is S (retail also has `h_turret_ap_d`/`h_turret_mp_d`) |
+| `P-riderLF`, `P-riderRF` | `pelican_p_l01`, `pelican_p_r01` | V3 for the names; 01 = front row is S (retail numbers each side's seats 01..05) |
+| `scorpionLF` | `scorpion_p_lf` | V3 (`scorpion_p_lf:any:any:enter`; retail also has `_p_lb`, `_p_rf`, `_p_rb`, which no Halo 1 name feeds) |
+| weapon `unarmed`, `pistol`, `rifle`, `missile`, `fixed` | the same class | V3 (classes of the retail biped graphs; `fixed` under `warthog_g`) |
+| third word before the action (`stand rifle sg reload-1`) | weapon type | V3 for the labels Halo 1 and Halo 2 share (`pr`, `sg`, `sr`, `hp`, `ne`, `pp`, `rl`, `f`); `ar` has no Halo 2 type (the assault rifle became several weapons) |
+| action `reload` / `reload-1` | `reload_full` | V3 that `reload_full` is the retail action and `reload_1` exists nowhere; retail reloads are first-person-only, so in a third-person graph no engine lookup uses it |
+| action `melee` | `melee` (unchanged) | V3 (`combat:rifle:any:melee`, `combat:pistol:any:melee` on the retail elite; `melee_strike_1..3` are first-person actions only) |
+| action `throw-grenade` | `throw_grenade` | V3 (`combat:sword:any:throw_grenade` on the masterchief) |
+| vehicle actions `stand opening` / `stand closing` | `combat:opening` / `combat:closing` | V3 — the only actions any retail vehicle graph carries (banshee, scorpion, pelican, `c_turret_ap`, the phantom and wraith turrets) |
+| `%n` | `:var<n>` on the action | Design; retail variant suffixes (`:var0`, ...) sit on animation names, never on tree actions |
 
-Every S row needs checking against retail `jmad` string IDs (`h2 anim
-<map> <tag> --actions`), which this lane did not do.
-
-**No Halo 2 equivalent, or not mapped yet:**
+**No Halo 2 equivalent, or not mapped:**
 
 - Unit damage (`h-kill`, `s-kill`, `s-ping`, with direction and region)
-  and vehicle overlays (`suspension left back`, `vehicle steering`,
-  `vehicle ground-speed`, `firing`) are not split into classes. They become
-  one action from all their words (`h_kill:back_gut`,
-  `suspension:left_back`). Halo 2 drives vehicle and damage animations
-  differently. Which of its names the engine looks up is open.
-- Pelican, covenant turret and scorpion passenger seats (`P-riderLF`,
-  `CT-driver`, `GT-gunner`, `scorpionLF`) keep their lower-cased Halo 1
-  label.
+  stays one action from all its words (`h_kill:back_gut`): V3 that no
+  retail tree holds `h_kill`, `s_kill` or `s_ping` (nor any mode for them).
+  Retail death vocabulary is `dead`, `mortal_wound`, `landing_dead`,
+  `airborne_dead`, `thrash_front/back`, `resurrect_front/back`, driven by
+  the engine's damage tables rather than name lookup.
+- Vehicle overlays (`suspension left back`, `vehicle steering`,
+  `vehicle ground-speed`, `tread pitch ...`, `firing`, `ground speed`,
+  `acc-front-back` and kin) also stay one word-run action: V3 that retail
+  vehicle graphs carry only `combat:opening`/`combat:closing` — no
+  `suspension` or `vehicle` mode, no `steering` or `ground_speed` action
+  exists anywhere. Halo 2 drives suspension and steering outside the jmad
+  tree.
+- Seats that keep their Halo 1 label: `P-riderLM`, `P-riderLB`,
+  `P-riderRM`, `P-riderRB` (their retail row number among `pelican_p_l01..05`
+  is not recoverable from the trees) and the dropship seats
+  `CD-passengerL01`/`CD-passenger01` (retail phantom seats are columns
+  `phantom_p_a01..c03`, with no left/right correspondence).
 - The engine-slot structure of Halo 1 graphs (units/weapons/vehicles
   blocks) is not converted. Halo 2's tree comes from names only.
 - Root movement (frame info) is dropped: 109 of the cyborg's 195
