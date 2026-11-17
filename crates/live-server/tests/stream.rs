@@ -859,7 +859,7 @@ async fn packed_frames_ingest_stream_and_record() {
         ..NewGame::default()
     };
     let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
-    let mut frames = live_proto::samples::multiplayer(6);
+    let mut frames = live_proto::samples::multiplayer(10);
     for f in &mut frames {
         f.game_id = game_id.clone();
     }
@@ -896,7 +896,7 @@ async fn packed_frames_ingest_stream_and_record() {
     let mut d = pack::Decoder::new();
     let mut seen = Vec::new();
     let mut sent = Vec::new();
-    for pair in frames.chunks(2) {
+    for pair in frames[..6].chunks(2) {
         let mut message = Vec::new();
         for f in pair {
             pack::push_record(&mut message, &encoder.encode(f).unwrap().0);
@@ -926,9 +926,30 @@ async fn packed_frames_ingest_stream_and_record() {
         next(&mut late).await,
         StreamMessage::CaughtUp { .. }
     ));
-    let mut d = pack::Decoder::new();
-    let caught = next_packed(&mut late, &mut d).await;
+    let mut late_d = pack::Decoder::new();
+    let caught = next_packed(&mut late, &mut late_d).await;
     assert_eq!(caught.last(), expect.last());
+
+    // The game goes on: the reader that joined mid-game and the one there
+    // from the start each get every new frame once, in order (a repeated
+    // or older frame, or a delta without its base, would not decode).
+    let (mut sent, mut seen, mut late_seen) = (Vec::new(), Vec::new(), Vec::new());
+    for pair in frames[6..].chunks(2) {
+        let mut message = Vec::new();
+        for f in pair {
+            pack::push_record(&mut message, &encoder.encode(f).unwrap().0);
+        }
+        ws.send(Message::Binary(message.into())).await.unwrap();
+        let StreamMessage::Frame { frame } = next(&mut json_reader).await else {
+            panic!("expected a frame")
+        };
+        sent.push(pack::quantize(&frame).unwrap());
+        seen.extend(next_packed(&mut packed_reader, &mut d).await);
+        late_seen.extend(next_packed(&mut late, &mut late_d).await);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    assert_eq!(seen, sent);
+    assert_eq!(late_seen, sent);
 
     // A delta without its base is refused; the socket stays open.
     let mut skip = pack::Encoder::new(0, 100);

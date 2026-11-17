@@ -72,6 +72,19 @@ impl LiveFrame {
             })
             .clone()
     }
+
+    /// A frame of stream `sid` with these packed bytes, for tests.
+    #[cfg(test)]
+    pub(crate) fn packed_for_test(sid: u64, seq: u64, keyframe: bool, packed: Vec<u8>) -> Self {
+        LiveFrame {
+            frame: Frame::default(),
+            sid,
+            seq,
+            keyframe,
+            packed: Some(packed),
+            json: Default::default(),
+        }
+    }
 }
 
 impl IngestState {
@@ -106,6 +119,8 @@ struct FrameClock {
     pack: pack::Encoder,
     /// Its frames since the last keyframe, for readers that join.
     since_key: Vec<Arc<LiveFrame>>,
+    /// Its packed frames since the last tick ([`crate::packed`]).
+    pending: crate::packed::Pending,
 }
 
 impl FrameClock {
@@ -118,6 +133,7 @@ impl FrameClock {
             machines: BTreeMap::new(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
+            pending: Default::default(),
         }
     }
 
@@ -143,7 +159,8 @@ impl FrameClock {
         if keyframe {
             self.since_key.clear();
         }
-        if live.packed.is_some() {
+        if let Some(packed) = &live.packed {
+            self.pending.push(seq, keyframe, packed);
             self.since_key.push(Arc::clone(&live));
         }
         live
@@ -471,6 +488,36 @@ impl Live {
 
     pub fn frames(&self) -> tokio::sync::broadcast::Receiver<Arc<LiveFrame>> {
         self.frames.subscribe()
+    }
+
+    /// Takes every game's packed frames since the last tick and publishes
+    /// them to packed readers ([`crate::packed`]); with none, drops them.
+    pub fn publish_packed(&self) {
+        let clocks: Vec<_> = {
+            let all = self.ingest.games.lock().unwrap();
+            all.iter()
+                .map(|(id, clock)| (id.clone(), Arc::clone(clock)))
+                .collect()
+        };
+        let readers = self.packed.has_readers();
+        let mut batches = Vec::new();
+        for (id, clock) in clocks {
+            let mut clock = clock.lock().unwrap();
+            let sid = clock.pack.sid();
+            if let Some(b) = clock.pending.take(&id, sid)
+                && readers
+            {
+                batches.push(b);
+            }
+        }
+        if !batches.is_empty() {
+            self.packed.publish(batches);
+        }
+    }
+
+    /// The packed fan-out, for stream readers.
+    pub fn packed(&self) -> &crate::packed::Hub {
+        &self.packed
     }
 
     /// Each live game's packed frames since its last keyframe (all games,

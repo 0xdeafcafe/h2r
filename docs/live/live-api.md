@@ -810,9 +810,12 @@ stream is anonymous and leaves those events out.
 
 `?frames=packed` sends frames as binary messages instead: each a container
 of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
-stream per game, batched up to 100 ms. A reader that joins or falls behind
-first gets each game's frames since its last keyframe. Events and
-`caught_up` stay JSON text messages.
+stream per game, batched up to 100 ms (the server batches every game's
+frames once a tick and shares the batch among readers). A reader that joins
+or falls behind first gets each game's frames since its last keyframe. Each
+stream's frames come in order, each once: never a frame older than one
+already sent, nor a delta without its base. Events and `caught_up` stay
+JSON text messages.
 
 **`GET /v1/ingest`** for the game. The first message is
 `{ "kind": "auth", "token": "<jwt>" }`. Then the client sends

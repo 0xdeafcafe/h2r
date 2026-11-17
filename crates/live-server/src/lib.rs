@@ -38,6 +38,7 @@ pub mod invites;
 pub mod local_signin;
 mod mailbox;
 pub mod model;
+pub mod packed;
 pub mod pg;
 pub mod public;
 pub mod recovery;

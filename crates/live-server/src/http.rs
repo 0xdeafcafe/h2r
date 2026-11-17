@@ -746,27 +746,28 @@ async fn run_stream(
             }
         }
     }
-    // Subscribe before replaying, so nothing falls between the two.
+    // Subscribe before replaying, so nothing falls between the two. A
+    // packed reader of one game hears only that game's batches; of more,
+    // every tick. JSON readers take every frame as it comes.
     let mut feed = live.feed();
-    let mut frames = live.frames();
+    let mut packed = filter.packed.then(|| match filter.games.as_slice() {
+        [one] => PackedFeed::Game(live.packed().subscribe_game(one)),
+        _ => PackedFeed::All(live.packed().subscribe_all()),
+    });
+    let mut frames = (!filter.packed).then(|| live.frames());
     let mut last = filter.from.unwrap_or_else(|| live.position());
     catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
     send(&mut socket, &StreamMessage::CaughtUp { position: last })
         .await
         .map_err(|e| e.to_string())?;
     let probe = filter.query(0, 1);
-    let mut batch = PackedBatch::default();
+    let mut follow = crate::packed::Follow::default();
     if filter.packed {
         // Start each live game's stream at its last keyframe.
-        for f in live.frames_since_keyframe(&filter.games) {
-            if live.frame_shows(&f, viewer) {
-                batch.add(&f);
-            }
-        }
-        batch.flush(&mut socket).await?;
+        since_keyframes(&live, &mut socket, &filter, viewer, &mut follow).await?;
     }
-    // One timer each for the token's end and the packed batch, made once
-    // and moved when they change (not made anew for every message).
+    // The token's end: one timer, moved when a fresh token comes (not
+    // made anew for every message).
     let token_end = |exp: i64| {
         let wait = (exp + TOKEN_LEEWAY_S - crate::app::now()).max(0) as u64;
         tokio::time::Instant::now() + Duration::from_secs(wait)
@@ -775,20 +776,11 @@ async fn run_stream(
         tokio::time::sleep_until(expires.map_or_else(tokio::time::Instant::now, token_end));
     tokio::pin!(deadline);
     let mut deadline_for = expires;
-    let flush = tokio::time::sleep(Duration::ZERO);
-    tokio::pin!(flush);
-    let mut flush_at = None;
     loop {
         if deadline_for != expires {
             deadline_for = expires;
             if let Some(exp) = expires {
                 deadline.as_mut().reset(token_end(exp));
-            }
-        }
-        if batch.due != flush_at {
-            flush_at = batch.due;
-            if let Some(at) = flush_at {
-                flush.as_mut().reset(at);
             }
         }
         tokio::select! {
@@ -807,29 +799,45 @@ async fn run_stream(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            frame = frames.recv() => match frame {
+            frame = recv_frame(&mut frames) => match frame {
                 Ok(f) if (filter.games.is_empty() || filter.games.contains(&f.frame.game_id)) && live.frame_shows(&f, viewer) => {
-                    if filter.packed {
-                        batch.add(&f);
-                    } else {
-                        socket.send(Message::Text(f.json_message())).await.map_err(|e| e.to_string())?;
-                    }
+                    socket.send(Message::Text(f.json_message())).await.map_err(|e| e.to_string())?;
                 }
-                Ok(_) => {}
-                // Frames are best effort: a slow reader skips some. A packed
-                // one picks its streams up again from their last keyframes.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    if filter.packed {
-                        for f in live.frames_since_keyframe(&filter.games) {
-                            if live.frame_shows(&f, viewer) {
-                                batch.add(&f);
-                            }
-                        }
-                    }
-                }
+                // Frames are best effort: a slow reader skips some.
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            _ = &mut flush, if flush_at.is_some() => batch.flush(&mut socket).await?,
+            batch = recv_packed(&mut packed) => {
+                let bytes = match batch {
+                    Packed::Tick(tick) => {
+                        let ids = tick.games.iter().map(|b| b.game_id.as_str());
+                        let shown: Vec<bool> = live
+                            .games_show(ids, viewer)
+                            .into_iter()
+                            .zip(&tick.games)
+                            .map(|(shows, b)| shows && (filter.games.is_empty() || filter.games.contains(&b.game_id)))
+                            .collect();
+                        follow.take_tick(&tick, &shown)
+                    }
+                    Packed::Game(b) => {
+                        if live.games_show([b.game_id.as_str()], viewer)[0] {
+                            follow.take_batch(&b)
+                        } else {
+                            None
+                        }
+                    }
+                    // A slow reader skips some, and picks its streams up
+                    // again from their last keyframes.
+                    Packed::Lagged => {
+                        since_keyframes(&live, &mut socket, &filter, viewer, &mut follow).await?;
+                        None
+                    }
+                    Packed::Closed => return Ok(()),
+                };
+                if let Some(bytes) = bytes {
+                    socket.send(Message::Binary(bytes)).await.map_err(|e| e.to_string())?;
+                }
+            },
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
@@ -854,49 +862,65 @@ async fn run_stream(
     }
 }
 
-/// How long a packed reader's frames wait to share a message.
-const PACKED_BATCH: Duration = Duration::from_millis(100);
-
-/// A packed reader's next binary message: frames of every stream it
-/// follows, each only once and only after its base (a frame that does not
-/// follow the last one sent of its stream waits for a keyframe).
-#[derive(Default)]
-struct PackedBatch {
-    bytes: Vec<u8>,
-    due: Option<tokio::time::Instant>,
-    /// Each stream's last sequence number sent.
-    sent: HashMap<u64, u64>,
+/// Sends a packed reader each of its games' frames since the last
+/// keyframe that it does not have yet ([`crate::packed::Follow`]), in one
+/// message.
+async fn since_keyframes(
+    live: &Live,
+    socket: &mut WebSocket,
+    filter: &StreamFilter,
+    viewer: Viewer,
+    follow: &mut crate::packed::Follow,
+) -> Result<(), String> {
+    let mut out = Vec::new();
+    for f in live.frames_since_keyframe(&filter.games) {
+        if live.frame_shows(&f, viewer) {
+            follow.take_frame(&f, &mut out);
+        }
+    }
+    if out.is_empty() {
+        return Ok(());
+    }
+    socket
+        .send(Message::Binary(out.into()))
+        .await
+        .map_err(|e| e.to_string())
 }
 
-impl PackedBatch {
-    fn add(&mut self, f: &crate::games::LiveFrame) {
-        let Some(packed) = &f.packed else {
-            return;
-        };
-        let follows = match self.sent.get(&f.sid) {
-            Some(last) if f.seq <= *last => return,
-            Some(last) => f.seq == last + 1 || f.keyframe,
-            None => f.keyframe,
-        };
-        if !follows {
-            return;
-        }
-        self.sent.insert(f.sid, f.seq);
-        live_proto::pack::push_record(&mut self.bytes, packed);
-        self.due
-            .get_or_insert_with(|| tokio::time::Instant::now() + PACKED_BATCH);
+/// A JSON reader's next frame (never, for a packed reader).
+async fn recv_frame(
+    frames: &mut Option<tokio::sync::broadcast::Receiver<Arc<crate::games::LiveFrame>>>,
+) -> Result<Arc<crate::games::LiveFrame>, tokio::sync::broadcast::error::RecvError> {
+    match frames {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
+}
 
-    async fn flush(&mut self, socket: &mut WebSocket) -> Result<(), String> {
-        self.due = None;
-        if self.bytes.is_empty() {
-            return Ok(());
-        }
-        let bytes = std::mem::take(&mut self.bytes);
-        socket
-            .send(Message::Binary(bytes.into()))
-            .await
-            .map_err(|e| e.to_string())
+/// What a packed reader hears: every game's ticks, or one game's batches.
+enum PackedFeed {
+    All(tokio::sync::broadcast::Receiver<Arc<crate::packed::Tick>>),
+    Game(tokio::sync::broadcast::Receiver<Arc<crate::packed::GameBatch>>),
+}
+
+enum Packed {
+    Tick(Arc<crate::packed::Tick>),
+    Game(Arc<crate::packed::GameBatch>),
+    Lagged,
+    Closed,
+}
+
+/// A packed reader's next tick or batch (never, for a JSON reader).
+async fn recv_packed(feed: &mut Option<PackedFeed>) -> Packed {
+    use tokio::sync::broadcast::error::RecvError;
+    let lost = |e: RecvError| match e {
+        RecvError::Lagged(_) => Packed::Lagged,
+        RecvError::Closed => Packed::Closed,
+    };
+    match feed {
+        Some(PackedFeed::All(rx)) => rx.recv().await.map_or_else(lost, Packed::Tick),
+        Some(PackedFeed::Game(rx)) => rx.recv().await.map_or_else(lost, Packed::Game),
+        None => std::future::pending().await,
     }
 }
 
