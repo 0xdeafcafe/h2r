@@ -94,6 +94,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [fonts.md](formats/fonts.md): packed bitmap fonts and the text rasteriser (`crates/font`, `h2 font`)
 - [h1-map-format.md](formats/h1-map-format.md): Halo 1 Xbox cache files (v5, zlib) and the `h1map` reader (`h2 h1`, `h2 import halo1`)
 - [h1-bitmaps.md](formats/h1-bitmaps.md): Halo 1 Xbox bitmaps: where the pixels are, decoding with Halo 2's decoder, conversion to Halo 2 `bitm` and lightmap pages (`crates/h1bitmaps`, `h2 h1 bitmap`)
+- [h1-sky.md](formats/h1-sky.md): Halo 1 and Halo 2 `sky ` tags — layouts, the disc census, and conversion (`crates/h1sky`)
 - [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`, `h2 hs`)
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
