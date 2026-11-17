@@ -65,6 +65,18 @@ impl Tsc {
             });
         out
     }
+
+    /// The last value read, which a machine snapshot records: the counter
+    /// never repeats, so a restored machine must continue from it.
+    pub fn last(&self) -> u64 {
+        self.last.load(Ordering::SeqCst)
+    }
+
+    /// Continue from a snapshot's [`Tsc::last`]. Only for a machine that is
+    /// not running: a concurrent read could return a value from either side.
+    pub fn restore_last(&self, last: u64) {
+        self.last.store(last, Ordering::SeqCst);
+    }
 }
 
 /// Guest-clock ticks to TSC cycles, exactly (rounded down).
@@ -75,6 +87,18 @@ pub fn cycles(ticks: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restored_counter_continues_where_the_saved_one_was() {
+        let saved = Tsc::default();
+        for _ in 0..5 {
+            saved.read();
+        }
+        let restored = Tsc::default();
+        restored.restore_last(saved.last());
+        assert_eq!(restored.read(), saved.read());
+        assert_eq!(restored.last(), saved.last());
+    }
 
     #[test]
     fn one_second_of_guest_time_is_the_cpu_clock() {

@@ -3,6 +3,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod state;
+pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
+
 pub const RAM_SIZE: usize = 64 * 1024 * 1024;
 pub const PAGE_SIZE: u32 = 4096;
 const MMIO_START: u64 = 0xfd00_0000;
