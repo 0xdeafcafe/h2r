@@ -21,6 +21,7 @@
 //! the owner's discs at run time.
 #![forbid(unsafe_code)]
 
+pub mod cutscenes;
 pub mod donor;
 pub mod manifest;
 pub mod scenario;
@@ -143,10 +144,16 @@ pub struct Options<'a> {
     /// Retail maps to copy the characters the base lacks from
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
-    /// Halo 1's cinematics and the a10 tutorial: skipped (the default)
-    /// until cutscene animation and recordings are converted
-    /// (docs/game/campaigns.md, Cutscenes).
-    pub cutscenes: h1scripts::compile::Cutscenes,
+    /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
+    /// (the default) takes each level's own choice
+    /// ([`cutscenes::default_for`]; docs/game/campaigns.md, Cutscenes).
+    pub cutscenes: Option<h1scripts::compile::Cutscenes>,
+    /// The animation graphs and recorded animations the scripts name
+    /// ([`cutscenes`]); off measures what they cost.
+    pub cutscene_data: bool,
+    /// The animation graphs alone (their animation data is raw in the map
+    /// file, which the campaign cache bounds).
+    pub cutscene_graphs: bool,
 }
 
 impl Default for Options<'_> {
@@ -157,7 +164,9 @@ impl Default for Options<'_> {
             scripts: None,
             sounds: 0,
             donors: None,
-            cutscenes: Default::default(),
+            cutscenes: None,
+            cutscene_data: true,
+            cutscene_graphs: true,
         }
     }
 }
@@ -192,6 +201,9 @@ pub struct Report {
     pub scenario: scenario::ScenarioReport,
     /// Everything left out, one line each, with the reason.
     pub dropped: Vec<String>,
+    /// How lean the conversion had to be to fit (`convert`): 0 is
+    /// everything.
+    pub lean: u8,
 }
 
 impl std::fmt::Display for Report {
@@ -253,13 +265,33 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // scripts only name: first the empty squads kept for their names, then
     // the seat table, then Halo 1's textures on the objects' models
     // (`h1objects`' shader copies and bitmaps; the models draw with the
-    // base's model shader), then the level data (`scenario::write`'s
+    // base's model shader), then the cutscenes' animation graphs and
+    // recorded animations, then the level data (`scenario::write`'s
     // `lean`). Calls naming level data that is not there are stubbed
     // (`h1scripts::compile::INDEXED`).
+    //
+    // A level over the campaign cache's file size (d40: its BSPs, textures
+    // and sounds leave half a megabyte) is converted again without the
+    // cutscenes' animation graphs, the only part that grows the file much.
     let mut lean = 0;
+    let mut opts = Options { ..*opts };
     loop {
-        match convert_with(h1, base, opts, lean) {
-            Err(Error::TagMemory { .. }) if lean < 4 => lean += 1,
+        match convert_with(h1, base, &opts, lean) {
+            Err(Error::TagMemory { .. }) if lean < 5 => lean += 1,
+            Err(Error::Map(map::Error::Invalid(m)))
+                if opts.cutscene_graphs && m.contains("cache size limit") =>
+            {
+                opts.cutscene_graphs = false;
+            }
+            Ok(mut done) => {
+                if !opts.cutscene_graphs {
+                    done.report.dropped.push(
+                        "cutscene animation graphs: over the campaign cache's file size with them"
+                            .into(),
+                    );
+                }
+                return Ok(done);
+            }
             r => return r,
         }
     }
@@ -273,6 +305,7 @@ fn convert_with<R: Read + Seek>(
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
+        lean,
         level: level.clone(),
         base: base.header().name.clone(),
         tags_before: base.tags().len(),

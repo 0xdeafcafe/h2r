@@ -357,6 +357,12 @@ pub struct ScriptReport {
     /// Squad groups the startup script places (Halo 1's initially created
     /// encounters).
     pub initial: Vec<String>,
+    /// Animation graphs the cutscenes name (crate::cutscenes).
+    pub graphs: crate::cutscenes::Graphs,
+    /// Recorded animations written (Halo 2 `scnr +0x110`), and their event
+    /// streams' bytes.
+    pub recordings: usize,
+    pub recording_bytes: usize,
 }
 
 impl std::fmt::Display for ScenarioReport {
@@ -573,8 +579,9 @@ pub fn replaced_fields() -> Vec<u32> {
 /// Writes the scenario layers into `set` (built from the base). `lean` 1
 /// leaves out the empty squads kept only because scripts name them; 2 also
 /// the seat table; 3 also Halo 1's textures on object models (in `lib.rs`);
-/// 4 also the level data the scripts name (the calls that
-/// name it are stubbed, their other hooks stay `none`).
+/// 4 also the cutscenes' animation graphs and recorded animations
+/// (`crate::cutscenes`); 5 also the level data the scripts name (the calls
+/// that name it are stubbed, their other hooks stay `none`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -915,9 +922,10 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
-                lean < 4,
+                lean < 5,
                 lean < 2,
-                opts.cutscenes,
+                (lean < 4 && opts.cutscene_data).then_some(opts.cutscene_graphs),
+                crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
             )?);
         }
         None => {
@@ -1243,6 +1251,7 @@ fn install_scripts(
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
+    cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
@@ -1253,7 +1262,7 @@ fn install_scripts(
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
     // Level data the scripts name (cutscene flags, camera points, titles,
-    // device groups), in h1scripts. Without it (`lean` 4), or for a name
+    // device groups), in h1scripts. Without it (`lean` 5), or for a name
     // it lacks, a call naming one is stubbed: the engine indexes these
     // blocks unchecked (`h1scripts::compile::INDEXED`).
     let level = if level_data {
@@ -1286,10 +1295,34 @@ fn install_scripts(
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
+    // Animation graphs the cutscenes name, and their animation names
+    // (crate::cutscenes).
+    // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
+    // go first when the level is over the tag memory bound (`lean` 4).
+    // `cutscene_data` is `None` without either, `Some(false)` without the
+    // graphs.
+    let graphs = match cutscene_data {
+        Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
+        _ => Default::default(),
+    };
+    let recordings = match cutscene_data {
+        Some(_) => crate::cutscenes::read_recordings(h1)?,
+        None => Vec::new(),
+    };
+    put_block(
+        root,
+        crate::cutscenes::H2_RECORDINGS,
+        crate::cutscenes::H2_RECORDING_LEN,
+        crate::cutscenes::recordings_block(&recordings),
+    );
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
         if h.type_name == "string_id" && !interned.contains_key(&h.token) {
-            interned.insert(h.token.clone(), set.intern(&h.token)?);
+            let text = match h.h1_type == h1scripts::compile::ANIMATION_NAME {
+                true => crate::cutscenes::animation_name(&graphs, h),
+                false => h.token.clone(),
+            };
+            interned.insert(h.token.clone(), set.intern(&text)?);
         }
     }
     // The seat-mapping table, in h1scripts.
@@ -1319,11 +1352,15 @@ fn install_scripts(
         .collect();
     let mut resolved_by_level = 0;
     let left = c.resolve_hooks(|h| {
+        if h.h1_type == h1scripts::compile::SOUND_LENGTH {
+            return crate::cutscenes::sound_length_hook(h1, h);
+        }
         match h.type_name.as_str() {
             "string_id" => interned.get(&h.token).copied(),
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
+            "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
             ty => level.resolve(h).or_else(|| {
                 let g = h1scripts::level::tag_group(ty)?;
                 tags_by_name.get(&(g, h.token.clone())).map(|id| id.0)
@@ -1386,6 +1423,9 @@ fn install_scripts(
         references: c.references.len(),
         references_resolved: resolved,
         initial: initial.to_vec(),
+        graphs,
+        recordings: recordings.len(),
+        recording_bytes: recordings.iter().map(|r| r.stream.len()).sum(),
     })
 }
 
