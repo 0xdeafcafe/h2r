@@ -460,8 +460,11 @@ async fn account_friends(
     headers: HeaderMap,
     Path(tag): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.friends(&gamertag(&tag)?)?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.friends(&gamertag(&tag)?, viewer)?,
+    ))
 }
 
 async fn keys_by_xuid(
@@ -475,8 +478,8 @@ async fn keys_by_xuid(
 }
 
 async fn presence(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.presence()))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.presence(viewer)))
 }
 
 fn event_query(p: &HashMap<String, String>) -> ApiResult<Query> {
@@ -696,15 +699,10 @@ async fn catch_up(
             .map_err(|e| e.to_string())?;
         for e in &batch {
             // A hidden event is skipped, but the reader's place moves past it.
-            if live.event_shows(e, viewer) {
-                send(
-                    socket,
-                    &StreamMessage::Event {
-                        event: Box::new(e.to_wire()),
-                    },
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+            if let Some(w) = live.wire_for(e, viewer) {
+                send(socket, &StreamMessage::Event { event: Box::new(w) })
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             *last = e.position;
         }
@@ -782,8 +780,8 @@ async fn run_stream(
                 Ok(e) => {
                     if e.position > last {
                         last = e.position;
-                        if probe.matches(&e) && live.event_shows(&e, viewer) {
-                            send(&mut socket, &StreamMessage::Event { event: Box::new(e.to_wire()) }).await.map_err(|e| e.to_string())?;
+                        if let Some(w) = probe.matches(&e).then(|| live.wire_for(&e, viewer)).flatten() {
+                            send(&mut socket, &StreamMessage::Event { event: Box::new(w) }).await.map_err(|e| e.to_string())?;
                         }
                     }
                 }

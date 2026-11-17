@@ -233,7 +233,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
-| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}` |
+| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
@@ -586,6 +586,17 @@ but its place still moves past them, and `caught_up` names the log's
 head. A stream reader says who it is with `?auth=1` and a first message
 `{"kind": "auth", "token": "<read token>"}` (see Streams); without it, a
 public server's stream is anonymous.
+
+**Presence.** A player's game id and activity follow the same rule. In
+`GET /v1/presence`, a friends list (`GET /v1/accounts/{gamertag}/friends`)
+and the log's `SignedIn`/`PresenceChanged` events (`/v1/events`,
+`/v1/stream`), a reader who may not see the player's game, or every
+friends-only or invite-only session the player was in when it set that
+presence (and, for the current presence, is in now), gets the player's
+state with no `game_id` and `activity: "In a game"` (none when the
+player said neither). The player itself and admins always get the real
+values. Such a log event carries `redacted: true` in its data and an
+empty `jws`: its signature covers the real data, so it is withheld.
 
 **Stats.** `GET /v1/stats/summary` counts every game for admins. Everyone
 else gets the public summary: a Live co-op game linked to a session is

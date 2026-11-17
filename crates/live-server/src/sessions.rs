@@ -284,9 +284,12 @@ impl Live {
         Ok((self.viewer_of(&author), exp))
     }
 
-    /// [`event_shows_to`] against the current read model.
-    pub fn event_shows(&self, e: &RecordedEvent, viewer: Viewer) -> bool {
-        viewer == Viewer::Admin || event_shows_to(&self.model.read(), &e.body.stream, viewer)
+    /// [`wire_for`] against the current read model.
+    pub fn wire_for(&self, e: &RecordedEvent, viewer: Viewer) -> Option<live_proto::WireEvent> {
+        if viewer == Viewer::Admin {
+            return Some(e.to_wire());
+        }
+        wire_for(&self.model.read(), e, viewer)
     }
 
     /// Whether a live frame's game shows to `viewer`.
@@ -320,6 +323,104 @@ pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
         return session_shows_to(s, id, viewer);
     }
     true
+}
+
+/// What presence says instead of a hidden game's or session's activity.
+pub const GENERIC_ACTIVITY: &str = "In a game";
+
+/// The open friends-only and invite-only sessions `xuid` hosts or is on.
+pub fn private_sessions_of(s: &State, xuid: live_proto::Xuid) -> Vec<String> {
+    s.sessions
+        .values()
+        .filter(|x| {
+            x.state == "open"
+                && !x.advertisement.visibility.is_public()
+                && (x.host_xuid == xuid || x.players.contains_key(&xuid))
+        })
+        .map(|x| x.session_id.clone())
+        .collect()
+}
+
+/// Whether `viewer` may see the details of `xuid`'s presence: its game id
+/// (the game shows to it) and its activity (every private session the
+/// player was in shows to it). The player and admins always may.
+pub fn presence_detail_shows(
+    s: &State,
+    xuid: live_proto::Xuid,
+    game_id: Option<&str>,
+    sessions: &[String],
+    viewer: Viewer,
+) -> bool {
+    if viewer == Viewer::Admin || viewer == Viewer::Account(xuid) {
+        return true;
+    }
+    game_id.is_none_or(|g| game_shows_to(s, g, viewer))
+        && sessions.iter().all(|id| session_shows_to(s, id, viewer))
+}
+
+/// A presence's game id and activity as `viewer` may see them: hidden
+/// ones become no game id and [`GENERIC_ACTIVITY`].
+pub fn presence_for(
+    s: &State,
+    xuid: live_proto::Xuid,
+    game_id: Option<&String>,
+    activity: Option<&String>,
+    sessions: &[String],
+    viewer: Viewer,
+) -> (Option<String>, Option<String>) {
+    if presence_detail_shows(s, xuid, game_id.map(String::as_str), sessions, viewer) {
+        return (game_id.cloned(), activity.cloned());
+    }
+    let busy = game_id.is_some() || activity.is_some();
+    (None, busy.then(|| GENERIC_ACTIVITY.to_string()))
+}
+
+/// A log event as `viewer` reads it: None when hidden ([`event_shows_to`]);
+/// a presence event whose details the reader may not see has them replaced
+/// ([`presence_for`]), its signature withheld (`jws` empty: it signed the
+/// real data) and `redacted: true` in its data.
+pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_proto::WireEvent> {
+    if !event_shows_to(s, &e.body.stream, viewer) {
+        return None;
+    }
+    let mut w = e.to_wire();
+    let b = &e.body;
+    if viewer == Viewer::Admin
+        || !matches!(
+            b.kind.as_str(),
+            live_proto::types::SIGNED_IN | live_proto::types::PRESENCE_CHANGED
+        )
+    {
+        return Some(w);
+    }
+    let Some(xuid) = b
+        .stream
+        .strip_prefix("presence-")
+        .and_then(|x| live_proto::Xuid::parse(x).ok())
+    else {
+        return Some(w);
+    };
+    let text = |k: &str| b.data[k].as_str().map(str::to_string);
+    let (game_id, activity) = (text("game_id"), text("activity"));
+    let sessions = s
+        .presence_context
+        .get(&e.position)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if presence_detail_shows(s, xuid, game_id.as_deref(), sessions, viewer) {
+        return Some(w);
+    }
+    if let Some(d) = w.data.as_object_mut() {
+        d.remove("game_id");
+        d.remove("session_id");
+        if game_id.is_some() || activity.is_some() {
+            d.insert("activity".into(), GENERIC_ACTIVITY.into());
+        }
+        d.insert("redacted".into(), true.into());
+    }
+    w.jws = String::new();
+    w.jws_index = None;
+    Some(w)
 }
 
 /// [`crate::model::Game::shows_to`] by id; an unknown game is public.
