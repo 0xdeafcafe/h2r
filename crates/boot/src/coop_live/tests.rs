@@ -563,6 +563,95 @@ fn the_retail_co_op_line_is_ours_only_in_a_co_op_session() {
     assert_eq!(lobby.string(0x0e00_01ed), None, "another retail id");
 }
 
+/// Every line the lobby can show in place of "Playing a co-op campaign
+/// requires 2 players on a single Xbox console" fits the lobby's 52
+/// characters a line, and none says "single".
+#[test]
+fn every_co_op_lobby_line_fits_and_none_says_single() {
+    let mut lines = vec![
+        LOBBY_LINE.to_string(),
+        INVITE_FIRST.into(),
+        GUEST_LINE.into(),
+        ONE_PER_CONSOLE.into(),
+        lobby_line(4),
+        lobby_line(16),
+    ];
+    lines.push(line_for(&Role::Host, Some(&session(5, 5)), 4));
+    for text in &lines {
+        assert!(text.len() < 128, "{text:?} fits a text slot");
+        assert!(!text.to_lowercase().contains("single"), "{text:?}");
+        for line in text.split("\r\n") {
+            assert!(line.len() <= 52, "{line:?}");
+        }
+    }
+}
+
+#[test]
+fn the_lobby_line_is_ours_from_the_co_op_row_and_says_invite_first_while_alone() {
+    // open_retail asks for co-op mode (process-wide).
+    let _turn = MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (lobby, _) = lobby_with(Arc::default());
+    lobby.set_text_base(0x5000_0000);
+    // At the main menu, then in a split-screen lobby: the game's text.
+    assert_eq!(lobby.string(COOP_TAKES_TWO), None);
+    lobby.observe(Some(coop_probe::Session {
+        class: 0,
+        ..session(1, 2)
+    }));
+    assert_eq!(lobby.string(COOP_TAKES_TWO), None, "split screen");
+    lobby.observe(None);
+    // The Co-op Campaign row: ours at once, before any session is read.
+    lobby.open_retail();
+    let at = lobby.string(COOP_TAKES_TWO).unwrap();
+    assert_eq!(at, lobby.texts.address(Texts::id(LINE_SLOT)).unwrap());
+    assert_eq!(
+        lobby.texts.get(LINE_SLOT).unwrap(),
+        lobby_line(lobby.max_players())
+    );
+    // The squad session, alone: Start Game does nothing, so say why.
+    lobby.observe(Some(session(1, 1)));
+    lobby.refresh_line();
+    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), INVITE_FIRST);
+    // A friend in, two players on one console between them.
+    lobby.observe(Some(session(2, 3)));
+    lobby.refresh_line();
+    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), ONE_PER_CONSOLE);
+    // Too many consoles for the limit.
+    lobby.observe(Some(session(3, 3)));
+    lobby.refresh_line();
+    assert_eq!(
+        lobby.texts.get(LINE_SLOT).unwrap(),
+        "Co-op over Xbox Live takes up to 2 consoles;\r\n3 are in this lobby."
+    );
+    // Another Live row: back to the game's text once out of the session.
+    lobby.leave();
+    lobby.observe(None);
+    assert_eq!(lobby.string(COOP_TAKES_TWO), None);
+    drop_coop_mode();
+}
+
+#[test]
+fn a_friend_in_the_hosts_lobby_reads_ours_before_it_knows_it_is_a_co_op_guest() {
+    let (lobby, _) = lobby_with(Arc::default());
+    lobby.set_text_base(0x5000_0000);
+    assert_eq!(lobby.role(), Role::Idle);
+    // The accepted invitation put this console in the host's lobby: a
+    // networked session it does not host.
+    lobby.observe(Some(coop_probe::Session {
+        host_peer: 1,
+        ..session(2, 2)
+    }));
+    assert!(lobby.string(COOP_TAKES_TWO).is_some());
+    lobby.refresh_line();
+    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), GUEST_LINE);
+    // Without Live (a system link lobby), the game's text.
+    let arm = Arm::session();
+    let offline = Lobby::new(levels_fixture(), Some(arm), None, Box::new(|_| Vec::new()));
+    offline.set_text_base(0x5000_0000);
+    offline.observe(Some(session(2, 2)));
+    assert_eq!(offline.string(COOP_TAKES_TWO), None);
+}
+
 #[test]
 fn a_co_op_guest_starts_with_exactly_the_hosts_skulls() {
     let (on, line) =

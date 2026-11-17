@@ -1075,18 +1075,33 @@ for the host's campaign`, `The lobby's difficulty differs`, `N consoles in
 the lobby`, `No lobby`) and Ready (closes the screen; the guest waits for
 the host's start in the lobby).
 
-**Text.** While a console hosts or joined a co-op session, the retail
-lobby line about co-op needing two players on one console (string id
-`0x0e0001ec`, `coop_takes_two` in `mainmenu.map`'s strings) reads:
+**Text.** The retail lobby line "Playing a co-op campaign requires 2
+players on a single Xbox console" (string id `0x0e0001ec`,
+`coop_takes_two` in `mainmenu.map`'s strings) is the only "single Xbox"
+text on this path: the code names that id once, in the lobby's status
+line (`0x24ffc9`, at `0x2500ab`), for start state 7 in co-op mode
+(`0x199994`). Start Game (`0x251050`) acts only on state 9 and shows no
+dialog otherwise, so the status line is where a refused start explains
+itself. On the Live co-op path it reads ours (`coop_live::line_for`):
 
-```text
-Co-op over Xbox Live: 2 players, one per console.
-Invite a friend from Co-op Campaign.
-```
+| When | Line |
+|---|---|
+| Co-op Campaign chosen, no session read yet | `Co-op over Xbox Live: 2 players, one per console.` / `Press Y in the lobby to invite a friend.` (`up to N players` above 2) |
+| the host alone in its session | `Invite a friend first: co-op over Xbox Live` / `needs at least 2 consoles. Press Y for Friends.` |
+| more players than consoles | `Co-op over Xbox Live: one player per console.` / `Sign out the extra players to start.` |
+| more consoles than the limit | `Co-op over Xbox Live takes up to N consoles;` / `M are in this lobby.` |
+| a guest (joined, or in a host's networked lobby before it knows) | `Co-op over Xbox Live: one player per console.` / `Waiting for the host to start the game.` |
 
-Split screen keeps the game's own text: the locale source answers that id
-only in a co-op session. Every text of the co-op screens is ours: guest
-memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
+It is ours from the moment the Co-op Campaign row is chosen (the role is
+the host's before the row's original runs), and, with Live on, on any
+console in a networked squad session (class not 0): a friend who accepted
+an invitation sits in the host's co-op lobby before the host's
+advertisement says co-op, and read the retail line until then. The tick
+reads the session, picks the line and writes it, in that order.
+
+Split screen keeps the game's own text: no session, or a local one (class
+0), and not hosting or joined. So does a system link lobby with Live off.
+Every text of the co-op screens is ours: guest memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
 is drawn and every tick. Not `0x20ffe000`, the first choice: the community
 variants answer index `0xffe0xx` whatever the top byte, so the co-op screen
 showed their names (a test now checks every id against every private range).
