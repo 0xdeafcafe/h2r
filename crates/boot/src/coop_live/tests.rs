@@ -706,7 +706,7 @@ fn the_screens_and_the_hooks_share_the_plan() {
     assert!(
         text.contains(FEATURE)
             && text.contains("co-op mode for the co-op row")
-            && text.contains("co-op over two consoles"),
+            && text.contains("co-op over 2 to N consoles"),
         "{text}"
     );
     // The join screen opens itself only with our list screens.
@@ -899,6 +899,28 @@ fn a_larger_co_op_host_waits_for_up_to_its_limit_and_says_so() {
     assert_eq!(
         lobby.checks().blocker().as_deref(),
         Some("5 players; co-op takes up to 4")
+    );
+}
+
+#[test]
+fn the_start_state_line_names_the_consoles_once() {
+    let (lobby, _) = lobby_with(Arc::default());
+    assert_eq!(
+        lobby
+            .start_state_line(START_COOP_OR_TEAMS, START_READY, 4)
+            .as_deref(),
+        Some("coop-live: lobby start state 7 (co-op wants one console) answered 9 for 4 consoles")
+    );
+    assert_eq!(
+        lobby.start_state_line(START_COOP_OR_TEAMS, START_READY, 4),
+        None,
+        "once"
+    );
+    assert_eq!(
+        lobby
+            .start_state_line(START_NOT_LOADED, START_NOT_LOADED, 4)
+            .as_deref(),
+        Some("coop-live: lobby start state 8")
     );
 }
 
