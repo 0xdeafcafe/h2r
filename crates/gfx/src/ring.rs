@@ -1,28 +1,28 @@
 //! Per-submission upload rings: one GPU buffer that many draws' bytes are
-//! packed into, written through a few large `queue.write_buffer_with`
-//! staging views per flush instead of one buffer per draw.
+//! packed into, written through one exactly sized `queue.write_buffer` per
+//! flush instead of one buffer per draw.
 //!
 //! [`UploadRing::push`] (or [`UploadRing::push_with`], which lets the
-//! caller produce the bytes in place) writes straight into wgpu's staging
-//! memory and returns the buffer and offset they will live at: one CPU
-//! copy, no intermediate buffer. The staging views cover [`CHUNK`]-sized
-//! runs of the ring; a full one is handed back to the queue and the next
-//! opened. [`UploadRing::flush`] hands back the open one. Queued writes
-//! land before the next submit, in order (a later view overlapping an
-//! earlier one's unused tail wins), so the written regions must not be
-//! reused before that submit: the cursor only moves forward until
-//! [`UploadRing::reset`], which the owner calls after submitting. WebGPU
-//! orders a queued write after the work already submitted, so a region
-//! reused after the reset never races a draw that still reads it.
+//! caller produce the bytes in place) stages the bytes on the CPU and
+//! returns the buffer and offset they will live at. [`UploadRing::flush`]
+//! hands everything staged since the last flush to the queue as one write
+//! of exactly the bytes used. The writes land before the next submit, in
+//! order, so the written regions must not be reused before that submit:
+//! the cursor only moves forward until [`UploadRing::reset`], which the
+//! owner calls after submitting. WebGPU orders a queued write after the
+//! work already submitted, so a region reused after the reset never races
+//! a draw that still reads it.
 //!
-//! When a push does not fit, the open view goes to the old buffer and a
+//! The staging used to be 2 MiB `write_buffer_with` views, one per ring
+//! per flush whatever it held: wgpu makes (and frees) a Metal buffer of the
+//! view's size for each, and copies all of it on the GPU. With a flush per
+//! target switch that was about 130 us a flush against about 20 us for an
+//! exactly sized write (`tests/staging_cost.rs`).
+//!
+//! When a push does not fit, what is staged goes to the old buffer and a
 //! new, larger one takes over (draws recorded so far keep their handle to
 //! the old one). An owner that never resets therefore never overwrites
 //! anything either: it just moves to a fresh buffer each time one fills up.
-
-/// Bytes a staging view covers (less at the end of the ring, more for a
-/// single larger push).
-pub const CHUNK: u64 = 2 << 20;
 
 /// Largest size a ring grows to by doubling when it fills (a single larger
 /// push still gets a buffer of its own size).
@@ -35,8 +35,10 @@ pub struct UploadRing {
     buffer: wgpu::Buffer,
     capacity: u64,
     cursor: u64,
-    /// The open staging view and the ring range `[start, end)` it covers.
-    view: Option<(wgpu::QueueWriteBufferView, u64, u64)>,
+    /// Bytes staged since the last flush, for the ring range from
+    /// `staged_at` (alignment gaps included, as zeros).
+    staged: Vec<u8>,
+    staged_at: u64,
     generation: u64,
 }
 
@@ -56,7 +58,8 @@ impl UploadRing {
             buffer: Self::allocate(device, label, usage, capacity),
             capacity,
             cursor: 0,
-            view: None,
+            staged: Vec::new(),
+            staged_at: 0,
             generation: 0,
         }
     }
@@ -95,7 +98,7 @@ impl UploadRing {
 
     /// [`push`](Self::push) of `len` bytes that `fill` writes in place: it
     /// gets exactly `len` bytes of staging memory, which it must write in
-    /// full. Padding up to a multiple of 4 is left unwritten.
+    /// full. Padding up to a multiple of 4 is written as zeros.
     pub fn push_with(
         &mut self,
         device: &wgpu::Device,
@@ -120,42 +123,32 @@ impl UploadRing {
             self.cursor = 0;
             offset = 0;
         }
-        if self
-            .view
-            .as_ref()
-            .is_none_or(|&(_, start, end)| offset < start || offset + padded > end)
-        {
-            // Hand back the open view (its unused tail is overwritten by the
-            // next one, queued after it) and open one from here.
-            self.view = None;
-            let size = CHUNK.max(padded).min(self.capacity - offset);
-            crate::churn::queue_write();
-            let view = queue
-                .write_buffer_with(
-                    &self.buffer,
-                    offset,
-                    wgpu::BufferSize::new(size).expect("non-empty"),
-                )
-                .expect("staging view inside the ring");
-            self.view = Some((view, offset, offset + size));
+        if self.staged.is_empty() {
+            self.staged_at = offset;
         }
-        let (view, start, _) = self.view.as_mut().expect("opened above");
-        let at = (offset - *start) as usize;
-        fill(view.slice(at..at + len));
+        let at = (offset - self.staged_at) as usize;
+        self.staged.resize(at + padded as usize, 0);
+        fill(wgpu::WriteOnly::from(&mut self.staged[at..at + len]));
         self.cursor = offset + padded;
         (self.buffer.clone(), offset)
     }
 
-    /// Hands the bytes written since the last flush to the queue.
-    pub fn flush(&mut self, _queue: &wgpu::Queue) {
-        self.view = None;
+    /// Hands the bytes written since the last flush to the queue: one
+    /// write of exactly the range used.
+    pub fn flush(&mut self, queue: &wgpu::Queue) {
+        if self.staged.is_empty() {
+            return;
+        }
+        crate::churn::queue_write();
+        queue.write_buffer(&self.buffer, self.staged_at, &self.staged);
+        self.staged.clear();
     }
 
     /// Starts again from offset 0. Call after the submit that follows a
     /// [`flush`](Self::flush); anything still open is flushed first by the
     /// caller's contract (debug-asserted).
     pub fn reset(&mut self) {
-        debug_assert!(self.view.is_none(), "reset with unflushed bytes");
+        debug_assert!(self.staged.is_empty(), "reset with unflushed bytes");
         self.cursor = 0;
     }
 

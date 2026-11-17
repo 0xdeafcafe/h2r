@@ -335,6 +335,9 @@ pub struct Stats {
     pub scissor_split_draws: u64,
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
+    /// Lazy levels left as targets whose guest bytes were not read again:
+    /// the match they held was still those bytes (`H2_D3D_LEAVE_READ`).
+    pub rtt_leave_reads_skipped: u64,
     /// Render-to-texture host surfaces filled from guest memory.
     pub rtt_uploads: u64,
     /// Depth-buffer readbacks for textures that alias its memory
@@ -752,6 +755,10 @@ pub struct Device<B: Backend> {
     /// render-to-texture and a backend that samples depth surfaces);
     /// `H2_D3D_LAZY_DEPTH=0` turns it off.
     lazy_depth: bool,
+    /// A level left as a target is read from guest memory every time, even
+    /// when its match is already those bytes (`H2_D3D_LEAVE_READ=1`;
+    /// `Device::set_leave_read`).
+    leave_read: bool,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
@@ -893,6 +900,7 @@ impl<B: Backend> Device<B> {
             depth_alias: HashMap::default(),
             depth_level_tex: HashMap::default(),
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
+            leave_read: std::env::var_os("H2_D3D_LEAVE_READ").is_some_and(|v| v == "1"),
             rtt_synced: HashMap::default(),
             rtt_stores: HashMap::default(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
@@ -953,6 +961,17 @@ impl<B: Backend> Device<B> {
     /// Constant register `r` (hardware order, index = register + 96).
     pub fn constant(&self, r: usize) -> [f32; 4] {
         std::array::from_fn(|c| f32::from_bits(self.constants[4 * r + c]))
+    }
+
+    /// Every constant register, boxed for a draw: filled in place in the
+    /// heap (a 3 KiB array built on the stack and then moved into its box
+    /// was a second copy per draw).
+    fn constants_box(&self) -> Box<[[f32; 4]; CONSTANTS]> {
+        let mut b = Box::new([[0f32; 4]; CONSTANTS]);
+        for (reg, words) in b.iter_mut().zip(self.constants.as_chunks::<4>().0) {
+            *reg = words.map(f32::from_bits);
+        }
+        b
     }
 
     fn live(&self, entry: &'static str) -> Result<(), D3dError> {
@@ -3260,16 +3279,16 @@ impl<B: Backend> Device<B> {
         ))
     }
 
+    /// The program from `program_start` up to and including its FINAL
+    /// instruction (or the last slot). Found first, then copied in one
+    /// allocation: every draw makes one, and growing it a slot at a time
+    /// reallocated several times per draw.
     fn microcode(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        for s in self.program_start as usize..PROGRAM_SLOTS {
-            let insn = &self.program[4 * s..4 * s + 4];
-            out.extend_from_slice(insn);
-            if insn[3] & 1 != 0 {
-                break; // FINAL
-            }
-        }
-        out
+        let start = (self.program_start as usize).min(PROGRAM_SLOTS);
+        let end = (start..PROGRAM_SLOTS)
+            .find(|&s| self.program[4 * s + 3] & 1 != 0) // FINAL
+            .map_or(PROGRAM_SLOTS, |s| s + 1);
+        self.program[4 * start..4 * end].to_vec()
     }
 
     fn shader_inputs(
@@ -3294,7 +3313,7 @@ impl<B: Backend> Device<B> {
             vertex,
             provided_inputs: provided,
             vertex_defaults: *self.immediate.registers(),
-            constants: Box::new(std::array::from_fn(|r| self.constant(r))),
+            constants: self.constants_box(),
             pixel_shader,
             combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
             final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,

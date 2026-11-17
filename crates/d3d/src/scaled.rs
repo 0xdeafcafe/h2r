@@ -183,6 +183,11 @@ pub trait ScaleView<R: Backend>: Backend {
     ) -> Result<Self::Surface, String>;
     /// Counted draws stop counting (the reference answers every count).
     fn stop_counting(&mut self);
+    /// This backend and `reference` sample each other's results: both
+    /// submit side work as they record it
+    /// ([`GfxBackend::set_defer_side_passes`]), so neither's submissions
+    /// can run ahead of what the other recorded. The default does nothing.
+    fn share_results(&mut self, _reference: &mut R) {}
     /// E3 lighting's one-tap shadow lookup for the draws prepared from now
     /// on (`crate::ShaderProvider::set_hard_shadows`). The default does
     /// nothing.
@@ -542,6 +547,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             return Err(format!("render scale {scale} is not 1 to {MAX_SCALE}"));
         }
         view.stop_counting();
+        let mut reference = reference;
+        view.share_results(&mut reference);
         Ok(Self {
             reference,
             view,
@@ -2184,6 +2191,11 @@ impl ScaleView<GfxBackend> for GfxBackend {
         self.count_samples = false;
     }
 
+    fn share_results(&mut self, reference: &mut GfxBackend) {
+        self.set_defer_side_passes(false);
+        reference.set_defer_side_passes(false);
+    }
+
     fn set_hard_shadows(&mut self, on: bool) {
         GfxBackend::set_hard_shadows(self, on);
     }
@@ -2328,6 +2340,11 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
 
     fn stop_counting(&mut self) {
         self.count_samples = false;
+    }
+
+    fn share_results(&mut self, _reference: &mut ScaledBackend<GfxBackend, GfxBackend>) {
+        // The inner backend turned its own two off when it was made.
+        self.set_defer_side_passes(false);
     }
 
     fn set_hard_shadows(&mut self, on: bool) {

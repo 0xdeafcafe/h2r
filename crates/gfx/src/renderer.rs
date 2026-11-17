@@ -1113,6 +1113,7 @@ impl Renderer {
                     wgpu::StoreOp::Discard
                 };
                 {
+                    crate::churn::pass();
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("gfx count pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1168,6 +1169,7 @@ impl Renderer {
                 }),
                 None => wgpu::LoadOp::Load,
             };
+            crate::churn::pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("gfx pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
