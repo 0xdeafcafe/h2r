@@ -2,9 +2,10 @@
 //! disc and its cache files, step 1 of the campaigns work
 //! (docs/game/campaigns.md, docs/formats/h1-map-format.md).
 //!
-//! The import copies the campaign maps byte for byte, as the disc has them
-//! (compressed), into `<data>/campaigns/halo1/source/`, with a manifest of
-//! their SHA-256. Converting them to Halo 2 maps is a later step.
+//! The import converts the whole disc ([`crate::h1_import`]); with
+//! `--copy-source` it also copies the campaign maps byte for byte, as the
+//! disc has them (compressed), into `<data>/campaigns/halo1/source/`, with a
+//! manifest of their SHA-256.
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -51,13 +52,24 @@ of the base pinned: every tag laid out anew, raw data copied
 (docs/formats/tag-schema.md, \"Fresh maps\"). --dry-run does everything but
 write and prints what it would write. See docs/game/h1-multiplayer.md.";
 
-const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--force] [--dry-run]
+const IMPORT_USAGE: &str = "usage: h2 import halo1 [halo1.iso] [--data DIR] [--disc halo2.iso]
+                        [--force] [--dry-run] [--copy-source]
 
-Checks the Halo: Combat Evolved disc and copies its campaign maps (a10 to d40,
-ui.map, and bitmaps.map and sounds.map if the disc has them) as they are on
-the disc into <data>/campaigns/halo1/source/, with manifest.txt listing each
-file's SHA-256. The disc defaults to disc/halo1.iso; --data to
-$TMPDIR/h2boot-data, as for `h2 play`. See docs/game/campaigns.md.";
+Converts the Halo: Combat Evolved disc for the game: its ten campaign levels
+into <data>/campaigns/halo1/ (Campaign, then Halo: Combat Evolved) and each
+multiplayer map, in both sandboxes, into <data>/maps/h1_<map>/ (the
+multiplayer map list). A line per map; a map that fails is reported and the
+rest go on. <data>/campaigns/halo1/import.stamp records the disc's SHA-256
+and the converter's version, so a rerun converts only what is missing or
+stale; --force converts everything again. `h2 play`, `h2 run` and `h2 serve`
+run this by themselves when halo1.iso is next to the Halo 2 disc.
+
+The disc defaults to disc/halo1.iso; --data to $TMPDIR/h2boot-data, as for
+`h2 play`; --disc (the Halo 2 disc, whose maps are the bases) to $H2_DISC,
+else halo2.iso beside the Halo 1 disc, else disc/halo2.iso. --copy-source
+also copies the disc's campaign maps as they are (compressed) into
+<data>/campaigns/halo1/source/ with a SHA-256 manifest. See
+docs/game/campaigns.md.";
 
 /// Where an import writes, under the data root.
 const SOURCE_DIR: [&str; 3] = ["campaigns", "halo1", "source"];
@@ -442,29 +454,49 @@ fn sound(args: &[String]) -> Result<()> {
 pub struct ImportArgs {
     pub iso: PathBuf,
     pub data: Option<PathBuf>,
+    pub disc: Option<PathBuf>,
     pub force: bool,
     pub dry_run: bool,
+    pub copy_source: bool,
 }
 
 pub fn parse_import(args: &[String], default_iso: PathBuf) -> Result<ImportArgs, String> {
-    let (mut iso, mut data, mut force, mut dry_run) = (None, None, false, false);
+    let mut a = ImportArgs {
+        iso: default_iso,
+        data: None,
+        disc: None,
+        force: false,
+        dry_run: false,
+        copy_source: false,
+    };
+    let mut iso = None;
     let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--data" => data = Some(PathBuf::from(it.next().ok_or("--data needs a directory")?)),
-            "--force" => force = true,
-            "--dry-run" => dry_run = true,
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--data" => a.data = Some(PathBuf::from(it.next().ok_or("--data needs a directory")?)),
+            "--disc" => a.disc = Some(PathBuf::from(it.next().ok_or("--disc needs the Halo 2 disc")?)),
+            "--force" => a.force = true,
+            "--dry-run" => a.dry_run = true,
+            "--copy-source" => a.copy_source = true,
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
-            _ if iso.is_none() => iso = Some(PathBuf::from(a)),
-            _ => return Err(format!("unexpected argument {a}")),
+            _ if iso.is_none() => iso = Some(PathBuf::from(arg)),
+            _ => return Err(format!("unexpected argument {arg}")),
         }
     }
-    Ok(ImportArgs {
-        iso: iso.unwrap_or(default_iso),
-        data,
-        force,
-        dry_run,
-    })
+    if let Some(i) = iso {
+        a.iso = i;
+    }
+    Ok(a)
+}
+
+/// The Halo 2 disc an import builds on: `--disc`, else `$H2_DISC`, else
+/// `halo2.iso` beside the Halo 1 disc, else the repo's `disc/halo2.iso`.
+pub fn import_h2_disc(a: &ImportArgs, env: Option<PathBuf>, repo_disc: PathBuf) -> PathBuf {
+    if let Some(d) = a.disc.clone().or(env) {
+        return d;
+    }
+    let beside = a.iso.with_file_name("halo2.iso");
+    if beside.is_file() { beside } else { repo_disc }
 }
 
 /// What an import wrote, or would write.
@@ -542,20 +574,44 @@ fn import(args: &[String]) -> Result<()> {
     let data = a
         .data
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("h2boot-data"));
-    let mut iso = crate::open_iso(&a.iso)?;
-    let out = OutDir::new(&data, a.force)?.protecting(&a.iso);
-    let done = install(&mut iso, &out, &data, a.dry_run)?;
-    let verb = if a.dry_run { "would write" } else { "wrote" };
-    for p in &done.written {
-        println!("{verb} {}", p.display());
+        .unwrap_or_else(content::store::default_data_root);
+    if a.copy_source {
+        let mut iso = crate::open_iso(&a.iso)?;
+        let out = OutDir::new(&data, a.force)?.protecting(&a.iso);
+        let done = install(&mut iso, &out, &data, a.dry_run)?;
+        let verb = if a.dry_run { "would write" } else { "wrote" };
+        for p in &done.written {
+            println!("{verb} {}", p.display());
+        }
     }
+    let h2 = import_h2_disc(
+        &a,
+        std::env::var_os("H2_DISC").map(PathBuf::from),
+        crate::repo_root().join("disc").join("halo2.iso"),
+    );
+    let sum = crate::h1_import::import(
+        &crate::h1_import::Request {
+            h1_iso: &a.iso,
+            h2_disc: &h2,
+            data: &data,
+            force: a.force,
+            dry_run: a.dry_run,
+        },
+        &mut |s| println!("{s}"),
+    )?;
     println!(
-        "{} map(s) from {} into {}",
-        done.copied.len(),
-        a.iso.display(),
+        "{} converted, {} failed, {} already there; data root {}",
+        sum.converted,
+        sum.failed,
+        sum.skipped,
         data.display()
     );
+    if sum.failed > 0 {
+        bail!(
+            "{} map(s) failed; the rest are in place. `h2 import halo1 --force` tries everything again",
+            sum.failed
+        );
+    }
     Ok(())
 }
 
@@ -694,20 +750,8 @@ fn convert(args: &[String]) -> Result<()> {
             .map(PathBuf::from)
             .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")),
     };
-    let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
-        .with_context(|| format!("reading {base_name}.map"))?;
-    let sha = content::Sha256::of(&file);
-    // The Halo 1 sandbox places Halo 1 objects, converted and added as
-    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox").
-    let p = match a.sandbox {
-        Sandbox::Halo2 => prepare(&h1, sha, &mut base, a.sandbox)?,
-        Sandbox::Halo1 => {
-            let templates = h1objects::base::Base::read(&mut base)
-                .with_context(|| format!("reading {base_name}'s object templates"))?;
-            let mut objects = h1objects::sandbox::Objects::new(&h1, &templates);
-            h1convert::convert::halo1::prepare_halo1(&h1, sha, &mut base, &mut objects)?
-        }
-    };
+    let mut base = h2_base(&disc, &base_name)?;
+    let p = prepare_mp(&h1, &file, &mut base, &base_name, a.sandbox)?;
     let name = map_name(&h1_name);
     let vertices: usize = p.sections.iter().map(|s| s.vertices.len()).sum();
     let triangles: usize = p.sections.iter().map(|s| s.indices.len() / 3).sum();
@@ -808,19 +852,63 @@ fn convert(args: &[String]) -> Result<()> {
     } else {
         p.build(&mut base, &mopp)?
     };
-    let out = OutDir::new(a.out.clone().expect("checked"), a.force)?.protecting(&a.path);
-    // One package per map; this run's variant beside any other already
-    // there (docs/game/h1-multiplayer.md, "Package").
-    let manifest_path = dir
-        .as_ref()
-        .expect("checked")
+    let out_root = a.out.clone().expect("checked");
+    let out = OutDir::new(&out_root, a.force)?.protecting(&a.path);
+    let (map_file, manifest) = write_mp_package(&out, &out_root, a.sandbox, &done)?;
+    println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
+    println!("wrote {}", manifest.display());
+    Ok(())
+}
+
+/// A Halo 2 map from the Halo 2 disc, opened.
+pub(crate) fn h2_base(disc: &Path, name: &str) -> Result<map::Map<Cursor<Vec<u8>>>> {
+    map::Map::from_reader(Cursor::new(read_h2_map(disc, name)?))
+        .with_context(|| format!("reading {name}.map"))
+}
+
+/// The first step of a multiplayer conversion: `h1` (whose file bytes are
+/// `file`) onto `base` in `sandbox`.
+pub(crate) fn prepare_mp(
+    h1: &H1Map,
+    file: &[u8],
+    base: &mut map::Map<Cursor<Vec<u8>>>,
+    base_name: &str,
+    sandbox: Sandbox,
+) -> Result<h1convert::convert::Prepared> {
+    let sha = content::Sha256::of(file);
+    // The Halo 1 sandbox places Halo 1 objects, converted and added as
+    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox").
+    Ok(match sandbox {
+        Sandbox::Halo2 => prepare(h1, sha, base, sandbox)?,
+        Sandbox::Halo1 => {
+            let templates = h1objects::base::Base::read(base)
+                .with_context(|| format!("reading {base_name}'s object templates"))?;
+            let mut objects = h1objects::sandbox::Objects::new(h1, &templates);
+            h1convert::convert::halo1::prepare_halo1(h1, sha, base, &mut objects)?
+        }
+    })
+}
+
+/// Writes a converted multiplayer map as `<out_root>/h1_<map>/`: its
+/// variant file and the package manifest, this run's variant beside any
+/// other already there (docs/game/h1-multiplayer.md, "Package"). Returns
+/// the map file's and the manifest's paths.
+pub(crate) fn write_mp_package(
+    out: &OutDir,
+    out_root: &Path,
+    sandbox: Sandbox,
+    done: &h1convert::convert::Converted,
+) -> Result<(PathBuf, PathBuf)> {
+    let name = done.name.clone();
+    let manifest_path = out_root
+        .join(&name)
         .join(content::manifest::MANIFEST_FILE);
     let mut manifest = done.manifest.clone();
     if let Some(old) = std::fs::read_to_string(&manifest_path)
         .ok()
         .and_then(|t| content::Manifest::from_toml(&t).ok())
     {
-        let ours = a.sandbox.name();
+        let ours = sandbox.name();
         manifest.variants.extend(
             old.variants
                 .into_iter()
@@ -836,12 +924,10 @@ fn convert(args: &[String]) -> Result<()> {
         .collect();
     let map_file = out.write(&parts, &done.bytes)?;
     let manifest = out.write(
-        &[name.clone(), content::manifest::MANIFEST_FILE.to_owned()],
+        &[name, content::manifest::MANIFEST_FILE.to_owned()],
         manifest.to_toml().as_bytes(),
     )?;
-    println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
-    println!("wrote {}", manifest.display());
-    Ok(())
+    Ok((map_file, manifest))
 }
 
 /// The Halo 2 disc `h1 convert` reads: `--disc`, else `$H2_DISC`, else
@@ -857,8 +943,8 @@ fn h2_disc(a: &ConvertArgs) -> PathBuf {
 
 /// The scripts layer's tables: Halo 1's XBE (from the Halo 1 disc), Halo
 /// 2's, and every Halo 2 scenario. `None` when the source is a bare map.
-fn campaign_scripting(a: &ConvertArgs, h2: &Path) -> Result<Option<h1campaign::Scripting>> {
-    let f = File::open(&a.path)?;
+pub(crate) fn campaign_scripting(h1: &Path, h2: &Path) -> Result<Option<h1campaign::Scripting>> {
+    let f = File::open(h1)?;
     let Ok(mut iso) = Xiso::open(BufReader::new(f)) else {
         return Ok(None);
     };
@@ -895,18 +981,12 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         .clone()
         .unwrap_or_else(|| h1campaign::base_for(&level).into());
     let disc = h2_disc(a);
-    let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
-        .with_context(|| format!("reading {base_name}.map"))?;
-    let scripting = campaign_scripting(a, &disc)?;
+    let mut base = h2_base(&disc, &base_name)?;
+    let scripting = campaign_scripting(&a.path, &disc)?;
     if scripting.is_none() {
         println!("  scripts: left out (they need the Halo 1 disc's XBE; give the disc, not a map)");
     }
-    let opts = h1campaign::Options {
-        scripts: scripting.as_ref(),
-        sounds: 1000,
-        ..Default::default()
-    };
-    let done = h1campaign::convert(h1, &mut base, &opts)?;
+    let done = h1campaign::convert(h1, &mut base, &campaign_options(scripting.as_ref()))?;
     print!("{}", done.report);
     let map_name = h1campaign::manifest::map_file(&level);
     let manifest_name = h1campaign::manifest::file_name();
@@ -921,16 +1001,42 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         );
         return Ok(());
     }
-    let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
-    let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), &level)?;
     let out = OutDir::new(out_dir, a.force)?.protecting(&a.path);
-    let map_file = out.write(&[map_name], &done.bytes)?;
-    println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
-    if existing.as_deref() != Some(manifest.as_str()) {
-        let path = out.write(&[manifest_name.to_owned()], manifest.as_bytes())?;
-        println!("wrote {}", path.display());
+    let written = write_campaign_level(&out, out_dir, &level, &done.bytes)?;
+    println!("wrote {} ({} bytes)", written[0].display(), done.bytes.len());
+    for p in &written[1..] {
+        println!("wrote {}", p.display());
     }
     Ok(())
+}
+
+/// The campaign conversion's layers: everything, scripts when the Halo 1
+/// disc's XBE gave them, and up to 1000 sounds.
+pub(crate) fn campaign_options(scripts: Option<&h1campaign::Scripting>) -> h1campaign::Options<'_> {
+    h1campaign::Options {
+        scripts,
+        sounds: 1000,
+        ..Default::default()
+    }
+}
+
+/// Writes a converted level as `<out_dir>/<level>.map`, and
+/// `campaign.toml` beside it when it isn't there or doesn't list the
+/// level. Returns the paths written, the map first.
+pub(crate) fn write_campaign_level(
+    out: &OutDir,
+    out_dir: &Path,
+    level: &str,
+    bytes: &[u8],
+) -> Result<Vec<PathBuf>> {
+    let manifest_name = h1campaign::manifest::file_name();
+    let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
+    let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), level)?;
+    let mut written = vec![out.write(&[h1campaign::manifest::map_file(level)], bytes)?];
+    if existing.as_deref() != Some(manifest.as_str()) {
+        written.push(out.write(&[manifest_name.to_owned()], manifest.as_bytes())?);
+    }
+    Ok(written)
 }
 
 #[cfg(test)]
@@ -1048,10 +1154,15 @@ mod tests {
             ImportArgs {
                 iso: d.clone(),
                 data: Some("/x".into()),
+                disc: None,
                 force: true,
-                dry_run: false
+                dry_run: false,
+                copy_source: false,
             }
         );
+        let a = parse_import(&s(&["--disc", "h2.iso", "--copy-source"]), d.clone()).unwrap();
+        assert_eq!((a.disc, a.copy_source), (Some(PathBuf::from("h2.iso")), true));
+        assert!(parse_import(&s(&["--disc"]), d.clone()).is_err());
         let a = parse_import(&s(&["my.iso", "--dry-run"]), d.clone()).unwrap();
         assert_eq!((a.iso, a.dry_run), (PathBuf::from("my.iso"), true));
         assert!(parse_import(&s(&["--data"]), d.clone()).is_err());

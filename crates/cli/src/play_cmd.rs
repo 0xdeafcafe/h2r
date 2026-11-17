@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
-          [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
+          [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
           [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
@@ -44,6 +44,10 @@ input crate timeline (docs/input/input.md) on guest time instead of live input.
 A mappack.iso next to the disc (or another .iso there with the map pack's
 layout) is installed into --data on the way in, once: a warning never stops
 the game. --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
+A halo1.iso next to the disc is converted into --data on the way in (its
+campaign under Campaign, its multiplayer maps in the map list), again only
+when the disc or the converter changed; a warning never stops the game.
+--no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
@@ -501,6 +505,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut disc = None;
     let mut audio = true;
     let mut no_mappack = false;
+    let mut no_halo1 = false;
     let mut follow_status = None;
     let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
@@ -552,6 +557,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--fullscreen" => config.fullscreen = true,
             "--no-audio" => audio = false,
             "--no-mappack" => no_mappack = true,
+            "--no-halo1" => no_halo1 = true,
             "--no-gamepads" => config.gamepads = false,
             "--no-vsync" => config.vsync = false,
             "--fps" => {
@@ -644,6 +650,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
         },
         gamepads: config.gamepads,
     };
+    // Before the level is resolved, so `--level a30` finds a level this
+    // converts.
+    if crate::h1_import::auto_enabled(no_halo1) {
+        crate::h1_import::auto_import(&disc, &data);
+    }
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
     let level = match level_choice(
@@ -652,7 +663,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         std::env::var("H2_LEVEL").ok(),
         std::env::var("H2_DIFFICULTY").ok(),
     )? {
-        Some((name, difficulty)) => Some(boot::level_boot::resolve(&disc, &name, difficulty)?),
+        Some((name, difficulty)) => Some(boot::level_boot::resolve_in(&disc, Some(&data), &name, difficulty)?),
         None => None,
     };
     if let Some(l) = &level {

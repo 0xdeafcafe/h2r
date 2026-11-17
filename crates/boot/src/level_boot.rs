@@ -33,6 +33,8 @@ use anyhow::{Context, Result, bail};
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
+use content::campaign_list as cl;
+
 use crate::layout_glue::Gm;
 
 // ---- guest addresses (docs/runtime/level-boot.md) ----
@@ -350,8 +352,23 @@ fn level_ids(disc: &Path, level: &DiscLevel) -> Option<(u32, u32)> {
 
 /// Resolves `name` against the disc's campaign and multiplayer maps.
 pub fn resolve(disc: &Path, name: &str, difficulty: Difficulty) -> Result<Request> {
+    resolve_in(disc, None, name, difficulty)
+}
+
+/// Resolves `name` against the disc's campaign and multiplayer maps, then,
+/// with a data root, the levels of the campaigns installed there
+/// (`<data>/campaigns/<key>/`, such as Halo 1's `a30`).
+pub fn resolve_in(disc: &Path, data_root: Option<&Path>, name: &str, difficulty: Difficulty) -> Result<Request> {
     let levels = disc_levels(disc)?;
-    let level = pick(&levels, name)?;
+    let level = match pick(&levels, name) {
+        Ok(l) => l,
+        Err(e) => {
+            if let Some(r) = data_root.and_then(|d| installed_request(d, disc, name, difficulty)) {
+                return Ok(r);
+            }
+            return Err(e);
+        }
+    };
     if level.scenario.len() >= OPT_PATH_LEN as usize {
         bail!("{}: scenario path {:?} is longer than the game options hold", level.name, level.scenario);
     }
@@ -372,18 +389,61 @@ pub fn resolve(disc: &Path, name: &str, difficulty: Difficulty) -> Result<Reques
     })
 }
 
-/// `H2_LEVEL` and `H2_DIFFICULTY`, resolved against `disc`; `None` when
-/// `H2_LEVEL` is unset or empty.
-pub fn from_env(disc: &Path) -> Result<Option<Request>> {
-    from_vars(disc, std::env::var("H2_LEVEL").ok().as_deref(), std::env::var("H2_DIFFICULTY").ok().as_deref())
+/// A level of an installed campaign, called by its map name (`a30`) or
+/// scenario path: the start record's campaign id, map id and scenario path
+/// as [`crate::campaigns`] builds them, so the game opens
+/// `d:\maps\<map>.map`, which `vfs::CampaignMapsBackend` serves from the
+/// campaign's folder.
+pub fn campaign_request(built: &[cl::Built], name: &str, difficulty: Difficulty) -> Option<Request> {
+    let n = name.trim().trim_end_matches(".map");
+    built.iter().find_map(|b| {
+        b.levels
+            .iter()
+            .find(|l| l.map.eq_ignore_ascii_case(n) || l.scenario.eq_ignore_ascii_case(n))
+            .map(|l| Request {
+                name: l.map.clone(),
+                scenario: l.scenario.clone(),
+                campaign: b.campaign_id,
+                map: l.map_id,
+                difficulty,
+                kind: Kind::Campaign,
+            })
+    })
 }
 
-pub fn from_vars(disc: &Path, level: Option<&str>, difficulty: Option<&str>) -> Result<Option<Request>> {
+/// [`campaign_request`] over the campaigns installed under `data_root`,
+/// built against the disc's lists exactly as at boot
+/// ([`crate::campaigns::boot_state`]).
+fn installed_request(data_root: &Path, disc: &Path, name: &str, difficulty: Difficulty) -> Option<Request> {
+    let (names, campaigns, maps) = crate::campaigns::read_disc(disc).ok()?;
+    let (ms, _) = crate::campaigns::installed(data_root, &|m| names.iter().any(|n| n == m));
+    let built = cl::build(&ms, &campaigns, &maps).ok()?;
+    campaign_request(&built, name, difficulty)
+}
+
+/// `H2_LEVEL` and `H2_DIFFICULTY`, resolved against `disc` (and the
+/// campaigns installed under `data_root`); `None` when `H2_LEVEL` is unset
+/// or empty.
+pub fn from_env(disc: &Path, data_root: Option<&Path>) -> Result<Option<Request>> {
+    from_vars(
+        disc,
+        data_root,
+        std::env::var("H2_LEVEL").ok().as_deref(),
+        std::env::var("H2_DIFFICULTY").ok().as_deref(),
+    )
+}
+
+pub fn from_vars(
+    disc: &Path,
+    data_root: Option<&Path>,
+    level: Option<&str>,
+    difficulty: Option<&str>,
+) -> Result<Option<Request>> {
     let Some(level) = level.map(str::trim).filter(|l| !l.is_empty()) else {
         return Ok(None);
     };
     let difficulty = difficulty.filter(|d| !d.is_empty()).map(Difficulty::parse).transpose()?.unwrap_or_default();
-    resolve(disc, level, difficulty).map(Some)
+    resolve_in(disc, data_root, level, difficulty).map(Some)
 }
 
 // ---- H2_PERF_FROM ----
@@ -1081,14 +1141,39 @@ mod tests {
         }
     }
 
+    /// `--level a30` with Halo 1 imported: the level of the installed
+    /// campaign, with the ids the campaign hooks give its start record and
+    /// the scenario path whose basename names the map the VFS serves.
+    #[test]
+    fn an_installed_campaign_level_resolves_by_map_or_scenario() {
+        let m = content::campaign_list::CampaignManifest::parse(content::campaign_list::HALO1).unwrap();
+        let retail: Vec<u32> = (0..15).map(|i| 0x65 + i).collect();
+        let built = cl::build(&[m], &[1], &retail).unwrap();
+        let r = campaign_request(&built, "A30.map", Difficulty::Heroic).unwrap();
+        assert_eq!(
+            r,
+            Request {
+                name: "a30".into(),
+                scenario: r"scenarios\solo\a30\a30".into(),
+                campaign: 2,
+                map: 0x1002,
+                difficulty: Difficulty::Heroic,
+                kind: Kind::Campaign,
+            }
+        );
+        assert_eq!(campaign_request(&built, r"scenarios\solo\d40\d40", Difficulty::Easy).unwrap().map, 0x100a);
+        assert!(campaign_request(&built, "03a_oldmombasa", Difficulty::Easy).is_none());
+        assert!(r.scenario.len() < OPT_PATH_LEN as usize);
+    }
+
     #[test]
     fn no_level_variable_means_no_request() {
         let disc = Path::new("/nonexistent/halo2.iso");
-        assert_eq!(from_vars(disc, None, Some("heroic")).unwrap(), None);
-        assert_eq!(from_vars(disc, Some("  "), None).unwrap(), None);
+        assert_eq!(from_vars(disc, None, None, Some("heroic")).unwrap(), None);
+        assert_eq!(from_vars(disc, None, Some("  "), None).unwrap(), None);
         // A bad difficulty is refused before the disc is read.
-        let e = from_vars(disc, Some("03a_oldmombasa"), Some("hard")).unwrap_err().to_string();
+        let e = from_vars(disc, None, Some("03a_oldmombasa"), Some("hard")).unwrap_err().to_string();
         assert!(e.contains("unknown difficulty"), "{e}");
-        assert!(from_vars(disc, Some("03a_oldmombasa"), None).is_err(), "no disc");
+        assert!(from_vars(disc, None, Some("03a_oldmombasa"), None).is_err(), "no disc");
     }
 }
