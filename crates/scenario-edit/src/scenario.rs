@@ -198,7 +198,7 @@ fn f32_at(b: &[u8], o: usize) -> f32 {
 impl Scenario {
     /// Read the map's scenario. Every block must fit, with its declared
     /// stride, either the scenario's own payload or (a block this editor
-    /// grew) the ordinary metadata past every tag; otherwise nothing is
+    /// grew) ordinary metadata no tag owns; otherwise nothing is
     /// returned.
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
         let tag = map
@@ -222,19 +222,26 @@ impl Scenario {
                 )
             })
             .collect();
-        // Outside its own payload, a block may only live past every tag:
-        // where `MapEditor::append_metadata` puts a grown block.
+        // Outside its own payload, a block may only live in ordinary
+        // metadata no tag owns: where `MapEditor::append_metadata` puts a
+        // grown block, which tags added by a later rebuild (`map::build`)
+        // may follow.
         let space = map.metadata_space();
-        let tags_end = map
+        let tag_ranges: Vec<(u64, u64)> = map
             .tags()
             .iter()
             .filter_map(|t| t.location)
             .filter(|l| Some(l.space) == space)
-            .map(|l| u64::from(l.address) + u64::from(l.size))
-            .max()
-            .unwrap_or(0);
+            .map(|l| {
+                (
+                    u64::from(l.address),
+                    u64::from(l.address) + u64::from(l.size),
+                )
+            })
+            .collect();
         let mut fetch = |address: u32, size: u32| -> Result<Vec<u8>> {
-            if u64::from(address) < tags_end {
+            let (lo, hi) = (u64::from(address), u64::from(address) + u64::from(size));
+            if tag_ranges.iter().any(|&(a, b)| lo < b && a < hi) {
                 return Err(Error::Invalid("block inside another tag"));
             }
             let at = map.file_offset(address, size)?;

@@ -1237,6 +1237,19 @@ fn growth_is_refused_when_the_metadata_does_not_end_the_file() {
     let mut b = fixture_at_end();
     put(&mut b, sfile(0x11c), META + 0x1100);
     assert!(Scenario::read(&mut open(b)).is_err());
+    // A block between tags, in bytes none owns, reads: a grown block that
+    // tags added by a later rebuild follow.
+    let mut b = fixture_at_end();
+    let flags = Scenario::read(&mut open(b.clone()))
+        .unwrap()
+        .block(BlockKind::NetgameFlags)
+        .clone();
+    let len = flags.len() * flags.entry(0).unwrap().len();
+    assert!(0x1110 + len <= 0x1200, "{len:#x}");
+    b.copy_within(sfile(FLAGS_AT)..sfile(FLAGS_AT) + len, META_FILE + 0x1110);
+    put(&mut b, sfile(0x11c), META + 0x1110);
+    let s = Scenario::read(&mut open(b)).unwrap();
+    assert_eq!(s.block(BlockKind::NetgameFlags).entry(0), flags.entry(0));
 }
 
 #[test]

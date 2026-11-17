@@ -48,8 +48,11 @@ pub enum Error {
     /// The structure has more surfaces than its MOPP code can key.
     #[error("{0} structure surfaces; Havok MOPP code keys at most 65536")]
     TooManySurfaces(usize),
-    /// The Halo 1 sandbox (phase 4) isn't built.
-    #[error("the Halo 1 sandbox isn't built yet; convert with the Halo 2 sandbox")]
+    /// The Halo 1 sandbox asked of [`convert::prepare`], which has no Halo 1
+    /// objects: [`convert::halo1::prepare_halo1`] builds it.
+    #[error(
+        "the Halo 1 sandbox needs Halo 1's objects (convert::halo1); or convert with the Halo 2 sandbox"
+    )]
     Halo1Sandbox,
     /// The base map couldn't be read or the map couldn't be built.
     #[error(transparent)]
@@ -63,6 +66,9 @@ pub enum Error {
     /// The lightmap bitmap couldn't be converted.
     #[error("lightmap bitmap: {0}")]
     Bitmap(#[from] h1bitmaps::Error),
+    /// The Halo 1 sandbox's objects couldn't be added.
+    #[error("Halo 1 objects: {0}")]
+    Objects(String),
     /// A converted tag couldn't be installed.
     #[error("installing a converted tag: {0}")]
     Install(#[from] h1models::Error),

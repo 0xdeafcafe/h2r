@@ -33,5 +33,7 @@ hopper-edit = { path = "../hopper-edit" }
 live-proto.workspace = true
 # Convert to Halo 2: the Halo 1 converter, over Halo 1 and Halo 2 maps.
 h1convert = { path = "../h1convert" }
+# The Halo 1 sandbox's objects.
+h1objects = { path = "../h1objects" }
 h1map = { path = "../h1map" }
 map.workspace = true

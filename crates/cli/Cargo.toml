@@ -25,6 +25,8 @@ h1convert = { path = "../h1convert" }
 h1bitmaps = { path = "../h1bitmaps" }
 h1sounds = { path = "../h1sounds" }
 h1models = { path = "../h1models" }
+# Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
+h1objects = { path = "../h1objects" }
 movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true

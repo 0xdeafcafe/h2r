@@ -522,6 +522,51 @@ pub static TOUCH_AUTO_FIRE: Def = Def {
     menu: None,
 };
 
+/// [`HALO1_SANDBOX`]'s values.
+pub const SANDBOX_HALO1: i64 = 1;
+pub const SANDBOX_HALO2: i64 = 2;
+
+pub static HALO1_SANDBOX: Def = Def {
+    key: "multiplayer.halo1_sandbox",
+    label: "Halo 1 Maps",
+    help: "Which sandbox converted Halo 1 maps play with: Halo 1's weapons, \
+           vehicles and health packs, or Halo 2's. Applies at the next launch, \
+           when new maps are installed (docs/game/h1-multiplayer.md).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: SANDBOX_HALO1,
+            name: "h1",
+            label: "Halo 1 Sandbox",
+        },
+        Choice {
+            value: SANDBOX_HALO2,
+            name: "h2",
+            label: "Halo 2 Sandbox",
+        },
+    ]),
+    default: Value::Int(SANDBOX_HALO1),
+    env: Some("H2_HALO1_SANDBOX"),
+    flag: None,
+    aliases: &[
+        ("halo1", Value::Int(SANDBOX_HALO1)),
+        ("halo2", Value::Int(SANDBOX_HALO2)),
+    ],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    // No row yet: `h2 settings` and settings.toml set it.
+    menu: None,
+};
+
+/// The content variant [`HALO1_SANDBOX`] names in `store`: `h1` or `h2`.
+pub fn halo1_sandbox(store: &Store) -> &'static str {
+    match store.get(HALO1_SANDBOX.key) {
+        Some(Value::Int(SANDBOX_HALO2)) => "h2",
+        _ => "h1",
+    }
+}
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -540,6 +585,7 @@ pub static ALL: &[&Def] = &[
     &TOUCH_GYRO,
     &TOUCH_ACCEL,
     &TOUCH_AUTO_FIRE,
+    &HALO1_SANDBOX,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -673,10 +719,12 @@ mod tests {
                 ("H2_TOUCH_GYRO", "off"),
                 ("H2_TOUCH_LOOK_ACCEL", "off"),
                 ("H2_TOUCH_AUTO_FIRE", "1"),
+                ("H2_HALO1_SANDBOX", "h2"),
             ],
         );
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
+        assert_eq!(halo1_sandbox(&s), "h2");
         assert_eq!(s.get(TOUCH_LOOK.key), Some(Value::Int(7)));
         assert_eq!(s.get(TOUCH_CROUCH.key), Some(Value::Int(TOUCH_CROUCH_HOLD)));
         assert_eq!(s.get(TOUCH_GYRO.key), Some(Value::Int(0)));
@@ -802,6 +850,26 @@ mod tests {
             s.step(AIM_ASSIST.key).unwrap();
             assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)));
         }
+    }
+
+    #[test]
+    fn halo1_maps_play_halo1s_sandbox_unless_asked() {
+        let data = tmp("sandbox");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(halo1_sandbox(&s), "h1");
+        assert_eq!(HALO1_SANDBOX.apply, Apply::Restart);
+        std::fs::write(
+            settings::path_in(&data),
+            "[multiplayer]\nhalo1_sandbox = \"h2\"\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(halo1_sandbox(&s), "h2");
+        let (s, _) = with_env(&data, &[("H2_HALO1_SANDBOX", "halo1")]);
+        assert_eq!(halo1_sandbox(&s), "h1");
+        assert!(s.state(HALO1_SANDBOX.key).unwrap().locked);
     }
 
     #[test]

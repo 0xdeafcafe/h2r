@@ -507,3 +507,46 @@ fn real_disc_base_entry_and_record() {
         eprintln!("{checked} map pack records have the preview alpha shape");
     }
 }
+
+#[test]
+fn a_converted_map_installs_the_sandbox_the_setting_names() {
+    let t = Temp::new("sandbox");
+    let data = &t.0;
+    let d = data.join("maps").join("h1_gulch");
+    for (s, seed) in [("h1", 7), ("h2", 9)] {
+        std::fs::create_dir_all(d.join(s)).unwrap();
+        std::fs::write(d.join(s).join("h1_gulch.map"), body(seed)).unwrap();
+    }
+    let variant = |s: &str, seed: u8| {
+        format!(
+            "[[variant]]\nfile = \"{s}/h1_gulch.map\"\nsha256 = \"{}\"\n\
+             origin = {{ game = \"halo1\", map = \"gulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
+            Sha256::of(&body(seed)),
+            Sha256([7; 32])
+        )
+    };
+    std::fs::write(
+        d.join("manifest.toml"),
+        format!(
+            "[package]\nformat = 1\nname = \"Gulch\"\n[base]\nmap = \"h1_gulch\"\nderived = true\n{}{}",
+            variant("h1", 7),
+            variant("h2", 9)
+        ),
+    )
+    .unwrap();
+    let installed = |data: &Path| {
+        let r = install(data, &mut disc()).unwrap();
+        assert_eq!(r.installed.len(), 1, "{r:?}");
+        let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(r.installed[0].1);
+        std::fs::read(dir.join("h1_gulch.map")).unwrap()
+    };
+    // Halo 1's sandbox by default.
+    assert_eq!(installed(data), body(7));
+    // The setting asks for Halo 2's: the next boot writes that one.
+    std::fs::write(
+        settings::path_in(data),
+        "[multiplayer]\nhalo1_sandbox = \"h2\"\n",
+    )
+    .unwrap();
+    assert_eq!(installed(data), body(9));
+}

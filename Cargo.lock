@@ -941,6 +941,7 @@ dependencies = [
  "h1convert",
  "h1map",
  "h1models",
+ "h1objects",
  "h1sounds",
  "hs",
  "iced-x86",
@@ -2447,10 +2448,12 @@ dependencies = [
 name = "h1objects"
 version = "0.1.0"
 dependencies = [
+ "content",
  "h1convert",
  "h1map",
  "h1models",
  "map",
+ "scenario-edit",
  "tags",
  "thiserror 2.0.21",
  "xiso",
@@ -6184,6 +6187,7 @@ dependencies = [
  "editor-core",
  "h1convert",
  "h1map",
+ "h1objects",
  "hopper-edit",
  "live-proto",
  "map",

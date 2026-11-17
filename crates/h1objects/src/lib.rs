@@ -5,6 +5,8 @@
 //!   [`refs`] finds any tag's references without knowing its layout (used
 //!   for `effe`, `jpt!`, `snd!`, `cont` and `ligh`, whose bodies are not
 //!   read).
+//! - [`sandbox::Objects`]: the objects a converted multiplayer map's
+//!   spawns name, for `h1convert`'s Halo 1 sandbox.
 //! - [`coll::convert_collision`] builds a Halo 2 `coll` from a Halo 1 one.
 //! - [`convert`] builds each object as a Halo 2 tag on a **retail Halo 2
 //!   template** of the same role, read from the base map ([`base::Base`]):
@@ -29,6 +31,7 @@ pub mod coll;
 pub mod convert;
 pub mod h1;
 pub mod refs;
+pub mod sandbox;
 
 pub use h1models::Converted;
 

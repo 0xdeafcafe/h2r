@@ -202,6 +202,14 @@ impl Library {
     /// empty library; packages that cannot be read are skipped with a
     /// notice.
     pub fn open(root: impl AsRef<Path>) -> Self {
+        Self::open_with_sandbox(root, None)
+    }
+
+    /// [`Self::open`], loading `sandbox`'s variant (`h1` or `h2`) of each
+    /// package that has variants ([`Manifest::select_variant`]; the
+    /// default's when it has none of that sandbox). `boot::new_maps` passes
+    /// the `multiplayer.halo1_sandbox` setting (docs/game/h1-multiplayer.md).
+    pub fn open_with_sandbox(root: impl AsRef<Path>, sandbox: Option<&str>) -> Self {
         let root = root.as_ref();
         let mut lib = Self {
             root: root.to_path_buf(),
@@ -229,7 +237,7 @@ impl Library {
             .collect();
         dirs.sort();
         for dir in dirs {
-            match load(&dir) {
+            match load(&dir, sandbox) {
                 Ok(p) => lib.packages.push(p),
                 Err(e) => lib
                     .notices
@@ -391,16 +399,16 @@ impl Library {
     }
 }
 
-fn load(dir: &Path) -> Result<Package, ResolveError> {
+fn load(dir: &Path, sandbox: Option<&str>) -> Result<Package, ResolveError> {
     let dir = dir.canonicalize()?;
     let text =
         std::fs::read_to_string(dir.join(MANIFEST_FILE)).map_err(|e| ResolveError::File {
             file: MANIFEST_FILE.into(),
             why: e.to_string(),
         })?;
-    // A converted map with one whole map per sandbox: load the default
-    // variant (docs/game/h1-multiplayer.md).
-    let manifest = Manifest::from_toml(&text)?.select_variant(None);
+    // A converted map with one whole map per sandbox: load the chosen
+    // variant, else the default (docs/game/h1-multiplayer.md).
+    let manifest = Manifest::from_toml(&text)?.select_variant(sandbox);
     manifest.validate_in(&dir)?;
     let id = manifest.map_id();
     Ok(Package { dir, manifest, id })
@@ -1222,6 +1230,13 @@ pub(crate) mod tests {
         let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
         assert_eq!(read(&r, b""), h1, "Halo 1's sandbox by default");
         let id_h1 = lib.packages()[0].id;
+        // The setting asks for Halo 2's: that one, with its own MapId.
+        let mut lib = Library::open_with_sandbox(&t.0, Some("h2"));
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h2);
+        assert_ne!(lib.packages()[0].id, id_h1);
+        let lib = Library::open_with_sandbox(&t.0, Some("h1"));
+        assert_eq!(lib.packages()[0].id, id_h1);
         // Only the Halo 2 variant: that one, with its own MapId.
         write(&variant("h2", &h2));
         let mut lib = Library::open(&t.0);
