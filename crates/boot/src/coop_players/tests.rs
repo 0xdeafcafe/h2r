@@ -321,3 +321,144 @@ fn the_feature_is_on_the_plan_with_the_co_op_hooks() {
     let text = r.build(&feature::Base).unwrap().text();
     assert!(!text.contains("players 3+: follow player 0"), "{text}");
 }
+
+// ---- checkpoints ----
+
+const PG: u32 = 0x0080_0000;
+
+/// A campaign with players 0 and 1 on foot at the origin, "some player
+/// dead" at `some_dead`.
+fn squad(some_dead: u8) -> FakeGuest {
+    let mut g = world(2);
+    g.put_u32(save::PLAYERS_GLOBALS, PG)
+        .put_u8(PG + save::SOME_DEAD, some_dead);
+    add_player(&mut g, 0, 1, Some([0.0; 3]), NONE);
+    add_player(&mut g, 1, 1, Some([1.0, 0.0, 0.0]), NONE);
+    g
+}
+
+fn in_use(m: &dyn GuestMemory, i: u32) -> bool {
+    m.u32(PLAYERS_BITS).unwrap() & (1 << i) != 0
+}
+
+/// Runs the checkpoint entry with `hidden`; the callee records what the
+/// original saw (player 2 in use, the dead flag) and answers `safe`.
+fn check(g: FakeGuest, hidden: Vec<u16>, safe: u32) -> (engine::entry::testing::Run, (bool, u8)) {
+    let regs = Regs {
+        esp: STACK,
+        ..Regs::default()
+    };
+    let seen = Arc::new(Mutex::new((true, 9)));
+    let s = Arc::clone(&seen);
+    let hidden2 = hidden.clone();
+    let f = move |cx: Cx| -> EntryFuture {
+        Box::pin(save::safe_to_save(cx, hidden2.clone(), Arc::default()))
+    };
+    let r = run(&f, g, regs, move |c, m| {
+        assert_eq!(c.target, points::SAVE_SAFE.base);
+        *s.lock().unwrap() = (in_use(m, 2), m.u8(PG + save::SOME_DEAD).unwrap());
+        Regs {
+            eax: safe,
+            ..Regs::default()
+        }
+    });
+    let seen = *seen.lock().unwrap();
+    (r, seen)
+}
+
+#[test]
+fn two_player_checkpoints_are_retail() {
+    let g = squad(0);
+    assert!(save::not_counted(&g, &players(&g)).is_empty());
+    // Player 1 dead: still counts (and blocks, as retail).
+    let mut g = squad(1);
+    add_player(&mut g, 1, 1, None, NONE);
+    assert!(save::not_counted(&g, &players(&g)).is_empty());
+}
+
+#[test]
+fn a_dead_third_player_no_longer_blocks_a_checkpoint() {
+    let mut g = squad(1);
+    add_player(&mut g, 2, 1, None, NONE);
+    let hidden = save::not_counted(&g, &players(&g));
+    assert_eq!(hidden, vec![2]);
+    let (r, seen) = check(g, hidden, 1);
+    assert_eq!(seen, (false, 0), "hidden and not dead for the check");
+    assert_eq!(r.result, Ok(Ret::new(1, 0)));
+    assert!(in_use(&r.guest, 2), "back in use after");
+    assert_eq!(
+        r.guest.u8(PG + save::SOME_DEAD).unwrap(),
+        1,
+        "the flag is put back"
+    );
+}
+
+#[test]
+fn a_dead_first_or_second_player_still_blocks() {
+    let mut g = squad(1);
+    add_player(&mut g, 1, 1, None, NONE);
+    add_player(&mut g, 2, 1, None, NONE);
+    let hidden = save::not_counted(&g, &players(&g));
+    assert_eq!(hidden, vec![2]);
+    let (_, seen) = check(g, hidden, 0);
+    assert_eq!(seen, (false, 1), "player 1 is dead: the flag stays");
+}
+
+#[test]
+fn a_far_third_player_does_not_block_and_a_near_one_does() {
+    let mut g = squad(0);
+    add_player(&mut g, 2, 1, Some([0.0, LEASH + 5.0, 0.0]), NONE);
+    let hidden = save::not_counted(&g, &players(&g));
+    assert_eq!(hidden, vec![2], "far: left out");
+    let (r, seen) = check(g, hidden, 1);
+    assert_eq!(seen, (false, 0));
+    assert!(in_use(&r.guest, 2));
+    // Near (an unsafe unit there blocks the save in the retail check,
+    // which still sees it), or driving: counted.
+    let mut g = squad(0);
+    add_player(&mut g, 2, 1, Some([0.0, LEASH - 1.0, 0.0]), NONE);
+    assert!(save::not_counted(&g, &players(&g)).is_empty());
+    let mut g = squad(0);
+    add_player(&mut g, 2, 1, Some([0.0, 90.0, 0.0]), 0x00ab_0030);
+    assert!(
+        save::not_counted(&g, &players(&g)).is_empty(),
+        "in a vehicle"
+    );
+}
+
+#[test]
+fn a_third_player_waiting_for_its_first_spawn_is_not_dead() {
+    assert_eq!(
+        save::some_dead_counted(
+            &[Player {
+                index: 0,
+                handle: 0,
+                flags: 1 | FIRST_SPAWN,
+                unit: NONE
+            }],
+            &[],
+            1
+        ),
+        0
+    );
+    let ps = [Player {
+        index: 0,
+        handle: 0,
+        flags: 1,
+        unit: NONE,
+    }];
+    assert_eq!(save::some_dead_counted(&ps, &[], 1), 1);
+    assert_eq!(save::some_dead_counted(&ps, &[], 0), 0, "never raised");
+}
+
+#[test]
+fn the_checkpoint_line_is_logged_once_per_change() {
+    let last = Mutex::new(None);
+    let line = save::note(&last, &[2]).unwrap();
+    assert!(
+        line.starts_with("coop-players: checkpoint checks leave out player(s) 2 "),
+        "{line}"
+    );
+    assert_eq!(save::note(&last, &[2]), None);
+    assert!(save::note(&last, &[2, 5]).unwrap().contains("2, 5"));
+}

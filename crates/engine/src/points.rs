@@ -426,6 +426,11 @@ points! { ALL;
     /// `object_teleport` (`0x2a2517`) and of
     /// `volume_teleport_players_not_inside` (`0x29f641`).
     SCRIPT_TELEPORT @ 0x0029_ffb0: [fn(object: stack 0, flag: stack 1, a: stack 2, b: stack 3) ret 16], Optional; "docs/live/live-coop.md";
+    /// Whether the game may save a checkpoint now: the body of
+    /// HaloScript `game_safe_to_save` (`0x2a9bb8`). A run of checks, among
+    /// them every player's unit (`0x14df40`, `0x14deb0`) and "some player
+    /// dead" (`players_globals+5`); AL 1 when safe.
+    SAVE_SAFE @ 0x0022_6190: [fn() -> al ret 0]; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
