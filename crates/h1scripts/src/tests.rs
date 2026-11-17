@@ -1047,3 +1047,182 @@ fn calls_naming_an_unresolved_flag_are_stubbed() {
     assert!(!body[0].atom());
     assert!(body[1].atom() && body[1].opcode() == VOID);
 }
+
+/// `(ai_status squad_a)` becomes a ladder of `if`s on Halo 2's
+/// `ai_combat_status` and its engine globals, giving Halo 1's scale.
+#[test]
+fn ai_status_reads_halo2_s_combat_status_on_halo1_s_scale() {
+    use crate::compile::STATUS_LADDER;
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("ai_status", SHORT, ORDINARY, &[AI]),
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    let b = |index, ret, params: &[u16], special| H2Builtin {
+        index,
+        return_type: ret,
+        parameters: params.to_vec(),
+        special,
+    };
+    h2.builtins
+        .insert("ai_combat_status".into(), b(352, SHORT, &[H2_AI], false));
+    h2.builtins.insert(">=".into(), b(17, BOOL, &[], true));
+    h2.builtins.insert("if".into(), b(2, PASS, &[], true));
+    for (i, (name, _)) in STATUS_LADDER.iter().enumerate() {
+        h2.externals.insert((*name).into(), (40 + i as u16, SHORT));
+    }
+    let mut bl = Builder::default();
+    let squad = bl.atom(AI, AI, "squad_a", 0);
+    let status = bl.call(1, SHORT, "ai_status", &[squad]);
+    let main = bl.call(0, VOID, "begin", &[status]);
+    let t = read(&scenario(&bl, &[("main", 0, VOID, main)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    assert!(out.missing.is_empty(), "{:?}", out.missing);
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let args = |n: &hs::Node| -> Vec<hs::Node> {
+        let mut a = s.node(Datum(n.data())).unwrap().next();
+        let mut v = Vec::new();
+        while a != Datum::NULL {
+            let x = *s.node(a).unwrap();
+            v.push(x);
+            a = x.next();
+        }
+        v
+    };
+    let mut n = main_body(&s)[0];
+    for (i, &(name, v)) in STATUS_LADDER.iter().enumerate() {
+        assert_eq!(n.opcode(), 2, "rung {i}: an if");
+        let [cond, then, rest] = args(&n)[..] else {
+            panic!("rung {i}")
+        };
+        assert_eq!(cond.opcode(), 17);
+        let [call, global] = args(&cond)[..] else {
+            panic!("rung {i}: >=")
+        };
+        assert_eq!(call.opcode(), 352);
+        assert!(global.global());
+        assert_eq!(global.data(), 0x8000 | (40 + i as u32));
+        assert_eq!(s.string(global.string_offset()).unwrap(), name);
+        assert_eq!((then.opcode(), then.data()), (SHORT, v as u32));
+        n = rest;
+    }
+    assert!(n.atom() && n.data() == 0);
+    // ai_living_fraction is Halo 2's ai_strength.
+    assert!(crate::translate::RENAMES.contains(&("ai_living_fraction", "ai_strength")));
+}
+
+/// `(op (ai_status x) k)` becomes one comparison of `ai_combat_status`
+/// with the ladder's global for the threshold: `(> s 3)` is
+/// `(>= c <status 4>)`, `(< 4 s)` the same flipped, `(= s 6)` `(>= c
+/// <status 6>)` and `(< s 0)` `false`.
+#[test]
+fn ai_status_comparisons_compare_combat_status_once() {
+    use crate::compile::STATUS_LADDER;
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("ai_status", SHORT, ORDINARY, &[AI]),
+            f("print", VOID, ORDINARY, &[STRING]),
+            f(">", BOOL, 0x3000, &[]),
+            f("<", BOOL, 0x3000, &[]),
+            f("=", BOOL, 0x3000, &[]),
+        ],
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    let b = |index, ret, params: &[u16], special| H2Builtin {
+        index,
+        return_type: ret,
+        parameters: params.to_vec(),
+        special,
+    };
+    h2.builtins
+        .insert("ai_combat_status".into(), b(352, SHORT, &[H2_AI], false));
+    h2.builtins.insert(">=".into(), b(17, BOOL, &[], true));
+    h2.builtins.insert("<".into(), b(18, BOOL, &[], true));
+    h2.builtins.insert(">".into(), b(19, BOOL, &[], true));
+    h2.builtins.insert("and".into(), b(20, BOOL, &[], true));
+    h2.builtins.insert("if".into(), b(2, PASS, &[], true));
+    for (i, (name, _)) in STATUS_LADDER.iter().enumerate() {
+        h2.externals.insert((*name).into(), (40 + i as u16, SHORT));
+    }
+    let mut bl = Builder::default();
+    let cmp = |bl: &mut Builder, op: u16, name: &str, status_first: bool, k: &str| {
+        let squad = bl.atom(AI, AI, "squad_a", 0);
+        let status = bl.call(1, SHORT, "ai_status", &[squad]);
+        let n = bl.atom(SHORT, SHORT, k, k.parse().unwrap());
+        let args = if status_first {
+            [status, n]
+        } else {
+            [n, status]
+        };
+        bl.call(op, BOOL, name, &args)
+    };
+    let gt = cmp(&mut bl, 3, ">", true, "3");
+    let flipped = cmp(&mut bl, 4, "<", false, "4");
+    let eq6 = cmp(&mut bl, 5, "=", true, "6");
+    let eq2 = cmp(&mut bl, 5, "=", true, "2");
+    let never = cmp(&mut bl, 4, "<", true, "0");
+    let main = bl.call(0, VOID, "begin", &[gt, flipped, eq6, eq2, never]);
+    let t = read(&scenario(&bl, &[("main", 0, VOID, main)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let args = |n: &hs::Node| -> Vec<hs::Node> {
+        let mut a = s.node(Datum(n.data())).unwrap().next();
+        let mut v = Vec::new();
+        while a != Datum::NULL {
+            let x = *s.node(a).unwrap();
+            v.push(x);
+            a = x.next();
+        }
+        v
+    };
+    // The ladder's global for Halo 1 status `k`.
+    let global =
+        |k: i32| 0x8000 | (40 + STATUS_LADDER.iter().position(|r| r.1 == k).unwrap() as u32);
+    let threshold = |n: &hs::Node, op: u16, k: i32| {
+        assert_eq!(n.opcode(), op);
+        let [call, g] = args(n)[..] else {
+            panic!("two arguments")
+        };
+        assert_eq!(call.opcode(), 352);
+        assert!(g.global());
+        assert_eq!(g.data(), global(k));
+    };
+    let body = main_body(&s);
+    threshold(&body[0], 17, 4);
+    threshold(&body[1], 17, 5);
+    // (= s 6): at least 6 and below 7, which is always.
+    assert_eq!(body[2].opcode(), 20);
+    let [lo, hi] = args(&body[2])[..] else {
+        panic!("and")
+    };
+    threshold(&lo, 17, 6);
+    assert!(hi.atom() && hi.data() == 1);
+    let [lo, hi] = args(&body[3])[..] else {
+        panic!("and")
+    };
+    threshold(&lo, 17, 2);
+    threshold(&hi, 18, 3);
+    assert!(body[4].atom() && body[4].data() == 0);
+    // Under a tenth of the ladder's nodes per comparison.
+    assert!(out.nodes.len() < 80, "{}", out.nodes.len());
+}
+
+mod cutscenes;

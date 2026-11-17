@@ -13,7 +13,8 @@ More than two players (up to 16, behind `coop.max_players`) is built on
 tests and traced in [section 13](#13-more-than-two-players).
 Join in progress (a friend joins a running campaign, nobody reverts) is
 traced and its protocol built on tests in
-[section 14](#14-join-in-progress); the game side is not wired yet.
+[section 14](#14-join-in-progress), and wired through the retail
+synchronous join (14.9); it needs its first game run.
 
 In short:
 
@@ -1792,10 +1793,10 @@ host is acceptable. Behind `coop.join_in_progress` (default on,
 `H2_COOP_JOIN_IN_PROGRESS`, docs/game/settings-menu.md).
 
 What is here: a static trace (14.1), the design (14.2 to 14.6), what is
-built on tests (14.7), and what needs a game run (14.8). The protocol,
-the setting and the harness are built; **the game side (hold, snapshot,
-restore, admit) is not wired yet**, so a run today shows the late guest
-accepting and then no join line.
+built on tests (14.7), what needs a game run (14.8), and the second
+pass (14.9): the retail path traced end to end and wired by lifting one
+check, with a `coop-jip:` line per stage. Our own protocol (14.7) stays
+the fallback.
 
 ### 14.1 What the retail engine already has
 
@@ -1844,10 +1845,8 @@ It never shipped in a mode anyone used, like the rest of section 1.3.
   to compress about 16:1 (most of it is free pool space). Our own
   numbers come from the first run (14.8).
 
-Not traced: who fills the update's `+0xDD0` fields on the server
-(the session's player list, [guess] through `0x00069260`), the client
-side of `0x29`/`0x2a` (where pieces are put back and the block
-restored), and what `0x0046e330` does.
+The rest (the client side, who fills `+0xDD0`, the callback tables, the
+gate) is traced in 14.9.
 
 ### 14.2 Two ways to build it
 
@@ -1864,8 +1863,8 @@ restored), and what `0x0046e330` does.
    then the newcomer is admitted through the update's player-set field.
    Independent of the unknowns above; costs a hold of the host's tick.
 
-Plan: try 1 on the first run (it is a lift, not a feature); if the
-retail client side does not restore, wire 2. Either way the newcomer's
+Decided (14.9): 1 is wired, since its client side turned out complete;
+2 is the fallback if a run shows the retail join failing. Either way the newcomer's
 player enters through the update's player-set change, so every console
 adds it on the same tick.
 
@@ -1967,7 +1966,7 @@ or `coop-jip: back to the lobby: <why>`; host
   progress" part: `Charlie joined in progress at tick T (player 3)`, or
   why not, and the host's admissions.
 
-Not built: the game side. Next, in order: (1) on the host, a feature
+Superseded by 14.9 (the retail path is wired); for the fallback, in order: (1) on the host, a feature
 that holds the tick (stop sending updates, as a sync-server whose
 client queue is full) and calls the checkpoint writer `0x123e20` into a
 buffer; (2) on the newcomer, load the level from the advertisement,
@@ -1978,12 +1977,112 @@ join datagrams on the co-op link beside the pad datagrams
 
 ### 14.8 What needs a game run
 
-First, the retail path (14.2, option 1): `h2 coop test --players 3
---auto --late`, the host in a level when Charlie accepts. Look for:
-the session refusing Charlie (a `coop-live: refused` line: the in-game
-join check, to lift next), or `0x000862e0` running (to add as a probe
-line), and whether Charlie's game shows the level. Then, once the game
-side of 14.7 is wired, the same command should end with
-`[x] Charlie joined in progress at tick T (player 3)` and Alpha's
-`admitted player 3 at tick T (K KiB sent, held M ms)`; K and M are the
-numbers 14.5 guesses at.
+See 14.9.4: the run and the lines to expect, stage by stage.
+
+### 14.9 The retail join, traced and wired (second pass)
+
+Static reading with `h2 disasm`, no run. Every address below is
+[local] unless marked.
+
+**14.9.1 The client side is there.** The session's message dispatch
+`0x00093aa0` (a jump table at `0x00093eb8`, message id minus 6) sends
+the four synchronous messages, each only while the session's channel
+state (`+0x54`) is 5, to small handlers that find the simulation view
+(`0x0006adc0`):
+
+| id | handler | what it does |
+|---|---|---|
+| `0x27` update | `0x00094990` | sync-client (view mode word 1): `0x000698e0`, the catch-up |
+| `0x28` actions | `0x000949d0` | sync-server (mode word 2): `0x00085f50` |
+| `0x29` join | `0x00094a10` | client: `0x00085dc0`, which (world mode 3 or 5 excluded) calls `0x0006a8a0` (a `0x40000` byte receive buffer at world `+0x1204`, count `+0x1200`), stores the server's update number at `+0x28` and `+0x120c`, and in mode 3 resets through `0x0006ab10` |
+| `0x2a` state | `0x00094a50` | client: `0x00085ed0`; a piece with bytes goes to `0x0006a990` (appended, at most `0x40000`), the empty last piece to `0x0006aa20` |
+
+`0x0006aa20` decompresses what arrived (`0x00199740`) **straight into
+the game-state block** (`*0x004e6080`), between `0x00199520` and
+`0x00199540`, which call the callback tables at `0x0046e334` (five
+entries) and `0x0046e348`; it succeeds only for exactly `0x3fe000`
+bytes. A failure in either client handler calls `0x00085a70(0, -1)` and
+sets the view's state `+0x28` to 5 ([guess] leave the game). So retail's
+client restores the host's state in place and then runs from the queued
+updates. This replaces our own snapshot and restore for the retail path.
+
+**14.9.2 The server side.** `0x0006a860` runs the four callbacks at
+`0x0046e320` (pointers to `0x001c3540`, `0x00068090`, `0x0016eff0`,
+`0x001e6af0`), marks world `+0x11fc` and answers the size `0x3fe000`;
+`0x000862e0` then compresses and queues (14.1) and calls the single
+callback at `0x0046e330` (`0x001c3590`). The update's `+0x403C` flag
+runs the same four and the same one on a server
+(`0x00068491`..`0x000684b6`). [guess] These are the "before and after
+the game state is read" hooks (the checkpoint writer `0x123e20` runs
+them too): the flag makes every console run them on the tick the state
+is taken, so the clients stay in step with the snapshot.
+
+**14.9.3 Who adds the player.** `0x00068350` (from the record build
+`0x00069260`, outside sync-server mode) copies a pending player set
+from the simulation world (`*0x004cf780`: mask `+0x1c`, sixteen 6 byte
+identifiers `+0x24`, pending byte `+0x84`) into the record's `+0xDD0`,
+`+0xDD4`, `+0xDD8` and clears the pending byte. The pending byte is set
+at `0x00083160`, `0x0008340f`, `0x00083434` and `0x0008424e`, from the
+session's player array (stride `0x10c`, identifier at `+0x16`). So a
+player the session admits reaches the update stream by itself, and
+`0x0014c630` adds it on every console on the same update (14.1).
+[guess] On the sync-server the record comes from its queue
+(`0x0006ac30`), built by the same path.
+
+**What blocks it today.** The host's join check `0x00062fe0` (session
+in EAX, request in EDI) answers 3 unless the session state `S+0x741c`
+is 5, the lobby: states 6, 7 and 8 refuse. Its other answers (2 invite
+only, 4 no room, through `0x0005af70` and `0x0005afc0`) do not depend
+on the state. The view machine's gates at `0x0006a0b7`
+(`*0x004ced48` ready peers, `*0x004ced54` a timer, `*0x004ced50`
+attempts) are in BSS, so [guess] zero unless network configuration
+fills them: no wait and one attempt.
+
+**14.9.4 What is wired** (`crates/boot/src/coop_jip.rs`, feature
+`coop-jip`, on the co-op over Live arm):
+
+- **The lift.** On the host of a co-op campaign with
+  `coop.join_in_progress` on and a free slot (`coop.max_players`), a
+  join check made while the game runs (state 6 to 8) sees state 5 for
+  the length of retail's call, and the real state goes back after it,
+  whatever retail answered. Off: `H2_COOP_JOIN_IN_PROGRESS=0`, or
+  `H2_COOP_JIP_LIFT=0` for this part alone.
+- **A line per stage** (off with `H2_COOP_JIP_LOG=0`), on the points
+  `SESSION_JOIN_CHECK`, `SIM_JOIN_SEND_STATE`, `SIM_JOIN_RECEIVE`,
+  `SIM_STATE_RECEIVED` and `SIM_UPDATE_APPLY` (all optional: a missing
+  one drops its line, not the feature).
+- `H2_FEATURES=-coop-jip` drops all of it.
+- Tests (`coop_jip::tests`, debug): the stage switches; the lift's
+  decision (host, campaign, running, not full, setting and switch);
+  the lifted check sees state 5 and puts 7 or 8 back, and retail's
+  other refusals stand; the host's lines (admitted once, only after a
+  send, not after a failed queue); the newcomer's (joined on its first
+  update after a restore, once; back to the lobby when the restore
+  fails); the feature on the plan and off by `H2_FEATURES`.
+
+**The user's run:** `h2 coop test --players 3 --auto --late`. Alpha
+(host) and Bravo start a co-op level; Charlie accepts 120 s after its
+invitation, so have the level running by then. The lines, in order:
+
+1. Alpha: `coop-jip: host: a console joins the running game (session state N read as the lobby's for the join check)`.
+   Instead `... still refused (C: why)`: retail's other checks
+   (2 invite only, 4 no room: check `coop.max_players` is 3). No line at
+   all: the request never reached the check ([guess] Charlie's own
+   session refused to join a running game first; look at Charlie's
+   `session` and `coop-live` lines).
+2. Alpha: `coop-jip: host: sending the game state to a joining console (attempt 1)`
+   then `... game state queued ahead of the joiner's updates`.
+   Missing: the view machine never ran `0x862e0` (its gates, 14.9.3).
+3. Charlie: `coop-jip: guest: join message; the host's game is at update U`.
+4. Charlie: `coop-jip: guest: game state restored (K KiB compressed)`
+   (K is the number 14.5 guesses at), or
+   `coop-jip: back to the lobby: the game state did not restore`.
+   Charlie needs the level loaded for the restore to mean anything:
+   [guess] retail's session start loads it when the join is accepted.
+5. Charlie: `coop-jip: joined in progress at tick T as player 3`, and
+   Alpha: `coop-jip: admitted player 3 at tick T (M ms after the state went out)`.
+6. The checklist ends with `[x] Charlie joined in progress at tick T (player 3)`.
+
+Then play a minute: a desync shows as the out-of-sync latch (1.3) and
+the existing `coop-live`/`coop-probe` lines. If the retail path stops at
+2 to 4, the fallback is 14.7's protocol.

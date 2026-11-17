@@ -20,6 +20,10 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("ai_exit_vehicle", "ai_vehicle_exit"),
     ("object_pvs_set_object", "pvs_set_object"),
     ("object_pvs_clear", "pvs_clear"),
+    // Halo 2 has no living fraction its scripts call; its strength is the
+    // squad's remaining vitality, 0 when all are dead (a30's waits on
+    // `(> 0.3 (ai_living_fraction x))` and `(= 0.0 ...)`).
+    ("ai_living_fraction", "ai_strength"),
     // The ticks left of a playing impulse sound (0 once it ends), as Halo
     // 1's. Halo 2's evaluator 0x2a9fe0 finds the sound among the 16 script
     // impulses and returns its permutation's length less the time played,
@@ -97,7 +101,7 @@ pub struct Target {
 impl Target {
     /// The named builtins and types of an observed Halo 2 catalog.
     pub fn from_catalog(c: &hs::Catalog) -> Self {
-        let builtins = c
+        let mut builtins: HashMap<String, H2Builtin> = c
             .named_functions()
             .into_iter()
             .filter_map(|(i, name)| {
@@ -113,6 +117,7 @@ impl Target {
                 ))
             })
             .collect();
+        crate::identified::name_unnamed(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),
