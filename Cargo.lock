@@ -2378,6 +2378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1ai"
+version = "0.1.0"
+dependencies = [
+ "h1convert",
+ "h1map",
+ "map",
+ "pathfind",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "h1bitmaps"
 version = "0.1.0"
 dependencies = [
