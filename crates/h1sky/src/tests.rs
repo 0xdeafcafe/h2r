@@ -1,0 +1,216 @@
+//! Conversion tests on invented bytes: a Halo 1 sky is built in memory,
+//! read, converted, installed in a built v8 map and decoded back through
+//! [`crate::h2`], and every field Halo 2 has comes back equal. The real
+//! `a30`/`bloodgulch` skies are exercised by the ignored disc tests.
+
+use std::io::Cursor;
+
+use h1map::Space;
+use map::Map;
+
+use crate::convert;
+use crate::h1;
+use crate::h2;
+
+/// The address the invented metadata is loaded at.
+const BASE: u32 = 0x8040_0000;
+
+fn put(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+fn putf(b: &mut [u8], at: usize, v: f32) {
+    put(b, at, v.to_bits());
+}
+
+/// Invented sky bytes laid out like the disc: a root at `ROOT_AT`, then one
+/// shader-function element, then two lights. Returns the whole buffer and
+/// the root's offset in it.
+fn invented_sky() -> (Vec<u8>, usize) {
+    let root_at = 0x100;
+    let mut bytes =
+        vec![0u8; root_at + h1::ROOT_LEN + h1::FUNCTION_LEN + 2 * h1::LIGHT_LEN];
+    let root = root_at;
+    // Model reference (null) at 0x00, animation (null) at 0x10.
+    put(&mut bytes, root, h1map::Group::new(b"mode").0);
+    put(&mut bytes, root + 0x0c, 0xffff_ffff);
+    put(&mut bytes, root + 0x10, h1map::Group::new(b"antr").0);
+    put(&mut bytes, root + 0x1c, 0xffff_ffff);
+    // Fog reference (null) at 0x98.
+    put(&mut bytes, root + 0x98, h1map::Group::new(b"fog ").0);
+    put(&mut bytes, root + 0xa4, 0xffff_ffff);
+    // Lighting scalars: first RGB, a fraction, the second RGB.
+    let scalars = root + h1::LIGHTING_SCALARS;
+    for (i, v) in [0.3f32, 0.4, 0.5, 0.25, 0.6, 0.7, 0.8].into_iter().enumerate() {
+        putf(&mut bytes, scalars + 4 * i, v);
+    }
+    // Shader-function element right after the root, then the lights.
+    let functions = root + h1::ROOT_LEN;
+    let lights = functions + h1::FUNCTION_LEN;
+    bytes[functions] = 0x5a;
+    put(&mut bytes, root + h1::layout::FUNCTIONS, 1);
+    put(
+        &mut bytes,
+        root + h1::layout::FUNCTIONS + 4,
+        BASE + functions as u32,
+    );
+    put(&mut bytes, root + h1::layout::LIGHTS, 2);
+    put(&mut bytes, root + h1::layout::LIGHTS + 4, BASE + lights as u32);
+    for (i, (yaw, pitch, color, power, cutoff)) in [
+        (0.174_533, 0.698_132, [0.9f32, 0.89, 0.79], 1.8f32, 0.003_490_7),
+        (-std::f32::consts::FRAC_PI_6, 1.741_548, [0.70, 0.63, 0.58], 0.8, 0.349_066),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let e = lights + i * h1::LIGHT_LEN;
+        // Lens flare reference (null).
+        put(&mut bytes, e + h1::light::LENS_FLARE, h1map::Group::new(b"lens").0);
+        put(&mut bytes, e + h1::light::LENS_FLARE + 12, 0xffff_ffff);
+        put(&mut bytes, e + h1::light::CONSTANT, 0x006e_7500);
+        put(&mut bytes, e + h1::light::FLAGS, if i == 0 { 3 } else { 1 });
+        for (c, v) in color.into_iter().enumerate() {
+            putf(&mut bytes, e + h1::light::COLOR + 4 * c, v);
+        }
+        putf(&mut bytes, e + h1::light::POWER, power);
+        putf(&mut bytes, e + h1::light::FALLOFF, 50.0);
+        putf(&mut bytes, e + h1::light::YAW, yaw);
+        putf(&mut bytes, e + h1::light::PITCH, pitch);
+        putf(&mut bytes, e + h1::light::CUTOFF, cutoff);
+    }
+    (bytes, root_at)
+}
+
+fn read_invented() -> h1::Sky {
+    let (bytes, root_at) = invented_sky();
+    let space = Space::new(&bytes, BASE);
+    let sky = h1::Sky::read(&space, &bytes[root_at..root_at + h1::ROOT_LEN]);
+    sky.expect("sky reads")
+}
+
+#[test]
+fn h1_reader_gets_every_field() {
+    let sky = read_invented();
+    assert_eq!(sky.model.id, h1map::TagId::NONE);
+    assert_eq!(sky.animation.id, h1map::TagId::NONE);
+    assert_eq!(sky.fog.id, h1map::TagId::NONE);
+    assert_eq!(sky.ambient_first_rgb(), [0.3, 0.4, 0.5]);
+    assert_eq!(sky.ambient_first_fraction(), 0.25);
+    assert_eq!(sky.ambient_second_rgb(), [0.6, 0.7, 0.8]);
+    assert_eq!(sky.shader_functions.len(), 1);
+    assert_eq!(sky.shader_functions[0][0], 0x5a);
+    assert_eq!(sky.lights.len(), 2);
+    let l = &sky.lights[0];
+    assert_eq!(l.flags, 3);
+    assert_eq!(l.color, [0.9, 0.89, 0.79]);
+    assert_eq!(l.power, 1.8);
+    assert_eq!(l.falloff_distance, 50.0);
+    assert_eq!(l.direction, [0.174_533, 0.698_132]);
+    assert_eq!(l.cutoff_angle, 0.003_490_7);
+    assert_eq!(sky.lights[1].flags, 1);
+    assert_eq!(sky.lights[1].cutoff_angle, 0.349_066);
+}
+
+#[test]
+fn a_truncated_root_is_refused() {
+    let (bytes, root_at) = invented_sky();
+    let space = Space::new(&bytes, BASE);
+    assert!(
+        h1::Sky::read(&space, &bytes[root_at..root_at + 0x60]).is_err(),
+        "a 0x60-byte root must not read"
+    );
+}
+
+#[test]
+fn converted_sky_round_trips_through_a_built_map() {
+    let sky = read_invented();
+    let (bytes, id, model_id) =
+        convert::build_sky_map(&sky, None, "levels\\test\\tiny\\tiny sky").expect("builds");
+    assert!(model_id.is_none());
+    let mut map = Map::from_reader(Cursor::new(bytes)).expect("map reads");
+    let out = h2::Sky::read_from_map(&mut map, id).expect("decodes");
+
+    // Fields Halo 2 has and the source supplied.
+    assert!(out.model.is_null(), "no model in the set");
+    assert!(out.unused_ref.is_null());
+    assert_eq!(out.word_10, 0);
+    assert_eq!(out.model_scale, 1.0);
+    assert_eq!(out.camera_translation_scale, 1.0);
+    assert_eq!(out.fallback_rgb, sky.ambient_first_rgb());
+    assert_eq!(out.word_44, 0.0);
+    assert_eq!(out.rotation, 0.0);
+    assert!(out.bitmap_layers.is_empty());
+    assert!(out.gradients_a.is_empty());
+    assert!(out.gradients_b.is_empty());
+    assert_eq!(out.lights.len(), sky.lights.len());
+    for (a, b) in out.lights.iter().zip(&sky.lights) {
+        assert_eq!(a.yaw, b.direction[0]);
+        assert_eq!(a.pitch, b.direction[1]);
+        assert!(a.lens_flare.is_null());
+        let p = a.params.as_ref().expect("params element");
+        assert_eq!(p.flags, convert::LIGHT_FLAGS);
+        assert_eq!(p.color, b.color);
+        assert_eq!(p.power, b.power);
+        assert_eq!(p.falloff_distance, b.falloff_distance);
+        assert_eq!(p.cutoff_angle, b.cutoff_angle);
+        assert_eq!(p.word_04, 0);
+    }
+}
+
+#[test]
+fn h2_decoder_follows_blocks_to_foreign_addresses() {
+    // The lights block points outside the payload, as three retail skies do
+    // (into another tag's payload); decode must follow it through the reader.
+    let mut payload = vec![0u8; h2::ROOT_LEN];
+    putf(&mut payload, h2::layout::MODEL_SCALE, 400.0);
+    putf(&mut payload, h2::layout::CAMERA_TRANSLATION_SCALE, -1.0);
+    putf(&mut payload, h2::layout::ROTATION, 0.5);
+    for (i, v) in [0.1f32, 0.2, 0.3].into_iter().enumerate() {
+        putf(&mut payload, h2::layout::FALLBACK_RGB + 4 * i, v);
+    }
+    put(&mut payload, h2::layout::WORD_10, 6);
+    // A bitmap layer, to exercise that block too.
+    put(&mut payload, h2::layout::BITMAP_LAYERS, 1);
+    let away = 0x8072_0000u32;
+    put(&mut payload, h2::layout::BITMAP_LAYERS + 4, away);
+    put(&mut payload, h2::layout::LIGHTS, 1);
+    put(&mut payload, h2::layout::LIGHTS + 4, away + h2::BITMAP_LAYER_LEN as u32);
+    // The foreign bytes: a bitmap-layer element, a light record and its
+    // params element.
+    let mut foreign = vec![0u8; h2::BITMAP_LAYER_LEN + h2::LIGHT_LEN + h2::PARAMS_LEN];
+    put(&mut foreign, 0, u32::from_be_bytes(*b"bitm"));
+    putf(&mut foreign, 8, 1.5);
+    let light = away as usize + h2::BITMAP_LAYER_LEN;
+    let light_at = h2::BITMAP_LAYER_LEN;
+    putf(&mut foreign, light_at + h2::light::YAW, 3.490_659);
+    putf(&mut foreign, light_at + h2::light::PITCH, 0.436_332);
+    let params_addr = (light + h2::LIGHT_LEN) as u32;
+    put(&mut foreign, light_at + h2::light::PARAMS, 1);
+    put(&mut foreign, light_at + h2::light::PARAMS + 4, params_addr);
+    let p = h2::BITMAP_LAYER_LEN + h2::LIGHT_LEN;
+    put(&mut foreign, p + h2::params::FLAGS, 12);
+    for (i, v) in [1.0f32, 0.95, 0.87].into_iter().enumerate() {
+        putf(&mut foreign, p + h2::params::COLOR + 4 * i, v);
+    }
+    let mut reads = 0;
+    let out = h2::Sky::decode(&payload, 0x8068_2e58, &mut |at, n| {
+        reads += 1;
+        let start = (at - away) as usize;
+        Ok(foreign[start..start + n as usize].to_vec())
+    })
+    .expect("decodes");
+    assert_eq!(reads, 3, "layer, lights and params reads");
+    assert_eq!(out.word_10, 6);
+    assert_eq!(out.model_scale, 400.0);
+    assert_eq!(out.camera_translation_scale, -1.0);
+    assert_eq!(out.rotation, 0.5);
+    assert_eq!(out.fallback_rgb, [0.1, 0.2, 0.3]);
+    assert_eq!(out.bitmap_layers.len(), 1);
+    assert_eq!(out.bitmap_layers[0].value, 1.5);
+    let l = &out.lights[0];
+    assert_eq!(l.yaw, 3.490_659);
+    assert_eq!(l.pitch, 0.436_332);
+    let p = l.params.as_ref().unwrap();
+    assert_eq!(p.flags, 12);
+    assert_eq!(p.color, [1.0, 0.95, 0.87]);
+}
