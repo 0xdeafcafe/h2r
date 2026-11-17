@@ -156,6 +156,8 @@ pub struct GfxBackend {
     merge_passes: bool,
     /// [`set_merge_discards`](Self::set_merge_discards).
     merge_discards: bool,
+    /// [`set_merge_masks`](Self::set_merge_masks).
+    merge_masks: bool,
     /// Made at the first counted draw.
     counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
@@ -172,6 +174,9 @@ pub struct GfxBackend {
     /// The alias mirror ([`Backend::mirror_reserve`]).
     mirror: Option<wgpu::Buffer>,
     reports: HashMap<u64, PixelReport>,
+    /// Reports recorded into the open encoder, told their submission when
+    /// it is made ([`set_defer_side_passes`](Self::set_defer_side_passes)).
+    unsubmitted_reports: Vec<PixelReport>,
     next_ticket: u64,
     /// Presents so far plus one.
     frame: u64,
@@ -275,7 +280,9 @@ impl GfxBackend {
     /// A backend on `ctx`, translating shaders with [`Nv2aShaders`].
     pub fn new(ctx: GfxContext) -> Self {
         let store = SurfaceStore::new(ctx.caps);
-        let renderer = Renderer::new(&ctx);
+        let mut renderer = Renderer::new(&ctx);
+        // `H2_GFX_STAGED_UPLOADS=0`: a queue write per persistent buffer.
+        renderer.set_staged_uploads(std::env::var_os("H2_GFX_STAGED_UPLOADS").is_none_or(|v| v != "0"));
         Self {
             ctx,
             store,
@@ -289,8 +296,10 @@ impl GfxBackend {
             merge_discards: merge_discards_from_env(
                 std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref(),
             ),
+            merge_masks: std::env::var("H2_GFX_MERGE_PASSES").as_deref() == Ok("loose"),
             counter: None,
             reports: HashMap::new(),
+            unsubmitted_reports: Vec::new(),
             depth_bits: None,
             guest_words: None,
             gpu_depth_aliases: std::env::var_os("H2_D3D_GPU_DEPTH_ALIAS").is_none_or(|v| v != "0"),
@@ -431,6 +440,17 @@ impl GfxBackend {
     /// `H2_GFX_MERGE_PASSES=exact` turns it off when the backend is made.
     pub fn set_merge_discards(&mut self, on: bool) {
         self.merge_discards = on;
+    }
+
+    /// The loose merge rule (`H2_GFX_MERGE_PASSES=loose`, off by default):
+    /// no draw starts a render pass of its own for the merge rules, not
+    /// after a partly masked draw either. Counted draws and target switches
+    /// still split. Not exact: it is there to measure what the mask splits
+    /// cost in a level (`pass_mask`, `pass_nocolor`, `pass_discard` in the
+    /// frame stats) and, with the merge self-check
+    /// ([`set_merge_check`](Self::set_merge_check)), what they buy.
+    pub fn set_merge_masks(&mut self, on: bool) {
+        self.merge_masks = on;
     }
 
     /// Compare merged and per-draw render passes for every pending pass of
@@ -646,6 +666,9 @@ impl GfxBackend {
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(ctx);
         }
+        if let Some(copies) = self.renderer.upload_commands(&ctx.device) {
+            ctx.queue.submit([copies]);
+        }
         let surface = |id| {
             self.store
                 .get(id)
@@ -838,12 +861,19 @@ impl GfxBackend {
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
         }
+        // Persistent buffers' copies go ahead of everything that draws.
+        let copies = self.renderer.upload_commands(&self.ctx.device);
         let index = {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit(open.into_iter().chain([enc.finish()]))
+            self.ctx
+                .queue
+                .submit(copies.into_iter().chain(open).chain([enc.finish()]))
         };
+        for r in self.unsubmitted_reports.drain(..) {
+            r.submitted(index.clone());
+        }
         self.last_submit = Some(index.clone());
         self.submitted_at = std::time::Instant::now();
         self.renderer.submitted();
@@ -961,7 +991,7 @@ impl GfxBackend {
         // Reports from this frame and before are read later (Halo reads a
         // visibility test two frames after it ends): start their reads now,
         // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values() {
+        for r in self.reports.values().filter(|r| r.is_submitted()) {
             r.try_read(&self.ctx)?;
         }
         Ok(())
@@ -1020,12 +1050,25 @@ impl GfxBackend {
             .and_then(|p| p.draws.last())
             .map(RecordedDraw::color_writes);
         let mask = recorded.color_writes();
-        let split = if self.merge_discards {
+        let split = if self.merge_masks {
+            false
+        } else if self.merge_discards {
             merge_split(prev_mask, mask, discards)
         } else {
             discards || merge_split(prev_mask, mask, false)
         };
         let own_pass = first && (!self.merge_passes || split);
+        // Why a merged pending pass splits (frame stats `pass_*`).
+        if own_pass && self.merge_passes && !recorded.counts_samples() {
+            use timeline::phase::{Counter, count};
+            match prev_mask {
+                Some(prev) if prev != wgpu::ColorWrites::ALL && prev != mask => {
+                    count(if prev.is_empty() { Counter::PassNoColor } else { Counter::PassMask }, 1)
+                }
+                Some(_) => count(Counter::PassDiscard, 1),
+                None => {}
+            }
+        }
         // A counted draw adds its count pass and the sum, and the draws
         // after it resume in a new render pass.
         let encoded = if recorded.counts_samples() {
@@ -1801,14 +1844,29 @@ impl Backend for GfxBackend {
     }
 
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
-        // The counted draws before it are in the total.
-        self.flush()?;
-        let ctx = &self.ctx;
-        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
-        let report = counter.report(ctx, &mut enc);
-        // The read waits for this submission only.
-        report.submitted(self.submit(enc));
+        let report = if self.defer_side_passes {
+            // After the counted draws, in the open encoder: it reaches the
+            // GPU with the next submission (a target switch, a read or the
+            // present), which tells it its index. Until then it reads as not
+            // back, and a waiting read submits it first.
+            let (mut enc, passes) = self.take_open()?;
+            let ctx = &self.ctx;
+            let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+            let report = counter.report(ctx, &mut enc);
+            self.open = Some((enc, passes));
+            self.unsubmitted_reports.push(report.clone());
+            report
+        } else {
+            // The counted draws before it are in the total.
+            self.flush()?;
+            let ctx = &self.ctx;
+            let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            let report = counter.report(ctx, &mut enc);
+            // The read waits for this submission only.
+            report.submitted(self.submit(enc));
+            report
+        };
         self.next_ticket += 1;
         self.reports.insert(self.next_ticket, report);
         Ok(Some(self.next_ticket))
@@ -1827,10 +1885,20 @@ impl Backend for GfxBackend {
             .reports
             .remove(&ticket)
             .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))?;
+        if !report.is_submitted() {
+            self.flush()?;
+        }
         report.read(&self.ctx)
     }
 
     fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        let Some(report) = self.reports.get(&ticket) else {
+            return Err(format!("pixel-count ticket {ticket} is not live"));
+        };
+        if !report.is_submitted() {
+            // Still in the open encoder: on its way once submitted.
+            self.flush()?;
+        }
         let Some(report) = self.reports.get(&ticket) else {
             return Err(format!("pixel-count ticket {ticket} is not live"));
         };
@@ -1843,6 +1911,10 @@ impl Backend for GfxBackend {
 
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.reports.remove(&ticket);
+    }
+
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.reports.get(&ticket).is_some_and(|r| !r.is_submitted())
     }
 }
 

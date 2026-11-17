@@ -457,6 +457,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
         self.inner.try_pixel_count(ticket)
     }
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.inner.pixel_count_unsubmitted(ticket)
+    }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
     }

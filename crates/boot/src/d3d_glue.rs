@@ -489,6 +489,9 @@ impl d3d::backend::Backend for Headless {
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.0.drop_pixel_count(ticket)
     }
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.0.pixel_count_unsubmitted(ticket)
+    }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.0.can_sample_depth_surfaces()
     }

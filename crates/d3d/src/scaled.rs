@@ -1885,6 +1885,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.reference.drop_pixel_count(ticket)
     }
 
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.reference.pixel_count_unsubmitted(ticket)
+    }
+
     fn create_texture_target(
         &mut self,
         format: D3DFormat,
