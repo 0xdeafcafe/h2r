@@ -250,6 +250,86 @@ impl Live {
         }
     }
 }
+/// Who reads a list of finished games: what a co-op game's session
+/// visibility is judged against (docs/live/live-api.md, "Co-op games").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Viewer {
+    /// No bearer: only public games.
+    Anonymous,
+    Account(live_proto::Xuid),
+    /// The operator or an admin account: every game.
+    Admin,
+}
+
+impl Live {
+    /// The reader behind a `read` bearer (checked even on a public server,
+    /// as [`Live::read_caller`] does); the operator and admin accounts are
+    /// [`Viewer::Admin`].
+    pub fn read_viewer(&self, bearer: Option<&str>) -> Result<Viewer, ApiError> {
+        if bearer.is_none() {
+            self.authorize_read(None)?;
+            return Ok(Viewer::Anonymous);
+        }
+        let author = self.authenticate(bearer, lxm::READ)?;
+        if self.admins.is_admin(&author, &self.model.read()) {
+            return Ok(Viewer::Admin);
+        }
+        Ok(match author {
+            Author::Account { xuid, .. } => Viewer::Account(xuid),
+            Author::Server(_) => Viewer::Admin,
+        })
+    }
+}
+
+/// Whether a finished game from a co-op session with this `visibility`,
+/// hosted by `host`, shows to `viewer`. Public: to everyone. Friends: to
+/// whoever played in it (`played`) and the host's friends. Invite: only to
+/// whoever played in it. Admins see every game.
+pub fn finished_shows_to(
+    visibility: session::Visibility,
+    host: live_proto::Xuid,
+    played: impl Fn(live_proto::Xuid) -> bool,
+    viewer: Viewer,
+    friends: impl Fn(live_proto::Xuid, live_proto::Xuid) -> bool,
+) -> bool {
+    let v = match viewer {
+        Viewer::Admin => return true,
+        _ if visibility.is_public() => return true,
+        Viewer::Anonymous => return false,
+        Viewer::Account(v) => v,
+    };
+    v == host || played(v) || (visibility == session::Visibility::Friends && friends(host, v))
+}
+
+/// The co-op session a Live co-op campaign game (`online: true`) was played
+/// in, found and recorded when the game starts: who hosted it and how it was
+/// listed then.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoopLink {
+    pub session_id: String,
+    pub host_xuid: live_proto::Xuid,
+    pub visibility: session::Visibility,
+}
+
+impl CoopLink {
+    /// The open co-op session hosted by, or else joined by, one of `xuids`.
+    pub fn find(s: &State, xuids: &[live_proto::Xuid]) -> Option<CoopLink> {
+        let open = || {
+            s.sessions
+                .values()
+                .filter(|x| x.state == "open" && x.advertisement.flags == session::COOP)
+        };
+        open()
+            .find(|x| xuids.contains(&x.host_xuid))
+            .or_else(|| open().find(|x| x.players.keys().any(|p| xuids.contains(p))))
+            .map(|x| CoopLink {
+                session_id: x.session_id.clone(),
+                host_xuid: x.host_xuid,
+                visibility: x.advertisement.visibility,
+            })
+    }
+}
+
 /// A finished co-op campaign game, derived from its session's events: a
 /// `coop` session that closed after at least one guest joined.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,6 +337,9 @@ pub struct CoopGame {
     pub session_id: String,
     pub host_xuid: live_proto::Xuid,
     pub campaign: session::Campaign,
+    /// The session's visibility when it closed: who the game shows to
+    /// ([`finished_shows_to`]).
+    pub visibility: session::Visibility,
     /// Every guest that ever joined, in join order.
     pub guests: Vec<live_proto::Xuid>,
     /// The first guest's join time.
@@ -310,6 +393,7 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent, at: i64) {
                     session_id: id.into(),
                     host_xuid: item.host_xuid,
                     campaign,
+                    visibility: item.advertisement.visibility,
                     guests: joined.into_iter().map(|(x, _)| x).collect(),
                     started,
                     ended: b.at.clone(),
@@ -448,7 +532,7 @@ pub(crate) async fn coop_games(
     headers: HeaderMap,
     Query(q): Query<BTreeMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    live.authorize_read(crate::http::bearer(&headers))?;
+    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
     let limit = q
         .get("limit")
         .filter(|v| !v.is_empty())
@@ -500,6 +584,15 @@ pub(crate) async fn coop_games(
         .rev()
         .filter(|(p, _)| before.is_none_or(|b| **p < b))
         .filter(|(_, g)| player.is_none_or(|x| g.host_xuid == x || g.guests.contains(&x)))
+        .filter(|(_, g)| {
+            finished_shows_to(
+                g.visibility,
+                g.host_xuid,
+                |x| g.guests.contains(&x),
+                viewer,
+                |a, b| s.is_friends(a, b),
+            )
+        })
         .take(limit)
         .collect();
     let next = (rows.len() == limit)
@@ -520,6 +613,7 @@ pub(crate) async fn coop_games(
                 "started": g.started,
                 "ended": g.ended,
                 "end_reason": g.end_reason,
+                "visibility": g.visibility.as_str(),
             })
         })
         .collect();

@@ -987,7 +987,13 @@ impl Live {
         }
     }
 
-    pub fn account(&self, tag: &Gamertag) -> Result<AccountDetail, ApiError> {
+    /// One account and its recent games, those `viewer` may see
+    /// ([`crate::model::Game::shows_to`]).
+    pub fn account(
+        &self,
+        tag: &Gamertag,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<AccountDetail, ApiError> {
         let position = self.position();
         let s = self.model.read();
         let a = s
@@ -1003,6 +1009,7 @@ impl Live {
             recent_games: s
                 .games_newest()
                 .filter(|g| g.xuids.contains(&a.xuid))
+                .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
                 .map(|g| g.summary())
                 .collect(),

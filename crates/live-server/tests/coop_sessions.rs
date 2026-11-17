@@ -354,3 +354,224 @@ async fn finished_coop_games_are_derived_from_session_events() {
         StatusCode::BAD_REQUEST
     );
 }
+
+/// What each viewer sees of one co-op game, endpoint by endpoint.
+#[derive(Debug, PartialEq)]
+struct Seen {
+    /// `GET /v1/coop/games`: how many finished co-op games.
+    coop: usize,
+    /// `GET /v1/coop/games?player=Guest`.
+    coop_player: usize,
+    /// `GET /v1/games`: how many games.
+    games: usize,
+    /// `GET /v1/games/{id}` answers.
+    detail: bool,
+    /// `GET /v1/games/{id}/frames` answers.
+    frames: bool,
+    /// `GET /v1/accounts/Host`: its recent games.
+    recent: usize,
+}
+
+const ALL: Seen = Seen {
+    coop: 1,
+    coop_player: 1,
+    games: 1,
+    detail: true,
+    frames: true,
+    recent: 1,
+};
+const NONE: Seen = Seen {
+    coop: 0,
+    coop_player: 0,
+    games: 0,
+    detail: false,
+    frames: false,
+    recent: 0,
+};
+
+/// A host and a guest play one Live co-op campaign game in a session of
+/// `visibility`: the session closes after the guest joined (a finished co-op
+/// game) and the host's `online` campaign game links to it. Returns what the
+/// anonymous reader, a stranger, the host's friend, the guest and an admin
+/// each see.
+async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen); 5] {
+    let h = start(
+        std::sync::Arc::new(live_server::store::MemoryStore::new()),
+        live_server::Policy {
+            admins: vec![live_proto::Gamertag::new("Boss").unwrap()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let a = h.create("Host").await;
+    let b = h.create("Guest").await;
+    let f = h.create("Friend").await;
+    let c = h.create("Stranger").await;
+    let boss = h.create("Boss").await;
+    let ask = h.event(
+        &a,
+        &streams::account(a.xuid),
+        types::FRIEND_REQUESTED,
+        json!({"from": a.xuid, "to": f.xuid}),
+    );
+    h.post_event(&a, ask).await;
+    let yes = h.event(
+        &f,
+        &streams::account(f.xuid),
+        types::FRIEND_ACCEPTED,
+        json!({"from": a.xuid, "to": f.xuid}),
+    );
+    h.post_event(&f, yes).await;
+
+    let r = create(&h, &a, &coop(visibility)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let sid = r.json()["session_id"].as_str().unwrap().to_string();
+    send(&h, &a, &sid, &[(session::JOINED, json!({"xuid": b.xuid}))]).await;
+    let game = h
+        .start_game(
+            &a,
+            json!({
+                "map": "03a_oldmombasa", "mode": "campaign", "kind": "campaign",
+                "difficulty": "heroic", "online": true, "team_play": false,
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": a.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": b.xuid, "team": 0, "local": false}
+                ]
+            }),
+        )
+        .await;
+    send(
+        &h,
+        &a,
+        &sid,
+        &[(session::DELETED, json!({"reason": "closed"}))],
+    )
+    .await;
+
+    let read = |u: Option<&User>, uri: String| {
+        let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        let h = &h;
+        async move { h.call(Method::GET, &uri, &headers, Body::empty()).await }
+    };
+    let operator = |h: &Harness| {
+        (
+            "authorization",
+            format!(
+                "Bearer {}",
+                h.token(&h.operator, "server:live.test", lxm::READ)
+            ),
+        )
+    };
+    let len = |r: Resp, key: &str| {
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        r.json()[key].as_array().unwrap().len()
+    };
+    let mut out = Vec::new();
+    for (name, u) in [
+        ("anonymous", None),
+        ("stranger", Some(&c)),
+        ("friend", Some(&f)),
+        ("guest", Some(&b)),
+        ("admin", Some(&boss)),
+    ] {
+        let detail = read(u, format!("/v1/games/{game}")).await.status;
+        assert!(matches!(detail, StatusCode::OK | StatusCode::NOT_FOUND));
+        let frames = read(u, format!("/v1/games/{game}/frames")).await.status;
+        out.push((
+            name,
+            Seen {
+                coop: len(read(u, "/v1/coop/games".into()).await, "items"),
+                coop_player: len(read(u, "/v1/coop/games?player=Guest".into()).await, "items"),
+                games: len(read(u, "/v1/games".into()).await, "items"),
+                detail: detail == StatusCode::OK,
+                frames: frames == StatusCode::OK,
+                recent: len(read(u, "/v1/accounts/Host".into()).await, "recent_games"),
+            },
+        ));
+    }
+    // The operator's own token is an admin's too.
+    let op = h
+        .call(
+            Method::GET,
+            "/v1/coop/games",
+            &[operator(&h)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(len(op, "items"), 1);
+    // The host always sees its own game.
+    assert_eq!(len(read(Some(&a), "/v1/games".into()).await, "items"), 1);
+    // The finished game says how it was listed.
+    let all = h
+        .call(
+            Method::GET,
+            "/v1/coop/games",
+            &[operator(&h)],
+            Body::empty(),
+        )
+        .await
+        .json();
+    assert_eq!(all["items"][0]["visibility"], visibility.as_str());
+    out.try_into().unwrap()
+}
+
+#[tokio::test]
+async fn public_coop_games_show_to_everyone() {
+    for (who, seen) in coop_seen_by(session::Visibility::Public).await {
+        assert_eq!(seen, ALL, "{who}");
+    }
+}
+
+#[tokio::test]
+async fn friends_only_coop_games_show_to_players_friends_and_admins() {
+    let seen = coop_seen_by(session::Visibility::Friends).await;
+    assert_eq!(
+        seen,
+        [
+            ("anonymous", NONE),
+            ("stranger", NONE),
+            ("friend", ALL),
+            ("guest", ALL),
+            ("admin", ALL),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn invite_only_coop_games_show_to_players_and_admins() {
+    let seen = coop_seen_by(session::Visibility::Invite).await;
+    assert_eq!(
+        seen,
+        [
+            ("anonymous", NONE),
+            ("stranger", NONE),
+            ("friend", NONE),
+            ("guest", ALL),
+            ("admin", ALL),
+        ]
+    );
+}
+
+/// A campaign game played outside any co-op session (split-screen, or Live
+/// co-op from a client that has no session) stays public.
+#[tokio::test]
+async fn campaign_games_without_a_session_stay_public() {
+    let h = harness().await;
+    let a = h.create("Solo").await;
+    h.start_game(
+        &a,
+        json!({
+            "map": "01a_tutorial", "mode": "campaign", "kind": "campaign",
+            "online": true, "team_play": false,
+            "players": [{"index": 0, "name": "Solo", "xuid": a.xuid, "team": 0, "local": true}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        h.get("/v1/games").await.json()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

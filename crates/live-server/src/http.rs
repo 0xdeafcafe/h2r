@@ -437,8 +437,11 @@ async fn account(
     headers: HeaderMap,
     Path(tag): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.account(&gamertag(&tag)?)?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.account(&gamertag(&tag)?, viewer)?,
+    ))
 }
 
 async fn keys_by_tag(
@@ -908,7 +911,7 @@ async fn list_games(
     headers: HeaderMap,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
     let paging = paging(&p)?;
     let state = match p.get("state").map(String::as_str) {
         None | Some("") => None,
@@ -933,7 +936,7 @@ async fn list_games(
     };
     Ok(json(
         StatusCode::OK,
-        &live.games_where(state, &filter, before, paging.limit),
+        &live.games_where(state, &filter, viewer, before, paging.limit),
     ))
 }
 
@@ -961,7 +964,8 @@ async fn game(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
+    live.check_game_shows(game_id(&id)?, viewer)?;
     Ok(json(StatusCode::OK, &live.game(game_id(&id)?)?))
 }
 
@@ -971,7 +975,8 @@ async fn game_frames(
     Path(id): Path<String>,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
+    live.check_game_shows(game_id(&id)?, viewer)?;
     let tick = |k: &str| {
         p.get(k)
             .filter(|v| !v.is_empty())

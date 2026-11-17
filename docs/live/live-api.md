@@ -226,12 +226,12 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)) |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
-| `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
+| `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}` |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
-| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on |
-| `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
+| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
@@ -526,7 +526,8 @@ from session events. A `coop` session that closed (`SessionDeleted` or
 `SessionExpired`) after at least one guest joined is one finished game; a
 session nobody joined is not. Nothing new is written.
 
-`GET /v1/coop/games` (public, or `read` on a private server) returns
+`GET /v1/coop/games` (public, or `read` on a private server; an optional
+`read` bearer says who reads, see below) returns
 `{items, next, position}`, newest closed first. `limit` is 1..1000
 (default 100); `cursor` is the previous `next`, the log position of the
 closing event. `player` (an XUID or a gamertag) keeps the games that
@@ -540,7 +541,8 @@ account hosted or joined; an unknown gamertag gives an empty page. An item:
   "campaign": { "level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2 },
   "started": "2026-11-16T10:05:41.220Z",
   "ended": "2026-11-16T10:47:09.004Z",
-  "end_reason": "closed" }
+  "end_reason": "closed",
+  "visibility": "friends" }
 ```
 
 `players` is the host first, then every guest that ever joined in join
@@ -548,6 +550,23 @@ order, including ones who left before the end. `started` is the first
 guest's join time, `ended` the closing event's. `end_reason` is `closed`,
 `host_left` or `expired`. `gamertag` is null for an account the server no
 longer knows. The campaign is the one on the session when it closed.
+
+**Who sees a finished co-op game.** `visibility` is the session's when it
+closed. A `public` one shows to everyone. A `friends` one shows only to
+the readers who were in it (the host or a guest) and the host's friends;
+an `invite` one only to those who were in it. Admins (the operator's
+token, or an admin account's) see every game. The reader is the account
+of an optional `read` bearer, checked when present even on a public
+server; without one, only public games show. The same rule holds for a
+Live co-op campaign game's telemetry (`kind: "campaign"`, `online: true`):
+when it starts, the server links it to the open `coop` session its host
+(or, failing that, a player) is in and records that session's host and
+visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames` and
+an account's `recent_games` leave it out for readers who may not see it
+(those who were in it are its players). A campaign game with no such
+session stays public. The stats summary still counts every game: its
+totals name no game. The raw log (`GET /v1/events`, `/v1/stream`) is not
+filtered.
 
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP

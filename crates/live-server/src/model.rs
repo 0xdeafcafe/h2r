@@ -81,6 +81,9 @@ pub struct Game {
     pub ended: Option<(GameEnded, String)>,
     /// Unix seconds of the last event or frame; idle games are ended.
     pub last_activity: i64,
+    /// A Live co-op campaign game's session, recorded when it starts: a
+    /// friends-only or invite-only one hides the game from strangers.
+    pub coop: Option<crate::sessions::CoopLink>,
 }
 
 impl Game {
@@ -110,6 +113,24 @@ impl Game {
             map_id: g.map_id,
             skulls: g.skulls.clone(),
         }
+    }
+
+    /// Whether `viewer` may see this game: every game but a Live co-op
+    /// one from a friends-only or invite-only session, which shows only to
+    /// those who were in it and (friends-only) the host's friends.
+    pub fn shows_to(
+        &self,
+        viewer: crate::sessions::Viewer,
+        friends: impl Fn(Xuid, Xuid) -> bool,
+    ) -> bool {
+        let Some(c) = &self.coop else { return true };
+        crate::sessions::finished_shows_to(
+            c.visibility,
+            c.host_xuid,
+            |x| self.xuids.contains(&x),
+            viewer,
+            friends,
+        )
     }
 
     /// May `author` write to this game: its host, or a player's account.
@@ -326,8 +347,21 @@ impl Model {
             };
             let id = started.game_id.clone();
             let players = started.game.players.clone();
+            let xuids: Vec<Xuid> = players.iter().filter_map(|p| p.xuid).collect();
+            let coop = (started.game.kind() == "campaign" && started.game.online == Some(true))
+                .then(|| {
+                    let mut who = xuids.clone();
+                    if let Some(live_proto::Author::Account { xuid, .. }) =
+                        live_proto::Author::parse(&started.host)
+                    {
+                        who.push(xuid);
+                    }
+                    crate::sessions::CoopLink::find(s, &who)
+                })
+                .flatten();
             let game = Game {
-                xuids: players.iter().filter_map(|p| p.xuid).collect(),
+                xuids,
+                coop,
                 players,
                 started,
                 started_at: b.at.clone(),
