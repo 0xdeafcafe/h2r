@@ -28,6 +28,7 @@
 pub mod donor;
 pub mod manifest;
 pub mod profiles;
+pub mod scratch;
 pub mod scenario;
 pub mod structure;
 
@@ -204,6 +205,8 @@ pub struct Report {
     pub dropped: Vec<String>,
     /// Whether the map was written fresh (nothing of the base pinned).
     pub fresh: bool,
+    /// What the from-scratch build did, when it was one.
+    pub scratch: Option<scratch::ScratchReport>,
     /// Raw resources no kept tag names, emptied: (count, bytes).
     pub raw_dropped: (usize, u64),
     /// The base's tags a fresh map dropped ([`KEEP`]).
@@ -228,7 +231,13 @@ impl std::fmt::Display for Report {
             self.metadata_max,
             self.lean
         )?;
-        if self.fresh {
+        if let Some(s) = &self.scratch {
+            writeln!(
+                f,
+                "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSPs; {} datum words rewritten), {} dangling",
+                s.tags, s.from_base, s.from_level, s.built_here, s.words, s.dangling.len()
+            )?;
+        } else if self.fresh {
             writeln!(
                 f,
                 "  pruned {} base tags {:?}; {} raw resources ({} bytes) no kept tag names",
@@ -376,7 +385,20 @@ fn convert_with<R: Read + Seek>(
     let (mut bytes, mut layout) = set.build()?;
     if !opts.pinned {
         let sections: Vec<usize> = slots.iter().map(|s| s.section).collect();
-        let out = fresh(base, &set, bytes.clone(), &sections, &mut report)?;
+        // From scratch ([`scratch`]); the base pruned ([`fresh`]) when
+        // that fails.
+        let file = scratch::file_bytes(base)?;
+        let out = match scratch::build(&file, &set, &bytes) {
+            Ok((out, r)) => {
+                report.fresh = true;
+                report.scratch = Some(r);
+                out
+            }
+            Err(e) => {
+                report.dropped.push(format!("from scratch: {e}; pruned instead"));
+                fresh(base, &set, bytes.clone(), &sections, &mut report)?
+            }
+        };
         let built = out.build()?;
         // Over the engine's file size (d40: the gestalt still holds the
         // pruned sounds' chunks, and copied raw runs to the next known

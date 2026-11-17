@@ -398,6 +398,16 @@ fn every_level_converts_fresh() {
                 &script_bad[..script_bad.len().min(12)]
             ));
         }
+        match &r.scratch {
+            // From scratch: no slot of the base's index left over.
+            Some(_) => {
+                let holes = m.index_slots() as usize - m.tags().len();
+                if holes != 0 {
+                    failed.push(format!("{level}: {holes} empty index slots"));
+                }
+            }
+            None => failed.push(format!("{level}: not built from scratch: {:?}", r.dropped)),
+        }
         if !r.fresh {
             failed.push(format!("{level}: written pinned: {:?}", r.dropped.last()));
         }

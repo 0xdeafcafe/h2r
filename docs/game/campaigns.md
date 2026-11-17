@@ -224,50 +224,56 @@ convert --pinned` skip it):
    | `+0x3d8` simulation table (446) | its object, projectile and damage tags | every kept tag of those groups, in index order (`write_simulation_table`) |
 
    The base's BSP slots take Halo 1's BSP names.
-2. **Nothing pinned.** Every base tag and every converted tag is read back
-   from the intermediate map and laid out anew (`h1convert::fresh::
-   unpin_all` with `built_too`; converted object tags keep words naming
-   arrays they share with their templates, so they are rebuilt too). The
-   intermediate keeps 05a's old scenario bytes whole (unowned), and the
-   unpinner reads every gap between tags too (`Unpinner::add_regions`):
-   05a's arrays live there. Raw resources, sound chunks and lip-sync data
-   are copied (`fresh::sound_gestalt`). Two retail words read as pointers
-   are data (`fresh::DATA_WORDS`). A tag that still does not move is
-   dropped, and the build fails if anything names it
-   (`fresh::check_refused`).
-3. **The base's unreachable tags dropped** (`fresh::prune_with`,
-   `h1campaign::KEEP`): what the scenario, `matg`, the shader templates
-   and the shared tables reach stays; the rest of 05a goes (its BSP
-   content, scenery, its AI characters, sounds, effects, bitmaps).
+2. **Built from scratch** (`h1campaign::scratch`, on `tags::repo`). The
+   map is assembled from an empty set by tag path, not from 05a:
+   `LevelSource` is one `TagSource` over two maps, the intermediate for
+   every tag the conversion built or changed (built, aliased, or pinned
+   with bytes unlike 05a's) and retail 05a for the rest. The roots are
+   `matg`, the keep list below and every datum the written scenario and
+   BSPs name; `tags::repo::closure` follows references from there and
+   `to_tag_set` lays the tags out with a dense index (no slot of 05a's,
+   no empty slots). The scenario, BSPs and lightmaps are the conversion's
+   own blocks: their datum words are renamed to the new index, their raw
+   blobs copied and their BSP sections made anew (`Transfer`), then the
+   simulation table is written for the new index. A tag the extractor
+   cannot take whole fails the build. Three 05a words outside every
+   schema field read as pointers and are data (`fresh::DATA_WORDS`, given
+   to the base's `MapSource::data_words`).
+3. **Fallback: pruned.** If the build from scratch fails, the level is
+   built the slice-before way (a `dropped` line says why): every tag of
+   the intermediate laid out anew (`h1convert::fresh::unpin_all` with
+   `built_too`), the unreachable base tags dropped (`fresh::prune_with`,
+   `KEEP`), on 05a's index. No level takes it today.
 
-**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17, with the starting profiles;
-pinned is the old way, lean ladder and all):
+**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17,
+converter version 24; pinned is the old way, lean ladder and all; pruned is
+version 23's fresh build):
 
-| Level | Tag memory pinned | fresh | File pinned | fresh | Lean pinned | fresh | Base tags dropped | References resolving |
+| Level | Tag memory pinned | pruned | from scratch | File pinned | pruned | from scratch | Tags | References resolving |
 |---|---|---|---|---|---|---|---|---|
-| a10 | `0xb44000` | `0x89b000` | 287,119,360 | 257,813,504 | 0 | 0 | 1,948 | 31,056/31,056 |
-| a30 | `0xb3c000` | `0x8e5000` | 232,101,376 | 176,360,448 | 0 | 0 | 1,832 | 30,153/30,153 |
-| a50 | `0xbeb000` | `0x8cf000` | 241,578,496 | 190,463,488 | 0 | 0 | 1,870 | 30,806/30,806 |
-| b30 | `0xb29000` | `0x85e000` | 230,040,064 | 171,379,200 | 0 | 0 | 1,905 | 30,214/30,214 |
-| b40 | `0xc22000` | `0x923000` | 265,091,072 | 229,058,048 | 4 | 0 | 1,841 | 32,727/32,727 |
-| c10 | `0xc01000` | `0x8a1000` | 260,217,344 | 210,515,968 | 0 | 0 | 2,534 | 31,616/31,616 |
-| c20 | `0xb3c000` | `0x83f000` | 257,913,344 | 208,459,264 | 0 | 0 | 4,641 | 25,721/25,721 |
-| c40 | `0xbe1000` | `0x8b7000` | 272,847,360 | 231,427,072 | 0 | 0 | 3,300 | 31,192/31,192 |
-| d20 | `0xbab000` | `0x8ed000` | 247,974,912 | 200,224,768 | 0 | 0 | 3,298 | 29,402/29,402 |
-| d40 | `0xbec000` | `0x8ee000` | 293,278,720 | 259,985,920 | 0 | 0 | 3,393 | 31,235/31,235 |
+| a10 | `0xb44000` | `0x89b000` | `0x826000` | 287,119,360 | 257,813,504 | 218,013,184 | 7,027 | 30,964/30,964 |
+| a30 | `0xb3c000` | `0x8e5000` | `0x870000` | 232,101,376 | 176,360,448 | 166,670,848 | 6,905 | 30,149/30,149 |
+| a50 | `0xbeb000` | `0x8cf000` | `0x852000` | 241,578,496 | 190,463,488 | 174,692,352 | 7,072 | 30,797/30,797 |
+| b30 | `0xb29000` | `0x85e000` | `0x7ee000` | 230,040,064 | 171,379,200 | 162,504,192 | 7,035 | 30,212/30,212 |
+| b40 | `0xc22000` | `0x923000` | `0x8a3000` | 265,091,072 | 229,058,048 | 203,627,008 | 7,309 | 32,626/32,626 |
+| c10 | `0xc01000` | `0x8a1000` | `0x81f000` | 260,217,344 | 210,515,968 | 191,560,192 | 6,678 | 31,612/31,612 |
+| c20 | `0xb3c000` | `0x83f000` | `0x7d2000` | 257,913,344 | 208,459,264 | 188,027,392 | 4,205 | 25,719/25,719 |
+| c40 | `0xbe1000` | `0x8b7000` | `0x830000` | 272,847,360 | 231,427,072 | 202,671,616 | 6,086 | 31,096/31,096 |
+| d20 | `0xbab000` | `0x8ed000` | `0x872000` | 247,974,912 | 200,224,768 | 181,662,720 | 5,842 | 29,396/29,396 |
+| d40 | `0xbec000` | `0x8ee000` | `0x86f000` | 293,278,720 | 259,985,920 | 223,619,072 | 6,020 | 31,070/31,070 |
 
-The bound is `0xc24000`: every level now has 3 to 4 MB to spare, and the
+The bound is `0xc24000`: every level now has 3.5 to 4.4 MB to spare, and the
 lean ladder fires nowhere (b40 keeps its level data, seat table and object
 textures; the ladder stays as a safety net). The file bound is
-`0x11800000` (293,601,280 bytes); d40 pinned is 322,560 bytes under it.
-On every level: no tag from `scenarios\solo\05a_deltaapproach\` or
-`scenarios\multi\`, every script atom naming an object definition,
-sound, effect, damage effect or animation graph resolves to a tag of that
-group with data, and the scripts' reference block reads back
-(`hs::Scenario::read`). The reference sweep counts only problems the pinned
-map of the same level does not have (none on any level). If the fresh
-map would pass the file bound the pinned one is written instead
-(`Report::fresh` false, a `dropped` line).
+`0x11800000` (293,601,280 bytes). On every level the map is built from
+scratch with one index slot per tag, and: no tag from
+`scenarios\solo\05a_deltaapproach\` or `scenarios\multi\`, every script
+atom naming an object definition, sound, effect, damage effect or
+animation graph resolves to a tag of that group with data, and the
+scripts' reference block reads back (`hs::Scenario::read`). The reference
+sweep counts only problems the pinned map of the same level does not have
+(none on any level). If the fresh map would pass the file bound the
+pinned one is written instead (`Report::fresh` false, a `dropped` line).
 
 **Player starting profiles** (`h1campaign::profiles`). Halo 1's block
 `scnr +0x348` (`0x68` each; S, the editing kits' layout, checked on all
@@ -290,10 +296,9 @@ scenario), so they need no entry: the fresh a30 keeps every `matg`
 reference. No scenario palette is nulled (the conversion already wrote
 them all).
 
-**Not done yet (the user's ask is more):** the map still takes 05a's
-index (slots kept, empty ones included) and is built from 05a by
-pruning, not assembled from an empty set by tag path. The tag repository
-(`tags::repo::TagSource`, `closure`, `to_tag_set`) is the way to that.
+**Not done yet:** multiplayer is still pruned on its base's index, and
+the sound gestalt is copied whole (05a's entries for sounds the level
+dropped stay in it).
 
 **Base per level: `05a_deltaapproach` for all ten** (`h1campaign::base_for`).
 Why (surveys `base_memory_and_vehicles`, `survey_bases`):
