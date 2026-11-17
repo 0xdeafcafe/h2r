@@ -525,6 +525,8 @@ don't move). Roots kept whatever references them (`fresh::KEEP_GROUPS`):
 (`KEEP_PREFIXES`: a `stem` names `spas` passes by a word the tree doesn't
 hold as a reference). No group the engine walks on its own is confirmed
 in the XBE yet; the list is the conservative guess a game run tests.
+Campaign levels use the same machinery with their own scenario
+(`fresh::prune_with`, `fresh::Keep`; docs/game/campaigns.md §9).
 Blood Gulch on Coagulation drops 227 tags (76 `bitm`, 44 `shad`, 14
 `snd!`, 12 `mode`, 11 `hlmt`, 10 `lsnd`, 10 `scen`, ...), 13 palette
 entries and 19 tag list entries; all 21580 references in the kept tags

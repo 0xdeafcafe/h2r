@@ -330,8 +330,19 @@ fn raw_len(starts: &[u32], offset: u32, size: Option<u32>, siblings: &[u32]) -> 
         .copied()
         .find(|x| !siblings.contains(x))
         .unwrap_or(offset);
-    size.unwrap_or(0).max(next - offset)
+    let gap = next - offset;
+    match size {
+        // A stored size and no other resource for many megabytes: the
+        // size it is (05a has a 2-byte resource with nothing after it
+        // before the next BSP region).
+        Some(n) if gap > RAW_GAP_LIMIT => n,
+        _ => size.unwrap_or(0).max(gap),
+    }
 }
+
+/// Past this distance to the next known resource, a stored raw size is
+/// trusted over the distance.
+const RAW_GAP_LIMIT: u32 = 16 << 20;
 
 /// Turns a map's pinned tags into built ones **in place**: the destination
 /// set has the same slots, datums and string table as the source map (it
@@ -373,6 +384,37 @@ impl<'s> Unpinner<'s> {
     /// The source map's relocator.
     pub fn relocator(&self) -> &Relocator<'s> {
         &self.rel
+    }
+
+    /// Words past `end` in the metadata space starting at `base` are not
+    /// pointers ([`super::Memory::limit_space`]).
+    pub fn limit_space(&mut self, base: u32, end: u32) {
+        self.rel.memory_mut().limit_space(base, end);
+    }
+
+    /// Words outside every field that are data in this source map
+    /// ([`super::Memory::data_words`]).
+    pub fn data_words(&mut self, words: &[u32]) {
+        self.rel.memory_mut().data_words(words);
+    }
+
+    /// Metadata of `src` (the source map) no tag owns, which tags' arrays
+    /// may point into ([`super::Memory::add_regions`]). The raw starts are
+    /// gathered again: tags that walk only now bound resources too.
+    pub fn add_regions<R: Read + Seek>(
+        &mut self,
+        src: &mut Map<R>,
+        regions: impl IntoIterator<Item = (u32, Vec<u8>)>,
+    ) {
+        self.rel.memory_mut().add_regions(regions);
+        let more = raw_starts(
+            self.rel.schema,
+            &self.rel,
+            src.tags(),
+            src.metadata_space(),
+            src.header().index_offset,
+        );
+        self.add_starts(more);
     }
 
     /// More local raw starts the schema does not reach (a sound gestalt's

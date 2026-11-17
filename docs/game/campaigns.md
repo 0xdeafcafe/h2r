@@ -191,10 +191,97 @@ the level and `vfs::CampaignMapsBackend` serves it as `maps\<level>.map`;
 the map's header name is the level's and its scenario path
 `scenarios\solo\<level>\<level>`, the path its start record names.
 
-**Pinned, not fresh (the user's stopgap).** A fresh map needs every tag
-moved or built, and `tags::schema::Relocator` can't move `sbsp` yet; a
-pinned base is reachable now. New tags are **added** to the pinned set
-(index growth, tail kept: the entry table moves to the metadata end).
+**Fresh by default; `--pinned` keeps the old way.** A level is first
+built on the pinned base as before (the intermediate), then written
+fresh (`h1campaign::convert`, `fresh`; `Options::pinned` and `h2 h1
+convert --pinned` skip it):
+
+1. **Its own scenario.** `scenario::fresh_root` starts from an empty
+   `0x3e0` root; nothing of 05a's scenario is copied. Every root field
+   05a fills that the conversion does not write, and what a fresh level
+   writes instead (survey `survey_base_scenario_fields`,
+   `survey_base_scenario_elements` in `tests/fresh.rs`, V on 05a, 03a and
+   Coagulation):
+
+   | Field | 05a | Fresh |
+   |---|---|---|
+   | `+0x00`, `+0x1f8`, `+0x208`, `+0x320` null references (`sbsp`, `unic`, `hmt `, `sfx+`) | group, -1 | the same (`FRESH_NULL_REFS`) |
+   | `+0xe8`/`+0xf0` light volumes and palette (28, 2) | its own | empty |
+   | `+0xf8` player starting profiles (2) | Halo 2's weapons | empty (Halo 1's profiles are not converted yet: the player starts unarmed) |
+   | `+0x100` starting locations | template element | Halo 1's, on a zeroed element (05a's bytes past the position and facing are zero) |
+   | `+0x108` trigger volumes | 121, parked | Halo 1's only (no parked base volumes; hooks index from 0) |
+   | `+0x138`/`+0x140` decals and palette | its own | empty |
+   | `+0x150` AI styles (7) | its own | empty (every converted order has style -1) |
+   | `+0x170` mission scenes (15) | its own | empty |
+   | `+0x200`, `+0x358`, `+0x3b8` chapter title, subtitles, objectives | 05a's | null |
+   | `+0x210` BSP descriptors | template elements | zeroed elements, region and `sbsp`/`ltmp` written |
+   | `+0x218` resources (1), `+0x230` kill triggers (4), `+0x248` AI triggers (50) | its own | empty |
+   | `+0x250`..`+0x260` background sound, sound environment, weather palettes | its own | empty (the cluster data names none) |
+   | `+0x298` object salts | 05a's counts | zero (Coagulation's are mostly zero) |
+   | `+0x318` spawn data (1) | all zero | empty |
+   | `+0x348`, `+0x350` fog and flocks; `+0x378`, `+0x380` decorators | its own | empty |
+   | `+0x398` level data, `+0x3b0` mission dialogue | 05a's | empty |
+   | `+0x3d8` simulation table (446) | its object, projectile and damage tags | every kept tag of those groups, in index order (`write_simulation_table`) |
+
+   The base's BSP slots take Halo 1's BSP names.
+2. **Nothing pinned.** Every base tag and every converted tag is read back
+   from the intermediate map and laid out anew (`h1convert::fresh::
+   unpin_all` with `built_too`; converted object tags keep words naming
+   arrays they share with their templates, so they are rebuilt too). The
+   intermediate keeps 05a's old scenario bytes whole (unowned), and the
+   unpinner reads every gap between tags too (`Unpinner::add_regions`):
+   05a's arrays live there. Raw resources, sound chunks and lip-sync data
+   are copied (`fresh::sound_gestalt`). Two retail words read as pointers
+   are data (`fresh::DATA_WORDS`). A tag that still does not move is
+   dropped, and the build fails if anything names it
+   (`fresh::check_refused`).
+3. **The base's unreachable tags dropped** (`fresh::prune_with`,
+   `h1campaign::KEEP`): what the scenario, `matg`, the shader templates
+   and the shared tables reach stays; the rest of 05a goes (its BSP
+   content, scenery, its AI characters, sounds, effects, bitmaps).
+
+**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17;
+pinned is the old way, lean ladder and all):
+
+| Level | Tag memory pinned | fresh | File pinned | fresh | Lean pinned | fresh | Base tags dropped | References resolving |
+|---|---|---|---|---|---|---|---|---|
+| a10 | `0xb44000` | `0x89b000` | 287,119,360 | 257,813,504 | 0 | 0 | 1,948 | 31,054/31,054 |
+| a30 | `0xb39000` | `0x8e2000` | 231,910,912 | 176,171,520 | 0 | 0 | 1,832 | 30,019/30,019 |
+| a50 | `0xbeb000` | `0x8ca000` | 241,079,296 | 189,946,368 | 0 | 0 | 1,870 | 30,533/30,533 |
+| b30 | `0xb26000` | `0x85c000` | 229,848,576 | 171,194,368 | 0 | 0 | 1,905 | 30,080/30,080 |
+| b40 | `0xc22000` | `0x923000` | 265,091,072 | 229,058,048 | 4 | 0 | 1,841 | 32,723/32,723 |
+| c10 | `0xc01000` | `0x8a1000` | 260,217,344 | 210,515,968 | 0 | 0 | 2,534 | 31,612/31,612 |
+| c20 | `0xb36000` | `0x839000` | 257,527,296 | 208,076,800 | 0 | 0 | 4,641 | 25,451/25,451 |
+| c40 | `0xbdf000` | `0x8b4000` | 272,660,480 | 231,238,144 | 0 | 0 | 3,300 | 31,058/31,058 |
+| d20 | `0xbaa000` | `0x8eb000` | 247,970,816 | 200,216,576 | 0 | 0 | 3,298 | 29,352/29,352 |
+| d40 | `0xbe9000` | `0x8ec000` | 293,087,744 | 259,801,088 | 0 | 0 | 3,393 | 31,101/31,101 |
+
+The bound is `0xc24000`: every level now has 3 to 4 MB to spare, and the
+lean ladder fires nowhere (b40 keeps its level data, seat table and object
+textures; the ladder stays as a safety net). The file bound is
+`0x11800000` (293,601,280 bytes); d40 pinned is 513,536 bytes under it.
+On every level: no tag from `scenarios\solo\05a_deltaapproach\` or
+`scenarios\multi\`, every script atom naming an object definition,
+sound, effect, damage effect or animation graph resolves to a tag of that
+group with data, and the scripts' reference block reads back
+(`hs::Scenario::read`). The reference sweep counts only problems the pinned
+map of the same level does not have (none on any level). If the fresh
+map would pass the file bound the pinned one is written instead
+(`Report::fresh` false, a `dropped` line).
+
+**Keep list** (`KEEP`, the multiplayer one, `fresh::MULTIPLAYER`):
+`matg`, `scnr`, `ugh!`, `unic`, `mulg`, `stem`, `spas`, `vrtx`, `pmov`,
+`sncl`, `snmx` and every tag under `shaders\` or `rasterizer\`. The HUD,
+interface globals, AI globals and dialogue, the player's character and
+the sound classes are all reached from `matg` (and the converted
+scenario), so they need no entry: the fresh a30 keeps every `matg`
+reference. No scenario palette is nulled (the conversion already wrote
+them all).
+
+**Not done yet (the user's ask is more):** the map still takes 05a's
+index (slots kept, empty ones included) and is built from 05a by
+pruning, not assembled from an empty set by tag path. The tag repository
+(`tags::repo::TagSource`, `closure`, `to_tag_set`) is the way to that.
 
 **Base per level: `05a_deltaapproach` for all ten** (`h1campaign::base_for`).
 Why (surveys `base_memory_and_vehicles`, `survey_bases`):
@@ -462,8 +549,8 @@ map. `--copy-source` also copies the disc's campaign maps unchanged to
 | each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
 | each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `boot::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
 
-Campaign levels go on their pinned base (§9); multiplayer maps on their
-default base, pinned (`h2 h1 convert` without `--fresh`).
+Campaign levels are written fresh from their base (§9); multiplayer maps
+fresh from their default base (`--pinned` for either keeps the base).
 
 ### The stamp, and when it converts again
 

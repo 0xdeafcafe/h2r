@@ -40,9 +40,11 @@ class, rate, channels and codec, and each playable permutation decoded to a
 16-bit PCM WAV in DIR, named <tag>.r<range>p<permutation>.wav. See
 docs/formats/h1-sounds.md.
 
-convert: a Halo 1 campaign level (a30) onto a Halo 2 campaign base (default
+convert: a Halo 1 campaign level (a30) from a Halo 2 campaign base (default
 05a_deltaapproach), written as DIR/a30.map and DIR/campaign.toml: point --out
-at <data>/campaigns/halo1. See docs/game/campaigns.md. Or a Halo 1
+at <data>/campaigns/halo1. The level is written fresh: its own scenario, and
+only the base's tags the level or the engine reaches; --pinned builds it on
+the pinned base instead. See docs/game/campaigns.md. Or a Halo 1
 multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
@@ -742,9 +744,6 @@ fn convert(args: &[String]) -> Result<()> {
         .iter()
         .any(|l| l.eq_ignore_ascii_case(&h1_name))
     {
-        if a.fresh.is_some() {
-            bail!("--fresh and --pinned are for multiplayer maps only, for now");
-        }
         return convert_campaign(&a, &h1);
     }
     let base_name = a
@@ -1035,8 +1034,9 @@ pub(crate) fn campaign_scripting(h1: &Path, h2: &Path) -> Result<Option<h1campai
     )?))
 }
 
-/// `h1 convert` of a campaign level: `DIR/<level>.map` on a pinned Halo 2
-/// campaign base, and `DIR/campaign.toml` listing it
+/// `h1 convert` of a campaign level: `DIR/<level>.map`, fresh (its own
+/// scenario, the base's unreachable tags dropped) or with `--pinned` on the
+/// pinned Halo 2 campaign base, and `DIR/campaign.toml` listing it
 /// (docs/game/campaigns.md). Point `--out` at `<data>/campaigns/halo1`.
 fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
     let level = h1.header().name.to_ascii_lowercase();
@@ -1051,11 +1051,9 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         println!("  scripts: left out (they need the Halo 1 disc's XBE; give the disc, not a map)");
     }
     let donors = campaign_donors(&disc)?;
-    let done = h1campaign::convert(
-        h1,
-        &mut base,
-        &campaign_options(scripting.as_ref(), Some(&donors)),
-    )?;
+    let mut opts = campaign_options(scripting.as_ref(), Some(&donors));
+    opts.pinned = a.fresh == Some(false);
+    let done = h1campaign::convert(h1, &mut base, &opts)?;
     print!("{}", done.report);
     let map_name = h1campaign::manifest::map_file(&level);
     let manifest_name = h1campaign::manifest::file_name();

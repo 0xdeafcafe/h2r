@@ -1552,7 +1552,7 @@ impl<'a> Builder<'a> {
         let metadata_at = file.len();
         file.extend_from_slice(&meta.bytes);
         let file_size = u32::try_from(file.len()).map_err(|_| Error::Limit)?;
-        if u64::from(file_size) > cache_size_limit(set.cache_type)? {
+        if set.check_tag_memory && u64::from(file_size) > cache_size_limit(set.cache_type)? {
             return Err(Error::Invalid("map exceeds the engine's cache size limit"));
         }
         debug_assert_eq!(metadata_at, index_at + index_size as usize);
