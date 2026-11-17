@@ -970,6 +970,13 @@ pub fn run_hosted_with_live(
         } else {
             coop_probe::install_live(&loaded.runtime, &mut features, &opts.data_root)?
         };
+        // coop.max_players: the host's co-op limit (docs/live/live-coop.md 12).
+        if let (Some(arm), Some(store)) = (&arm, &host.settings) {
+            let n = arm.set_max_players(i64::from(setting_defs::coop_max_players(store)));
+            if n != coop_probe::MAX_PLAYERS {
+                eprintln!("coop-live: co-op takes up to {n} players (coop.max_players)");
+            }
+        }
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
         custom_games::set_coop_row(on);
     }

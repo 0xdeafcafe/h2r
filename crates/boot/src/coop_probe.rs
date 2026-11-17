@@ -46,7 +46,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -152,9 +152,23 @@ pub mod layout {
 /// The network life cycle's state; the joinable predicate refuses 6 to 9.
 const LIFE_CYCLE: u32 = 0x0052_7334;
 pub const NO_DIFFICULTY: u16 = 0xffff;
-/// Two machines, two players: where the probe stops.
+/// Two machines, two players: where the probe stops, and co-op over Live
+/// by default (`coop.max_players`, [`Arm::set_max_players`]).
 pub const MAX_PEERS: u32 = 2;
 pub const MAX_PLAYERS: u32 = 2;
+/// The most players a session, its options and the synchronous update
+/// record carry: 16 peer entries at `S+0x58`, 16 player entries at
+/// `S+0x4f90` (`0x6ee12` loops 16), 16 options players (`+0x2d4`, `0xe4`
+/// each) and 16 update entries at `+0x610` (docs/live/live-coop.md 1.3, 12).
+pub const CEILING: u32 = 16;
+/// The player check the session start makes (`0x6ee9b`: more than two
+/// players refuses a campaign start).
+pub const START_PLAYER_CHECK: u32 = 2;
+
+/// `n` held to what co-op supports: 2 to [`CEILING`].
+pub fn clamp_players(n: i64) -> u32 {
+    n.clamp(i64::from(MAX_PLAYERS), i64::from(CEILING)) as u32
+}
 
 /// A squad session, read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -276,14 +290,24 @@ pub fn read_session<M: Gm + ?Sized>(m: &M) -> Option<Session> {
 pub enum Bypass {
     /// Leave the start as retail; why.
     Retail(&'static str),
-    /// Show the start one peer until `OPTIONS_NEW`; `real` goes back.
-    Fake { real: u32 },
-    /// Past what the probe supports; retail refuses it.
+    /// Show the start one peer (and at most two players) until
+    /// `OPTIONS_NEW`; `real` peers and, when it was changed, `players` go
+    /// back.
+    Fake { real: u32, players: Option<u32> },
+    /// Past the limit; retail refuses it.
     Refuse(String),
 }
 
-/// The peer-count decision for a session start.
-pub fn peer_bypass(s: &Session) -> Bypass {
+/// The peer-count decision for a session start, for a co-op limit of `max`
+/// players (one per console).
+///
+/// The start reads the player count once (`0x6ee69`, into EDI) and uses it
+/// twice: the refusal at `0x6ee9b` (more than two) and, after
+/// `OPTIONS_NEW`, the options' "more than one player" byte (`0x6ef61`,
+/// `setg` on `EDI > 1`). So for three or more players the window also
+/// shows two: the refusal passes and the byte is 1, as it is for any
+/// count above one. Everything after `OPTIONS_NEW` reads the real count.
+pub fn peer_bypass(s: &Session, max: u32) -> Bypass {
     if !s.live() {
         return Bypass::Retail("the session is not in a lobby or game state");
     }
@@ -293,16 +317,16 @@ pub fn peer_bypass(s: &Session) -> Bypass {
     if s.peers <= 1 {
         return Bypass::Retail("one peer: retail starts it");
     }
-    if s.peers > MAX_PEERS {
-        return Bypass::Refuse(format!("{} peers: the probe stops at {MAX_PEERS}", s.peers));
+    if s.peers > max {
+        return Bypass::Refuse(format!("{} peers: co-op stops at {max}", s.peers));
     }
-    if s.players > MAX_PLAYERS {
-        return Bypass::Refuse(format!(
-            "{} players: the probe stops at {MAX_PLAYERS}",
-            s.players
-        ));
+    if s.players > max {
+        return Bypass::Refuse(format!("{} players: co-op stops at {max}", s.players));
     }
-    Bypass::Fake { real: s.peers }
+    Bypass::Fake {
+        real: s.peers,
+        players: (s.players > START_PLAYER_CHECK).then_some(s.players),
+    }
 }
 
 /// What `0x63e00` reads.
@@ -318,9 +342,9 @@ pub struct JoinInputs {
     pub difficulty: u16,
 }
 
-/// The retail predicate (`probe` false), or the probe's: the same without
-/// the campaign clause, while fewer than two players are in.
-pub fn joinable(j: &JoinInputs, probe: bool) -> bool {
+/// The retail predicate (`limit` `None`), or the probe's: the same without
+/// the campaign clause, while fewer than `limit` players are in.
+pub fn joinable(j: &JoinInputs, limit: Option<u32>) -> bool {
     if !j.ready || !(3..=8).contains(&j.state) || j.privacy != 0 {
         return false;
     }
@@ -330,7 +354,7 @@ pub fn joinable(j: &JoinInputs, probe: bool) -> bool {
     if j.difficulty == NO_DIFFICULTY {
         return true;
     }
-    probe && j.players < MAX_PLAYERS
+    limit.is_some_and(|max| j.players < max)
 }
 
 pub fn read_join<M: Gm + ?Sized>(m: &M) -> JoinInputs {
@@ -359,7 +383,7 @@ pub enum Setup {
     Due,
 }
 
-pub fn host_setup(s: &Session, want: &Want) -> Setup {
+pub fn host_setup(s: &Session, want: &Want, max: u32) -> Setup {
     if !s.live() {
         return Setup::Wait(format!("session state {}", s.state));
     }
@@ -375,18 +399,29 @@ pub fn host_setup(s: &Session, want: &Want) -> Setup {
             s.peers
         ));
     }
-    if s.peers > MAX_PEERS {
-        return Setup::Wait(format!(
-            "{} machines: the probe stops at {MAX_PEERS}",
-            s.peers
-        ));
+    if s.peers > max {
+        return Setup::Wait(format!("{} machines: co-op stops at {max}", s.peers));
     }
     Setup::Due
 }
 
-/// The peer limit to write after the game-start parameters, if any.
-pub fn max_peers_fix(s: &Session) -> Option<u32> {
-    (s.live() && s.is_campaign() && s.max_peers < MAX_PEERS).then_some(MAX_PEERS)
+/// The limits to write after the host's game-start parameters (`0x6e720`
+/// sets a campaign's peer limit to 1 at `0x6e8eb` and its player limit to
+/// 2 at `0x6e8aa`), for a co-op limit of `max`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LimitsFix {
+    pub peers: Option<u32>,
+    pub players: Option<u32>,
+}
+
+pub fn limits_fix(s: &Session, max: u32) -> LimitsFix {
+    if !(s.live() && s.is_campaign()) {
+        return LimitsFix::default();
+    }
+    LimitsFix {
+        peers: (s.max_peers < max).then_some(max),
+        players: (s.max_players < max).then_some(max),
+    }
 }
 
 /// One guest call of the lobby setup.
@@ -607,10 +642,19 @@ impl HashLog {
 
 // ---- the feature ----
 
+/// What the session start's window changed: the session, its real peer
+/// count and, when it was shown two, its real player count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pending {
+    addr: u32,
+    peers: u32,
+    players: Option<u32>,
+}
+
 #[derive(Default)]
 struct State {
-    /// The peer count the session start must get back: (session, real).
-    pending: Option<(u32, u32)>,
+    /// The counts the session start must get back.
+    pending: Option<Pending>,
     last_session: Option<String>,
     last_sim: Option<Sim>,
     last_join: Option<bool>,
@@ -635,11 +679,25 @@ pub const LIVE_ID: &str = "coop-live";
 /// only while this console hosts or joined a co-op session, the host with
 /// its chosen level. Disarmed, every hook lets the game run as retail and
 /// nothing is logged.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Arm {
     forced: bool,
     on: AtomicBool,
     want: Mutex<Option<Want>>,
+    /// The host's co-op player limit (`coop.max_players`), 2 to
+    /// [`CEILING`].
+    max_players: AtomicU32,
+}
+
+impl Default for Arm {
+    fn default() -> Arm {
+        Arm {
+            forced: false,
+            on: AtomicBool::new(false),
+            want: Mutex::new(None),
+            max_players: AtomicU32::new(MAX_PLAYERS),
+        }
+    }
 }
 
 impl Arm {
@@ -649,6 +707,7 @@ impl Arm {
             forced: true,
             on: AtomicBool::new(true),
             want: Mutex::new(want),
+            ..Arm::default()
         })
     }
     /// Off until a co-op session arms it.
@@ -674,6 +733,28 @@ impl Arm {
         if !self.forced {
             *self.want.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.on.store(false, Ordering::SeqCst);
+        }
+    }
+    /// Sets the host's player limit (`coop.max_players`), held to 2 to
+    /// [`CEILING`]; the value it took.
+    pub fn set_max_players(&self, n: i64) -> u32 {
+        let n = clamp_players(n);
+        self.max_players.store(n, Ordering::SeqCst);
+        n
+    }
+    /// The host's player limit.
+    pub fn max_players(&self) -> u32 {
+        self.max_players.load(Ordering::SeqCst)
+    }
+    /// The limit a session's checks use on this console: the host's own
+    /// setting; on a guest, [`CEILING`], since the host's lobby already
+    /// held the start to its limit and a guest that refused it would only
+    /// break the game the host started.
+    pub fn limit_for(&self, s: &Session) -> u32 {
+        if s.is_host() {
+            self.max_players()
+        } else {
+            CEILING
         }
     }
     /// The level the host sets, when armed as host.
@@ -785,17 +866,28 @@ impl feature::Feature for Probe {
                 return Ok(Flow::Continue);
             };
             say(&format!("session start: {}", s.describe()));
-            match peer_bypass(&s) {
+            match peer_bypass(&s, arm.limit_for(&s)) {
                 Bypass::Retail(why) => say(&format!("session start: retail ({why})")),
                 Bypass::Refuse(why) => say(&format!("session start: refused ({why}); retail refuses too")),
-                Bypass::Fake { real } => {
-                    if Gm::set_u32(&mut *mem, addr.wrapping_add(layout::PEERS), 1) {
-                        lock(&st).pending = Some((addr, real));
+                Bypass::Fake { real, players } => {
+                    let peers_ok = Gm::set_u32(&mut *mem, addr.wrapping_add(layout::PEERS), 1);
+                    let players_ok = players.is_none_or(|_| {
+                        Gm::set_u32(&mut *mem, addr.wrapping_add(layout::PLAYERS), START_PLAYER_CHECK)
+                    });
+                    if peers_ok && players_ok {
+                        lock(&st).pending = Some(Pending { addr, peers: real, players });
                         say(&format!(
                             "session start: campaign with {real} peers: showing the start 1 peer until OPTIONS_NEW"
                         ));
+                        if let Some(n) = players {
+                            say(&format!(
+                                "session start: {n} players: showing the start {START_PLAYER_CHECK} until OPTIONS_NEW"
+                            ));
+                        }
                     } else {
-                        say("session start: could not write the peer count");
+                        // Put back whatever was written.
+                        let _ = Gm::set_u32(&mut *mem, addr.wrapping_add(layout::PEERS), real);
+                        say("session start: could not write the peer or player count");
                     }
                 }
             }
@@ -841,7 +933,8 @@ impl feature::Feature for Probe {
             }
             let rt = Arc::clone(c.ctx.runtime());
             let j = read_join(&*rt.memory());
-            let (retail, probe) = (joinable(&j, false), joinable(&j, true));
+            let limit = read_session(&*rt.memory()).map_or(MAX_PLAYERS, |s| arm.limit_for(&s));
+            let (retail, probe) = (joinable(&j, None), joinable(&j, Some(limit)));
             {
                 let mut s = lock(&st);
                 if s.last_join != Some(probe) {
@@ -871,12 +964,21 @@ impl feature::Feature for Probe {
                 let Some(s) = read_session_at(&*mem, c.cpu.ebx) else {
                     return Ok(());
                 };
-                if let Some(n) = max_peers_fix(&s)
+                let fix = limits_fix(&s, arm.limit_for(&s));
+                if let Some(n) = fix.peers
                     && Gm::set_u32(&mut *mem, s.addr.wrapping_add(layout::MAX_PEERS), n)
                 {
                     say(&format!(
                         "game limits: campaign peer limit {} -> {n}",
                         s.max_peers as i32
+                    ));
+                }
+                if let Some(n) = fix.players
+                    && Gm::set_u32(&mut *mem, s.addr.wrapping_add(layout::MAX_PLAYERS), n)
+                {
+                    say(&format!(
+                        "game limits: campaign player limit {} -> {n}",
+                        s.max_players as i32
                     ));
                 }
                 Ok(())
@@ -891,7 +993,7 @@ impl feature::Feature for Probe {
             b.raw()
                 .before(&points::GAME_TICK, "host lobby setup", move |c| {
                     match arm.want() {
-                        Some(want) => lobby_setup(&st, &want, c),
+                        Some(want) => lobby_setup(&st, &want, arm.max_players(), c),
                         None => Ok(Flow::Continue),
                     }
                 })
@@ -957,22 +1059,45 @@ impl feature::Feature for Probe {
 }
 
 fn restore(st: &Mutex<State>, c: &mut Call, when: &str) {
-    let Some((addr, real)) = lock(st).pending.take() else {
+    let Some(p) = lock(st).pending.take() else {
         return;
     };
     let rt = Arc::clone(c.ctx.runtime());
-    let ok = Gm::set_u32(&mut *rt.memory(), addr.wrapping_add(layout::PEERS), real);
-    say(&format!(
-        "session start: peer count back to {real} {when}{}",
-        if ok { "" } else { " (WRITE FAILED)" }
-    ));
+    let mut mem = rt.memory();
+    for line in restore_counts(&mut *mem, p, when) {
+        say(&line);
+    }
+}
+
+/// Writes back what the session start's window changed; the log lines.
+fn restore_counts<M: Gm + ?Sized>(m: &mut M, p: Pending, when: &str) -> Vec<String> {
+    let failed = |ok: bool| if ok { "" } else { " (WRITE FAILED)" };
+    let ok = m.set_u32(p.addr.wrapping_add(layout::PEERS), p.peers);
+    let mut lines = vec![format!(
+        "session start: peer count back to {} {when}{}",
+        p.peers,
+        failed(ok)
+    )];
+    if let Some(n) = p.players {
+        let ok = m.set_u32(p.addr.wrapping_add(layout::PLAYERS), n);
+        lines.push(format!(
+            "session start: player count back to {n} {when}{}",
+            failed(ok)
+        ));
+    }
+    lines
 }
 
 /// Ticks between two setup attempts, and attempts in all.
 const SETUP_EVERY: u32 = 60;
 const SETUP_ATTEMPTS: u32 = 3;
 
-fn lobby_setup(st: &Arc<Mutex<State>>, want: &Want, c: &mut Call) -> Result<Flow, GuestFault> {
+fn lobby_setup(
+    st: &Arc<Mutex<State>>,
+    want: &Want,
+    max: u32,
+    c: &mut Call,
+) -> Result<Flow, GuestFault> {
     let rt = Arc::clone(c.ctx.runtime());
     let (s, tick) = {
         let mem = rt.memory();
@@ -990,7 +1115,7 @@ fn lobby_setup(st: &Arc<Mutex<State>>, want: &Want, c: &mut Call) -> Result<Flow
             state.setup_done = false;
             state.setup_wait = None;
         }
-        match host_setup(&s, want) {
+        match host_setup(&s, want, max) {
             Setup::Wait(why) => {
                 if state.setup_wait.as_deref() != Some(why.as_str()) && s.can_set_params() {
                     say(&format!("host: lobby setup: {why}"));

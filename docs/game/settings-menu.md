@@ -315,6 +315,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | Steam Controller | **Built:** three rows on Controls with a Steam Controller: "Steam Pad Speaker" (`[steam_pad] speaker`, `H2_STEAM_SPEAKER`), "Trackpad Aim" (1 to 10, default 5; `[steam_pad] sensitivity`, `H2_STEAM_SENSITIVITY`) and "Left Trackpad" (D-Pad, Stick; `[steam_pad] left_pad`, `H2_STEAM_LEFT_PAD`) | live (`boot::setting_defs::steam_tuning`) |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](../audio/playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](../live/live-custom-games.md)) | at once |
+| Co-op players | **Built:** `coop.max_players` (2 to 16, default 2; `H2_COOP_MAX_PLAYERS`). No row: the most players a co-op campaign this console hosts over Live takes, one per console. Above 2 is experimental ([live-coop.md](../live/live-coop.md) section 12) | next launch |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](../input/input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
 **Graphics backend (runtime variables, read at launch).**
