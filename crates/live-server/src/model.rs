@@ -341,8 +341,14 @@ impl Model {
         }
     }
 
-    /// A frame arrived for a live game.
+    /// Notes activity in game `id` at unix second `now`. Frames come 15 a
+    /// second and the clock moves once a second: the write lock is taken
+    /// only when it moves.
     pub fn touch_game(&self, id: &str, now: i64) {
+        let behind = |s: &State| s.games.get(id).is_some_and(|g| g.last_activity < now);
+        if !behind(&self.state.read().unwrap()) {
+            return;
+        }
         if let Some(g) = self.state.write().unwrap().games.get_mut(id) {
             g.last_activity = g.last_activity.max(now);
         }
