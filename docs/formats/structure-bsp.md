@@ -61,8 +61,14 @@ Clusters and definitions both start with the same `0x54` bytes:
 | `00` u16 | Total vertex count | V: equals every vertex stream's count |
 | `02` u16 | Total triangle count | V: index count is exactly 3 × this |
 | `04` u16 | Total part count | V: equals the loaded part count |
-| `0c` u16 | `unknown_0c`. No engine use found | V: ≤ total; every instance's lightmap bucket range fits when sized by this count, while 6 ranges overflow using the total |
-| other bytes to `28` | Not interpreted | Preserved in `SectionInfo::raw` |
+| `06`, `08` u16 | Shadow-casting triangle and part counts | D: Halo 2's section info order; V: equal to the totals on retail multiplayer clusters checked |
+| `0c` u16 | `unknown_0c`, by Halo 2's order the opaque vertex count. No engine use found | V: ≤ total; every instance's lightmap bucket range fits when sized by this count, while 6 ranges overflow using the total |
+| `0e` u16 | Opaque part count | D, as `06` |
+| `12` u16 | Shadow-casting rigid triangle count | D, as `06` |
+| `16` u16 | Compression flags: bit 2, the lightmap texture coordinate is compressed (stream `1f`) | D; V: 4 on every drawn retail multiplayer cluster but two |
+| `24` u16 | Subpart count | V: equals the loaded subpart count |
+| `26` u16 | Lighting flags: bit 0 lightmap texture coordinates, bit 1 incident radiance (stream `30`) | D; V: 3 on every drawn retail multiplayer cluster but two |
+| other bytes to `28` | Not interpreted (`0a`, `10`, `14`, `18..23` zero on retail multiplayer clusters) | Preserved in `SectionInfo::raw` |
 | `28`..`4c` | Geometry block info (below) | E `0x00223c70` |
 | `4c` block | Runtime section pointer, filled after loading | E `0x000410d6` reads `+50h`; `0x00223c73`..`0x00223c87` writes count 1 and the pointer; V: empty on disc whenever a raw block exists |
 
@@ -71,6 +77,12 @@ Cluster-only fields:
 | Offset | Meaning | Evidence |
 |---|---|---|
 | `54` f32×6 | Bounds: x min, x max, y min, y max, z min, z max | V: finite, and no loaded vertex position lies outside its cluster's bounds (tolerance 0.01) |
+| `6c`..`71` u8 | `0xff` or 0, `0xff`, the sky index (E `0x0014b38d`), then `0xff` ×3 on retail multiplayer clusters | V |
+| `72`, `74` u16 | Not interpreted: small indices on half the retail multiplayer clusters, 0 on the rest | V |
+| `78`, `7a` i16 | Ambience and reverb sound cluster (`sbsp+0x148`, `+0x150`) | E `0x0018d7b4`, `0x0018dd10` (unchecked) |
+| `84` block, 8 | Predicted resources: u16 type, u16 index, tag datum. Type 0 is image *index* of a bitmap (E `0x0016e656`, unchecked against the image count), 3 cluster *index*'s geometry block (E `0x0016e68e`), 2 a render model, 4 and 6..8 instanced and lightmap geometry buckets (E `0x0016e770`..`0x0016e8f0`, which index the lightmap group's tables unchecked). The engine predicts the camera cluster's list and those of the clusters it sees (E `0x0003f495`, `0x0003f4da` → `0x0016e5e0`) | E; V: every retail multiplayer cluster has one, including its own type 3 and type 7 entries and its shaders' bitmaps |
+| `8c` block, u16 | Portals | V |
+| `94` u32 | The structure checksum (`sbsp+0x08`) | V: equal on every retail multiplayer cluster |
 
 Placements:
 
@@ -173,7 +185,10 @@ must match the block info's. For clusters and definitions
 | `38` block | Vertex-buffer descriptor, `0x20` bytes | E `0x00223ced` (`shl 5`); V |
 
 Fields `28` (data) and `30` (u16 elements) are also patched by resources but
-are not interpreted. Lightmap buckets use an 8-byte struct whose only field is
+are not interpreted. Their layout matches Halo 2's section struct, where they
+are the visibility MOPP code over the subparts and its reorder table; every
+retail multiplayer structure section has both (D, sizes track the subpart
+count). Lightmap buckets use an 8-byte struct whose only field is
 a descriptor block at `00` (`BUCKET_SECTION`). Render models use a `0x70`
 byte struct (`MODEL_SECTION`, map-format.md).
 
@@ -186,8 +201,13 @@ Part (`0x48`):
 | `04` u16 | Material index | V: below `sbsp+a4`'s count on every structure part, and below the model's material count on every model part |
 | `06`, `08` u16 | First index, index count | V: tiling |
 | `0a`, `0c` u16 | First subpart, subpart count | V: tiling |
+| `10` f32×3 | Bounding sphere centre: the centre of the box at `30` | V: equal on every Coagulation part checked |
+| `2c` f32 | Bounding sphere radius, never 0 on disc | E `0x00045da1` reads it; a radius ≤ 0 is replaced by a constant |
+| `30` f32×6 | Box of the part's vertices: x min, x max, y min, y max, z min, z max | V: equal to the box computed from the part's indices |
 
-The rest of the part is preserved. Only bit 3 of the flags is interpreted.
+On every retail multiplayer structure part (2,450) the kind is 2 and the
+flags are `0xb`; `1c..2b` are zero. The rest of the part is preserved. Only
+bit 3 of the flags is interpreted.
 
 Subpart (8): u16 first index, u16 index count (V: tiling), u16 unknown
 (`0xffff` in structure sections), u16 owning part (V: always the index of the
@@ -216,7 +236,7 @@ map-format.md):
 | `18` | 8 | f32×2 texture coordinate | Stride and count here. The name rests on model sections, where `18` occurs exactly when the texcoord-compression flag is clear |
 | `1b` | 12 | Three packed vectors, signed 11:11:10 (x bits 0–10, y 11–21, z 22–31); the first is the normal | Every non-zero vector is unit length (± 0.02); 12,104 are exactly zero; winding agreement above |
 | `1f` | 4 | Two normalized i16 lightmap coordinates | All values in [0, 1] |
-| `30` | 4 | Not interpreted (unpacks as 11:11:10 with length ≤ 1, not unit) | — |
+| `30` | 4 | Packed 11:11:10 incident light direction, length ≤ 1 (D: Halo 2's lightmap incident radiance; present exactly when section lighting flag bit 1 is set, 398 of 400 retail multiplayer clusters) | Unpacks with length ≤ 1, not unit, not the normal |
 | `2f` | 3 | Not interpreted (buckets only) | Present exactly when bucket flag bit 1 is set |
 
 ## Lightmap

@@ -37,11 +37,14 @@ pub const LIGHTMAP_GROUP: usize = 0x68;
 pub const SECTION: usize = 0x44;
 /// Part element size.
 pub const PART: usize = 0x48;
-/// Part kind written: a drawn kind (0 and 5 are not drawn, E
-/// `0x000410fc`); which drawn kind means what is not known.
+/// Part kind written: opaque, the kind of every retail multiplayer
+/// structure part (0 and 5 are not drawn, E `0x000410fc`; 4 transparent).
 pub const PART_KIND: u16 = 2;
 /// Part flag bit 3: a triangle list.
 pub const PART_TRIANGLE_LIST: u16 = 0x8;
+/// Part flags written: every retail multiplayer structure part has 0xb,
+/// the triangle list bit and bits 0 and 1 (not named).
+pub const PART_FLAGS: u16 = PART_TRIANGLE_LIST | 0x3;
 /// Size of the element at `sbsp+0x21c` written (one, zeroed; the engine
 /// reads its first word, E `0x00210f0f`).
 pub const ELEMENT_21C: usize = 0x40;
@@ -63,7 +66,18 @@ pub const SECTION_MAX: usize = 0xffff;
 
 /// Vertex stream types written, with their strides
 /// (docs/formats/structure-bsp.md, "Stream types").
-pub const STREAMS: [(u8, u8); 4] = [(0x01, 12), (0x18, 8), (0x1b, 12), (0x1f, 4)];
+/// Every retail multiplayer structure section has these five (0x30 in all
+/// but the unlit ones).
+pub const STREAMS: [(u8, u8); 5] = [(0x01, 12), (0x18, 8), (0x1b, 12), (0x1f, 4), (0x30, 4)];
+
+/// Section compression flags (cluster `+0x16`): bit 2, the secondary
+/// (lightmap) texture coordinate is compressed, as stream 0x1f's `i16`s
+/// are. Every retail multiplayer structure cluster has 4.
+pub const COMPRESSION_FLAGS: u16 = 0x4;
+/// Section lighting flags (cluster `+0x26`) of a lit section: bit 0 it has
+/// lightmap texture coordinates, bit 1 per-vertex incident radiance
+/// (stream 0x30). Every lit retail multiplayer structure cluster has 3.
+pub const LIGHTING_FLAGS: u16 = 0x3;
 
 /// A rendered vertex.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,6 +91,10 @@ pub struct Vertex {
     pub texcoord: [f32; 2],
     /// Lightmap texture coordinate, in [0, 1].
     pub lightmap: [f32; 2],
+    /// The lightmap's incident light direction, packed 11:11:10 (stream
+    /// 0x30): Halo 1's lightmap vertex direction, or the normal when the
+    /// vertex has none.
+    pub incident: u32,
 }
 
 /// The triangles drawn with one Halo 1 shader.
@@ -124,6 +142,7 @@ pub fn meshes(
                         .lightmap_vertices
                         .get(i)
                         .map_or([0.0; 2], |l| l.texcoord.map(|c| c.clamp(0.0, 1.0))),
+                    incident: m.lightmap_vertices.get(i).map_or(v.frame[0], |l| l.normal),
                 })
                 .collect();
             out.push(Mesh {
@@ -228,6 +247,32 @@ pub fn bounds(points: impl Iterator<Item = [f32; 3]>) -> [f32; 6] {
     if any { b } else { [0.0; 6] }
 }
 
+/// A part's bounding sphere and box, as the part's `+0x10` centre, `+0x2c`
+/// radius and `+0x30` box hold them: the centre is the box's, the radius
+/// the farthest vertex from it (at least a millimetre, so never zero; the
+/// draw at E `0x00045da1` swaps in a constant for a radius of 0), the box
+/// `[x min, x max, y min, y max, z min, z max]`. Retail fills all three
+/// for every structure part.
+pub fn part_sphere(s: &Section, p: &Part) -> ([f32; 3], f32, [f32; 6]) {
+    let first = usize::from(p.first);
+    let end = (first + usize::from(p.count)).min(s.indices.len());
+    let points = || {
+        s.indices[first..end]
+            .iter()
+            .filter_map(|&i| s.vertices.get(usize::from(i)).map(|v| v.position))
+    };
+    let b = bounds(points());
+    let centre = [
+        (b[0] + b[1]) / 2.0,
+        (b[2] + b[3]) / 2.0,
+        (b[4] + b[5]) / 2.0,
+    ];
+    let radius = points()
+        .map(|q| dot(sub(q, centre), sub(q, centre)).sqrt())
+        .fold(0.001f32, f32::max);
+    (centre, radius, b)
+}
+
 /// Packs meshes into sections of at most [`SECTION_MAX`] vertices and
 /// indices, one lightmap page each (meshes are taken in page order,
 /// unlit last, and otherwise in their order). `material[i]` is mesh `i`'s
@@ -310,12 +355,16 @@ pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
     for (i, p) in s.parts.iter().enumerate() {
         let mut e = [0u8; PART];
         put16(&mut e, 0, PART_KIND);
-        put16(&mut e, 2, PART_TRIANGLE_LIST);
+        put16(&mut e, 2, PART_FLAGS);
         put16(&mut e, 4, p.material);
         put16(&mut e, 6, p.first);
         put16(&mut e, 8, p.count);
         put16(&mut e, 0xa, i as u16);
         put16(&mut e, 0xc, 1);
+        let (centre, radius, b) = part_sphere(s, p);
+        e[0x10..0x1c].copy_from_slice(&f32s(centre));
+        e[0x2c..0x30].copy_from_slice(&radius.to_le_bytes());
+        e[0x30..0x48].copy_from_slice(&f32s(b));
         parts.extend(e);
         let mut sp = [0u8; 8];
         put16(&mut sp, 0, p.first);
@@ -343,9 +392,10 @@ pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
         .flat_map(|v| v.lightmap)
         .flat_map(|c| ((c.clamp(0.0, 1.0) * 32767.0).round() as i16).to_le_bytes())
         .collect();
+    let incident: Vec<u8> = v.iter().flat_map(|v| v.incident.to_le_bytes()).collect();
 
     // (kind, field, element size or descriptor index, bytes)
-    let resources: [(u8, u16, u16, Vec<u8>); 8] = [
+    let resources: [(u8, u16, u16, Vec<u8>); 9] = [
         (0, 0x00, PART as u16, parts),
         (0, 0x08, 8, subparts),
         (0, 0x20, 2, indices),
@@ -354,6 +404,7 @@ pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
         (2, 0x38, 1, texcoords),
         (2, 0x38, 2, frames),
         (2, 0x38, 3, lightmap),
+        (2, 0x38, 4, incident),
     ];
     let mut section = vec![0u8; SECTION];
     let mut data = Vec::new();
@@ -384,6 +435,92 @@ pub fn raw_block(s: &Section) -> (Vec<u8>, Vec<[u8; 16]>) {
     block.extend(&data);
     block.extend(fourcc(b"blkf"));
     (block, table)
+}
+
+/// A predicted resource (cluster `+0x84`, 8 bytes): `u16` type, `u16`
+/// index, the tag's datum. The engine walks a cluster's list, and those of
+/// the clusters it sees, through E `0x0016e5e0` (called from
+/// `0x0003f495`), before drawing.
+pub const PREDICTED_RESOURCE: usize = 8;
+/// Predicted resource type 0: image `index` of bitmap `tag` (E
+/// `0x0016e656`: the bitmap's `+0x48` images, 0x74 each, unchecked).
+pub const PREDICT_BITMAP: u16 = 0;
+/// Predicted resource type 3: cluster `index`'s geometry block of the
+/// structure `tag` (E `0x0016e68e`). Types 6 to 8 name lightmap buckets,
+/// which a converted lightmap has none of (E `0x0016e7b0` and
+/// `0x0016e820` read the group's per-cluster tables unchecked), so they
+/// are never written.
+pub const PREDICT_CLUSTER_GEOMETRY: u16 = 3;
+
+/// The bitmaps a shader's parameters name (`shad+0x20` postprocess, its
+/// first element's `+0x04` parameters, 0xc each with the bitmap datum at
+/// `+0x00`), in order and without repeats, as far as `set` holds them:
+/// a built shader's tree, or a pinned shader's own bytes. Only datums of
+/// `bitm` tags in the set count.
+pub fn shader_bitmaps(set: &TagSet, shader: TagId) -> Vec<TagId> {
+    use map::build::{FixupKind, TagPayload};
+    let mut raw = Vec::new();
+    match set.tag(shader).map(|t| &t.payload) {
+        Some(TagPayload::Built(root)) => {
+            let child = |b: &'_ Block, at: u32| {
+                b.fixups.iter().find_map(|f| match &f.kind {
+                    FixupKind::Block { count, child } if f.offset == at && *count > 0 => {
+                        Some((*count, child.clone()))
+                    }
+                    _ => None,
+                })
+            };
+            if let Some((_, pp)) = child(root, 0x20)
+                && let Some((n, params)) = child(&pp, 0x04)
+            {
+                for i in 0..n as usize {
+                    let at = 0xc * i;
+                    let fixed = params.fixups.iter().find_map(|f| match f.kind {
+                        FixupKind::TagId(id) | FixupKind::TagRef(id) if f.offset as usize == at => {
+                            Some(id)
+                        }
+                        _ => None,
+                    });
+                    let bytes = params
+                        .bytes
+                        .get(at..at + 4)
+                        .map(|b| TagId(u32::from_le_bytes(b.try_into().expect("4"))));
+                    raw.extend(fixed.or(bytes));
+                }
+            }
+        }
+        Some(TagPayload::Pinned { address, bytes }) => {
+            let word = |at: usize| {
+                bytes
+                    .get(at..at + 4)
+                    .map(|b| u32::from_le_bytes(b.try_into().expect("4")))
+            };
+            let inside = |a: u32| a.checked_sub(*address).map(|o| o as usize);
+            let params = (|| {
+                if word(0x20)? == 0 {
+                    return None;
+                }
+                let pp = inside(word(0x24)?)?;
+                let n = word(pp + 4)? as usize;
+                let at = inside(word(pp + 8)?)?;
+                Some((n.min(64), at))
+            })();
+            if let Some((n, at)) = params {
+                raw.extend((0..n).filter_map(|i| word(at + 0xc * i).map(TagId)));
+            }
+        }
+        _ => {}
+    }
+    let mut out = Vec::new();
+    for id in raw {
+        let bitmap = set
+            .tag(id)
+            .is_some_and(|t| t.id == id && t.group == map::FourCC(*b"bitm"));
+        if bitmap && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
 }
 
 /// Element templates taken from the base map's own structure BSP.
@@ -680,6 +817,46 @@ impl Structure<'_> {
         e
     }
 
+    /// Cluster `c`'s predicted resources (`+0x84`), as retail lists
+    /// them: its own geometry block, the lightmap image its render info
+    /// names, and every bitmap its parts' shaders draw with (image 0).
+    pub fn predicted(&self, set: &TagSet, c: usize, sbsp: TagId) -> Vec<(u16, u16, TagId)> {
+        let Some(s) = self.sections.get(c).filter(|s| !s.indices.is_empty()) else {
+            return Vec::new();
+        };
+        let mut out = vec![(PREDICT_CLUSTER_GEOMETRY, c as u16, sbsp)];
+        if let Some(page) = s.page
+            && self.lightmap_bitmap != TagId::NULL
+        {
+            out.push((PREDICT_BITMAP, page, self.lightmap_bitmap));
+        }
+        let mut shaders: Vec<TagId> = Vec::new();
+        for p in &s.parts {
+            let from = self
+                .materials
+                .get(usize::from(p.material))
+                .copied()
+                .unwrap_or(0);
+            if from < self.templates.material_heads.len() {
+                let id = self.templates.shader(from);
+                if !shaders.contains(&id) {
+                    shaders.push(id);
+                }
+            }
+        }
+        for id in shaders {
+            for b in shader_bitmaps(set, id) {
+                if !out
+                    .iter()
+                    .any(|&(k, i, t)| k == PREDICT_BITMAP && i == 0 && t == b)
+                {
+                    out.push((PREDICT_BITMAP, 0, b));
+                }
+            }
+        }
+        out
+    }
+
     /// Writes the BSP and lightmap into `set` as built payloads of the
     /// tags `sbsp` and `ltmp` (existing slots), each section's raw block as
     /// a new raw resource, and adds the BSP section. Returns its index in
@@ -699,13 +876,35 @@ impl Structure<'_> {
             let s = self.sections.get(c).unwrap_or(&empty);
             let at = CLUSTER * c;
             let b = &mut cluster_elements.bytes[at..at + CLUSTER];
-            put16(b, 0, s.vertices.len() as u16);
-            put16(b, 2, (s.indices.len() / 3) as u16);
-            put16(b, 4, s.parts.len() as u16);
-            put16(b, 0xc, s.vertices.len() as u16);
+            // Section info, as retail fills it: every triangle and part
+            // casts shadows and is opaque, rigid, worldspace (+0x14 0);
+            // one subpart per part.
+            let (vertices, triangles, parts) = (
+                s.vertices.len() as u16,
+                (s.indices.len() / 3) as u16,
+                s.parts.len() as u16,
+            );
+            put16(b, 0, vertices);
+            put16(b, 2, triangles);
+            put16(b, 4, parts);
+            put16(b, 6, triangles); // shadow-casting triangles
+            put16(b, 8, parts); // shadow-casting parts
+            put16(b, 0xc, vertices); // opaque vertices
+            put16(b, 0xe, parts); // opaque parts
+            put16(b, 0x12, triangles); // shadow-casting rigid triangles
+            if !s.indices.is_empty() {
+                put16(b, 0x16, COMPRESSION_FLAGS);
+            }
+            put16(b, 0x24, parts); // subparts
+            if s.page.is_some() && self.lightmap_bitmap != TagId::NULL {
+                put16(b, 0x26, LIGHTING_FLAGS);
+            }
             for (k, v) in s.bounds().iter().enumerate() {
                 b[0x54 + 4 * k..0x58 + 4 * k].copy_from_slice(&v.to_le_bytes());
             }
+            // +0x6c and +0x6d none (0xff, as retail), then the sky.
+            b[0x6c] = 0xff;
+            b[0x6d] = 0xff;
             b[0x6e] = 0; // sky: the scenario's first (E 0x0014b38d)
             b[0x6f] = 0xff;
             b[0x70] = 0xff;
@@ -718,11 +917,20 @@ impl Structure<'_> {
             // 0x0018dd10: indexed unchecked).
             put16(b, 0x78, 0);
             put16(b, 0x7a, 0);
+            // The structure checksum, as every retail cluster repeats it.
+            put32(b, 0x94, self.checksum);
             if s.indices.is_empty() {
                 // No raw block: pointer none, everything else zero.
                 put32(b, 0x28, u32::MAX);
                 put32(b, 0x40, u32::MAX);
                 continue;
+            }
+            let predicted = self.predicted(set, c, sbsp);
+            let mut list = Block::zeroed(PREDICTED_RESOURCE * predicted.len());
+            for (k, &(kind, index, tag)) in predicted.iter().enumerate() {
+                put16(&mut list.bytes, PREDICTED_RESOURCE * k, kind);
+                put16(&mut list.bytes, PREDICTED_RESOURCE * k + 2, index);
+                list.tag_id((PREDICTED_RESOURCE * k + 4) as u32, tag);
             }
             let (block, table) = raw_block(s);
             put32(b, 0x2c, block.len() as u32);
@@ -737,6 +945,7 @@ impl Structure<'_> {
             cluster_elements
                 .raw(base + 0x28, RawRef::Local(raw))
                 .block(base + 0x38, table.len() as u32, Block::new(table.concat()))
+                .block(base + 0x84, predicted.len() as u32, list)
                 .tag_id(base + 0x40, sbsp);
         }
 
