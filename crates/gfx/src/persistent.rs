@@ -4,36 +4,44 @@
 //! bytes that never change under that id (the d3d device's vertex cache
 //! hands out a new id whenever it re-reads a range). The first draw of an
 //! id writes its host buffer (raw, realigned or converted, as the stream's
-//! [`StreamPlan`] says) into a buffer of its own; later draws of the same
-//! id with the same plan bind that buffer, with nothing staged in the
-//! upload ring. Buffers are dropped least recently used first past a byte
-//! budget; draws already recorded keep theirs alive (wgpu buffers are
-//! reference counted).
+//! [`StreamPlan`] says) into a region of its own; later draws of the same
+//! id with the same plan bind that region, with nothing staged in the
+//! upload ring. Regions are dropped least recently used first past a byte
+//! budget; draws already recorded keep their buffers alive (wgpu buffers
+//! are reference counted).
 //!
 //! Index lists marked with an id ([`Draw::index_id`]) are kept the same
 //! way, as the host list (Xbox-only primitives rewritten) per id and
 //! primitive type.
 //!
-//! Buffers come in power-of-two size classes and are reused: a dropped
-//! one (evicted or replaced) waits until the owner reports a submit
-//! ([`PersistentVertices::submitted`]: every draw recorded with it is then
-//! on the queue), then goes to a free list the next new id takes from. A
-//! queued write lands after the work already submitted, so a reused buffer
-//! never changes under a draw that still reads it. Free buffers are held
-//! up to half the budget (an eviction frees a quarter at once).
+//! Each id takes a region of a power-of-two size class. By default the
+//! regions are carved out of a few large slabs ([`SLAB`] bytes, a buddy
+//! allocator): wgpu-core sizes every render pass's usage scope and every
+//! command buffer's tracker to the most buffers the device has held at
+//! once, so a buffer per id made every pass pay for each snapshot alive
+//! (`tests/pass_cost.rs`). With [`PersistentVertices::set_slabs`] off, each
+//! region is a buffer of its own, as before.
+//!
+//! A dropped region (evicted or replaced) waits until the owner reports a
+//! submit ([`PersistentVertices::submitted`]: every draw recorded with it
+//! is then on the queue), then goes back to be taken by the next new id. A
+//! queued write lands after the work already submitted, so a reused region
+//! never changes under a draw that still reads it. Free buffers of their
+//! own are held up to half the budget (an eviction frees a quarter at
+//! once); slabs that come back empty past [`SPARE_SLABS`] are dropped.
 //!
 //! Staged writes ([`PersistentVertices::set_staged`], what `d3d`'s backend
-//! uses): instead of a `queue.write_buffer` per new buffer (a staging
+//! uses): instead of a `queue.write_buffer` per new region (a staging
 //! buffer wgpu makes and frees, about 20 us each), the bytes go into an
 //! upload ring that is written once per flush, and a buffer-to-buffer copy
-//! per new buffer is encoded into a command buffer of its own
+//! per new region is encoded into a command buffer of its own
 //! ([`PersistentVertices::copy_commands`]) that the owner submits ahead of
-//! the work that draws from them. Same bytes in the same buffers.
+//! the work that draws from them. Same bytes in the same regions.
 //!
 //! [`Draw::stream_ids`]: crate::renderer::Draw::stream_ids
 //! [`Draw::index_id`]: crate::renderer::Draw::index_id
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::context::GfxContext;
 use crate::repack::StreamPlan;
@@ -43,17 +51,33 @@ use crate::vertex::PrimitiveType;
 /// Default GPU budget (`H2_VERTEX_CACHE_MB` overrides it).
 pub const DEFAULT_BUDGET: u64 = 128 << 20;
 
+/// Slab size: regions up to this size are carved out of slabs.
+pub const SLAB: u64 = 8 << 20;
+
+/// Empty slabs kept for reuse; more are dropped.
+pub const SPARE_SLABS: usize = 2;
+
+/// Where an id's bytes live: `size` bytes (its class) at `offset` in
+/// `buffer`, part of slab `slab` or (`None`) a buffer of its own.
+struct Region {
+    buffer: wgpu::Buffer,
+    offset: u64,
+    size: u64,
+    slab: Option<usize>,
+    index: bool,
+}
+
 struct Slot {
     plan: StreamPlan,
     vertex_count: u32,
-    buffer: wgpu::Buffer,
-    size: u64,
+    region: Region,
     used: u64,
 }
 
 struct IndexSlot {
-    buffer: wgpu::Buffer,
-    size: u64,
+    region: Region,
+    /// Bytes bound.
+    bound: u64,
     /// Indices in the host list.
     count: u32,
     used: u64,
@@ -85,13 +109,102 @@ pub struct PersistentStats {
 /// Smallest size class.
 const MIN_CLASS: u64 = 256;
 
-/// Free buffers by (size, index usage).
+/// Free buffers of their own by (size, index usage), and the slabs.
 #[derive(Default)]
 struct Pool {
     free: HashMap<(u64, bool), Vec<wgpu::Buffer>>,
     free_bytes: u64,
     /// Dropped since the last submit.
-    retired: Vec<(bool, wgpu::Buffer)>,
+    retired: Vec<Region>,
+    /// [`PersistentVertices::set_slabs`].
+    slabs: Option<Slabs>,
+}
+
+/// Orders of [`Slabs`] blocks: `MIN_CLASS << order` bytes, up to [`SLAB`].
+const ORDERS: usize = (SLAB / MIN_CLASS).trailing_zeros() as usize + 1;
+
+/// Usage of a slab: vertex and index regions share them (both read-only
+/// in a pass); `COPY_SRC` so tests can read the bytes back.
+const SLAB_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::VERTEX
+    .union(wgpu::BufferUsages::INDEX)
+    .union(wgpu::BufferUsages::COPY_DST)
+    .union(wgpu::BufferUsages::COPY_SRC);
+
+/// Buddy allocation over slabs of [`SLAB`] bytes.
+struct Slabs {
+    buffers: Vec<Option<wgpu::Buffer>>,
+    /// Free blocks per order, as (slab, offset): the lowest is taken first.
+    free: Vec<BTreeSet<(usize, u64)>>,
+}
+
+impl Slabs {
+    fn new() -> Self {
+        Self {
+            buffers: Vec::new(),
+            free: vec![BTreeSet::new(); ORDERS],
+        }
+    }
+
+    /// A block of `class` bytes (a power of two, `MIN_CLASS..=SLAB`): its
+    /// slab, offset and buffer.
+    fn alloc(&mut self, ctx: &GfxContext, class: u64) -> (usize, u64, wgpu::Buffer) {
+        let order = (class / MIN_CLASS).trailing_zeros() as usize;
+        let (mut o, (slab, offset)) = match (order..ORDERS).find(|&o| !self.free[o].is_empty()) {
+            Some(o) => {
+                crate::churn::buffer_reused();
+                (o, self.free[o].pop_first().expect("non-empty"))
+            }
+            None => {
+                let buffer = crate::churn::create_buffer(
+                    &ctx.device,
+                    &wgpu::BufferDescriptor {
+                        label: Some("persistent slab"),
+                        size: SLAB,
+                        usage: SLAB_USAGE,
+                        mapped_at_creation: false,
+                    },
+                );
+                let slab = match self.buffers.iter().position(Option::is_none) {
+                    Some(i) => {
+                        self.buffers[i] = Some(buffer);
+                        i
+                    }
+                    None => {
+                        self.buffers.push(Some(buffer));
+                        self.buffers.len() - 1
+                    }
+                };
+                (ORDERS - 1, (slab, 0))
+            }
+        };
+        // Split down to the class, freeing the upper halves.
+        while o > order {
+            o -= 1;
+            self.free[o].insert((slab, offset + (MIN_CLASS << o)));
+        }
+        let buffer = self.buffers[slab].clone().expect("a live slab");
+        (slab, offset, buffer)
+    }
+
+    /// Frees a block of `class` bytes, merged with its free buddies; a slab
+    /// that comes back whole past [`SPARE_SLABS`] empty ones is dropped.
+    fn free(&mut self, slab: usize, mut offset: u64, class: u64) {
+        let mut o = (class / MIN_CLASS).trailing_zeros() as usize;
+        while o + 1 < ORDERS && self.free[o].remove(&(slab, offset ^ (MIN_CLASS << o))) {
+            offset &= !(MIN_CLASS << o);
+            o += 1;
+        }
+        if o + 1 == ORDERS && self.free[o].len() >= SPARE_SLABS {
+            self.buffers[slab] = None;
+            return;
+        }
+        self.free[o].insert((slab, offset));
+    }
+
+    /// Slabs alive.
+    fn live(&self) -> usize {
+        self.buffers.iter().flatten().count()
+    }
 }
 
 /// Persistent vertex buffers by stream id.
@@ -109,8 +222,8 @@ pub struct PersistentVertices {
 /// The staging ring and the copies out of it not yet encoded.
 struct Staged {
     ring: Option<UploadRing>,
-    /// (source, source offset, destination, bytes).
-    copies: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64)>,
+    /// (source, source offset, destination, destination offset, bytes).
+    copies: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)>,
 }
 
 /// Initial size of the staging ring (it grows as the upload rings do).
@@ -118,11 +231,12 @@ const STAGING_RING: u64 = 1 << 20;
 
 impl Staged {
     /// Stages `len` bytes that `fill` writes, for a copy of `len` rounded
-    /// up to 4 into the start of `dst`.
+    /// up to 4 into `dst` at `at`.
     fn write(
         &mut self,
         ctx: &GfxContext,
         dst: &wgpu::Buffer,
+        at: u64,
         len: usize,
         fill: impl FnOnce(wgpu::WriteOnly<'_, [u8]>),
     ) {
@@ -136,12 +250,13 @@ impl Staged {
         });
         let (src, off) = ring.push_with(&ctx.device, &ctx.queue, len, 4, fill);
         let size = (len as u64).max(4).next_multiple_of(4);
-        self.copies.push((src, off, dst.clone(), size));
+        self.copies.push((src, off, dst.clone(), at, size));
     }
 }
 
 impl PersistentVertices {
-    /// Empty, holding at most `budget` bytes.
+    /// Empty, holding at most `budget` bytes, in slabs
+    /// ([`set_slabs`](Self::set_slabs)).
     pub fn new(budget: u64) -> Self {
         Self {
             slots: HashMap::new(),
@@ -149,12 +264,32 @@ impl PersistentVertices {
             budget,
             tick: 0,
             stats: PersistentStats::default(),
-            pool: Pool::default(),
+            pool: Pool {
+                slabs: Some(Slabs::new()),
+                ..Pool::default()
+            },
             staged: None,
         }
     }
 
-    /// Writes new buffers through a staging ring and copies the owner
+    /// Regions in a few large slabs (on, the default) or a buffer each
+    /// (module docs). Switch before the first stream.
+    pub fn set_slabs(&mut self, on: bool) {
+        self.pool.slabs = on.then(Slabs::new);
+    }
+
+    /// Buffers held: slabs, and buffers of their own (in use, free, or
+    /// waiting for a submit).
+    pub fn buffers(&self) -> usize {
+        let own = |r: &Region| r.slab.is_none();
+        self.pool.slabs.as_ref().map_or(0, Slabs::live)
+            + self.slots.values().filter(|s| own(&s.region)).count()
+            + self.indices.values().filter(|s| own(&s.region)).count()
+            + self.pool.retired.iter().filter(|r| own(r)).count()
+            + self.pool.free.values().map(Vec::len).sum::<usize>()
+    }
+
+    /// Writes new regions through a staging ring and copies the owner
     /// submits first ([`copy_commands`](Self::copy_commands)) instead of a
     /// queue write each (module docs). Off by default: the owner must then
     /// submit [`copy_commands`](Self::copy_commands) ahead of every
@@ -174,7 +309,7 @@ impl PersistentVertices {
         }
     }
 
-    /// The copies of the buffers written since the last call, as one
+    /// The copies of the regions written since the last call, as one
     /// command buffer to submit ahead of the draws (after
     /// [`flush`](Self::flush)); `None` when there are none.
     pub fn copy_commands(&mut self, device: &wgpu::Device) -> Option<wgpu::CommandBuffer> {
@@ -185,16 +320,41 @@ impl PersistentVertices {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("persistent copies"),
         });
-        for (src, off, dst, size) in staged.copies.drain(..) {
-            enc.copy_buffer_to_buffer(&src, off, &dst, 0, size);
+        for (src, off, dst, at, size) in staged.copies.drain(..) {
+            enc.copy_buffer_to_buffer(&src, off, &dst, at, size);
         }
         Some(enc.finish())
     }
 
-    /// A buffer of at least `size` bytes (its size class) for vertices or
-    /// (`index`) indices, reused if one is free.
-    fn buffer(&mut self, ctx: &GfxContext, size: u64, index: bool) -> wgpu::Buffer {
+    /// A region of at least `size` bytes (its size class) for vertices or
+    /// (`index`) indices: from a slab, or a buffer of its own (reused if
+    /// one is free).
+    fn region(&mut self, ctx: &GfxContext, size: u64, index: bool) -> Region {
         let class = size.max(MIN_CLASS).next_power_of_two();
+        if let Some(slabs) = self.pool.slabs.as_mut()
+            && class <= SLAB
+        {
+            let (slab, offset, buffer) = slabs.alloc(ctx, class);
+            return Region {
+                buffer,
+                offset,
+                size: class,
+                slab: Some(slab),
+                index,
+            };
+        }
+        Region {
+            buffer: self.buffer(ctx, class, index),
+            offset: 0,
+            size: class,
+            slab: None,
+            index,
+        }
+    }
+
+    /// A buffer of `class` bytes for vertices or (`index`) indices, reused
+    /// if one is free.
+    fn buffer(&mut self, ctx: &GfxContext, class: u64, index: bool) -> wgpu::Buffer {
         if let Some(b) = self.pool.free.get_mut(&(class, index)).and_then(Vec::pop) {
             self.pool.free_bytes -= class;
             crate::churn::buffer_reused();
@@ -217,7 +377,7 @@ impl PersistentVertices {
         )
     }
 
-    /// Every draw recorded so far has been submitted: buffers dropped
+    /// Every draw recorded so far has been submitted: regions dropped
     /// before now may be written again.
     pub fn submitted(&mut self) {
         if let Some(s) = self.staged.as_mut() {
@@ -227,13 +387,25 @@ impl PersistentVertices {
             }
         }
         let cap = self.budget / 2;
-        for (index, b) in self.pool.retired.drain(..) {
-            let class = b.size();
-            if self.pool.free_bytes + class > cap {
+        for r in self.pool.retired.drain(..) {
+            if let Some(slab) = r.slab {
+                let slabs = self
+                    .pool
+                    .slabs
+                    .as_mut()
+                    .expect("slab regions come from slabs");
+                slabs.free(slab, r.offset, r.size);
                 continue;
             }
-            self.pool.free_bytes += class;
-            self.pool.free.entry((class, index)).or_default().push(b);
+            if self.pool.free_bytes + r.size > cap {
+                continue;
+            }
+            self.pool.free_bytes += r.size;
+            self.pool
+                .free
+                .entry((r.size, r.index))
+                .or_default()
+                .push(r.buffer);
         }
     }
 
@@ -247,7 +419,8 @@ impl PersistentVertices {
 
     /// The buffer for stream `id` as `plan` lays out `vertex_count` vertices
     /// of `guest` (already checked), written now if this is the first draw
-    /// of `id` under `plan`. Returns the buffer and the bytes it binds.
+    /// of `id` under `plan`. Returns the buffer, the offset and the bytes
+    /// to bind from there.
     pub fn get(
         &mut self,
         ctx: &GfxContext,
@@ -256,7 +429,7 @@ impl PersistentVertices {
         guest: &[u8],
         vertex_count: u32,
         scratch: &mut Vec<u8>,
-    ) -> (wgpu::Buffer, u64) {
+    ) -> (wgpu::Buffer, u64, u64) {
         self.tick += 1;
         let len = plan.host_bytes(vertex_count);
         let bound = (len as u64).max(4);
@@ -266,12 +439,12 @@ impl PersistentVertices {
         {
             s.used = self.tick;
             self.stats.hits += 1;
-            return (s.buffer.clone(), bound);
+            return (s.region.buffer.clone(), s.region.offset, bound);
         }
-        let buffer = self.buffer(ctx, bound.next_multiple_of(4), false);
-        let size = buffer.size();
+        let region = self.region(ctx, bound.next_multiple_of(4), false);
+        let (buffer, at, size) = (region.buffer.clone(), region.offset, region.size);
         if let Some(staged) = self.staged.as_mut() {
-            staged.write(ctx, &buffer, len, |out| {
+            staged.write(ctx, &buffer, at, len, |out| {
                 plan.write_into(guest, vertex_count, out, scratch)
             });
         } else {
@@ -280,7 +453,7 @@ impl PersistentVertices {
                 .queue
                 .write_buffer_with(
                     &buffer,
-                    0,
+                    at,
                     wgpu::BufferSize::new(bound.next_multiple_of(4)).expect("non-empty"),
                 )
                 .expect("staging view of a new buffer");
@@ -294,69 +467,71 @@ impl PersistentVertices {
             Slot {
                 plan: plan.clone(),
                 vertex_count,
-                buffer: buffer.clone(),
-                size,
+                region,
                 used: self.tick,
             },
         ) {
-            self.stats.held_bytes -= old.size;
-            self.pool.retired.push((false, old.buffer));
+            self.stats.held_bytes -= old.region.size;
+            self.pool.retired.push(old.region);
         }
         self.evict();
-        (buffer, bound)
+        (buffer, at, bound)
     }
 
     /// The host index buffer kept for index list `id` drawn as `primitive`:
-    /// the buffer, the bytes it binds and the indices it holds.
+    /// the buffer, the offset, the bytes to bind from there and the indices
+    /// it holds.
     pub fn cached_indices(
         &mut self,
         id: u64,
         primitive: PrimitiveType,
-    ) -> Option<(wgpu::Buffer, u64, u32)> {
+    ) -> Option<(wgpu::Buffer, u64, u64, u32)> {
         self.tick += 1;
         let s = self.indices.get_mut(&(id, primitive))?;
         s.used = self.tick;
         self.stats.index_hits += 1;
-        Some((s.buffer.clone(), s.size, s.count))
+        Some((s.region.buffer.clone(), s.region.offset, s.bound, s.count))
     }
 
     /// Keeps `list` (the host index list of `id` drawn as `primitive`) in a
-    /// buffer of its own; returns it and the bytes it binds.
+    /// region of its own; returns the buffer, the offset and the bytes to
+    /// bind from there.
     pub fn put_indices(
         &mut self,
         ctx: &GfxContext,
         id: u64,
         primitive: PrimitiveType,
         list: &[u32],
-    ) -> (wgpu::Buffer, u64) {
+    ) -> (wgpu::Buffer, u64, u64) {
         self.tick += 1;
         let bytes: &[u8] = bytemuck::cast_slice(list);
-        let size = (bytes.len() as u64).max(4);
-        let buffer = self.buffer(ctx, size, true);
+        let bound = (bytes.len() as u64).max(4);
+        let region = self.region(ctx, bound, true);
+        let (buffer, at) = (region.buffer.clone(), region.offset);
         match self.staged.as_mut() {
             _ if bytes.is_empty() => {}
-            Some(staged) => staged.write(ctx, &buffer, bytes.len(), |mut out| {
+            Some(staged) => staged.write(ctx, &buffer, at, bytes.len(), |mut out| {
                 out.copy_from_slice(bytes)
             }),
             None => {
                 crate::churn::queue_write();
-                ctx.queue.write_buffer(&buffer, 0, bytes);
+                ctx.queue.write_buffer(&buffer, at, bytes);
             }
         }
         self.stats.index_uploads += 1;
-        self.stats.held_bytes += buffer.size();
+        self.stats.held_bytes += region.size;
         let slot = IndexSlot {
-            buffer: buffer.clone(),
-            size,
+            region,
+            bound,
             count: list.len() as u32,
             used: self.tick,
         };
         if let Some(old) = self.indices.insert((id, primitive), slot) {
-            self.stats.held_bytes -= old.buffer.size();
-            self.pool.retired.push((true, old.buffer));
+            self.stats.held_bytes -= old.region.size;
+            self.pool.retired.push(old.region);
         }
         self.evict();
-        (buffer, size)
+        (buffer, at, bound)
     }
 
     /// Counters so far.
@@ -364,17 +539,17 @@ impl PersistentVertices {
         self.stats
     }
 
-    /// Drops every buffer (draws already recorded keep theirs; the pool
-    /// reuses them after the next submit).
+    /// Drops every region (draws already recorded keep their buffers; the
+    /// regions are reused after the next submit).
     pub fn clear(&mut self) {
         let retired = &mut self.pool.retired;
-        retired.extend(self.slots.drain().map(|(_, s)| (false, s.buffer)));
-        retired.extend(self.indices.drain().map(|(_, s)| (true, s.buffer)));
+        retired.extend(self.slots.drain().map(|(_, s)| s.region));
+        retired.extend(self.indices.drain().map(|(_, s)| s.region));
         self.stats.held_bytes = 0;
     }
 
-    /// Past the budget: drops least recently used buffers until a quarter of
-    /// it is free.
+    /// Past the budget: drops least recently used regions until a quarter
+    /// of it is free.
     fn evict(&mut self) {
         if self.stats.held_bytes <= self.budget {
             return;
@@ -397,12 +572,12 @@ impl PersistentVertices {
                 break;
             }
             let freed = match k {
-                Key::Vertices(id) => self.slots.remove(&id).map(|s| (false, s.buffer)),
-                Key::Indices(id, p) => self.indices.remove(&(id, p)).map(|s| (true, s.buffer)),
+                Key::Vertices(id) => self.slots.remove(&id).map(|s| s.region),
+                Key::Indices(id, p) => self.indices.remove(&(id, p)).map(|s| s.region),
             };
-            if let Some((index, b)) = freed {
-                self.stats.held_bytes -= b.size();
-                self.pool.retired.push((index, b));
+            if let Some(r) = freed {
+                self.stats.held_bytes -= r.size;
+                self.pool.retired.push(r);
             }
         }
     }

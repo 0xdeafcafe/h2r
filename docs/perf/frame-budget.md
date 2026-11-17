@@ -902,6 +902,70 @@ The mask splits are left as they are: each one exists because merged
 and per-draw rendering differ on Apple GPUs without it, and no test can
 show a replacement gives the same pixels.
 
+### Buffer count and per-pass bookkeeping (2026-11-17, third round)
+
+Master on the same scene: 30.8 ms a frame at ~1000 draws (encode 6.3,
+submit 11.2, 193 passes), 44 ms at 2000 (encode 10.4, submit 17.4, 297
+passes). The render thread's self time had `madvise` 10%, `memset`
+5.5%, `BufferUsageScope::clear` 4%, `Vec<Option<Arc<Buffer>>>::resize`
+2.7%.
+
+wgpu-core 30 sizes every pass's usage scope to the buffer tracker
+index allocator's high-water mark: `Device::new_usage_scope` ->
+`UsageScope::new_pooled` -> `BufferUsageScope::set_size(
+tracker_indices.buffers.size())`, where `size()` is `next_index`, the
+most buffers ever alive at once (freed indices are reused, the mark
+never drops). `set_size` resizes the state and `Option<Arc<Buffer>>`
+vectors and the ownership bit vector to that length, and `clear` at the
+pass's end empties them again, so every pass memsets and walks one
+entry per buffer the device has held, used or not. Command-buffer
+trackers (`BufferTracker::set_size`) and submission triage do the same
+per command buffer and submission.
+
+The persistent vertex cache made that mark large: a buffer per
+vertex-cache snapshot and index list (256-byte classes up), up to the
+128 MiB budget, plus free buffers up to half of it. A test scene of 600
+new streams a frame for ten frames (`persistent_pool.rs`,
+`slabs_keep_the_buffer_count_small`) holds 10,800 buffers.
+
+`tests/pass_cost.rs` (ignored timing, `--release`), draw-less passes
+with a load and a store, a submit per 8:
+
+| buffers alive | us per pass |
+|---|---|
+| 0 | 52 |
+| 1,000 | 47 |
+| 10,000 | 46 |
+| 30,000 | 49 |
+| 100,000 | 76 |
+
+About 0.3 us per pass per 1,000 buffers once past the noise, before any
+draw binds one: at 100,000 buffers and ~300 passes that is ~7 ms of
+render thread a frame, at 30,000 about 1 ms. The game's own count was
+not measured here (no game runs); `Renderer::persistent_buffers` gives
+the cache's share.
+
+Changes:
+
+- Persistent vertex and index regions are carved out of 8 MiB slabs
+  (a buddy allocator, 256-byte to 8 MiB blocks; larger lists still get
+  a buffer of their own). The test scene holds 5 slabs instead of
+  10,800 buffers. Same bytes at the offsets the draws bind (the pool
+  tests compare every region with a buffer per id, staged and not,
+  through evictions and reuse). `H2_GFX_VERTEX_SLABS=0` restores a
+  buffer per region.
+- A draw's 3 KiB constant block (`ShaderInputs::constants`) was
+  allocated on the game thread and freed on the render thread, every
+  draw; the allocator handed the freed pages back with `madvise`. The
+  render thread now returns the blocks once per batch and the device
+  overwrites a spare one (`shader::spare_constants`, up to 2,048 kept).
+
+Not done: the `memmove` in `flush_uploads` is `queue.write_buffer`
+copying the rings' staged bytes into wgpu's staging buffer. Writing in
+place needs mapped ring buffers (`MAP_WRITE` on a vertex or uniform
+buffer is `MAPPABLE_PRIMARY_BUFFERS`, and each needs its own map/unmap
+cycle across submissions); left for a later round.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split

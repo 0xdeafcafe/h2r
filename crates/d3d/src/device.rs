@@ -968,9 +968,11 @@ impl<B: Backend> Device<B> {
 
     /// Every constant register, boxed for a draw: filled in place in the
     /// heap (a 3 KiB array built on the stack and then moved into its box
-    /// was a second copy per draw).
+    /// was a second copy per draw), a spare block of a draw already run
+    /// when there is one ([`crate::shader::spare_constants`]); every
+    /// register is overwritten.
     fn constants_box(&self) -> Box<[[f32; 4]; CONSTANTS]> {
-        let mut b = Box::new([[0f32; 4]; CONSTANTS]);
+        let mut b = crate::shader::spare_constants();
         for (reg, words) in b.iter_mut().zip(self.constants.as_chunks::<4>().0) {
             *reg = words.map(f32::from_bits);
         }
