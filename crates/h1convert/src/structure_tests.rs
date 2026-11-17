@@ -31,6 +31,7 @@ fn vertex(p: [f32; 3]) -> Vertex {
         frame: [UP, 0, 0],
         texcoord: [p[0], p[1]],
         lightmap: [0.25, 0.75],
+        incident: UP,
     }
 }
 
@@ -504,4 +505,118 @@ fn each_lightmap_page_gets_its_own_cluster_and_render_info() {
     let g = &Lightmap::read(&mut map, b.ltmp).unwrap().groups[0];
     assert_eq!(g.bitmap, None);
     assert!(g.cluster_render_info.iter().all(|r| r.bitmap_index == -1));
+}
+
+fn f32_at(b: &[u8], at: usize) -> f32 {
+    f32::from_bits(word(b, at))
+}
+
+#[test]
+fn render_fields_are_filled_the_way_retail_fills_them() {
+    let mut m = meshes();
+    m.iter_mut().for_each(|m| m.page = Some(0));
+    let sections = pack(&m, &[0, 1]);
+    let b = build_lit(&sections, true);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let render = StructureRender::read(&mut map, b.sbsp).unwrap();
+    let c = &render.clusters[0];
+    let w = |at: usize| u16::from_le_bytes([c.raw[at], c.raw[at + 1]]);
+
+    // Section info: 7 vertices, 3 triangles, 2 parts; all shadow-casting,
+    // opaque and rigid; lightmap coordinates compressed; one subpart per
+    // part; lit, with incident radiance.
+    let head: Vec<u16> = (0..0x28).step_by(2).map(w).collect();
+    assert_eq!(
+        head,
+        [7, 3, 2, 3, 2, 0, 7, 2, 0, 3, 0, 4, 0, 0, 0, 0, 0, 0, 2, 3]
+    );
+    assert_eq!(&c.raw[0x6c..0x72], [0xff, 0xff, 0, 0xff, 0xff, 0xff]);
+    assert_eq!(word(&c.raw, 0x94), 0x1234_5678, "the structure checksum");
+
+    // Predicted resources: the cluster's own geometry, then its lightmap
+    // page (the materials' shaders are not in the set: no bitmaps).
+    let tag = map.tag(b.sbsp).unwrap().clone();
+    let at = tag.location.unwrap().address;
+    let p = map.read_tag_bytes(b.sbsp).unwrap();
+    let clusters = (word(&p, 0xa0) - at) as usize;
+    assert_eq!(word(&p, clusters + 0x84), 2);
+    let list = (word(&p, clusters + 0x88) - at) as usize;
+    let bitmap = map
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"bitm"))
+        .unwrap()
+        .id;
+    assert_eq!(&p[list..list + 4], [3, 0, 0, 0]);
+    assert_eq!(word(&p, list + 4), b.sbsp.0);
+    assert_eq!(&p[list + 8..list + 12], [0, 0, 0, 0]);
+    assert_eq!(word(&p, list + 12), bitmap.0);
+
+    // Parts: opaque, flags 0xb, bounding sphere and box of their own
+    // vertices.
+    let mut raw = Mem(b.bytes.clone());
+    let s = c.geometry.load(&mut raw, Some(2)).unwrap().unwrap();
+    assert!(s.parts.iter().all(|p| p.kind == 2 && p.flags == 0xb));
+    let floor = &s.parts[0].raw;
+    let centre: Vec<f32> = (0..3).map(|k| f32_at(floor, 0x10 + 4 * k)).collect();
+    assert_eq!(centre, [0.5, 0.5, 0.0]);
+    assert!((f32_at(floor, 0x2c) - 0.5f32.sqrt()).abs() < 1e-6);
+    let bounds: Vec<f32> = (0..6).map(|k| f32_at(floor, 0x30 + 4 * k)).collect();
+    assert_eq!(bounds, [0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(f32_at(&s.parts[1].raw, 0x18), 1.0, "the roof's centre z");
+
+    // Stream 0x30: the incident direction, one packed word per vertex.
+    let incident = s
+        .stream(tags::geometry::VertexKind::Unknown(0x30))
+        .expect("stream 0x30");
+    let d = s.data(incident);
+    assert_eq!(d.len(), 4 * 7);
+    assert!(
+        d.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|v| u32::from_le_bytes(*v) == UP)
+    );
+
+    // Unlit: no lighting flags, no lightmap page predicted.
+    let b = build(&pack(&meshes(), &[0, 1]));
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let render = StructureRender::read(&mut map, b.sbsp).unwrap();
+    let c = &render.clusters[0];
+    assert_eq!(&c.raw[0x26..0x28], [0, 0]);
+    assert_eq!(word(&c.raw, 0x84), 1);
+}
+
+#[test]
+fn a_shaders_bitmaps_are_read_from_its_parameters() {
+    let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
+    for g in [b"bitm", b"shad"] {
+        set.add_group(FourCC(*g), None, None);
+    }
+    let bitmap = |set: &mut TagSet, name: &str| {
+        set.add_tag(
+            FourCC(*b"bitm"),
+            name,
+            TagPayload::Built(Block::zeroed(0x4c)),
+        )
+        .unwrap()
+    };
+    let (a, b) = (
+        bitmap(&mut set, "invented\\a"),
+        bitmap(&mut set, "invented\\b"),
+    );
+    // Three parameters: a, b, a again; then a datum that is no bitmap.
+    let mut params = Block::zeroed(0xc * 4);
+    for (i, id) in [a, b, a, TagId(0x1234_0005)].iter().enumerate() {
+        params.bytes[0xc * i..0xc * i + 4].copy_from_slice(&id.0.to_le_bytes());
+    }
+    let mut pp = Block::zeroed(0x7c);
+    pp.block(0x04, 4, params);
+    let mut root = Block::zeroed(0x54);
+    root.block(0x20, 1, pp);
+    let shader = set
+        .add_tag(FourCC(*b"shad"), "invented\\s", TagPayload::Built(root))
+        .unwrap();
+    assert_eq!(shader_bitmaps(&set, shader), [a, b]);
+    assert!(shader_bitmaps(&set, TagId::NULL).is_empty());
 }
