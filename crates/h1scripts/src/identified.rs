@@ -169,19 +169,13 @@ pub const IDENTIFIED: &[Identified] = &[
     id("show_hud", 625, "boolean", &["boolean"]),
 ];
 
-/// Identifications not used yet: the recordings. Halo 1's event streams
-/// copied as they are fault Halo 2's player (a30's intro, 2026-11-18: a
-/// call through a null decoder entry at `0x001fb61e`, reached from
-/// `0x001fb360`), so until they are converted to Halo 2's encoding the
-/// recording builtins stay missing and compile as stubs:
-/// `recording_play*` false, `recording_kill` nothing, `recording_time` 0.
-pub const HELD: &[&str] = &[
-    "recording_play",
-    "recording_play_and_delete",
-    "recording_play_and_hover",
-    "recording_kill",
-    "recording_time",
-];
+/// Identifications not used yet; a held builtin stays missing and compiles
+/// as a stub. Empty: the recordings (138 to 142) were held at converter
+/// version 27, when Halo 1's event streams copied as they are faulted
+/// Halo 2's player (a30's intro: a call through the handler table past its
+/// end, from `0x001fb61e`), and play from version 28 with the streams
+/// rewritten by `h1campaign::recordings`.
+pub const HELD: &[&str] = &[];
 
 /// Adds each identification whose Halo 2 builtin is unnamed and has the
 /// signature it expects to `builtins`, except those [`HELD`].

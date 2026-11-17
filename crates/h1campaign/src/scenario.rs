@@ -385,6 +385,8 @@ pub struct ScriptReport {
     /// streams' bytes.
     pub recordings: usize,
     pub recording_bytes: usize,
+    /// The streams' rewrite for Halo 2's player.
+    pub recordings_rewritten: crate::recordings::Report,
 }
 
 impl std::fmt::Display for ScenarioReport {
@@ -475,6 +477,9 @@ impl std::fmt::Display for ScenarioReport {
                 "    placed at startup ({INITIAL_SCRIPT}): {:?}",
                 s.initial
             )?;
+            for r in &s.recordings_rewritten.stilled {
+                writeln!(f, "    recording held still: {r}")?;
+            }
         }
         Ok(())
     }
@@ -1379,10 +1384,12 @@ fn install_scripts(
         Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
         _ => Default::default(),
     };
-    let recordings = match cutscene_data {
+    let mut recordings = match cutscene_data {
         Some(_) => crate::cutscenes::read_recordings(h1)?,
         None => Vec::new(),
     };
+    // Halo 1's event streams in Halo 2's encoding (crate::recordings).
+    let rewritten = crate::recordings::for_halo2(&mut recordings);
     put_block(
         root,
         crate::cutscenes::H2_RECORDINGS,
@@ -1502,6 +1509,7 @@ fn install_scripts(
         graphs,
         recordings: recordings.len(),
         recording_bytes: recordings.iter().map(|r| r.stream.len()).sum(),
+        recordings_rewritten: rewritten,
     })
 }
 

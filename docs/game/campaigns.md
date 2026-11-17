@@ -312,13 +312,28 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   version 4 (Halo 2's decoder table at `0x0046fd5c` has four versions);
   unit control versions 0, 3 and 4. `recording_play`, `_and_delete`,
   `_and_hover`, `recording_kill` and `recording_time` are 138 to 142.
-  **Held (converter version 27):** played as they are, Halo 1's streams
-  fault Halo 2's player (a30's intro, headless, 18 s in: a call to pc 4
-  through a null decoder entry from `0x001fb61e`). Until the streams are
-  converted to Halo 2's encoding, the five builtins stay missing
-  (`h1scripts::identified::HELD`) and compile as stubs: the plays
-  `false`, the kill nothing, `recording_time` 0 (every wait on it reads
-  0 as done). The block is still written, unused.
+  **Streams rewritten (converter version 28).** Copied as they are,
+  Halo 1's streams faulted Halo 2's player (a30 and a50 headless: calls
+  to pc 4 and pc 1 from `0x0029f13d`, under `0x001fb61e`), and version
+  27 held the five builtins as stubs. Both games' version-4 players are
+  the same loop: a header byte whose low two bits give the delay (none,
+  one tick, a byte, a short) and whose upper six bits are the event type,
+  dispatched through a handler table with no bound (Halo 2 `0x004710f0`,
+  24 types; Halo 1 `0x00232538`, 23). The payloads differ in one place:
+  control flags (type 4) are two bytes in Halo 1 and four in Halo 2, so
+  Halo 2 lost its place in 189 of the 349 streams, most of them then
+  reading a payload byte as a type past the table (the word after it is
+  `0x00000001`). The
+  initial unit control state differs too (Halo 2's fields are wider).
+  `h1campaign::recordings` rewrites each stream: the state field by
+  field, flag events widened, animation-state events (Halo 2's state is
+  a mode string ID a byte cannot carry) folded into the initial mode,
+  and only Halo 1's movement and stance flags (bits 0 to 9) kept: Halo 2
+  moved the weapon actions to its high half, so recorded units move and
+  look but do not fire. The disc test `every_converted_recording_walks_in_halo_2`
+  walks every rewritten stream through Halo 2's table, and
+  `decoder_tables_match_the_executables` checks the tables against both
+  `default.xbe` files.
 - **Camera.** `camera_set`, `camera_control`, `camera_time` map directly;
   `camera_set_relative` (451), `camera_set_first_person` (456) and
   `camera_set_dead` (457, an object in Halo 2) by position. No level

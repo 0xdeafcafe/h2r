@@ -180,8 +180,9 @@ name) is Halo 1's: the recordings 138 to 142 (between
 `physics_disable_character_ground_adhesion_forces` 129 and
 `texture_camera_set_object_marker` 144; E: the evaluators of 138, 139 and
 140 call one function, `0x001fb360`, with play flags 0, 8 and `0x10`,
-which reads the scenario's recorded animations; held, not added, until
-the streams are converted: `identified::HELD`), `object_set_facing` 106,
+which reads the scenario's recorded animations; held at converter
+version 27, played from 28 with the streams rewritten by
+`h1campaign::recordings`), `object_set_facing` 106,
 `scenery_animation_start` 184 and `_at_frame` 188, `unit_open` 194,
 `unit_close` 195, `custom_animation_list` 205,
 `unit_custom_animation_at_frame` 206, `unit_is_playing_custom_animation`
