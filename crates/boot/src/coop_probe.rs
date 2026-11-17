@@ -1394,6 +1394,8 @@ pub fn install_live(
             // Players 3 to 16 (docs/live/live-coop.md section 12), on the
             // same arm.
             crate::coop_players::install(registry, Arc::clone(&arm))?;
+            // Join in progress (section 14), on the same arm.
+            crate::coop_jip::install(registry, Arc::clone(&arm))?;
             Ok(Some(arm))
         }
         Ok(false) => Ok(None),
