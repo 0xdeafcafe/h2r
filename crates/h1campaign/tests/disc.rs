@@ -104,6 +104,182 @@ fn tag_refs(
     }
 }
 
+/// Groups whose tags are objects: their references are followed.
+const OBJECT_GROUPS: [&[u8; 4]; 12] = [
+    b"bipd", b"vehi", b"weap", b"eqip", b"garb", b"proj", b"scen", b"mach", b"ctrl", b"ssce",
+    b"bloc", b"crea",
+];
+
+/// The object sweep over a built map: from `roots` (palette entries and
+/// AI characters), every object, `hlmt` and `char` reachable through tag
+/// references is checked, and each reference it holds must name a tag of
+/// its group (or a descendant) whose data is present. On each `hlmt`, the
+/// node count must cover the render model's nodes and the physics model's
+/// rigid-body nodes: `object_new` sizes an object's node matrices by the
+/// `hlmt` count (at least one), and the model, graph and physics write one
+/// per their node (a30's first crash: converted `hlmt`s had none).
+/// Returns (tags checked, problems).
+fn object_sweep(
+    m: &Map<Cursor<Vec<u8>>>,
+    mem: &tags::schema::Memory,
+    roots: &[TagId],
+) -> (usize, Vec<String>) {
+    let schema = tags::schema::Schema::builtin();
+    let word = |a: u32| {
+        mem.slice(a, 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let half = |a: u32| {
+        mem.slice(a, 2)
+            .map(|b| i16::from_le_bytes(b.try_into().unwrap()))
+    };
+    let descends = |g: FourCC, of: FourCC| {
+        g == of
+            || m.groups()
+                .iter()
+                .any(|x| x.class == g && (x.parent == Some(of) || x.grandparent == Some(of)))
+    };
+    let unloaded = |g: FourCC| g == FourCC(*b"sbsp") || g == FourCC(*b"ltmp");
+    let follow = |g: FourCC| {
+        OBJECT_GROUPS.iter().any(|o| g.0 == **o) || g == FourCC(*b"hlmt") || g == FourCC(*b"char")
+    };
+    let mut queue: Vec<TagId> = roots
+        .iter()
+        .copied()
+        .filter(|t| *t != TagId::NULL)
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut bad = Vec::new();
+    while let Some(id) = queue.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Ok(t) = m.tag(id) else {
+            bad.push(format!("{id:?} names no tag"));
+            continue;
+        };
+        let label = format!("{} {}", t.group, t.name.as_deref().unwrap_or("?"));
+        let Some(loc) = t.location else {
+            bad.push(format!("{label}: no data"));
+            continue;
+        };
+        let Some(st) = schema.groups.get(&t.group) else {
+            continue;
+        };
+        let mut refs = Vec::new();
+        tag_refs(st, loc.address, 1, mem, &mut refs, 0);
+        for (at, g, r) in refs {
+            if r == TagId::NULL || g.0 == [0xff; 4] {
+                continue;
+            }
+            match m.tag(r) {
+                Err(_) => bad.push(format!(
+                    "{label} +{:#x}: {g} {r:?} names no tag",
+                    at - loc.address
+                )),
+                Ok(rt) if !descends(rt.group, g) => bad.push(format!(
+                    "{label} +{:#x}: {g} names a {}",
+                    at - loc.address,
+                    rt.group
+                )),
+                Ok(rt) if rt.location.is_none() && !unloaded(rt.group) => bad.push(format!(
+                    "{label} +{:#x}: {} {} has no data",
+                    at - loc.address,
+                    rt.group,
+                    rt.name.as_deref().unwrap_or("?")
+                )),
+                Ok(rt) if follow(rt.group) => queue.push(r),
+                Ok(_) => {}
+            }
+        }
+        if t.group == FourCC(*b"hlmt") {
+            let a = loc.address;
+            let nodes = word(a + 0x78).unwrap_or(0);
+            let mode = TagId(word(a + 4).unwrap_or(u32::MAX));
+            if let Some(ml) = m.tag(mode).ok().and_then(|t| t.location) {
+                let mn = word(ml.address + 0x48).unwrap_or(0);
+                if nodes < mn.max(1) {
+                    bad.push(format!("{label}: {nodes} nodes, its render model has {mn}"));
+                }
+            }
+            let phmo = TagId(word(a + 0x24).unwrap_or(u32::MAX));
+            if let Some(pl) = m.tag(phmo).ok().and_then(|t| t.location) {
+                let n = word(pl.address + 0x38).unwrap_or(0);
+                let at = word(pl.address + 0x3c).unwrap_or(0);
+                let top = (0..n)
+                    .filter_map(|i| half(at + i * 0x90))
+                    .max()
+                    .unwrap_or(-1);
+                if i64::from(top) >= i64::from(nodes.max(1)) {
+                    bad.push(format!(
+                        "{label}: physics rigid bodies reach node {top}, the hlmt has {nodes}"
+                    ));
+                }
+            }
+        }
+    }
+    (seen.len(), bad)
+}
+
+/// Every object palette entry of the scenario at `addr` (`bytes` its
+/// root), by `tags::object::OBJECT_TYPES`.
+fn palette_roots(bytes: &[u8], addr: u32, mem: &tags::schema::Memory) -> Vec<TagId> {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let _ = addr;
+    let mut out = Vec::new();
+    for ty in tags::object::OBJECT_TYPES {
+        let Some((_, pal, _)) = ty.placement else {
+            continue;
+        };
+        let n = word(bytes, pal as usize);
+        let a = word(bytes, pal as usize + 4);
+        if let Some(p) = mem.slice(a, n * 0x28) {
+            out.extend((0..n as usize).map(|i| TagId(word(p, i * 0x28 + 4))));
+        }
+    }
+    out
+}
+
+/// The sweep over a whole map: its scenario's palettes and AI characters.
+fn sweep_map(m: &mut Map<Cursor<Vec<u8>>>) -> (usize, Vec<String>) {
+    let scnr = m.scenario().unwrap().clone();
+    let addr = scnr.location.unwrap().address;
+    let space = m.metadata_space().unwrap();
+    let meta = m
+        .read_file_range(space.file_offset, u64::from(space.size))
+        .unwrap();
+    let mem = tags::schema::Memory::from_regions(
+        vec![(space.virtual_base, meta)],
+        vec![(space.virtual_base, space.virtual_base + space.size)],
+    );
+    let bytes = m.read_tag_bytes(scnr.id).unwrap();
+    let mut roots = palette_roots(&bytes, addr, &mem);
+    let view = tags::geometry::TagView::new(&bytes, addr);
+    if let Ok(ai) = h1ai::h2::ScenarioAi::read(&view) {
+        roots.extend(ai.character_palette.iter().copied());
+    }
+    object_sweep(m, &mem, &roots)
+}
+
+/// The sweep finds nothing on the base level as shipped, so a problem it
+/// reports on a converted map is the converter's. With `$H1_SWEEP_MAP` (a
+/// built `.map`), that map is swept too: an existing conversion is checked
+/// without converting again.
+#[test]
+#[ignore = "reads disc/halo2.iso"]
+fn object_sweep_is_clean_on_the_retail_base() {
+    let mut base = h2_map(h1campaign::BASE);
+    let (n, bad) = sweep_map(&mut base);
+    println!("{}: {n} tags swept", h1campaign::BASE);
+    assert!(bad.is_empty(), "{bad:#?}");
+    if let Ok(path) = std::env::var("H1_SWEEP_MAP") {
+        let mut m = Map::from_reader(Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let (n, bad) = sweep_map(&mut m);
+        println!("{path}: {n} tags swept, {} problems", bad.len());
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn h1_trigger_volumes_read() {
@@ -289,6 +465,14 @@ fn a30_converts_onto_its_base_and_reads_back() {
             }
             println!("object block {at:#x}: {n} placements over {pn} palette entries");
         }
+    }
+
+    // The object sweep: every object, model and character the scenario
+    // names resolves, with data, and every hlmt covers its model's nodes.
+    if opts.objects {
+        let (n, bad) = sweep_map(&mut m);
+        println!("object sweep: {n} tags");
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 
     // AI: decodes with h1ai's reader and its indices check.

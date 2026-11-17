@@ -207,6 +207,36 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
 /// Default-pose node blocks, with the inverse of each node's model-space
 /// transform.
 fn node_blocks(model: &Model) -> Vec<Block> {
+    default_pose(model, NODE_LEN)
+}
+
+/// Stride of an `hlmt` node (`hlmt +0x78`).
+pub const HLMT_NODE_LEN: usize = 0x5c;
+
+/// The `hlmt` nodes for a converted model, as one block-array child (count
+/// = the model's node count, stride [`HLMT_NODE_LEN`]).
+///
+/// **E** (`object_new` `0x000b7ef3`, `0x000b800b`): an object reserves
+/// `0x34` bytes of node matrices per `hlmt` node, at least one. The render
+/// model and animation graph write one matrix per *their* node, so an
+/// `hlmt` with fewer nodes than its `mode` lets every update run past the
+/// object's memory into the next object's header. **V** (`05a`'s SMG,
+/// warthog, banshee, Master Chief): a retail `hlmt` node is the `mode`
+/// node's first `0x5c` bytes (no distance from parent), with `+0xa` zero.
+pub fn hlmt_nodes(model: &Model) -> (u32, Block) {
+    let nodes = default_pose(model, HLMT_NODE_LEN)
+        .into_iter()
+        .map(|mut b| {
+            b.put_i16(0xa, 0);
+            b
+        })
+        .collect::<Vec<_>>();
+    (nodes.len() as u32, array(nodes, HLMT_NODE_LEN))
+}
+
+/// Node blocks of `len` bytes (`mode`'s `0x60`, or `hlmt`'s `0x5c`, which
+/// stops before the distance from the parent).
+fn default_pose(model: &Model, len: usize) -> Vec<Block> {
     let world = world_transforms(
         &model
             .nodes
@@ -219,7 +249,7 @@ fn node_blocks(model: &Model) -> Vec<Block> {
         .iter()
         .zip(&world)
         .map(|(n, (m, p))| {
-            let mut b = Block::zeroed(NODE_LEN);
+            let mut b = Block::zeroed(len);
             b.string_id(0, &n.name)
                 .put_i16(4, n.parent)
                 .put_i16(6, n.first_child)
@@ -234,8 +264,10 @@ fn node_blocks(model: &Model) -> Vec<Block> {
             for c in 0..3 {
                 b.put_f32s(0x2c + 12 * c, &[m[0][c], m[1][c], m[2][c]]);
             }
-            b.put_f32s(0x50, &inv_p)
-                .put_f32(0x5c, n.distance_from_parent);
+            b.put_f32s(0x50, &inv_p);
+            if len >= NODE_LEN {
+                b.put_f32(0x5c, n.distance_from_parent);
+            }
             b
         })
         .collect()

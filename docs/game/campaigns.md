@@ -224,6 +224,12 @@ placement's palette entry is a tag of that group; the AI decodes with
 `h1ai::h2::ScenarioAi::read` and its indices check, every character is a
 `char`; the scripts decode with `hs::Scenario::read` with the compiled
 counts; `campaign.toml` lists a30 under the map's own path.
+The object sweep (also run alone, over the retail base and over any
+built map named by `$H1_SWEEP_MAP`, by `object_sweep_is_clean_on_the_retail_base`)
+follows every object palette entry and AI character through its tag
+references: each names a tag of its group with data, and each `hlmt`
+has at least its render model's nodes and its physics model's
+rigid-body nodes (h1-objects.md, Nodes). Clean on 05a as shipped.
 `h1_trigger_volumes_read` checks a30's trigger volumes (`scnr+0x360`,
 `0x60` each, name at `+4`: printable names, unit forward and up vectors).
 

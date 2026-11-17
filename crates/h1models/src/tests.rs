@@ -19,6 +19,50 @@ use crate::{Converted, Error, Result, jmad};
 // ---------------------------------------------------------------------------
 
 /// Builds a v8 map holding just `tags` and returns its bytes and their datums.
+/// The `hlmt` nodes are the converted `mode`'s, one for one: the engine
+/// sizes an object's node matrices by the `hlmt` count, and the model
+/// writes one per its own node (a30 crashed on a converted `hlmt` with none).
+#[test]
+fn hlmt_nodes_match_the_render_model() {
+    use map::build::FixupKind;
+    let (img, at) = synthetic_model();
+    let m = h1::Model::read(&img, at).unwrap();
+    let out = convert_model(&m, "thing", &ModelOptions::default()).unwrap();
+    let (mode_count, mode_nodes) = out
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            FixupKind::Block { count, child } if f.offset == 0x48 => Some((*count, child)),
+            _ => None,
+        })
+        .expect("mode nodes");
+    let (count, nodes) = crate::mode::hlmt_nodes(&m);
+    assert_eq!(count, 2);
+    assert_eq!(count, mode_count);
+    let n = crate::mode::HLMT_NODE_LEN;
+    assert_eq!(nodes.bytes.len(), count as usize * n);
+    for i in 0..count as usize {
+        let h = &nodes.bytes[i * n..(i + 1) * n];
+        let mut want = mode_nodes.bytes[i * 0x60..i * 0x60 + n].to_vec();
+        want[0xa..0xc].copy_from_slice(&[0, 0]);
+        assert_eq!(h, &want[..], "node {i}");
+    }
+    let names = |b: &map::build::Block, stride: usize| {
+        b.fixups
+            .iter()
+            .map(|f| {
+                (
+                    f.offset as usize / stride,
+                    f.offset as usize % stride,
+                    f.kind.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&nodes, n), names(mode_nodes, 0x60));
+}
+
 fn build(tags: Vec<(Converted, &str)>) -> (Vec<u8>, Vec<TagId>) {
     let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
     let ids = tags

@@ -169,9 +169,22 @@ tags must go into a `TagSet` made from that base map.
 object has none, as on the weapons), **physics model: the template's
 `phmo`, borrowed** (warthog's for the warthog, ghost's for the ghost,
 `masterchief`'s for the cyborg; Coagulation's weapons and equipment have
-none). Variants and nodes are emptied (count 0); regions are rebuilt
-from the converted model's region and permutation names. `obje
-default_variant` is set to 0.
+none). Variants are emptied (count 0); regions are rebuilt from the
+converted model's region and permutation names. `obje default_variant`
+is set to 0.
+
+**Nodes** (`hlmt +0x78`, `0x5c` each) are the converted `mode`'s, one
+for one (`h1models::mode::hlmt_nodes`): name, parent, first child, next
+sibling, `+0xa` zero, default translation and rotation, scale 1, the
+inverse model-space basis and position. V (05a: SMG, warthog, banshee,
+Master Chief): a retail `hlmt` node is its `mode` node's first `0x5c`
+bytes with `+0xa` zero. E: `object_new` reserves `0x34` bytes of node
+matrices per `hlmt` node, at least one (`0x000b7ef3`, `0x000b800b`,
+object `+0x114`); the model, graph and physics write one per *their*
+node. With the nodes emptied (the first version), every multi-node
+object wrote past its body into the next object in the pool; a30's
+first game run faulted on the clobbered header of the next item
+(`0x0010b96e`, `mov edx,[ecx+0BCh]` with the definition pointer null).
 
 **`coll`** is built from scratch: materials and names as string IDs
 (lower case, spaces to underscores), each region permutation holding the
@@ -306,7 +319,7 @@ the new tags (136) names a tag of that group in the built map.
 
 ## Needs a game run
 
-- That the engine accepts objects whose `hlmt` has no variants or nodes
+- That the engine accepts objects whose `hlmt` has no variants
   and regions renamed from Halo 1, and whose template damage info names
   regions the converted model lacks.
 - The borrowed `phmo`s against Halo 1 skeletons (node counts and names
