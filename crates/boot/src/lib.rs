@@ -14,6 +14,7 @@ pub mod account_screen;
 pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
+pub mod coop_jip;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
@@ -27,6 +28,7 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod precision;
 pub mod host_perf;
 pub mod sampling;
 pub mod icons;
@@ -724,10 +726,13 @@ pub fn run_hosted_with_live(
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
     // The health model follows the sandbox the converted Halo 1 maps were
     // just installed in (docs/game/health.md).
-    {
+    // The VFS serves the same variant (docs/game/h1-multiplayer.md).
+    let halo1_sandbox = {
         let (store, _) = setting_defs::load(&opts.data_root, &[]);
-        health::set_halo1_sandbox(setting_defs::halo1_sandbox(&store) == "h1");
-    }
+        let sandbox = setting_defs::halo1_sandbox(&store);
+        health::set_halo1_sandbox(sandbox == "h1");
+        sandbox
+    };
     // A second campaign (docs/game/multiple-campaigns.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
@@ -737,7 +742,7 @@ pub fn run_hosted_with_live(
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes, &campaign_maps);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), Some(halo1_sandbox), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -890,6 +895,10 @@ pub fn run_hosted_with_live(
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     let health_on = health::install(&mut features).context("installing the health model")?;
+    // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
+    // (docs/game/h1-multiplayer.md): the battle rifle for the SMG at game
+    // activation, from the swaps each package's manifest records.
+    precision::install(&mut features, &packages).context("installing the precision swaps")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
@@ -991,6 +1000,13 @@ pub fn run_hosted_with_live(
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
+    // Which pages the render front-end writes and the sim reads, when
+    // H2_FEATURES has render-census (off by default;
+    // docs/graphics/pipelined-render.md).
+    let census = feature::render_census::RenderCensus::new()
+        .with_region(d3d_glue::PUSH_BASE, d3d_glue::PUSH_BASE + d3d_glue::PUSH_LEN, "push_buffer")
+        .with_region(d3d_glue::SCRATCH_BASE, d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
+    features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
@@ -1015,6 +1031,13 @@ pub fn run_hosted_with_live(
             let n = arm.set_max_players(i64::from(setting_defs::coop_max_players(store)));
             if n != coop_probe::MAX_PLAYERS {
                 eprintln!("coop-live: co-op takes up to {n} players (coop.max_players)");
+            }
+            // coop.join_in_progress: the host lets friends join a running
+            // game (docs/live/live-coop.md 14).
+            let jip = setting_defs::coop_join_in_progress(store);
+            coop_jip::set_enabled(jip);
+            if !jip {
+                eprintln!("coop-jip: off (coop.join_in_progress)");
             }
         }
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;

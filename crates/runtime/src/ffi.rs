@@ -161,7 +161,8 @@ unsafe fn read(
     // Guest preflights the entire span before copying, so faults leave output
     // untouched without staging through a second host buffer.
     let out = unsafe { std::slice::from_raw_parts_mut(out, width as usize) };
-    let result = ctx.memory().read_bytes(addr, out, alignment);
+    // `_from`: the access trap (crate::trap) attributes it to `pc`.
+    let result = ctx.memory().read_bytes_from(pc, addr, out, alignment);
     status(ctx, pc, result)
 }
 
@@ -291,7 +292,7 @@ unsafe fn write(
     // SAFETY: the ABI guarantees width readable bytes disjoint from context.
     // Guest validates the complete write and retains its alias-aware barrier.
     let value = unsafe { std::slice::from_raw_parts(value, width as usize) };
-    let result = ctx.memory().write_bytes(addr, value, alignment);
+    let result = ctx.memory().write_bytes_from(pc, addr, value, alignment);
     status(ctx, pc, result)
 }
 

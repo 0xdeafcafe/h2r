@@ -40,8 +40,10 @@ pub fn build(base: &[u8], set: &TagSet, bytes: &[u8]) -> Result<(TagSet, Scratch
         from_level,
     };
     let from_level = src.from_level.clone();
-    let (mut out, report) = scratch::build(&mut src, set, &crate::KEEP, &from_level, low_detail)?;
+    let (mut out, report) =
+        scratch::build(&mut src, set, &crate::KEEP, &[], &from_level, low_detail)?;
     crate::scenario::write_simulation_table(&mut out);
     out.check_tag_memory = false;
+    out.check_file_size = false;
     Ok((out, report))
 }

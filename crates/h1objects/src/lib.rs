@@ -7,7 +7,9 @@
 //!   read).
 //! - [`sandbox::Objects`]: the objects a converted multiplayer map's
 //!   spawns name, for `h1convert`'s Halo 1 sandbox.
-//! - [`coll::convert_collision`] builds a Halo 2 `coll` from a Halo 1 one.
+//! - [`coll::convert_collision`] builds a Halo 2 `coll` from a Halo 1 one,
+//!   with BSP physics slots (Havok's view) for scenery.
+//! - [`query`] answers points and rays on either game's collision BSP.
 //! - [`convert`] builds each object as a Halo 2 tag on a **retail Halo 2
 //!   template** of the same role, read from the base map ([`base::Base`]):
 //!   the template's root is copied, the fields this crate knows in both
@@ -30,6 +32,7 @@ pub mod base;
 pub mod coll;
 pub mod convert;
 pub mod h1;
+pub mod query;
 pub mod refs;
 pub mod sandbox;
 

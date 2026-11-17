@@ -163,8 +163,7 @@ impl Runner {
                     route: transfer.route,
                 }));
             }
-            let Some((handler, selector, function, generation)) = ctx.resolve_cached(transfer)
-            else {
+            let Some(resolution) = ctx.resolve_cached(transfer) else {
                 return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
                     pc: cpu.eip,
                     target: transfer.target_pc,
@@ -179,12 +178,18 @@ impl Runner {
                 .checked_sub(kernel::KERNEL_TOKEN_BASE)
                 .filter(|v| v.is_multiple_of(4))
                 .and_then(|v| kernel::function(v / 4));
-            if token.is_none() {
-                let access = ctx.runtime().check_execute(transfer.target_pc);
-                if let Err(fault) = access {
-                    return ctx.fault(transfer.target_pc, fault);
-                }
+            if token.is_none()
+                && let Err(fault) = ctx.check_execute_cached(&resolution, transfer.target_pc)
+            {
+                return ctx.fault(transfer.target_pc, fault);
             }
+            let crate::exec::Resolution {
+                handler,
+                selector,
+                function,
+                generation,
+                ..
+            } = resolution;
             // Generated code may now invoke this entry's handler directly
             // (direct.rs) while the dispatch generation stays the same.
             if transfer.route == abi::ENTRY && selector == transfer.target_pc {

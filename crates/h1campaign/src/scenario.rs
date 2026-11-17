@@ -19,7 +19,8 @@
 //! | AI fields (`h1ai::convert::ScenarioBlocks`) | | Halo 1's AI, or empty |
 //! | script fields (`h1scripts::compile::field`) | | Halo 1's scripts, or empty |
 //! | `+0x210` BSP descriptors | `0x44` | one per Halo 1 BSP, in Halo 1's order: its region (`FixupKind::Bsp`), `sbsp` and `ltmp` |
-//! | `+0x290` cluster data | `0x34` | one per BSP: per cluster no background sound or sound environment, its centroid; the BSP's checksum |
+//! | `+0x250`, `+0x258` background sounds, sound environments | `0x64`, `0x48` | Halo 1's (`h1convert::ambience`), the palettes the clusters name |
+//! | `+0x290` cluster data | `0x34` | one per BSP: per cluster its background sound and sound environment (as the structure's cluster names them), its centroid; the BSP's checksum |
 //! | `+0x388` per-BSP points | `0x10` | one per BSP, no points |
 
 use std::collections::HashMap;
@@ -59,6 +60,10 @@ pub const BSP_SWITCH: usize = 0xe;
 /// the BSP's checksum at `+0x18` (`sbsp+0x08`).
 pub const CLUSTER_DATA: u32 = 0x290;
 pub const CLUSTER_DATUM: usize = 0x34;
+/// Background sound and sound environment palettes
+/// (`h1convert::ambience`).
+pub const BACKGROUND_SOUNDS: u32 = h1convert::ambience::BACKGROUND_SOUNDS as u32;
+pub const SOUND_ENVIRONMENTS: u32 = h1convert::ambience::SOUND_ENVIRONMENTS as u32;
 /// One element per BSP too: a null `sbsp` reference and a block of
 /// points (`0xc`), often empty.
 pub const BSP_POINTS: u32 = 0x388;
@@ -75,11 +80,21 @@ pub struct BspSlot {
     pub checksum: u32,
     /// One per cluster.
     pub centroids: Vec<[f32; 3]>,
+    /// Per cluster: background sound and sound environment (-1 none).
+    pub sounds: Vec<[i16; 2]>,
 }
 
 /// The `+0x290` element of `b`.
 fn cluster_datum(b: &BspSlot) -> Block {
     let n = b.centroids.len();
+    let sound = |which: usize| {
+        let mut c = Block::zeroed(4 * n);
+        for k in 0..n {
+            let v = b.sounds.get(k).map_or(-1, |s| s[which]);
+            c.put_u16(4 * k, v as u16);
+        }
+        c
+    };
     let none = || {
         let mut c = Block::zeroed(4 * n);
         for k in 0..n {
@@ -96,8 +111,8 @@ fn cluster_datum(b: &BspSlot) -> Block {
             centroids.put_f32(0xc * k + 4 * j, *v);
         }
     }
-    e.block(0x08, n as u32, none())
-        .block(0x10, n as u32, none())
+    e.block(0x08, n as u32, sound(0))
+        .block(0x10, n as u32, sound(1))
         .put_u32(0x18, b.checksum)
         .block(0x1c, n as u32, centroids)
         .block(0x24, n as u32, none())
@@ -182,6 +197,10 @@ pub struct BaseScenario {
     /// With a tree: the old bytes other tags' arrays still use, as
     /// (address, end). They stay as unowned metadata.
     pub keep: Vec<(u32, u32)>,
+    /// The shader converted sky models' materials name
+    /// (`h1convert::sky::base_sky_shader`): never NONE, which the shader
+    /// draw `0x16b90` does not survive.
+    pub sky_shader: Option<TagId>,
 }
 
 fn u32_at(b: &[u8], at: usize) -> Result<u32> {
@@ -209,6 +228,7 @@ impl BaseScenario {
             tree: None,
             refusal: None,
             keep: Vec::new(),
+            sky_shader: h1convert::sky::base_sky_shader(base),
         };
         match s.relocate(base)? {
             Ok((t, keep)) => {
@@ -353,6 +373,13 @@ pub struct ScriptReport {
     /// (over the cap, or the gestalt's 16-bit indices).
     pub sounds: usize,
     pub sounds_dropped: usize,
+    /// Looping sounds (music and ambience) the scripts name, converted with
+    /// `h1sounds::looping`, and those left out (not in the level, failed,
+    /// or no room: `Lean::Music` leaves them all out, a map over the engine's
+    /// file size limit fewer of them), and the sample bytes they added.
+    pub looping: usize,
+    pub looping_dropped: Vec<String>,
+    pub looping_bytes: u64,
     pub missing_calls: usize,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
@@ -362,6 +389,12 @@ pub struct ScriptReport {
     /// Squad groups the startup script places (Halo 1's initially created
     /// encounters).
     pub initial: Vec<String>,
+    /// Animation graphs the cutscenes name (crate::cutscenes).
+    pub graphs: crate::cutscenes::Graphs,
+    /// Recorded animations written (Halo 2 `scnr +0x110`), and their event
+    /// streams' bytes.
+    pub recordings: usize,
+    pub recording_bytes: usize,
 }
 
 impl std::fmt::Display for ScenarioReport {
@@ -440,8 +473,12 @@ impl std::fmt::Display for ScenarioReport {
             }
             writeln!(
                 f,
-                "    sounds: {} converted, {} left out",
-                s.sounds, s.sounds_dropped
+                "    sounds: {} converted, {} left out; looping sounds: {} converted, {} left out {:?}",
+                s.sounds,
+                s.sounds_dropped,
+                s.looping,
+                s.looping_dropped.len(),
+                s.looping_dropped
             )?;
             writeln!(
                 f,
@@ -555,6 +592,8 @@ pub fn replaced_fields() -> Vec<u32> {
         BSPS,
         CLUSTER_DATA,
         BSP_POINTS,
+        BACKGROUND_SOUNDS,
+        SOUND_ENVIRONMENTS,
     ];
     for t in tags::object::OBJECT_TYPES.iter() {
         if let Some((at, pal, _)) = t.placement {
@@ -617,11 +656,10 @@ pub fn fresh_root() -> Block {
     root
 }
 
-/// Writes the scenario layers into `set` (built from the base). `lean` 1
-/// leaves out the empty squads kept only because scripts name them; 2 also
-/// the seat table; 3 also Halo 1's textures on object models (in `lib.rs`);
-/// 4 also the level data the scripts name (the calls that
-/// name it are stubbed, their other hooks stay `none`).
+/// Writes the scenario layers into `set` (built from the base), leaving
+/// out what `lean` says ([`crate::Lean`]; object textures are left out in
+/// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
+/// sounds' sample bytes (the map file's own bound).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -629,9 +667,11 @@ pub fn write(
     set: &mut TagSet,
     base: &BaseScenario,
     bsps: &[BspSlot],
+    sounds: &h1convert::ambience::Installed,
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
-    lean: u8,
+    lean: crate::Lean,
+    music: u64,
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -691,6 +731,30 @@ pub fn write(
         })
         .collect();
     put_block(&mut root, BSP_POINTS, BSP_POINT, points);
+    for (at, stride, entries, entry) in [
+        (
+            BACKGROUND_SOUNDS,
+            h1convert::ambience::BACKGROUND_SOUND,
+            &sounds.backgrounds,
+            h1convert::ambience::background_entry as fn(&str, TagId) -> Vec<u8>,
+        ),
+        (
+            SOUND_ENVIRONMENTS,
+            h1convert::ambience::SOUND_ENVIRONMENT,
+            &sounds.environments,
+            h1convert::ambience::environment_entry,
+        ),
+    ] {
+        let elements = entries
+            .iter()
+            .map(|(n, id)| {
+                let mut e = Block::new(entry(n, *id));
+                e.tag_ref(0x20, *id);
+                e
+            })
+            .collect();
+        put_block(&mut root, at, stride, elements);
+    }
     put_block(&mut root, BSPS, BSP, desc);
 
     // Skies.
@@ -700,6 +764,15 @@ pub fn write(
         let tag = h1.tag(r.id)?;
         let (sky, model) =
             h1sky::convert::sky_from_map(h1, tag).map_err(|e| invalid(format!("sky: {e}")))?;
+        // The model's materials name the base sky's shader; without one the
+        // sky goes in without its model (h1convert::sky).
+        let model = match (model, base.sky_shader) {
+            (Some((n, mut c)), Some(shader)) => {
+                h1convert::sky::set_material_shaders(&mut c.root, shader);
+                Some((n, c))
+            }
+            _ => None,
+        };
         let id = h1sky::convert::install_sky(
             set,
             &sky,
@@ -854,7 +927,7 @@ pub fn write(
         .flat_map(|e| e.squads.iter().map(move |q| (e, q)))
         .filter(|(e, q)| empty_named(e, q))
         .count();
-    let keep_empty = lean == 0 && placed + empty <= MAX_SQUADS;
+    let keep_empty = !lean.leaves_out(crate::Lean::EmptySquads) && placed + empty <= MAX_SQUADS;
     if !keep_empty && empty > 0 {
         report.dropped.push(format!(
             "ai: {empty} empty squads the scripts name left out ({placed} placed; cap {MAX_SQUADS}); the scripts name their squad groups"
@@ -972,9 +1045,16 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
-                lean < 4,
-                lean < 2,
-                opts.cutscenes,
+                !lean.leaves_out(crate::Lean::LevelData),
+                !lean.leaves_out(crate::Lean::SeatTable),
+                if lean.leaves_out(crate::Lean::Music) {
+                    0
+                } else {
+                    music
+                },
+                (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
+                    .then_some(opts.cutscene_graphs),
+                crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
             )?);
         }
         None => {
@@ -1308,10 +1388,22 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                     .position(|n| n.eq_ignore_ascii_case(g))
                     .map(|i| 0x4000_0000 | i as u32)
             };
-            // A squad left out (empty, over the squad cap): its encounter.
+            // A squad left out (empty, over the squad cap): the first
+            // squad of its encounter, else the encounter's squad group.
+            // Halo 2's `ai_migrate` ignores a destination with either top
+            // bit set (`0x002a54cc`, `test ecx,0C0000000h`) and
+            // `ai_attach_units` reads the low 16 bits as a squad index
+            // (`0x0027305e`), so a squad group there would do nothing or
+            // name another squad; a sibling keeps the actors in their
+            // encounter's zone, as Halo 1's migration did.
             group(&token).or_else(|| {
                 let (encounter, _) = h.token.split_once('/')?;
-                group(&encounter.chars().take(31).collect::<String>())
+                let prefix = format!("{encounter}/").to_ascii_lowercase();
+                t.squads
+                    .iter()
+                    .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
+                    .map(|i| i as u32)
+                    .or_else(|| group(&encounter.chars().take(31).collect::<String>()))
             })
         }
         _ => None,
@@ -1329,6 +1421,8 @@ fn install_scripts(
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
+    music: u64,
+    cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
@@ -1339,7 +1433,7 @@ fn install_scripts(
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
     // Level data the scripts name (cutscene flags, camera points, titles,
-    // device groups), in h1scripts. Without it (`lean` 4), or for a name
+    // device groups), in h1scripts. Without it (`Lean::LevelData`), or for a name
     // it lacks, a call naming one is stubbed: the engine indexes these
     // blocks unchecked (`h1scripts::compile::INDEXED`).
     let level = if level_data {
@@ -1372,10 +1466,37 @@ fn install_scripts(
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
+    // The looping sounds (`lsnd`: music and ambience) the scripts start,
+    // found by the tag-name lookup below.
+    let (looping, looping_dropped, looping_bytes) = install_looping_sounds(h1, set, &c, music);
+    // Animation graphs the cutscenes name, and their animation names
+    // (crate::cutscenes).
+    // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
+    // are left out at `Lean::CutsceneData`.
+    // `cutscene_data` is `None` without either, `Some(false)` without the
+    // graphs.
+    let graphs = match cutscene_data {
+        Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
+        _ => Default::default(),
+    };
+    let recordings = match cutscene_data {
+        Some(_) => crate::cutscenes::read_recordings(h1)?,
+        None => Vec::new(),
+    };
+    put_block(
+        root,
+        crate::cutscenes::H2_RECORDINGS,
+        crate::cutscenes::H2_RECORDING_LEN,
+        crate::cutscenes::recordings_block(&recordings),
+    );
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
         if h.type_name == "string_id" && !interned.contains_key(&h.token) {
-            interned.insert(h.token.clone(), set.intern(&h.token)?);
+            let text = match h.h1_type == h1scripts::compile::ANIMATION_NAME {
+                true => crate::cutscenes::animation_name(&graphs, h),
+                false => h.token.clone(),
+            };
+            interned.insert(h.token.clone(), set.intern(&text)?);
         }
     }
     // The seat-mapping table, in h1scripts.
@@ -1400,7 +1521,7 @@ fn install_scripts(
         .iter()
         .filter_map(|s| {
             let t = s.tag.as_ref()?;
-            Some(((t.group, s.name.clone()?), t.id))
+            Some(((t.group, s.name.as_ref()?.to_ascii_lowercase()), t.id))
         })
         .collect();
     let mut resolved_by_level = 0;
@@ -1410,9 +1531,12 @@ fn install_scripts(
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
+            "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
             ty => level.resolve(h).or_else(|| {
                 let g = h1scripts::level::tag_group(ty)?;
-                tags_by_name.get(&(g, h.token.clone())).map(|id| id.0)
+                tags_by_name
+                    .get(&(g, h.token.to_ascii_lowercase()))
+                    .map(|id| id.0)
             }),
         }
         .inspect(|_| {
@@ -1463,6 +1587,9 @@ fn install_scripts(
         samples,
         sounds: sounds.len(),
         sounds_dropped,
+        looping: looping.len(),
+        looping_dropped,
+        looping_bytes,
         missing_calls: c.missing.len(),
         unindexed: c
             .unindexed
@@ -1472,6 +1599,9 @@ fn install_scripts(
         references: c.references.len(),
         references_resolved: resolved,
         initial: initial.to_vec(),
+        graphs,
+        recordings: recordings.len(),
+        recording_bytes: recordings.iter().map(|r| r.stream.len()).sum(),
     })
 }
 
@@ -1480,6 +1610,86 @@ fn install_scripts(
 /// Halo 1 names with the base's gestalt. When the gestalt's 16-bit indices
 /// overflow, half as many are tried, down to none. Returns each installed
 /// sound's datum by name, and how many were left out.
+/// The Halo 1 `lsnd` tags the scripts name (`looping_sound` hooks), in
+/// first-use order.
+fn looping_names(h1: &H1Map, c: &h1scripts::compile::Compiled) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for h in c.hooks.iter().filter(|h| h.type_name == "looping_sound") {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(&h.token))
+            && h1.find(h1sounds::looping::LSND, &h.token).is_some()
+        {
+            names.push(h.token.clone());
+        }
+    }
+    names
+}
+
+/// Converts and installs the looping sounds the scripts name, in first-use
+/// order while their samples fit in `budget` bytes (0 installs none).
+/// Returns the installed tags, per sound left out why, and the sample bytes
+/// added. The ones that fit go in at once or none do (a failure leaves
+/// `set` as it was).
+fn install_looping_sounds(
+    h1: &H1Map,
+    set: &mut TagSet,
+    c: &h1scripts::compile::Compiled,
+    budget: u64,
+) -> (Vec<TagId>, Vec<String>, u64) {
+    let mut loops = Vec::new();
+    let mut dropped = Vec::new();
+    let mut counted: Vec<String> = Vec::new();
+    let mut bytes = 0u64;
+    for n in looping_names(h1, c) {
+        if budget == 0 {
+            dropped.push(format!("{n}: no room"));
+            continue;
+        }
+        let tag = h1.find(h1sounds::looping::LSND, &n).expect("found above");
+        let l = match h1sounds::looping::read_looping(h1, tag) {
+            Ok(l) => l,
+            Err(e) => {
+                dropped.push(format!("{n}: {e}"));
+                continue;
+            }
+        };
+        let new: u64 = l
+            .sounds
+            .iter()
+            .filter(|(s, _)| !counted.contains(s))
+            .map(|(_, s)| sample_bytes(s))
+            .sum();
+        if bytes + new > budget {
+            dropped.push(format!("{n}: over the map file's size limit"));
+            continue;
+        }
+        bytes += new;
+        counted.extend(l.sounds.iter().map(|(s, _)| s.clone()));
+        loops.push(l);
+    }
+    let mut trial = set.clone();
+    match h1sounds::looping::install_looping(&mut trial, &loops) {
+        Ok(ids) => {
+            *set = trial;
+            (ids, dropped, bytes)
+        }
+        Err(e) => {
+            dropped.extend(loops.iter().map(|l| format!("{}: {e}", l.name)));
+            (Vec::new(), dropped, 0)
+        }
+    }
+}
+
+/// A converted sound's sample bytes in the map file, each chunk rounded up
+/// to the builder's 0x1000 alignment at most.
+pub(crate) fn sample_bytes(s: &h1sounds::ConvertedSound) -> u64 {
+    s.ranges
+        .iter()
+        .flat_map(|r| &r.permutations)
+        .flat_map(|p| &p.chunks)
+        .map(|c| (c.len() as u64).next_multiple_of(0x1000))
+        .sum()
+}
+
 fn install_named_sounds(
     h1: &H1Map,
     set: &mut TagSet,
@@ -1562,4 +1772,34 @@ pub fn write_simulation_table(set: &mut TagSet) -> usize {
         put_block(root, SIMULATION_TABLE, 4, list);
     }
     n
+}
+
+/// Bounds the clusters' background sounds' samples to `budget` bytes: the
+/// palette's entries in order while they fit; the rest keep their palette
+/// entry and their tracks (so the clusters' indices and the tag's shape
+/// stand) but no sounds: each track's and detail's sound is a null
+/// reference. Returns the silenced ones' names.
+pub fn bound_ambience(a: &mut h1convert::ambience::Ambience, budget: u64) -> Vec<String> {
+    if budget == u64::MAX {
+        return Vec::new();
+    }
+    let mut counted: Vec<String> = Vec::new();
+    let mut bytes = 0u64;
+    let mut silenced = Vec::new();
+    for (entry, l) in &mut a.backgrounds {
+        let new: u64 = l
+            .sounds
+            .iter()
+            .filter(|(n, _)| !counted.contains(n))
+            .map(|(_, s)| sample_bytes(s))
+            .sum();
+        if bytes + new <= budget {
+            bytes += new;
+            counted.extend(l.sounds.iter().map(|(n, _)| n.clone()));
+            continue;
+        }
+        silenced.push(format!("{entry} ({})", l.name));
+        l.sounds.clear();
+    }
+    silenced
 }

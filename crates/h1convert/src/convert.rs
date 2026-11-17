@@ -165,6 +165,11 @@ pub struct Prepared {
     /// The level's own background sounds and sound environments
     /// ([`crate::ambience`]), in place of the base's.
     pub ambience: crate::ambience::Ambience,
+    /// Per cluster, the background sound and sound environment it plays
+    /// (indices into the scenario's palettes as written, -1 none), and
+    /// per collision leaf its cluster ([`structure::sound_zones`]).
+    pub sound_clusters: Vec<[i16; 2]>,
+    pub sound_leaves: Vec<u16>,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
@@ -383,7 +388,7 @@ pub fn prepare<R: Read + Seek>(
             })
         })
         .collect();
-    let sections = structure::pack(&meshes, &material);
+    let mut sections = structure::pack(&meshes, &material);
 
     let scnr = base
         .scenario()
@@ -397,6 +402,28 @@ pub fn prepare<R: Read + Seek>(
     let scnr_bytes = base.read_tag_bytes(scnr_id)?;
     let (_, sbsp, ltmp) = bsp_descriptor(&scnr_bytes, scnr_at)?;
     let trigger_volumes = park_trigger_volumes(&mut scnr_bytes.clone(), scnr_at)?;
+    // Ambient sound: the palettes go into the base's storage, as many as
+    // it holds (`ambience::patch_scenario`); each cluster names its zone's.
+    let ambience = crate::ambience::read(h1);
+    let room = crate::ambience::room(&scnr_bytes)?;
+    let written = [
+        ambience
+            .backgrounds
+            .len()
+            .min(room[0])
+            .min(crate::ambience::MAX_PALETTE),
+        ambience
+            .environments
+            .len()
+            .min(room[1])
+            .min(crate::ambience::MAX_PALETTE),
+    ];
+    let (sound_clusters, sound_leaves) = structure::sound_zones(
+        &src,
+        collision.leaves.len(),
+        |z| ambience.index(0, z, written),
+        &mut sections,
+    )?;
     let sbsp_at = base
         .tag(sbsp)?
         .location
@@ -485,8 +512,13 @@ pub fn prepare<R: Read + Seek>(
         materials,
         material_shaders,
         textures,
-        skies: crate::sky::read(h1),
-        ambience: crate::ambience::read(h1),
+        skies: crate::sky::Skies {
+            shader: crate::sky::base_sky_shader(base),
+            ..crate::sky::read(h1)
+        },
+        ambience,
+        sound_clusters,
+        sound_leaves,
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
@@ -521,6 +553,13 @@ impl Prepared {
 
     /// The package manifest for `map_bytes`.
     pub fn manifest(&self, map_bytes: &[u8]) -> Manifest {
+        self.manifest_with(map_bytes, &self.applied.precision)
+    }
+
+    /// The package manifest for `map_bytes`, whose precision swaps'
+    /// collections are `precision` (a fresh map's own datums,
+    /// `crate::fresh::Fresh::precision`).
+    pub fn manifest_with(&self, map_bytes: &[u8], precision: &[(TagId, TagId)]) -> Manifest {
         let name = map_name(&self.h1_name);
         let variant = Variant {
             file: variant_file(&self.h1_name, self.sandbox),
@@ -531,12 +570,19 @@ impl Prepared {
                 sandbox: self.sandbox.name().into(),
                 source_sha256: self.source_sha256,
             },
+            precision: precision
+                .iter()
+                .map(|&(from, to)| content::Swap {
+                    from: from.0,
+                    to: to.0,
+                })
+                .collect(),
         };
         // Parsed from text so the manifest's own checks run on it.
         let text = format!(
             "[package]\nformat = 1\nname = {display:?}\n\n[base]\nmap = {name:?}\nderived = true\n\n\
              [list]\nbase = {base:?}\n\n[[variant]]\nfile = {file:?}\nsha256 = \"{sha}\"\n\
-             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n",
+             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}",
             display = self.display_name,
             base = known(&self.h1_name).map_or("beavercreek", |(_, b)| b),
             file = variant.file,
@@ -544,6 +590,16 @@ impl Prepared {
             map = variant.origin.map,
             sandbox = variant.origin.sandbox,
             src = variant.origin.source_sha256,
+            precision = if variant.precision.is_empty() {
+                String::new()
+            } else {
+                let swaps: Vec<String> = variant
+                    .precision
+                    .iter()
+                    .map(|p| format!("{{ from = {}, to = {} }}", p.from, p.to))
+                    .collect();
+                format!("precision = [{}]\n", swaps.join(", "))
+            },
         );
         let m = Manifest::from_toml(&text).expect("a well-formed manifest");
         debug_assert_eq!(m.variants, [variant]);
@@ -654,6 +710,20 @@ impl Prepared {
                 .install(&mut set, &self.templates, &self.texture_picks())?;
         let skies = self.skies.install(&mut set)?;
         let ambience = self.ambience.install(&mut set)?;
+        let room = {
+            let tag = set.tag(set.scenario).ok_or(Error::Invalid("no scenario"))?;
+            let map::build::TagPayload::Pinned { bytes, .. } = &tag.payload else {
+                return Err(Error::Invalid("the base scenario should be pinned"));
+            };
+            crate::ambience::room(bytes)?
+        };
+        let [backgrounds, environments] = ambience.palettes(room);
+        let sound = structure::Sound {
+            backgrounds: ambience.backgrounds[..backgrounds.len()].to_vec(),
+            environments: ambience.environments[..environments.len()].to_vec(),
+            clusters: self.sound_clusters.clone(),
+            leaves: self.sound_leaves.clone(),
+        };
         let structure = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
@@ -664,6 +734,7 @@ impl Prepared {
             checksum: fnv(&geometry),
             templates: &templates,
             lightmap_bitmap,
+            sound: &sound,
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 

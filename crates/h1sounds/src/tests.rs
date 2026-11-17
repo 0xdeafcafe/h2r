@@ -428,6 +428,22 @@ fn converted_sounds_read_back_through_tags_and_decode_identically() {
                     .map(|e| e.2.samples.clone())
                     .collect::<Vec<_>>()
             );
+            // Permutation `+6`: each one's length in milliseconds, which a
+            // script waiting on the playing sound reads.
+            let times: Vec<u16> = r
+                .ranges
+                .iter()
+                .flat_map(|r| &r.permutations)
+                .map(|p| u16::from_le_bytes([p.raw[6], p.raw[7]]))
+                .collect();
+            assert_eq!(
+                times,
+                expect
+                    .iter()
+                    .map(|e| (e.2.frames() as u64 * 1000 / 44100) as u16)
+                    .collect::<Vec<_>>()
+            );
+            assert!(times.iter().all(|&t| t > 0));
             // Runtime flags: the two-permutation range has a byte of its own.
             let pr = &r.ranges[0].range;
             assert_eq!(&pr.raw[4..6], &[0xff, 0xff]);

@@ -25,6 +25,7 @@
 //! the owner's discs at run time.
 #![forbid(unsafe_code)]
 
+pub mod cutscenes;
 pub mod donor;
 pub mod manifest;
 pub mod profiles;
@@ -89,6 +90,19 @@ pub enum Error {
         /// The scenario's biggest root fields, as `offset bytes`.
         fields: String,
     },
+    /// The converted map file is over the engine's size limit for its cache
+    /// type, with `music` bytes of the scripts' looping sounds' samples and
+    /// `ambience` bytes of the clusters' background sounds' in it.
+    #[error(
+        "{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music, {ambience:#x} of ambience)"
+    )]
+    FileSize {
+        level: String,
+        need: u64,
+        max: u64,
+        music: u64,
+        ambience: u64,
+    },
 }
 
 /// Result alias for this crate.
@@ -149,13 +163,19 @@ pub struct Options<'a> {
     /// Retail maps to copy the characters the base lacks from
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
-    /// Halo 1's cinematics and the a10 tutorial: skipped (the default)
-    /// until cutscene animation and recordings are converted
-    /// (docs/game/campaigns.md, Cutscenes).
-    pub cutscenes: h1scripts::compile::Cutscenes,
+    /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
+    /// (the default) takes each level's own choice
+    /// ([`cutscenes::default_for`]; docs/game/campaigns.md, Cutscenes).
+    pub cutscenes: Option<h1scripts::compile::Cutscenes>,
+    /// The animation graphs and recorded animations the scripts name
+    /// ([`cutscenes`]); off measures what they cost.
+    pub cutscene_data: bool,
+    /// The animation graphs alone (their animation data is raw in the map
+    /// file, which the campaign cache bounds).
+    pub cutscene_graphs: bool,
     /// Keep the base's file and metadata (`--pinned`). By default the
-    /// level is written fresh: every tag laid out anew and the base's tags
-    /// nothing reaches dropped ([`KEEP`], `h1convert::fresh`).
+    /// level is written fresh: built from scratch ([`scratch`]), or the
+    /// base pruned when that fails ([`KEEP`], `h1convert::fresh`).
     pub pinned: bool,
 }
 
@@ -167,7 +187,9 @@ impl Default for Options<'_> {
             scripts: None,
             sounds: 0,
             donors: None,
-            cutscenes: Default::default(),
+            cutscenes: None,
+            cutscene_data: true,
+            cutscene_graphs: true,
             pinned: false,
         }
     }
@@ -211,16 +233,74 @@ pub struct Report {
     pub raw_dropped: (usize, u64),
     /// The base's tags a fresh map dropped ([`KEEP`]).
     pub pruned: h1convert::fresh::Pruned,
-    /// How far down the lean ladder the level went ([`convert`]); 0 is
-    /// nothing left out for room.
-    pub lean: u8,
+    /// How lean the conversion had to be to fit (`convert`).
+    pub lean: Lean,
+    /// The map file's size, bytes.
+    pub file_size: u64,
+    /// Each conversion retried before this one, and why (`convert`).
+    pub retries: Vec<String>,
+    /// Raw bytes (sound samples) the clusters' background sounds added
+    /// (`h1convert::ambience`).
+    pub ambience_bytes: u64,
+    /// Background sounds left silent for the map file's size limit.
+    pub ambience_silenced: Vec<String>,
+}
+
+/// The lean ladder: what a conversion of a level over the engine's tag
+/// memory bound leaves out, one more step each time (`convert`). Each step
+/// leaves out its own extra and every step before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lean {
+    /// Everything.
+    #[default]
+    Everything,
+    /// The empty squads kept only because the scripts name them.
+    EmptySquads,
+    /// The seat-mapping table.
+    SeatTable,
+    /// Halo 1's textures on object models (`h1objects`' shader copies and
+    /// bitmaps; the models draw with the base's model shader).
+    ObjectTextures,
+    /// The looping sounds (music and ambience) the scripts name.
+    Music,
+    /// The cutscenes' animation graphs and recorded animations
+    /// ([`cutscenes`]).
+    CutsceneData,
+    /// The level data the scripts name (cutscene flags, camera points,
+    /// titles, device groups): the calls naming it are stubbed
+    /// (`h1scripts::compile::INDEXED`), their other hooks stay `none`.
+    LevelData,
+}
+
+impl Lean {
+    /// The steps in order.
+    pub const LADDER: [Lean; 7] = [
+        Lean::Everything,
+        Lean::EmptySquads,
+        Lean::SeatTable,
+        Lean::ObjectTextures,
+        Lean::Music,
+        Lean::CutsceneData,
+        Lean::LevelData,
+    ];
+
+    /// The next step down, if any.
+    pub fn next(self) -> Option<Lean> {
+        let i = Self::LADDER.iter().position(|&l| l == self)?;
+        Self::LADDER.get(i + 1).copied()
+    }
+
+    /// Whether this conversion leaves out `step`'s extra.
+    pub fn leaves_out(self, step: Lean) -> bool {
+        step != Lean::Everything && self >= step
+    }
 }
 
 impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} on {} ({}): {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, lean {}",
+            "{} on {} ({}): {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} (ambience {:#x}), lean {:?}",
             self.level,
             self.base,
             if self.fresh { "fresh" } else { "pinned" },
@@ -229,6 +309,8 @@ impl std::fmt::Display for Report {
             self.metadata,
             self.memory,
             self.metadata_max,
+            self.file_size,
+            self.ambience_bytes,
             self.lean
         )?;
         if let Some(s) = &self.scratch {
@@ -290,6 +372,12 @@ impl std::fmt::Display for Report {
         for d in &self.dropped {
             writeln!(f, "  dropped: {d}")?;
         }
+        for a in &self.ambience_silenced {
+            writeln!(f, "  silenced for file size: {a}")?;
+        }
+        for r in &self.retries {
+            writeln!(f, "  retried: {r}")?;
+        }
         Ok(())
     }
 }
@@ -309,17 +397,58 @@ pub struct Converted {
 /// Converts the Halo 1 campaign level `h1` onto `base` (a retail Halo 2
 /// campaign map, normally [`BASE`]).
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
-    // A level at the bound (b40) is converted again without the extras the
-    // scripts only name: first the empty squads kept for their names, then
-    // the seat table, then Halo 1's textures on the objects' models
-    // (`h1objects`' shader copies and bitmaps; the models draw with the
-    // base's model shader), then the level data (`scenario::write`'s
-    // `lean`). Calls naming level data that is not there are stubbed
-    // (`h1scripts::compile::INDEXED`).
-    let mut lean = 0;
+    // A level over the tag memory bound (b40) is converted again a step
+    // further down the lean ladder ([`Lean`]). A map file over the
+    // engine's size limit is converted again with that much less music
+    // (and 256 KiB of margin), down to none; then with that much less of
+    // the clusters' background sounds (an entry left out stays in the
+    // palette, silent), down to none; then without the cutscenes'
+    // animation graphs (their animation data is raw in the file), which
+    // the cutscenes need to play.
+    let mut lean = Lean::Everything;
+    let mut music = u64::MAX;
+    let mut ambience = u64::MAX;
+    let mut opts = Options { ..*opts };
+    // Each retry and why, for the report.
+    let mut retries = Vec::new();
     loop {
-        match convert_with(h1, base, opts, lean) {
-            Err(Error::TagMemory { .. }) if lean < 4 => lean += 1,
+        match convert_with(h1, base, &opts, lean, [music, ambience]) {
+            Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
+                lean = lean.next().expect("checked");
+                retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));
+            }
+            Err(Error::FileSize {
+                need,
+                max,
+                music: m,
+                ..
+            }) if m > 0 => {
+                music = m.saturating_sub(need - max + 0x4_0000);
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} with {m:#x} of music: music to {music:#x}"
+                ));
+            }
+            Err(Error::FileSize {
+                need,
+                max,
+                ambience: a,
+                ..
+            }) if a > 0 => {
+                ambience = a.saturating_sub(need - max + 0x4_0000);
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music, with {a:#x} of ambience: ambience to {ambience:#x}"
+                ));
+            }
+            Err(Error::FileSize { need, max, .. }) if opts.cutscene_graphs => {
+                opts.cutscene_graphs = false;
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music or ambience: no cutscene animation graphs"
+                ));
+            }
+            Ok(mut done) => {
+                done.report.retries = retries;
+                return Ok(done);
+            }
             r => return r,
         }
     }
@@ -329,20 +458,24 @@ fn convert_with<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
     opts: &Options,
-    lean: u8,
+    lean: Lean,
+    [music, ambience_budget]: [u64; 2],
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
+        lean,
         level: level.clone(),
         base: base.header().name.clone(),
         tags_before: base.tags().len(),
         ..Report::default()
     };
     let scnr = scenario::BaseScenario::read(base)?;
-    let bsps = structure::prepare_all(h1, base, &scnr, &mut report)?;
+    let mut ambience = h1convert::ambience::read(h1);
+    report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
+    let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
     let objects_base = if opts.objects {
         let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
-        if lean >= 3 {
+        if lean.leaves_out(Lean::ObjectTextures) {
             b.model_shader = None;
         }
         Some(b)
@@ -356,6 +489,12 @@ fn convert_with<R: Read + Seek>(
     let slot = set.scenario.index();
     set.slots[slot].name = Some(scenario_path.clone());
 
+    // The level's background sounds and sound environments, which the
+    // clusters and the scenario's palettes name.
+    let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
+    let sounds = ambience.install(&mut set)?.bounded();
+    report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
+
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
     // under Halo 1's names.
     let mut slots = Vec::new();
@@ -367,7 +506,7 @@ fn convert_with<R: Read + Seek>(
                 set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
             ),
         };
-        let section = b.write(&mut set, sbsp, ltmp)?;
+        let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
         if !opts.pinned {
             // A fresh level's BSPs are Halo 1's, named so in every slot.
             for id in [sbsp, ltmp] {
@@ -380,6 +519,7 @@ fn convert_with<R: Read + Seek>(
             ltmp,
             checksum: b.checksum,
             centroids: b.centroids(),
+            sounds: b.sound_clusters.clone(),
         });
     }
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
@@ -391,15 +531,18 @@ fn convert_with<R: Read + Seek>(
         &mut set,
         &scnr,
         &slots,
+        &sounds,
         objects_base.as_ref(),
         opts,
         lean,
+        music,
         &mut report,
     )?;
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
     set.check_tag_memory = false;
+    set.check_file_size = false;
     // The rebuilt scenario and sound gestalt first, into their old ranges.
     set.largest_built_first = true;
     let (mut bytes, mut layout) = set.build()?;
@@ -436,13 +579,6 @@ fn convert_with<R: Read + Seek>(
             set = out;
         }
     }
-    if bytes.len() as u64 > map::writer::cache_size_limit(set.cache_type)? {
-        return Err(invalid(format!(
-            "{level}: {:#x} bytes, over the engine's file size",
-            bytes.len()
-        )));
-    }
-    report.lean = lean;
     let max = map::writer::max_metadata_size(set.cache_type)?;
     report.memory = layout.memory_size;
     report.groups = memory_by_group(&set);
@@ -485,6 +621,21 @@ fn convert_with<R: Read + Seek>(
             fields,
         });
     }
+    let limit = map::writer::cache_size_limit(set.cache_type)?;
+    if bytes.len() as u64 > limit {
+        return Err(Error::FileSize {
+            level,
+            need: bytes.len() as u64,
+            max: limit,
+            music: report
+                .scenario
+                .scripts
+                .as_ref()
+                .map_or(0, |s| s.looping_bytes),
+            ambience: report.ambience_bytes,
+        });
+    }
+    report.file_size = bytes.len() as u64;
     let back = Map::from_reader(std::io::Cursor::new(bytes.as_slice()))?;
     report.tags_after = back.tags().len();
     report.metadata = back.header().meta_size;
@@ -535,12 +686,13 @@ fn fresh<R: Read + Seek>(
     // The scenario is the converter's (no base palette or tag list): what
     // it, the globals and [`KEEP`] reach stays; the simulation table then
     // lists what stayed.
-    report.pruned = fresh::prune_with(&mut out, first, &KEEP);
+    report.pruned = fresh::prune_with(&mut out, first, &KEEP, &[]);
     fresh::check_refused(&mut out, &unpinned)?;
     report.raw_dropped = fresh::drop_unused_raw(&mut out);
     report.scenario.simulation = scenario::write_simulation_table(&mut out);
     report.fresh = true;
     out.check_tag_memory = false;
+    out.check_file_size = false;
     Ok(out)
 }
 

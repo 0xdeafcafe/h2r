@@ -6,7 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::{
     Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 /// Gate bits, as in `h2fastmem.h`: the holder, and a Rust guard waiting.
@@ -51,10 +51,13 @@ pub(crate) struct Memory {
     shared: Box<MemoryShared>,
     ready: AtomicBool,
     enabled: AtomicBool,
+    /// The Guest's [`Guest::layout_id`] as the last guard left it.
+    layout: AtomicU64,
 }
 impl Memory {
     pub(crate) fn new(guest: Guest) -> Self {
         Self {
+            layout: AtomicU64::new(guest.layout_id()),
             guest: Mutex::new(guest),
             contention: Default::default(),
             shared: Box::new(MemoryShared {
@@ -75,6 +78,7 @@ impl Memory {
                 guard,
                 shared: None,
                 ready: &self.ready,
+                layout: &self.layout,
             };
         }
         // C holds the gate across runs of accesses and retakes it at once,
@@ -107,6 +111,7 @@ impl Memory {
             guard,
             shared: Some(&self.shared),
             ready: &self.ready,
+            layout: &self.layout,
         };
         // Publish every C store to subscribers before exposing Guest to HLE.
         // SAFETY: result owns the gate and Guest mutex until its Drop.
@@ -151,19 +156,37 @@ impl Memory {
         self.release_gate();
         allowed
     }
+    /// The guest layout every guard so far has left ([`Guest::layout_id`]).
+    /// A guard publishes its Guest's layout as it ends, before it lets go
+    /// of the gate and the Guest: whoever reads a layout here reads it after
+    /// the changes that made it, and a guard still changing the layout has
+    /// not published yet (an execute check made meanwhile, under the old
+    /// value, is ordered before that guard).
+    #[inline]
+    pub(crate) fn layout(&self) -> u64 {
+        self.layout.load(Ordering::Acquire)
+    }
+    /// Every generated handler's entry asks (`h2abi_v1_fast_acquire`):
+    /// the usual answer, a ready view, is one load inline.
+    #[inline]
     pub(crate) fn fast_shared(&self) -> *const MemoryShared {
         if !self.ready.load(Ordering::Acquire) {
-            let mut guard = self.lock();
-            if guard.shared.is_none() {
-                // No C view exists yet. Enable while holding the Guest mutex,
-                // before publishing a view or allowing any ungated Rust borrow.
-                self.shared.gate.store(1, Ordering::Relaxed);
-                guard.shared = Some(&self.shared);
-                self.enabled.store(true, Ordering::Release);
-            }
-            guard.prepare_fast_pages();
+            self.prepare_fast_shared();
         }
         &*self.shared
+    }
+    #[cold]
+    #[inline(never)]
+    fn prepare_fast_shared(&self) {
+        let mut guard = self.lock();
+        if guard.shared.is_none() {
+            // No C view exists yet. Enable while holding the Guest mutex,
+            // before publishing a view or allowing any ungated Rust borrow.
+            self.shared.gate.store(1, Ordering::Relaxed);
+            guard.shared = Some(&self.shared);
+            self.enabled.store(true, Ordering::Release);
+        }
+        guard.prepare_fast_pages();
     }
 }
 
@@ -173,6 +196,7 @@ pub struct MemoryGuard<'a> {
     guard: MutexGuard<'a, Guest>,
     shared: Option<&'a MemoryShared>,
     ready: &'a AtomicBool,
+    layout: &'a AtomicU64,
 }
 impl Deref for MemoryGuard<'_> {
     type Target = Guest;
@@ -187,6 +211,8 @@ impl DerefMut for MemoryGuard<'_> {
 }
 impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
+        // Still holding the Guest (and the gate, if any): see Memory::layout.
+        self.layout.store(self.guard.layout_id(), Ordering::Release);
         let Some(shared) = self.shared else {
             return;
         };

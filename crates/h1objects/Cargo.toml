@@ -15,6 +15,8 @@ h1bitmaps = { path = "../h1bitmaps" }
 map.workspace = true
 # The Halo 2 collision BSP form, and the object decoders the proof reads back through.
 tags.workspace = true
+# Havok MOPP code over converted collision BSPs (the bsp-physics slots).
+mopp = { path = "../mopp" }
 thiserror.workspace = true
 
 [dev-dependencies]

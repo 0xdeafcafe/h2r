@@ -437,8 +437,8 @@ fn every_level_converts_fresh() {
         if !r.fresh {
             failed.push(format!("{level}: written pinned: {:?}", r.dropped.last()));
         }
-        if r.lean != 0 {
-            failed.push(format!("{level}: the lean ladder fired ({})", r.lean));
+        if r.lean != h1campaign::Lean::Everything {
+            failed.push(format!("{level}: the lean ladder fired ({:?})", r.lean));
         }
         rows.push((
             level,
@@ -453,8 +453,8 @@ fn every_level_converts_fresh() {
         "level | pinned memory | pinned size | pinned lean | fresh memory | fresh size | fresh lean | tags"
     );
     for (level, b, mem, size, lean, tags) in &rows {
-        let (bm, bs, bl) = b.unwrap_or((0, 0, 0));
-        println!("{level} | {bm:#x} | {bs} | {bl} | {mem:#x} | {size} | {lean} | {tags}");
+        let (bm, bs, bl) = b.unwrap_or((0, 0, h1campaign::Lean::Everything));
+        println!("{level} | {bm:#x} | {bs} | {bl:?} | {mem:#x} | {size} | {lean:?} | {tags}");
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }

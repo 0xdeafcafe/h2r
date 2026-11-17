@@ -423,7 +423,9 @@ raw resources in the set, rewrites both, declares the group, and adds the
 tag. The lower-level pieces are `h1::Model::read`, `h1::Graph::read` (any
 `h1::Memory`), `mode::convert_model` and `jmad::convert_graph`.
 `jmad::GraphReport` lists each name mapping, the variants, and what was
-dropped.
+dropped. `jmad::animation_names` gives each animation's Halo 2 name (and
+whether it is a variant) without converting, so a script that names a
+Halo 1 animation can name the converted one (h1campaign's cutscenes).
 
 ## Tests and measured error
 

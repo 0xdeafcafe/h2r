@@ -63,9 +63,55 @@ shape of the data only.
 | `+0x2c` | nodes, 12 bytes: `name`, `i16 region`, `i16 parent`, `i16 next_sibling`, `i16 first_child` | D: a tree (parent/child/sibling indices in range). No engine consumer located. |
 
 Permutation, 0x14 bytes: `+0` name, `+4` bsps `{count, addr}` (0x44-byte
-elements), `+0xc` bsp-physics `{count, addr@+0x10}` (0x70-byte runtime Havok
-slots; the engine loops `+0xc` times pairing slot `i` with BSP `i`). The slots
-are zero or absent in nearly every tag and their content is not decoded.
+elements), `+0xc` BSP physics `{count, addr@+0x10}` (0x70-byte Havok slots;
+the engine loops `+0xc` times pairing slot `i` with BSP `i`; below).
+
+### BSP physics (0x70 bytes)
+
+How Havok sees a static scenery object that has a `coll` and no `phmo`:
+a Havok shape over the collision BSP, inside a MOPP tree. Havok moves bipeds (their
+shapes, bipd `+0x264`, get Havok vtables in `0x001c2390`), vehicles and
+loose items, so scenery with neither a `phmo` nor these slots is not
+there for them: the player walks through it (Guess for the walk itself:
+inferred from the biped's Havok shapes, not traced through the biped's
+movement code).
+
+**The rule (V, `retail_static_scenery_carries_bsp_physics`, every map on
+the disc: 7,033 permutations, 280 slots):** a `coll`'s permutations have
+one slot per BSP exactly when a scenery object (`scen`) with no `phmo`
+uses it, and none otherwise. Weapons, equipment, devices, bipeds and
+crates (`bloc`) without a `phmo` have no slots; nothing with a `phmo`
+has any. (A weapon's `coll` has slots on a map that also places the
+weapon as scenery.)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | Halo BSP shape: vtable (`0x00456194` written at load), `+0x06` u16 `0x81` in the tag (`0x80` written), `+0x08` zero, `+0x0c` the BSP (element `+4`, written at load) | E `0x00246c60` |
+| `+0x10` | f32×3 (+pad) centre of the BSP's bounding box | E: the shape's `getAabb` (`0x001ef040`, vtable `+0x18`) passes `+0x20` and `+0x10`; V: the box of the BSP's vertices |
+| `+0x20` | f32×3 (+pad) half extents | E, V as above |
+| `+0x30` | u32 a tag datum (retail: a tool-time datum, the same for every slot of a tag; not read by anything found) | D |
+| `+0x40` | 16-byte wrapper (vtable `0x00455540`) pointing at `+0x50`; `+0x46` u16 `0x80` in the tag | E `0x00246c60` |
+| `+0x50` | MOPP tree shape (vtable `0x00455f58`): `+0x5c` = the slot's shape, `+0x60` = the code (copied from `+0x68`); `+0x56` u16 `0x81` in the tag | E `0x00246c60` |
+| `+0x64` | byte block `{count, address}`: a MOPP code object as in [mopp.md](mopp.md), the count its size rounded to 16 | E (`+0x68` read before the rest is written), V (every retail slot's block parses and validates) |
+
+The code's keys are plain surface indices: on every retail slot it emits
+exactly `0..surface_count`, each once (V). The shape's child count is the
+BSP's surface count (`0x001ee470` reads BSP `+0x28`, one less when the
+last surface has flag `0x10`). The engine fills in every pointer and
+vtable at load (`0x002122b0` → `0x00246c60`, which skips a BSP with no
+surfaces); the tag's own bytes that matter are the box and the code.
+`tags::collision::BspPhysics` decodes them; `h1objects::coll` writes them
+for converted Halo 1 objects.
+
+### `hlmt` region bytes
+
+`hlmt` regions (`0x10`, `+0x70`) carry `i8` collision region at `+4` and
+`i8` physics region at `+5`; their permutations (`8`) `i8` collision
+permutation at `+5` and physics permutation at `+6`. -1 is none. D: on
+every map, a region of an object with no `coll` holds -1 in its collision
+byte (1,224 of 1,230 regions, counted per object), and the physics byte is never -1 on an
+object with no `phmo`; a two-region object whose second region uses the
+`coll`'s region 1 holds 1. The engine's reading of them is not traced.
 
 ### BSP element (0x44 bytes)
 
@@ -213,7 +259,9 @@ Capsules are built along their end-point axis, not a fixed one.
 
 ## Not established
 
-- `coll`: the BSP leading word, the contents of the 0x70-byte physics slots,
+- `coll`: the BSP leading word (V: on every retail object it is a node
+  index in range, e.g. `0, 2, 3` on a five-node weapon; not proven
+  against the engine), the BSP physics slot's `+0x30` datum,
   `flags` of pathfinding spheres and leaves/surfaces beyond the bits the engine
   tests, and the engine's use of regions, nodes and pathfinding spheres.
 - `phmo`: blocks at `+0x28` and `+0x30`; the three constraint blocks beyond

@@ -493,3 +493,68 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         );
     }
 }
+
+/// Every sound of a fresh multiplayer conversion (`H1_MAPS`, default
+/// bloodgulch; the Halo 2 sandbox, as `h2 play` imports it) read back
+/// through the gestalt as the engine plays it (`h1sounds::audit`): Halo
+/// 1's background sounds hold exactly their Halo 1 samples, and every
+/// other sound is byte for byte the base's of the same name.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_multiplayer_sound_plays_what_it_was_made_from() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let h2_iso = std::env::var("H2_DISC").expect("set H2_DISC");
+    let maps: Vec<String> = std::env::var("H1_MAPS").map_or_else(
+        |_| vec!["bloodgulch".to_owned()],
+        |s| s.split(',').map(str::to_owned).collect(),
+    );
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let mut h2 = xiso::Xiso::open(BufReader::new(File::open(&h2_iso).unwrap())).unwrap();
+    let mut failed = Vec::new();
+    for name in maps {
+        let Some(e) = disc.map(&name).cloned() else {
+            println!("{name}: not on this Halo 1 disc");
+            continue;
+        };
+        let file = iso.read(&e).unwrap();
+        let sha = content::Sha256::of(&file);
+        let h1 = H1Map::from_reader(Cursor::new(file)).unwrap();
+        let base_name = known(&name).unwrap().1;
+        let e = h2
+            .entries()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.path.rsplit(['/', '\\']).next() == Some(&format!("{base_name}.map")))
+            .unwrap();
+        let base_bytes = h2.read(&e).unwrap();
+        let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
+        let p = prepare(&h1, sha, &mut base, Sandbox::Halo2).unwrap();
+        let mopp = structure_mopp(&p.collision).unwrap();
+        let fresh = p.build_fresh(&mut base, &mopp).unwrap();
+        let a =
+            h1sounds::audit::audit(&fresh.bytes, Some(&h1), &[(base_name, &base_bytes)]).unwrap();
+        println!(
+            "{name} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
+             {} unmatched {:?}",
+            a.sounds,
+            a.converted,
+            a.converted_seconds,
+            a.retail,
+            a.permutations,
+            a.unmatched.len(),
+            &a.unmatched[..a.unmatched.len().min(10)]
+        );
+        for p in &a.problems {
+            println!("  {p}");
+        }
+        if !a.problems.is_empty() || !a.unmatched.is_empty() {
+            failed.push(format!(
+                "{name}: {} problems, {} unmatched",
+                a.problems.len(),
+                a.unmatched.len()
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}

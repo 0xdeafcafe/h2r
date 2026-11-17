@@ -614,7 +614,10 @@ impl State {
         let session = self.session();
         self.invites
             .refresh(c, user, self.service.as_ref(), session.as_ref());
-        if let Some(v) = self.auto.accept_now(&self.invites.pending(c)) {
+        if let Some(v) = self.auto.accept_now(
+            &self.invites.pending(c),
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        ) {
             match self
                 .invites
                 .accept(c, user, &v, self.service.as_ref(), session.as_ref())

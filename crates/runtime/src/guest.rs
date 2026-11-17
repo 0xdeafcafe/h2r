@@ -1,7 +1,7 @@
 //! Checked virtual mappings over one 64 MB physical store. Physical offsets
 //! identify aliases; high virtual addresses are never masked into RAM.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod state;
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
@@ -155,6 +155,18 @@ pub struct Guest {
     code: Vec<(u64, u64)>,
     next_id: u32,
     pub(crate) watch: crate::watch::WriteWatch,
+    /// Names the current mappings and permissions ([`Guest::layout_id`]).
+    layout: u64,
+    /// The access trap, when a research observer installed one
+    /// ([`crate::trap`]).
+    trap: Option<Box<crate::trap::AccessTrap>>,
+}
+
+/// Layout identities, unique across every [`Guest`] in the process, so a
+/// replaced or restored Guest never repeats one an earlier layout had.
+static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(1);
+fn fresh_layout() -> u64 {
+    NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed)
 }
 
 fn overlaps(a: u64, a_end: u64, b: u64, b_end: u64) -> bool {
@@ -186,7 +198,17 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            layout: fresh_layout(),
+            trap: None,
         }
+    }
+    /// Identifies the mappings and their permissions: a new value, never
+    /// seen before, after any change to either (a map, protect or unmap,
+    /// a snapshot layout adopted). The runner remembers the layout a target
+    /// last passed its execute check under, and checks again only once this
+    /// has moved ([`crate::Runtime::layout_epoch`]).
+    pub(crate) fn layout_id(&self) -> u64 {
+        self.layout
     }
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
@@ -688,6 +710,7 @@ impl Guest {
         self.refresh_fast_range(start, end);
     }
     fn apply_unmap(&mut self, start: u64, end: u64) {
+        self.layout = fresh_layout();
         self.split_at(start);
         self.split_at(end);
         self.mappings
@@ -719,7 +742,10 @@ impl Guest {
     // Guest::map permits byte-granular mappings. Only a whole virtual page
     // backed by a whole aligned physical page can use the C copy/dirty-bit
     // protocol. Partial pages and shifted backing remain on checked_start.
+    // Every mapping and permission change ends here (or in apply_unmap),
+    // so this is where the layout moves on.
     fn refresh_fast_range(&mut self, start: u64, end: u64) {
+        self.layout = fresh_layout();
         let Some(pages) = &mut self.fast_pages else {
             return;
         };
@@ -743,6 +769,135 @@ impl Guest {
                     permissions: m.permissions.0 as u32,
                 };
             }
+        }
+        // Armed pages stay armed through a remap or protect.
+        if let Some(trap) = &self.trap {
+            for page in first..last {
+                let still =
+                    (trap.armed(page, false) as u32) | ((trap.armed(page, true) as u32) << 1);
+                pages[page].permissions &= !still;
+            }
+        }
+    }
+
+    /// Installs the access trap ([`crate::trap`]), keeping up to `cap` hits
+    /// between [`take_trap_hits`](Self::take_trap_hits). Nothing is armed
+    /// yet. A no-op when one is installed.
+    pub fn install_trap(&mut self, cap: usize) {
+        if self.trap.is_none() {
+            self.trap = Some(Box::new(crate::trap::AccessTrap::new(cap)));
+        }
+    }
+    /// Disarms every page, restores the fast page table and removes the
+    /// trap.
+    pub fn remove_trap(&mut self) {
+        self.disarm_all();
+        self.trap = None;
+    }
+    pub fn has_trap(&self) -> bool {
+        self.trap.is_some()
+    }
+    /// Arms every mapped page for the kinds asked (and clears the host's
+    /// logged-once marks for them): the next access of that kind to each
+    /// page is logged. Pages already armed stay armed. Stickiness is kept.
+    pub fn arm_all(&mut self, read: bool, write: bool) {
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        let clear = (if read { 1 } else { 0 }) | (if write { 2 } else { 0 });
+        for m in &self.mappings {
+            let first = (m.virtual_start >> 12) as usize;
+            let last = ((m.virtual_start as u64 + m.len as u64 - 1) >> 12) as usize;
+            for page in first..=last {
+                trap.arm(page, read, write);
+                if let Some(pages) = &mut self.fast_pages {
+                    pages[page].permissions &= !clear;
+                }
+            }
+        }
+    }
+    /// Makes `pages` (virtual page numbers) sticky, and every other page
+    /// not: armed for both kinds, every access to them is logged.
+    pub fn set_sticky_pages(&mut self, pages: &[u32]) {
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        for p in trap.armed_pages() {
+            trap.set_sticky(p, false);
+        }
+        for &p in pages {
+            let p = p as usize & ((1 << 20) - 1);
+            trap.arm(p, true, true);
+            trap.set_sticky(p, true);
+            if let Some(fast) = &mut self.fast_pages {
+                fast[p].permissions &= !3;
+            }
+        }
+    }
+    /// Disarms every page and restores its fast page table entry.
+    pub fn disarm_all(&mut self) {
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        let pages = trap.armed_pages();
+        for &p in &pages {
+            trap.disarm(p);
+        }
+        for p in pages {
+            self.open_fast_page(p);
+        }
+    }
+    /// What the trap logged since the last take.
+    pub fn take_trap_hits(&mut self) -> crate::trap::TrapLog {
+        self.trap.as_ref().map(|t| t.take()).unwrap_or_default()
+    }
+    /// A guest (`pc` non-zero) or host access the slow path allowed.
+    fn trap_note(&mut self, pc: u32, addr: u32, len: usize, write: bool) {
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        let open = trap.note(pc, addr, len, write);
+        if open.is_empty() {
+            return;
+        }
+        for &p in open.pages() {
+            self.open_fast_page(p);
+        }
+    }
+    /// Rebuilds virtual page `page`'s fast entry from its live mapping, as
+    /// [`refresh_fast_range`](Self::refresh_fast_range) would, without the
+    /// kinds the trap still has armed there.
+    fn open_fast_page(&mut self, page: usize) {
+        let va = (page as u64) << 12;
+        let entry = self
+            .mapping_index(va)
+            .map(|i| &self.mappings[i])
+            .filter(|m| va + PAGE_SIZE as u64 <= m.virtual_start as u64 + m.len as u64)
+            .map(|m| {
+                (
+                    m.physical_start as u64 + va - m.virtual_start as u64,
+                    m.permissions,
+                )
+            })
+            .filter(|(physical, _)| physical.is_multiple_of(PAGE_SIZE as u64))
+            .map_or(FastPage::default(), |(physical, p)| FastPage {
+                physical: physical as u32,
+                permissions: p.0 as u32,
+            });
+        let mut still = 0;
+        if let Some(t) = &self.trap {
+            if t.armed(page, false) {
+                still |= 1;
+            }
+            if t.armed(page, true) {
+                still |= 2;
+            }
+        }
+        if let Some(pages) = &mut self.fast_pages {
+            pages[page] = FastPage {
+                physical: entry.physical,
+                permissions: entry.permissions & !still,
+            };
         }
     }
 
@@ -884,8 +1039,56 @@ impl Guest {
         }
         self.read_bytes_slow(addr, out, alignment)
     }
+    /// [`read_bytes`](Self::read_bytes) for guest code at `pc` (the ABI
+    /// helpers): the same access, attributed to `pc` by the access trap.
+    #[inline]
+    pub fn read_bytes_from(
+        &mut self,
+        pc: u32,
+        addr: u32,
+        out: &mut [u8],
+        alignment: u32,
+    ) -> Result<(), GuestFault> {
+        if let Some(at) = self.fast_offset(addr, out.len(), 1, alignment) {
+            out.copy_from_slice(&self.ram[at..at + out.len()]);
+            return Ok(());
+        }
+        if self.trap.is_some() {
+            return self.read_bytes_trapped(pc, addr, out, alignment);
+        }
+        self.read_bytes_slow(addr, out, alignment)
+    }
+    #[inline(never)]
+    fn read_bytes_trapped(
+        &mut self,
+        pc: u32,
+        addr: u32,
+        out: &mut [u8],
+        alignment: u32,
+    ) -> Result<(), GuestFault> {
+        self.read_bytes_unnoted(addr, out, alignment)?;
+        if !out.is_empty() {
+            self.trap_note(pc, addr, out.len(), false);
+        }
+        Ok(())
+    }
     #[inline(never)]
     fn read_bytes_slow(&self, addr: u32, out: &mut [u8], alignment: u32) -> Result<(), GuestFault> {
+        self.read_bytes_unnoted(addr, out, alignment)?;
+        if let Some(t) = &self.trap
+            && !out.is_empty()
+        {
+            // The host never disarms a page, so nothing to open.
+            t.note(0, addr, out.len(), false);
+        }
+        Ok(())
+    }
+    fn read_bytes_unnoted(
+        &self,
+        addr: u32,
+        out: &mut [u8],
+        alignment: u32,
+    ) -> Result<(), GuestFault> {
         let Some(mut index) = self.checked_start(addr, out.len(), Access::Read, alignment)? else {
             return Ok(());
         };
@@ -927,11 +1130,26 @@ impl Guest {
             out.extend_from_slice(&self.ram[span]);
             index += 1;
         }
+        if let Some(t) = &self.trap {
+            t.note(0, addr, len, false);
+        }
         Ok(())
     }
     /// No bytes change unless every mapping in the access is writable.
     pub fn write_bytes(
         &mut self,
+        addr: u32,
+        value: &[u8],
+        alignment: u32,
+    ) -> Result<(), GuestFault> {
+        self.write_bytes_from(0, addr, value, alignment)
+    }
+    /// [`write_bytes`](Self::write_bytes) for guest code at `pc` (the ABI
+    /// helpers; 0 is the host): attributed to `pc` by the access trap.
+    #[inline]
+    pub fn write_bytes_from(
+        &mut self,
+        pc: u32,
         addr: u32,
         value: &[u8],
         alignment: u32,
@@ -963,6 +1181,9 @@ impl Guest {
             }
             offset += n;
             index += 1;
+        }
+        if self.trap.is_some() && !value.is_empty() {
+            self.trap_note(pc, addr, value.len(), true);
         }
         Ok(())
     }

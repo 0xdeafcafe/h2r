@@ -114,6 +114,12 @@ pub fn set_halo1_sandbox(on: bool) {
     HALO1_SANDBOX.store(on, Ordering::SeqCst);
 }
 
+/// Whether converted Halo 1 multiplayer maps are in their Halo 1 sandbox
+/// this run ([`set_halo1_sandbox`]).
+pub fn halo1_sandbox() -> bool {
+    HALO1_SANDBOX.load(Ordering::SeqCst)
+}
+
 /// Halo 1's campaign levels, as a converted campaign names its map.
 pub const HALO1_LEVELS: [&str; 10] = [
     "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
@@ -308,6 +314,22 @@ struct State {
     said_hold: AtomicBool,
 }
 
+impl State {
+    /// Why a snapshot can't be taken now: a damage update or a body restore
+    /// is between its two hooks. Otherwise the model is a function of the
+    /// loaded map (`set_mode` at game start, from guest memory) and the
+    /// meter is published again every tick, so a load rebuilds them.
+    fn live(&self) -> Option<String> {
+        if self.armed.load(Ordering::Relaxed) || self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            return Some("a damage update is between its hooks".into());
+        }
+        if self.restore.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            return Some("a body restore is between its hooks".into());
+        }
+        None
+    }
+}
+
 /// The feature: hooks on the damage update and the body restore, a tick
 /// observer for the meter, a game-start line.
 pub struct H1Health {
@@ -391,6 +413,10 @@ impl feature::Feature for H1Health {
             let v = meter_now(&*o.guest());
             publish_meter(v);
         });
+        {
+            let s = Arc::clone(&self.state);
+            b.snapshot(feature::SnapshotPolicy::forbid_while(move || s.live()));
+        }
         {
             let s = Arc::clone(&self.state);
             b.game()

@@ -299,6 +299,13 @@ pub fn tick<M: Gm>(m: &mut M, pending: (f64, f64), zoom: f32) -> Option<String> 
     change.map(|(from, to)| format!("touch: layout {} -> {}", from.name(), to.name()))
 }
 
+/// Why `touch-glue` can't be snapshotted now: on-screen controls are
+/// shown, so touch input not yet applied (and the layout it follows) is
+/// host state. With no controls shown the hook does nothing.
+pub fn touch_live() -> Option<String> {
+    input::touch::controls_shown().then(|| "touch controls are shown".into())
+}
+
 /// The tick hook.
 pub struct TouchGlue;
 
@@ -327,6 +334,7 @@ impl feature::Feature for TouchGlue {
             // Our skulls hook the same tick; neither reads what the other
             // writes, so any fixed order will do.
             .after_feature(crate::skulls_custom::FEATURE);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(touch_live));
         Ok(())
     }
 }

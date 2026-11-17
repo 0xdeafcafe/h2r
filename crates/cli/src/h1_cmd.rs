@@ -875,7 +875,7 @@ fn convert(args: &[String]) -> Result<()> {
             }
         );
         h1convert::convert::Converted {
-            manifest: p.manifest(&f.bytes),
+            manifest: p.manifest_with(&f.bytes, &f.precision),
             name: f.name,
             bytes: f.bytes,
         }

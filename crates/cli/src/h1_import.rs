@@ -76,7 +76,11 @@ impl Job<'_> {
             Job::Campaign(l) => format!("campaign {l}"),
             Job::Multiplayer(m, s) => format!(
                 "multiplayer {m} ({} sandbox)",
-                if *s == Sandbox::Halo1 { "Halo 1" } else { "Halo 2" }
+                if *s == Sandbox::Halo1 {
+                    "Halo 1"
+                } else {
+                    "Halo 2"
+                }
             ),
         }
     }
@@ -148,7 +152,10 @@ impl Stamp {
     pub fn parse(text: &str) -> Option<Self> {
         let mut st = Stamp::default();
         let mut seen = 0;
-        for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        for line in text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        {
             if let Some(rest) = line.strip_prefix("map ") {
                 let (key, rest) = rest.split_once(' ')?;
                 let r = if rest == "ok" {
@@ -284,7 +291,11 @@ pub fn run_jobs(
         match &r {
             Ok(()) => {
                 sum.converted += 1;
-                say(format!("{n} {}: done ({:.1} s)", job.label(), t.elapsed().as_secs_f32()));
+                say(format!(
+                    "{n} {}: done ({:.1} s)",
+                    job.label(),
+                    t.elapsed().as_secs_f32()
+                ));
             }
             Err(e) => {
                 sum.failed += 1;
@@ -332,7 +343,8 @@ impl DiscConverter {
             .with_context(|| format!("no {name}.map on the disc"))?
             .clone();
         let bytes = self.iso.read(&e)?;
-        let m = H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())?;
+        let m =
+            H1Map::from_reader(Cursor::new(bytes.as_slice())).with_context(|| e.path.clone())?;
         Ok((bytes, m))
     }
 
@@ -350,7 +362,8 @@ impl Converter for DiscConverter {
                 let (_, h1) = self.read(level)?;
                 if self.scripting.is_none() {
                     self.scripting = Some(
-                        h1_cmd::campaign_scripting(&self.h1_path, &self.h2).map_err(|e| format!("{e:#}")),
+                        h1_cmd::campaign_scripting(&self.h1_path, &self.h2)
+                            .map_err(|e| format!("{e:#}")),
                     );
                 }
                 if self.donors.is_none() {
@@ -374,7 +387,11 @@ impl Converter for DiscConverter {
                 let mopp = structure_mopp(&p.collision)?;
                 // Fresh: nothing of the base pinned.
                 let f = p.build_fresh(&mut base, &mopp)?;
-                let done = h1convert::convert::Converted { manifest: p.manifest(&f.bytes), name: f.name, bytes: f.bytes };
+                let done = h1convert::convert::Converted {
+                    manifest: p.manifest_with(&f.bytes, &f.precision),
+                    name: f.name,
+                    bytes: f.bytes,
+                };
                 if self.card_ui.is_none() {
                     self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
                 }
@@ -384,7 +401,13 @@ impl Converter for DiscConverter {
                     .and_then(|ui| ui.as_ref())
                     .and_then(|ui| h1convert::ui::mp_card(ui, name).ok().flatten());
                 let root = content::store::maps_dir(&self.data);
-                h1_cmd::write_mp_package(&self.out(root.clone())?, &root, sandbox, &done, card.as_ref())?;
+                h1_cmd::write_mp_package(
+                    &self.out(root.clone())?,
+                    &root,
+                    sandbox,
+                    &done,
+                    card.as_ref(),
+                )?;
             }
         }
         Ok(())
@@ -417,11 +440,17 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
     let stems: Vec<String> = disc.maps.iter().map(|e| map_stem(e).to_owned()).collect();
     let all = jobs(&stems);
     if all.is_empty() {
-        bail!("{} has no Halo 1 campaign or multiplayer maps", r.h1_iso.display());
+        bail!(
+            "{} has no Halo 1 campaign or multiplayer maps",
+            r.h1_iso.display()
+        );
     }
     let (size, mtime) = size_mtime(r.h1_iso)?;
     let old = if r.force { None } else { Stamp::read(r.data) };
-    if old.as_ref().is_none_or(|o| o.size != size || o.mtime != mtime) {
+    if old
+        .as_ref()
+        .is_none_or(|o| o.size != size || o.mtime != mtime)
+    {
         say(format!(
             "checking {} ({:.1} GB)",
             r.h1_iso.display(),
@@ -436,7 +465,11 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
     let skipped = all.len() - todo.len();
     if r.dry_run {
         for j in &todo {
-            say(format!("would convert {} to {}", j.label(), j.output(r.data).display()));
+            say(format!(
+                "would convert {} to {}",
+                j.label(),
+                j.output(r.data).display()
+            ));
         }
         return Ok(Summary {
             skipped,
@@ -464,7 +497,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         data: r.data.to_path_buf(),
         scripting: None,
         donors: None,
-            card_ui: None,
+        card_ui: None,
     };
     let data = r.data.to_path_buf();
     let mut sum = run_jobs(&todo, &mut stamp, &mut conv, &mut |s| s.write(&data), say);
@@ -494,7 +527,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Whether `path` is a Halo 1 disc: reads its directory and XBE header.
 fn is_halo1(path: &Path) -> bool {
-    let Ok(f) = File::open(path) else { return false };
+    let Ok(f) = File::open(path) else {
+        return false;
+    };
     let Ok(mut iso) = Xiso::open(BufReader::new(f)) else {
         return false;
     };
@@ -552,7 +587,9 @@ fn try_auto(game_disc: &Path, data: &Path) -> Result<()> {
             game_disc.display()
         );
     }
-    let name = h1.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let name = h1
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let mut say = |s: String| eprintln!("halo1: {s}");
     let sum = import(
         &Request {

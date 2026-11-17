@@ -670,6 +670,9 @@ impl feature::Feature for LoadedMark {
                 _ => {}
             }
         });
+        // `LOADED_AT` is a host-side mark for perf sessions; the game never
+        // reads it.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

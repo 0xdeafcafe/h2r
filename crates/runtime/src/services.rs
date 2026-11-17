@@ -111,6 +111,13 @@ impl Runtime {
     pub fn memory_contention(&self) -> Contention {
         self.memory.contention()
     }
+    /// The guest layout as the last memory guard left it ([`Guest`]'s
+    /// layout identity): an execute check that passed under this value
+    /// still passes while it stays the same.
+    #[inline]
+    pub(crate) fn layout_epoch(&self) -> u64 {
+        self.memory.layout()
+    }
     pub(crate) fn check_execute(&self, addr: u32) -> Result<(), crate::GuestFault> {
         if self.memory.allows_execute(addr) {
             Ok(())

@@ -72,14 +72,19 @@ impl PixelShaderDef {
         if bytes.len() < PSDEF_SIZE {
             return Err(Truncated(bytes.len()));
         }
-        let w: Vec<u32> = bytes[..PSDEF_SIZE]
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_le_bytes(*c))
-            .collect();
+        let mut w = [0u32; PSDEF_SIZE / 4];
+        for (w, c) in w.iter_mut().zip(bytes[..PSDEF_SIZE].as_chunks::<4>().0) {
+            *w = u32::from_le_bytes(*c);
+        }
+        Ok(Self::from_words(&w))
+    }
+
+    /// The structure from its 60 dwords, as [`from_bytes`](Self::from_bytes)
+    /// reads them (without the byte round trip or an allocation: the d3d
+    /// judge builds one per draw).
+    pub fn from_words(w: &[u32; PSDEF_SIZE / 4]) -> Self {
         let arr = |at: usize| -> [u32; 8] { std::array::from_fn(|i| w[at + i]) };
-        Ok(Self {
+        Self {
             alpha_inputs: arr(0),
             final_inputs_abcd: w[8],
             final_inputs_efg: w[9],
@@ -99,7 +104,7 @@ impl PixelShaderDef {
             c0_mapping: w[57],
             c1_mapping: w[58],
             final_constants: w[59],
-        })
+        }
     }
 
     /// Serialises back to the 0xF0-byte layout.

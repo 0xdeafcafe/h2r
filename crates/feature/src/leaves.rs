@@ -89,6 +89,9 @@ impl Feature for EngineLeaves {
                 engine::runtime_glue::invoke(o, cpu, &mut guest)
             });
         }
+        // Pure functions of guest memory; the string sources are fixed at
+        // boot.
+        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

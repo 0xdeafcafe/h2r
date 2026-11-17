@@ -324,6 +324,86 @@ fn generated_runtime_benchmark() {
     }
 }
 
+/// Runner-routed transfers. A loop makes eight indirect calls per trip,
+/// each one a CALL the handler hands to the runner, into one of `targets`
+/// distinct callees that only `ret`, which is a RETURN the runner resolves
+/// to the caller's resume. So every iteration is 16 runner transfers, each
+/// resolving its target, checking it is executable and entering a handler
+/// whose first access (the `ret`'s stack read) starts a gate hold. With
+/// many targets the runner's per-context resolve cache stops covering them,
+/// as in the game (thousands of functions and return sites a frame).
+///
+/// `cargo test -p emit --release --test perf runner_transfer_benchmark -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark; run release with --nocapture"]
+fn runner_transfer_benchmark() {
+    const CALLEES: u32 = 4096;
+    const CALLEE_BASE: u32 = A + 0x1000;
+    const TABLE: u32 = 0x0020_0000;
+    const BENCH_STACK: u32 = 0x0030_0ff0;
+    const SITES: u32 = 8;
+    let n: u32 = std::env::var("H2_PERF_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(200_000);
+    let trials: usize = std::env::var("H2_PERF_TRIALS").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
+    let mut funcs = vec![function(A, |a| {
+        let mut l = a.create_label();
+        a.mov(ecx, n)?;
+        a.mov(esi, TABLE)?;
+        a.set_label(&mut l)?;
+        for s in 0..SITES {
+            a.lea(eax, dword_ptr(ecx + s * 37))?;
+            a.and(eax, edx)?;
+            a.call(dword_ptr(esi + eax * 4))?;
+        }
+        a.dec(ecx)?;
+        a.jnz(l)?;
+        a.ret()
+    })];
+    funcs.extend((0..CALLEES).map(|i| function(CALLEE_BASE + i * 16, |a| a.ret())));
+    let (_lib, dispatch) = compile_module_with(
+        "runner-transfers",
+        funcs,
+        false,
+        std::env::var_os("H2_FASTMEM").is_none_or(|v| v != "0"),
+        emit::opt::Passes::from_env().unwrap(),
+        emit::Codegen::from_env().unwrap(),
+    );
+    let mut mem = Guest::new();
+    mem.map_zeroed(A, 0x20000, Permissions::RX).unwrap();
+    mem.map_zeroed(TABLE, CALLEES * 4, Permissions::RW).unwrap();
+    mem.map_zeroed(BENCH_STACK & !0xfff, 0x1000, Permissions::RW).unwrap();
+    for i in 0..CALLEES {
+        mem.set_u32(TABLE + i * 4, CALLEE_BASE + i * 16).unwrap();
+    }
+    mem.set_u32(BENCH_STACK, runtime::exec::HARNESS_EXIT).unwrap();
+    let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch), 1);
+    for targets in [16u32, 256, 1024, 4096] {
+        let mut times = Vec::new();
+        for _ in 0..trials {
+            let mut cpu = CpuAbi {
+                esp: BENCH_STACK,
+                edx: targets - 1,
+                ..CpuAbi::default()
+            };
+            let start = Instant::now();
+            let t = Runner {
+                max_transfers: 2 * SITES as u64 * n as u64 + 10,
+            }
+            .run(&mut cpu, &mut ctx, A);
+            times.push(start.elapsed().as_secs_f64() * 1e9 / (2 * SITES * n) as f64);
+            assert_eq!(t.kind, runtime::abi::STOP, "{t:?}, {:?}", ctx.events());
+            assert_eq!(cpu.eip, runtime::exec::HARNESS_EXIT);
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "runner transfers, {targets} targets: n={n}x{}, trials={trials}, min={:.2} median={:.2} max={:.2} ns/transfer",
+            2 * SITES,
+            times[0],
+            times[trials / 2],
+            times[trials - 1]
+        );
+    }
+}
+
 #[test]
 fn generated_counts_match_executed_work() {
     for kind in ["read", "x87", "call", "tail"] {

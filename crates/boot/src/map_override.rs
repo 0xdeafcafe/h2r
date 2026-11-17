@@ -60,12 +60,15 @@ pub fn mount<R: vfs::Rewrite + 'static>(
         fonts,
         maps,
         packages,
+        None,
         content::DiscHashes::default(),
         &[],
     )
 }
 
-/// [`mount`], with the package resolver recording each disc base it hashes
+/// [`mount`], loading `sandbox`'s variant of each converted Halo 1 map
+/// (the `multiplayer.halo1_sandbox` setting, as `boot::new_maps` lists
+/// them; `None` is the default, Halo 1's), with the package resolver recording each disc base it hashes
 /// in `hashes` (shared with [`crate::map_bases::DiscBases`]), and
 /// `campaign_maps` (map name, host file) served as `maps\<map>.map` where
 /// the disc has no such map (docs/game/multiple-campaigns.md §3).
@@ -75,16 +78,19 @@ pub fn mount<R: vfs::Rewrite + 'static>(
 /// Live join, the editor) is served at the map's next open
 /// (`vfs::PackageBackend`, docs/game/maps.md §3). With an empty folder it serves
 /// the disc's bytes unchanged.
+#[allow(clippy::too_many_arguments)]
 pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     cfg: vfs::Config,
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
     packages: Option<&Path>,
+    sandbox: Option<&str>,
     hashes: content::DiscHashes,
     campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
-    let library = packages.map(|p| content::Library::open(p).with_disc_hashes(hashes));
+    let library =
+        packages.map(|p| content::Library::open_with_sandbox(p, sandbox).with_disc_hashes(hashes));
     if library.is_none() && maps.is_none() && campaign_maps.is_empty() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),

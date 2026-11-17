@@ -199,6 +199,22 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
     (b"vehi", &["lifepod"], "objects\\vehicles\\pelican\\pelican"),
 ];
 
+/// Halo 1 craft built on another vehicle's template ([`TEMPLATES`]) that
+/// keep none of its looping sounds. The lifepod stands on the pelican,
+/// whose attachments (`obje +0x94`) loop six engine, hover and banking
+/// sounds at every placement: every lifepod a10 places hummed the
+/// pelican's engine for the whole level. Halo 1's own looping sounds are not converted, so the
+/// craft is quiet; the template's other attachments (lights, contrails)
+/// stay.
+pub const QUIET_STAND_INS: &[&str] = &["lifepod"];
+
+/// Whether the Halo 1 vehicle at `path` drops its template's looping
+/// sounds ([`QUIET_STAND_INS`]).
+pub fn quiet_stand_in(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    QUIET_STAND_INS.iter().any(|w| path.contains(w))
+}
+
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
 /// table order: the converter takes the first the base map holds.
 pub fn template_candidates(group: &[u8; 4], path: &str) -> Vec<&'static str> {
@@ -226,6 +242,10 @@ pub mod h2 {
     pub const BOUNDING_OFFSET: usize = 0x08;
     pub const DEFAULT_VARIANT: usize = 0x30;
     pub const MODEL: usize = 0x34;
+    /// Attachments: `0x18` each, an 8-byte reference first (E,
+    /// `docs/formats/objects.md`).
+    pub const ATTACHMENTS: usize = 0x94;
+    pub const ATTACHMENT: usize = 0x18;
     /// `weap` root.
     pub const HEAT_RECOVERY_THRESHOLD: usize = 0x150;
     pub const OVERHEATED_THRESHOLD: usize = 0x154;
@@ -297,7 +317,54 @@ pub mod h2 {
     pub const PHMO_RIGID_BODIES: usize = 0x38;
     pub const HLMT_VARIANTS: usize = 0x50;
     pub const HLMT_REGIONS: usize = 0x70;
+    /// `hlmt` region (`0x10`): `i8` collision and physics region (-1
+    /// none); permutation (`8`): `i8` collision and physics permutation.
+    /// D: retail regions of objects with no `coll` hold -1 in the
+    /// collision byte; the physics byte is never -1 without a `phmo`.
+    pub const HLMT_REGION_COLLISION: usize = 4;
+    pub const HLMT_REGION_PHYSICS: usize = 5;
+    pub const HLMT_PERMUTATION_COLLISION: usize = 5;
+    pub const HLMT_PERMUTATION_PHYSICS: usize = 6;
     pub const HLMT_NODES: usize = 0x78;
+}
+
+/// For each render region, the collision region it selects and, per
+/// render permutation, the collision permutation (-1 none). Regions and
+/// permutations match by name (string ID form); a render region whose
+/// name the `coll` lacks takes the `coll` region at the same index, and a
+/// permutation likewise, then the region's first, so a renamed region
+/// still collides.
+pub fn region_map(
+    render: &[(String, Vec<String>)],
+    coll: &[(String, Vec<String>)],
+) -> Vec<(i8, Vec<i8>)> {
+    let find = |names: &[String], want: &str| {
+        let want = crate::coll::sid_name(want);
+        names.iter().position(|n| crate::coll::sid_name(n) == want)
+    };
+    let coll_regions: Vec<String> = coll.iter().map(|c| c.0.clone()).collect();
+    render
+        .iter()
+        .enumerate()
+        .map(|(i, (name, perms))| {
+            let r = find(&coll_regions, name).or((i < coll.len()).then_some(i));
+            let Some(r) = r else {
+                return (-1, vec![-1; perms.len()]);
+            };
+            let cp = &coll[r].1;
+            let perms = perms
+                .iter()
+                .enumerate()
+                .map(|(j, p)| {
+                    find(cp, p)
+                        .or((j < cp.len()).then_some(j))
+                        .or((!cp.is_empty()).then_some(0))
+                        .map_or(-1, |k| k as i8)
+                })
+                .collect();
+            (r as i8, perms)
+        })
+        .collect()
 }
 
 /// Halo 1's cache keeps speeds per tick; Halo 2's tags hold them per
@@ -513,7 +580,11 @@ pub struct Converter<'a> {
     pub h1: &'a H1Map,
     pub base: &'a Base,
     pub tree: Tree,
+    /// Every converted `coll` and what it holds, in build order.
+    pub coll_reports: Vec<(String, crate::coll::CollisionReport)>,
     done: HashMap<u32, TagId>,
+    colls: HashMap<(u32, bool), TagId>,
+    coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
 }
 
 impl<'a> Converter<'a> {
@@ -522,7 +593,10 @@ impl<'a> Converter<'a> {
             h1,
             base,
             tree: Tree::default(),
+            coll_reports: Vec::new(),
             done: HashMap::new(),
+            colls: HashMap::new(),
+            coll_names: HashMap::new(),
         }
     }
 
@@ -640,20 +714,46 @@ impl<'a> Converter<'a> {
             }
         };
         let mode = self.cached(mode_tag, mode)?;
+        let mut hlmt = match template_hlmt {
+            Some(t) => Block::new(self.base.root(t)?),
+            None => Block::zeroed(
+                tags::object::GroupDef::find(FourCC(*b"hlmt"))
+                    .map_or(0xfc, |d| d.root_size as usize),
+            ),
+        };
+        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
+        let mut has_phmo = false;
+        rep.physics = Some(
+            match self.base.reference(&hlmt.bytes, h2::HLMT_PHYSICS_MODEL) {
+                Some(p) => {
+                    // The physics model writes one matrix per rigid body's node;
+                    // the object holds the hlmt's count. A template whose rigid
+                    // bodies reach past the converted nodes would write past
+                    // them, so it is not borrowed.
+                    let top = self.phmo_top_node(p)?;
+                    let name = self.base.name(p).map_or("?", |n| n.1).to_owned();
+                    if top >= i64::from(count.max(1)) {
+                        hlmt.tag_ref(h2::HLMT_PHYSICS_MODEL as u32, TagId::NULL);
+                        format!(
+                            "none: the template's {name} reaches node {top}, the model has {count}"
+                        )
+                    } else {
+                        has_phmo = true;
+                        format!("borrowed: {name}")
+                    }
+                }
+                None => "none (the template has no phmo)".into(),
+            },
+        );
+        // Havok sees static scenery through the phmo or, with none, through
+        // the coll's BSP physics slots (crate::coll). Retail writes slots
+        // only for scenery: its weapons, equipment, devices and bipeds
+        // without a phmo have none.
+        let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
         let coll = match obj.collision {
             Some(c) => {
                 let t = self.h1_tag(c)?;
-                match self.done.get(&t.id.0) {
-                    Some(id) => Some(*id),
-                    None => {
-                        let (conv, cr) = convert_collision(&h1::Collision::read(self.h1, t)?)?;
-                        rep.no_home.push(format!(
-                            "coll damage: body vitality {}, shield vitality {}, {} modifiers, {} damage effect references (Halo 2 keeps damage in the hlmt; not written)",
-                            cr.body_vitality, cr.shield_vitality, cr.modifiers, cr.damage_references
-                        ));
-                        Some(self.cached(t, conv)?)
-                    }
-                }
+                Some(self.collision(rep, t, scenery && !has_phmo)?)
             }
             None => None,
         };
@@ -671,38 +771,9 @@ impl<'a> Converter<'a> {
             None => None,
         };
 
-        let mut hlmt = match template_hlmt {
-            Some(t) => Block::new(self.base.root(t)?),
-            None => Block::zeroed(
-                tags::object::GroupDef::find(FourCC(*b"hlmt"))
-                    .map_or(0xfc, |d| d.root_size as usize),
-            ),
-        };
         hlmt.tag_ref(h2::HLMT_RENDER as u32, mode);
-        hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.unwrap_or(TagId::NULL));
+        hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.map_or(TagId::NULL, |c| c.0));
         hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
-        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
-        rep.physics = Some(
-            match self.base.reference(&hlmt.bytes, h2::HLMT_PHYSICS_MODEL) {
-                Some(p) => {
-                    // The physics model writes one matrix per rigid body's node;
-                    // the object holds the hlmt's count. A template whose rigid
-                    // bodies reach past the converted nodes would write past
-                    // them, so it is not borrowed.
-                    let top = self.phmo_top_node(p)?;
-                    let name = self.base.name(p).map_or("?", |n| n.1).to_owned();
-                    if top >= i64::from(count.max(1)) {
-                        hlmt.tag_ref(h2::HLMT_PHYSICS_MODEL as u32, TagId::NULL);
-                        format!(
-                            "none: the template's {name} reaches node {top}, the model has {count}"
-                        )
-                    } else {
-                        format!("borrowed: {name}")
-                    }
-                }
-                None => "none (the template has no phmo)".into(),
-            },
-        );
         hlmt.bytes[h2::HLMT_VARIANTS..h2::HLMT_VARIANTS + 8].fill(0);
         // One node per render-model node: the engine sizes an object's node
         // matrices by this count, and the converted model and graph write
@@ -712,13 +783,42 @@ impl<'a> Converter<'a> {
         } else {
             hlmt.block(h2::HLMT_NODES as u32, count, nodes);
         }
-        // Regions and their permutations, named as the converted model's.
+        // Regions and their permutations, named as the converted model's,
+        // each with the collision and physics region and permutation it
+        // uses (-1 none).
+        let render: Vec<(String, Vec<String>)> = h1_model
+            .regions
+            .iter()
+            .map(|r| {
+                (
+                    r.name.clone(),
+                    r.permutations.iter().map(|p| p.name.clone()).collect(),
+                )
+            })
+            .collect();
+        let coll_names = coll.map_or(&[][..], |c| &self.coll_names[&c.1][..]);
+        let map = region_map(&render, coll_names);
+        for (i, name) in coll_names.iter().enumerate() {
+            if !map.iter().any(|(r, _)| *r == i as i8) {
+                rep.no_home.push(format!(
+                    "coll region {} has no render region to select it",
+                    name.0
+                ));
+            }
+        }
+        // Physics bytes stay 0, as before: retail never holds -1 there on
+        // an object with no phmo (the scenery template's statue: 0).
+        let physics: i8 = 0;
         let mut regions = Block::zeroed(0x10 * h1_model.regions.len());
         for (i, r) in h1_model.regions.iter().enumerate() {
             put_sid(&mut regions, 0x10 * i, &r.name);
+            regions.bytes[0x10 * i + h2::HLMT_REGION_COLLISION] = map[i].0 as u8;
+            regions.bytes[0x10 * i + h2::HLMT_REGION_PHYSICS] = physics as u8;
             let mut perms = Block::zeroed(8 * r.permutations.len());
             for (j, p) in r.permutations.iter().enumerate() {
                 put_sid(&mut perms, 8 * j, &p.name);
+                perms.bytes[8 * j + h2::HLMT_PERMUTATION_COLLISION] = map[i].1[j] as u8;
+                perms.bytes[8 * j + h2::HLMT_PERMUTATION_PHYSICS] = physics as u8;
             }
             if !r.permutations.is_empty() {
                 regions.block((0x10 * i + 8) as u32, r.permutations.len() as u32, perms);
@@ -754,6 +854,47 @@ impl<'a> Converter<'a> {
         )))
     }
 
+    /// The converted `coll` for Halo 1's `t`, with or without BSP physics
+    /// slots (each built once; a second form, when two objects need both,
+    /// gets a suffixed name). Returns the tag and its key in `coll_names`.
+    fn collision(
+        &mut self,
+        rep: &mut ObjectReport,
+        t: &Tag,
+        bsp_physics: bool,
+    ) -> Result<(TagId, (u32, bool))> {
+        let key = (t.id.0, bsp_physics);
+        if let Some(id) = self.colls.get(&key) {
+            return Ok((*id, key));
+        }
+        let h1c = h1::Collision::read(self.h1, t)?;
+        let (conv, cr) = convert_collision(&h1c, bsp_physics)?;
+        rep.no_home.push(format!(
+            "coll damage: body vitality {}, shield vitality {}, {} modifiers, {} damage effect references (Halo 2 keeps damage in the hlmt; not written)",
+            cr.body_vitality, cr.shield_vitality, cr.modifiers, cr.damage_references
+        ));
+        let name = if self.colls.contains_key(&(t.id.0, !bsp_physics)) {
+            format!(
+                "{}{}",
+                t.name,
+                if bsp_physics { "_bsp_physics" } else { "_phmo" }
+            )
+        } else {
+            t.name.clone()
+        };
+        let id = self.tree.push(&name, conv);
+        self.colls.insert(key, id);
+        self.coll_names.insert(
+            key,
+            h1c.regions
+                .iter()
+                .map(|r| (r.name.clone(), r.permutations.clone()))
+                .collect(),
+        );
+        self.coll_reports.push((name, cr));
+        Ok((id, key))
+    }
+
     /// The highest node a `phmo`'s rigid bodies name (`+0x38`, `0x90`
     /// each, node `i16` first), `-1` with none.
     fn phmo_top_node(&self, phmo: TagId) -> Result<i64> {
@@ -769,8 +910,12 @@ impl<'a> Converter<'a> {
 
     /// A `shad` per Halo 1 shader of `model`: a copy of the base's model
     /// shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
-    /// base and detail maps, converted by `h1bitmaps` (each once). Null
-    /// for a shader with no base map this reads, or with no template.
+    /// base and detail maps, converted by `h1bitmaps` (each once). A
+    /// shader with no base map this reads gets the base's model shader
+    /// itself, never null: the shader draw begin `0x1bbf0` does not skip a
+    /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
+    /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
+    /// template at all the materials stay null.
     fn model_shaders(&mut self, rep: &mut ObjectReport, model: &h1models::h1::Model) -> Vec<TagId> {
         let Some(template) = self.base.model_shader.clone() else {
             rep.no_home
@@ -797,11 +942,11 @@ impl<'a> Converter<'a> {
             })();
             if id.is_none() {
                 rep.no_home.push(format!(
-                    "model shader {}: no base map read; material null",
+                    "model shader {}: no base map read; the base's model shader stands in",
                     self.h1.tag(s.tag).map_or("?".into(), |t| t.name.clone())
                 ));
             }
-            out.push(id.unwrap_or(TagId::NULL));
+            out.push(id.unwrap_or(template.shader));
         }
         out
     }
@@ -831,6 +976,45 @@ impl<'a> Converter<'a> {
                 rep.stopgaps.push((at, g.to_string(), n));
             }
         }
+    }
+
+    /// Gives `root` its own copy of the template's attachments without the
+    /// looping sounds ([`QUIET_STAND_INS`]); every other element is the
+    /// template's as stored.
+    fn drop_looping_attachments(
+        &self,
+        rep: &mut ObjectReport,
+        root: &mut Block,
+        tpl_root: &[u8],
+    ) -> Result<()> {
+        let lsnd = u32::from_be_bytes(*b"lsnd");
+        let n = crate::base::u32_at(tpl_root, h2::ATTACHMENTS) as usize;
+        let mut kept = Vec::with_capacity(n);
+        for i in 0..n {
+            let e = self
+                .base
+                .element(tpl_root, h2::ATTACHMENTS, h2::ATTACHMENT, i)?
+                .expect("below the count");
+            if crate::base::u32_at(&e, 0) == lsnd {
+                if let Some(id) = self.base.reference(&e, 0) {
+                    let name = self.base.name(id).map_or("?", |(_, n)| n);
+                    rep.no_home
+                        .push(format!("template looping sound dropped: {name}"));
+                }
+            } else {
+                kept.push(e);
+            }
+        }
+        if kept.len() == n {
+            return Ok(());
+        }
+        if kept.is_empty() {
+            root.bytes[h2::ATTACHMENTS..h2::ATTACHMENTS + 8].fill(0);
+        } else {
+            let k = kept.len() as u32;
+            root.block(h2::ATTACHMENTS as u32, k, Block::new(kept.concat()));
+        }
+        Ok(())
     }
 
     fn report(tag: &Tag, template: &str) -> ObjectReport {
@@ -1398,6 +1582,9 @@ impl<'a> Converter<'a> {
             tag.group,
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
+        if &g == b"vehi" && quiet_stand_in(&tag.name) {
+            self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
+        }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(

@@ -101,6 +101,13 @@ fn build(sections: &[Section]) -> Built {
 
 /// [`build`], with a lightmap bitmap tag the lightmap names when `lit`.
 fn build_lit(sections: &[Section], lit: bool) -> Built {
+    build_with(sections, lit, false)
+}
+
+/// [`build_lit`]; with `sounds`, two looping sounds and a sound
+/// environment, cluster `c` playing background `c % 2` (environment 0 on
+/// even clusters, none on odd), and leaf `k` in cluster `k % clusters`.
+fn build_with(sections: &[Section], lit: bool, sounds: bool) -> Built {
     let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
     for g in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
         set.add_group(FourCC(*g), None, None);
@@ -138,6 +145,37 @@ fn build_lit(sections: &[Section], lit: bool) -> Built {
     let collision = crate::collision::convert(&room()).unwrap();
     let t = templates();
     let mopp = stand_in_mopp();
+    let mut sound = Sound::default();
+    if sounds {
+        for g in [b"lsnd", b"snde"] {
+            set.add_group(FourCC(*g), None, None);
+        }
+        for k in 0..2 {
+            let id = set
+                .add_tag(
+                    FourCC(*b"lsnd"),
+                    &format!("invented\\loop{k}"),
+                    TagPayload::Built(Block::zeroed(0x40)),
+                )
+                .unwrap();
+            sound.backgrounds.push((format!("loop{k}"), id));
+        }
+        let id = set
+            .add_tag(
+                FourCC(*b"snde"),
+                "invented\\room",
+                TagPayload::Built(Block::zeroed(0x48)),
+            )
+            .unwrap();
+        sound.environments.push(("room".into(), id));
+        let n = sections.len().max(1);
+        sound.clusters = (0..n)
+            .map(|c| [(c % 2) as i16, if c % 2 == 0 { 0 } else { -1 }])
+            .collect();
+        sound.leaves = (0..collision.leaves.len())
+            .map(|k| (k % n) as u16)
+            .collect();
+    }
     let s = Structure {
         collision: &collision,
         collision_materials: 2,
@@ -148,6 +186,7 @@ fn build_lit(sections: &[Section], lit: bool) -> Built {
         checksum: 0x1234_5678,
         templates: &t,
         lightmap_bitmap,
+        sound: &sound,
     };
     let section = s.write(&mut set, sbsp, ltmp).unwrap();
     let mut descriptor = Block::zeroed(0x44);
@@ -732,5 +771,86 @@ fn a_table_of_n_or_a_key_on_many_leaves_is_refused() {
     let v9 = mopp::build(&per_triangle).to_block();
     if per_triangle.len() > n {
         assert!(check_visibility(n, &v9, &table).is_err());
+    }
+}
+
+#[test]
+fn clusters_name_their_sounds_and_leaves_their_cluster() {
+    let mut sections = pack(&meshes(), &[0, 1]);
+    split(&mut sections, 2);
+    assert_eq!(sections.len(), 2);
+    let b = build_with(&sections, false, true);
+    let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let t = map.tag(b.sbsp).unwrap().clone();
+    let at = t.location.unwrap().address;
+    let mut m = map;
+    let sbsp = m.read_tag_bytes(b.sbsp).unwrap();
+    let block = |field: usize, len: usize| -> Vec<Vec<u8>> {
+        let (n, p) = (word(&sbsp, field) as usize, word(&sbsp, field + 4));
+        let p = p.wrapping_sub(at) as usize;
+        (0..n)
+            .map(|k| sbsp[p + k * len..p + (k + 1) * len].to_vec())
+            .collect()
+    };
+    // The structure's palettes: what the clusters index (E 0x0011bf46).
+    let bg = block(0xd4, 0x64);
+    let env = block(0xdc, 0x48);
+    assert_eq!((bg.len(), env.len()), (2, 1));
+    assert_eq!(&bg[1][..6], b"loop1\0");
+    assert_eq!(word(&bg[0], 0x20), FourCC(*b"lsnd").as_u32());
+    let lsnd = m.tag(TagId(word(&bg[1], 0x24))).unwrap();
+    assert_eq!(lsnd.group, FourCC(*b"lsnd"));
+    assert_eq!(word(&env[0], 0x20), FourCC(*b"snde").as_u32());
+    let clusters = block(0x9c, CLUSTER);
+    let half = |b: &[u8], o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+    assert_eq!(
+        clusters
+            .iter()
+            .map(|c| [half(c, 0x72), half(c, 0x74)])
+            .collect::<Vec<_>>(),
+        vec![[0, 0], [1, -1]]
+    );
+    let leaves = block(0x2c, 8);
+    assert_eq!(leaves.len(), b.collision.leaves.len());
+    for (k, l) in leaves.iter().enumerate() {
+        assert_eq!(half(l, 0) as usize, k % 2, "leaf {k}");
+    }
+}
+
+#[test]
+fn split_cuts_the_largest_section_and_keeps_every_triangle() {
+    let sections = pack(&meshes(), &[0, 1]);
+    let triangles = |ss: &[Section]| -> Vec<([[u32; 3]; 3], u16)> {
+        let mut out = Vec::new();
+        for s in ss {
+            for p in &s.parts {
+                let first = usize::from(p.first);
+                for t in s.indices[first..first + usize::from(p.count)]
+                    .as_chunks::<3>()
+                    .0
+                {
+                    out.push((
+                        t.map(|i| s.vertices[usize::from(i)].position.map(f32::to_bits)),
+                        p.material,
+                    ));
+                }
+            }
+        }
+        out
+    };
+    let before = triangles(&sections);
+    let mut split_up = sections.clone();
+    split(&mut split_up, sections.len() + 3);
+    assert!(split_up.len() > sections.len());
+    assert_eq!(triangles(&split_up), before);
+    for s in &split_up {
+        assert!(!s.indices.is_empty());
+        let mut at = 0;
+        for p in &s.parts {
+            assert_eq!(usize::from(p.first), at, "parts tile the indices");
+            at += usize::from(p.count);
+        }
+        assert_eq!(at, s.indices.len());
+        assert!(s.indices.iter().all(|&i| usize::from(i) < s.vertices.len()));
     }
 }

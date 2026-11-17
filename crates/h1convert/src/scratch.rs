@@ -237,10 +237,13 @@ fn own_shares(b: &mut Block, owner: u32, none: bool) {
 /// The map from scratch: every tag `src` gives that the roots reach, plus
 /// `set`'s built scenario and BSPs moved across. `from_level` only sorts
 /// the report's counts; `low_detail` is the header's low-detail region.
+/// `extra` are more roots of `set` (tags nothing names that the game swaps
+/// in, such as `boot::precision`'s collections).
 pub fn build(
     src: &mut dyn TagSource,
     set: &TagSet,
     keep: &Keep,
+    extra: &[TagId],
     from_level: &HashSet<TagKey>,
     low_detail: Option<Vec<u8>>,
 ) -> Result<(TagSet, ScratchReport)> {
@@ -270,6 +273,7 @@ pub fn build(
             roots.push(TagKey::new(t.group, name));
         }
     }
+    roots.extend(extra.iter().filter_map(|&d| key_of(set, d)));
     let mut named = Vec::new();
     for (id, _) in &here {
         if let Some(TagPayload::Built(b)) = set.tag(*id).map(|t| &t.payload) {

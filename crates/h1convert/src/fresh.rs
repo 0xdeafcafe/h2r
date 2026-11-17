@@ -83,6 +83,9 @@ pub struct Fresh {
     pub bytes: Vec<u8>,
     /// What was done.
     pub report: FreshReport,
+    /// The precision swaps' collections, as this map's datums (for
+    /// [`Prepared::manifest_with`]).
+    pub precision: Vec<(TagId, TagId)>,
 }
 
 impl Prepared {
@@ -103,13 +106,36 @@ impl Prepared {
             }
         }
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
-        report.pruned = prune(&mut fresh, base.index_slots() as usize);
+        // The precision swaps' collections are named by no placement: kept
+        // for `boot::precision` to swap in at game start.
+        let keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        report.pruned = prune(&mut fresh, base.index_slots() as usize, &keep);
         check_refused(&mut fresh, &report)?;
         drop(src);
         // Then from scratch: the base's tags by path, only what is reached,
         // on a dense index. The pruned set is the fallback.
-        match from_scratch(base, &pinned, &bytes, &fresh) {
+        let mut precision = self.applied.precision.clone();
+        match from_scratch(base, &pinned, &bytes, &fresh, &keep) {
             Ok((set, r)) => {
+                // The swaps' datums, in the new index (the manifest's).
+                let key = |s: &TagSet, d: TagId| {
+                    let slot = s.slots.get(d.index())?;
+                    let t = slot.tag.as_ref().filter(|t| t.id == d)?;
+                    Some((t.group, slot.name.clone()))
+                };
+                let by_key: std::collections::HashMap<_, TagId> = set
+                    .slots
+                    .iter()
+                    .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
+                    .collect();
+                let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
+                precision = self
+                    .applied
+                    .precision
+                    .iter()
+                    .map(|&(a, b)| Some((new(a)?, new(b)?)))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
                 fresh = set;
                 report.scratch = Some(r);
             }
@@ -120,6 +146,7 @@ impl Prepared {
             name: map_name(&self.h1_name),
             bytes,
             report,
+            precision,
         })
     }
 }
@@ -132,6 +159,7 @@ fn from_scratch<R: Read + Seek>(
     pinned: &TagSet,
     bytes: &[u8],
     fresh: &TagSet,
+    extra: &[TagId],
 ) -> Result<(TagSet, crate::scratch::ScratchReport)> {
     use crate::scratch::{LevelSource, build, changed, file_bytes, low_detail};
     use tags::repo::{MapSource, SharedFiles};
@@ -152,7 +180,7 @@ fn from_scratch<R: Read + Seek>(
         from_level,
     };
     let from_level = src.from_level.clone();
-    build(&mut src, fresh, &MULTIPLAYER, &from_level, low)
+    build(&mut src, fresh, &MULTIPLAYER, extra, &from_level, low)
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
@@ -666,11 +694,11 @@ impl Pruned {
 }
 
 /// Scenario palettes whose base entries are nulled: `(offset, element)`,
-/// the tag reference at `+0`. Sound scenery `+0xe0`, light fixtures
-/// `+0xf0`, crates `+0x330` (`tags::object::OBJECT_TYPES`, the schema).
-/// The scenery palette (`+0x58`) is left: the schema's element size for
-/// it (4) disagrees with the object table's.
-pub const BASE_PALETTES: [(u32, usize); 3] = [(0xe0, 0x28), (0xf0, 0x28), (0x330, 0x28)];
+/// the tag reference at `+0`. Scenery `+0x58`, sound scenery `+0xe0`,
+/// light fixtures `+0xf0`, crates `+0x330` (`tags::object::OBJECT_TYPES`;
+/// every palette is `0x28` an element, `tags::schema::infer::ENGINE_STRIDES`).
+pub const BASE_PALETTES: [(u32, usize); 4] =
+    [(0x58, 0x28), (0xe0, 0x28), (0xf0, 0x28), (0x330, 0x28)];
 
 /// The scenario's tag list (`+0x3d8`, a datum each).
 pub const SCENARIO_RESOURCES: u32 = 0x3d8;
@@ -752,8 +780,9 @@ fn named(payload: &TagPayload, out: &mut Vec<u32>) {
     }
 }
 
-/// The slots reachable from the scenario, the globals and `keep`'s roots.
-pub fn reachable(set: &TagSet, keep: &Keep) -> Vec<bool> {
+/// The slots reachable from the scenario, the globals, `keep`'s roots and
+/// the tags `extra`.
+pub fn reachable(set: &TagSet, keep: &Keep, extra: &[TagId]) -> Vec<bool> {
     let n = set.slots.len();
     let mut seen = vec![false; n];
     let mut todo = Vec::new();
@@ -762,6 +791,7 @@ pub fn reachable(set: &TagSet, keep: &Keep) -> Vec<bool> {
         if t.id == set.scenario
             || t.id == set.globals
             || keep.groups.iter().any(|g| t.group == FourCC(**g))
+            || extra.contains(&t.id)
             || s.name
                 .as_deref()
                 .is_some_and(|n| keep.prefixes.iter().any(|p| n.starts_with(p)))
@@ -794,14 +824,15 @@ pub fn reachable(set: &TagSet, keep: &Keep) -> Vec<bool> {
 /// 2. the scenario's tag list ([`SCENARIO_RESOURCES`]) keeps a base tag
 ///    only when something else reaches it;
 /// 3. every base slot then unreachable ([`reachable`]) is emptied, its
-///    datum named by nothing.
-pub fn prune(set: &mut TagSet, first: usize) -> Pruned {
-    prune_with(set, first, &MULTIPLAYER)
+///    datum named by nothing. The tags in `extra`, and what they reach,
+///    stay.
+pub fn prune(set: &mut TagSet, first: usize, extra: &[TagId]) -> Pruned {
+    prune_with(set, first, &MULTIPLAYER, extra)
 }
 
 /// [`prune`] with other roots and palettes (a campaign level's:
 /// `h1campaign::KEEP`).
-pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep) -> Pruned {
+pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
     let scenario = set.scenario;
     let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
@@ -830,7 +861,7 @@ pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep) -> Pruned {
         _ => None,
     };
     if let Some(list) = list {
-        let seen = reachable(set, keep);
+        let seen = reachable(set, keep, extra);
         let kept: Vec<u8> = list
             .as_chunks::<4>()
             .0
@@ -857,7 +888,7 @@ pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep) -> Pruned {
             }
         }
     }
-    let seen = reachable(set, keep);
+    let seen = reachable(set, keep, extra);
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;

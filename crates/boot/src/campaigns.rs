@@ -448,6 +448,18 @@ impl Selection {
     pub fn building(&self) -> bool {
         self.building.load(Ordering::SeqCst)
     }
+    /// Why a snapshot can't be taken now: the level select is being built,
+    /// or a level-select request is to be let through. The campaign shown
+    /// is menu state only; in a game, the level's campaign comes from the
+    /// map (`State::lookup_campaign`, `fix_selection`).
+    pub fn snapshot_live(&self) -> Option<String> {
+        if self.building() {
+            return Some("the level select is being built".into());
+        }
+        self.pass
+            .load(Ordering::SeqCst)
+            .then(|| "a level-select request is to be let through".into())
+    }
 }
 
 // ---------------------------------------------------------------------------

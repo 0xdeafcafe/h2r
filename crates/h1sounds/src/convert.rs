@@ -75,6 +75,14 @@ pub struct PermutationOut {
     pub skip_fraction: i16,
     /// `+4`: gain in decibels.
     pub gain: i8,
+    /// `+6`: how long it plays, in milliseconds (`u16`, saturating). Retail
+    /// fills it for dialogue (classes 19 and 45 to 48) with the line's
+    /// length in its longest language; the engine reads it as the length
+    /// of a playing script impulse in campaign games with the language
+    /// timing byte set (E `0x00218c60`, from `0x0020b3c0`). Every
+    /// converted permutation gets its own length, so a script's wait on
+    /// its sound (`sound_impulse_language_time`) never ends at once.
+    pub time_ms: u16,
     /// The samples, cut into chunks of at most [`CHUNK_LEN`].
     pub chunks: Vec<Vec<u8>>,
 }
@@ -232,7 +240,9 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
                     bytes.len()
                 )));
             }
+            let samples = bytes.len() / block * if compression == 1 { 64 } else { 1 };
             permutations.push(PermutationOut {
+                time_ms: u16::try_from(samples as u64 * 1000 / u64::from(rate)).unwrap_or(u16::MAX),
                 name: first.name.clone(),
                 skip_fraction: (first.skip_fraction.clamp(0.0, 1.0) * 32767.0).round() as i16,
                 gain: decibels(first.gain).round().clamp(-128.0, 127.0) as i8,
@@ -327,6 +337,7 @@ impl ConvertedSound {
                 put_u16(&mut e, 2, p.skip_fraction as u16);
                 e[4] = p.gain as u8;
                 e[5] = u8::try_from(i).unwrap_or(u8::MAX);
+                put_u16(&mut e, 6, p.time_ms);
                 e[8..12].copy_from_slice(&size.to_le_bytes());
                 put_u16(&mut e, 12, first_chunk);
                 put_u16(&mut e, 14, count);

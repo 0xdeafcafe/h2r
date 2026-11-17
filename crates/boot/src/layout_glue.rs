@@ -1391,8 +1391,19 @@ impl feature::Feature for LayoutValueText {
                 Ok(())
             },
         );
+        b.snapshot(feature::SnapshotPolicy::forbid_while(layout_value_live));
         Ok(())
     }
+}
+
+/// Why `layouts-value` can't be snapshotted now: a Controls row text is
+/// being drawn, between its before and after hooks.
+pub fn layout_value_live() -> Option<String> {
+    layout_value_reason(PENDING_VALUE.load(Ordering::Relaxed))
+}
+
+fn layout_value_reason(pending: u32) -> Option<String> {
+    (pending != 0).then(|| "a Controls row text is being drawn".into())
 }
 
 /// The strings our rows and layouts show (`ui-strings`), served from guest
@@ -1414,6 +1425,8 @@ impl feature::Feature for StringsFeature {
                 .find(|(i, _)| *i == id)
                 .map(|(_, a)| *a)
         });
+        // The strings are written and their addresses fixed at install.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -1545,6 +1558,11 @@ fn add_items(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshots_wait_while_a_controls_row_text_is_drawn() {
+        assert_eq!(super::layout_value_reason(0), None);
+        assert!(super::layout_value_reason(super::EDIT_LAYOUT).is_some());
+    }
     use super::*;
     use crate::ui::Chosen;
     use std::collections::BTreeMap;
