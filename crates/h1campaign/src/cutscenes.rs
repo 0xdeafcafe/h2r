@@ -163,7 +163,7 @@ impl Graphs {
 /// of a graph with no node block of its own (vehicles, scenery and
 /// devices animate their model's nodes; their animations carry its
 /// checksum).
-fn model_by_checksum<'a>(h1: &'a H1Map, checksum: u32) -> Option<&'a h1map::Tag> {
+fn model_by_checksum(h1: &H1Map, checksum: u32) -> Option<&h1map::Tag> {
     let mode = Group::new(b"mode");
     h1.tags().iter().find(|t| {
         t.group == mode
@@ -285,7 +285,7 @@ pub fn read_recordings(h1: &H1Map) -> Result<Vec<Recording>> {
     }
     let all = h1.read(address, count * H1_RECORDING_LEN)?;
     let mut out = Vec::with_capacity(count);
-    for e in all.chunks_exact(H1_RECORDING_LEN) {
+    for e in all.as_chunks::<H1_RECORDING_LEN>().0 {
         let name_end = e[..32].iter().position(|&c| c == 0).unwrap_or(32);
         let size = u32::from_le_bytes(e[0x2c..0x30].try_into().expect("4 bytes")) as usize;
         let at = u32::from_le_bytes(e[0x38..0x3c].try_into().expect("4 bytes"));
