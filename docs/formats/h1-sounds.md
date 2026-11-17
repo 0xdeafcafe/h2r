@@ -289,6 +289,22 @@ new indices:
 H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
 ```
 
+### A gestalt cut to its sounds (`h1convert::compact`)
+
+A map built from scratch keeps only the `snd!` tags something reaches;
+`compact::gestalt` merges each of them, in index order, into an empty
+gestalt and rewrites its header. Chunk and extra-info raw keep their
+resources and import names their strings (carried as tokens across
+`SoundGestalt`, which keeps stored words). A promotion, which
+`merge_sound` refuses, is carried whole: its rules start with a pitch
+range index within the sound, not the gestalt (**V**, 2026-11-18, every
+promotion of 05a, Coagulation and 03a: each index is below the sound's own
+range count, and `glass_breakable`'s rules are the same on 05a and
+Coagulation though its first range is 13 on one and 20 on the other); its
+runtime timers are one per rule, and each promotion has one sound.
+`compact::entries` describes a sound's entries without an index in them,
+so a map and its cut compare sound by sound.
+
 ### A whole tree with its sounds (`h1sounds::transplant`)
 
 `h1sounds::transplant(schema, src, src_gestalt, root, dst_set,

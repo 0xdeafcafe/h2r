@@ -276,7 +276,8 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         // Every tag the same, address-free, raw data by its bytes; the
         // scenario block by block.
         let (mut same, mut by_group) = (0, BTreeMap::<String, u32>::new());
-        let skip: HashSet<[u8; 4]> = [*b"sbsp", *b"ltmp", *b"ugh!", *b"scnr"].into();
+        // Sounds' indices are the cut gestalt's: compared below.
+        let skip: HashSet<[u8; 4]> = [*b"sbsp", *b"ltmp", *b"ugh!", *b"scnr", *b"snd!"].into();
         for t in m.tags().to_vec() {
             let (Some(a), Some(s)) = (t.location, schema.groups.get(&t.group)) else {
                 continue;
@@ -372,58 +373,42 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             "scenario root words differ at {differ:x?}"
         );
 
-        // The sound gestalt: same blocks, same chunk data.
-        use h1sounds::gestalt::{ChunkPointer, SoundGestalt};
-        let ugh = m
-            .tags()
-            .iter()
-            .find(|t| t.group == FourCC(*b"ugh!"))
+        // The sound gestalt, cut to the kept sounds (compact::gestalt): every
+        // kept sound names the same entries, names and chunk data as in the
+        // pinned map.
+        use h1sounds::gestalt::SoundGestalt;
+        let gestalt = |map: &mut M| {
+            let t = map
+                .tags()
+                .iter()
+                .find(|t| t.group == FourCC(*b"ugh!"))
+                .unwrap()
+                .clone();
+            SoundGestalt::decode(
+                &map.read_tag_bytes(t.id).unwrap(),
+                t.location.unwrap().address,
+            )
             .unwrap()
-            .clone();
-        let ga = SoundGestalt::decode(
-            &m.read_tag_bytes(ugh.id).unwrap(),
-            ugh.location.unwrap().address,
-        )
-        .unwrap();
-        let ugh_f = f.tag(fid(&ugh).unwrap()).unwrap().clone();
-        let gb = SoundGestalt::decode(
-            &f.read_tag_bytes(ugh_f.id).unwrap(),
-            ugh_f.location.unwrap().address,
-        )
-        .unwrap();
-        // Datums name the same tags under the fresh index.
-        let mut gb = gb;
-        let to_pinned: HashMap<u32, u32> = f.tags().iter().map(|t| (t.id.0, mid(t).0)).collect();
-        let rename = |b: &mut Vec<u8>| {
-            for w in b.as_chunks_mut::<4>().0 {
-                if let Some(d) = to_pinned.get(&u32::from_le_bytes(*w)) {
-                    *w = d.to_le_bytes();
-                }
-            }
         };
-        gb.flat.iter_mut().for_each(rename);
-        for n in gb.nested.iter_mut().flatten() {
-            rename(&mut n.bytes);
-            n.children.iter_mut().for_each(|c| rename(&mut c.bytes));
+        let gb = gestalt(&mut f);
+        let c = s
+            .gestalt
+            .as_ref()
+            .unwrap_or_else(|| panic!("gestalt kept whole: {:?}", s.gestalt_whole));
+        assert!(c.chunks.1 <= c.chunks.0);
+        let before = h1convert::compact::map_entries(&mut m, &pinned).unwrap();
+        let after = h1convert::compact::map_entries(&mut f, &fresh.bytes).unwrap();
+        let mut sounds = 0;
+        for (n, y) in &after {
+            assert_eq!(before.get(n), Some(y), "{n}");
+            sounds += 1;
         }
-        assert_eq!((&ga.flat, &ga.nested), (&gb.flat, &gb.nested));
-        assert_eq!(ga.chunks.len(), gb.chunks.len());
-        let chunk = |c: &h1sounds::gestalt::Chunk, file: &[u8]| match c.pointer {
-            ChunkPointer::Stored(p) if p >> 30 == 0 => {
-                let at = p as usize;
-                file.get(at..at + (c.size & 0x7fff_ffff) as usize)
-                    .map(<[u8]>::to_vec)
-            }
-            _ => None,
-        };
-        for (a, b) in ga.chunks.iter().zip(&gb.chunks) {
-            assert_eq!(a.size, b.size);
-            assert_eq!(
-                chunk(a, &pinned),
-                chunk(b, &fresh.bytes),
-                "sound chunk data"
-            );
-        }
+        assert_eq!(sounds, c.sounds);
+        println!(
+            "  gestalt cut to {sounds} sounds: {} -> {} bytes, {} -> {} chunks; {} raw ({} bytes) \
+             dropped; every sound's entries and chunk data the same",
+            c.bytes.0, c.bytes.1, c.chunks.0, c.chunks.1, c.raw_dropped.0, c.raw_dropped.1
+        );
 
         // Bitmaps decode the same: every level of detail and low-detail
         // range holds the same bytes.
@@ -498,7 +483,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         println!(
             "  read back: {} tags, {n} references resolve (pinned map: {pn}); \
              {same} tags identical address-free ({by_group:?}); scenario: {} blocks identical, \
-             root identical; sound gestalt identical ({} chunks); {bitmaps} bitmaps decode \
+             root identical; sound gestalt cut ({} chunks); {bitmaps} bitmaps decode \
              identically; 9 languages' strings identical; structure {} bytes ({:?})",
             f.tags().len(),
             r.scenario_blocks.len(),

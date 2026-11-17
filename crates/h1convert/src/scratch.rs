@@ -10,6 +10,8 @@
 //! hold) renamed for the new set, their raw copied, their BSP regions made
 //! anew.
 //!
+//! The sound gestalt is then cut to the sounds kept ([`crate::compact`]).
+//!
 //! The roots are the globals, the [`Keep`] groups and path prefixes the set
 //! holds, and every tag the scenario and BSPs name. What nothing reaches is
 //! never read: there is nothing to prune.
@@ -53,6 +55,10 @@ pub struct ScratchReport {
     pub words: usize,
     /// References to tags no source holds, nulled: (from, to).
     pub dangling: Vec<(String, String)>,
+    /// The sound gestalt cut to the kept sounds ([`crate::compact`]), or
+    /// why it stays whole.
+    pub gestalt: Option<crate::compact::Compacted>,
+    pub gestalt_whole: Option<String>,
 }
 
 fn invalid(s: impl Into<String>) -> Error {
@@ -353,6 +359,10 @@ pub fn build(
     report.words = cx.words;
     for (id, b) in payloads {
         out.tag_mut(id).expect("added").payload = TagPayload::Built(b);
+    }
+    match crate::compact::gestalt(&mut out) {
+        Ok(c) => report.gestalt = Some(c),
+        Err(e) => report.gestalt_whole = Some(e.to_string()),
     }
     report.built_here = here.len();
     report.tags = out.slots.iter().filter(|s| s.tag.is_some()).count();

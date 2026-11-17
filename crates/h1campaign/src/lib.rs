@@ -242,6 +242,21 @@ impl std::fmt::Display for Report {
                 s.words,
                 s.dangling.len()
             )?;
+            match (&s.gestalt, &s.gestalt_whole) {
+                (Some(g), _) => writeln!(
+                    f,
+                    "  gestalt cut to {} sounds: {} -> {} bytes, {} -> {} chunks; {} raw resources ({} bytes) dropped",
+                    g.sounds,
+                    g.bytes.0,
+                    g.bytes.1,
+                    g.chunks.0,
+                    g.chunks.1,
+                    g.raw_dropped.0,
+                    g.raw_dropped.1
+                )?,
+                (None, Some(why)) => writeln!(f, "  gestalt kept whole: {why}")?,
+                _ => {}
+            }
         } else if self.fresh {
             writeln!(
                 f,

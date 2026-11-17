@@ -20,6 +20,7 @@
 pub mod ambience;
 pub mod apply;
 pub mod collision;
+pub mod compact;
 pub mod convert;
 pub mod fresh;
 pub mod globals;

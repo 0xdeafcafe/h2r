@@ -320,6 +320,7 @@ fn every_level_converts_fresh() {
             ..Default::default()
         };
         let mut pinned_bad = std::collections::BTreeSet::new();
+        let mut pinned_sounds = None;
         let before = pinned_too.then(|| {
             opts.pinned = true;
             let p = h1campaign::convert(&h1, &mut base, &opts).unwrap();
@@ -327,6 +328,7 @@ fn every_level_converts_fresh() {
             let mut pm = Map::from_reader(Cursor::new(p.bytes.clone())).unwrap();
             let pmem = memory(&mut pm);
             pinned_bad = reference_sweep(&pm, &pmem).1.into_iter().collect();
+            pinned_sounds = Some(h1convert::compact::map_entries(&mut pm, &p.bytes).unwrap());
             let profiles = start_profiles(&mut pm, &h1);
             assert!(
                 profiles.is_empty(),
@@ -399,11 +401,35 @@ fn every_level_converts_fresh() {
             ));
         }
         match &r.scratch {
-            // From scratch: no slot of the base's index left over.
-            Some(_) => {
+            // From scratch: no slot of the base's index left over, and the
+            // gestalt cut to the kept sounds, each naming what it did in
+            // the pinned map (entries, names, chunk bytes).
+            Some(sr) => {
                 let holes = m.index_slots() as usize - m.tags().len();
                 if holes != 0 {
                     failed.push(format!("{level}: {holes} empty index slots"));
+                }
+                if sr.gestalt.is_none() {
+                    failed.push(format!("{level}: gestalt whole: {:?}", sr.gestalt_whole));
+                }
+                if let Some(before) = &pinned_sounds {
+                    let after = h1convert::compact::map_entries(&mut m, &done.bytes).unwrap();
+                    let differ: Vec<&String> = after
+                        .iter()
+                        .filter(|(n, e)| before.get(*n) != Some(*e))
+                        .map(|(n, _)| n)
+                        .collect();
+                    println!(
+                        "  {} sounds name what they did pinned, {} do not",
+                        after.len() - differ.len(),
+                        differ.len()
+                    );
+                    if !differ.is_empty() {
+                        failed.push(format!(
+                            "{level}: sounds differ from pinned: {:?}",
+                            &differ[..differ.len().min(8)]
+                        ));
+                    }
                 }
             }
             None => failed.push(format!("{level}: not built from scratch: {:?}", r.dropped)),

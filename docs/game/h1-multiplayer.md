@@ -535,7 +535,7 @@ alone: the schema gives it 4-byte elements where the object types table
 gives it `0x28`; settle that first. The dropped tags' raw data stays in
 the file, unused.
 
-**Then built from scratch (`h1convert::scratch`, converter version 27).**
+**Then built from scratch (`h1convert::scratch`, converter version 28).**
 The pruned set is a step, not the output: `fresh::from_scratch` reads
 every tag by `(group, path)` through `tags::repo` (`scratch::LevelSource`:
 the conversion's tags from the pinned map it wrote, the rest from the
@@ -549,11 +549,14 @@ gestalt not at all: the readers that take one tag's bytes
 each tag whole. If it fails, the pruned set is written
 (`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
-slots, 0 dangling, 33.4 MB (pinned 48.6 MB); 4,380 tags identical to the
-pinned map's by name, address- and index-free, the scenario's 20 blocks
-and root, the sound gestalt (5,293 chunks), every bitmap and the 9
-languages' strings the same; 21,570 references resolve
-(`tests/fresh.rs`).
+slots, 0 dangling, 26.0 MB (pinned 48.6 MB); every tag but the sounds
+identical to the pinned map's by name, address- and index-free, the
+scenario's 20 blocks and root, every bitmap and the 9 languages' strings
+the same; 21,570 references resolve (`tests/fresh.rs`). The sound gestalt
+is cut to the 1,270 kept sounds (`h1convert::compact`; campaigns.md §9):
+5,293 chunks to 5,054, 223 raw resources (8.1 MB) dropped, each sound
+naming the same entries, import names and chunk bytes as in the pinned
+map.
 
 **The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
 the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,
