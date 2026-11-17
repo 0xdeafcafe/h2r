@@ -796,7 +796,7 @@ async fn run_stream(
                     if filter.packed {
                         batch.add(&f);
                     } else {
-                        send(&mut socket, &StreamMessage::Frame { frame: Box::new(f.frame.clone()) }).await.map_err(|e| e.to_string())?;
+                        socket.send(Message::Text(f.json_message())).await.map_err(|e| e.to_string())?;
                     }
                 }
                 Ok(_) => {}
