@@ -91,6 +91,15 @@ impl GuestMemory for GuestAdapter<'_> {
             .read_bytes(addr, out, 1)
             .map_err(|f| self.failed(f, addr, len))
     }
+    /// A fixed-size read: a load on the guest's fast path, where the
+    /// default (through [`read`](Self::read)'s slice) was a `memmove` call.
+    fn read_u32(&self, addr: u32) -> Result<u32, GuestError> {
+        let mut b = [0; 4];
+        self.guest
+            .read_bytes(addr, &mut b, 1)
+            .map_err(|f| self.failed(f, addr, 4))?;
+        Ok(u32::from_le_bytes(b))
+    }
     fn read_append(&self, addr: u32, len: usize, out: &mut Vec<u8>) -> Result<(), GuestError> {
         crate::guest::check_range(addr, len)?;
         self.guest
