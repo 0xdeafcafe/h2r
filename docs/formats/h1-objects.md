@@ -172,6 +172,18 @@ stays the template's. Template child blocks that are not rebuilt keep
 their retail addresses (aliasing, as retail does 13,099 times), so the
 tags must go into a `TagSet` made from that base map.
 
+Lifepods keep none of the pelican's looping sounds
+(`convert::QUIET_STAND_INS`). The pelican's attachments (`obje +0x94`,
+`0x18` each) loop six sounds, engine, hover and banking on each side,
+scaled by its `engine_audio`, `hover_audio` and `banking_audio`
+functions; on a lifepod they hummed the pelican's engine at every
+placement, all level (a10 at converter version 14: "repeated
+wurrrring"). A lifepod gets its own copy of the attachments without the
+`lsnd` elements (its lights and thruster effects stay the template's)
+and a report line per sound dropped. Halo 1's own looping sounds are not
+converted, so lifepods are quiet. Other craft keep their template's
+sounds: those are the same vehicle's.
+
 Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
 (5 placements, the intro pods) is named in `recording_play` (5),
 `recording_play_and_delete` (6), `unit_enter_vehicle` (2),

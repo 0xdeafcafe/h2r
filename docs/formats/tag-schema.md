@@ -110,6 +110,16 @@ Then, on offsets still free:
    next raw pointer of that map into the same file, skipping the
    element's own other pointers (a bitmap's first level of detail spans
    the later ones). Of those, the one with the least total slack wins.
+8. **Engine strides** (`infer::ENGINE_STRIDES`): element sizes the XBE
+   settles where the data can't. The scenery palette (`scnr +0x58`) sits
+   so close to other arrays on some maps that inference gave it 4 bytes.
+   **E:** every object palette is read with one `0x28` stride and its
+   datum at `+4` (`0x000a743b` loads the palette by object type from the
+   table at `0x00468630`, `0x000a7442` reads the placement's `+0xc`
+   index, `0x000a746d`/`0x000a7473` scale it by `0x28` and read `+4`).
+   **V:** 27 maps, 854 scenery palette entries, 5,445 placements, every
+   entry a tag reference at `+0` of a `0x28` element
+   (`h1convert/tests/h2_scenario.rs`).
 
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They
