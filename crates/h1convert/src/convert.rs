@@ -512,7 +512,10 @@ pub fn prepare<R: Read + Seek>(
         materials,
         material_shaders,
         textures,
-        skies: crate::sky::read(h1),
+        skies: crate::sky::Skies {
+            shader: crate::sky::base_sky_shader(base),
+            ..crate::sky::read(h1)
+        },
         ambience,
         sound_clusters,
         sound_leaves,
@@ -560,12 +563,21 @@ impl Prepared {
                 sandbox: self.sandbox.name().into(),
                 source_sha256: self.source_sha256,
             },
+            precision: self
+                .applied
+                .precision
+                .iter()
+                .map(|&(from, to)| content::Swap {
+                    from: from.0,
+                    to: to.0,
+                })
+                .collect(),
         };
         // Parsed from text so the manifest's own checks run on it.
         let text = format!(
             "[package]\nformat = 1\nname = {display:?}\n\n[base]\nmap = {name:?}\nderived = true\n\n\
              [list]\nbase = {base:?}\n\n[[variant]]\nfile = {file:?}\nsha256 = \"{sha}\"\n\
-             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n",
+             origin = {{ game = \"halo1\", map = {map:?}, sandbox = \"{sandbox}\", source_sha256 = \"{src}\" }}\n{precision}",
             display = self.display_name,
             base = known(&self.h1_name).map_or("beavercreek", |(_, b)| b),
             file = variant.file,
@@ -573,6 +585,16 @@ impl Prepared {
             map = variant.origin.map,
             sandbox = variant.origin.sandbox,
             src = variant.origin.source_sha256,
+            precision = if variant.precision.is_empty() {
+                String::new()
+            } else {
+                let swaps: Vec<String> = variant
+                    .precision
+                    .iter()
+                    .map(|p| format!("{{ from = {}, to = {} }}", p.from, p.to))
+                    .collect();
+                format!("precision = [{}]\n", swaps.join(", "))
+            },
         );
         let m = Manifest::from_toml(&text).expect("a well-formed manifest");
         debug_assert_eq!(m.variants, [variant]);
