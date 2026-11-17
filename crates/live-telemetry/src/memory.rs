@@ -254,12 +254,12 @@ fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
         .map(|(kind, body)| (kind, body.addr)))
 }
 
+/// Three `f32`s in one guest read: the same bytes as three reads, and a
+/// fault where any of them would fault.
 fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
-    let mut out = [0.0; 3];
-    for (i, value) in out.iter_mut().enumerate() {
-        *value = f64::from(guest.f32(address + 4 * i as u32)?);
-    }
-    Ok(out)
+    let b = guest.read::<12>(address)?;
+    let f = |i: usize| f64::from(f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]));
+    Ok([f(0), f(4), f(8)])
 }
 
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
@@ -428,15 +428,50 @@ pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
 /// vehicle (occupied when any biped's parent is it) and every machine. Only
 /// those objects' bodies are read; a fault on one object skips it.
 pub fn world(guest: &Guest) -> ReadResult<World> {
+    let mut out = World::default();
+    world_into(guest, &mut ScanBuffers::default(), &mut out)?;
+    Ok(out)
+}
+
+/// The world scan's working lists, kept between ticks for their allocations.
+#[derive(Default)]
+pub struct ScanBuffers {
+    headers: Vec<u8>,
+    /// Vehicles a biped is parented to.
+    ridden: Vec<u32>,
+}
+
+/// [`world`] into `out`, reusing its lists' (and `buffers`') allocations
+/// from the last tick: once they have grown, the scan allocates nothing.
+/// After an error `out` is empty.
+pub fn world_into(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
+    clear(out);
+    let scanned = scan(guest, buffers, out);
+    if scanned.is_err() {
+        clear(out);
+    }
+    scanned
+}
+
+fn clear(world: &mut World) {
+    world.actors.clear();
+    world.vehicles.clear();
+    world.machines.clear();
+    world.placed.clear();
+    world.bodies.clear();
+}
+
+fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let high_water = guest
         .u32(array + layout::DATUM_HIGH_WATER)?
         .min(layout::OBJECT_CAPACITY);
     let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let mut headers = vec![0; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
-    guest.read_bytes(data, &mut headers, 1)?;
-    let mut out = World::default();
-    let mut ridden = BTreeSet::new();
+    let ScanBuffers { headers, ridden } = buffers;
+    headers.clear();
+    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
+    guest.read_bytes(data, headers, 1)?;
+    ridden.clear();
     const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
     for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
         let salt = u16::from_le_bytes([header[0], header[1]]);
@@ -456,7 +491,7 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                 if let Ok(parent) = guest.u32(body + layout::BODY_PARENT)
                     && parent != u32::MAX
                 {
-                    ridden.insert(parent);
+                    ridden.push(parent);
                 }
                 let Ok(depleted) = guest
                     .u16(body + layout::BODY_DAMAGE_FLAGS)
@@ -525,10 +560,11 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
             _ => {}
         }
     }
+    ridden.sort_unstable();
     for v in &mut out.vehicles {
-        v.occupied = ridden.contains(&v.datum);
+        v.occupied = ridden.binary_search(&v.datum).is_ok();
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The placement kind of an object type whose placements frames track.

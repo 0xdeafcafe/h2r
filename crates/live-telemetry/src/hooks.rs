@@ -8,6 +8,7 @@ use engine::points;
 use runtime::Runtime;
 
 use crate::config::{TelemetryConfig, TelemetrySinkConfig};
+use crate::event::World;
 use crate::layout;
 use crate::memory;
 use crate::server::ServerSink;
@@ -32,6 +33,8 @@ pub struct Telemetry {
     /// Damage reports since the last sample, from the damage hook (oldest
     /// dropped past [`MAX_PENDING_HITS`]).
     hits: Mutex<Vec<crate::event::HitRecord>>,
+    /// The world scan's buffers and lists, kept between frame ticks.
+    scan: Mutex<(memory::ScanBuffers, World)>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -48,6 +51,7 @@ impl Telemetry {
             last_tick: Mutex::new(None),
             shots: Mutex::new(BTreeMap::new()),
             hits: Mutex::new(Vec::new()),
+            scan: Mutex::default(),
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
         }
@@ -254,16 +258,28 @@ impl Telemetry {
         snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
         snapshot.hits = std::mem::take(&mut *self.hits.lock().unwrap());
         // Actors, vehicles and machines only go out in frames (every second
-        // tick); a failed scan sends none rather than stopping telemetry.
-        if snapshot.tick.is_multiple_of(2) {
-            let world = memory::world(guest).unwrap_or_default();
-            snapshot.actors = world.actors;
-            snapshot.vehicles = world.vehicles;
-            snapshot.machines = world.machines;
-            snapshot.placed = world.placed;
-            snapshot.bodies = world.bodies;
+        // tick). The scan's lists are lent to the snapshot and taken back
+        // after, so a frame tick reuses the last one's allocations.
+        let mut scan = self.scan.lock().unwrap();
+        let (buffers, world) = &mut *scan;
+        let frame_tick = snapshot.tick.is_multiple_of(2);
+        if frame_tick {
+            // A failed scan sends none rather than stopping telemetry.
+            let _ = memory::world_into(guest, buffers, world);
+            snapshot.actors = std::mem::take(&mut world.actors);
+            snapshot.vehicles = std::mem::take(&mut world.vehicles);
+            snapshot.machines = std::mem::take(&mut world.machines);
+            snapshot.placed = std::mem::take(&mut world.placed);
+            snapshot.bodies = std::mem::take(&mut world.bodies);
         }
         self.session.lock().unwrap().sample(&snapshot);
+        if frame_tick {
+            world.actors = snapshot.actors;
+            world.vehicles = snapshot.vehicles;
+            world.machines = snapshot.machines;
+            world.placed = snapshot.placed;
+            world.bodies = snapshot.bodies;
+        }
         Ok(true)
     }
 
