@@ -168,7 +168,7 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
     (b"vehi", &["banshee"], "objects\\vehicles\\banshee\\banshee"),
     // Campaign craft: Halo 2's counterpart where a base carries one
     // (05a_deltaapproach has the pelican, phantom, wraith and Covenant
-    // turret; 03a, 06a and 08a the insertion pod).
+    // turret).
     (b"vehi", &["pelican"], "objects\\vehicles\\pelican\\pelican"),
     (
         b"vehi",
@@ -189,11 +189,14 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &[],
         "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
     ),
-    (
-        b"vehi",
-        &["lifepod"],
-        "objects\\vehicles\\insertion_pod\\insertion_pod",
-    ),
+    // Halo 1's lifepod (the escape pod) is a small flying craft, not Halo
+    // 2's insertion pod (the ODST drop pod, a different vehicle). By role:
+    // the scripts fly it with recordings (`recording_play`, a30's intro),
+    // load units into it (`unit_enter_vehicle`), open and close it, attach
+    // and animate it, and never give it to the player (`lifepod_use` in
+    // h1campaign's survey). The pelican is the base's flying unit with
+    // passenger seats; the model and animations stay Halo 1's.
+    (b"vehi", &["lifepod"], "objects\\vehicles\\pelican\\pelican"),
 ];
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in

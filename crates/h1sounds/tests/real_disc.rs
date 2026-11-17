@@ -620,3 +620,104 @@ fn every_retail_sound_merges() {
     println!("{merged} sounds merged, {promoted} with promotions refused");
     assert!(merged > 0);
 }
+
+/// A character's whole tree moved from one retail map onto another
+/// (`h1sounds::transplant`: 04b's flood combat elite onto 05a, which has
+/// none) takes its sounds: after a build, every moved `snd!` names, in the
+/// new map's gestalt, the source's playback and scale, and per permutation
+/// the same import name (as a string) and chunks whose bytes are the
+/// source's (local raw copied, shared-cache pointers kept).
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn a_transplanted_tree_takes_its_sounds() {
+    use h1sounds::convert::snd;
+    let u16_at = |b: &[u8], o: usize| usize::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let name = "objects\\characters\\floodcombat_elite\\ai\\floodcombat_elite";
+    let src_bytes = h2_bytes("04b_floodlab");
+    let (src_g, _) = gestalt_of(&src_bytes);
+    let mut src = Map::from_reader(Cursor::new(src_bytes.as_slice())).unwrap();
+    let root = src
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"char") && t.name.as_deref() == Some(name))
+        .unwrap()
+        .id;
+    let base = h2_bytes("05a_deltaapproach");
+    let mut set =
+        TagSet::from_map(&mut Map::from_reader(Cursor::new(base.as_slice())).unwrap()).unwrap();
+    let mut g = SoundGestalt::from_set(&set).unwrap();
+    let schema = tags::schema::Schema::builtin();
+    let moved = h1sounds::transplant(schema, &mut src, &src_g, root, &mut set, &mut g)
+        .unwrap()
+        .unwrap();
+    g.install(&mut set, "g").unwrap();
+    let (out, _) = set.build().unwrap();
+    let (dst_g, _) = gestalt_of(&out);
+    let mut dst = Map::from_reader(Cursor::new(out.as_slice())).unwrap();
+    let raw = |bytes: &[u8], p: u32, size: u32| -> Option<Vec<u8>> {
+        (p >> 30 == 0).then(|| bytes[p as usize..][..size as usize].to_vec())
+    };
+    let (mut sounds, mut chunks) = (0, 0);
+    for from in &moved.tree.added {
+        if src.tag(*from).unwrap().group != FourCC(*b"snd!") {
+            continue;
+        }
+        let to = moved.tree.ids[from];
+        let h = src.read_tag_bytes(*from).unwrap();
+        let o = dst.read_tag_bytes(to).unwrap();
+        sounds += 1;
+        assert_eq!(
+            src_g.element(blocks::PLAYBACKS, u16_at(&h, snd::PLAYBACK)),
+            dst_g.element(blocks::PLAYBACKS, u16_at(&o, snd::PLAYBACK))
+        );
+        assert_eq!(
+            src_g.element(blocks::SCALES, h[snd::SCALE].into()),
+            dst_g.element(blocks::SCALES, o[snd::SCALE].into())
+        );
+        assert_eq!(h[snd::PITCH_RANGE_COUNT], o[snd::PITCH_RANGE_COUNT]);
+        for r in 0..usize::from(h[snd::PITCH_RANGE_COUNT]) {
+            let a = src_g.element(blocks::PITCH_RANGES, u16_at(&h, snd::FIRST_PITCH_RANGE) + r);
+            let b = dst_g.element(blocks::PITCH_RANGES, u16_at(&o, snd::FIRST_PITCH_RANGE) + r);
+            for p in 0..u16_at(a, 10) {
+                let pa = src_g.element(blocks::PERMUTATIONS, u16_at(a, 8) + p);
+                let pb = dst_g.element(blocks::PERMUTATIONS, u16_at(b, 8) + p);
+                let string = |m: &Map<Cursor<&[u8]>>, g: &SoundGestalt, e: &[u8]| {
+                    let id = u32::from_le_bytes(
+                        g.element(blocks::IMPORT_NAMES, u16_at(e, 0))
+                            .try_into()
+                            .unwrap(),
+                    );
+                    m.strings()[(id & 0xff_ffff) as usize].clone()
+                };
+                assert_eq!(string(&src, &src_g, pa), string(&dst, &dst_g, pb));
+                for c in 0..u16_at(pa, 14) {
+                    let ca = src_g.chunks[u16_at(pa, 12) + c];
+                    let cb = dst_g.chunks[u16_at(pb, 12) + c];
+                    let (
+                        h1sounds::gestalt::ChunkPointer::Stored(x),
+                        h1sounds::gestalt::ChunkPointer::Stored(y),
+                    ) = (ca.pointer, cb.pointer)
+                    else {
+                        panic!("decoded chunks are stored");
+                    };
+                    assert_eq!(ca.size, cb.size);
+                    let size = ca.size & 0x7fff_ffff;
+                    match raw(&src_bytes, x, size) {
+                        Some(a) => assert_eq!(Some(a), raw(&out, y, size), "chunk bytes"),
+                        None => assert_eq!(x, y, "a shared-cache pointer stays"),
+                    }
+                    chunks += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "{name}: {} tags, {sounds} sounds, {chunks} chunks; {} promotions and {} extra infos cut; {:?} raw copied",
+        moved.tree.added.len(),
+        moved.promotions_cut,
+        moved.extra_infos_cut,
+        moved.raw
+    );
+    assert_eq!(sounds, moved.sounds);
+    assert!(sounds > 0 && chunks > 0);
+}

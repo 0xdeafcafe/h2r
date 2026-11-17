@@ -313,9 +313,14 @@ test checks the table against the disc).
 | engineer, assassin, player, none | `ai\generic` | every level with AI |
 
 A converted level needs each chosen tag in its map; no single retail map
-holds them all, so the map builder has to pull them from the levels listed
-(with their units and dependencies). That is the builder's job; the plan
-lists the paths.
+holds them all. `h1campaign::donor` copies the ones the base (05a) lacks
+from a donor, whole tree and sounds (`h1sounds::transplant`): hunter
+from 03a, flood combat elite, infection, carrier and the monitor from
+04b, flood combat human from 06a, and the special-ops elite and grunt
+from 04b. Two stay out: the crewman (no donor; the marine stands in) and
+the sentinel: every sentinel character but the enforcer shares
+`sentinel_aggressor`'s animation graph, which `tags::schema` refuses (an
+unknown pointer in the `+0xb4` block's elements, `donor_survey`).
 
 ### a30 and a10 (V)
 

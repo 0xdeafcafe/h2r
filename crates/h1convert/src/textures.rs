@@ -309,7 +309,9 @@ pub fn plan<R: Read + Seek>(
 impl Retexture {
     /// Adds the bitmaps and shader copies to `set` (after anything whose
     /// datums were predicted) and returns `templates` with a material head
-    /// per copy, and for each of `materials` the head it now uses.
+    /// per copy, and for each of `materials` the head it now uses. A bitmap
+    /// or shader copy whose name the set already holds is reused, so the
+    /// BSPs of one level share their textures.
     pub fn install(
         &self,
         set: &mut TagSet,
@@ -318,7 +320,11 @@ impl Retexture {
     ) -> Result<(Templates, Vec<usize>)> {
         let mut ids = Vec::new();
         for (name, c) in &self.bitmaps {
-            ids.push(c.clone().install(set, name)?);
+            let have = set.find(c.group, name);
+            ids.push(match have {
+                Some(id) => id,
+                None => c.clone().install(set, name)?,
+            });
         }
         set.add_group(SHAD, None, None);
         let mut out = templates.clone();
@@ -329,7 +335,10 @@ impl Retexture {
             for &(p, k) in &c.swaps {
                 params.bytes[p * 0xc..p * 0xc + 4].copy_from_slice(&ids[k].0.to_le_bytes());
             }
-            let id = set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(root))?;
+            let id = match set.find(SHAD, &c.h1_shader) {
+                Some(id) => id,
+                None => set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(root))?,
+            };
             let mut head = templates.material_heads[c.material];
             head[0x8..0xc].copy_from_slice(&SHAD.as_u32().to_le_bytes());
             head[0xc..0x10].copy_from_slice(&id.0.to_le_bytes());

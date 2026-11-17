@@ -19,7 +19,7 @@
 //! Layouts and evidence: `docs/formats/h1-sounds.md` ("The Halo 2 gestalt").
 
 use map::FourCC;
-use map::build::{Block, RawId, RawRef, TagPayload, TagSet};
+use map::build::{Block, FixupKind, RawId, RawRef, TagPayload, TagSet};
 
 use crate::{Error, Result};
 
@@ -300,17 +300,83 @@ impl SoundGestalt {
             .position(|s| s.tag.as_ref().is_some_and(|t| t.group == UGH))
     }
 
-    /// Decodes the set's (pinned) `ugh!`; an empty gestalt when it has none.
+    /// Decodes the set's `ugh!`, pinned or built by [`Self::install`]; an
+    /// empty gestalt when it has none.
     pub fn from_set(set: &TagSet) -> Result<Self> {
         let Some(slot) = Self::slot(set) else {
             return Ok(Self::default());
         };
         match &set.slots[slot].tag.as_ref().expect("a tag").payload {
             TagPayload::Pinned { address, bytes } => Self::decode(bytes, *address),
+            TagPayload::Built(b) => Self::from_block(b),
             _ => Err(Error::Invalid(
-                "the set's ugh! is not pinned; keep the SoundGestalt that built it".into(),
+                "the set's ugh! is neither pinned nor built".into(),
             )),
         }
+    }
+
+    /// The inverse of [`Self::to_block`].
+    pub fn from_block(root: &Block) -> Result<Self> {
+        let bad = |what: &str| Error::Invalid(format!("ugh! block: {what}"));
+        let child = |b: &Block, at: usize| -> Result<Option<(u32, Block)>> {
+            match b.fixups.iter().find(|f| f.offset as usize == at) {
+                None => Ok(None),
+                Some(f) => match &f.kind {
+                    FixupKind::Block { count, child } => Ok(Some((*count, child.clone()))),
+                    _ => Err(bad("a header field is not a block")),
+                },
+            }
+        };
+        if root.bytes.len() != HEADER_LEN {
+            return Err(bad("header size"));
+        }
+        let mut g = SoundGestalt::default();
+        for i in 0..11 {
+            let Some((count, b)) = child(root, i * 8)? else {
+                continue;
+            };
+            let n = count as usize;
+            if b.bytes.len() != n * STRIDES[i] {
+                return Err(bad("element bytes"));
+            }
+            if i == blocks::CHUNKS {
+                for k in 0..n {
+                    let at = k * 12;
+                    let pointer = match b.fixups.iter().find(|f| f.offset as usize == at) {
+                        None => ChunkPointer::Stored(u32_at(&b.bytes, at)),
+                        Some(f) => match f.kind {
+                            FixupKind::Raw(RawRef::Local(r)) => ChunkPointer::Local(r),
+                            _ => return Err(bad("a chunk pointer")),
+                        },
+                    };
+                    g.chunks.push(Chunk {
+                        pointer,
+                        size: u32_at(&b.bytes, at + 4),
+                        runtime: u32_at(&b.bytes, at + 8),
+                    });
+                }
+            } else if is_nested(i) {
+                let stride = STRIDES[i];
+                for k in 0..n {
+                    let at = k * stride;
+                    let mut e = Nested {
+                        bytes: b.bytes[at..at + stride].to_vec(),
+                        children: Vec::new(),
+                    };
+                    for &(off, _) in child_blocks(i) {
+                        let (count, bytes) = match child(&b, at + off)? {
+                            Some((c, cb)) => (c, cb.bytes),
+                            None => (0, Vec::new()),
+                        };
+                        e.children.push(Child { count, bytes });
+                    }
+                    g.nested[i].push(e);
+                }
+            } else {
+                g.flat[i] = b.bytes;
+            }
+        }
+        Ok(g)
     }
 
     /// Writes the gestalt into `set`: in place of its `ugh!` (same slot and

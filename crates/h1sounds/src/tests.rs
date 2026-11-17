@@ -284,6 +284,25 @@ fn invented_gestalt() -> (Vec<u8>, u32) {
     (b, base)
 }
 
+/// A built gestalt reads back as the one that built it (local chunk
+/// pointers included), so a set's gestalt can grow in more than one pass.
+#[test]
+fn a_built_gestalt_reads_back() {
+    let (bytes, base) = invented_gestalt();
+    let mut g = SoundGestalt::decode(&bytes, base).unwrap();
+    let mut set = TagSet::new(CacheType::Multiplayer, "g", "invented\\g");
+    let raw = set.add_raw(vec![1, 2, 3, 4], 4);
+    g.chunks.push(crate::gestalt::Chunk {
+        pointer: ChunkPointer::Local(raw),
+        size: 4,
+        runtime: u32::MAX,
+    });
+    let back = SoundGestalt::from_block(&g.to_block()).unwrap();
+    assert_eq!(back, g);
+    g.install(&mut set, "g").unwrap();
+    assert_eq!(SoundGestalt::from_set(&set).unwrap(), back);
+}
+
 #[test]
 fn a_gestalt_is_covered_exactly_and_survives_a_build() {
     let (bytes, base) = invented_gestalt();

@@ -159,8 +159,11 @@ on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
 health pack on the overshield, cyborg on `masterchief_mp`, warthog and
 ghost on Halo 2's. For campaign bases (05a_deltaapproach): pelican on the
 pelican, Covenant dropship on the phantom, wraith on the wraith, the
-Covenant gun turret on `c_turret_ap`, lifepods on `insertion_pod` (03a,
-06a, 08a have it; 05a does not); placed elites, grunts, jackals and
+Covenant gun turret on `c_turret_ap`, lifepods on the pelican (by role:
+Halo 1's lifepod is the escape pod, a small flying craft, not Halo 2's
+`insertion_pod`, the ODST drop pod. The scripts fly it with recordings,
+load units into it, open, close, attach and animate it, and never hand it
+to the player: `lifepod_use` in h1campaign's survey, below); placed elites, grunts, jackals and
 engineers on Halo 2's elite, grunt, jackal and drone, every other placed
 biped (marines, Keyes, the pilot) on `masterchief`; scenery on Delta
 Halo's `statue_shard_large` (a static rock with collision and no `phmo`). The template's root is copied; the fields below get
@@ -168,6 +171,17 @@ Halo 1's values; the model reference becomes a converted `hlmt`; the rest
 stays the template's. Template child blocks that are not rebuilt keep
 their retail addresses (aliasing, as retail does 13,099 times), so the
 tags must go into a `TagSet` made from that base map.
+
+Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
+(5 placements, the intro pods) is named in `recording_play` (5),
+`recording_play_and_delete` (6), `unit_enter_vehicle` (2),
+`object_teleport` (16), `objects_attach` (3) and `custom_animation` (1)
+calls; a10's `lifepod_docked` and `lifepod` in `objects_attach`,
+`custom_animation`, `unit_open`/`unit_close` and teleports; b30's and
+a30's plain `lifepod` palette entries have no placement. No call drives
+one with a player. So the template is a flying unit with passenger
+seats that a recording can fly: the pelican, on 05a; the model and
+animations stay Halo 1's.
 
 **Model chain.** `hlmt` = the template's `hlmt` root with: render model
 -> converted `mode` (`h1models`, no shaders yet), collision -> converted
