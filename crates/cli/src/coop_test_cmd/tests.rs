@@ -295,6 +295,7 @@ fn the_supervisor_merges_two_games_and_the_verdict_reads_the_log() {
     let roles = Roles {
         host: "Alpha".into(),
         guests: vec!["Bravo".into()],
+        late: vec![],
     };
     let merged = dir.join("coop.log");
     let mut sup = Supervisor::new(&merged, &dir, &roles).unwrap();
@@ -373,6 +374,7 @@ fn the_next_steps_name_each_window_and_its_presses() {
     let two = Roles {
         host: "Alpha".into(),
         guests: vec!["Bravo".into()],
+        late: vec![],
     };
     assert_eq!(
         next_steps(&two, true),
@@ -383,6 +385,7 @@ fn the_next_steps_name_each_window_and_its_presses() {
     let three = Roles {
         host: "Alpha".into(),
         guests: vec!["Bravo".into(), "Charlie".into()],
+        late: vec![],
     };
     let line = next_steps(&three, false);
     assert!(
@@ -424,4 +427,40 @@ fn the_harness_waits_on_the_hosts_agent_socket_for_the_main_menu() {
         serde_json::json!({"phase": "menu", "map_ticks": 60})
     );
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn late_holds_back_the_last_guests_accept_and_names_it_late() {
+    let o = opts(&["test", "--players", "3", "--auto", "--late", "--root", "/r"]);
+    assert!(o.late);
+    let games = plan(&o, "http://x", Ipv4Addr::new(10, 0, 0, 2), Path::new("/s"));
+    let get = |g: &Game, k: &str| g.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(
+        get(&games[2], "H2_COOP_AUTO_ACCEPT_DELAY").as_deref(),
+        Some("120")
+    );
+    assert_eq!(get(&games[1], "H2_COOP_AUTO_ACCEPT_DELAY"), None);
+    assert_eq!(get(&games[0], "H2_COOP_AUTO_ACCEPT_DELAY"), None);
+    // The host still invites everyone (Charlie accepts later).
+    assert_eq!(
+        get(&games[0], "H2_COOP_AUTO_INVITE").unwrap(),
+        "Bravo,Charlie"
+    );
+    let r = roles(&games, true);
+    assert_eq!(r.guests, ["Bravo"]);
+    assert_eq!(r.late, ["Charlie"]);
+    assert_eq!(roles(&games, false).late, Vec::<String>::new());
+    let line = next_steps(&r, true);
+    assert!(
+        line.contains("Charlie: Xbox Live too; it accepts 120 s after the invitation"),
+        "{line}"
+    );
+    // --late needs a guest to spare and the automation.
+    for bad in [
+        &["test", "--late", "--auto"][..],
+        &["test", "--players", "3", "--late"],
+    ] {
+        let e = parse(args(bad), env).unwrap_err().to_string();
+        assert!(e.contains("--late needs --auto"), "{e}");
+    }
 }
