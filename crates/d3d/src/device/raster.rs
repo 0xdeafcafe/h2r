@@ -748,6 +748,7 @@ impl<B: Backend> Device<B> {
                 self.write_back(mem, header, WritebackCause::Rewritten)?;
             }
             self.rtt.remove(&header);
+            self.rtt_epoch += 1;
             self.mirror_stale.remove(&header);
             self.rtt_synced.remove(&header);
             self.rtt_stores.remove(&header);
@@ -780,6 +781,7 @@ impl<B: Backend> Device<B> {
         };
         self.tracker.watch(target.data, target.len());
         self.rtt.insert(header, target);
+        self.rtt_epoch += 1;
         self.write_back_overlapping(mem, header)?;
         // The level's current texels, so draws that do not cover it all
         // leave the rest as the guest had it.
@@ -1106,6 +1108,7 @@ impl<B: Backend> Device<B> {
     /// drawn: a skipped draw dirties nothing.
     pub(super) fn mark_written(&mut self, writes_depth: bool) {
         if let Some(t) = self.rtt.get_mut(&self.render_target) {
+            self.rtt_epoch += u64::from(!t.dirty);
             t.dirty = true;
             self.mirror_supersede(self.render_target);
         }
@@ -1120,6 +1123,7 @@ impl<B: Backend> Device<B> {
         }
         if writes_depth && self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
+                self.rtt_epoch += u64::from(!t.dirty);
                 t.dirty = true;
                 self.depth_level_tex.remove(&self.depth_stencil);
                 self.mirror_supersede(self.depth_stencil);
@@ -1299,6 +1303,16 @@ impl<B: Backend> Device<B> {
         if self.rtt.is_empty() && self.mirror.is_none() {
             return Ok(());
         }
+        // Nothing has changed for this texture since the last call: no
+        // level to write back, the same range to flush. (A 12-byte header
+        // at the end of mapped memory is not remembered.)
+        let words = crate::guest::read_array::<5>(mem, texture).ok();
+        if let Some(&(w, epoch, lo, hi)) = self.texture_flushed.get(&texture)
+            && Some(w) == words
+            && epoch == self.rtt_epoch
+        {
+            return self.mirror_flush_range(mem, lo, hi);
+        }
         let (start, end) = self.resource_span(mem, texture)?;
         let headers: Vec<u32> = self
             .rtt
@@ -1323,6 +1337,11 @@ impl<B: Backend> Device<B> {
                 lo = lo.min(t.data as u64);
                 hi = hi.max(t.data as u64 + t.len() as u64);
             }
+        }
+        // Written back, the levels are clean: the answer holds until a
+        // target changes.
+        if let Some(words) = words {
+            self.texture_flushed.insert(texture, (words, self.rtt_epoch, lo, hi));
         }
         self.mirror_flush_range(mem, lo, hi)
     }
@@ -1356,6 +1375,7 @@ impl<B: Backend> Device<B> {
         self.rtt_synced.clear();
         self.rtt_stores.clear();
         self.depth_level_tex.clear();
+        self.rtt_epoch += 1;
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
             self.backend
                 .destroy_surface(t.surface)

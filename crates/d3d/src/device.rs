@@ -727,6 +727,14 @@ pub struct Device<B: Backend> {
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
     rtt: HashMap<u32, RttTarget<B::Surface>>,
+    /// Bumped whenever [`Self::rtt`] gains or loses a target or a target
+    /// becomes dirty: what `flush_for_texture` found for a texture holds
+    /// until then.
+    rtt_epoch: u64,
+    /// `flush_for_texture`'s last answer per texture: its header words,
+    /// [`Self::rtt_epoch`] then, and the guest range to flush the mirror
+    /// over. Nothing to write back while both still match.
+    texture_flushed: rustc_hash::FxHashMap<u32, ([u32; 5], u64, u64, u64)>,
     /// Bumped by every draw or clear that may write the device's own depth
     /// buffer (`raster.rs`, textures over [`DEPTH_BUFFER_DATA`]).
     depth_generation: u64,
@@ -894,6 +902,8 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             display: display::Display::default(),
             rtt: HashMap::default(),
+            rtt_epoch: 0,
+            texture_flushed: rustc_hash::FxHashMap::default(),
             depth_generation: 0,
             depth_color: None,
             depth_color_newer: false,
@@ -2038,6 +2048,7 @@ impl<B: Backend> Device<B> {
         self.depth_level_tex.remove(&header);
         self.mirror_stale.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
+            self.rtt_epoch += 1;
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
@@ -2053,6 +2064,7 @@ impl<B: Backend> Device<B> {
             self.rtt_synced.remove(&h);
             self.rtt_stores.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
+            self.rtt_epoch += 1;
             self.mirror_stale.remove(&h);
             self.depth_level_tex.remove(&h);
             self.backend
