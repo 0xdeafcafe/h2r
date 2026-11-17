@@ -80,7 +80,9 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     assert_eq!(done.manifest.variants[0].origin.sandbox, "h1");
 
     let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
-    assert_eq!(out.index_slots() as usize, first + added);
+    // The Halo 1 objects, then Halo 1's textures (bitmaps, shader copies).
+    let textures = p.textures.bitmaps.len() + p.textures.copies.len();
+    assert_eq!(out.index_slots() as usize, first + added + textures);
     let ctx = tags::object::Context::read(&mut out).unwrap();
     let names: std::collections::HashMap<TagId, (FourCC, String)> = out
         .tags()

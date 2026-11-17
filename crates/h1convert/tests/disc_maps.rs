@@ -138,15 +138,30 @@ fn check_structure_texturing(
             m.tag(id).unwrap().name.clone().unwrap()
         })
         .collect();
-    let chosen: Vec<&String> = p.material_shaders.iter().map(|(_, n)| n).collect();
+    // A material whose Halo 1 shader got a copy with Halo 1's textures
+    // names the copy (named after the Halo 1 shader); the rest name the
+    // chosen base shader.
+    let copy_of = |k: usize| {
+        p.textures
+            .copies
+            .iter()
+            .find(|c| c.h1_shader == p.materials[k] && c.material == p.material_shaders[k].0)
+    };
+    let chosen: Vec<&String> = (0..p.material_shaders.len())
+        .map(|k| copy_of(k).map_or(&p.material_shaders[k].1, |c| &c.h1_shader))
+        .collect();
     assert_eq!(shader_of.iter().collect::<Vec<_>>(), chosen, "{name}");
-    for n in &shader_of {
+    for (k, n) in shader_of.iter().enumerate() {
         let id = m
             .tags()
             .iter()
             .find(|t| t.name.as_deref() == Some(n.as_str()))
             .unwrap()
             .id;
+        if let Some(c) = copy_of(k) {
+            check_shader_copy(name, m, base, id, c);
+            continue;
+        }
         // The shader reads as it does in the base (the reader doesn't
         // follow every shader; one it can't read in the base is skipped).
         let got = scenario_edit::scene::shader_bitmaps(m, id).map_err(|e| e.to_string());
@@ -191,6 +206,81 @@ fn check_structure_texturing(
         all.clone()
             .all(|v| v.lightmap.iter().all(|c| (0.0..=1.0).contains(c)))
     );
+}
+
+/// A shader copy with Halo 1's textures: it reads as a shader, its
+/// template is its base shader's, and its bitmaps are the base shader's
+/// with each swapped role's bitmap replaced by the Halo 1 one (named as in
+/// Halo 1), which is in the map as a bitmap.
+fn check_shader_copy(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    base: &mut Map<Cursor<Vec<u8>>>,
+    id: map::TagId,
+    c: &h1convert::textures::ShaderCopy,
+) {
+    let n = &c.h1_shader;
+    let (template, got) = scenario_edit::scene::shader_bitmaps(m, id)
+        .unwrap_or_else(|e| panic!("{name}: shader copy {n}: {e}"));
+    let (want_template, want) = scenario_edit::scene::shader_bitmaps(base, c.template).unwrap();
+    assert_eq!(template, want_template, "{name}: {n}'s template");
+    assert_eq!(got.len(), want.len(), "{name}: {n}'s bitmaps");
+    let h1_names: Vec<&str> = c.swapped.iter().map(|s| s.1.as_str()).collect();
+    let mut replaced = 0;
+    for (g, w) in got.iter().zip(&want) {
+        if g == w {
+            continue;
+        }
+        let t = m.tag(*g).unwrap();
+        assert_eq!(t.group, FourCC(*b"bitm"), "{name}: {n}");
+        let bn = t.name.clone().unwrap_or_default();
+        assert!(h1_names.contains(&bn.as_str()), "{name}: {n} uses {bn}");
+        replaced += 1;
+    }
+    assert!(replaced > 0, "{name}: {n} draws none of Halo 1's bitmaps");
+}
+
+/// Halo 1's own textures: every bitmap the converter added decodes
+/// (through Halo 2's decoder, from the converted map's own raw data) to
+/// the pixels `h1bitmaps` decodes from the Halo 1 bitmap, every image's
+/// top level. Returns (bitmaps, images).
+fn check_h1_textures(
+    name: &str,
+    m: &mut Map<Cursor<Vec<u8>>>,
+    files: &mut ResourceFiles,
+    h1: &H1Map,
+    p: &h1convert::convert::Prepared,
+) -> (usize, usize) {
+    let mut images = 0;
+    for (bn, _) in &p.textures.bitmaps {
+        let id = m
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"bitm") && t.name.as_deref() == Some(bn.as_str()))
+            .unwrap_or_else(|| panic!("{name}: no bitmap {bn}"))
+            .id;
+        let d = DecodedTag::read(m, id).unwrap();
+        let TagData::Bitmap(b) = d.data else {
+            panic!("{name}: {bn} isn't a bitmap")
+        };
+        let tag = h1
+            .tags()
+            .iter()
+            .find(|t| &t.name == bn && t.group.to_string() == "bitm")
+            .unwrap()
+            .clone();
+        let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
+        assert_eq!(b.images.len(), src.images.len(), "{name}: {bn}");
+        for (i, im) in b.images.iter().enumerate() {
+            let got = assets::decode_image(im, files)
+                .unwrap_or_else(|e| panic!("{name}: {bn} [{i}]: {e}"));
+            let want = h1bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap())
+                .unwrap();
+            assert_eq!(got.levels[0].rgba, want[0].rgba, "{name}: {bn} [{i}]");
+            images += 1;
+        }
+    }
+    (p.textures.bitmaps.len(), images)
 }
 
 /// The converted lightmap: the lightmap names the converted bitmap, every
@@ -395,6 +485,22 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         for (h1s, (_, b)) in p.materials.iter().zip(&p.material_shaders) {
             eprintln!("    shader {h1s} -> {b}");
         }
+        for c in &p.textures.copies {
+            eprintln!(
+                "    textures {} on {}: {:?}",
+                c.h1_shader, c.template_name, c.swapped
+            );
+        }
+        for n in &p.textures.notes {
+            eprintln!("    textures: {n}");
+        }
+        if name == "bloodgulch" {
+            assert!(
+                p.textures.copies.len() >= 5,
+                "{name}: Halo 1 textures on {} shaders",
+                p.textures.copies.len()
+            );
+        }
         for c in &p.applied.collections {
             eprintln!("    built {} as {:?}", c.name, c.id);
         }
@@ -425,9 +531,11 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
                 c.name
             );
         }
+        // Then Halo 1's textures: a bitmap per converted bitmap and a
+        // shader per copy.
         assert_eq!(
             m.index_slots() as usize,
-            base_slots + collections.len(),
+            base_slots + collections.len() + p.textures.bitmaps.len() + p.textures.copies.len(),
             "{name}"
         );
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
@@ -522,6 +630,11 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
             p.lightmap.as_ref().unwrap().source,
             p.lightmap.as_ref().unwrap().replaces
         );
+        let (h1_bitmaps, h1_images) =
+            check_h1_textures(name, &mut m, &mut converted_files, &h1, &p);
+        eprintln!(
+            "    Halo 1 textures: {h1_bitmaps} bitmaps, {h1_images} images decode as in Halo 1"
+        );
         let want = bitmaps(&mut base_map, &mut base_files);
         let got = bitmaps(&mut m, &mut converted_files);
         std::fs::remove_file(&path).unwrap();
@@ -534,6 +647,7 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let got: Vec<_> = got
             .into_iter()
             .filter(|g| g.0 != converted_lightmap)
+            .filter(|g| !p.textures.bitmaps.iter().any(|(n, _)| *n == g.0))
             .collect();
         assert_eq!(got.len(), want.len(), "{name}: image count");
         let differ: Vec<_> = got
