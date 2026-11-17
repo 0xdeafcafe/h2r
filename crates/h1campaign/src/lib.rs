@@ -251,11 +251,13 @@ pub struct Converted {
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
     // A level at the bound (b40) is converted again without the extras the
     // scripts only name: first the empty squads kept for their names, then
-    // the level data and seat table (`scenario::write`'s `lean`).
+    // the seat table, then the level data (`scenario::write`'s `lean`).
+    // Calls naming level data that is not there are stubbed
+    // (`h1scripts::compile::INDEXED`).
     let mut lean = 0;
     loop {
         match convert_with(h1, base, opts, lean) {
-            Err(Error::TagMemory { .. }) if lean < 2 => lean += 1,
+            Err(Error::TagMemory { .. }) if lean < 3 => lean += 1,
             r => return r,
         }
     }

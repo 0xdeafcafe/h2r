@@ -104,6 +104,15 @@ fn cluster_datum(b: &BspSlot) -> Block {
     e
 }
 
+/// Squads the engine holds: the AI's squad array at load (`0x00200974`,
+/// `mov ebx,14Fh`, `0x98` per datum) takes one datum per scenario squad
+/// (`+0x160`, `0x74` each; filled by `0x00200b30`), and a squad past it
+/// faults at `0x00200c44`. **E**.
+pub const MAX_SQUADS: usize = 0x14f;
+/// Squad groups the engine holds: the array at `0x002009ad` (`mov
+/// ebx,64h`, `0x38` per datum), one datum per `+0x158` element. **E**.
+pub const MAX_SQUAD_GROUPS: usize = 0x64;
+
 /// Script tables: string data, scripts, globals, references, nodes.
 pub const SCRIPT_FIELDS: [u32; 5] = [0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x238];
 /// Palette element (`scenario_edit::layout`): a tag reference first.
@@ -340,6 +349,9 @@ pub struct ScriptReport {
     pub sounds: usize,
     pub sounds_dropped: usize,
     pub missing_calls: usize,
+    /// Calls stubbed because a cutscene flag, camera point, title or device
+    /// group they name does not resolve (`h1scripts::compile::INDEXED`).
+    pub unindexed: Vec<String>,
     pub references: usize,
     pub references_resolved: usize,
     /// Squad groups the startup script places (Halo 1's initially created
@@ -413,6 +425,14 @@ impl std::fmt::Display for ScenarioReport {
                 s.references
             )?;
             writeln!(f, "    unresolved samples: {:?}", s.samples)?;
+            if !s.unindexed.is_empty() {
+                writeln!(
+                    f,
+                    "    {} calls stubbed for an unresolved flag, camera point, title or device group: {:?}",
+                    s.unindexed.len(),
+                    s.unindexed
+                )?;
+            }
             writeln!(
                 f,
                 "    sounds: {} converted, {} left out",
@@ -552,7 +572,8 @@ pub fn replaced_fields() -> Vec<u32> {
 
 /// Writes the scenario layers into `set` (built from the base). `lean` 1
 /// leaves out the empty squads kept only because scripts name them; 2 also
-/// the level data and seat table the scripts name (their hooks stay `none`).
+/// the seat table; 3 also the level data the scripts name (the calls that
+/// name it are stubbed, their other hooks stay `none`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -752,15 +773,51 @@ pub fn write(
     // name them; only those the scripts name are worth their room.
     let named = h1scripts::Tables::read(h1)
         .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|n| n.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    // They go first when the level would pass the engine's squad cap
+    // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
+    // squad's encounter, its squad group ([`hook_value`]).
+    let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
+        q.starting_locations.is_empty()
+            && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
+    };
+    let placed = ai_src
+        .encounters
+        .iter()
+        .flat_map(|e| &e.squads)
+        .filter(|q| !q.starting_locations.is_empty())
+        .count();
+    let empty = ai_src
+        .encounters
+        .iter()
+        .flat_map(|e| e.squads.iter().map(move |q| (e, q)))
+        .filter(|(e, q)| empty_named(e, q))
+        .count();
+    let keep_empty = lean == 0 && placed + empty <= MAX_SQUADS;
+    if !keep_empty && empty > 0 {
+        report.dropped.push(format!(
+            "ai: {empty} empty squads the scripts name left out ({placed} placed; cap {MAX_SQUADS}); the scripts name their squad groups"
+        ));
+    }
     for e in &mut ai_src.encounters {
         let encounter = e.name.clone();
         e.squads.retain(|q| {
             !q.starting_locations.is_empty()
-                || (lean == 0 && named.contains(&format!("{encounter}/{}", q.name)))
+                || (keep_empty
+                    && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
     let plan = h1ai::convert::convert(&ai_src, &Default::default());
+    if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
+        return Err(invalid(format!(
+            "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",
+            plan.ai.squads.len(),
+            plan.ai.squad_groups.len()
+        )));
+    }
     let mut chars = Vec::new();
     let resolve = |p: &str| -> Option<TagId> {
         let find = |p: &str| {
@@ -857,6 +914,7 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
+                lean < 3,
                 lean < 2,
                 opts.cutscenes,
             )?);
@@ -1121,7 +1179,8 @@ const DIFFICULTIES: [[&str; 2]; 4] = [
 /// (V, every atom of these types in 05a and 03a, printed by the survey
 /// test): object and unit names, `short`, team and difficulty values are
 /// `0xffff0000 | index`; trigger volumes are the bare index; an AI squad is
-/// its index and a squad group `0x40000000 | index`.
+/// its index and a squad group `0x40000000 | index`. Names match without
+/// case, as HaloScript's do.
 pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
     let short = |i: usize| Some(0xffff_0000 | (i as u32 & 0xffff));
     if h.token == "none" {
@@ -1129,13 +1188,15 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
     }
     match h.type_name.as_str() {
         "object_name" | "unit_name" | "vehicle_name" | "weapon_name" | "device_name"
-        | "scenery_name" | "object" | "unit" | "vehicle" => {
-            short(t.names.iter().position(|n| n == &h.token)?)
-        }
+        | "scenery_name" | "object" | "unit" | "vehicle" => short(
+            t.names
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(&h.token))?,
+        ),
         "trigger_volume" => t
             .volumes
             .iter()
-            .position(|n| *n == h.token)
+            .position(|n| n.eq_ignore_ascii_case(&h.token))
             .map(|i| (t.parked + i) as u32),
         // Adapter defaults read `<builtin>:<value>`.
         "short" => short(h.token.rsplit(':').next()?.trim().parse::<i16>().ok()? as u16 as usize),
@@ -1151,13 +1212,20 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
         ),
         "ai" => {
             let token: String = h.token.chars().take(31).collect();
-            if let Some(i) = t.squads.iter().position(|q| *q == token) {
+            if let Some(i) = t.squads.iter().position(|q| q.eq_ignore_ascii_case(&token)) {
                 return Some(i as u32);
             }
-            t.groups
-                .iter()
-                .position(|g| *g == token)
-                .map(|i| 0x4000_0000 | i as u32)
+            let group = |g: &str| {
+                t.groups
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(g))
+                    .map(|i| 0x4000_0000 | i as u32)
+            };
+            // A squad left out (empty, over the squad cap): its encounter.
+            group(&token).or_else(|| {
+                let (encounter, _) = h.token.split_once('/')?;
+                group(&encounter.chars().take(31).collect::<String>())
+            })
         }
         _ => None,
     }
@@ -1173,6 +1241,7 @@ fn install_scripts(
     initial: &[String],
     max_sounds: usize,
     level_data: bool,
+    seat_table: bool,
     cutscenes: h1scripts::compile::Cutscenes,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
@@ -1182,6 +1251,26 @@ fn install_scripts(
         .iter()
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
+    // Level data the scripts name (cutscene flags, camera points, titles,
+    // device groups), in h1scripts. Without it (`lean` 2), or for a name
+    // it lacks, a call naming one is stubbed: the engine indexes these
+    // blocks unchecked (`h1scripts::compile::INDEXED`).
+    let level = if level_data {
+        h1scripts::level::Level::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?
+    } else {
+        Default::default()
+    };
+    let resolves = |ty: &str, token: &str| {
+        level
+            .resolve(&h1scripts::compile::Hook {
+                slot: 0,
+                h2_type: 0,
+                type_name: ty.to_owned(),
+                h1_type: String::new(),
+                token: token.to_owned(),
+            })
+            .is_some()
+    };
     let mut c = compile_with(
         &t,
         &s.catalog,
@@ -1189,6 +1278,7 @@ fn install_scripts(
         &s.target,
         Missing::Stub,
         cutscenes,
+        &resolves,
         &refs,
     )
     .map_err(|e| invalid(format!("scripts: {e}")))?;
@@ -1201,19 +1291,15 @@ fn install_scripts(
             interned.insert(h.token.clone(), set.intern(&h.token)?);
         }
     }
-    // Level data the scripts name (cutscene flags, camera points, titles,
-    // device groups) and the seat-mapping table, in h1scripts.
-    let (level, seats) = if level_data {
-        let level =
-            h1scripts::level::Level::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
-        let seats = h1scripts::seats::Table::build(
+    // The seat-mapping table, in h1scripts.
+    let seats = if seat_table {
+        h1scripts::seats::Table::build(
             c.hooks
                 .iter()
                 .filter(|h| h.type_name == "unit_seat_mapping")
                 .map(|h| h.token.as_str()),
             &h1scripts::seats::units(set),
-        );
-        (level, seats)
+        )
     } else {
         Default::default()
     };
@@ -1291,6 +1377,11 @@ fn install_scripts(
         sounds: sounds.len(),
         sounds_dropped,
         missing_calls: c.missing.len(),
+        unindexed: c
+            .unindexed
+            .iter()
+            .map(|u| format!("{}: {}", u.definition, u.name))
+            .collect(),
         references: c.references.len(),
         references_resolved: resolved,
         initial: initial.to_vec(),

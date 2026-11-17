@@ -363,6 +363,34 @@ c20, c40, d20, d40 (by what each level's AI uses):
 
 The bound is `0xc24000`; the base alone is `0xaed000`.
 
+### Engine caps and unchecked indices
+
+- **Squads.** The AI's squad array at load holds 335 (`0x00200974`,
+  `mov ebx,14Fh`, `0x98` per datum); `0x00200b30` takes one datum per
+  scenario squad (`+0x160`, `0x74` each) and a squad past the cap faults
+  at `0x00200c44` (a50 did, with 384). Squad groups have their own array
+  of 100 (`0x002009ad`). `h1campaign::scenario::MAX_SQUADS` and
+  `MAX_SQUAD_GROUPS`; the converter refuses a level over either. Squads
+  with starting locations are always kept; the empty ones the scripts
+  name (migration and attach targets, mostly) only while the total fits.
+  a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out,
+  and the scripts' names for them resolve to their encounter's squad
+  group. Every other level fits with them (the most: c40, 227).
+  Survey: `ai_counts_against_the_caps`, `empty_squad_uses`.
+- **Cutscene flags, camera points, titles and device groups.** The
+  engine indexes these blocks without a check (b40 faulted at
+  `0x002a003f` in `object_teleport`, reading flag -1): a call naming one
+  that does not resolve is stubbed (h1-scripts.md, Indexed values).
+  `every_level_s_scripts_run_on_the_retail_interpreter` checks every
+  reached atom of these types against its converted block on all ten
+  levels. Names resolve without case (b30 and d40 named 3 and 9 flags
+  and a device group in another case and lost them).
+- **b40's level data.** b40 is at the tag memory bound. The lean
+  retries now drop the seat table before the level data, but b40 still
+  converts without its level data (`0xc21000` of `0xc24000`): its 74
+  calls naming a flag, camera point, title or device group are stubbed
+  (the insertion's teleports and camera moves among them).
+
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,
 before them): a10 262, a30 152, a50 76, b30 153, b40 274 (converted

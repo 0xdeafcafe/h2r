@@ -233,10 +233,14 @@ impl Level {
     /// The value a hook of one of this module's types takes: the element's
     /// index (a device group's datum). Navpoints take Halo 2's `default`
     /// (0) whatever Halo 1's type was: Halo 2's navpoint names are not
-    /// mapped yet.
+    /// mapped yet. Names match without case, as HaloScript's do (the
+    /// scripts' tokens are lower case; b30's `shaftA_control_teleflag`,
+    /// d40's `enc7_7_L1`).
     pub fn resolve(&self, h: &Hook) -> Option<u32> {
         fn index<'a>(mut names: impl Iterator<Item = &'a str>, token: &str) -> Option<u32> {
-            names.position(|n| n == token).map(|i| i as u32)
+            names
+                .position(|n| n.eq_ignore_ascii_case(token))
+                .map(|i| i as u32)
         }
         let t = h.token.as_str();
         match h.type_name.as_str() {

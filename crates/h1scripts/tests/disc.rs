@@ -249,8 +249,17 @@ fn skipped_cutscenes_on_every_level() {
         let guards = src.matches(&format!("({SKIP_GUARD})")).count();
         let mut seen = Vec::new();
         for cut in [Cutscenes::Play, Cutscenes::Skip] {
-            let c = compile_with(&t, &catalog, &table, &target, Missing::Stub, cut, &[])
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let c = compile_with(
+                &t,
+                &catalog,
+                &table,
+                &target,
+                Missing::Stub,
+                cut,
+                &|_, _| true,
+                &[],
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
             let bytes = c.scenario_bytes(BASE);
             let s = hs::Scenario::decode(&bytes, BASE).unwrap();
             s.verify_codec_symmetry(&bytes, BASE).unwrap();

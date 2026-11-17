@@ -1090,3 +1090,147 @@ fn h1_initial_encounters() {
         }
     }
 }
+
+/// Per level: Halo 1's encounters and squads, the squads with starting
+/// locations, the empty ones the scripts name, and the converted squad
+/// groups and squads against the engine's caps.
+#[test]
+#[ignore = "reads the discs"]
+fn ai_counts_against_the_caps() {
+    let h1p = disc("H1_ISO", "halo1.iso");
+    let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
+    let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        let e = d.map(level).unwrap().clone();
+        let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
+        let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+        let named = h1scripts::Tables::read(&h1)
+            .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| n.to_ascii_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        let squads: usize = ai.encounters.iter().map(|e| e.squads.len()).sum();
+        let placed: usize = ai
+            .encounters
+            .iter()
+            .flat_map(|e| &e.squads)
+            .filter(|q| !q.starting_locations.is_empty())
+            .count();
+        let empty_named = ai
+            .encounters
+            .iter()
+            .flat_map(|e| e.squads.iter().map(move |q| (e, q)))
+            .filter(|(e, q)| {
+                q.starting_locations.is_empty()
+                    && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
+            })
+            .count();
+        let empty_encounters = ai
+            .encounters
+            .iter()
+            .filter(|e| e.squads.iter().all(|q| q.starting_locations.is_empty()))
+            .count();
+        println!(
+            "{level}: {} encounters ({empty_encounters} with no placed squad), {squads} squads, {placed} with starting locations, {empty_named} empty ones named; converted {} squads; named tokens {}",
+            ai.encounters.len(),
+            placed + empty_named,
+            named.len()
+        );
+    }
+}
+
+/// `H1_LEVEL` (default a50): the builtins whose arguments name an empty
+/// squad (no starting locations), with the argument position.
+#[test]
+#[ignore = "reads the discs"]
+fn empty_squad_uses() {
+    let h1p = disc("H1_ISO", "halo1.iso");
+    let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
+    let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
+    let level = std::env::var("H1_LEVEL").unwrap_or("a50".into());
+    let e = d.map(&level).unwrap().clone();
+    let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
+    let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+    let empty: std::collections::BTreeSet<String> = ai
+        .encounters
+        .iter()
+        .flat_map(|e| {
+            e.squads
+                .iter()
+                .filter(|q| q.starting_locations.is_empty())
+                .map(move |q| format!("{}/{}", e.name, q.name))
+        })
+        .collect();
+    let t = h1scripts::Tables::read(&h1).unwrap();
+    let mut uses = std::collections::BTreeMap::<String, usize>::new();
+    for n in t.nodes.iter().filter(|n| n.live() && !n.atom()) {
+        let Ok(head) = t.node(hs::Datum(n.data())) else {
+            continue;
+        };
+        let name = t.string(head.string_offset()).unwrap_or("?").to_owned();
+        let mut a = head.next();
+        let mut k = 0;
+        while a != hs::Datum::NULL {
+            let x = *t.node(a).unwrap();
+            if x.atom()
+                && !x.global()
+                && x.opcode() == h1scripts::catalog::types::AI
+                && empty.contains(t.string(x.string_offset()).unwrap_or(""))
+            {
+                *uses.entry(format!("{name} arg {k}")).or_default() += 1;
+            }
+            a = x.next();
+            k += 1;
+        }
+    }
+    println!("{level}: {} empty squads; uses {uses:?}", empty.len());
+}
+
+/// `H1_LEVEL` (default b30) and `TOKENS` (comma-separated): each script
+/// atom with that token, its Halo 1 type and data word, and whether the
+/// level's cutscene flags name it.
+#[test]
+#[ignore = "reads the discs"]
+fn h1_atoms_by_token() {
+    let h1p = disc("H1_ISO", "halo1.iso");
+    let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
+    let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
+    let level = std::env::var("H1_LEVEL").unwrap_or("b30".into());
+    let e = d.map(&level).unwrap().clone();
+    let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
+    let t = h1scripts::Tables::read(&h1).unwrap();
+    let lv = h1scripts::level::Level::read(&h1).unwrap();
+    let flags: Vec<&str> = lv.flags.iter().map(|f| f.name.as_str()).collect();
+    for tok in std::env::var("TOKENS").unwrap_or_default().split(',') {
+        for n in t
+            .nodes
+            .iter()
+            .filter(|n| n.live() && n.atom() && !n.global())
+        {
+            if t.string(n.string_offset()).ok() == Some(tok) {
+                let at = (n.data() & 0xffff) as usize;
+                println!(
+                    "{level} {tok}: type {} data {:#x}; in the flags block: {}; flag {at}: {:?}, device group {at}: {:?}",
+                    n.opcode(),
+                    n.data(),
+                    flags.contains(&tok),
+                    flags.get(at),
+                    lv.device_groups.get(at).map(|g| g.name.as_str())
+                );
+            }
+        }
+    }
+    let bytes: usize = lv
+        .blocks()
+        .iter()
+        .map(|(_, stride, e)| stride * e.len())
+        .sum();
+    println!(
+        "{level}: {} flags, {} camera points, {} titles, {} device groups: {bytes:#x} bytes in Halo 2's blocks",
+        flags.len(),
+        lv.camera_points.len(),
+        lv.titles.len(),
+        lv.device_groups.len()
+    );
+}
