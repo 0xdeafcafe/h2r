@@ -787,6 +787,10 @@ light, each a mutex and a clock read, a few microseconds a frame; plus
 the hooked functions leaving the direct-call path. The split is valid to
 that precision; compare `fps` with the feature off to see the cost.
 
+Whether the front-end could run one frame behind the simulation on its
+own thread, and the `render-census` feature that measures which pages
+the two share, are in [pipelined-render.md](../graphics/pipelined-render.md).
+
 ### What scales with draws on the render thread (2026-11-17)
 
 Old Mombasa, presents 4000-7000, 1x, headless with the render thread,

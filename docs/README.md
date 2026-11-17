@@ -62,6 +62,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe, measured gain
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
+- [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: design, and the `render-census` that decides it
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
 - [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phases 1 and 3 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
