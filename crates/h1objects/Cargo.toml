@@ -1,0 +1,19 @@
+[package]
+name = "h1objects"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+# Converted render models and animation graphs.
+h1models = { path = "../h1models" }
+# The collision BSP narrowing copy, shared with the structure.
+h1convert = { path = "../h1convert" }
+map.workspace = true
+# The Halo 2 collision BSP form, and the object decoders the proof reads back through.
+tags.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true
