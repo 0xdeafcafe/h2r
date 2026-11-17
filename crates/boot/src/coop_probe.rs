@@ -1390,7 +1390,12 @@ pub fn install_live(
     }
     let arm = Arm::session();
     match registry.add(&Probe::armed(Arc::clone(&arm), data_root.join("coop-probe"))) {
-        Ok(true) => Ok(Some(arm)),
+        Ok(true) => {
+            // Players 3 to 16 (docs/live/live-coop.md section 12), on the
+            // same arm.
+            crate::coop_players::install(registry, Arc::clone(&arm))?;
+            Ok(Some(arm))
+        }
         Ok(false) => Ok(None),
         Err(e) => anyhow::bail!("coop-live: {e}"),
     }

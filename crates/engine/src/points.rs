@@ -407,6 +407,25 @@ points! { ALL;
     /// else 8).
     LOBBY_COUNTDOWN @ 0x0006_4a60: [fn() -> eax ret 0]; "docs/live/live-coop.md";
     LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The per-tick player update (from `game_tick`, `0x13801f`): every
+    /// player; a first spawn pending (flags byte `+2` bit 3) goes to
+    /// `PLAYER_SPAWN`; the co-op respawn (`0x14cdd0`) runs inside it.
+    PLAYER_UPDATE @ 0x0014_d3a0: [fn(update: stack 0) ret 4]; "docs/live/live-coop.md";
+    /// Spawn one player (handle): unit type, a starting location from
+    /// `PLAYER_SPAWN_LOCATION`, the unit; AL 0 when no location was free.
+    /// Clears the first-spawn bit (`0x14f6c1`) when it spawned.
+    PLAYER_SPAWN @ 0x0014_f2e0: [fn(player: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// The best free starting location for a player (handle in ECX): AX the
+    /// index into `scnr+0x100`, `0xffff` when every spot is blocked.
+    PLAYER_SPAWN_LOCATION @ 0x0014_ef00: [fn(player: ecx, unit: stack 0, a: stack 1, b: stack 2) -> eax ret 12]; "docs/live/live-coop.md";
+    /// Retail co-op placement: move a player (EBX) next to a position (ESI,
+    /// three floats) beside an anchor unit (stack). The co-op respawn's
+    /// own call is at `0x14cffd`. AL 1 when placed.
+    PLAYER_PLACE_NEAR @ 0x0014_e970: [fn(player: ebx, position: esi, anchor: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// Teleport an object to a cutscene flag: the body of HaloScript
+    /// `object_teleport` (`0x2a2517`) and of
+    /// `volume_teleport_players_not_inside` (`0x29f641`).
+    SCRIPT_TELEPORT @ 0x0029_ffb0: [fn(object: stack 0, flag: stack 1, a: stack 2, b: stack 3) ret 16], Optional; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
@@ -475,6 +494,9 @@ globals! { GLOBALS;
     PLAYERS @ 0x004e_8c24; "docs/live/live-gamestate.md";
     /// Pointer to the objects datum array (`0xc`-byte headers).
     OBJECTS @ 0x004e_0300; "docs/formats/objects.md";
+    /// Pointer to the loaded scenario tag (`scnr`): player starting
+    /// locations at `+0x100` (count) and `+0x104`, `0x34` each.
+    SCENARIO @ 0x004e_0350; "docs/editor/scenario-editor.md";
     /// Holds the guest address of the tag-index header.
     TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
     /// Holds the guest address of the 16-byte tag-entry table.
