@@ -202,10 +202,12 @@ All three hooks are wrappers at function entries
    `0xffe000..=0xffe0ff` (the low 24 bits; retail ids are small indexes). The
    wrapper on `0x1a0180` answers those ids with our UTF-16 text in the
    caller's `0x100`-unit buffer and returns; every other id goes to the
-   original. Names are "<name> U+E006". The match is on the low 24 bits only, so no
-   other string id of ours may end `0xffe0xx` whatever its top byte: the
-   co-op screens' texts were first at `0x20ffe000` and showed these names,
-   and moved to `0x20ffd000`.
+   original. Names are "<name> U+E006". The match is on the whole id (top
+   byte 0): it was on the low 24 bits once, and the co-op screens' texts,
+   first at `0x20ffe000`, showed these names. The ids reach the wrapper as
+   written (the `goof` entry's name, the description id we return), so
+   nothing needs the looser match. `crates/boot/src/string_ids.rs` checks
+   every family of our ids against every other's claim.
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids

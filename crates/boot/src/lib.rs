@@ -1211,6 +1211,8 @@ pub mod log {
 pub(crate) static SHIM_EVENTS: Mutex<Vec<(u32, u32, String)>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
+mod string_ids;
+#[cfg(test)]
 mod tests {
     use super::*;
 
