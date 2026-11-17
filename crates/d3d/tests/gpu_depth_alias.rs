@@ -309,6 +309,50 @@ fn gpu_depth_aliases_draw_what_the_readback_draws() {
     assert_same("render thread, GPU aliases off", &threaded_old, &want);
 }
 
+/// Depth-alias passes recorded into the open encoder (the default,
+/// `GfxBackend::set_defer_side_passes`) draw what a submission of their own
+/// per alias draws, with fewer submissions.
+#[test]
+fn deferred_depth_alias_passes_draw_what_submitted_ones_draw() {
+    let Some(mut now) = backend(true) else { return };
+    now.set_defer_side_passes(false);
+    let (want, _) = run(now);
+    let mut deferred = backend(true).unwrap();
+    deferred.set_defer_side_passes(true);
+    let (got, _) = run(deferred);
+    assert_same("deferred side passes", &got, &want);
+    let submits = |defer: bool| {
+        let mut b = backend(true).unwrap();
+        b.set_defer_side_passes(defer);
+        let (mut d, mut m) = create(b, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        fill_depth(&mut d, &mut m, 1);
+        let before = d.backend.batch_stats().submits;
+        for a in CASES {
+            d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+            write_alias(&mut m, a);
+            d.set_texture(&mut m, 0, ALIAS).unwrap();
+            strip(
+                &mut d,
+                &mut m,
+                &[
+                    (0.0, 0.0, 0.5, 0.0, 0.0),
+                    (8.0, 0.0, 0.5, 1.0, 0.0),
+                    (0.0, 8.0, 0.5, 0.0, 1.0),
+                ],
+                true,
+            );
+        }
+        d.backend.flush().unwrap();
+        d.backend.batch_stats().submits - before
+    };
+    let (now, deferred) = (submits(false), submits(true));
+    assert!(
+        deferred < now,
+        "deferred {deferred} submissions, submitted {now}"
+    );
+}
+
 /// The GPU path takes no read-back: the depth words never come to the CPU.
 #[test]
 fn gpu_depth_aliases_read_nothing_back() {

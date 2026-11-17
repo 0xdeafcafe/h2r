@@ -787,6 +787,67 @@ light, each a mutex and a clock read, a few microseconds a frame; plus
 the hooked functions leaving the direct-call path. The split is valid to
 that precision; compare `fps` with the feature off to see the cost.
 
+### What scales with draws on the render thread (2026-11-17)
+
+Old Mombasa, presents 4000-7000, 1x, headless with the render thread,
+500 Hz sampler on both threads. Frames bucketed by draws (ms per frame):
+
+| draws | frames | total | cpu | d3d | render-wait | encode | submit | submits |
+|---|---|---|---|---|---|---|---|---|
+| 250 | 684 | 19.3 | 15.9 | 2.7 | 0.4 | 3.2 | 5.0 | 37 |
+| 1000 | 3035 | 57.6 | 42.4 | 10.7 | 2.5 | 15.0 | 22.9 | 46 |
+| 2000 | 105 | 52.6 | 33.8 | 10.9 | 5.2 | 18.5 | 22.2 | 65 |
+
+At ~1000 draws the game thread is the critical path (cpu + d3d + decode
++ render-wait = total); the render thread (encode + submit, ~38 ms) runs
+beside it with a third of its samples idle. Past ~2000 draws the render
+thread's work outgrows the frame, `render-wait` climbs (35-107 ms in the
+worst seconds) and the frame rate falls off: the cliff is render-thread
+throughput. Its busy samples (38.2k):
+
+- **per render pass, ~26%**: wgpu's `begin_render_pass` into Metal (AGX
+  render-context init) 5.6k, tracker setup and teardown (`UsageScope`
+  drop, `set_size`, `new_pooled`) 2.4k, `open_pass` and
+  `begin_encoding` (a Metal command buffer per pass) 1.8k;
+- **per submission and command buffer, ~17%**: `commit` 2.4k,
+  `Queue::maintain` 3.1k (dropping staging buffers and trackers);
+- **staging buffers, ~11%**: `AGXBuffer initWithDevice` 2.8k and
+  `dealloc` 1.5k. 64% of them were the upload rings' 2 MiB
+  `write_buffer_with` views, one per ring per submission whatever they
+  held; 28% persistent vertex uploads (one per new stream, exact size);
+- **per draw, ~25%**: recording (`Renderer::record` 4.1k), shader
+  preparation (4.7k, uniform staging included) and wgpu's per-draw
+  encode (pipeline, bind groups, vertex buffers, `drawIndexed`: 2.7k).
+
+The `GfxBackend::submit` callers' shares are misleading on their own: a
+submit encodes the pending scene pass too, so `depth_level_texture` (6.0k
+inclusive) and `mirror_store` (5.0k) mostly carry scene draws. What they
+added themselves is submissions: `mirror_store`, `mirror_load` and the
+GPU depth alias each submitted twice (the pending pass, then their own
+encoder), and with `depth_level_texture` and `clear_pixel_count` they were
+half the render thread's `Queue::submit` samples (3.4k of 7.0k).
+
+The 16.5% `semaphore_wait_trap` is the render thread idle in its command
+channel's `recv`, not the game thread; the game thread's own waits for
+replies are 579 samples (1%).
+
+Changes:
+
+- the upload rings stage on the CPU and flush one exactly sized queue
+  write (`gfx/src/ring.rs`). `tests/staging_cost.rs`: a 2 MiB view costs
+  about 130 us against about 20 us for an exact one, submit share
+  included;
+- side work rides the open encoder (`GfxBackend::set_defer_side_passes`,
+  `H2_GFX_SIDE_SUBMIT=1` turns it off; off under a render scale);
+- frames.csv gains `passes` (render and compute passes gfx begins) and
+  `queue_writes` (staging buffers from gfx's queued writes).
+
+Not changed, and next: the render-pass count itself. Each costs ~40-75
+us of wgpu and Metal CPU; `passes` in the next capture says how many a
+1000-draw frame has and, against `draws` and `submits`, where they come
+from (count passes and sums for visibility tests, splits after partly
+masked draws, side passes, clears).
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split

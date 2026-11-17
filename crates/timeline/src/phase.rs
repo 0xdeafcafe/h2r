@@ -129,10 +129,16 @@ pub enum Counter {
     /// Vertex-stream bytes draws took from the device's vertex cache
     /// without a copy.
     VertexReused = 8,
+    /// Render and compute passes encoded (each is a Metal encoder and
+    /// command buffer of its own in wgpu: the per-pass CPU cost).
+    Passes = 9,
+    /// Queued buffer writes from `gfx` (each is a staging buffer wgpu
+    /// makes and frees).
+    QueueWrites = 10,
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 9;
+pub const COUNTERS: usize = 11;
 
 impl Counter {
     pub const ALL: [Counter; COUNTERS] = [
@@ -145,6 +151,8 @@ impl Counter {
         Counter::ReadBytes,
         Counter::VertexCopied,
         Counter::VertexReused,
+        Counter::Passes,
+        Counter::QueueWrites,
     ];
 
     pub fn label(self) -> &'static str {
@@ -158,6 +166,8 @@ impl Counter {
             Counter::ReadBytes => "read_bytes",
             Counter::VertexCopied => "vtx_copied",
             Counter::VertexReused => "vtx_reused",
+            Counter::Passes => "passes",
+            Counter::QueueWrites => "queue_writes",
         }
     }
 }

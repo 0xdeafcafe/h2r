@@ -596,6 +596,7 @@ impl SurfaceStore {
         let s = self.typed(id, SurfaceKind::Color)?;
         if let Some((_, msaa_view)) = &s.msaa {
             // An empty pass that loads and resolves the multisampled image.
+            crate::churn::pass();
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("msaa resolve"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

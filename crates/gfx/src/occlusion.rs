@@ -465,6 +465,7 @@ impl PixelCounter {
                 },
             ],
         });
+        crate::churn::pass();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("gfx pixel count sum"),
             timestamp_writes: None,

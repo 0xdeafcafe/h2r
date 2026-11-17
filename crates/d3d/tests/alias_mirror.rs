@@ -410,6 +410,38 @@ fn overlapping_levels_through_the_mirror_match_the_write_backs() {
     }
 }
 
+/// Mirror stores and loads recorded into the open encoder (the default,
+/// `GfxBackend::set_defer_side_passes`) give the same pixels and guest
+/// bytes as each submitted on its own, with fewer submissions.
+#[test]
+fn deferred_mirror_passes_match_submitted_ones() {
+    for upload in [UploadPolicy::Tracked, UploadPolicy::Verify] {
+        let Some(mut now) = gfx() else { return };
+        now.set_defer_side_passes(false);
+        let mut deferred = gfx().unwrap();
+        deferred.set_defer_side_passes(true);
+        let (want, want_stats) = scenario(now, true, upload);
+        let (got, stats) = scenario(deferred, true, upload);
+        assert_seen(&format!("{upload:?}, deferred"), &got, &want);
+        assert!(
+            stats.mirror_stores >= 4 && stats.mirror_stores == want_stats.mirror_stores,
+            "{stats:?}"
+        );
+        assert_eq!(stats.mirror_loads, want_stats.mirror_loads);
+    }
+    let submits = |defer: bool| {
+        let mut b = gfx().unwrap();
+        b.set_defer_side_passes(defer);
+        let (d, _) = pool_frames(b, true, 4);
+        d.backend.batch_stats().submits
+    };
+    let (now, deferred) = (submits(false), submits(true));
+    assert!(
+        deferred < now,
+        "deferred {deferred} submissions, submitted {now}"
+    );
+}
+
 /// Levels that only the GPU reads never come back to the CPU: the
 /// Heretic's pattern, a pool of colour levels bound in turn, each
 /// sampling the one before, frame after frame.
