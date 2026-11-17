@@ -9,20 +9,27 @@
 
 use std::fmt::Write as _;
 
-/// Whether a game's stderr line goes into the merged log.
+/// Whether a game's stderr line goes into the merged log: the co-op
+/// lines, not the boot-time dumps that merely name a co-op hook (the
+/// feature plan, a hook's first `active`, the health model's `game start`).
 pub fn wanted(line: &str) -> bool {
-    const KEEP: [&str; 9] = [
+    const DROP: [&str; 3] = ["feature plan:", "feature: ", "health: "];
+    const DROP_ANY: [&str; 1] = ["hooks installed via feature plan"];
+    const KEEP: [&str; 10] = [
         "coop-live",
         "coop-probe",
         "coop-auto",
         "skulls",
         "session",
-        "game start",
+        "game start: options",
         "live: playing as",
         "custom games",
+        "agent: listening",
         "panicked",
     ];
-    KEEP.iter().any(|k| line.contains(k))
+    !DROP.iter().any(|d| line.starts_with(d))
+        && !DROP_ANY.iter().any(|d| line.contains(d))
+        && KEEP.iter().any(|k| line.contains(k))
 }
 
 /// One merged line.
@@ -206,6 +213,9 @@ pub struct StepResult {
     pub n: usize,
     pub what: &'static str,
     pub seen: Seen,
+    /// For a step not seen: the likely reason, in plain words (most often
+    /// a press nobody made yet).
+    pub why: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,10 +257,15 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         } else {
             Seen::No { missing }
         };
+        let why = match &seen {
+            Seen::No { missing } => why(i + 1, missing, &roles, &lines, auto),
+            _ => None,
+        };
         steps.push(StepResult {
             n: i + 1,
             what: step.what,
             seen,
+            why,
         });
     }
     let trouble = log
@@ -259,6 +274,98 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         .map(String::from)
         .collect();
     Some(Verdict { steps, trouble })
+}
+
+/// Whether game `tag` printed a line holding `p`.
+fn said(lines: &[(&str, &str)], tag: &str, p: &str) -> bool {
+    lines.iter().any(|(t, text)| *t == tag && text.contains(p))
+}
+
+/// The Xbox Live menu was on `tag`'s screen: its tag was extended, or one
+/// of our rows drawn (`custom games: ...`, crates/boot/src/layout_glue.rs).
+fn opened_live_menu(lines: &[(&str, &str)], tag: &str) -> bool {
+    said(lines, tag, "custom games: xbox live menu tag")
+        || said(lines, tag, "custom games: row text")
+        || said(lines, tag, "custom games: row chosen")
+        || said(lines, tag, "coop-live: Live menu row ")
+}
+
+/// Why step `n` was not seen on the games `missing`, when the log says
+/// more than "not seen": usually the press before it that nobody made.
+fn why(
+    n: usize,
+    missing: &[String],
+    roles: &Roles,
+    lines: &[(&str, &str)],
+    auto: bool,
+) -> Option<String> {
+    let host = roles.host.as_str();
+    let first = missing.first()?.as_str();
+    let not_online: Vec<&str> = roles
+        .guests
+        .iter()
+        .map(String::as_str)
+        .filter(|g| !opened_live_menu(lines, g))
+        .collect();
+    match n {
+        1 => Some(format!(
+            "{first} never signed in: it was still building or starting, or its window closed first"
+        )),
+        2 if said(lines, first, "cannot read the disc's campaign levels") => {
+            Some(format!("{first} could not read the disc's campaign levels"))
+        }
+        2 => Some(format!("{first}'s co-op hooks never started")),
+        3 if said(lines, host, "co-op hooks are off")
+            || said(lines, host, "co-op screens are off") =>
+        {
+            Some(format!(
+                "{host}'s co-op hooks are off, so Co-op Campaign opened nothing"
+            ))
+        }
+        3 if !opened_live_menu(lines, host) => Some(format!(
+            "{host} never opened the Xbox Live menu: on {host}'s window, Xbox Live from the main menu"
+        )),
+        3 if said(lines, host, "custom games: row chosen") => Some(format!(
+            "{host} opened the Xbox Live menu and picked another of its rows, never Co-op Campaign"
+        )),
+        3 => Some(format!(
+            "{host} opened the Xbox Live menu but never picked Co-op Campaign"
+        )),
+        4 | 5 => Some(format!(
+            "{host} picked Co-op Campaign but the lobby did not open in co-op mode \
+             (did the game make its Live session? look in {host}.log)"
+        )),
+        6 => Some(format!(
+            "{host}'s lobby never said which level it holds, so there was nothing to invite to"
+        )),
+        7 if !not_online.is_empty() => Some(format!(
+            "{} never opened the Xbox Live menu in their window, so {host} had nobody online to invite",
+            not_online.join(", ")
+        )),
+        7 => Some(format!(
+            "{host} saw its friends online but sent no invitation"
+        )),
+        8 if !said(lines, host, "coop-auto: invited ") => {
+            Some(format!("{host} never sent an invitation (step 7)"))
+        }
+        8 => Some(format!(
+            "{first} never accepted: is it signed in to Xbox Live in its window?"
+        )),
+        9 if auto && said(lines, first, "coop-auto: accepting ") => Some(format!(
+            "{first} accepted, but the game did not join {host}'s lobby; open {first}'s friends list \
+             to see whether it joins from there"
+        )),
+        9 => Some(format!(
+            "{first} never joined: accept {host}'s invitation in {first}'s friends list (Y in the Xbox Live menu)"
+        )),
+        11 if !said(lines, host, "coop-live: lobby start state") => {
+            Some(format!("nobody pressed Start Game in {host}'s lobby"))
+        }
+        11 => Some(format!(
+            "{host}'s lobby never asked to start co-op with every player in (all players ready?)"
+        )),
+        _ => None,
+    }
 }
 
 impl Verdict {
@@ -279,10 +386,16 @@ impl Verdict {
                 Seen::NotLogged => ("-", ": no line without --auto".into()),
             };
             let _ = writeln!(s, "  [{mark}] {:2}. {}{note}", step.n, step.what);
+            if let Some(why) = &step.why {
+                let _ = writeln!(s, "         {why}");
+            }
         }
         match self.stopped_at() {
             Some(step) => {
                 let _ = writeln!(s, "stopped at step {}: {}", step.n, step.what);
+                if let Some(why) = &step.why {
+                    let _ = writeln!(s, "  {why}");
+                }
             }
             None => s.push_str("every step seen\n"),
         }
@@ -487,5 +600,168 @@ mod tests {
         );
         assert!(v.trouble.is_empty());
         assert!(v.render().contains("every step seen"));
+    }
+
+    /// The host's log of the 2026-11-17 three-game run up to its main menu
+    /// (paths shortened): only the real co-op lines are kept, none of the
+    /// feature plan or the hooks' first `active` that name a co-op hook.
+    #[test]
+    fn the_filter_keeps_the_co_op_lines_of_a_real_run_and_drops_the_plan() {
+        let fixture = include_str!("coop_verdict/host-at-menu.log");
+        let kept: Vec<&str> = fixture.lines().filter(|l| wanted(l)).collect();
+        assert_eq!(
+            kept,
+            [
+                "live: playing as Alpha (0009d7e882ecd47d) on http://127.0.0.1:8075",
+                "agent: listening on /Users/u/Library/Caches/h2recomp/coop-alpha.sock (docs/runtime/agent-api.md)",
+                "coop-live: co-op takes up to 3 players (coop.max_players)",
+                "coop-live: 15 campaign levels (15 named)",
+            ]
+        );
+        assert!(
+            fixture
+                .lines()
+                .any(|l| l.starts_with("feature plan:") && l.contains("coop-live"))
+        );
+        assert!(
+            fixture
+                .lines()
+                .any(|l| l.starts_with("feature: ") && l.contains("coop-live"))
+        );
+    }
+
+    fn signed_in() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("Alpha", "live: playing as Alpha (1) on x"),
+            ("Bravo", "live: playing as Bravo (2) on x"),
+            ("Alpha", "coop-live: 15 campaign levels (15 named)"),
+            ("Bravo", "coop-live: 15 campaign levels (15 named)"),
+        ]
+    }
+
+    fn stopped(lines: &[(&str, &str)], auto: bool) -> (usize, String) {
+        let v = verdict(&log(lines), auto).unwrap();
+        let s = v.stopped_at().unwrap();
+        (s.n, s.why.clone().unwrap_or_default())
+    }
+
+    #[test]
+    fn step_3_says_which_press_the_host_never_made() {
+        // The real run: everyone at the main menu, nobody in Xbox Live.
+        let (n, why) = stopped(&signed_in(), true);
+        assert_eq!(n, 3);
+        assert_eq!(
+            why,
+            "Alpha never opened the Xbox Live menu: on Alpha's window, Xbox Live from the main menu"
+        );
+        let mut l = signed_in();
+        l.push((
+            "Alpha",
+            "custom games: xbox live menu tag has 6 panes and room for 5 rows",
+        ));
+        l.push(("Alpha", "custom games: row text active"));
+        assert_eq!(
+            stopped(&l, true).1,
+            "Alpha opened the Xbox Live menu but never picked Co-op Campaign"
+        );
+        l.push(("Alpha", "custom games: row chosen active"));
+        assert!(stopped(&l, true).1.contains("picked another of its rows"));
+        let mut off = signed_in();
+        off.push((
+            "Alpha",
+            "coop-live: the co-op hooks are off; nothing opened",
+        ));
+        assert!(stopped(&off, true).1.contains("co-op hooks are off"));
+        // Picked, but the lobby never switched to co-op.
+        let mut l = signed_in();
+        l.push((
+            "Alpha",
+            "coop-live: Live menu row 4 opens the custom game lobby (row 2) in co-op mode",
+        ));
+        l.push((
+            "Alpha",
+            "coop-live: hosting a co-op campaign in the game's own lobby",
+        ));
+        let (n, why) = stopped(&l, true);
+        assert_eq!(n, 5);
+        assert!(
+            why.starts_with("Alpha picked Co-op Campaign but the lobby did not open in co-op mode"),
+            "{why}"
+        );
+        assert!(
+            verdict(&log(&l), true)
+                .unwrap()
+                .render()
+                .contains("  Alpha picked Co-op Campaign")
+        );
+    }
+
+    fn in_lobby() -> Vec<(&'static str, &'static str)> {
+        let mut l = signed_in();
+        l.extend([
+            ("Alpha", "coop-live: Live menu row 4 opens the custom game lobby (row 2) in co-op mode"),
+            ("Alpha", "coop-live: hosting a co-op campaign in the game's own lobby"),
+            ("Alpha", "coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)"),
+            ("Alpha", "coop-live: the lobby holds Outskirts on Heroic; advertised"),
+        ]);
+        l
+    }
+
+    #[test]
+    fn later_steps_name_the_guests_missing_press() {
+        // The guest never signed in to Xbox Live in its window.
+        let (n, why) = stopped(&in_lobby(), true);
+        assert_eq!(n, 7);
+        assert_eq!(
+            why,
+            "Bravo never opened the Xbox Live menu in their window, so Alpha had nobody online to invite"
+        );
+        let mut l = in_lobby();
+        l.push(("Bravo", "custom games: row text active"));
+        assert_eq!(
+            stopped(&l, true).1,
+            "Alpha saw its friends online but sent no invitation"
+        );
+        l.push((
+            "Alpha",
+            "coop-auto: invited Bravo to session 8000000000000001",
+        ));
+        assert!(stopped(&l, true).1.contains("Bravo never accepted"));
+        l.push((
+            "Bravo",
+            "coop-auto: accepting Alpha's invitation to session 8000000000000001",
+        ));
+        let (n, why) = stopped(&l, true);
+        assert_eq!(n, 9);
+        assert!(why.contains("did not join Alpha's lobby"), "{why}");
+        // Without --auto: accept by hand.
+        let mut l = in_lobby();
+        l.push(("Bravo", "custom games: row text active"));
+        let (n, why) = stopped(&l, false);
+        assert_eq!(n, 9);
+        assert!(
+            why.contains("accept Alpha's invitation in Bravo's friends list"),
+            "{why}"
+        );
+        // In, pinged, but nobody pressed Start.
+        l.push((
+            "Bravo",
+            "coop-live: guest: joined Alpha's co-op session 8000000000000001: Outskirts on Heroic",
+        ));
+        l.push(("Alpha", "coop-live: ping 3 ms"));
+        l.push(("Bravo", "coop-live: ping 3 ms"));
+        let (n, why) = stopped(&l, false);
+        assert_eq!(n, 11);
+        assert_eq!(why, "nobody pressed Start Game in Alpha's lobby");
+        l.push(("Alpha", "coop-live: lobby start state 8"));
+        assert!(stopped(&l, false).1.contains("all players ready?"));
+    }
+
+    #[test]
+    fn a_game_that_never_signed_in() {
+        let l = [("Alpha", "live: playing as Alpha (1) on x")];
+        let (n, why) = stopped(&l, true);
+        assert_eq!(n, 1);
+        assert!(why.starts_with("Bravo never signed in"), "{why}");
     }
 }

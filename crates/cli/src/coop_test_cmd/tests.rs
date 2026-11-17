@@ -355,3 +355,61 @@ fn players_go_up_to_sixteen_and_the_host_gets_the_limit() {
     let mut seen = std::collections::HashSet::new();
     assert!(TAGS.iter().all(|t| seen.insert(*t)), "gamertags are unique");
 }
+
+#[test]
+fn the_next_steps_name_each_window_and_its_presses() {
+    let two = Roles {
+        host: "Alpha".into(),
+        guests: vec!["Bravo".into()],
+    };
+    assert_eq!(
+        next_steps(&two, true),
+        "coop test: next, on Bravo's window: Xbox Live (to sign in). Then on Alpha's window: \
+         Xbox Live > Co-op Campaign > pick a level and difficulty; Bravo get the invitation and \
+         join by themselves; then Start Game on Alpha."
+    );
+    let three = Roles {
+        host: "Alpha".into(),
+        guests: vec!["Bravo".into(), "Charlie".into()],
+    };
+    let line = next_steps(&three, false);
+    assert!(
+        line.contains("on Bravo and Charlie's windows: Xbox Live"),
+        "{line}"
+    );
+    assert!(
+        line.contains("press Y and invite Bravo and Charlie"),
+        "{line}"
+    );
+}
+
+/// A stand-in game's agent socket: the harness asks it to wait for the
+/// main menu, and goes on when it answers.
+#[cfg(unix)]
+#[test]
+fn the_harness_waits_on_the_hosts_agent_socket_for_the_main_menu() {
+    use std::os::unix::net::UnixListener;
+    let dir = scratch("menu");
+    let socket = dir.join("coop-alpha.sock");
+    // Nothing listening: gives up when told to.
+    let err = wait_for_menu(&socket, Duration::from_millis(100)).unwrap_err();
+    assert!(format!("{err:#}").contains("connecting to"), "{err:#}");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(&s).read_line(&mut line).unwrap();
+        let mut w = &s;
+        w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
+            .unwrap();
+        line
+    });
+    wait_for_menu(&socket, Duration::from_secs(10)).unwrap();
+    let asked: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+    assert_eq!(asked["method"], "session.wait");
+    assert_eq!(
+        asked["params"]["until"],
+        serde_json::json!({"phase": "menu", "map_ticks": 60})
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
