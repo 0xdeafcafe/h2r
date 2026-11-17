@@ -352,6 +352,23 @@ fn every_cluster_pair_has_an_audibility_distance() {
         let p = map.read_tag_bytes(b.sbsp).unwrap();
         assert_eq!(word(&p, 0x9c) as usize, n);
         check_audibility(&p, at).unwrap_or_else(|e| panic!("{n} clusters: {e}"));
+        check_sound_clusters(&p, at).unwrap_or_else(|e| panic!("{n} clusters: {e}"));
+        // One ambience and one reverb sound cluster: no palette entry, no
+        // portals, every cluster inside; and one zeroed element at +0x94.
+        for field in [0x148, 0x150] {
+            assert_eq!(word(&p, field), 1, "{n} clusters: +{field:#x}");
+            let e = (word(&p, field + 4) - at) as usize;
+            assert_eq!(word(&p, e), u32::MAX, "no palette entry");
+            assert_eq!(word(&p, e + 4), 0, "no portals");
+            assert_eq!(word(&p, e + 0xc) as usize, n);
+            let list = (word(&p, e + 0x10) - at) as usize;
+            let interior: Vec<u16> = p[list..list + 2 * n]
+                .chunks(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            assert_eq!(interior, (0..n as u16).collect::<Vec<_>>());
+        }
+        assert_eq!(word(&p, 0x94), 1);
         assert_eq!(word(&p, 0x224), 1, "{n} clusters");
         let e = (word(&p, 0x228) - at) as usize;
         assert_eq!(word(&p, e), 0, "no doors");
@@ -370,10 +387,13 @@ fn every_cluster_pair_has_an_audibility_distance() {
             assert!((n - 1) * i - i * (i + 1) / 2 + j - 1 < pairs);
         }
     }
-    // Without the element the check fails, as the engine would.
-    let mut p = vec![0u8; 0x240];
+    // Without the elements the checks fail, as the engine would: 16
+    // clusters naming sound cluster 0 of an empty block.
+    let mut p = vec![0u8; 0x240 + 16 * CLUSTER];
     p[0x9c..0xa0].copy_from_slice(&16u32.to_le_bytes());
+    p[0xa0..0xa4].copy_from_slice(&0x240u32.to_le_bytes());
     assert!(check_audibility(&p, 0).is_err());
+    assert!(check_sound_clusters(&p, 0).is_err());
 }
 
 #[test]

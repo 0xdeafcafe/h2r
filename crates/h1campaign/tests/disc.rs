@@ -226,6 +226,12 @@ fn a30_converts_onto_its_base_and_reads_back() {
             .filter(|p| !p.ends_with("material 65535 out of range"))
             .collect();
         assert!(problems.is_empty(), "bsp {k}: {problems:?}");
+        // The engine's unchecked reads every tick (audibility, sound
+        // clusters): the first converted Blood Gulch faulted on both.
+        h1convert::structure::check_audibility(&b, loc.address)
+            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
+        h1convert::structure::check_sound_clusters(&b, loc.address)
+            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
         let pf = tags::pathfinding::PathfindingData::from_sbsp(&view)
             .unwrap()
             .expect("pathfinding present");

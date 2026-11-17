@@ -427,6 +427,9 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
             if let Err(e) = h1convert::structure::check_audibility(&bytes, at) {
                 failures.push(format!("{name}: audibility: {e}"));
             }
+            if let Err(e) = h1convert::structure::check_sound_clusters(&bytes, at) {
+                failures.push(format!("{name}: sound clusters: {e}"));
+            }
         }
         // Every vehicle spawn names a collection whose entry is the right
         // vehicle and variant, with its class's netgame type.
