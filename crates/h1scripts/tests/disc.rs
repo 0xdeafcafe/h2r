@@ -1,0 +1,233 @@
+//! Opt-in checks against the owner's discs. Set `H1_ISO` (default
+//! `disc/halo1.iso`) and `H2_ISO` (default `disc/halo2.iso`). Nothing read
+//! here is written to the repository; summaries go to stdout.
+use std::{fs::File, io::BufReader, path::PathBuf};
+
+use h1scripts::{Catalog, Tables, decompile::decompile};
+
+fn disc(var: &str, name: &str) -> PathBuf {
+    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../disc")
+            .join(name)
+    })
+}
+
+fn h1() -> (Catalog, Vec<(String, h1map::H1Map)>) {
+    let path = disc("H1_ISO", "halo1.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let xbe_entry = iso.find("/default.xbe").unwrap();
+    let xbe_bytes = iso.read(&xbe_entry).unwrap();
+    let catalog = Catalog::from_xbe(&xbe::Xbe::parse(&xbe_bytes).unwrap()).unwrap();
+    let d = h1map::disc::Disc::open(&mut iso).unwrap();
+    let maps = h1map::disc::CAMPAIGN_LEVELS
+        .iter()
+        .map(|&l| {
+            let e = d.map(l).unwrap().clone();
+            let bytes = iso.read(&e).unwrap();
+            (l.to_owned(), h1map::H1Map::from_reader(&bytes[..]).unwrap())
+        })
+        .collect();
+    (catalog, maps)
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso"]
+fn every_campaign_script_decompiles() {
+    let (catalog, maps) = h1();
+    println!(
+        "catalog: {} builtins, {} types",
+        catalog.functions().len(),
+        catalog.types().len()
+    );
+    let special = (0..catalog.functions().len() as u16)
+        .filter(|&i| !catalog.fixed_signature(i))
+        .count();
+    println!("special forms: {special}");
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let d = decompile(&t, &catalog).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let s = &d.stats;
+        println!(
+            "{name}: scripts {} globals {} refs {} live {} reached {} emitted {} calls {} (checked {} special {}) script-calls {} globals-refs {} literals {} casts {} stale-heads {} builtins {}",
+            s.scripts,
+            s.globals,
+            s.references,
+            s.live_nodes,
+            s.reached_nodes,
+            s.emitted_nodes,
+            s.builtin_calls,
+            s.checked_calls,
+            s.special_calls,
+            s.script_calls,
+            s.global_refs,
+            s.literals,
+            s.casts,
+            s.stale_heads,
+            s.builtin_uses.len()
+        );
+        assert_eq!(
+            s.reached_nodes, s.live_nodes,
+            "{name}: unreached live nodes"
+        );
+    }
+}
+
+fn h2() -> h1scripts::translate::Target {
+    let path = disc("H2_ISO", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let e = iso.find("default.xbe").unwrap();
+    let bytes = iso.read(&e).unwrap();
+    let mut c = hs::Catalog::from_xbe(&xbe::Xbe::parse(&bytes).unwrap()).unwrap();
+    let mut scenarios = Vec::new();
+    for e in iso
+        .entries()
+        .unwrap()
+        .iter()
+        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+    {
+        let base = iso.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
+        let mut map = map::Map::from_region(
+            BufReader::new(File::open(&path).unwrap()),
+            base,
+            e.size.into(),
+        )
+        .unwrap();
+        let s = hs::Scenario::read(&mut map).unwrap();
+        c.observe(&s).unwrap();
+        scenarios.push(s);
+    }
+    let mut t = h1scripts::translate::Target::from_catalog(&c);
+    for s in &scenarios {
+        t.observe_externals(s);
+    }
+    t
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn translation_coverage() {
+    use h1scripts::translate::{Coverage, Kind, Table};
+    let (catalog, maps) = h1();
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let unmapped: Vec<_> = catalog
+        .types()
+        .iter()
+        .zip(&table.types)
+        .filter(|(_, m)| m.is_none())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    println!(
+        "H2 named builtins {}, H1 types without an H2 type: {unmapped:?}",
+        target.builtins.len()
+    );
+    let mut all = Coverage::default();
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let d = decompile(&t, &catalog).unwrap();
+        let c = table.coverage(&d.stats.builtin_uses);
+        let pct = |k| 100.0 * c.of(k) as f64 / c.total() as f64;
+        println!(
+            "{name}: calls {} direct {:.1}% renamed {:.1}% adapter {:.1}% missing {:.1}% ({} builtins missing)",
+            c.total(),
+            pct(Kind::Direct),
+            pct(Kind::Renamed),
+            pct(Kind::Adapter),
+            pct(Kind::Missing),
+            c.missing.len()
+        );
+        all.add(&c);
+    }
+    let pct = |k| 100.0 * all.of(k) as f64 / all.total() as f64;
+    println!(
+        "all: calls {} direct {:.1}% renamed {:.1}% adapter {:.1}% missing {:.1}% ({} builtins missing)",
+        all.total(),
+        pct(Kind::Direct),
+        pct(Kind::Renamed),
+        pct(Kind::Adapter),
+        pct(Kind::Missing),
+        all.missing.len()
+    );
+    let mut ranked: Vec<_> = all.missing.iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (i, n) in ranked {
+        let t = table.builtin(*i).unwrap();
+        let f = catalog.function(*i).unwrap();
+        let params: Vec<_> = f
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        println!(
+            "MISSING {n:5} {} ({}) -> {} [{}]",
+            t.name,
+            params.join(" "),
+            catalog.type_name(f.return_type).unwrap(),
+            t.reason.unwrap_or("")
+        );
+    }
+    for t in table.builtins.iter().filter(|t| t.kind == Kind::Adapter) {
+        println!(
+            "ADAPTER {} -> {} {:?}",
+            t.name,
+            t.target.as_ref().unwrap().0,
+            t.adapter.unwrap()
+        );
+    }
+}
+
+fn h2_catalog() -> hs::Catalog {
+    let path = disc("H2_ISO", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let e = iso.find("default.xbe").unwrap();
+    let bytes = iso.read(&e).unwrap();
+    hs::Catalog::from_xbe(&xbe::Xbe::parse(&bytes).unwrap()).unwrap()
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_campaign_script_compiles_and_round_trips() {
+    use h1scripts::compile::{Missing, compile};
+    let (catalog, maps) = h1();
+    let target = h2();
+    let h2c = h2_catalog();
+    let table = h1scripts::translate::Table::build(&catalog, &target);
+    const BASE: u32 = 0x8010_0000;
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let refs: Vec<String> = t
+            .references
+            .iter()
+            .map(|r| map.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
+            .collect();
+        for policy in [Missing::Stub, Missing::Extension] {
+            let c = compile(&t, &catalog, &table, &target, policy, &refs)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let bytes = c.scenario_bytes(BASE);
+            let s = hs::Scenario::decode(&bytes, BASE).unwrap_or_else(|e| panic!("{name}: {e}"));
+            s.verify_codec_symmetry(&bytes, BASE).unwrap();
+            assert_eq!(s.nodes().len(), c.nodes.len());
+            assert_eq!(s.scripts().len(), t.scripts.len());
+            assert_eq!(s.globals().len(), t.globals.len());
+            let reached = s.reachable(s.roots()).unwrap().len();
+            assert_eq!(reached, c.nodes.len(), "{name}: unreached nodes");
+            if policy == Missing::Stub {
+                let v = s.validate(&h2c).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let src = s.decompile(&h2c, None).unwrap();
+                let counts = hs::source_counts(&src.source).unwrap();
+                assert_eq!(counts.nodes, src.emitted_nodes);
+                println!(
+                    "{name}: h2 nodes {} builtin-calls {} script-calls {} hooks {} missing-calls {} missing-globals {} strings {}B",
+                    c.nodes.len(),
+                    v.builtin_calls,
+                    v.script_calls,
+                    c.hooks.len(),
+                    c.missing.len(),
+                    c.missing_globals.len(),
+                    c.strings.len()
+                );
+            }
+        }
+    }
+}
