@@ -987,6 +987,29 @@ builds again, then a hash lookup comparing whole keys), `submit_inner`
 itself (388), `drain`'s push-buffer decode and `Immediate::apply`
 (~210), `read_stream` and `vertex_setup` (~360 self).
 
+Fifth round, same profile:
+
+- `submit_inner`'s own time is mostly `shader_inputs`, inlined: per
+  draw it converted all 192 constant registers into a fresh 3 KiB block
+  and boxed the 60-word PSDEF and the 57 combiner words (two more small
+  allocations, freed on the render thread). `ShaderInputs` now holds
+  them in `Arc`s: the constant block is shared until a register is
+  written (a generation every constant write bumps, push-buffer methods
+  included), and the PSDEF and combiner words are shared while they
+  read the same as the draw before. Recorded draws compare equal as
+  before; the blocks are only shared.
+- `GfxJudge` is about 150 ns a draw (key build ~70, lookup with a whole
+  key compare ~55, hash ~15). A memo by state would need the same
+  comparisons: an API draw's state words are a fresh `Arc` per draw, so
+  there is no cheap generation covering every input `program_key` reads.
+  Left as it is.
+- `decode_one_into` and `Immediate::apply` are already a header decode
+  and one `match`; the 4-byte reads they make went through `memmove`
+  until round 4's `read_u32`. Left as they are.
+- `DrawStats` is read by the run report printed at exit (`h2 play`
+  included) and by `H2_BOOT_GFX_SHADOWS`'s shadow-frame screenshots, so
+  it is not diagnostics-only; round 4 made it Fx maps. Left on.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split
