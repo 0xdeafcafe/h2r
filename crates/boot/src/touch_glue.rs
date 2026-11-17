@@ -323,7 +323,10 @@ impl feature::Feature for TouchGlue {
                     eprintln!("{line}");
                 }
                 Ok(())
-            });
+            })
+            // Our skulls hook the same tick; neither reads what the other
+            // writes, so any fixed order will do.
+            .after_feature(crate::skulls_custom::FEATURE);
         Ok(())
     }
 }
