@@ -1386,7 +1386,7 @@ mod tests {
         let f = |o| profile_flags_for(Arch::X86_64Windows, o, Some("none")).unwrap();
         assert_eq!(f(None), ["-O2"]);
         assert_eq!(f(Some("1")), ["-O1"], "H2_OPT still wins");
-        assert!(profile_flags_for(Arch::X86_64Windows, Some("3"), None).is_err());
+        assert!(profile_flags_for(Arch::X86_64Windows, Some("4"), None).is_err());
         // What the build compiles with and the stamp records: with H2_OPT
         // unset (as `pack` requires), Windows objects are -O2.
         if std::env::var_os("H2_OPT").is_none() {
