@@ -61,7 +61,7 @@ where
         GameStatus {
             tick,
             map,
-            mode: info.map(|i| i.mode),
+            mode: info.and_then(|i| known_mode(i.mode)),
             bsp: live_telemetry::active_bsp(&g).ok().flatten(),
         }
     }
@@ -82,6 +82,12 @@ where
         out.extend(world.bodies.iter().map(|a| actor_object(Kind::Body, a)));
         Ok(out)
     }
+}
+
+/// While a map loads, the options say neither game nor menu
+/// (`unknown_0`): no mode, rather than a made-up one.
+pub fn known_mode(mode: String) -> Option<String> {
+    (!mode.starts_with("unknown_")).then_some(mode)
 }
 
 fn hex(v: u32) -> String {
@@ -138,6 +144,7 @@ pub fn vehicle_object(v: &VehicleState) -> Object {
         forward: Some(v.forward),
         tag: v.definition.map(hex),
         occupied: Some(v.occupied),
+        mounted_on: v.parent.map(|p| id(Kind::Vehicle, p)),
         ..Default::default()
     }
 }
@@ -177,6 +184,12 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_loading_mode_is_no_mode() {
+        assert_eq!(known_mode("unknown_0".into()), None);
+        assert_eq!(known_mode("campaign".into()).as_deref(), Some("campaign"));
     }
 
     #[test]
@@ -256,7 +269,21 @@ mod tests {
             forward: [0.0; 3],
             up: [0.0; 3],
             occupied: true,
+            parent: None,
+            aim: None,
         });
+        assert_eq!(v.mounted_on, None);
+        let turret = vehicle_object(&VehicleState {
+            datum: 0xe300_0004,
+            definition: None,
+            pos: [0.0, 0.0, 1.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0; 3],
+            occupied: false,
+            parent: Some(0xe200_0003),
+            aim: None,
+        });
+        assert_eq!(turret.mounted_on.as_deref(), Some("vehicle.e2000003"));
         assert_eq!(
             (v.id.as_str(), v.occupied),
             ("vehicle.e2000003", Some(true))

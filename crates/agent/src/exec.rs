@@ -6,7 +6,7 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -85,8 +85,11 @@ struct State {
 }
 
 struct Conn {
-    tx: Sender<String>,
+    tx: SyncSender<String>,
     events: BTreeSet<EventKind>,
+    /// Its outgoing queue filled up: the client isn't reading. Dropped at
+    /// the next prune, whatever it asked.
+    dead: bool,
     /// Its client stopped sending (a half-close or a disconnect): answer
     /// what it already asked, then drop it.
     closing: bool,
@@ -119,8 +122,9 @@ impl Agent {
         self.shared.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A new connection; lines for it (responses and events) go to `tx`.
-    pub fn connect(&self, tx: Sender<String>) -> ConnId {
+    /// A new connection; lines for it (responses and events) go to `tx`,
+    /// a bounded queue: a client that lets it fill is dropped.
+    pub fn connect(&self, tx: SyncSender<String>) -> ConnId {
         let mut s = self.lock();
         s.next_conn += 1;
         let id = s.next_conn;
@@ -130,6 +134,7 @@ impl Agent {
                 tx,
                 events: BTreeSet::new(),
                 closing: false,
+                dead: false,
             },
         );
         id
@@ -257,7 +262,6 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
-        s.map_ticks += 1;
         match s.stepping {
             Some(left) if left <= 1 => {
                 s.stepping = None;
@@ -323,7 +327,11 @@ impl Agent {
             return;
         }
         s.slice_refresh = Some(Instant::now());
-        s.refresh(reader, Where::Slice);
+        // While the game ticks, a read here could catch a tick half done
+        // (a BSP switch, a map change): answers keep the last tick's state.
+        if !s.ticking() {
+            s.refresh(reader, Where::Slice);
+        }
         s.serve(reader, Where::Slice);
         s.settle_waits();
         s.prune();
@@ -331,10 +339,18 @@ impl Agent {
 }
 
 impl State {
-    fn send(&self, conn: ConnId, r: Response) {
-        if let Some(c) = self.conns.get(&conn) {
-            let _ =
-                c.tx.send(serde_json::to_string(&r).expect("responses serialise"));
+    fn send(&mut self, conn: ConnId, r: Response) {
+        let line = serde_json::to_string(&r).expect("responses serialise");
+        if let Some(c) = self.conns.get_mut(&conn) {
+            Self::push(c, line);
+        }
+    }
+
+    /// Queues a line; a full queue marks the connection dead (the game
+    /// thread never blocks on a client).
+    fn push(c: &mut Conn, line: String) {
+        if let Err(TrySendError::Full(_)) = c.tx.try_send(line) {
+            c.dead = true;
         }
     }
 
@@ -342,11 +358,11 @@ impl State {
         self.conns.values().any(|c| !c.events.is_empty())
     }
 
-    fn emit(&self, e: Event) {
+    fn emit(&mut self, e: Event) {
         let kind = e.kind();
         let line = serde_json::to_string(&Notification::event(e)).expect("events serialise");
-        for c in self.conns.values().filter(|c| c.events.contains(&kind)) {
-            let _ = c.tx.send(line.clone());
+        for c in self.conns.values_mut().filter(|c| c.events.contains(&kind)) {
+            Self::push(c, line.clone());
         }
     }
 
@@ -393,6 +409,10 @@ impl State {
         let old = std::mem::replace(&mut self.game, reader.status());
         if old.map != self.game.map {
             self.map_ticks = 0;
+        }
+        // Counting this tick, so a map's first tick says 1 in its events too.
+        if where_ == Where::Tick {
+            self.map_ticks += 1;
         }
         if old.map.is_some() && old.map != self.game.map {
             // A cutscene doesn't outlive its map.
@@ -466,7 +486,18 @@ impl State {
             .map(|(c, _)| *c)
             .chain(self.waits.iter().map(|w| w.conn))
             .collect();
-        self.conns.retain(|id, c| !c.closing || busy.contains(id));
+        let dead: BTreeSet<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.dead)
+            .map(|(id, _)| *id)
+            .collect();
+        if !dead.is_empty() {
+            self.pending.retain(|(c, _)| !dead.contains(c));
+            self.waits.retain(|w| !dead.contains(&w.conn));
+        }
+        self.conns
+            .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
         // Control never outlives its connection.
         if self
             .controller

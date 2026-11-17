@@ -529,7 +529,8 @@ How it behaves (**Code**, with tests in `crates/agent`):
   `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black aren't detected yet.
 - **World.** Players (their units), AI bipeds, vehicles, machines and dead
   bodies, from `live-telemetry::memory`. Ids keep the datum's salt:
-  a slot reused by another object answers `gone` (code 3). `near` sorts
+  a slot reused by another object answers `gone` (code 3). A turret is a
+  vehicle with `mounted_on` set; its `pos` is relative to that vehicle. `near` sorts
   nearest first; `fields` trims; pages default to 50, at most 500.
 - **Control.** `pause`, `resume` and `step` need `session.claim`; one
   connection holds it. A pause blocks the game thread inside the tick
@@ -546,8 +547,14 @@ How it behaves (**Code**, with tests in `crates/agent`):
   still gets answers to what it sent; the connection closes after the
   last one. Closing releases control. Valid JSON that isn't a request
   gets `-32600`; unknown params fields are refused; batches aren't
-  supported. Each connection's outgoing queue is unbounded, so a
-  subscriber that stops reading grows it (events are rare).
+  supported. Each connection queues at most 4096 lines for its client;
+  a client that lets it fill isn't reading and is dropped (its control
+  released), so the game thread never waits on a client.
+- **Consistency between slices.** While the game ticks, answers between
+  slices keep the last tick's state (and say `boundary: "tick"`) instead of
+  reading mid-tick. During a load the mode reads as none, not `unknown_0`.
+- **Stopping.** `h2 serve` removes its socket on Ctrl-C or SIGTERM. A
+  socket left by a crash is replaced at the next start.
 - **Waits.** `session.wait` settles at tick boundaries (and between
   slices for wall-clock timeouts and while loading). A condition already
   true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,

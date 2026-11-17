@@ -94,6 +94,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         let path = socket.unwrap_or_else(agent_proto::default_socket);
         // SAFETY: set before the run starts any thread; boot reads it once.
         unsafe { std::env::set_var(agent_proto::ENV, &path) };
+        #[cfg(unix)]
+        stop_on_signal(path)?;
     }
     if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
         if cmd != "build" && lib.exists() {
@@ -184,6 +186,45 @@ fn fresh_data_dirs(data: &Path, keep: &[&Path]) -> Result<Vec<PathBuf>> {
         out.push(d);
     }
     Ok(out)
+}
+
+/// `h2 serve` on Ctrl-C or SIGTERM: remove the socket file, store pending
+/// file metadata, and exit (128 + the signal), instead of dying with the
+/// socket left behind. SIGINT and SIGTERM are blocked here, before the run
+/// starts any thread, so every thread inherits the mask and only this one
+/// takes them.
+#[cfg(unix)]
+fn stop_on_signal(socket: PathBuf) -> Result<()> {
+    // SAFETY: plain sigset operations on a local, and a mask change on
+    // this thread before any other thread exists.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        let r = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        if r != 0 {
+            bail!(
+                "h2 serve: blocking SIGINT/SIGTERM: {}",
+                std::io::Error::from_raw_os_error(r)
+            );
+        }
+        set
+    };
+    std::thread::Builder::new()
+        .name("serve-signals".into())
+        .spawn(move || {
+            let mut sig = 0;
+            // SAFETY: waits on the signals blocked above.
+            if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
+                return;
+            }
+            let _ = std::fs::remove_file(&socket);
+            vfs::flush_pending_metadata();
+            eprintln!("h2 serve: signal {sig}: stopping");
+            std::process::exit(128 + sig);
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]
