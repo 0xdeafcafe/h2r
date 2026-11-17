@@ -429,19 +429,25 @@ fn installed_lists_campaigns_with_maps_and_says_why_not() {
 }
 
 #[test]
-fn the_picker_lists_halo_2_first() {
+fn the_picker_lists_halo_1_then_halo_2_then_the_rest() {
     let b = built(&[HALO1, FIXTURE]);
     let p = Picker::new(&b);
     assert_eq!(
         p.rows,
         [
-            (1, "Halo 2".to_string()),
             (2, "Halo: Combat Evolved".to_string()),
+            (1, "Halo 2".to_string()),
             (3, "Second Campaign (test)".to_string())
         ]
     );
-    assert_eq!(p.campaign(0), Some(1));
+    assert_eq!(p.campaign(0), Some(2));
+    assert_eq!(p.campaign(1), Some(1));
     assert_eq!(p.campaign(2), Some(3));
+    // No order, or one at or past Halo 2's: below Halo 2.
+    let late = HALO1.replace("order = 10", &format!("order = {}", cl::HALO2_ORDER));
+    assert_eq!(Picker::new(&built(&[&late])).rows[0].0, RETAIL_CAMPAIGN);
+    let none = HALO1.replace("order = 10\n", "");
+    assert_eq!(Picker::new(&built(&[&none])).rows[0].0, RETAIL_CAMPAIGN);
     assert_eq!(p.campaign(3), None);
     assert_eq!(p.campaign(-1), None);
 }
@@ -608,10 +614,11 @@ fn a_halo1_import_is_picked_started_and_served() {
     assert_eq!(built.len(), 1);
     let b = &built[0];
 
-    // The picker: Halo 2, then Halo 1.
+    // The picker: Halo 1, then Halo 2.
     let picker = Picker::new(&built);
-    assert_eq!(picker.rows[1], (b.campaign_id, "Halo: Combat Evolved".to_string()));
-    assert_eq!(picker.campaign(1), Some(b.campaign_id));
+    assert_eq!(picker.rows[0], (b.campaign_id, "Halo: Combat Evolved".to_string()));
+    assert_eq!(picker.rows[1].0, RETAIL_CAMPAIGN);
+    assert_eq!(picker.campaign(0), Some(b.campaign_id));
     // Its levels, in play order, with names.
     let got: Vec<(&str, &str)> = b
         .levels
@@ -657,4 +664,72 @@ fn a_halo1_import_is_picked_started_and_served() {
     fs.read_at("maps\\mainmenu.map", 0, &mut buf).unwrap();
     assert_eq!(&buf, b"retail mainmenu");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every 1.0 caller of the `(campaign, map)` lookups (`0x19c270`, the
+/// start record; `0x19c440`, the next level), driven with a Halo 1 map id
+/// and the campaign each passes. Several pass campaign 1 whatever the map:
+/// without the hooks' [`State::lookup_campaign`] they find nothing, and the
+/// level select's press (`0x2c5118`) reads the null record and faults (the
+/// user's crash on picking Halo CE). With it, each finds Halo 1's record or
+/// next level; a caller that already passes the right campaign is left
+/// alone, and a retail map asked under one of our campaigns goes back to
+/// Halo 2's.
+#[test]
+fn every_lookup_caller_finds_a_halo1_level() {
+    let built = built(&[HALO1]);
+    let h1 = built[0].campaign_id;
+    let a10 = built[0].levels[0].map_id;
+    let a30 = built[0].levels[1].map_id;
+    let d40 = built[0].levels[9].map_id;
+    let state = State {
+        built: built.clone(),
+        selection: Selection::default(),
+        progress: Progress::memory(),
+    };
+    let mut g = globals(4, 3, true);
+    extend(&mut g, &built, &REGION).unwrap();
+    let start = start_list(&g);
+    let fixed = |c: u32, m: u32| state.lookup_campaign(c, m).unwrap_or(c);
+
+    // 0x19c270(campaign, map) callers: (site, what, campaign passed, map).
+    let record_calls = [
+        (0x2c5118, "level select press: campaign 1 hard-coded", 1, a10),
+        (0x199ab7, "Continue: campaign 1, the profile's progress", 1, a30),
+        (0x199ac5, "Continue, second lookup", 1, a30),
+        (0x148d6d, "selection globals 0x54e7c0/0x54e7c4, still 1", 1, a30),
+        (0x148d6d, "selection globals, already ours", h1, a30),
+        (0x18e9ec, "game won: the options' campaign", h1, a30),
+        (0x163664, "0x163610: the level's own campaign", h1, d40),
+        (0x19c98a, "0x19c960: its caller's campaign", 1, d40),
+    ];
+    for (site, what, c, m) in record_calls {
+        let want = built[0].levels.iter().find(|l| l.map_id == m).unwrap();
+        if c != h1 {
+            assert_eq!(lookup(&start, c, m), None, "{site:#x} {what}: the fault without the hook");
+        }
+        assert_eq!(
+            lookup(&start, fixed(c, m), m),
+            Some(want.scenario.as_str()),
+            "{site:#x} {what}"
+        );
+    }
+    // 0x19c440(campaign, map) callers.
+    let next_calls = [
+        (0x24a9e9, "0x24a9xx: campaign 1 hard-coded", 1, a10, Some(a30)),
+        (0x163658, "0x163610", h1, a10, Some(a30)),
+        (0x18e9da, "game won", h1, d40, None),
+    ];
+    for (site, what, c, m, want) in next_calls {
+        assert_eq!(next_level(&start, fixed(c, m), m), want, "{site:#x} {what}");
+    }
+    assert_eq!(next_level(&start, 1, a10), None, "without the hook");
+
+    // Left alone: the right campaign already, retail under retail.
+    assert_eq!(state.lookup_campaign(h1, a10), None);
+    assert_eq!(state.lookup_campaign(1, 0x65), None);
+    assert_eq!(state.lookup_campaign(7, 0x65), None, "a campaign not ours");
+    // A retail map asked under ours: Halo 2's.
+    assert_eq!(state.lookup_campaign(h1, 0x65), Some(1));
+    assert_eq!(lookup(&start, fixed(h1, 0x65), 0x65), Some("scenarios\\solo\\l0\\l0"));
 }

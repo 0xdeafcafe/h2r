@@ -185,7 +185,8 @@ reads after a level is won; the hook there extends it the same way.
 | `LEVEL_SELECT_NEW` `0x2c4ea0` | before, after | the lists; after, `0x54e7c0` is the picked campaign instead of the constructor's 1 |
 | `PROGRESS_MAX` `0x190565` | after | while the level select is being built for one of our campaigns: our progress for the signed-in profiles (`-1`: the first level only) |
 | `CAMPAIGN_START` `0x23643f` | before | the lists; `0x54e7c0` becomes the campaign the selected map id belongs to |
-| `NEXT_LEVEL` `0x19c440` | before | the lists (in the level's own globals): the game-won path (`0x18e960`, through `0x1388e0`) and `0x163610` find the next level here |
+| `NEXT_LEVEL` `0x19c440` | before | the lists (in the level's own globals): the game-won path (`0x18e960`, through `0x1388e0`) and `0x163610` find the next level here; the campaign argument becomes the map's campaign (`0x24a9e9` passes 1) |
+| `CAMPAIGN_LEVEL_LOOKUP` `0x19c270` | before | the lists; the campaign argument becomes the map's campaign (`State::lookup_campaign`): the level select's press (`0x2c5118`) and Continue (`0x199ab7`, `0x199ac5`) pass 1 for any map |
 | `PROGRESS_RAISE` `0x19043f` | before | a map id of ours: kept in our progress for that slot's profile, and the original skipped, so the profile keeps Halo 2's progress only |
 | `LAST_LEVEL_SET` `0x19040d` | before | a map id of ours: kept as that campaign's last level for each signed-in profile; the original skipped |
 | `SCREEN_REQUEST` `0x149f49` | before | the main menu's level-select request (return address `0x2b16f3`, loader `0x2b130a`): the loader becomes the picker's |
@@ -193,8 +194,10 @@ reads after a level is won; the hook there extends it the same way.
 ### The picker (`campaign_menu::PickerRows`, screen `campaigns`)
 
 Our own list class ([feature-engine.md](../engine/feature-engine.md) "UI
-step b", as the Skulls screen is), titled "Campaign": "Halo 2", then each
-campaign's name. A press sets the picked campaign, rebuilds the level
+step b", as the Skulls screen is), titled "Campaign": the campaigns whose
+`order` is below 20 (`campaign_list::HALO2_ORDER`; Halo 1's is 10), then
+"Halo 2", then the rest, so Halo: Combat Evolved is first and Halo 2
+second. A press sets the picked campaign, rebuilds the level
 select's list with the game's own `0x19c6d0([0x4ee4e8], id)`, and opens
 the retail level select (`0x2b130a`). This needed one new press result in
 `ui::Chosen`, `Retail { calls, loader }`, made by
@@ -215,6 +218,29 @@ last = 4100                     # last level started
 
 Written whole through a rename when it changes; an unreadable file is
 reported and never overwritten.
+
+### The lookups by `(campaign, map)`
+
+Every 1.0 caller of the start-record lookup `0x19c270` and the next-level
+lookup `0x19c440` (found by scanning the XBE for calls to them):
+
+| Call | Campaign passed | Map |
+|---|---|---|
+| `0x2c5118` (level select, a press) | **1** | the pressed level's |
+| `0x199ab7`, `0x199ac5` (Continue) | **1** (`0x54e7c0` set to 1) | the profile's progress |
+| `0x148d6d` | `0x54e7c0` | `0x54e7c4` |
+| `0x18e9ec`, `0x18e9da` (game won) | the game options' | the next level |
+| `0x163664`, `0x163658` (`0x163610`) | the level's own | its next |
+| `0x19c98a` (`0x19c960`) | its caller's | its caller's |
+| `0x24a9e9` (`0x19c440`) | **1** | `[ebp+0x68]` |
+
+The ones passing 1 find no record for one of our levels: picking Halo CE
+and pressing a level faulted at `0x2c5125` reading the null record. Map ids
+are unique across campaigns, so both lookups are hooked at entry and the
+campaign argument becomes the one that owns the map
+(`campaigns::State::lookup_campaign`); a retail map asked under one of
+ours goes back to 1. The MP lookup `0x19c5f0` takes a map id alone and
+reads the multiplayer list, which campaign ids never reach.
 
 ## Tests
 
@@ -238,6 +264,10 @@ reported and never overwritten.
 - `vfs` `campaign_maps::tests` (2): a map the disc lacks is served from
   its campaign folder (stat, read, listing, host file, `MapId`); the
   disc's own map is never shadowed; a missing host file stays missing.
+- `boot` `campaigns::tests::every_lookup_caller_finds_a_halo1_level`: each
+  call in the table above, with a Halo 1 map id and the campaign it passes,
+  finds nothing without the rewrite and Halo 1's record or next level with
+  it; `the_picker_lists_halo_1_then_halo_2_then_the_rest`.
 - `boot` `campaign_menu::tests` (2): a press picks the campaign and asks
   for `0x19c6d0([0x4ee4e8], id)` then the level select; the hooks are on
   the plan where the table says.

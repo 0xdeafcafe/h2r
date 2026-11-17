@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use engine::points::{
-    CAMPAIGN_LEVEL_LIST, CAMPAIGN_START, LAST_LEVEL_SET, LEVEL_SELECT_NEW, NEXT_LEVEL,
+    CAMPAIGN_LEVEL_LIST, CAMPAIGN_LEVEL_LOOKUP, CAMPAIGN_START, LAST_LEVEL_SET, LEVEL_SELECT_NEW, NEXT_LEVEL,
     PROGRESS_MAX, PROGRESS_RAISE, SCREEN_REQUEST,
 };
 use feature::{BuildError, Builder, Call, Flow, Manifest};
@@ -233,11 +233,24 @@ impl feature::Feature for Campaigns {
                 }
                 Ok(Flow::Continue)
             });
-        let s = Arc::clone(st);
-        b.raw().before(&NEXT_LEVEL, "the lists", move |c| {
-            ensure(c, &s);
-            Ok(Flow::Continue)
-        });
+        // Both take `(campaign, map)`; some callers pass campaign 1 for
+        // any map, which finds nothing for ours (the level select's press
+        // faulted on it).
+        for (point, what) in [
+            (&NEXT_LEVEL, "the lists, the map's campaign"),
+            (&CAMPAIGN_LEVEL_LOOKUP, "the lists, the map's campaign"),
+        ] {
+            let s = Arc::clone(st);
+            b.raw().before(point, what, move |c| {
+                ensure(c, &s);
+                if let (Some(campaign), Some(map)) = (stack(c, 0), stack(c, 1))
+                    && let Some(want) = s.lookup_campaign(campaign, map)
+                {
+                    set_stack(c, 0, want);
+                }
+                Ok(Flow::Continue)
+            });
+        }
         let s = Arc::clone(st);
         b.raw()
             .before(&PROGRESS_RAISE, "our campaign's progress", move |c| {
@@ -351,7 +364,8 @@ mod tests {
         assert_eq!(rows.title(), TITLE_ID);
         assert_eq!(rows.texts(1), [(0, ID_BASE + 2)]);
         assert!(rows.texts(3).is_empty());
-        match rows.press(1) {
+        // Halo 1 first, Halo 2 second.
+        match rows.press(0) {
             Chosen::Retail {
                 calls,
                 loader,
@@ -372,7 +386,7 @@ mod tests {
         assert_eq!(st.selection.campaign(), 2);
         // Halo 2 again: campaign 1, the retail list.
         assert!(
-            matches!(rows.press(0), Chosen::Retail { ref calls, .. } if calls[0].1[1] == GuestArg::Value(1))
+            matches!(rows.press(1), Chosen::Retail { ref calls, .. } if calls[0].1[1] == GuestArg::Value(1))
         );
         assert_eq!(st.selection.campaign(), 1);
         assert_eq!(rows.press(9), Chosen::Nothing);
@@ -390,6 +404,8 @@ mod tests {
         let text = r.build(&feature::Base).unwrap().text();
         for line in [
             "0x0019c6d0 CAMPAIGN_LEVEL_LIST: before [campaigns:the shown campaign's list] -> original",
+            "0x0019c270 CAMPAIGN_LEVEL_LOOKUP: before [campaigns:the lists, the map's campaign] -> original",
+            "0x0019c440 NEXT_LEVEL: before [campaigns:the lists, the map's campaign] -> original",
             "0x0023643f CAMPAIGN_START: before [campaigns:the level's campaign] -> original",
             "0x0019043f PROGRESS_RAISE: before [campaigns:our campaign's progress] -> original",
             "0x0019040d LAST_LEVEL_SET: before [campaigns:our campaign's last level] -> original",
