@@ -417,7 +417,7 @@ fn translation_kinds() {
     let kind = |i: u16| t.builtin(i).unwrap().kind;
     assert_eq!(kind(0), Kind::Direct);
     assert_eq!(kind(1), Kind::Direct);
-    assert_eq!(t.builtin(2).unwrap().adapter, Some(Adapter::AppendShort(0)));
+    assert_eq!(t.builtin(2).unwrap().adapter, Some(Adapter::OmitOptional));
     assert_eq!(t.builtin(3).unwrap().adapter, Some(Adapter::Negate));
     assert_eq!(kind(4), Kind::Renamed);
     assert_eq!(
@@ -506,14 +506,11 @@ fn compile_rewrites_adapters_and_stubs_missing_calls() {
         }
         v
     };
-    // ai_place gains a hooked short; its squad is a hook.
+    // ai_place keeps one argument (Halo 2's count is optional); its
+    // squad is a hook.
     let place = call_args("ai_place");
-    assert_eq!(place.len(), 2);
+    assert_eq!(place.len(), 1);
     assert_eq!((place[0].value_type(), place[0].data()), (H2_AI, u32::MAX));
-    assert_eq!(
-        (place[1].opcode(), place[1].value_type(), place[1].data()),
-        (SHORT, SHORT, 0)
-    );
     // != becomes (not (= g_count 2)).
     let not = call_args("not");
     assert_eq!(not.len(), 1);
@@ -603,4 +600,45 @@ fn install_writes_the_halo2_scenario_fields() {
         child.fixups[0].kind,
         map::build::FixupKind::TagId(map::TagId(0xe000_0001))
     ));
+}
+
+#[test]
+fn startup_placements_decode_as_a_startup_script() {
+    let (_, mut out) = compiled(Missing::Stub);
+    let hooks = out.hooks.len();
+    let scripts = out.scripts.len();
+    crate::compile::add_startup_placements(
+        &mut out,
+        &h2_target(),
+        "h1_initial",
+        &["first".into(), "second".into()],
+    )
+    .unwrap();
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.scripts().len(), scripts + 1);
+    let script = s.script("h1_initial").unwrap();
+    assert_eq!((script.kind(), script.return_type()), (0, VOID));
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    // Two one-argument ai_place calls inside begin, each squad hooked.
+    let places: Vec<_> = s
+        .nodes()
+        .iter()
+        .filter(|n| {
+            !n.atom()
+                && s.string(s.node(Datum(n.data())).unwrap().string_offset())
+                    .unwrap()
+                    == "ai_place"
+        })
+        .collect();
+    assert_eq!(places.len(), 3, "main's call and the two new ones");
+    let new: Vec<_> = out.hooks[hooks..]
+        .iter()
+        .map(|h| h.token.as_str())
+        .collect();
+    assert_eq!(new, ["first", "second"]);
+    assert!(out.hooks[hooks..].iter().all(|h| h.h2_type == H2_AI));
+    // Nothing to place: no script.
+    let n = out.scripts.len();
+    crate::compile::add_startup_placements(&mut out, &h2_target(), "x", &[]).unwrap();
+    assert_eq!(out.scripts.len(), n);
 }

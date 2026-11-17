@@ -1,14 +1,17 @@
-//! The converted level's scenario: the base's `scnr`, rebuilt as a built
-//! root (`0x3e0` bytes, `tags::schema`'s `scnr` root size) whose untouched
-//! block fields keep pointing at the base's own children. Those stay where
-//! they were as unowned metadata (`PinnedImage::unowned`), so nothing that
-//! names them moves. The fields below are replaced.
+//! The converted level's scenario: the base's `scnr`, relocated as a block
+//! tree (`tags::schema::Relocator::to_built_emptied`) with the fields below
+//! emptied first ([`replaced_fields`]), so the base scenario's old bytes
+//! are free for built tags; only the arrays other tags keep inside them
+//! stay, as unowned metadata. When the base scenario does not relocate,
+//! the root is rebuilt over the old bytes instead (`0x3e0` bytes, its
+//! untouched fields keeping their raw addresses, the old bytes kept). The
+//! fields below are replaced.
 //!
 //! | Field | Stride | Written |
 //! |---|---|---|
 //! | `+0x08` skies | 8 | Halo 1's skies, converted (`h1sky`) |
 //! | `+0x48` object names | `0x24` | Halo 1's names; each placement index mapped to the converted placement, or -1 |
-//! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment and vehicles from Halo 1's |
+//! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment, vehicles, scenery and bipeds from Halo 1's |
 //! | `+0x100` player starting locations | `0x34` | Halo 1's, each on the base's first element |
 //! | `+0x108` trigger volumes | `0x44` | the base's, parked out of the level (`h1convert::convert::park_trigger_volumes`) |
 //! | AI fields (`h1ai::convert::ScenarioBlocks`) | | Halo 1's AI, or empty |
@@ -61,6 +64,7 @@ pub mod h1 {
     pub const WEAPONS: (usize, usize) = (0x270, 0x5c);
     pub const WEAPON_PALETTE: (usize, usize) = (0x27c, 0x30);
     pub const SCENERY: (usize, usize) = (0x210, 0x48);
+    pub const SCENERY_PALETTE: (usize, usize) = (0x21c, 0x30);
 }
 
 /// The high word of the unique IDs given to converted placements
@@ -76,11 +80,26 @@ pub struct Descriptor {
 }
 
 /// The base's scenario, as read.
+/// A relocated base scenario: its tree, and the old byte ranges other
+/// tags' arrays still use (address, end).
+type Relocated = (Block, Vec<(u32, u32)>);
+
 pub struct BaseScenario {
     pub id: TagId,
     pub address: u32,
     pub bytes: Vec<u8>,
     pub descriptors: Vec<Descriptor>,
+    /// The base scenario as a relocatable tree (`tags::schema`), when it
+    /// is one and no other tag points into it. The converted scenario is
+    /// built from it, so the fields replaced here leave the map and the
+    /// base scenario's old bytes are free for built tags. `None` keeps the
+    /// old bytes as unowned metadata instead.
+    pub tree: Option<Block>,
+    /// Why the base scenario did not relocate, when it did not.
+    pub refusal: Option<String>,
+    /// With a tree: the old bytes other tags' arrays still use, as
+    /// (address, end). They stay as unowned metadata.
+    pub keep: Vec<(u32, u32)>,
 }
 
 fn u32_at(b: &[u8], at: usize) -> Result<u32> {
@@ -105,7 +124,17 @@ impl BaseScenario {
             address,
             bytes,
             descriptors: Vec::new(),
+            tree: None,
+            refusal: None,
+            keep: Vec::new(),
         };
+        match s.relocate(base)? {
+            Ok((t, keep)) => {
+                s.tree = Some(t);
+                s.keep = keep;
+            }
+            Err(why) => s.refusal = Some(why),
+        }
         s.descriptors = s
             .elements(BSPS, BSP)?
             .iter()
@@ -115,6 +144,44 @@ impl BaseScenario {
             })
             .collect();
         Ok(s)
+    }
+
+    /// The base scenario as a relocatable tree, or why not: `tags::schema`
+    /// refuses it, or another tag points into it. The fields `write`
+    /// replaces are emptied first, so neither their old contents (the BSP
+    /// descriptors' region words point into BSP space, which the walk
+    /// refuses) nor their bytes come along.
+    fn relocate<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+    ) -> Result<std::result::Result<Relocated, String>> {
+        let mut r = tags::schema::Relocator::new(tags::schema::Schema::builtin(), base)
+            .map_err(|e| invalid(format!("base scenario: {e}")))?;
+        // Other tags' arrays inside the old scenario bytes stay put.
+        let mut keep: Vec<(u32, u32)> = r
+            .pointed_into(self.id)
+            .into_iter()
+            .map(|(_, a, n)| (a, a + n))
+            .collect();
+        keep.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (lo, hi) in keep {
+            match merged.last_mut() {
+                Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+                _ => merged.push((lo, hi)),
+            }
+        }
+        for at in replaced_fields() {
+            r.memory_mut().patch(self.address + at, &[0; 8]);
+        }
+        Ok(r.to_built_emptied(self.id)
+            .map(|b| (b, merged))
+            .map_err(|d| {
+                format!(
+                    "{:?} at field path {:x?} +{:#x} ({:#x})",
+                    d.refusal, d.path, d.offset, d.value
+                )
+            }))
     }
 
     /// The elements of the root's block field `at`.
@@ -145,8 +212,17 @@ pub struct ScenarioReport {
     /// Object tags added by `h1objects` (models, collisions, animations,
     /// projectiles included).
     pub object_tags: usize,
-    /// The player biped, converted (not yet the player's: see the doc).
+    /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
+    /// `None` when the scenario was rebuilt from the base's relocated tree
+    /// (the base scenario's old bytes freed); else why it was written over
+    /// them.
+    pub base_tree: Option<String>,
+    /// Bytes of the old scenario kept for other tags' arrays.
+    pub base_kept: u32,
+    /// The scenario's largest root fields, as (offset, bytes of the
+    /// field's tree).
+    pub fields: Vec<(u32, u64)>,
     /// Object names written.
     pub names: usize,
     /// Base trigger volumes parked.
@@ -184,6 +260,9 @@ pub struct ScriptReport {
     pub missing_calls: usize,
     pub references: usize,
     pub references_resolved: usize,
+    /// Squad groups the startup script places (Halo 1's initially created
+    /// encounters).
+    pub initial: Vec<String>,
 }
 
 impl std::fmt::Display for ScenarioReport {
@@ -201,6 +280,23 @@ impl std::fmt::Display for ScenarioReport {
             "  object tags added: {}, player biped: {:?}, names: {}, base trigger volumes parked: {}",
             self.object_tags, self.player_biped, self.names, self.parked_volumes
         )?;
+        writeln!(
+            f,
+            "  scenario: {}",
+            match &self.base_tree {
+                None => format!(
+                    "rebuilt from the base's relocated tree ({:#x} old bytes kept for other tags)",
+                    self.base_kept
+                ),
+                Some(why) => format!("over the base's old bytes ({why})"),
+            }
+        )?;
+        let fields: Vec<String> = self
+            .fields
+            .iter()
+            .map(|(at, n)| format!("{at:#x} {n:#x}"))
+            .collect();
+        writeln!(f, "  scenario's largest fields: {}", fields.join(", "))?;
         if let Some(a) = &self.ai {
             writeln!(
                 f,
@@ -230,6 +326,11 @@ impl std::fmt::Display for ScenarioReport {
                 f,
                 "    sounds: {} converted, {} left out",
                 s.sounds, s.sounds_dropped
+            )?;
+            writeln!(
+                f,
+                "    placed at startup ({INITIAL_SCRIPT}): {:?}",
+                s.initial
             )?;
         }
         Ok(())
@@ -289,7 +390,7 @@ struct Kind {
     h2_type: u16,
 }
 
-const KINDS: [Kind; 3] = [
+const KINDS: [Kind; 5] = [
     Kind {
         label: "weapons",
         h1: h1::WEAPONS,
@@ -308,10 +409,51 @@ const KINDS: [Kind; 3] = [
         h1_palette: h1::VEHICLE_PALETTE,
         h2_type: 1,
     },
+    Kind {
+        label: "scenery",
+        h1: h1::SCENERY,
+        h1_palette: h1::SCENERY_PALETTE,
+        h2_type: 6,
+    },
+    Kind {
+        label: "bipeds",
+        h1: h1::BIPEDS,
+        h1_palette: h1::BIPED_PALETTE,
+        h2_type: 0,
+    },
 ];
 
 /// The Halo 1 player biped the objects layer converts.
 pub const PLAYER_BIPED: &str = "characters\\cyborg\\cyborg";
+
+/// The scenario root fields [`write`] replaces (or empties).
+pub fn replaced_fields() -> Vec<u32> {
+    use h1ai::h2::layout as ai;
+    let mut v = vec![
+        SKIES,
+        OBJECT_NAMES,
+        STARTING_LOCATIONS,
+        TRIGGER_VOLUMES,
+        BSPS,
+    ];
+    for t in tags::object::OBJECT_TYPES.iter() {
+        if let Some((at, pal, _)) = t.placement {
+            v.extend([u32::from(at), u32::from(pal)]);
+        }
+    }
+    v.extend(SCRIPT_FIELDS);
+    for (at, _) in [
+        ai::SQUAD_GROUPS,
+        ai::SQUADS,
+        ai::ZONES,
+        ai::CHARACTER_PALETTE,
+        ai::SCRIPTING_DATA,
+        ai::ORDERS,
+    ] {
+        v.push(at as u32);
+    }
+    v
+}
 
 /// Writes the scenario layers into `set` (built from the base).
 /// `sections[k]` is the built BSP section of Halo 1 BSP `k`.
@@ -324,7 +466,10 @@ pub fn write(
     opts: &Options,
     report: &mut Report,
 ) -> Result<()> {
-    let mut root = Block::new(base.bytes[..ROOT].to_vec());
+    let mut root = match &base.tree {
+        Some(t) => t.clone(),
+        None => Block::new(base.bytes[..ROOT].to_vec()),
+    };
     let rep = &mut report.scenario;
 
     // BSP descriptors: the converted regions; the base's others stay.
@@ -527,6 +672,20 @@ pub fn write(
             } else {
                 Default::default()
             };
+            // Encounters Halo 1 creates at load (encounter flag bit 0, "not
+            // initially created", clear): their squad groups, placed by a
+            // startup script.
+            let initial: Vec<String> = if opts.ai {
+                ai_src
+                    .encounters
+                    .iter()
+                    .zip(&plan.ai.squad_groups)
+                    .filter(|(e, _)| e.flags & 1 == 0)
+                    .map(|(_, g)| g.name.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             rep.scripts = Some(install_scripts(
                 h1,
                 s,
@@ -539,6 +698,7 @@ pub fn write(
                     squads: &squads,
                     groups: &groups,
                 },
+                &initial,
                 opts.sounds,
             )?);
         }
@@ -549,13 +709,38 @@ pub fn write(
         }
     }
 
-    // The old bytes stay where they were, so the untouched fields'
-    // children (still raw addresses in the root) stay valid.
-    set.pinned
+    // Without a tree, the old bytes stay where they were, so the untouched
+    // fields' children (still raw addresses in the root) stay valid.
+    // With one, only the ranges other tags' arrays use stay.
+    let pinned = set
+        .pinned
         .as_mut()
-        .ok_or_else(|| invalid("the set is not from a retail map"))?
-        .unowned
-        .push((base.address, base.bytes.clone()));
+        .ok_or_else(|| invalid("the set is not from a retail map"))?;
+    if base.tree.is_none() {
+        pinned.unowned.push((base.address, base.bytes.clone()));
+    } else {
+        for &(lo, hi) in &base.keep {
+            let (a, b) = ((lo - base.address) as usize, (hi - base.address) as usize);
+            pinned
+                .unowned
+                .push((lo, base.bytes[a..b.min(base.bytes.len())].to_vec()));
+        }
+        rep.base_kept = base.keep.iter().map(|(lo, hi)| hi - lo).sum();
+    }
+    rep.base_tree = base.refusal.clone();
+    let mut fields: Vec<(u32, u64)> = root
+        .fixups
+        .iter()
+        .filter_map(|f| match &f.kind {
+            FixupKind::Block { child, .. } | FixupKind::Data(child) => {
+                Some((f.offset, child.tree_len()))
+            }
+            _ => None,
+        })
+        .collect();
+    fields.sort_by_key(|f| std::cmp::Reverse(f.1));
+    fields.truncate(12);
+    rep.fields = fields;
     set.tag_mut(base.id)
         .ok_or_else(|| invalid("no scenario"))?
         .payload = TagPayload::Built(root);
@@ -595,9 +780,13 @@ fn place_objects(
         }
         palettes.push(pal);
     }
+    let mut player = None;
     rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
         Some(t) => match conv.object(t) {
-            Ok(_) => Some(t.name.clone()),
+            Ok(id) => {
+                player = Some(id);
+                Some(t.name.clone())
+            }
             Err(e) => {
                 dropped.push(format!("player biped {}: {e}", t.name));
                 None
@@ -611,6 +800,12 @@ fn place_objects(
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
     let real = |t: TagId| ids[(t.0 & 0xffff) as usize];
+    // The campaign players (globals representation 0 and 1) are the Halo 1
+    // cyborg; Halo 1 health follows from the map name at boot.
+    if let Some(p) = player {
+        h1convert::globals::set_player_unit(set, real(p), h1convert::globals::Players::Campaign)
+            .map_err(|e| invalid(format!("player unit: {e}")))?;
+    }
 
     let mut placed = HashMap::new();
     let mut unique = 0u32;
@@ -661,11 +856,6 @@ fn place_objects(
             .push((k.label, out.len(), src.len(), converted, pal.len()));
         put_block(root, u32::from(at), usize::from(stride), out);
     }
-    let scenery = h1_block(h1, h1::SCENERY)?.len();
-    let bipeds = h1_block(h1, h1::BIPEDS)?.len();
-    dropped.push(format!(
-        "{scenery} scenery and {bipeds} biped placements: scenery and placed bipeds have no h1objects conversion yet"
-    ));
     Ok(placed)
 }
 
@@ -704,6 +894,9 @@ pub mod h1_volumes {
 }
 
 /// What script hooks resolve against.
+/// The startup script that places the encounters Halo 1 creates at load.
+pub const INITIAL_SCRIPT: &str = "h1_initial_encounters";
+
 pub struct Targets<'a> {
     /// Object names, in the scenario's order.
     pub names: &'a [String],
@@ -780,6 +973,7 @@ fn install_scripts(
     set: &mut TagSet,
     root: &mut Block,
     targets: &Targets,
+    initial: &[String],
     max_sounds: usize,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile};
@@ -790,6 +984,8 @@ fn install_scripts(
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
     let mut c = compile(&t, &s.catalog, &s.table, &s.target, Missing::Stub, &refs)
+        .map_err(|e| invalid(format!("scripts: {e}")))?;
+    h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
     let mut interned: HashMap<String, u32> = HashMap::new();
@@ -825,6 +1021,9 @@ fn install_scripts(
         })
         .collect();
     let mut resolved = 0;
+    for at in SCRIPT_FIELDS {
+        put_block(root, at, 0, Vec::new());
+    }
     c.install(root, |_, name| {
         let r = by_name.get(name).copied();
         resolved += usize::from(r.is_some());
@@ -843,6 +1042,7 @@ fn install_scripts(
         missing_calls: c.missing.len(),
         references: c.references.len(),
         references_resolved: resolved,
+        initial: initial.to_vec(),
     })
 }
 

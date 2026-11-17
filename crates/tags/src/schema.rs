@@ -379,6 +379,28 @@ impl Memory {
         (address - a < b.len() as u32).then_some((*a, b.as_slice()))
     }
 
+    /// Overwrite bytes at `address` (inside one region). False when the
+    /// range is in no region.
+    pub fn patch(&mut self, address: u32, bytes: &[u8]) -> bool {
+        let i = match self
+            .regions
+            .partition_point(|r| r.0 <= address)
+            .checked_sub(1)
+        {
+            Some(i) => i,
+            None => return false,
+        };
+        let (a, b) = &mut self.regions[i];
+        let at = (address - *a) as usize;
+        match b.get_mut(at..at + bytes.len()) {
+            Some(d) => {
+                d.copy_from_slice(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `n` bytes at `address`, inside one region.
     pub fn slice(&self, address: u32, n: u32) -> Option<&[u8]> {
         let (a, b) = self.region(address)?;
@@ -658,6 +680,13 @@ impl<'s> Relocator<'s> {
         &self.memory
     }
 
+    /// The map's metadata, to patch words a caller replaces anyway (such
+    /// as a scenario's BSP descriptor addresses, which point into BSP
+    /// space and so stop [`Relocator::check`]).
+    pub fn memory_mut(&mut self) -> &mut Memory {
+        &mut self.memory
+    }
+
     fn tag(&self, id: TagId) -> Option<&map::Tag> {
         self.by_id.get(&id).map(|&i| &self.tags[i])
     }
@@ -693,6 +722,87 @@ impl<'s> Relocator<'s> {
     /// [`Relocator::to_built_among`].
     pub fn to_built(&self, id: TagId) -> Result<Block, Refusal> {
         self.build(id, &|_| false)
+    }
+
+    /// [`Relocator::to_built`] for a tag some of whose fields the caller
+    /// emptied (patched in [`Relocator::memory_mut`]): its arrays need not
+    /// tile it, since the emptied fields' old arrays are left out. Every
+    /// other check holds. Whether other tags point into it is
+    /// [`Relocator::pointed_into`].
+    pub fn to_built_emptied(&self, id: TagId) -> Result<Block, Detail> {
+        match self.check(id) {
+            Ok(_) => {}
+            Err(d) if d.refusal == Refusal::Uncovered => {}
+            Err(d) => return Err(d),
+        }
+        let tag = self.tag(id).expect("checked");
+        let root = &self.schema.groups[&tag.group];
+        let l = tag.location.expect("checked");
+        let cx = TreeCtx {
+            mem: &self.memory,
+            salt: self.salt,
+            own: (l.address, l.address + l.size),
+            stays: &|_| false,
+        };
+        let mut block = tree(root, &cx, l.address, 1);
+        block.share = None;
+        Ok(block)
+    }
+
+    /// Arrays of other tags (by their schema, followed from each root)
+    /// that sit inside `id`'s bytes, as (that tag, address, byte length).
+    /// `id`'s bytes can be freed only when there are none, or when these
+    /// ranges are kept. Words that merely fall inside `id` (shader
+    /// microcode, sample data) are not counted.
+    pub fn pointed_into(&self, id: TagId) -> Vec<(TagId, u32, u32)> {
+        let Some(t) = self.tag(id) else {
+            return Vec::new();
+        };
+        let Some(l) = t.location else {
+            return Vec::new();
+        };
+        let range = l.address..l.address + l.size;
+        let mut out = Vec::new();
+        for other in &self.tags {
+            let (Some(ol), Some(root)) = (other.location, self.schema.groups.get(&other.group))
+            else {
+                continue;
+            };
+            if other.id == id || Some(ol.space) != self.metadata || ol.size == 0 {
+                continue;
+            }
+            let mut seen = std::collections::HashSet::new();
+            let mut todo = vec![(root, ol.address, 1u32, 0u32)];
+            while let Some((s, at, count, depth)) = todo.pop() {
+                if depth > 64 || !seen.insert(at) {
+                    continue;
+                }
+                let Some(bytes) = s
+                    .size
+                    .checked_mul(count)
+                    .and_then(|n| self.memory.slice(at, n))
+                else {
+                    continue;
+                };
+                for i in 0..count {
+                    let e = (i * s.size) as usize;
+                    for (&o, f) in &s.fields {
+                        if let Field::Block(child) = f {
+                            let c = u32_at(bytes, e + o as usize);
+                            let a = u32_at(bytes, e + o as usize + 4);
+                            if c == 0 || a == 0 {
+                                continue;
+                            }
+                            if range.contains(&a) {
+                                out.push((other.id, a, c.saturating_mul(child.size)));
+                            }
+                            todo.push((child, a, c, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// [`Relocator::to_built`] when exactly the tags in `moving` become

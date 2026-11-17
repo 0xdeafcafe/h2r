@@ -103,7 +103,7 @@ fn hooks_take_retail_encodings() {
     assert_eq!(hook_value(&hook("object", "none"), &t), Some(u32::MAX));
     assert_eq!(hook_value(&hook("trigger_volume", "second"), &t), Some(11));
     assert_eq!(
-        hook_value(&hook("short", "ai_place:0"), &t),
+        hook_value(&hook("short", "unit_exit_vehicle:0"), &t),
         Some(0xffff_0000)
     );
     assert_eq!(

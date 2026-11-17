@@ -128,7 +128,9 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   marker-name string becomes a `string_id` literal; a string the
   interpreter cannot cast becomes a hook of the expected type, below); or
   one of `ADAPTERS`:
-  `ai_place` gains a `short` count, `unit_exit_vehicle` gains a `short` mode
+  `ai_place` keeps Halo 1's one argument (`OmitOptional`: Halo 2's count
+  is optional; retail Halo 2 scripts leave it out in 1,309 of 2,100 calls
+  and never pass 0, survey `ai_place_counts`), `unit_exit_vehicle` gains a `short` mode
   (1, what every retail Halo 2 call passes), `device_group_set` gains `none`
   as its device, and `!=` becomes `(not (= a b))` because Halo 2's scripts
   never call `!=`.
@@ -262,9 +264,12 @@ squad group's `0x40000000 | index`, a squad's starting location
 
 ## Open questions
 
-- The adapter defaults (`ai_place` count 0, `unit_exit_vehicle` mode 1) are
-  not checked against Halo 2's evaluators; both are hooks so the converter
-  can change them.
+- The `unit_exit_vehicle` mode 1 default is not checked against Halo 2's
+  evaluator (it is a hook, so the converter can change it). `ai_place`
+  no longer passes a count (above).
+- `compile::add_startup_placements` appends a startup script of one-argument
+  `ai_place` calls, each squad an `ai` hook: h1campaign places Halo 1's
+  initially created encounters with it (h1-ai.md).
 - Halo 2's string literals are fixed up at load from `+0xc`; the compiled
   string atoms put the same offset in the data word. Untested in the engine.
 - Salts: `0x8000 | slot`. The engine rebuilds occupancy from salts at load;

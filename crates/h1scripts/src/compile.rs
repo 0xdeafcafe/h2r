@@ -168,6 +168,94 @@ pub fn compile(
     Ok(c.out)
 }
 
+/// Appends a startup script `name` that places each of `squads` with a
+/// one-argument `ai_place`, each squad an `ai` atom hooked with its name
+/// (the converter resolves it like any other). Halo 1 creates an encounter
+/// at load unless it is flagged "not initially created"; Halo 2 places
+/// squads only from scripts (no retail squad sets a placement flag), so
+/// the converted level does it here.
+pub fn add_startup_placements(
+    out: &mut Compiled,
+    h2: &Target,
+    name: &str,
+    squads: &[String],
+) -> Result<()> {
+    if squads.is_empty() {
+        return Ok(());
+    }
+    let place = h2
+        .builtins
+        .get("ai_place")
+        .ok_or_else(|| invalid("Halo 2 has no ai_place"))?
+        .clone();
+    let begin = h2
+        .builtins
+        .get("begin")
+        .ok_or_else(|| invalid("Halo 2 has no begin"))?
+        .clone();
+    let ai = *place
+        .parameters
+        .first()
+        .ok_or_else(|| invalid("ai_place takes no squad"))?;
+    let type_name = h2.types.get(ai as usize).cloned().unwrap_or_default();
+    let push = |out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32| {
+        let string = out.strings.len() as u32;
+        out.strings.extend_from_slice(token);
+        out.strings.push(0);
+        let slot = out.nodes.len();
+        let salt = 0x8000 | (slot as u16 & 0x7fff);
+        let mut b = [0u8; Node::SIZE];
+        b[0..2].copy_from_slice(&salt.to_le_bytes());
+        b[2..4].copy_from_slice(&opcode.to_le_bytes());
+        b[4..6].copy_from_slice(&ty.to_le_bytes());
+        b[6..8].copy_from_slice(&flags.to_le_bytes());
+        b[8..12].copy_from_slice(&Datum::NULL.0.to_le_bytes());
+        b[12..16].copy_from_slice(&string.to_le_bytes());
+        b[16..20].copy_from_slice(&data.to_le_bytes());
+        out.nodes.push(Node::decode(&b).expect("20 bytes"));
+        Datum(u32::from(salt) << 16 | slot as u32)
+    };
+    let link = |out: &mut Compiled, d: Datum, next: Datum| {
+        let mut b = out.nodes[d.slot()].encode();
+        b[8..12].copy_from_slice(&next.0.to_le_bytes());
+        out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
+    };
+    // A call: head atom, arguments chained after it, then the call node.
+    let call =
+        |out: &mut Compiled, b: &crate::translate::H2Builtin, token: &[u8], args: &[Datum]| {
+            let head = push(out, b.index, h2t::FUNCTION_NAME, ATOM, token, 0);
+            let mut prev = head;
+            for &a in args {
+                link(out, prev, a);
+                prev = a;
+            }
+            // Both calls stand where a script expects void.
+            push(out, b.index, h2t::VOID, CALL, b"", head.0)
+        };
+    let mut calls = Vec::new();
+    for squad in squads {
+        let atom = push(out, ai, ai, ATOM, squad.as_bytes(), NONE);
+        out.hooks.push(Hook {
+            slot: atom.slot() as u16,
+            h2_type: ai,
+            type_name: type_name.clone(),
+            h1_type: "ai".into(),
+            token: squad.clone(),
+        });
+        calls.push(call(out, &place, b"ai_place", &[atom]));
+    }
+    let body = call(out, &begin, b"begin", &calls);
+    let i = out.scripts.len();
+    out.scripts.push(definition(name, 0, h2t::VOID, body, i)?);
+    if out.nodes.len() > MAX_NODES {
+        return Err(invalid(format!(
+            "{} nodes, Halo 2 holds {MAX_NODES}",
+            out.nodes.len()
+        )));
+    }
+    Ok(())
+}
+
 fn definition(name: &str, a: u16, b: u16, root: Datum, i: usize) -> Result<[u8; 40]> {
     if name.len() >= 32 {
         return Err(invalid(format!("definition {i}: name too long")));
@@ -409,7 +497,8 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
-        if !b.special && out.len() != b.parameters.len() {
+        let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
+        if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(
                 "{token}: {} arguments for {h2_name}",
                 out.len()

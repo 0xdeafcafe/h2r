@@ -467,6 +467,22 @@ fn child(b: &mut Block, (at, stride): (usize, usize), elements: Vec<Block>) {
     }
 }
 
+/// [`child`] for an array with no fixups that zones often repeat (Halo 1
+/// encounters copy firing positions: b40's 20789 hold 8335 distinct). The
+/// builder places identical arrays once, keyed by their bytes.
+fn shared_child(b: &mut Block, (at, stride): (usize, usize), elements: Vec<Block>) {
+    use std::hash::{Hash, Hasher};
+    if !elements.is_empty() {
+        let n = elements.len() as u32;
+        let a = array(elements, stride);
+        debug_assert!(a.fixups.is_empty());
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("h1ai zone array", at, &a.bytes).hash(&mut h);
+        let key = h.finish();
+        b.block(at as u32, n, a.shared(key));
+    }
+}
+
 fn area_refs(set: &[AreaRef]) -> Vec<Block> {
     set.iter()
         .map(|r| {
@@ -591,7 +607,7 @@ impl Plan {
                             b
                         })
                         .collect();
-                    child(&mut e, l::ZONE_FIRING_POSITIONS, fps);
+                    shared_child(&mut e, l::ZONE_FIRING_POSITIONS, fps);
                     let areas = z
                         .areas
                         .iter()
@@ -608,7 +624,7 @@ impl Plan {
                             b
                         })
                         .collect();
-                    child(&mut e, l::ZONE_AREAS, areas);
+                    shared_child(&mut e, l::ZONE_AREAS, areas);
                     e
                 })
                 .collect(),

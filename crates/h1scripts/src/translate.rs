@@ -25,8 +25,10 @@ pub const RENAMES: &[(&str, &str)] = &[
 /// Halo 1 builtins whose Halo 2 counterpart takes different arguments, and
 /// the rewrite that bridges them.
 pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
-    // Halo 2 adds a count; retail Halo 2 scripts always pass one.
-    ("ai_place", "ai_place", Adapter::AppendShort(0)),
+    // Halo 2 adds an optional count. Retail Halo 2 scripts leave it out in
+    // 1309 of 2100 calls and never pass 0 (`ai_place_counts` in
+    // h1campaign's survey), so the call keeps Halo 1's one argument.
+    ("ai_place", "ai_place", Adapter::OmitOptional),
     // Halo 2 adds an exit mode; every retail Halo 2 call passes 1.
     (
         "unit_exit_vehicle",
@@ -52,6 +54,9 @@ pub enum Adapter {
     AppendShort(i16),
     /// Insert `none` as the first argument.
     PrependNone,
+    /// Halo 2's last parameter is optional and Halo 1 has no counterpart:
+    /// the call keeps Halo 1's arguments, one fewer than Halo 2's table.
+    OmitOptional,
     /// Call the target (a comparison) inside `not`.
     Negate,
 }

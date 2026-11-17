@@ -343,6 +343,25 @@ positions and 90% of starting locations; the misses (a30's river and cave
 floor, a10's flanks) stand on scenery, which isn't in the structure BSP, on
 slopes past 45°, or in water.
 
+## Spawning
+
+Halo 1 creates an encounter at load unless its flag bit 0 ("not
+initially created") is set; on the ten levels almost all are set (a30:
+21 of 22, b40: 74 of 75), so Halo 1's scripts place them. Halo 2 has no
+such default: no squad on any retail campaign map sets a placement flag
+(survey `squad_flag_bits`: only bits 8, 9 and 13, on a few squads), and
+retail scripts place every squad with `ai_place`. So `h1campaign` adds a
+startup script, `h1_initial_encounters`, placing the squad group of every
+encounter with bit 0 clear (a30: `mid_cliff_1`), and Halo 1's own
+`ai_place` calls keep one argument, as most retail calls do
+(h1-scripts.md). Squad flags stay 0.
+
+Zone firing positions and areas are written as shared arrays keyed by
+their bytes: Halo 1 encounters repeat firing positions (b40's 20,789 hold
+8,335 distinct; survey `h1_ai_sizes`), and the builder places identical
+arrays once. On b40 the scenario's tree is `0x14838f` bytes and lays
+out in `0xfe618`.
+
 ## What only a game run can prove
 
 - That Halo 2 spawns the squads at all: the converted scenario still lacks
