@@ -315,6 +315,9 @@ rebuilt from guest state. That is the largest piece of work here and the
 riskiest (**S**). The fallback is the game's own checkpoint plus level
 boot: coarser, but it exists.
 
+The design, the inventory of host-side state and the phases are in
+[snapshots.md](snapshots.md).
+
 Snapshots never enter the repository: they contain game data.
 
 **Edits** change the state directly, at a tick boundary:
