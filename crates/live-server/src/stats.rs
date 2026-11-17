@@ -826,7 +826,7 @@ mod tests {
                 position: self.position,
                 version: 0,
                 hash: String::new(),
-                jws: String::new(),
+                jws: "".into(),
                 jws_index: None,
                 body,
             });

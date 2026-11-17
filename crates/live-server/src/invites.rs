@@ -360,7 +360,7 @@ async fn append(live: &Live, jws: &str, event: SignedEvent) -> Result<u64, ApiEr
         .store
         .append(
             vec![NewEvent {
-                jws: jws.to_string(),
+                jws: jws.into(),
                 jws_index: None,
                 body: event.body,
             }],
@@ -411,7 +411,7 @@ pub async fn create(
     }
     check_custom(live, custom, now)?;
     let mut events = vec![NewEvent {
-        jws: jws.to_string(),
+        jws: jws.into(),
         jws_index: None,
         body: event.body,
     }];

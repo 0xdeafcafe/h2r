@@ -30,7 +30,8 @@ use sqlx::sqlite::{
 use tokio::sync::watch;
 
 use crate::store::{
-    BatchDecoder, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError, Wake,
+    BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
+    Wake,
 };
 
 const SCHEMA: &str = include_str!("sqlite_schema.sql");
@@ -67,7 +68,7 @@ fn decode(row: &SqliteRow, batches: &mut BatchDecoder) -> Result<RecordedEvent, 
     let position = row.get::<i64, _>("position") as u64;
     let index = row.get::<Option<i64>, _>("jws_index").map(|i| i as usize);
     let e = batches
-        .decode(row.get("jws"), index)
+        .decode(row.get::<&str, _>("jws"), index)
         .map_err(|e| StoreError::Corrupt {
             position,
             reason: e.to_string(),
@@ -107,6 +108,7 @@ impl SqliteStore {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+        Self::migrate(&pool).await?;
         let store = SqliteStore {
             pool,
             path: path.to_path_buf(),
@@ -136,6 +138,50 @@ impl SqliteStore {
     #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Brings a log made by an older server up to [`SCHEMA`]: `events.batch`
+    /// (nullable, so the rows already there read as they always did). In
+    /// one `BEGIN IMMEDIATE`, so two processes opening the file at once
+    /// do not both add it.
+    async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let has_batch: bool = sqlx::query_scalar(
+            "select count(*) > 0 from pragma_table_info('events') where name = 'batch'",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if !has_batch {
+            sqlx::query("alter table events add column batch text")
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Stores `e`'s JWS: a single event's in its row; a batch's in
+    /// `batches`, once, its rows naming it. Returns the row's `jws` and
+    /// `batch` columns.
+    async fn put_jws<'e>(
+        tx: &mut sqlx::SqliteConnection,
+        rows: &mut BatchRows,
+        jws: &'e std::sync::Arc<str>,
+        jws_index: Option<usize>,
+    ) -> Result<(&'e str, Option<String>), StoreError> {
+        let Some((key, first)) = rows.key(jws, jws_index) else {
+            return Ok((jws, None));
+        };
+        if first {
+            sqlx::query(
+                "insert into batches (sha256, jws) values (?1, ?2) on conflict (sha256) do nothing",
+            )
+            .bind(&key)
+            .bind(&**jws)
+            .execute(&mut *tx)
+            .await?;
+        }
+        Ok(("", Some(key)))
     }
 
     /// `stream`'s next version and last hash, inside a write transaction.
@@ -227,13 +273,15 @@ impl EventStore for SqliteStore {
                         }
                     }
                     let mut out = Vec::with_capacity(events.len());
+                    let mut rows = BatchRows::default();
                     for e in events {
                         let head = heads.get_mut(&e.body.stream).expect("read above");
                         let (version, hash) = (head.0, chain_hash(head.1.as_deref(), &e.jws));
+                        let (jws, batch) = Self::put_jws(tx, &mut rows, &e.jws, e.jws_index).await?;
                         let b = &e.body;
                         let position: i64 = sqlx::query_scalar(
-                            "insert into events (stream_id, version, type, data, at, author, kid, jws, jws_index, hash)
-                             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                            "insert into events (stream_id, version, type, data, at, author, kid, jws, jws_index, hash, batch)
+                             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                              returning position",
                         )
                         .bind(&b.stream)
@@ -243,9 +291,10 @@ impl EventStore for SqliteStore {
                         .bind(&b.at)
                         .bind(&b.author)
                         .bind(&b.kid)
-                        .bind(&e.jws)
+                        .bind(jws)
                         .bind(e.jws_index.map(|i| i as i64))
                         .bind(&hash)
+                        .bind(batch)
                         .fetch_one(&mut *tx)
                         .await?;
                         *head = (version + 1, Some(hash.clone()));
@@ -270,12 +319,13 @@ impl EventStore for SqliteStore {
 
     async fn read(&self, q: &Query) -> Result<Vec<RecordedEvent>, StoreError> {
         let rows = sqlx::query(
-            "select position, version, hash, jws, jws_index from events
-             where position > ?1
-               and (?2 is null or stream_id = ?2)
-               and (json_array_length(?3) = 0 or type in (select value from json_each(?3)))
-               and type not in (select value from json_each(?5))
-             order by position limit ?4",
+            "select e.position, e.version, e.hash, coalesce(b.jws, e.jws) as jws, e.jws_index
+             from events e left join batches b on b.sha256 = e.batch
+             where e.position > ?1
+               and (?2 is null or e.stream_id = ?2)
+               and (json_array_length(?3) = 0 or e.type in (select value from json_each(?3)))
+               and e.type not in (select value from json_each(?5))
+             order by e.position limit ?4",
         )
         .bind(to_i64(q.after))
         .bind(&q.stream)
@@ -351,16 +401,18 @@ impl EventStore for SqliteStore {
                     .fetch_one(&mut *tx)
                     .await?;
                 let mut check = ImportCheck::new(head as u64);
+                let mut rows = BatchRows::default();
                 for e in &events {
                     if !check.knows(&e.body.stream) {
                         let (next, hash) = Self::stream_head(tx, &e.body.stream).await?;
                         check.seed(&e.body.stream, next, hash);
                     }
                     check.check(e)?;
+                    let (jws, batch) = Self::put_jws(tx, &mut rows, &e.jws, e.jws_index).await?;
                     let b = &e.body;
                     sqlx::query(
-                        "insert into events (position, stream_id, version, type, data, at, author, kid, jws, jws_index, hash)
-                         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        "insert into events (position, stream_id, version, type, data, at, author, kid, jws, jws_index, hash, batch)
+                         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     )
                     .bind(to_i64(e.position))
                     .bind(&b.stream)
@@ -370,9 +422,10 @@ impl EventStore for SqliteStore {
                     .bind(&b.at)
                     .bind(&b.author)
                     .bind(&b.kid)
-                    .bind(&e.jws)
+                    .bind(jws)
                     .bind(e.jws_index.map(|i| i as i64))
                     .bind(&e.hash)
+                    .bind(batch)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -475,6 +528,88 @@ pub(crate) mod tests {
         drop(store);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+
+    /// A log written before batches were stored once (no `batch` column,
+    /// a batch's JWS in each of its rows) opens: the column is added, the
+    /// old rows read and verify as before, and new batches are stored once.
+    #[tokio::test]
+    async fn a_log_from_before_batches_were_stored_once_still_verifies() {
+        let path = temp_db("legacy");
+        let key = live_proto::sign::KeyPair::generate();
+        let legacy = conformance::legacy_log(&key, "game-legacy");
+        {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let options = SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true);
+            let pool = SqlitePool::connect_with(options).await.unwrap();
+            sqlx::raw_sql(LEGACY_EVENTS).execute(&pool).await.unwrap();
+            for e in &legacy {
+                let b = &e.body;
+                sqlx::query(
+                    "insert into events (position, stream_id, version, type, data, at, author, kid, jws, jws_index, hash)
+                     values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                )
+                .bind(e.position as i64)
+                .bind(&b.stream)
+                .bind(e.version as i64)
+                .bind(&b.kind)
+                .bind(b.data.to_string())
+                .bind(&b.at)
+                .bind(&b.author)
+                .bind(&b.kid)
+                .bind(&*e.jws)
+                .bind(e.jws_index.map(|i| i as i64))
+                .bind(&e.hash)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            pool.close().await;
+        }
+        let store = SqliteStore::open(&path).await.unwrap();
+        conformance::upgraded(&store, &key, &legacy).await;
+        // On disk: the old rows untouched, the new batch once.
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("select jws, batch from events order by position")
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        for (row, e) in rows.iter().zip(&legacy) {
+            assert_eq!((row.0.as_str(), row.1.as_deref()), (&*e.jws, None));
+        }
+        let new: Vec<_> = rows[legacy.len()..].iter().collect();
+        assert_eq!(new.len(), 2);
+        assert!(new.iter().all(|r| r.0.is_empty() && r.1 == new[0].1));
+        let stored: Vec<String> = sqlx::query_scalar("select sha256 from batches")
+            .fetch_all(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, [new[0].1.clone().unwrap()]);
+        drop(store);
+        // Opening again finds the column there.
+        let store = SqliteStore::open(&path).await.unwrap();
+        assert_eq!(store.head().await.unwrap(), legacy.len() as u64 + 2);
+        drop(store);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// `events` as servers before `batches` made it.
+    const LEGACY_EVENTS: &str = "
+        create table events (
+            position integer primary key autoincrement,
+            stream_id text not null,
+            version integer not null,
+            type text not null,
+            data text not null,
+            at text not null,
+            author text not null,
+            kid text not null,
+            jws text not null,
+            jws_index integer,
+            hash text not null,
+            unique (stream_id, version)
+        );";
 
     /// The race test Postgres runs, on SQLite: one winner for version 0,
     /// and concurrent appends chained without gaps or repeats.

@@ -415,11 +415,13 @@ impl Live {
                 return Err(conflict("nonce already used"));
             }
         }
+        // The batch's events share its JWS (one copy, not one an event).
+        let jws: Arc<str> = jws.into();
         let events = bodies
             .into_iter()
             .enumerate()
             .map(|(i, body)| NewEvent {
-                jws: jws.to_string(),
+                jws: Arc::clone(&jws),
                 jws_index: Some(i),
                 body,
             })

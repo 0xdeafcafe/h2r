@@ -650,7 +650,7 @@ impl Live {
             time::OffsetDateTime::now_utc(),
         );
         NewEvent {
-            jws: body.sign(key),
+            jws: body.sign(key).into(),
             jws_index: None,
             body,
         }
@@ -843,7 +843,7 @@ impl Live {
             return Err(conflict("nonce already used"));
         }
         let new = NewEvent {
-            jws: jws.to_string(),
+            jws: jws.into(),
             jws_index: None,
             body: event.body,
         };

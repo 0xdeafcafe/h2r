@@ -497,9 +497,14 @@ Postgres's; SQLite's `sqlite_schema.sql` is the same table, and its appends
 take an in-process lock and `BEGIN IMMEDIATE` for the same commit-order
 positions). One append-only `events` table: `position bigserial`,
 `stream_id`, `version`, `type`, `data jsonb`, `at`, `author`, `kid`, `jws`,
-`jws_index` (batches), `hash`, unique on `(stream_id, version)`. The `jws`
-is the author's, untouched, and the source of truth: events are decoded
-from it, and the other columns are copies for querying. `hash` is
+`jws_index` (batches), `hash`, `batch`, unique on `(stream_id, version)`.
+The `jws` is the author's, untouched, and the source of truth: events are
+decoded from it, and the other columns are copies for querying. A batch
+JWS is stored once, in `batches (sha256, jws)`: its events' rows have an
+empty `jws` and name it in `batch`, and reads join it back. Rows written
+before that keep their own `jws` and a null `batch` (the column is added
+on open), so an old log reads and verifies as it did; a log written this
+way needs a server that knows `batches`. `hash` is
 `hex(sha256(prev || jws))` per stream, computed in the append transaction.
 Appends take a list of events and expected versions (0: the stream must
 not exist) and are atomic across streams: account creation writes the
