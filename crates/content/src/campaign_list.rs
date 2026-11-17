@@ -73,6 +73,10 @@ pub const FIRST_SHOWN_ID: u32 = 0x69;
 /// `ID_STRIDE * (n + 1)`. Retail ids on the user's disc are `0x1` to
 /// `0x325`.
 pub const ID_STRIDE: u32 = 0x1000;
+/// Halo 2's place among the campaigns' `order`s in the picker: a campaign
+/// whose `order` is below it is listed above Halo 2 (Halo 1's is 10), one
+/// with none or a larger one below.
+pub const HALO2_ORDER: i32 = 20;
 /// A free slot's campaign id and map id.
 pub const FREE: u32 = u32::MAX;
 
@@ -88,7 +92,7 @@ pub const MAX_MAP_NAME: usize = 31;
 /// key = "halo1"              # its directory under <data>/campaigns
 /// name = "Halo: Combat Evolved"
 /// description = "..."        # optional
-/// order = 10                 # optional: the picker's order (then key)
+/// order = 10                 # optional: the picker's order (then key); below 20, above Halo 2
 ///
 /// [[level]]
 /// map = "a10"                # maps\a10.map
@@ -306,6 +310,9 @@ picture = "07a_highcharity"
 pub struct Built {
     pub key: String,
     pub campaign_id: u32,
+    /// The manifest's `order`: below [`HALO2_ORDER`] the picker lists the
+    /// campaign above Halo 2.
+    pub order: Option<i32>,
     pub names: [String; 9],
     pub descriptions: [String; 9],
     pub levels: Vec<BuiltLevel>,
@@ -382,6 +389,7 @@ pub fn build(
         out.push(Built {
             key: m.campaign.key.clone(),
             campaign_id,
+            order: m.campaign.order,
             names: all_languages(&m.campaign.name),
             descriptions: all_languages(m.campaign.description.as_deref().unwrap_or("")),
             levels,

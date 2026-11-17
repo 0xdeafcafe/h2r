@@ -348,7 +348,7 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
    maps in two sandboxes) in about 90 s of a release build, the disc's
    hash included. Later starts print `halo1: up to date (36 maps from
    halo1.iso)` and go straight on.
-3. Sign in, **Campaign**, then **Halo: Combat Evolved** in the picker:
+3. Sign in, **Campaign**, then **Halo: Combat Evolved**, the picker's first row (Halo 2 is second):
    the ten levels, a10 to d40, as far as the profile has got. Halo 1's
    multiplayer maps are `h1_<map>` in the multiplayer map list (Custom
    Game, Xbox Live), named as in Halo 1 (docs/game/h1-multiplayer.md

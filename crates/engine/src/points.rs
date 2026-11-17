@@ -429,6 +429,11 @@ points! { ALL;
     /// that campaign id in the start-level list (stdcall, EAX, -1 none).
     /// The game-won path (`0x18e960`) and `0x163610` ask it.
     NEXT_LEVEL @ 0x0019_c440: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    /// The start-level record of `(campaign, map)`: the first with both ids
+    /// in the loaded globals' start-level list (stdcall, EAX, 0 none). Some
+    /// callers pass campaign 1 whatever the map: the level select's press
+    /// (`0x2c5118`), which faults on 0, and Continue (`0x199ab7`).
+    CAMPAIGN_LEVEL_LOOKUP @ 0x0019_c270: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
     /// A finished level raises one slot's profile progress for a difficulty
     /// to map id ESI (stdcall `(slot, difficulty)`).
     PROGRESS_RAISE @ 0x0019_043f: [fn(map: esi, slot: stack 0, difficulty: stack 1) ret 8]; "docs/game/multiple-campaigns.md";

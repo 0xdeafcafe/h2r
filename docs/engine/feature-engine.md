@@ -1342,7 +1342,7 @@ All on tests; nothing here was run in the game.
   globals `GAME_GLOBALS` and `GAME_TIME`. Points added by later features
   (all with a doc page): `OBJECT_DAMAGE_UPDATE` and `BODY_RESTORE`
   (health), the campaign menu's `CAMPAIGN_LEVEL_LIST`, `CAMPAIGN_START`,
-  `NEXT_LEVEL`, `PROGRESS_RAISE`, `LAST_LEVEL_SET`, `LEVEL_SELECT_NEW`,
+  `NEXT_LEVEL`, `CAMPAIGN_LEVEL_LOOKUP`, `PROGRESS_RAISE`, `LAST_LEVEL_SET`, `LEVEL_SELECT_NEW`,
   `PROGRESS_MAX` and `SCREEN_REQUEST`, and the aim assist's
   `PLAYER_CONTROL_UPDATE` and `AIM_ASSIST_PARAMS`. The macro grammar is
   `NAME @ 0x...: [fn(arg: loc, ..) -> loc ret n] | [opaque], Hot, Optional; "docs/page.md";`

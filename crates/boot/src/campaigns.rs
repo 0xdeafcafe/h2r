@@ -598,8 +598,9 @@ fn write(path: &Path, file: &ProgressFile) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------
 // The picker's rows.
 
-/// The picker: Halo 2, then each installed campaign. Row `n` names its
-/// campaign id.
+/// The picker: the installed campaigns whose `order` is below
+/// [`cl::HALO2_ORDER`] (Halo 1), then Halo 2, then the rest, each group in
+/// the campaigns' own order. Row `n` names its campaign id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picker {
     pub rows: Vec<(u32, String)>,
@@ -607,8 +608,11 @@ pub struct Picker {
 
 impl Picker {
     pub fn new(built: &[Built]) -> Self {
-        let mut rows = vec![(RETAIL_CAMPAIGN, "Halo 2".to_owned())];
-        rows.extend(built.iter().map(|b| (b.campaign_id, b.names[0].clone())));
+        let above = |b: &&Built| b.order.is_some_and(|o| o < cl::HALO2_ORDER);
+        let row = |b: &Built| (b.campaign_id, b.names[0].clone());
+        let mut rows: Vec<(u32, String)> = built.iter().filter(above).map(row).collect();
+        rows.push((RETAIL_CAMPAIGN, "Halo 2".to_owned()));
+        rows.extend(built.iter().filter(|b| !above(b)).map(row));
         Picker { rows }
     }
     /// The campaign row `row` picks.
@@ -638,6 +642,21 @@ impl State {
             .iter()
             .find(|b| b.campaign_id == id)
             .map(|b| b.key.as_str())
+    }
+    /// Before a lookup by `(campaign, map)` (`0x19c270`, `0x19c440`): the
+    /// campaign to ask for instead, when the caller's doesn't own the map.
+    /// Map ids are unique across campaigns, so the map names its campaign:
+    /// one of ours for our ids, else Halo 2's when the caller asked one of
+    /// ours. 1.0's callers that hard-code campaign 1 (the level select's
+    /// press `0x2c5118`, Continue `0x199ab7`, `0x24a9e9`) would otherwise
+    /// find no record for one of our levels.
+    pub fn lookup_campaign(&self, campaign: u32, map: u32) -> Option<u32> {
+        let want = match campaign_of(&self.built, map) {
+            Some(b) => b.campaign_id,
+            None if self.key_of_campaign(campaign).is_some() => RETAIL_CAMPAIGN,
+            None => campaign,
+        };
+        (want != campaign).then_some(want)
     }
     /// Before the menu's campaign start: the campaign of the selected map.
     pub fn fix_selection<M: Gm>(&self, m: &mut M) -> Option<u32> {

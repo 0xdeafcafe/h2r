@@ -348,7 +348,7 @@ fn real_import_is_found_by_the_game() {
     if !levels.is_empty() {
         let state = boot::campaigns::boot_state(&data, &h2).expect("Halo 1 installed");
         let picker = boot::campaigns::Picker::new(&state.built);
-        assert_eq!(picker.rows[1].1, "Halo: Combat Evolved");
+        assert_eq!(picker.rows[0].1, "Halo: Combat Evolved");
         let b = &state.built[0];
         let got: Vec<&str> = b.levels.iter().map(|l| l.map.as_str()).collect();
         assert_eq!(got, levels, "play order");
