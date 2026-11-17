@@ -439,8 +439,17 @@ tests).
 library with `content::Library::open_with_sandbox`, so the next boot
 installs that variant of each converted map
 (`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`).
-It has no menu row yet: `h2 settings set multiplayer.halo1_sandbox h2`
-or `settings.toml` set it.
+Its row is "Halo 1 Maps" (Halo 1 Sandbox / Halo 2 Sandbox), the last on
+our Video screen; a change says "(restart)" until the next launch
+(`video_screen::tests::the_halo1_maps_row_picks_the_sandbox_for_the_next_launch`).
+`h2 settings set multiplayer.halo1_sandbox h2` and `settings.toml` set it
+too.
+
+**One list ID per map (Built).** `content::Package::list_key` is
+`Manifest::variants_key` for a package with variants (from its origin's
+game and map), else its `MapId`; `boot::new_maps` derives list IDs from
+it, so a converted map keeps its list ID and content folder whichever
+sandbox is installed (`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`).
 
 ## Vehicles
 
@@ -498,16 +507,15 @@ warthog becomes the gauss warthog (the user's decision). Blood Gulch and
 Sidewinder place all 8 of their vehicles (2 warthogs, 4 ghosts, 2
 scorpions; the Xbox maps have no rocket warthog).
 
-**Freed slots** (`h1convert::slots`). A map rebuilt from a retail one
-can't grow its tag index (uninterpreted bytes follow it), so new tags
-take the slot of tags only the base's structure BSP and lightmap named,
-which the conversion replaces: their own shaders, lightmap bitmap and so
-on. "Only named" means the tag's datum appears as a word in no metadata
-tag but itself, a test that can only err towards keeping a tag. The
-shaders the converted structure still uses and the base's lightmap
-bitmap (kept for the converted lightmap) are never taken. On Coagulation
-the scorpion collection takes the slot of `coag_panel_i`, a structure
-shader the conversion doesn't use; `h2 h1 convert` names each one.
+**Added tags.** A built vehicle collection is added after the base's
+tags (`TagSet::add_tag`, which keeps the pinned index's tail); its datum
+is known when the placements are written (slot `n`, salt `0xe174 + n`,
+`convert::halo1::added_datum`) and checked when the map is built. No base
+tag gives up its slot (`tests/disc_maps.rs` checks every built collection
+and the index size). The converted lightmap still takes the base's own
+lightmap bitmap's slot: it replaces that bitmap, whose pixels would
+otherwise stay in the map unused. (`h1convert::slots::spare`, the freed
+slots the collections used before, is no longer called.)
 
 ## What isn't placed, and why
 
@@ -580,11 +588,18 @@ disc.
    element each). The rest are used by some maps only. The converter
    writes `+0x4c`, `+0x94`, `+0x148` and `+0x1d0` empty without an engine
    reading that allows it (above).
-4. **Precision variants** at round start (the AR rule above).
-5. **The setting and the map list** (below): the setting is built; its
-   menu row isn't.
-6. **Halo 1 sandbox**: objects placed (below). Next the cyborg as the
-   player, the health model per variant, and Halo 1's skies.
+4. **Precision variants** at round start (the AR rule above; not built).
+   What a hook would read: the game variant at `[game globals]+0x8+0x134`
+   (`live_telemetry` layout), its starting weapon byte at `+0xd6`
+   (`variants::record`, setting 89; battle rifle 3, sniper rifle 10,
+   carbine 13 as `community_variants::Weapon` numbers them). Still open:
+   how the hook knows which spawns came from assault rifles without tag
+   names in memory, and whether the spawner has rolled them by the game
+   start.
+5. **The setting and the map list** (below): built, with its row.
+6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
+   model per variant are built (below). Next Halo 1's skies and a HUD
+   with the health meter.
 
 ## The setting and the map list (design)
 
@@ -605,9 +620,9 @@ disc.
 - **Names (decided):** converted maps are `h1_<map>` (`h1_beavercreek`:
   Halo 2 has its own `beavercreek`), with Halo 1's display name in the
   list.
-- **Identity (decided default):** one list ID per Halo 1 map, whichever
-  variant; the `MapId` (content hash) differs per variant; online, the
-  host's variant is used.
+- **Identity (built):** one list ID per Halo 1 map, whichever
+  variant (`Package::list_key`, above); the `MapId` (content hash)
+  differs per variant; online, the host's variant is used.
 
 ## Halo 1 sandbox (**Built**: `convert::halo1`, `h1objects::sandbox`)
 
@@ -637,11 +652,34 @@ and reads every netgame equipment spawn of the built map back: 43 of 43
 (35 items, 8 vehicles), each naming a tag this conversion added, of its
 group, with a render model (`tags::object::Context`). 68 tags are added:
 8 weapons with their projectiles, camouflage, overshield, the health pack
-(on the overshield template), both grenades, warthog, ghost and scorpion.
+(on the overshield template), both grenades, warthog, ghost and scorpion,
+and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
+73 in all.
 
-**Not done yet:** players are still Halo 2's biped (the cyborg biped
-converts, but `matg`'s player representation isn't patched), and the
-shared health subsystem below isn't switched on per variant.
+**The player is the cyborg (Built, `h1convert::globals`).** The engine
+picks a player's unit in `0x0014f040` (E): the player's representation
+byte (player `+0x88`), clamped to the globals' player representation
+block (`matg +0x138`, elements of `0xbc`), and in multiplayer (game mode
+2, `[0x4e6948]+8`) 0 becomes element 2 and 1 element 3; the unit is the
+element's tag reference at `+0xb0` (datum `+0xb4`), with a word at `+0xb8`.
+On the disc every multiplayer map's elements are none, none,
+`masterchief_mp`, `elite_mp`; campaign maps fill element 0
+(`masterchief`) or 1 (`dervish`) (`tests/h2_globals.rs`, both checks).
+`globals::set_player_unit(set, biped, Players::Multiplayer)` points
+elements 2 and 3 at the converted cyborg and clears the word;
+`Players::Campaign` does elements 0 and 1, for `h1campaign`. The
+sandbox's disc test checks both elements name the added cyborg, which
+decodes with a render model. The first-person arms stay Halo 2's (element
+`+0x0`).
+
+**The health model per variant (Built, `boot::health`).** At each game
+start the loaded map's name (`0x547898`) picks the model
+(`health::model_for_map`): `h1_<map>` is Halo 1's when the converted
+maps were installed in the Halo 1 sandbox (the boot reads
+`multiplayer.halo1_sandbox` once, as `new_maps` does), Halo 2's in the
+Halo 2 sandbox; Halo 1's campaign level names (`a10` to `d40`) are Halo
+1's. `H2_HEALTH_MODEL` still overrides. The HUD meter is the window's
+until a converted HUD has a body widget.
 
 ### Design notes
 

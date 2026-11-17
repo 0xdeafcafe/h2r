@@ -384,3 +384,35 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     assert_eq!(health(BODY), 0.5);
     force(None);
 }
+
+#[test]
+fn halo1_maps_pick_halo1s_model_by_name_and_sandbox() {
+    let m = |n: &str, s: bool| model_for_map(n, s);
+    assert_eq!(m("h1_bloodgulch", true), HealthModel::Halo1);
+    assert_eq!(m("H1_Bloodgulch", true), HealthModel::Halo1);
+    assert_eq!(
+        m("h1_bloodgulch", false),
+        HealthModel::Halo2,
+        "Halo 2 sandbox"
+    );
+    assert_eq!(
+        m("a30", false),
+        HealthModel::Halo1,
+        "campaigns whatever the sandbox"
+    );
+    assert_eq!(m("d40", true), HealthModel::Halo1);
+    for retail in ["coagulation", "01a_tutorial", "mainmenu", "", "a300"] {
+        assert_eq!(m(retail, true), HealthModel::Halo2, "{retail}");
+    }
+}
+
+#[test]
+fn the_loaded_map_name_reads_from_the_cache_header() {
+    let mut g = FakeGuest::new();
+    g.map(CACHE_MAP_NAME, 0x20);
+    g.put(CACHE_MAP_NAME, b"h1_bloodgulch\0junk");
+    assert_eq!(loaded_map_name(&g).unwrap(), "h1_bloodgulch");
+    g.put(CACHE_MAP_NAME, &[b'x'; 32]);
+    assert_eq!(loaded_map_name(&g).unwrap().len(), 32);
+    assert!(loaded_map_name(&FakeGuest::new()).is_err());
+}

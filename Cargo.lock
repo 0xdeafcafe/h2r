@@ -2440,11 +2440,13 @@ dependencies = [
  "h1bitmaps",
  "h1map",
  "h1models",
+ "iced-x86",
  "map",
  "mopp",
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 

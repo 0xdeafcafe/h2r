@@ -265,6 +265,16 @@ impl Manifest {
         Ok(())
     }
 
+    /// The identity a package with variants keeps whichever variant is
+    /// loaded: from its first variant's origin (game and map), so the map
+    /// list gives a converted map one ID in both sandboxes
+    /// (docs/game/h1-multiplayer.md). `None` without variants.
+    pub fn variants_key(&self) -> Option<MapId> {
+        let o = &self.variants.first()?.origin;
+        let key = format!("variants:{}:{}", o.game, o.map).to_ascii_lowercase();
+        Some(MapId(Sha256::of(key.as_bytes()).0))
+    }
+
     /// The variant for `sandbox`, if the package has one.
     pub fn variant(&self, sandbox: &str) -> Option<&Variant> {
         self.variants.iter().find(|v| v.origin.sandbox == sandbox)
@@ -516,6 +526,13 @@ origin = {{ game = "halo1", map = "bloodgulch", sandbox = "h2", source_sha256 = 
         );
         let h1 = m.select_variant(None);
         assert_ne!(crate::MapId::of(&h1), crate::MapId::of(&h2));
+        // One key for the package whichever variant: its origin's.
+        let key = m.variants_key().unwrap();
+        let mut other = m.clone();
+        other.variants.reverse();
+        other.variants[0].sha256 = Sha256([9; 32]);
+        assert_eq!(other.variants_key(), Some(key));
+        assert_eq!(h1.variants_key(), None, "a selected variant has none");
         // Origin isn't identity: the same file without it is the same map.
         let plain = Manifest::from_toml(&h2.to_toml()).unwrap();
         assert_eq!(crate::MapId::of(&plain), crate::MapId::of(&h2));

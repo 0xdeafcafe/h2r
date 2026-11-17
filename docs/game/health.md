@@ -1,9 +1,12 @@
 # Health: Halo 1's model on Halo 2's engine
 
 Status: the hooks, the window meter and the switch are built and confirmed in
-the game by the owner (2026-11-17). Nothing calls the switch yet: no map load or converted
-Halo 1 map selects the Halo 1 model, so today it is on only through the
-debug override `H2_HEALTH_MODEL=halo1`. Started 2026-11-16.
+the game by the owner (2026-11-17). Since 2026-11-17 the game start picks
+the model from the loaded map's name (`health::model_for_map`): converted
+Halo 1 multiplayer maps (`h1_<map>`) in the Halo 1 sandbox and Halo 1's
+campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL` still
+beats it ([h1-multiplayer.md](h1-multiplayer.md), "Halo 1 sandbox").
+Started 2026-11-16.
 
 Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health

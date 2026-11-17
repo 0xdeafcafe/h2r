@@ -21,6 +21,10 @@ use crate::{Error, Result, collision, placements, shaders, slots, structure};
 
 pub mod halo1;
 
+/// At most this many vehicle collections are built (one per vehicle role
+/// the base lacks a collection for).
+const MAX_NEW_COLLECTIONS: usize = 16;
+
 /// Size of a collection's (`itmc`, `vehc`) root.
 pub const COLLECTION_ROOT: usize = 0xc;
 /// Size of a collection entry.
@@ -170,6 +174,10 @@ pub struct Prepared {
     pub objects: Option<halo1::ObjectTags>,
     /// The index slot the first of them takes.
     objects_first: usize,
+    /// The Halo 1 sandbox's player biped (one of the added objects), made
+    /// the multiplayer player unit when the map is built
+    /// ([`crate::globals::set_player_unit`]); `None` keeps the base's.
+    pub player_biped: Option<TagId>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -388,9 +396,7 @@ pub fn prepare<R: Read + Seek>(
         .map(|i| (i, base_shaders[i].name.clone()))
         .collect();
 
-    // Slots for new tags: tags only the base's structure named, except
-    // the shaders the converted one still names and the base's lightmap
-    // bitmap, kept for the converted lightmap.
+    // The base's lightmap bitmap's slot takes the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
     let pages = h1bitmaps::lightmap_pages(h1, &src)?;
     let lightmap = match (&pages.tag, lightmap_slot) {
@@ -406,13 +412,13 @@ pub fn prepare<R: Read + Seek>(
         }
         _ => None,
     };
-    let mut keep: Vec<TagId> = material_shaders
-        .iter()
-        .map(|(i, _)| templates.shader(*i))
+    // Built vehicle collections are added after the base's tags when the
+    // map is built (`TagSet::add_tag`), so their datums are known now:
+    // slot `n` gets salt `0xe174 + n` ([`halo1::added_datum`]).
+    let first = base.index_slots() as usize;
+    let mut spare: Vec<TagId> = (0..MAX_NEW_COLLECTIONS)
+        .map(|k| halo1::added_datum(first + k))
         .collect();
-    keep.push(templates.collision_shader());
-    keep.extend(lightmap_slot);
-    let mut spare = slots::spare(base, sbsp, ltmp, &keep)?;
     let applied = apply(&mut scenario, &plan, &tags, &mut spare)?;
 
     Ok(Prepared {
@@ -434,6 +440,7 @@ pub fn prepare<R: Read + Seek>(
         lightmap,
         objects: None,
         objects_first: 0,
+        player_biped: None,
         scenario,
         sbsp,
         ltmp,
@@ -507,11 +514,6 @@ impl Prepared {
         };
         set.add_group(FourCC(*b"vehc"), None, None);
         for c in &self.applied.collections {
-            let slot = set
-                .slots
-                .get_mut(c.id.index())
-                .ok_or(Error::Invalid("a reused slot is outside the index"))?;
-            slot.name = Some(c.name.clone());
             let mut entry = Block::zeroed(COLLECTION_ENTRY);
             entry.put_f32(0, 1.0).tag_ref(4, c.vehicle);
             if let Some(v) = c.variant {
@@ -519,11 +521,12 @@ impl Prepared {
             }
             let mut root = Block::zeroed(COLLECTION_ROOT);
             root.put_u32(8, word8).block(0, 1, entry);
-            let tag = set
-                .tag_mut(c.id)
-                .ok_or(Error::Invalid("a reused slot holds no tag"))?;
-            tag.group = FourCC(*b"vehc");
-            tag.payload = TagPayload::Built(root);
+            let id = set.add_tag(FourCC(*b"vehc"), &c.name, TagPayload::Built(root))?;
+            if id != c.id {
+                return Err(Error::Invalid(
+                    "a built vehicle collection's datum moved from what the placements name",
+                ));
+            }
         }
         Ok(())
     }
@@ -536,6 +539,9 @@ impl Prepared {
         let mut set = TagSet::from_map(&mut patched)?;
         if let Some(objects) = &self.objects {
             halo1::install(objects, self.objects_first, &mut set)?;
+        }
+        if let Some(biped) = self.player_biped {
+            crate::globals::set_player_unit(&mut set, biped, crate::globals::Players::Multiplayer)?;
         }
 
         self.add_collections(base, &mut set)?;

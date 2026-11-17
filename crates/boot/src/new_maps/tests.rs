@@ -534,9 +534,11 @@ fn a_converted_map_installs_the_sandbox_the_setting_names() {
         ),
     )
     .unwrap();
+    let ids = std::cell::RefCell::new(Vec::new());
     let installed = |data: &Path| {
         let r = install(data, &mut disc()).unwrap();
         assert_eq!(r.installed.len(), 1, "{r:?}");
+        ids.borrow_mut().push((r.installed[0].1, r.installed[0].2));
         let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(r.installed[0].1);
         std::fs::read(dir.join("h1_gulch.map")).unwrap()
     };
@@ -549,4 +551,8 @@ fn a_converted_map_installs_the_sandbox_the_setting_names() {
     )
     .unwrap();
     assert_eq!(installed(data), body(9));
+    // One map in the list either way: the same offer and list ID.
+    let ids = ids.into_inner();
+    assert_eq!(ids[0], ids[1]);
+    assert_eq!(dirs(data).len(), 1);
 }

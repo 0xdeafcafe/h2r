@@ -740,11 +740,10 @@ fn convert(args: &[String]) -> Result<()> {
     }
     for c in &p.applied.collections {
         println!(
-            "  built vehicle collection {}{} in the unused slot of {}",
+            "  built vehicle collection {}{}, added",
             c.name,
             c.variant
                 .map_or_else(String::new, |v| format!(" (variant {v})")),
-            c.replaces
         );
     }
     if let Some(o) = &p.objects {

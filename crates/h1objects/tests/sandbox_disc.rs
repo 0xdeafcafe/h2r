@@ -14,6 +14,7 @@ use std::io::{BufReader, Cursor};
 use h1convert::apply::NETGAME_ITEM;
 use h1convert::convert::halo1::{added_datum, prepare_halo1};
 use h1convert::convert::{Sandbox, structure_mopp};
+use h1convert::globals::{PLAYER_REPRESENTATION, PLAYER_REPRESENTATION_SIZE, REPRESENTATION_UNIT};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::sandbox::Objects;
@@ -122,6 +123,26 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             ours.keys().any(|n| n.contains(want)),
             "no {want} placed: {ours:?}"
         );
+    }
+    // Players spawn as the converted cyborg: the globals' multiplayer
+    // player representations (elements 2 and 3) name it.
+    let g = out.globals().unwrap().clone();
+    let gb = out.read_tag_bytes(g.id).unwrap();
+    let gw = |at: usize| u32::from_le_bytes(gb[at..at + 4].try_into().unwrap());
+    let reps = (gw(PLAYER_REPRESENTATION + 4) - g.location.unwrap().address) as usize;
+    for e in [2, 3] {
+        let at = reps + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_UNIT;
+        let id = TagId(gw(at + 4));
+        let (grp, name) = &names[&id];
+        assert_eq!(*grp, FourCC(*b"bipd"));
+        assert!(name.contains("cyborg"), "player {e}: {name}");
+        assert!(
+            (id.0 & 0xffff) as usize >= first,
+            "player {e}: the base's {name}"
+        );
+        let o = ctx.resolve_object(id).unwrap();
+        assert!(o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
+        eprintln!("player representation {e}: {name}");
     }
     assert_eq!(
         ours.keys()
