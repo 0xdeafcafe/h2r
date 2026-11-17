@@ -267,7 +267,10 @@ fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
     let v = vector(guest, body + layout::UNIT_AIM)?;
     let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    Ok((v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len)).then(|| v.map(|c| c / len)))
+    Ok(
+        (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
+            .then(|| [v[0] / len, v[1] / len, v[2] / len]),
+    )
 }
 
 /// The weapon the unit holds: current weapon index `+0x212` into the four
