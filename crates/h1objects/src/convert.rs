@@ -133,6 +133,19 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &[],
         "objects\\characters\\masterchief\\masterchief_mp",
     ),
+    // Campaign bases have no multiplayer biped or powerups: the
+    // campaign's own biped, and a grenade for the health pack (its powerup
+    // type and time are Halo 1's either way).
+    (
+        b"bipd",
+        &[],
+        "objects\\characters\\masterchief\\masterchief",
+    ),
+    (
+        b"eqip",
+        &["health"],
+        "objects\\weapons\\grenade\\frag_grenade\\frag_grenade",
+    ),
     (b"vehi", &["warthog"], "objects\\vehicles\\warthog\\warthog"),
     (b"vehi", &["ghost"], "objects\\vehicles\\ghost\\ghost"),
     (
@@ -142,6 +155,17 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
     ),
     (b"vehi", &["banshee"], "objects\\vehicles\\banshee\\banshee"),
 ];
+
+/// Every template row that matches a Halo 1 tag of `group` at `path`, in
+/// table order: the converter takes the first the base map holds.
+pub fn template_candidates(group: &[u8; 4], path: &str) -> Vec<&'static str> {
+    let path = path.to_ascii_lowercase();
+    TEMPLATES
+        .iter()
+        .filter(|(g, words, _)| *g == group && words.iter().all(|w| path.contains(w)))
+        .map(|t| t.2)
+        .collect()
+}
 
 /// The template for a Halo 1 tag of `group` at `path`.
 pub fn template_for(group: &[u8; 4], path: &str) -> Option<&'static str> {
@@ -458,14 +482,17 @@ impl<'a> Converter<'a> {
     }
 
     fn template(&self, group: &[u8; 4], path: &str, h2_group: &[u8; 4]) -> Result<(TagId, String)> {
-        let name = template_for(group, path).ok_or_else(|| {
-            Error::NoTemplate(format!("{} {path}", String::from_utf8_lossy(group)))
-        })?;
-        let id = self
-            .base
-            .find(h2_group, name)
-            .ok_or_else(|| Error::NoTemplate(format!("{name} is not in the base map")))?;
-        Ok((id, name.to_owned()))
+        let names = template_candidates(group, path);
+        let Some(&first) = names.first() else {
+            return Err(Error::NoTemplate(format!(
+                "{} {path}",
+                String::from_utf8_lossy(group)
+            )));
+        };
+        names
+            .iter()
+            .find_map(|n| Some((self.base.find(h2_group, n)?, (*n).to_owned())))
+            .ok_or_else(|| Error::NoTemplate(format!("{first} is not in the base map")))
     }
 
     /// Converts any supported object tag (once; later calls return the

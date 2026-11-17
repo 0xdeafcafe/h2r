@@ -2,7 +2,9 @@
 
 Halo 2's AI walks on *sectors*: convex polygons joined by *links*. A
 structure BSP carries them. Halo 1 maps don't, so a Halo 1 converter has to
-generate them from collision. `h2 h1 convert` does not yet: it leaves
+generate them from collision. `h2 h1 convert` writes generated
+pathfinding into each converted campaign BSP (`crates/h1campaign`,
+[campaigns.md](../game/campaigns.md) §9); multiplayer maps still leave
 `sbsp+0xc4` empty ([h1-multiplayer.md](../game/h1-multiplayer.md)). This page is the layout as retail levels
 carry it, how it relates to the collision BSP, and the generator in
 `crates/pathfind`.

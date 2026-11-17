@@ -39,7 +39,10 @@ class, rate, channels and codec, and each playable permutation decoded to a
 16-bit PCM WAV in DIR, named <tag>.r<range>p<permutation>.wav. See
 docs/formats/h1-sounds.md.
 
-convert: a Halo 1 multiplayer map (a .map file, or a disc and a map name such
+convert: a Halo 1 campaign level (a30) onto a Halo 2 campaign base (default
+05a_deltaapproach), written as DIR/a30.map and DIR/campaign.toml: point --out
+at <data>/campaigns/halo1. See docs/game/campaigns.md. Or a Halo 1
+multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
 $H2_DISC, else disc/halo2.iso), written as the package DIR/h1_<map>/
 (manifest.toml and h1_<map>.map). --base picks the base (default per map,
@@ -666,6 +669,12 @@ fn convert(args: &[String]) -> Result<()> {
     let a = parse_convert(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
     let (file, h1) = read_source(&a.path, a.map.as_deref())?;
     let h1_name = h1.header().name.clone();
+    if h1map::disc::CAMPAIGN_LEVELS
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case(&h1_name))
+    {
+        return convert_campaign(&a, &h1);
+    }
     let base_name = a
         .base
         .clone()
@@ -797,6 +806,92 @@ fn convert(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
     println!("wrote {}", manifest.display());
+    Ok(())
+}
+
+/// The Halo 2 disc `h1 convert` reads: `--disc`, else `$H2_DISC`, else
+/// `disc/halo2.iso`.
+fn h2_disc(a: &ConvertArgs) -> PathBuf {
+    match &a.disc {
+        Some(d) => d.clone(),
+        None => std::env::var_os("H2_DISC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")),
+    }
+}
+
+/// The scripts layer's tables: Halo 1's XBE (from the Halo 1 disc), Halo
+/// 2's, and every Halo 2 scenario. `None` when the source is a bare map.
+fn campaign_scripting(a: &ConvertArgs, h2: &Path) -> Result<Option<h1campaign::Scripting>> {
+    let f = File::open(&a.path)?;
+    let Ok(mut iso) = Xiso::open(BufReader::new(f)) else {
+        return Ok(None);
+    };
+    let e = iso
+        .find("/default.xbe")
+        .context("no default.xbe on the Halo 1 disc")?;
+    let h1_xbe = iso.read(&e)?;
+    let mut iso = Xiso::open(BufReader::new(File::open(h2)?))?;
+    let e = iso
+        .find("default.xbe")
+        .context("no default.xbe on the Halo 2 disc")?;
+    let h2_xbe = iso.read(&e)?;
+    let mut scenarios = Vec::new();
+    for e in iso
+        .entries()?
+        .into_iter()
+        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+    {
+        let mut m = map::Map::from_reader(Cursor::new(iso.read(&e)?))?;
+        scenarios.push(hs::Scenario::read(&mut m)?);
+    }
+    Ok(Some(h1campaign::Scripting::new(
+        &h1_xbe, &h2_xbe, &scenarios,
+    )?))
+}
+
+/// `h1 convert` of a campaign level: `DIR/<level>.map` on a pinned Halo 2
+/// campaign base, and `DIR/campaign.toml` listing it
+/// (docs/game/campaigns.md). Point `--out` at `<data>/campaigns/halo1`.
+fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
+    let level = h1.header().name.to_ascii_lowercase();
+    let base_name = a.base.clone().unwrap_or_else(|| h1campaign::BASE.into());
+    let disc = h2_disc(a);
+    let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
+        .with_context(|| format!("reading {base_name}.map"))?;
+    let scripting = campaign_scripting(a, &disc)?;
+    if scripting.is_none() {
+        println!("  scripts: left out (they need the Halo 1 disc's XBE; give the disc, not a map)");
+    }
+    let opts = h1campaign::Options {
+        scripts: scripting.as_ref(),
+        sounds: 1000,
+        ..Default::default()
+    };
+    let done = h1campaign::convert(h1, &mut base, &opts)?;
+    print!("{}", done.report);
+    let map_name = h1campaign::manifest::map_file(&level);
+    let manifest_name = h1campaign::manifest::file_name();
+    let Some(out_dir) = &a.out else {
+        println!("would write <--out>/{map_name} and <--out>/{manifest_name}");
+        return Ok(());
+    };
+    if a.dry_run {
+        println!(
+            "would write {0}/{map_name} and {0}/{manifest_name}",
+            out_dir.display()
+        );
+        return Ok(());
+    }
+    let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
+    let manifest = h1campaign::manifest::manifest_for(existing.as_deref(), &level)?;
+    let out = OutDir::new(out_dir, a.force)?.protecting(&a.path);
+    let map_file = out.write(&[map_name], &done.bytes)?;
+    println!("wrote {} ({} bytes)", map_file.display(), done.bytes.len());
+    if existing.as_deref() != Some(manifest.as_str()) {
+        let path = out.write(&[manifest_name.to_owned()], manifest.as_bytes())?;
+        println!("wrote {}", path.display());
+    }
     Ok(())
 }
 
