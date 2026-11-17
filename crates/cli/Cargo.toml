@@ -22,6 +22,8 @@ xiso.workspace = true
 h1map = { path = "../h1map" }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../h1convert" }
+# Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
+h1campaign = { path = "../h1campaign" }
 h1bitmaps = { path = "../h1bitmaps" }
 h1sounds = { path = "../h1sounds" }
 h1models = { path = "../h1models" }

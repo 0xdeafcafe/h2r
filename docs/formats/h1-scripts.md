@@ -233,6 +233,19 @@ Stubbed calls count outermost missing calls; a missing call's arguments go
 with it, which is why the Halo 2 node counts are lower than Halo 1's. All
 maps fit Halo 2's `0x9000`-node pool.
 
+## Step 4: hooks in a converted level
+
+`crates/h1campaign` resolves hooks with the encodings retail Halo 2
+scripts use (V: every atom of these types in `05a_deltaapproach` and
+`03a_oldmombasa`, printed by `h1campaign`'s `ai_and_name_literal_encoding`
+survey): object, unit and vehicle names, `short`, `team` and
+`game_difficulty` are `0xffff0000 | index`; trigger volumes and cutscene
+flags the bare index; `sound` the tag's datum; `ai` a squad's index, a
+squad group's `0x40000000 | index`, a squad's starting location
+`0xc0000000 | squad << 16 | location`. Adapter defaults arrive as
+`<builtin>:<value>` tokens. Counts for a30 are in
+[campaigns.md](../game/campaigns.md) §9.
+
 ## Open questions
 
 - The adapter defaults (`ai_place` count 0, `unit_exit_vehicle` mode 1) are

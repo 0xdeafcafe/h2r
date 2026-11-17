@@ -250,6 +250,14 @@ Stopgap references (every retail effect, sound, damage effect, HUD and
 `phmo` kept from a template) are listed per object in
 `ObjectReport::stopgaps`; Blood Gulch's proof set keeps 93.
 
+**Campaign bases** have no multiplayer biped or powerups. Each Halo 1
+tag tries every matching row in table order (`template_candidates`) and
+takes the first the base holds: the biped falls back to
+`objects\characters\masterchief\masterchief`, the health pack to the frag
+grenade (its powerup type and time are still Halo 1's;
+[campaigns.md](../game/campaigns.md) §9 converts a30 onto Delta Halo
+this way).
+
 ## API
 
 ```rust

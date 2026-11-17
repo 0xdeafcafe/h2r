@@ -938,6 +938,7 @@ dependencies = [
  "font",
  "gltf",
  "h1bitmaps",
+ "h1campaign",
  "h1convert",
  "h1map",
  "h1models",
@@ -2401,6 +2402,31 @@ dependencies = [
  "map",
  "tags",
  "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
+name = "h1campaign"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "h1ai",
+ "h1bitmaps",
+ "h1convert",
+ "h1map",
+ "h1models",
+ "h1objects",
+ "h1scripts",
+ "h1sky",
+ "h1sounds",
+ "hs",
+ "map",
+ "mopp",
+ "pathfind",
+ "scenario-edit",
+ "tags",
+ "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 

@@ -1,7 +1,9 @@
 # Campaigns: Halo 1 in the Halo 2 engine (design)
 
-Status: design. Nothing here is built yet except where a section says
-**Built**. Started 2026-11-16.
+Status: design, with parts **Built**. a30 converts to a Halo 2 map with
+its structure, sky, player starts, objects, AI, scripts and script sounds,
+proven offline only (§9); no converted campaign level has been played yet.
+Started 2026-11-16.
 
 The goal: more than one campaign in the game, starting with Halo 1's
 (Halo: Combat Evolved, Xbox). The Halo 1 levels run **in the Halo 2
@@ -55,9 +57,10 @@ Pieces:
   with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
   trees, pixels copied as they are ([h1-bitmaps.md](../formats/h1-bitmaps.md)).
 - **The converter** (`crates/h1convert`) works one tag group at a time, in
-  the order of §3. Built so far for multiplayer maps only (collision,
-  structure BSP, placements, MOPP; `h2 h1 convert`): see
-  [h1-multiplayer.md](h1-multiplayer.md). Campaign levels are not converted.
+  the order of §3: collision, structure BSP, placements, MOPP
+  (`h2 h1 convert`), see [h1-multiplayer.md](h1-multiplayer.md).
+  **`crates/h1campaign`** puts it and the other Halo 1 crates together for
+  a campaign level (§9).
 - **The import command**, `h2 import halo1 [disc/halo1.iso]`, is built as
   step 1 only: it copies the disc's campaign maps unchanged to
   `<data>/campaigns/halo1/source/` with a SHA-256 manifest. The goal is
@@ -103,9 +106,17 @@ Each step is proven with tests; the user plays the result.
 3. **a30 walkable.** Geometry, collision, lightmaps, sky, shaders, one
    player spawn. You walk around a30 in Halo 2's engine with Halo 2's
    physics. Halo 2's assets stand in for anything not converted yet.
+   **Built, offline proof only** (§9): `h2 h1 convert <iso> a30`. Needs a
+   game run.
 4. **Objects.** Scenery, machines and doors, weapons, vehicles, equipment.
+   **Built for weapons, equipment, vehicles with a template, and the
+   player biped** (§9); scenery, machines, placed bipeds not yet.
 5. **AI.** Characters, encounters to squads, generated pathfinding.
-6. **Scripts.**
+   **Built** (§9): `h1ai` on retail Halo 2 characters, pathfinding from
+   `crates/pathfind` in every converted BSP.
+6. **Scripts.** **Built, stubbed** (§9): `h1scripts` with
+   `Missing::Stub`, hooks resolved to the placed names, trigger volumes,
+   squads and the sounds the scripts name.
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
 8. **Menus.** The campaign picker and its level list (§4), and progress
    saved per campaign. **Built** ([multiple-campaigns.md](multiple-campaigns.md)),
@@ -160,6 +171,95 @@ input, what the converter must write, and the debug switch
 
 Halo 1's multiplayer maps follow the same rules, with a sandbox setting:
 [h1-multiplayer.md](h1-multiplayer.md).
+
+## 9. a30 on a pinned base (**Built**, tests only)
+
+`crates/h1campaign`; `h2 h1 convert disc/halo1.iso a30 --out DIR
+[--disc disc/halo2.iso] [--base MAP] [--dry-run] [--force]` writes
+`DIR/a30.map` and `DIR/campaign.toml` (Halo 1's manifest,
+`content::campaign_list::HALO1`, unless one is there already). With
+`DIR = <data>/campaigns/halo1` the campaign picker's Halo 1 entry lists
+a30 and `vfs::CampaignMapsBackend` serves it as `maps\a30.map`; the map's
+header name is `a30` and its scenario path `scenarios\solo\a30\a30`, the
+path a30's start record names.
+
+**Pinned, not fresh (the user's stopgap).** A fresh map needs every tag
+moved or built, and `tags::schema::Relocator` can't move `scnr` or `sbsp`
+yet; a pinned base is reachable now. The base is **`05a_deltaapproach`**
+(Delta Halo): Covenant elites, grunts and jackals against marines,
+outdoors on a ring, so a30's AI finds every retail character it maps to
+but the crewman (the marine stands in); it holds every Halo 2 template
+`h1objects` needs for a30's weapons, equipment and vehicles; and of the
+Covenant-and-marines levels it has the most tag memory to spare
+(`0xaed000` of `0xc24000`; 03a has `0xb4a000`, 08a lacks the SMG,
+magnum, warthog). New tags are **added** to the pinned set (index
+growth, tail kept: the entry table moves to the metadata end).
+
+What each layer writes, from the base map up:
+
+| Layer | Written | Left out |
+|---|---|---|
+| Structure | Each Halo 1 BSP into the base's BSP slot of the same index, with `h1convert::structure` (collision, render geometry, materials matched to the base's shaders, Halo 1's lightmap as a new `bitm`, MOPP) and pathfinding generated from the collision at `sbsp+0xc4` | Halo 1 BSPs past the base's count (none for a30: 2 of 3 slots) |
+| Sky | Halo 1's skies (`h1sky`), every cluster on the first | |
+| Scenario | The base `scnr` rebuilt as a built `0x3e0`-byte root whose untouched block fields keep their raw addresses; the old bytes stay in place as unowned metadata. BSP descriptors through `FixupKind::Bsp` | |
+| Player starts | a30's starting locations, each on the base's first element | |
+| Objects | Every base placement removed. Weapons, equipment and vehicles from a30's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. The cyborg is converted. Object names are Halo 1's, each pointing at its converted placement or -1 | Scenery (702) and placed bipeds (21): no `h1objects` path. Pelican, dropship, lifepods: no template. The cyborg is not yet the player's biped (the globals name the base's) |
+| Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); a30's 74 appended after them | |
+| AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks fall back to the marine (marine kinds) or the folder's first | |
+| Scripts | `h1scripts` with `Missing::Stub`. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Script references resolved by tag name | Cutscene flags and camera points, navpoints, device groups, looping sounds, damage effects, animation graphs, titles, platoon-level AI tokens: `none` |
+| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit | Every other a30 sound; `lsnd` (looping) |
+| Text | Nothing | `h1text::Locales::patch_matg` would replace the base's English table, and the scripts' HUD text builtins are stubbed: no reader for Halo 1's text yet |
+
+**Proof.** `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test
+--release -p h1campaign --test disc -- --ignored --nocapture`
+(`H1_LAYERS=none` for the structure alone). The test converts a30, reopens
+it with `map::Map`, and checks: a valid checksum, name and scenario path;
+the scenario resolves; every tag reference in the scenario's tree (walked
+with `tags::schema`'s `scnr` layout over the whole metadata) names a tag of
+its group; each BSP's descriptor leads to its region, its collision
+decodes and validates, its pathfinding decodes and validates against the
+collision's surface count; the first player start is a30's and stands on a
+generated sector; the sky is a `sky `; every weapon, equipment and vehicle
+placement's palette entry is a tag of that group; the AI decodes with
+`h1ai::h2::ScenarioAi::read` and its indices check, every character is a
+`char`; the scripts decode with `hs::Scenario::read` with the compiled
+counts; `campaign.toml` lists a30 under the map's own path.
+`h1_trigger_volumes_read` checks a30's trigger volumes (`scnr+0x360`,
+`0x60` each, name at `+4`: printable names, unit forward and up vectors).
+
+Counts on the owner's discs (2026-11-17):
+
+| | a30 |
+|---|---|
+| Tags | 8,365 (8,274 in the base; 91 added: 2 lightmap bitmaps, skies and their models, 47 object tags, 38 sounds, the gestalt) |
+| Metadata | `0xbc3000` of `0xc24000` |
+| BSP 0 | 33 clusters, 41,018 vertices, 29,572 triangles, 33 materials, 19,138 collision surfaces, 32 lightmap pages, 7,764 sectors, 15,806 links |
+| BSP 1 | 28 clusters, 40,303 vertices, 31,748 triangles, 34 materials, 23,187 collision surfaces, 27 lightmap pages, 10,960 sectors, 20,458 links |
+| Player starts | 2, the first on a generated sector |
+| Weapons | 19 of 19 placed (4 palette entries) |
+| Equipment | 61 of 61 (5; the health pack on the frag grenade template) |
+| Vehicles | 8 of 31 (warthog, banshee; pelican, dropship, lifepods dropped) |
+| AI | 22 squad groups, 89 squads, 22 zones, 92 orders, 5 characters |
+| Scripts | 139 scripts, 108 globals, 10,832 nodes, 1,419 hooks (305 left `none`), 583 missing calls stubbed, 39 of 60 references resolved |
+| Sounds | 38 (every sound the scripts name), none left out |
+
+**Needs a game run:**
+
+- that the level loads at all: the rebuilt scenario root over pinned
+  children, the moved index entry table, the base's decorators, lights and
+  decals (not cleared: their scenario blocks aren't located), BSP 0's
+  clusters against the base's per-cluster data;
+- that the player spawns at a30's start and walks on the converted
+  collision; whether the base's starting profile (its weapons) applies;
+- the placement tail (`+0x34` on): zeros except the head; whether Halo 2
+  needs a nonzero BSP policy or per-type tail for objects to spawn;
+- AI on generated pathfinding; whether `ai_place` with the adapter's count
+  0 places anyone (h1-scripts.md);
+- the script hook encodings beyond the retail survey (squad index vs other
+  AI kinds), and stubbed calls changing a30's flow (dialogue waits on
+  `sound_impulse_time`, which is stubbed to 0);
+- the health pack on a grenade template; the cyborg as the player (needs
+  the globals' player biped, not located).
 
 ## 8. Open questions
 
