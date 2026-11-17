@@ -8,7 +8,7 @@ use live_proto::game::{
 
 use crate::event::{
     GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlacedObject, Placements,
-    PlayerState, Snapshot, VehicleState,
+    PlayerState, Pose, Snapshot, VehicleState,
 };
 use crate::layout;
 use crate::memory::yaw;
@@ -992,6 +992,43 @@ fn frame_objects(
     placed: &[PlacedObject],
     found: &mut Vec<u32>,
 ) -> Vec<FrameObject> {
+    frame_objects_with(placements, placed, found, true)
+}
+
+/// Inside the two degrees by more than this (in cosine) needs no exact
+/// test: rounding is some 1e-15.
+const PLACED_COS_MARGIN: f64 = 1e-9;
+
+/// Whether `o` is where `pose` puts it beyond doubt, without normalising
+/// its axes: then [`frame_objects`]' exact test (normalise, then compare)
+/// finds it there too. Its distance test is the exact one; each axis must
+/// be finite, longer than `1e-6` with room, and within the cosine with
+/// [`PLACED_COS_MARGIN`] to spare (`v·p / |v|`, squared: no square root).
+fn surely_in_place(o: &PlacedObject, pose: &Pose) -> bool {
+    let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let cos = PLACED_COS + PLACED_COS_MARGIN;
+    let within = |v: [f64; 3], p: [f64; 3]| {
+        let n = dot(v, v);
+        let q = dot(v, p);
+        n.is_finite() && n > 2e-12 && q > 0.0 && q * q >= cos * cos * n
+    };
+    let d = [0, 1, 2].map(|k| o.pos[k] - pose.pos[k]);
+    o.pos.iter().all(|c| c.is_finite())
+        // The exact test's `dot(d, d) > PLACED_DISTANCE²`, negated.
+        && dot(d, d).partial_cmp(&(PLACED_DISTANCE * PLACED_DISTANCE))
+            != Some(std::cmp::Ordering::Greater)
+        && within(o.forward, pose.forward)
+        && within(o.up, pose.up)
+}
+
+/// [`frame_objects`]; `quick` lets [`surely_in_place`] skip the exact test
+/// (the tests compare both).
+fn frame_objects_with(
+    placements: &Placements,
+    placed: &[PlacedObject],
+    found: &mut Vec<u32>,
+    quick: bool,
+) -> Vec<FrameObject> {
     const NONE: u32 = u32::MAX;
     let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let unit = |v: [f64; 3]| {
@@ -1046,6 +1083,7 @@ fn frame_objects(
                     u: None,
                     gone: true,
                 }),
+                Some(o) if quick && pose.as_ref().is_some_and(|p| surely_in_place(o, p)) => None,
                 Some(o) => {
                     let (Some(forward), Some(up)) = (unit(o.forward), unit(o.up)) else {
                         continue;
@@ -2381,6 +2419,97 @@ mod tests {
         };
         frame.tick = 2;
         live_proto::game::validate_frame(&frame).unwrap();
+    }
+
+    /// Objects at and about every boundary of the in-place test (distance,
+    /// two degrees on either axis, axis length, non-finite values), around
+    /// placements of many orientations: the quick path decides as the
+    /// exact one, object for object.
+    #[test]
+    fn the_quick_in_place_test_decides_as_the_exact_one() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let angle = PLACED_COS.acos();
+        let mut poses = Vec::new();
+        let mut placed = Vec::new();
+        for i in 0..4000u16 {
+            let (forward, up) =
+                crate::memory::rotation_axes([next() * 6.3, next() * 3.0 - 1.5, next() * 6.3]);
+            let pos = [next() * 100.0, next() * 100.0, next() * 10.0];
+            poses.push(Some(Pose { pos, forward, up }));
+            // Turn by an angle at the two-degree boundary (give or take a
+            // few ulps, or the margin), or well inside or out.
+            let turn = match i % 6 {
+                0 => angle * (1.0 + (next() - 0.5) * 1e-12),
+                1 => angle + (next() - 0.5) * 4e-9,
+                2 => angle * next(),
+                3 => angle * (1.0 + next()),
+                4 => 0.0,
+                _ => angle * (1.0 - 1e-15 * next()),
+            };
+            let (sn, cs) = turn.sin_cos();
+            // About the axis forward × up's normal: forward toward up's side.
+            let side = [
+                forward[1] * up[2] - forward[2] * up[1],
+                forward[2] * up[0] - forward[0] * up[2],
+                forward[0] * up[1] - forward[1] * up[0],
+            ];
+            let turned = |a: [f64; 3]| [0, 1, 2].map(|k| a[k] * cs + side[k] * sn);
+            let scale = match i % 7 {
+                0 => 1e-6 * (1.0 + (next() - 0.5) * 1e-9),
+                1 => 1.414e-6 + next() * 1e-9,
+                2 => 1e3,
+                _ => 0.5 + next(),
+            };
+            let mut f = turned(forward).map(|c| c * scale);
+            let mut u = if i % 2 == 0 { up } else { turned(up) };
+            let r = PLACED_DISTANCE
+                * match i % 5 {
+                    0 => 1.0 + (next() - 0.5) * 1e-12,
+                    1 => next(),
+                    2 => 1.5,
+                    _ => 0.0,
+                };
+            let mut p = [pos[0] + r, pos[1], pos[2]];
+            match i % 97 {
+                0 => f[1] = f64::NAN,
+                1 => u[2] = f64::INFINITY,
+                2 => p[0] = f64::NAN,
+                3 => f = [0.0; 3],
+                4 => u = u.map(|c| -c),
+                _ => {}
+            }
+            placed.push(PlacedObject {
+                kind: ObjectKind::Scenery,
+                index: i,
+                parented: false,
+                pos: p,
+                forward: f,
+                up: u,
+            });
+        }
+        let mut exact = Vec::new();
+        // In runs of a hundred placements, under the frame's cap.
+        for (poses, run) in poses.chunks(100).zip(placed.chunks_mut(100)) {
+            for (i, o) in run.iter_mut().enumerate() {
+                o.index = i as u16;
+            }
+            let table = Placements {
+                kinds: vec![(ObjectKind::Scenery, poses.to_vec())],
+            };
+            let quick = frame_objects_with(&table, run, &mut Vec::new(), true);
+            let b = frame_objects_with(&table, run, &mut Vec::new(), false);
+            assert_eq!(quick, b);
+            exact.extend(b);
+        }
+        // Both sides of the boundary were tried.
+        let sent = exact.iter().filter(|o| !o.gone).count();
+        assert!(sent > 500 && sent < 3500, "{sent}");
     }
 
     #[test]
