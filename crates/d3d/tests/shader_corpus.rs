@@ -100,7 +100,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
         shader: ShaderInputs {
             vertex: VertexProcessing::Program {
                 start: 0,
-                microcode,
+                microcode: microcode.into(),
             },
             provided_inputs: reads,
             vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],

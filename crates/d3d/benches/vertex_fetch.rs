@@ -206,7 +206,7 @@ fn make_draw(rng: &mut Rng, shape: &[Stream]) -> ResolvedDraw {
         shader: ShaderInputs {
             vertex: VertexProcessing::Program {
                 start: 0,
-                microcode: program_words(),
+                microcode: program_words().into(),
             },
             provided_inputs: provided,
             vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],

@@ -56,7 +56,7 @@ use crate::regs::{RegisterValues, RegisterWindow};
 use crate::resource::{
     AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
 };
-use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
+use crate::shader::{CONSTANTS, Microcode, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
 use crate::state::{DrawState, StateWords, Translator, slot};
 use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
@@ -692,6 +692,8 @@ pub struct Device<B: Backend> {
     push_words: Vec<u32>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
     program_start: u32,
+    /// The last microcode handed to a draw ([`Device::microcode`]).
+    microcode_memo: Option<Microcode>,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
     constants: Box<[u32; CONSTANTS * 4]>,
     viewport: Viewport,
@@ -862,6 +864,7 @@ impl<B: Backend> Device<B> {
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
+            microcode_memo: None,
             constants: Box::new([0; CONSTANTS * 4]),
             viewport: Viewport {
                 x: 0,
@@ -3280,15 +3283,25 @@ impl<B: Backend> Device<B> {
     }
 
     /// The program from `program_start` up to and including its FINAL
-    /// instruction (or the last slot). Found first, then copied in one
-    /// allocation: every draw makes one, and growing it a slot at a time
-    /// reallocated several times per draw.
-    fn microcode(&self) -> Vec<u32> {
+    /// instruction (or the last slot). While program memory holds the same
+    /// words, every draw gets the same shared copy, so the shader keys built
+    /// from consecutive draws compare by pointer and hash nothing again.
+    /// Checked against program memory each time (one compare of the
+    /// words), so nothing that writes program memory has to say so.
+    fn microcode(&mut self) -> Microcode {
         let start = (self.program_start as usize).min(PROGRAM_SLOTS);
         let end = (start..PROGRAM_SLOTS)
             .find(|&s| self.program[4 * s + 3] & 1 != 0) // FINAL
             .map_or(PROGRAM_SLOTS, |s| s + 1);
-        self.program[4 * start..4 * end].to_vec()
+        let words = &self.program[4 * start..4 * end];
+        if let Some(m) = &self.microcode_memo
+            && **m == *words
+        {
+            return m.clone();
+        }
+        let m = Microcode::new(words.into());
+        self.microcode_memo = Some(m.clone());
+        m
     }
 
     fn shader_inputs(

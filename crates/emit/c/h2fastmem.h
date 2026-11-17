@@ -215,12 +215,29 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
         g->held = 0u;
     }
 }
+/* Whether physical page `physical` is already marked dirty. A set bit lies
+ * inside [dirty_lo, dirty_hi): every marker sets the bit and widens the
+ * bounds under the gate, and the drain clears both under it. So a marked
+ * page needs nothing more. */
+#define H2_DIRTY_MARKED(d, physical) \
+    (((d)->dirty[(physical) >> 18] >> (((physical) >> 12) & 63u)) & 1u)
+/* H2_DIRTY_INLINE=1 (emit-time, `H2_DIRTY_INLINE` in the build's
+ * environment; default off): store sites test the bit themselves and call
+ * h2_mark_dirty only for an unmarked page, a load, a shift and a branch
+ * more per store site in exchange for the call. */
+#ifndef H2_DIRTY_INLINE
+#define H2_DIRTY_INLINE 0
+#endif
 /* Mark a physical page dirty for the Rust side's drain. Out of line and
  * register-preserving: a site calls it only for a store to a page other
- * than the one this hold marked last (H2Gate.dirtied). */
+ * than the one this hold marked last (H2Gate.dirtied). A page already
+ * marked (the usual case: hot pages stay marked until the next drain)
+ * writes nothing. */
 static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical) {
     uint32_t p = physical >> 12, word = p >> 6;
-    d->dirty[word] |= UINT64_C(1) << (p & 63u);
+    uint64_t bit = UINT64_C(1) << (p & 63u);
+    if (d->dirty[word] & bit) return;
+    d->dirty[word] |= bit;
     if (word < d->dirty_lo) d->dirty_lo = word;
     if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
 }
@@ -250,7 +267,8 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
         if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
         if ((write) && (g).data->watching && (page).physical != (g).dirtied) {  \
-            h2_mark_dirty((g).data, (page).physical);                           \
+            if (!H2_DIRTY_INLINE || !H2_DIRTY_MARKED((g).data, (page).physical)) \
+                h2_mark_dirty((g).data, (page).physical);                       \
             (g).dirtied = (page).physical;                                      \
         }                                                                       \
         H2_FAST_CHARGE(f);                                                      \
