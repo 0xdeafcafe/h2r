@@ -277,7 +277,8 @@ fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
 /// weapon datums at `+0x218`. The weapon must be a live weapon object
 /// parented to this unit (`0x00101fb0` finds a weapon's owner through its
 /// parent).
-fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>> {
+/// With the weapon, its body (for the magazine).
+fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<(Weapon, u32)>> {
     let index = guest.u8(body + layout::UNIT_WEAPON_INDEX)? as i8;
     if !(0..layout::UNIT_WEAPON_SLOTS).contains(&index) {
         return Ok(None);
@@ -290,7 +291,7 @@ fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>
         return Ok(None);
     }
     let definition = guest.u32(weapon + layout::BODY_DEFINITION)?;
-    Ok((definition != u32::MAX).then_some(Weapon { datum, definition }))
+    Ok((definition != u32::MAX).then_some((Weapon { datum, definition }, weapon)))
 }
 
 pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
@@ -305,8 +306,9 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // (a stale weapon datum, a "likely" offset) drops the field, not the
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
-    let weapon = held_weapon(guest, datum, body).ok().flatten();
-    let motion = motion(guest, kind, body, weapon);
+    let held = held_weapon(guest, datum, body).ok().flatten();
+    let weapon = held.map(|(w, _)| w);
+    let motion = motion(guest, kind, body, held.map(|(_, b)| b));
     let team = guest
         .u16(body + layout::UNIT_TEAM)
         .ok()
@@ -365,7 +367,8 @@ fn vehicle_mount(guest: &Guest, body: u32) -> ReadResult<Option<(u32, u32)>> {
 
 /// A unit's movement and inventory state; each field independently `None`
 /// when its read faults or reads as nonsense.
-fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion {
+/// `weapon` is the held weapon's body.
+fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
     let velocity = vector(guest, body + layout::BODY_VELOCITY)
         .ok()
         .filter(|v| v.iter().all(|c| c.is_finite()))
@@ -399,8 +402,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion 
         Ok(slots)
     })()
     .ok();
-    let magazine = weapon.and_then(|w| {
-        let (_, weapon_body) = object_body(guest, w.datum).ok().flatten()?;
+    let magazine = weapon.and_then(|weapon_body| {
         let reserve = guest
             .u16(weapon_body + layout::WEAPON_MAGAZINE_RESERVE)
             .ok()? as i16;
