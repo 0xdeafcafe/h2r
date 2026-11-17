@@ -583,6 +583,16 @@ fn cutscenes_convert_and_read_back() {
         {
             *stubbed.entry(m.name.as_str()).or_default() += 1;
         }
+        // Held recordings (h1scripts::identified::HELD): no call reaches
+        // Halo 2's recording builtins (138 to 142).
+        let held = played
+            .nodes
+            .iter()
+            .filter(|n| !n.atom() && !n.script_call() && (138..=142).contains(&n.opcode()))
+            .count();
+        if held > 0 {
+            failed.push(format!("{level}: {held} calls of a held recording builtin"));
+        }
         println!("== {level}: {} cinematic scripts", cinematic.len());
         println!("  stubbed in cinematics: {stubbed:?}");
 
