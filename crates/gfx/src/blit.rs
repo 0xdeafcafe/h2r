@@ -155,6 +155,7 @@ impl Blitter {
                 },
             ],
         });
+        crate::churn::pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

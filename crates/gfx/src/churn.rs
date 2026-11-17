@@ -64,9 +64,16 @@ pub fn buffer_created() {
     bump(|c| c.buffers_created += 1);
 }
 
-/// Counts a queue write (a wgpu staging buffer).
+/// Counts a queue write (a wgpu staging buffer), here and in the frame
+/// stats (`queue_writes`).
 pub fn queue_write() {
     bump(|c| c.queue_writes += 1);
+    timeline::phase::count(timeline::phase::Counter::QueueWrites, 1);
+}
+
+/// Counts a render or compute pass begun, in the frame stats (`passes`).
+pub fn pass() {
+    timeline::phase::count(timeline::phase::Counter::Passes, 1);
 }
 
 /// Counts a staging chunk taken from the pool.

@@ -518,6 +518,7 @@ impl GuestWords {
                 },
             ],
         });
+        crate::churn::pass();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("gfx guest words store colour"),
             timestamp_writes: None,
@@ -574,6 +575,7 @@ impl GuestWords {
                 },
             ],
         });
+        crate::churn::pass();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("gfx guest words store depth"),
             timestamp_writes: None,
@@ -656,6 +658,7 @@ impl GuestWords {
             ],
         });
         let view = dst.create_view(&Default::default());
+        crate::churn::pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gfx guest words load colour"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -751,6 +754,7 @@ impl GuestWords {
                 ],
             });
             {
+                crate::churn::pass();
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("gfx guest words load stencil"),
                     timestamp_writes: None,
@@ -824,6 +828,7 @@ impl GuestWords {
             ],
         });
         let view = dst.create_view(&Default::default());
+        crate::churn::pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gfx guest words load depth"),
             color_attachments: &[],
@@ -926,6 +931,7 @@ impl GuestWords {
             ],
         });
         {
+            crate::churn::pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("gfx depth alias"),
                 timestamp_writes: None,
