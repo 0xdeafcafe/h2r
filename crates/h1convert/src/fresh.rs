@@ -385,11 +385,11 @@ impl Pruned {
 }
 
 /// Scenario palettes whose base entries are nulled: `(offset, element)`,
-/// the tag reference at `+0`. Sound scenery `+0xe0`, light fixtures
-/// `+0xf0`, crates `+0x330` (`tags::object::OBJECT_TYPES`, the schema).
-/// The scenery palette (`+0x58`) is left: the schema's element size for
-/// it (4) disagrees with the object table's.
-pub const BASE_PALETTES: [(u32, usize); 3] = [(0xe0, 0x28), (0xf0, 0x28), (0x330, 0x28)];
+/// the tag reference at `+0`. Scenery `+0x58`, sound scenery `+0xe0`,
+/// light fixtures `+0xf0`, crates `+0x330` (`tags::object::OBJECT_TYPES`;
+/// every palette is `0x28` an element, `tags::schema::infer::ENGINE_STRIDES`).
+pub const BASE_PALETTES: [(u32, usize); 4] =
+    [(0x58, 0x28), (0xe0, 0x28), (0xf0, 0x28), (0x330, 0x28)];
 
 /// The scenario's tag list (`+0x3d8`, a datum each).
 pub const SCENARIO_RESOURCES: u32 = 0x3d8;
