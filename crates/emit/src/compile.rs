@@ -23,8 +23,10 @@ use crate::fnv64;
 use crate::output::{self, Temporary};
 
 mod dependencies;
+pub mod pgo;
 mod tiers;
 
+pub use pgo::Pgo;
 pub use tiers::{Tiers, hot_addresses};
 
 /// Flags for every generated object that do not depend on the build
@@ -50,8 +52,11 @@ pub const CFLAGS: &[&str] = &[
     "-fcoverage-compilation-dir=.",
 ];
 
+/// The `-O` levels `H2_OPT` accepts.
+pub const OPT_LEVELS: &[&str] = &["0", "1", "g", "s", "2", "3"];
+
 /// The optimisation and debug-info flags for `opt` (`H2_OPT`: `0` `1` `g`
-/// `s` `2`, default `1`) and `debug` (`H2_DEBUG`: `lines`, `full`, `none`,
+/// `s` `2` `3`, default `1`) and `debug` (`H2_DEBUG`: `lines`, `full`, `none`,
 /// default `lines`). Both are part of every object's cache key. `-O1` is
 /// the release level (LIFTER.md §1); `lines` keeps guest-address line
 /// tables for backtraces and stepping at about two thirds of the compile
@@ -59,8 +64,8 @@ pub const CFLAGS: &[&str] = &[
 /// object size. [`profile_flags_for`] takes a target's own default level.
 pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<String>, Error> {
     let opt = opt.unwrap_or("1");
-    if !["0", "1", "g", "s", "2"].contains(&opt) {
-        return Err(err(format!("H2_OPT={opt}: expected 0, 1, g, s or 2")));
+    if !OPT_LEVELS.contains(&opt) {
+        return Err(err(format!("H2_OPT={opt}: expected 0, 1, g, s, 2 or 3")));
     }
     let debug = match debug.unwrap_or("lines") {
         "lines" => Some("-gline-tables-only"),
@@ -83,7 +88,9 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
 /// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
 /// pointers invoking the handler in the target's direct slot
-/// (`H2_INDIRECT_CALLS`).
+/// (`H2_INDIRECT_CALLS`). Profile-guided optimisation (`H2_PGO`) and the
+/// target CPU (`H2_CPU`, arm64 only: see [`pgo::for_arch`]) are off unless
+/// set ([`pgo`]).
 ///
 /// These are the flags for `arch`: [`Arch::codegen_flags`] after
 /// [`CFLAGS`], and its default level ([`Arch::default_opt`]) when `H2_OPT`
@@ -96,6 +103,8 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
     v.extend(arch.codegen_flags().iter().map(|s| s.to_string()));
     v.extend(profile_flags_for(arch, env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
+    v.extend(Pgo::from_env()?.flags()?);
+    v.extend(pgo::cpu_flags(env("H2_CPU").as_deref())?);
     for (name, default) in [
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
@@ -113,7 +122,7 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
             v.push(format!("-D{name}=1"));
         }
     }
-    Ok(v)
+    Ok(pgo::for_arch(v, arch))
 }
 
 /// [`cflags_for`] the host: what a test compiling generated C for this
@@ -1066,6 +1075,15 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     let flags = cflags_for(build.arch)?;
     let target = build.arch.target_args()?;
     let mut args: Vec<PathBuf> = build.objects.clone();
+    // H2_PGO=gen: the driver links the profile runtime when the link names
+    // the instrumentation flag; the shim names the profile and exports the
+    // write.
+    let generate = pgo::generates(&flags);
+    if generate && build.arch.is_windows() {
+        return Err(err("H2_PGO=gen: a Windows module cannot link the profile runtime yet"));
+    }
+    let shim = [(pgo::SHIM_NAME, pgo::SHIM)];
+    let extra = extra.iter().chain(if generate { &shim[..] } else { &[] });
     for (name, text) in extra {
         let src = src_dir.join(name);
         output::replace(&src, text.as_bytes()).map_err(err)?;
@@ -1095,6 +1113,11 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     } else {
         Command::new(&cc)
             .args(&target)
+            .args(generate.then_some(pgo::GEN_FLAG))
+            // The instrumented image is too big for compact unwind: ld64
+            // asserts that a function's offset fits in 24 bits. DWARF
+            // unwind info serves the training run.
+            .args(generate.then_some(["-Xlinker", "-no_compact_unwind"]).into_iter().flatten())
             .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
             .arg(build.arch.install_name(out))
             .arg("-o")
@@ -1343,10 +1366,13 @@ mod tests {
         assert_eq!(f(None, None), ["-O1", "-gline-tables-only"]);
         assert_eq!(f(Some("0"), Some("full")), ["-O0", "-g"]);
         assert_eq!(f(Some("2"), Some("none")), ["-O2"]);
-        assert!(profile_flags(Some("3"), None).is_err());
+        assert_eq!(f(Some("3"), None), ["-O3", "-gline-tables-only"]);
+        assert!(profile_flags(Some("4"), None).is_err());
+        assert!(profile_flags(Some("fast"), None).is_err());
         assert!(profile_flags(None, Some("dwarf")).is_err());
         let key = |o, d| common_key(b"a", b"b", Arch::Arm64, &f(o, d), "t");
         assert_ne!(key(None, None), key(Some("0"), None), "opt level");
+        assert_ne!(key(Some("2"), None), key(Some("3"), None), "-O3");
         assert_ne!(key(None, None), key(None, Some("full")), "debug level");
     }
 

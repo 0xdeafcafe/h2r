@@ -759,6 +759,13 @@ impl Generated {
         }
     }
 
+    /// Write the raw profile now when the module was built with
+    /// `H2_PGO=gen` (see [`crate::compile::pgo::write_profile`]).
+    pub fn write_profile(&self) -> Option<Result<std::path::PathBuf, String>> {
+        // SAFETY: `load` only accepts modules built by this crate.
+        unsafe { crate::compile::pgo::write_profile(&self._lib) }
+    }
+
     /// Run transfers from `start` until one this host can't resolve, a
     /// fault/stop, a return to [`HARNESS_EXIT`], or `max` handler calls.
     /// Returns the final transfer.
