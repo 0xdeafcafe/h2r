@@ -29,6 +29,7 @@ pub mod cutscenes;
 pub mod donor;
 pub mod manifest;
 pub mod profiles;
+pub mod recordings;
 pub mod scenario;
 pub mod scratch;
 pub mod structure;
