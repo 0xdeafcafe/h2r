@@ -543,13 +543,13 @@ retail base as it is on the disc), from the roots `matg`, the keep list
 and every tag the built scenario and structure name, and lays them out on
 a dense index of their own (`to_tag_set`); the scenario and structure are
 the fresh build's, their datums renamed (`scratch::Transfer`). Equal
-blocks are shared only within a tag, never across tags, and the sound
-gestalt not at all: the readers that take one tag's bytes
-(`tags::DecodedTag`, `SoundGestalt::decode`, the editor's patching) see
-each tag whole. If it fails, the pruned set is written
+blocks are shared across tags, as retail does, except bitmaps and the
+sound gestalt, which the readers that take one tag's bytes
+(`tags::DecodedTag`, `SoundGestalt::decode`) need whole
+(`scratch::SELF_CONTAINED`). If it fails, the pruned set is written
 (`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
-slots, 0 dangling, 26.0 MB (pinned 48.6 MB); every tag but the sounds
+slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the
 scenario's 20 blocks and root, every bitmap and the 9 languages' strings
 the same; 21,570 references resolve (`tests/fresh.rs`). The sound gestalt

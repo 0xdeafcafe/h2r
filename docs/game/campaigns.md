@@ -236,9 +236,12 @@ convert --pinned` skip it):
    own blocks: their datum words are renamed to the new index, their raw
    blobs copied and their BSP sections made anew (`Transfer`), then the
    simulation table is written for the new index. A tag the extractor
-   cannot take whole fails the build. Equal blocks are shared only within
-   a tag (the gestalt not at all), so every tag reads whole from its own
-   bytes; that costs about 1.1 MB against sharing across tags. The core
+   cannot take whole fails the build. Equal blocks are shared across
+   tags, as retail shares arrays across tags in 25 to 28 groups per map
+   (05a: 377,044 bytes of `effe` arrays and 245,966 of `shad` lie in
+   other tags), except `bitm` (shares only within itself) and `ugh!` (not
+   at all), which our readers take alone and retail never shares
+   (`scratch::SELF_CONTAINED`, V on 05a, Coagulation, 03a and 07a). The core
    is `h1convert::scratch` (multiplayer uses it too) and takes any
    `TagSource`, so tags written from typed definitions plug in as a
    source. The sound gestalt is then cut to the kept sounds (below).
@@ -257,18 +260,18 @@ and all; pruned is version 23's fresh build):
 
 | Level | Tag memory pinned | pruned | from scratch | File pinned | pruned | from scratch | Tags | References resolving |
 |---|---|---|---|---|---|---|---|---|
-| a10 | `0xb44000` | `0x89b000` | `0x913000` | 287,119,360 | 257,813,504 | 111,705,600 | 7,027 | 30,437/30,437 |
-| a30 | `0xb3c000` | `0x8e5000` | `0x95b000` | 232,101,376 | 176,360,448 | 58,331,648 | 6,905 | 29,658/29,658 |
-| a50 | `0xbeb000` | `0x8cf000` | `0x940000` | 241,578,496 | 190,463,488 | 66,365,440 | 7,072 | 30,306/30,306 |
-| b30 | `0xb29000` | `0x85e000` | `0x8d3000` | 230,040,064 | 171,379,200 | 54,140,416 | 7,035 | 29,721/29,721 |
-| b40 | `0xc22000` | `0x923000` | `0x9b0000` | 265,091,072 | 229,058,048 | 95,427,072 | 7,309 | 32,135/32,135 |
-| c10 | `0xc01000` | `0x8a1000` | `0x901000` | 260,217,344 | 210,515,968 | 83,184,128 | 6,678 | 30,538/30,538 |
-| c20 | `0xb3c000` | `0x83f000` | `0x823000` | 257,913,344 | 208,459,264 | 79,057,408 | 4,205 | 22,866/22,866 |
-| c40 | `0xbe1000` | `0x8b7000` | `0x8f5000` | 272,847,360 | 231,427,072 | 94,176,768 | 6,086 | 29,241/29,241 |
-| d20 | `0xbab000` | `0x8ed000` | `0x916000` | 247,974,912 | 200,224,768 | 73,032,704 | 5,842 | 27,541/27,541 |
-| d40 | `0xbec000` | `0x8ee000` | `0x926000` | 293,278,720 | 259,985,920 | 115,066,880 | 6,020 | 29,179/29,179 |
+| a10 | `0xb44000` | `0x89b000` | `0x810000` | 287,119,360 | 257,813,504 | 110,644,736 | 7,027 | 30,437/30,437 |
+| a30 | `0xb3c000` | `0x8e5000` | `0x85c000` | 232,101,376 | 176,360,448 | 57,287,168 | 6,905 | 29,658/29,658 |
+| a50 | `0xbeb000` | `0x8cf000` | `0x83e000` | 241,578,496 | 190,463,488 | 65,308,672 | 7,072 | 30,306/30,306 |
+| b30 | `0xb29000` | `0x85e000` | `0x7db000` | 230,040,064 | 171,379,200 | 53,124,608 | 7,035 | 29,721/29,721 |
+| b40 | `0xc22000` | `0x923000` | `0x891000` | 265,091,072 | 229,058,048 | 94,251,520 | 7,309 | 32,135/32,135 |
+| c10 | `0xc01000` | `0x8a1000` | `0x7f1000` | 260,217,344 | 210,515,968 | 82,070,016 | 6,678 | 30,538/30,538 |
+| c20 | `0xb3c000` | `0x83f000` | `0x745000` | 257,913,344 | 208,459,264 | 78,148,096 | 4,205 | 22,866/22,866 |
+| c40 | `0xbe1000` | `0x8b7000` | `0x7d9000` | 272,847,360 | 231,427,072 | 93,013,504 | 6,086 | 29,241/29,241 |
+| d20 | `0xbab000` | `0x8ed000` | `0x81a000` | 247,974,912 | 200,224,768 | 72,000,512 | 5,842 | 27,541/27,541 |
+| d40 | `0xbec000` | `0x8ee000` | `0x815000` | 293,278,720 | 259,985,920 | 113,948,672 | 6,020 | 29,179/29,179 |
 
-The bound is `0xc24000`: every level has 2.5 to 4 MB to spare, and the
+The bound is `0xc24000`: every level has 3.6 to 4.9 MB to spare, and the
 lean ladder fires nowhere (b40 keeps its level data, seat table and object
 textures; the ladder stays as a safety net). The file bound is
 `0x11800000` (293,601,280 bytes). On every level the map is built from
@@ -302,12 +305,11 @@ scenario), so they need no entry: the fresh a30 keeps every `matg`
 reference. No scenario palette is nulled (the conversion already wrote
 them all).
 
-From scratch takes more tag memory than pruned (a30 `0x95b000` against
-`0x8e5000`). Before the gestalt cut the tags' own bytes were the same
-group for group (`Report::groups`), so the difference is layout: about
-1.1 MB is the
-sharing kept within tags, the rest the repository builder's block
-alignment and padding, not traced yet.
+From scratch takes less tag memory than pruned (a30 `0x85c000` against
+`0x8e5000`): the dense index, the cut gestalt, and equal blocks placed
+once. Scoping the sharing to each tag had cost about 1 MB a level, the
+arrays retail itself shares across `effe`, `shad`, `styl` and `prt3`
+tags.
 
 **The sound gestalt cut to the kept sounds** (`h1convert::compact`, run by
 the builder from scratch). 05a's `ugh!` holds every 05a sound's entries;

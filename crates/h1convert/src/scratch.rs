@@ -194,6 +194,29 @@ fn stub(key: TagKey) -> LooseTag {
     }
 }
 
+/// Groups whose tags keep every block inside their own bytes, sharing only
+/// within themselves (`ugh!` not at all: its reader takes no overlap). Our
+/// readers take these tags' bytes alone (`tags::DecodedTag` for bitmaps,
+/// `h1sounds::gestalt::SoundGestalt::decode`), and retail never shares
+/// across them (V, 2026-11-18, 05a, Coagulation, 03a and 07a: no `bitm` or
+/// `ugh!` array outside its tag). Every other group shares equal blocks
+/// across tags, as retail does in 25 to 28 groups per map (05a: 377,044
+/// bytes of `effe` arrays and 245,966 of `shad` lie in other tags).
+pub const SELF_CONTAINED: [&[u8; 4]; 2] = [b"bitm", b"ugh!"];
+
+/// Applies [`SELF_CONTAINED`] to `set`'s built tags.
+pub fn scope_shares(set: &mut TagSet) {
+    for slot in &mut set.slots {
+        if let Some(t) = slot.tag.as_mut()
+            && SELF_CONTAINED.iter().any(|g| t.group == FourCC(**g))
+            && let TagPayload::Built(b) = &mut t.payload
+        {
+            let ugh = t.group == FourCC(*b"ugh!");
+            own_shares(b, t.id.0, ugh);
+        }
+    }
+}
+
 /// Scope `b`'s share keys to the tag `owner` (or drop them, `none`).
 fn own_shares(b: &mut Block, owner: u32, none: bool) {
     if none {
@@ -307,20 +330,7 @@ pub fn build(
     for (from, to) in built.dangling {
         report.dangling.push((from.to_string(), to.to_string()));
     }
-    // The builder shares equal blocks between tags. Each tag here keeps its
-    // blocks inside its own bytes (sharing only within itself), as the
-    // readers that take a tag's bytes alone expect: `tags::DecodedTag`,
-    // `h1sounds::gestalt::SoundGestalt::decode`, the editor, a later
-    // conversion.
-    for slot in &mut out.slots {
-        if let Some(t) = slot.tag.as_mut()
-            && let TagPayload::Built(b) = &mut t.payload
-        {
-            // The gestalt reader takes no overlap at all.
-            let ugh = t.group == FourCC(*b"ugh!");
-            own_shares(b, t.id.0, ugh);
-        }
-    }
+    scope_shares(&mut out);
     out.scenario_path = set.scenario_path.clone();
 
     // The scenario and BSPs, as built, rewritten for `out`.
@@ -467,4 +477,49 @@ pub fn file_bytes<R: Read + Seek>(m: &mut Map<R>) -> Result<Vec<u8>> {
         at += n;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use map::CacheType;
+
+    fn tag(set: &mut TagSet, group: &[u8; 4], name: &str) -> TagId {
+        let g = FourCC(*group);
+        set.add_group(g, None, None);
+        let child = Block::new(vec![7; 16]).shared(42);
+        let mut root = Block::zeroed(8);
+        root.block(0, 1, child);
+        set.add_tag(g, name, TagPayload::Built(root)).unwrap()
+    }
+
+    fn key(set: &TagSet, id: TagId) -> Option<u64> {
+        let TagPayload::Built(b) = &set.tag(id).unwrap().payload else {
+            unreachable!()
+        };
+        match &b.fixups[0].kind {
+            FixupKind::Block { child, .. } => child.share,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn bitmaps_and_the_gestalt_keep_their_blocks_to_themselves() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        let (e1, e2) = (tag(&mut set, b"effe", "a"), tag(&mut set, b"effe", "b"));
+        let (b1, b2) = (tag(&mut set, b"bitm", "a"), tag(&mut set, b"bitm", "b"));
+        let u = tag(&mut set, b"ugh!", "g");
+        scope_shares(&mut set);
+        // Effects share across tags, as retail's do.
+        assert_eq!(key(&set, e1), Some(42));
+        assert_eq!(key(&set, e2), Some(42));
+        // Bitmaps share only within themselves, never with each other or
+        // with another group.
+        let (k1, k2) = (key(&set, b1), key(&set, b2));
+        assert!(k1.is_some() && k2.is_some());
+        assert_ne!(k1, k2);
+        assert_ne!(k1, Some(42));
+        // The gestalt shares nothing.
+        assert_eq!(key(&set, u), None);
+    }
 }
