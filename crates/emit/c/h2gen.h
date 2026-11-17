@@ -854,7 +854,10 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #else
 #define H2GEN_FEATURE_DIRECT 0u
 #endif
-#define H2_DIRECT_SLOTS 256u
+/* The table has room for H2_DIRECT_SLOTS; the runtime uses the first
+ * slot_mask + 1 of them (a power of two, H2_DIRECT_SLOTS in its
+ * environment, 256 unless set). */
+#define H2_DIRECT_SLOTS 8192u
 #define H2_DIRECT_MAX_DEPTH 64u
 /* What the runner learnt: entry `pc` resolved to `fn` (selector pc) at
  * dispatch generation `generation`. */
@@ -877,6 +880,7 @@ typedef struct H2Direct {
      * handed back by the callee on its way out (H2_DIRECT_GATE); 0: none. */
     uint32_t frames_len, gate;
     H2DirectFrame frames[H2_DIRECT_MAX_DEPTH];
+    uint32_t slot_mask, pad2;
     H2DirectSlot slots[H2_DIRECT_SLOTS];
     /* The view a direct caller lends the handler it is about to invoke
      * (module feature H2GEN_FEATURE_DIRECT_VIEW): taken, and cleared, on
@@ -888,7 +892,7 @@ typedef struct H2Direct {
 } H2Direct;
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(H2DirectSlot) == 24 && sizeof(H2DirectFrame) == 16, "direct layout");
-_Static_assert(sizeof(H2Direct) == 40 + 16 * 64 + 24 * 256 + 16, "direct layout");
+_Static_assert(sizeof(H2Direct) == 40 + 16 * 64 + 8 + 24 * 8192 + 16, "direct layout");
 #endif
 static inline H2Direct *h2_direct(ExecCtxOpaque *ctx) {
     H2Direct *d;
@@ -1011,7 +1015,7 @@ static inline uint64_t h2_acc_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
 #define H2_TAKE_BACK_ACC_(d) ((void)0)
 #define H2_COUNT_FITS_() 1
 #endif
-static inline uint32_t h2_direct_slot(uint32_t pc) { return (pc ^ (pc >> 8)) & (H2_DIRECT_SLOTS - 1u); }
+static inline uint32_t h2_direct_slot(const H2Direct *d, uint32_t pc) { return (pc ^ (pc >> 8)) & d->slot_mask; }
 /* The runner's check_execute fast path: the page's execute bit in the
  * inline RAM view, read under the gate (`held`: the handler's own hold's
  * view, else NULL and taken here). No view, a busy gate or no bit: not
@@ -1038,7 +1042,7 @@ static inline int h2_direct_enter(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess 
                                   uint32_t kind, uint32_t target, uint32_t resume, uint32_t esp,
                                   uint32_t *my, int fits) {
     if (!d || d->depth >= d->cap || d->depth >= H2_DIRECT_MAX_DEPTH) return 0;
-    const H2DirectSlot *s = &d->slots[h2_direct_slot(target)];
+    const H2DirectSlot *s = &d->slots[h2_direct_slot(d, target)];
     if (s->pc != target || s->fn != fn || s->generation != __atomic_load_n(d->generation, __ATOMIC_ACQUIRE))
         return 0;
     if (!fits || !h2_direct_quiet(d, ctx) || !h2_direct_exec(f, held, target)) return 0;
@@ -1140,6 +1144,33 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
 #else
 #define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
 #define H2_DJUMP(fn, target, spill, dirty) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
+#endif
+/* A call through a pointer, `cont` this handler's own selector.
+ * H2_INDIRECT_CALLS=1 (emit-time, default off) takes the target's handler
+ * from its direct slot, where the runner put it when it last dispatched
+ * that entry, and calls it as H2_DCALL does: h2_direct_enter checks the
+ * slot again (pc, handler, generation) with everything else, so the call is
+ * direct exactly where H2_DCALL's would be for that target, and otherwise
+ * the same CALL for the runner. Off: always the runner's. */
+#ifndef H2_INDIRECT_CALLS
+#define H2_INDIRECT_CALLS 0
+#endif
+#if H2_DIRECT_CALLS && H2_INDIRECT_CALLS
+static inline H2Handler h2_slot_fn(ExecCtxOpaque *ctx, uint32_t target) {
+    const H2Direct *d = h2_direct(ctx);
+    if (!d) return NULL;
+    const H2DirectSlot *s = &d->slots[h2_direct_slot(d, target)];
+    return s->pc == target ? s->fn : NULL;
+}
+#define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)           \
+    do {                                                                        \
+        uint32_t it_ = (target);                                                \
+        H2Handler if_ = h2_slot_fn(ctx, it_);                                   \
+        if (if_) H2_DCALL(if_, it_, (cont), label, spill, reload, refresh, dirty); \
+        H2_XFER(H2_CALL, H2_ENTRY, it_, (cont));                                \
+    } while (0)
+#else
+#define H2_ICALL(target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
 #endif
 
 #endif

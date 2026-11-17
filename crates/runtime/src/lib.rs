@@ -10,6 +10,7 @@ pub mod cpu;
 #[allow(unsafe_code)]
 pub mod direct;
 pub mod dispatch;
+mod entry_stats;
 pub mod events;
 pub mod exec;
 #[allow(unsafe_code)]

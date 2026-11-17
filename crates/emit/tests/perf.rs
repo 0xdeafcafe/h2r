@@ -1188,6 +1188,64 @@ fn image_gate_holds() {
     assert!(n[1] <= n[0]);
 }
 
+/// The image's transfer sites by what the emitter makes of them: a call or
+/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), or one it leaves
+/// to the runner, and why: through a kernel import, through a pointer
+/// (indirect), to an address that is not a function entry, or (a call)
+/// with a continuation another handler owns. Every return leaves for the
+/// runner unless its handler was invoked directly. Static counts: which
+/// runner entries could become direct or stay in C.
+/// `cargo test -p emit --release --test perf image_transfer_sites -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_transfer_sites() {
+    use ir::{CallKind, Control, Target};
+    use std::collections::{BTreeMap, BTreeSet};
+    let Some(path) = common::xbe_path() else {
+        common::skip("image_transfer_sites", "no XBE (set H2_XBE)");
+        return;
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = xbe::Xbe::parse(&data).unwrap();
+    let analysis = analyze::analyze(&x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
+    let mut n: BTreeMap<&str, u64> = BTreeMap::new();
+    // Indirect calls by how many distinct sites share a continuation owner.
+    for o in &owners {
+        for b in o.func.blocks.values() {
+            let Some(last) = b.insns.last() else { continue };
+            let what = match &last.control {
+                Control::Call { target: Target::Direct(t), continuation, .. } => {
+                    if !functions.contains(t) {
+                        "call: static, not a function entry"
+                    } else if !o.selectors.contains(continuation) {
+                        "call: static, continuation owned elsewhere"
+                    } else {
+                        "call: direct (H2_DCALL)"
+                    }
+                }
+                Control::Call { kind: CallKind::Kernel { .. }, .. } => "call: kernel import",
+                Control::Call { .. } => "call: indirect",
+                Control::Jump { target: Target::Direct(t), tail: true, .. } => {
+                    if functions.contains(t) { "jump: direct tail (H2_DJUMP)" } else { "jump: static tail, not an entry" }
+                }
+                Control::Jump { tail: false, .. } => continue,
+                Control::Jump { kind: CallKind::Kernel { .. }, .. } => "jump: kernel import",
+                Control::Jump { .. } => "jump: indirect",
+                Control::Return { .. } => "return",
+                _ => continue,
+            };
+            *n.entry(what).or_default() += 1;
+        }
+    }
+    println!("owners {}, function entries {}", owners.len(), functions.len());
+    for (k, v) in &n {
+        println!("{v:>8} {k}");
+    }
+    assert!(!n.is_empty());
+}
+
 /// Every width the emitter loads and stores (1, 2, 4, 8, 10 and 16 bytes),
 /// at every alignment near both ends of a page, across a page boundary
 /// into RAM and into nothing, from and to unmapped, read-only and MMIO
