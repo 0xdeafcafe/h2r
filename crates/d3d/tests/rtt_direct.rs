@@ -534,6 +534,44 @@ fn lazily_only_reads_of_the_level_write_it_back() {
     assert_eq!(d.stats().rtt_writebacks, 4);
 }
 
+/// Asked again about the same texture with nothing changed, a wait
+/// writes nothing back (the device remembers the answer); a draw into the
+/// level, or the texture's header moved over a dirty level, asks again.
+#[test]
+fn repeated_waits_write_back_only_after_a_change() {
+    let (mut d, mut m, surf) = recorded();
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 1);
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+    d.resource_busy(&mut m, TEX_HEADER).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 1);
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 2);
+    // A header past the level, asked about while the level is dirty;
+    // then rewritten in place over the level's second row.
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let other = MISC + 0x7340;
+    let header = |m: &mut SparseMemory, data: u32| {
+        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 3, 64, data)
+            .write(m, other)
+            .unwrap();
+    };
+    header(&mut m, TEX_DATA + 256);
+    d.block_on_resource(&mut m, other).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 2);
+    header(&mut m, TEX_DATA + 64);
+    d.block_on_resource(&mut m, other).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 3);
+}
+
 /// A store made while a depth/stencil level is bound is overwritten when
 /// the target changes, just like a store into the active colour target.
 fn active_depth_store<B: d3d::Backend>(backend: B, lazy: bool) -> Vec<u8> {

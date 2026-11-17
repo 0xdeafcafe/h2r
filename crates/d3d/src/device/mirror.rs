@@ -74,6 +74,12 @@ pub(crate) struct AliasMirror {
     /// Write-tracker generation of the oldest take still holding newer
     /// bytes (pages written after it may hold guest stores).
     since: u64,
+    /// Bumped whenever bytes of `newer` are set (only those can make
+    /// `stored` bytes 1 too).
+    marked: u64,
+    /// The span `mirror_supersede` last zeroed and `marked`
+    /// then: while both match, it is still all zeros.
+    superseded: Option<(usize, usize, u64)>,
 }
 
 impl AliasMirror {
@@ -230,6 +236,8 @@ impl<B: Backend> Device<B> {
             stored: vec![0; n],
             stored_any: false,
             since: self.tracker.generation(),
+            marked: 0,
+            superseded: None,
         });
         Ok(true)
     }
@@ -315,6 +323,7 @@ impl<B: Backend> Device<B> {
                 m.since = generation;
             }
             m.newer[i..j].fill(1);
+            m.marked += 1;
             m.stored[i..j].fill(0);
             m.synced[i..j].copy_from_slice(&bytes);
             let hash = if self.cfg.upload == UploadPolicy::Verify {
@@ -487,8 +496,14 @@ impl<B: Backend> Device<B> {
             return;
         };
         if let Some((i, j)) = m.span(range(t).0, range(t).1) {
+            // Every draw into a level lands here: the span zeroed by the
+            // draw before stays zero until a take marks bytes newer.
+            if m.superseded == Some((i, j, m.marked)) {
+                return;
+            }
             m.newer[i..j].fill(0);
             m.stored[i..j].fill(0);
+            m.superseded = Some((i, j, m.marked));
         }
     }
 

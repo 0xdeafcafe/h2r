@@ -48,6 +48,11 @@ const HOME: u32 = CODE + 0xe00;
 const HOME_B: u32 = CODE + 0xe80;
 const LOOP: u32 = CODE + 0xf00;
 const LOOP_B: u32 = CODE + 0xf80;
+// The second page.
+const IND: u32 = CODE + 0x1000;
+const CL: u32 = CODE + 0x1100;
+/// Shares NEST_B's slot in a table of 256, not in one of 4096.
+const COLL: u32 = CODE + 0x1213;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -125,6 +130,37 @@ fn log(a: &mut CodeAssembler, marker: u32) -> Result<(), IcedError> {
 
 fn funcs() -> Vec<IrFunction> {
     vec![
+        // Calls of two entries that share a slot in the smallest table.
+        function(CL, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            a.call(NEST_B as u64)?;
+            a.call(COLL as u64)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
+        function(COLL, |a| {
+            log(a, 32)?;
+            a.ret()
+        }),
+        // Calls through a register, to a caller of its own and to a leaf
+        // (O, which the override scenario overrides), in a loop.
+        function(IND, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            log(a, 30)?;
+            a.mov(eax, NEST_B)?;
+            a.call(eax)?;
+            log(a, 31)?;
+            a.mov(eax, O)?;
+            a.call(eax)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
         // Nested calls, a stdcall callee among them, in a loop.
         function(NEST, |a| {
             let mut l = a.create_label();
@@ -476,7 +512,7 @@ struct Machine {
 impl Machine {
     fn new(mode: Mode) -> Machine {
         let mut mem = Guest::new();
-        mem.map_zeroed(CODE, 4096, Permissions::RX).unwrap();
+        mem.map_zeroed(CODE, 8192, Permissions::RX).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
@@ -592,6 +628,53 @@ fn nested_calls_and_a_stdcall_callee() {
     });
     // 3 trips: A->B, B->C and both returns, all direct on the second run.
     assert_eq!(direct_count(NEST, None), 12);
+}
+
+/// Calls through a register (`H2_ICALL`): with `H2_INDIRECT_CALLS=1` the
+/// warm run finds both targets in their slots and calls them directly, and
+/// every mode still ends the same; an override on one target between runs
+/// stops its calls going direct, and disabling it lets them again.
+#[test]
+fn indirect_calls() {
+    let calls = Arc::new(AtomicU32::new(0));
+    agree("indirect", |m| {
+        let mut out = run_twice(IND)(m);
+        let seen = calls.clone();
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.register_override(O, "test override", move |cpu, ctx, _| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                cpu.ebx = cpu.ebx.wrapping_add(0x100);
+                ctx.memory().ret(cpu, 0)
+            })
+        });
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND)));
+        m.ctx.runtime().edit_dispatch(|d| d.set_enabled(O, false));
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND)));
+        out
+    });
+    assert_eq!(calls.load(Ordering::Relaxed), 3 * MODES.len() as u32);
+    // 3 trips: NEST_B's call of NEST_C and its return are direct either
+    // way; with the switch, IND's two calls and their returns too.
+    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() == Ok("1");
+    assert_eq!(direct_count(IND, None), if on { 18 } else { 6 });
+}
+
+/// Two callees in one slot (`H2_DIRECT_SLOTS`, runtime environment): with
+/// 256 slots each call finds the other's entry there and goes through the
+/// runner, which takes the slot back; with 4096 or more both stay. Every
+/// mode ends the same either way.
+#[test]
+fn callees_sharing_a_slot() {
+    let n = (CL ^ (CL >> 8), NEST_B ^ (NEST_B >> 8), COLL ^ (COLL >> 8));
+    assert_eq!(n.1 & 255, n.2 & 255);
+    assert_ne!(n.1 & 4095, n.2 & 4095);
+    agree("shared slot", run_twice(CL));
+    let slots: u32 = std::env::var("H2_DIRECT_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    // 3 trips: NEST_B's call of NEST_C and its return always; with room,
+    // CL's two calls and their returns too.
+    assert_eq!(direct_count(CL, None), if slots >= 4096 { 18 } else { 6 });
 }
 
 #[test]
@@ -765,7 +848,7 @@ fn every_transfer_limit() {
 /// same end.
 #[test]
 fn a_preempt_request_at_every_access() {
-    for entry in [NEST, TAIL, REC] {
+    for entry in [NEST, TAIL, REC, IND] {
         for slice in 1..60u64 {
             agree(&format!("{entry:#x} slice {slice}"), |m| {
                 let warm = {
@@ -946,9 +1029,15 @@ fn a_direct_callee_borrows_its_callers_view() {
     // only A acquires, and B and C borrow, each still with its own
     // accesses to charge on the way out (the exit call that is left).
     assert_eq!((old_on[0], old_on[1], old_on[3]), (7, 7, 0), "{old_on:?}");
-    assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
-    // The charges before each direct call are the same.
-    assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    if std::env::var("H2_DIRECT_COUNT").as_deref() == Ok("1") {
+        // The count goes with the view and comes back: A charges the lot
+        // in its one exit, and no handler charges before a call.
+        assert_eq!(on, [1, 0, 0, 1], "{on:?}");
+    } else {
+        assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
+        // The charges before each direct call are the same.
+        assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    }
     // A call that falls back to the runner lends nothing: its callee
     // acquires, as through the runner. Past a cap of 0 that is every call,
     // as with direct calls disabled; past a cap of 1, B's calls of C.

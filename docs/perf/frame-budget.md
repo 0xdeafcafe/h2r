@@ -966,6 +966,50 @@ place needs mapped ring buffers (`MAP_WRITE` on a vertex or uniform
 buffer is `MAPPABLE_PRIMARY_BUFFERS`, and each needs its own map/unmap
 cycle across submissions); left for a later round.
 
+### Game-thread D3D work (2026-11-17, fourth round)
+
+After round 3 the game thread is the limit: 23.8 ms CPU a frame at 1000
+draws, 29.9 at 2000. In a 29.9k-sample profile of the main thread at
+2000 draws (about one sample per microsecond of a frame) `Device` is
+about 5.4k. Cut, with the backend call streams unchanged:
+
+| what | samples | change |
+|---|---|---|
+| `flush_for_texture` per sampled texture | ~250 of 329 | the answer per texture is kept with its header words and an epoch the render-to-texture targets bump when one is added, removed or becomes dirty; while both match, only the mirror flush runs |
+| `ThreadedBackend::draw_owned` malloc | 127 | the render thread hands emptied draw boxes back once per batch; the next draws fill them |
+| `mirror_supersede` `_bzero` | 85 | every draw into a level zeroed the mirror's per-byte state over the whole level; the span zeroed last stays zero until a take marks bytes newer, so a repeat is skipped |
+| `GuestAdapter::read_u32` `memmove` | 79 | a fixed-size read, a load on the guest's fast path |
+| `DrawStats::add` | ~60 of 99 | `boot`'s draw diagnostics (on in `h2 play` as well as headless) count into Fx maps instead of SipHash ones |
+
+About 600 samples, ~0.6 ms a frame at 2000 draws (2% of the game
+thread). Left: `GfxJudge` (308: the program key the render thread
+builds again, then a hash lookup comparing whole keys), `submit_inner`
+itself (388), `drain`'s push-buffer decode and `Immediate::apply`
+(~210), `read_stream` and `vertex_setup` (~360 self).
+
+Fifth round, same profile:
+
+- `submit_inner`'s own time is mostly `shader_inputs`, inlined: per
+  draw it converted all 192 constant registers into a fresh 3 KiB block
+  and boxed the 60-word PSDEF and the 57 combiner words (two more small
+  allocations, freed on the render thread). `ShaderInputs` now holds
+  them in `Arc`s: the constant block is shared until a register is
+  written (a generation every constant write bumps, push-buffer methods
+  included), and the PSDEF and combiner words are shared while they
+  read the same as the draw before. Recorded draws compare equal as
+  before; the blocks are only shared.
+- `GfxJudge` is about 150 ns a draw (key build ~70, lookup with a whole
+  key compare ~55, hash ~15). A memo by state would need the same
+  comparisons: an API draw's state words are a fresh `Arc` per draw, so
+  there is no cheap generation covering every input `program_key` reads.
+  Left as it is.
+- `decode_one_into` and `Immediate::apply` are already a header decode
+  and one `match`; the 4-byte reads they make went through `memmove`
+  until round 4's `read_u32`. Left as they are.
+- `DrawStats` is read by the run report printed at exit (`h2 play`
+  included) and by `H2_BOOT_GFX_SHADOWS`'s shadow-frame screenshots, so
+  it is not diagnostics-only; round 4 made it Fx maps. Left on.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split
