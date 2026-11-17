@@ -307,3 +307,44 @@ fn skipped_cutscenes_on_every_level() {
         }
     }
 }
+
+/// Halo 1's `sound_impulse_time` becomes Halo 2's
+/// `sound_impulse_language_time`: one sound argument, a number back, and
+/// the evaluator at `0x2a9fe0` that returns the ticks a playing impulse
+/// has left (`0x18a240`). Stubbed, every wait on a line of dialogue ended
+/// at once.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn sound_impulse_time_waits_on_the_playing_sound() {
+    use h1scripts::translate::{Kind, Table};
+    let (catalog, _) = h1();
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let t = table
+        .builtins
+        .iter()
+        .find(|t| t.name == "sound_impulse_time")
+        .unwrap();
+    assert_ne!(t.kind, Kind::Missing, "{:?}", t.reason);
+    let (name, b) = t.target.as_ref().unwrap();
+    assert_eq!(name, "sound_impulse_language_time");
+    let c = h2_catalog();
+    let f = c.function(b.index).unwrap();
+    let types: Vec<_> = f
+        .parameters()
+        .iter()
+        .map(|&p| c.type_name(p).unwrap())
+        .collect();
+    println!(
+        "{} -> {name}: index {}, evaluator {:#x}, ({}) -> {}, {:?} {:?}",
+        t.name,
+        b.index,
+        f.evaluate(),
+        types.join(" "),
+        c.type_name(f.return_type()).unwrap(),
+        t.kind,
+        t.adapter
+    );
+    assert_eq!(f.evaluate(), 0x002a_9fe0);
+    assert_eq!(types, ["sound"]);
+}

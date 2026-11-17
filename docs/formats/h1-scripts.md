@@ -121,8 +121,18 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
 - **Renamed** (`RENAMES`): `ai_magically_see_encounter` → `ai_magically_see`,
   `game_save_totally_unsafe` → `game_save_immediate`, `ai_exit_vehicle` →
   `ai_vehicle_exit`, `object_pvs_set_object` → `pvs_set_object`,
-  `object_pvs_clear` → `pvs_clear` (and `ai_attach` → `ai_attach_units`,
-  which is also a cast, so it counts as an adapter).
+  `object_pvs_clear` → `pvs_clear`, `sound_impulse_time` →
+  `sound_impulse_language_time` (and `ai_attach` → `ai_attach_units`,
+  which is also a cast, so it counts as an adapter). Both impulse times
+  are the ticks a playing impulse sound has left, 0 once it ends: a10
+  waits `(sleep (sound_impulse_time line))` after a line and
+  `(sleep_until (= 0 (sound_impulse_time line)))` for one to finish.
+  **E:** Halo 2's evaluator `0x002a9fe0` (builtin 602, `(sound) -> long`)
+  finds the sound among the 16 script impulses (`0x0018a240`) and returns
+  its permutation's length less the time played, times 30. Stubbed (to
+  converter version 16) every such wait ended at once, so a level's
+  dialogue played over itself. `sound_impulse_time_waits_on_the_playing_sound`
+  checks the mapping on the discs.
 - **Adapter**: `Coerce` when the arity matches but types differ (argument
   nodes take Halo 2's parameter types and Halo 2's interpreter casts; a
   marker-name string becomes a `string_id` literal; a string the
@@ -160,7 +170,7 @@ Coverage, share of builtin calls (`translation_coverage`):
 Missing builtins by calls across the campaign (top 40 of 139; 3,882 calls in
 all; the test prints the full list with signatures):
 
-sound_impulse_time 493, ai_magically_see_players 180, ai_conversation 169,
+sound_impulse_time 493 (now renamed, above), ai_magically_see_players 180, ai_conversation 169,
 ai_command_list 150, ai_go_to_vehicle 143, recording_play 141,
 ai_command_list_by_unit 136, show_hud_help_text 125, recording_time 96,
 object_beautify 93, ai_follow_target_players 93, ai_spawn_actor 82,
@@ -182,7 +192,7 @@ the Halo 1 HUD help and objective text, encounter-level AI control
 `ai_link_activation`), unit doors and seats (`unit_open`, `unit_close`,
 `unit_set_seat`, `unit_enter_vehicle`, `unit_suspended`), and
 `sound_impulse_time`, which a script waits on after almost every line of
-dialogue and is the first VM candidate.
+dialogue (since mapped to `sound_impulse_language_time`).
 
 ## Step 3: compile
 

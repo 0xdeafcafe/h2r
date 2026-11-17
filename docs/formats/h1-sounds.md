@@ -169,8 +169,18 @@ What a converted sound adds (Design, checked by read-back):
   converter writes the first form: one fresh byte of block 7 per eight
   permutations.
 - Per playable Halo 1 permutation, one Halo 2 permutation: name, skip
-  fraction (× 32767, Design), gain (dB), its index in the range, size, and
-  its chunks.
+  fraction (× 32767, Design), gain (dB), its index in the range, `+6` its
+  length in milliseconds (`u16`, saturating), size, and its chunks.
+  `+6` is the "language neutral time". **V (retail):** 03a's dialogue
+  (classes 19 and 45 to 48) has it on every permutation, at least the
+  line's own length and mostly equal; every other class leaves it 0.
+  **E:** `0x00218c60` returns it as a playing impulse's length (×0.001,
+  seconds) when `0x0020b3c0` finds a campaign game (`[[0x4e6948]+8] == 1`)
+  with the byte at options `+0x134` set; otherwise `0x00218ca0` works the
+  length out from the size. Scripts read that length through
+  `sound_impulse_language_time` (`0x002a9fe0` → `0x0018a240`: the ticks
+  left of the sound among the 16 script impulses). A converted sound
+  with `+6 = 0` would read as already over.
 - Chunks: the samples as stored, cut every `0x7ff8` bytes (retail Halo 2's
   streaming chunk size, a whole number of mono and stereo blocks), each a
   raw resource of the map. Bit 31 of a chunk's size is never set. **V
@@ -251,6 +261,26 @@ matches; the base's own sounds still resolve to the same chunks.
 |---|---|---|---|---|
 | beavercreek, every sound | 316 | 902 | 21,532,928 | 837.7 s |
 | a30 dialogue (classes 19, 44, 46, 47; every 4th) | 257 | 1,283 | 36,806,272 | 1,669.2 s |
+
+### Every sound of a built map (`h1sounds::audit`)
+
+`audit(built, h1, retail)` follows every `snd!` of a built map through
+its gestalt as the engine does and checks it plays what it was made
+from: indices inside their blocks, no pitch range without permutations
+and no permutation without chunks, sizes the sum of their chunks and
+whole blocks, chunks inside the file. A sound named as a Halo 1 sound
+must have the header, playback, scale, permutation elements and bytes
+`convert_sound` makes (so it plays as long as in Halo 1); any other must
+be byte for byte the same-named sound of the base or a donor. A sound
+pointing at the wrong or too few bytes plays as a short repeating buzz.
+
+`every_campaign_sound_plays_what_it_was_made_from` (h1campaign,
+`H1_LEVELS`, default a10) and `every_multiplayer_sound_plays_what_it_was_made_from`
+(h1convert, `H1_MAPS`, default bloodgulch) run it on converted maps.
+**V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
+Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no
+problem. The bytes were never the fault behind a10's "repeated
+wurrrring" (`docs/game/campaigns.md`, Sounds).
 
 ## Merging a moved sound (`h1sounds::merge_sound`)
 

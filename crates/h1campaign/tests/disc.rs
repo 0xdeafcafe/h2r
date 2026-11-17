@@ -1199,3 +1199,84 @@ fn every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them() {
     assert!(levels > 0);
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+/// Every sound of a converted campaign level (`H1_LEVELS`, default a10)
+/// read back through the gestalt as the engine plays it
+/// (`h1sounds::audit`): Halo 1 sounds (the scripts' dialogue and effects)
+/// hold exactly their Halo 1 samples, as long as they played there, and
+/// every other sound is byte for byte the base's or a donor's of the same
+/// name. A sound pointing at the wrong or too few bytes plays as a short
+/// repeating buzz.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_campaign_sound_plays_what_it_was_made_from() {
+    let s = scripting();
+    let donors = donors();
+    let levels = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
+    let mut failed = Vec::new();
+    for level in levels.split(',') {
+        let h1 = h1_level(level);
+        let base_name = h1campaign::base_for(level);
+        let base_bytes = h2_bytes(base_name);
+        let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
+        let opts = Options {
+            scripts: Some(&s),
+            sounds: 1000,
+            donors: Some(&donors),
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let mut retail: Vec<(&str, &[u8])> = vec![(base_name, &base_bytes)];
+        retail.extend(donors.maps.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
+        let a = h1sounds::audit::audit(&done.bytes, Some(&h1), &retail).unwrap();
+        println!(
+            "{level} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
+             {} unmatched {:?}",
+            a.sounds,
+            a.converted,
+            a.converted_seconds,
+            a.retail,
+            a.permutations,
+            a.unmatched.len(),
+            &a.unmatched[..a.unmatched.len().min(10)]
+        );
+        for p in &a.problems {
+            println!("  {p}");
+        }
+        if !a.problems.is_empty() || !a.unmatched.is_empty() {
+            failed.push(format!(
+                "{level}: {} problems, {} unmatched",
+                a.problems.len(),
+                a.unmatched.len()
+            ));
+        }
+        // Lifepods stand on the pelican and keep none of its looping
+        // sounds (`h1objects::convert::QUIET_STAND_INS`).
+        let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+        let mem = map_memory(&mut m);
+        let word = |a: u32| u32::from_le_bytes(mem.slice(a, 4).unwrap().try_into().unwrap());
+        let (at, stride) = (
+            h1objects::convert::h2::ATTACHMENTS as u32,
+            h1objects::convert::h2::ATTACHMENT as u32,
+        );
+        let mut pods = 0;
+        for t in m.tags().iter().filter(|t| t.group == FourCC(*b"vehi")) {
+            let name = t.name.clone().unwrap_or_default();
+            if !h1objects::convert::quiet_stand_in(&name) {
+                continue;
+            }
+            pods += 1;
+            let a = t.location.unwrap().address;
+            let (n, first) = (word(a + at), word(a + at + 4));
+            let loops = (0..n)
+                .filter(|i| word(first + i * stride) == u32::from_be_bytes(*b"lsnd"))
+                .count();
+            println!("  {name}: {n} attachments, {loops} looping sounds");
+            if loops > 0 {
+                failed.push(format!("{level}: {name} loops {loops} sounds"));
+            }
+        }
+        println!("  {pods} lifepods");
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}

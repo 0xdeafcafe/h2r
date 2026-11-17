@@ -8,7 +8,7 @@ use map::{CacheType, FourCC, Map, TagId};
 
 use crate::Converted;
 use crate::coll::{convert_collision, sid_name};
-use crate::convert::{Tree, local, template_for};
+use crate::convert::{Tree, local, quiet_stand_in, template_for};
 use crate::h1::{CollNode, CollRegion, Collision, Sphere};
 
 fn one_bsp() -> CollisionBsp {
@@ -53,6 +53,25 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
     assert!(t(b"bipd", "characters\\anything").contains("masterchief"));
     assert_eq!(t(b"proj", "weapons\\assault rifle\\bullet"), "-");
     assert_eq!(sid_name(" Front Left-Tire "), "front_left_tire");
+}
+
+#[test]
+fn lifepods_alone_drop_their_template_s_looping_sounds() {
+    for p in [
+        "vehicles\\lifepod\\lifepod",
+        "vehicles\\lifepod_docked\\lifepod_docked",
+        "scenery\\vehicles\\lifepod_atmosphere_entry\\lifepod_atmosphere_entry",
+    ] {
+        assert!(quiet_stand_in(p), "{p}");
+        assert!(template_for(b"vehi", p).unwrap().ends_with("\\pelican"));
+    }
+    for p in [
+        "vehicles\\pelican\\pelican_astral",
+        "vehicles\\warthog\\warthog",
+        "vehicles\\ghost\\ghost_mp",
+    ] {
+        assert!(!quiet_stand_in(p), "{p}");
+    }
 }
 
 #[test]
