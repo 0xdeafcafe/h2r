@@ -62,6 +62,7 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod video_screen;
+pub mod snapshot_probe;
 pub mod sse;
 pub mod sweep_diag;
 pub mod touch_glue;
@@ -1018,6 +1019,9 @@ pub fn run_hosted_with_live(
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
         custom_games::set_coop_row(on);
     }
+    // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
+    // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
+    let mut snapshot_probe = snapshot_probe::Probe::from_env(&mut features)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
@@ -1083,6 +1087,17 @@ pub fn run_hosted_with_live(
     let mut audio_idle = 0u64;
     // H2_AUDIO_STATS=1: a line of audio health every few seconds.
     let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
+    if let Some(p) = &mut snapshot_probe {
+        let installed: [(&'static str, bool); 6] = [
+            ("d3d", d3d_calls.is_some()),
+            ("dsound", ds.is_some()),
+            ("xapi", xa.is_some()),
+            ("bink", opts.bink),
+            ("live", _live.is_some()),
+            ("lockstep", harness.is_some()),
+        ];
+        p.set_host(installed.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect());
+    }
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
@@ -1178,6 +1193,9 @@ pub fn run_hosted_with_live(
         if let Some(a) = &agent {
             a.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        if let Some(p) = &mut snapshot_probe {
+            p.after_slice(&m, &plan);
+        }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
             && audio_errors.len() < 8
@@ -1196,6 +1214,9 @@ pub fn run_hosted_with_live(
     }
     if let Some(a) = &ds {
         a.output.halt();
+    }
+    if let Some(p) = &snapshot_probe {
+        p.finish();
     }
     // H2_PGO=gen: the run is over (a present count, the slice limit, the
     // host); the training profile is complete.

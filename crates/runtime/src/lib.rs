@@ -31,6 +31,7 @@ pub mod tsc;
 pub mod watch;
 
 pub use abi::{GuestFn, TransferAbi};
+pub use continuation::ContinuationInfo;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
