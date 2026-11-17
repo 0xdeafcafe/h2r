@@ -75,7 +75,9 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// from the environment, plus the optional paths. `H2_PERF` is off unless
 /// set to `1`; the inline RAM path (`H2_FASTMEM`), native x87
 /// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), and direct calls between
-/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`.
+/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`; store
+/// sites testing the dirty bit before marking a page (`H2_DIRTY_INLINE`,
+/// `h2fastmem.h`) is off unless set to `1`.
 pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -86,6 +88,7 @@ pub fn cflags() -> Result<Vec<String>, Error> {
         ("H2_X87_NATIVE", true),
         ("H2_SSE_NATIVE", true),
         ("H2_DIRECT_CALLS", true),
+        ("H2_DIRTY_INLINE", false),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -1247,6 +1250,8 @@ mod tests {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }
+        let inline = std::env::var("H2_DIRTY_INLINE").as_deref() == Ok("1");
+        assert_eq!(flags.contains(&"-DH2_DIRTY_INLINE=1".to_string()), inline);
     }
 
     #[test]

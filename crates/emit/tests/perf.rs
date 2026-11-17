@@ -1330,3 +1330,73 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
         assert!(!dirty.is_empty(), "accounting {accounting}: the stores after the drain were not marked");
     }
 }
+
+/// What `H2_DIRTY_INLINE=1` costs in code: every 16th owner of the lifted
+/// image, emitted and compiled at -O2 with the inline RAM path, with and
+/// without the switch, and the `__text` bytes of both (only objects under
+/// Cargo's scratch directory; nothing is linked).
+/// `cargo test -p emit --release --test perf image_dirty_inline_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_dirty_inline_code_size() {
+    let Some(path) = common::xbe_path() else {
+        common::skip("image_dirty_inline_code_size", "no XBE (set H2_XBE)");
+        return;
+    };
+    let Some(header) = common::abi_header() else {
+        common::skip("image_dirty_inline_code_size", "no h2abi.h");
+        return;
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = xbe::Xbe::parse(&data).unwrap();
+    let analysis = analyze::analyze(&x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let sample: Vec<_> = owners.into_iter().step_by(16).collect();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("dirty-inline-size");
+    let src = dir.join("src");
+    let _ = std::fs::remove_dir_all(&dir);
+    emit::write_module_with(&sample, &src, emit::Codegen::default()).unwrap();
+    emit::compile::install_header(&src, &header).unwrap();
+    let cc = emit::compile::compiler().unwrap();
+    let mut sources: Vec<_> = std::fs::read_dir(&src)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    sources.sort();
+    // The __text section's size of a Mach-O object, from `size -m`.
+    let text = |obj: &std::path::Path| -> u64 {
+        let out = std::process::Command::new("size").arg("-m").arg(obj).output().unwrap();
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines()
+            .find_map(|l| l.trim().strip_prefix("Section (__TEXT, __text): "))
+            .map_or(0, |n| n.trim().parse().unwrap())
+    };
+    let mut sizes = [0u64; 2];
+    for (i, inline) in [false, true].into_iter().enumerate() {
+        let objs = dir.join(format!("obj-{inline}"));
+        std::fs::create_dir_all(&objs).unwrap();
+        for s in &sources {
+            let obj = objs.join(s.file_stem().unwrap()).with_extension("o");
+            let mut c = std::process::Command::new(&cc);
+            c.args(emit::compile::CFLAGS);
+            c.args(["-O2", "-DH2_FASTMEM=1", "-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1", "-DH2_DIRECT_CALLS=1"]);
+            if inline {
+                c.arg("-DH2_DIRTY_INLINE=1");
+            }
+            let status = c.arg("-c").arg("-I").arg(&src).arg(s).arg("-o").arg(&obj).status().unwrap();
+            assert!(status.success(), "{}", s.display());
+            sizes[i] += text(&obj);
+        }
+    }
+    println!(
+        "{} of the image's owners in {} files: __text {} bytes, {} with H2_DIRTY_INLINE ({:+.2}%)",
+        sample.len(),
+        sources.len(),
+        sizes[0],
+        sizes[1],
+        100.0 * (sizes[1] as f64 - sizes[0] as f64) / sizes[0] as f64
+    );
+    assert!(sizes[0] > 0);
+}
