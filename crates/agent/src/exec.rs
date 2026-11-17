@@ -9,16 +9,17 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
 use crate::tap::{self as input, AgentTap, Chain, Input};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agent_proto::{
-    At, Boundary, ClearParams, CountParams, Counters, Counts, Event, EventKind, Features, GroupBy,
-    InputStatus, InputStopped, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams,
-    ObjectResult, PROTOCOL, PadParams, Padded, PauseParams, Phase, QueryParams, QueryResult,
-    RecordParams, ReplayParams, Request, Response, RpcError, Status, StepParams, SubscribeParams,
-    Until, WaitParams, Waited, code, method,
+    At, Boundary, Capture, CaptureParams, ClearParams, CountParams, Counters, Counts, Event,
+    EventKind, Features, GroupBy, InputStatus, InputStopped, Kind, Notification, OBJECT_FIELDS,
+    Object, ObjectId, ObjectParams, ObjectResult, PROTOCOL, PadParams, Padded, PauseParams, Phase,
+    QueryParams, QueryResult, RecordParams, ReplayParams, Request, Response, RpcError, Sampling,
+    Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -91,6 +92,28 @@ struct State {
     input: Arc<Mutex<Input>>,
     /// Where input logs (and captures) go; the cache directory unless set.
     dir: Option<PathBuf>,
+    /// The `profile.capture` running.
+    capture: Option<Capturing>,
+    /// Frame stats (`timeline::phase` unless a test sets one).
+    frames: Option<Box<dyn FrameSource>>,
+    /// A sampling profiler, when the game was built with one.
+    sampler: Option<Box<dyn Sampler>>,
+}
+
+/// A `profile.capture` waiting for its window to pass.
+struct Capturing {
+    conn: ConnId,
+    id: Value,
+    from_ticks: u64,
+    tick_limit: Option<u64>,
+    deadline: Instant,
+    budget_ms: f64,
+    spikes: usize,
+    marks: Vec<TickMark>,
+    /// Files are named after this.
+    stem: String,
+    /// `None`: not asked for; `Err`: why not.
+    sampling: Option<Result<(), String>>,
 }
 
 struct Conn {
@@ -260,6 +283,12 @@ impl Agent {
                 Response::err(w.id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
             );
         }
+        if let Some(c) = s.cancel_capture() {
+            s.send(
+                c.conn,
+                Response::err(c.id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
+            );
+        }
         drop(s);
         self.shared.wake.notify_all();
     }
@@ -275,6 +304,16 @@ impl Agent {
     /// directory, `agent_proto::cache_dir`).
     pub fn set_dir(&self, dir: PathBuf) {
         self.lock().dir = Some(dir);
+    }
+
+    /// Where frames for `profile.capture` come from (tests).
+    pub fn set_frame_source(&self, frames: Box<dyn FrameSource>) {
+        self.lock().frames = Some(frames);
+    }
+
+    /// The sampling profiler `profile.capture {"sample": true}` runs.
+    pub fn set_sampler(&self, sampler: Box<dyn Sampler>) {
+        self.lock().sampler = Some(sampler);
     }
 
     pub fn is_paused(&self) -> bool {
@@ -302,8 +341,10 @@ impl Agent {
             Some(left) => s.stepping = Some(left - 1),
             None => {}
         }
+        s.mark_tick();
         s.serve(reader, Where::Tick);
         s.settle_waits();
+        s.settle_capture();
         while let Some(until) = s.paused {
             if s.shutdown {
                 break;
@@ -321,6 +362,7 @@ impl Agent {
                 .0;
             s.serve(reader, Where::Tick);
             s.settle_waits();
+            s.settle_capture();
         }
         if s.holding {
             s.holding = false;
@@ -343,6 +385,8 @@ impl Agent {
         if s.paused.is_some_and(|until| Instant::now() >= until) {
             s.resume("timeout");
         }
+        // A capture by time ends here too (the game may not be ticking).
+        s.settle_capture();
         // While ticking, the tick boundary does the reading; between
         // slices only queued requests that don't need a tick, and wall
         // clock timeouts. Once ticks stop (loading), read here, at most
@@ -520,6 +564,7 @@ impl State {
             .iter()
             .map(|(c, _)| *c)
             .chain(self.waits.iter().map(|w| w.conn))
+            .chain(self.capture.as_ref().map(|c| c.conn))
             .collect();
         let dead: BTreeSet<ConnId> = self
             .conns
@@ -533,6 +578,14 @@ impl State {
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
+        // A capture nobody will read is stopped.
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|c| !self.conns.contains_key(&c.conn))
+        {
+            self.cancel_capture();
+        }
         // Control never outlives its connection.
         if self
             .controller
@@ -752,6 +805,16 @@ impl State {
                 serde_json::json!({ "at": self.at(), "cleared": cleared })
             }),
             method::INPUT_STATUS => Ok(to_value(self.input_status())),
+            method::PROFILE_CAPTURE => {
+                let cp = match params::<CaptureParams>(p) {
+                    Ok(cp) => cp,
+                    Err(e) => return Some(Err(e)),
+                };
+                return match self.start_capture(conn, req.id?, cp) {
+                    Ok(()) => None,
+                    Err(e) => Some(Err(e)),
+                };
+            }
             method::INPUT_RECORD => params::<RecordParams>(p).and_then(|rp| self.record(rp)),
             method::INPUT_REPLAY => params::<ReplayParams>(p).and_then(|rp| self.replay(rp)),
             method::INPUT_STOP => self.stop_input().map(|ended| {
@@ -849,6 +912,157 @@ impl State {
                 Err(e)
             }
         }
+    }
+
+    fn frames(&mut self) -> &mut dyn FrameSource {
+        self.frames
+            .get_or_insert_with(|| Box::new(TimelineFrames))
+            .as_mut()
+    }
+
+    fn start_capture(&mut self, conn: ConnId, id: Value, p: CaptureParams) -> Result<(), RpcError> {
+        let bad = |m: String| Err(RpcError::new(code::INVALID_PARAMS, m));
+        let (tick_limit, window) = match (p.ticks, p.ms) {
+            (Some(t), None) if (1..=CaptureParams::MAX_TICKS).contains(&t) => (Some(t), WAIT_MAX),
+            (None, Some(ms)) if (1..=CaptureParams::MAX_MS).contains(&ms) => {
+                (None, Duration::from_millis(ms))
+            }
+            (Some(_), None) => {
+                return bad(format!("ticks must be 1 to {}", CaptureParams::MAX_TICKS));
+            }
+            (None, Some(_)) => return bad(format!("ms must be 1 to {}", CaptureParams::MAX_MS)),
+            _ => return bad("give ticks or ms (one of them)".into()),
+        };
+        let budget_ms = p.budget_ms.unwrap_or(CaptureParams::DEFAULT_BUDGET_MS);
+        if !(budget_ms.is_finite() && budget_ms > 0.0) {
+            return bad("budget_ms must be more than 0".into());
+        }
+        let spikes = p.spikes.unwrap_or(CaptureParams::DEFAULT_SPIKES);
+        if spikes > CaptureParams::MAX_SPIKES {
+            return bad(format!(
+                "spikes must be at most {}",
+                CaptureParams::MAX_SPIKES
+            ));
+        }
+        if self.capture.is_some() {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "a capture is already running; one at a time",
+            ));
+        }
+        if !self.frames().begin() {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "frame stats are off, so there is nothing to capture",
+            ));
+        }
+        let stem = format!(
+            "capture-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis())
+        );
+        let sampling = p.sample.then(|| match self.sampler.as_mut() {
+            None => {
+                Err("sampling needs an h2 built with --features perf; this one wasn't".to_owned())
+            }
+            Some(_) => {
+                let dir = self.dir().join("captures").join(format!("{stem}.profile"));
+                self.sampler.as_mut().unwrap().start(&dir)
+            }
+        });
+        self.capture = Some(Capturing {
+            conn,
+            id,
+            from_ticks: self.ticks,
+            tick_limit,
+            deadline: Instant::now() + window,
+            budget_ms,
+            spikes,
+            marks: vec![self.tick_mark()],
+            stem,
+            sampling,
+        });
+        Ok(())
+    }
+
+    fn tick_mark(&self) -> TickMark {
+        TickMark {
+            ns: timeline::now_ns(),
+            tick: self.game.tick,
+            map: self.game.map.clone(),
+        }
+    }
+
+    fn mark_tick(&mut self) {
+        if self.capture.is_some() {
+            let m = self.tick_mark();
+            if let Some(c) = self.capture.as_mut() {
+                c.marks.push(m);
+            }
+        }
+    }
+
+    /// Stops a capture without answering it; returns it so the caller can.
+    fn cancel_capture(&mut self) -> Option<Capturing> {
+        let c = self.capture.take()?;
+        self.frames().end();
+        if let (Some(Ok(())), Some(s)) = (&c.sampling, self.sampler.as_mut()) {
+            let _ = s.finish();
+        }
+        Some(c)
+    }
+
+    /// Answers the capture once its window has passed.
+    fn settle_capture(&mut self) {
+        let Some(c) = &self.capture else { return };
+        let by_ticks = c.tick_limit.is_some_and(|n| self.ticks - c.from_ticks >= n);
+        if !by_ticks && Instant::now() < c.deadline {
+            return;
+        }
+        let c = self.capture.take().expect("checked above");
+        let frames = self.frames().end().unwrap_or_default();
+        let sampling = c.sampling.map(|s| match s {
+            Err(e) => Sampling {
+                folded: None,
+                unavailable: Some(e),
+            },
+            Ok(()) => match self.sampler.as_mut().map(|s| s.finish()) {
+                Some(Ok(path)) => Sampling {
+                    folded: Some(path.display().to_string()),
+                    unavailable: None,
+                },
+                Some(Err(e)) => Sampling {
+                    folded: None,
+                    unavailable: Some(e),
+                },
+                None => Sampling {
+                    folded: None,
+                    unavailable: Some("the sampler went away".into()),
+                },
+            },
+        });
+        let stats = capture::summarise(&frames, &c.marks, c.budget_ms, c.spikes);
+        let csv = self.dir().join("captures").join(format!("{}.csv", c.stem));
+        let reply = match capture::write_csv(&csv, &frames, &c.marks) {
+            Ok(()) => Ok(to_value(Capture {
+                at: self.at(),
+                ticks: self.ticks - c.from_ticks,
+                complete: c.tick_limit.is_none() || by_ticks,
+                stats,
+                csv: csv.display().to_string(),
+                sampling,
+            })),
+            Err(e) => Err(RpcError::new(
+                code::UNAVAILABLE,
+                format!("writing {}: {e}", csv.display()),
+            )),
+        };
+        let r = match reply {
+            Ok(v) => Response::ok(c.id, v),
+            Err(e) => Response::err(c.id, e),
+        };
+        self.send(c.conn, r);
     }
 
     fn dir(&self) -> PathBuf {

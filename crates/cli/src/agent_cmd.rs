@@ -24,6 +24,9 @@ or a short form:
   query [JSON]           world.query, e.g. '{\"kind\":[\"actor\"],\"near\":{\"player\":0,\"radius\":20}}'
   object <id>            world.object, e.g. actor.e1230045
   counters               profile.counters (frame-stats window)
+  capture <N|Nms> [sample]  profile.capture over N game ticks or N ms: frame
+                         percentiles, phase totals, spikes over 33.3 ms, a CSV
+                         of every frame; `sample` adds perf's folded stacks
   features               features.list
   claim | release        take or give up control
   pause [max_ms]         session.pause (needs claim, so use it in a `-` script)
@@ -260,6 +263,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             method::INPUT_REPLAY,
             json!({ "name": arg.context("replay needs a name")? }),
         ),
+        "capture" => {
+            let n = arg.context("capture needs ticks (300) or milliseconds (5000ms)")?;
+            let mut p = match n.strip_suffix("ms") {
+                Some(ms) => json!({ "ms": number(Some(&ms.to_owned()), "capture")? }),
+                None => json!({ "ticks": number(Some(n), "capture")? }),
+            };
+            match words.get(2).map(String::as_str) {
+                None => {}
+                Some("sample") => p["sample"] = json!(true),
+                Some(other) => bail!("capture: unexpected {other} (only `sample`)"),
+            }
+            extra(3)?;
+            return Ok((method::PROFILE_CAPTURE.into(), p));
+        }
         "clear" => (
             method::INPUT_CLEAR,
             match arg {
@@ -356,6 +373,17 @@ mod tests {
             ("input.replay".into(), json!({"name": "fight"}))
         );
         assert_eq!(c("stop"), ("input.stop".into(), Value::Null));
+        assert_eq!(
+            c("capture 300"),
+            ("profile.capture".into(), json!({"ticks": 300}))
+        );
+        assert_eq!(
+            c("capture 5000ms sample"),
+            (
+                "profile.capture".into(),
+                json!({"ms": 5000, "sample": true})
+            )
+        );
     }
 
     #[test]
@@ -385,6 +413,9 @@ mod tests {
             "record",
             "record a twice",
             "replay",
+            "capture",
+            "capture soon",
+            "capture 30 loud",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

@@ -13,12 +13,14 @@
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
 
+mod capture;
 mod exec;
 mod reader;
 #[cfg(unix)]
 mod server;
 mod tap;
 
+pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{Agent, ConnId, Page, TICK_STALE, query};
 pub use reader::{
     GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,

@@ -52,6 +52,9 @@ impl AgentGlue {
             }
             Err(e) => anyhow::bail!("agent: {e}"),
         }
+        // profile.capture {"sample": true} runs perf's sampler.
+        #[cfg(feature = "perf")]
+        agent.set_sampler(Box::new(PerfSampler(None)));
         match xapi {
             Some(x) => {
                 let mut x = x.lock().unwrap_or_else(|e| e.into_inner());
@@ -91,6 +94,34 @@ impl AgentGlue {
     pub fn after_slice(&self, rt: &runtime::Runtime, presents: u64) {
         let mut reader = agent::GuestReader::new(|| rt.memory());
         self.agent.between_slices(&mut reader, presents);
+    }
+}
+
+/// `perf::Session` as the agent's sampler, started on the game thread
+/// (where `profile.capture` is answered).
+#[cfg(feature = "perf")]
+struct PerfSampler(Option<(perf::Session, PathBuf)>);
+
+#[cfg(feature = "perf")]
+impl agent::Sampler for PerfSampler {
+    fn start(&mut self, dir: &std::path::Path) -> std::result::Result<(), String> {
+        if self.0.is_some() {
+            return Err("a sampling session is already running".into());
+        }
+        let config = perf::SessionConfig {
+            profile: Some(dir.to_owned()),
+            ..Default::default()
+        };
+        let s = perf::Session::start(config).map_err(|e| format!("starting the sampler: {e}"))?;
+        self.0 = Some((s, dir.to_owned()));
+        Ok(())
+    }
+
+    fn finish(&mut self) -> std::result::Result<PathBuf, String> {
+        let (s, dir) = self.0.take().ok_or("no sampling session is running")?;
+        s.finish()
+            .map_err(|e| format!("writing the profile: {e}"))?;
+        Ok(dir.join("profile.folded"))
     }
 }
 

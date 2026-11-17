@@ -93,10 +93,6 @@ impl Input {
         self.queue.retain(|p| p.until > tick);
     }
 
-    pub fn clock(&self) -> u64 {
-        self.clock
-    }
-
     /// Drops every queued packet, or one player's.
     pub fn clear(&mut self, port: Option<u32>) -> usize {
         let before = self.queue.len();

@@ -53,12 +53,14 @@ dependencies = [
  "agent-proto",
  "engine",
  "feature",
+ "input",
  "live-proto",
  "live-telemetry",
  "runtime",
  "serde",
  "serde_json",
  "timeline",
+ "xapi",
 ]
 
 [[package]]

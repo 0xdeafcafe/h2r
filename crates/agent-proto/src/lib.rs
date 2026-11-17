@@ -66,6 +66,7 @@ pub mod method {
     pub const WORLD_QUERY: &str = "world.query";
     pub const WORLD_OBJECT: &str = "world.object";
     pub const PROFILE_COUNTERS: &str = "profile.counters";
+    pub const PROFILE_CAPTURE: &str = "profile.capture";
     pub const FEATURES: &str = "features.list";
     pub const INPUT_PAD: &str = "input.pad";
     pub const INPUT_CLEAR: &str = "input.clear";
@@ -89,6 +90,7 @@ pub mod method {
         WORLD_QUERY,
         WORLD_OBJECT,
         PROFILE_COUNTERS,
+        PROFILE_CAPTURE,
         FEATURES,
         INPUT_PAD,
         INPUT_CLEAR,
@@ -681,6 +683,129 @@ pub struct Counters {
     pub phase_ms: BTreeMap<String, f64>,
     /// Mean per frame of each counter (`draws`, `uploads`, …).
     pub counts: BTreeMap<String, f64>,
+}
+
+/// `profile.capture`: every frame over a window, by game ticks or wall
+/// time (one of them).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureParams {
+    /// Game ticks to capture (1 to 36000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u64>,
+    /// Milliseconds to capture (1 to 600000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// A frame longer than this is a spike (default 33.3, 30 fps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<f64>,
+    /// List at most this many spikes, worst first (default 20, at most
+    /// 500). `over_budget` counts them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spikes: Option<usize>,
+    /// Also run the sampling profiler over the window (an h2 built with
+    /// `--features perf` only).
+    #[serde(default)]
+    pub sample: bool,
+}
+
+impl CaptureParams {
+    pub const MAX_TICKS: u64 = 36_000;
+    pub const MAX_MS: u64 = 600_000;
+    pub const DEFAULT_BUDGET_MS: f64 = 33.3;
+    pub const DEFAULT_SPIKES: usize = 20;
+    pub const MAX_SPIKES: usize = 500;
+}
+
+/// Milliseconds per frame over a capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhaseStats {
+    pub mean: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub max: f64,
+    /// Summed over every frame.
+    pub total: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CountStats {
+    /// Per frame.
+    pub mean: f64,
+    pub max: u64,
+    pub total: u64,
+}
+
+/// A frame over the budget, with its own breakdown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Spike {
+    /// The present that ended it (frame stats count frames by present).
+    pub present: u64,
+    /// The game tick it fell in, and the map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// Wall time, and wall time less pacing.
+    pub ms: f64,
+    pub busy_ms: f64,
+    /// Each phase it spent time in, ms.
+    pub phases: BTreeMap<String, f64>,
+    /// Each counter it counted.
+    pub counts: BTreeMap<String, u64>,
+    /// Its biggest phases, biggest first (pacing left out).
+    pub top: Vec<String>,
+}
+
+/// What a capture's frames say.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureStats {
+    pub frames: usize,
+    pub wall_ms: f64,
+    pub fps: f64,
+    /// Whole-frame wall time.
+    pub frame_ms: PhaseStats,
+    /// Wall time less pacing: what frames cost.
+    pub busy_ms: PhaseStats,
+    /// Per phase (`cpu`, `decode`, `encode`, `submit`, `gpu-wait`, `pace`,
+    /// `render-wait`, `d3d`, and `render` when measured).
+    pub phases: BTreeMap<String, PhaseStats>,
+    /// Per counter (`draws`, `passes`, `uploads`, …).
+    pub counts: BTreeMap<String, CountStats>,
+    pub budget_ms: f64,
+    /// Frames over the budget; `spikes` lists the worst of them.
+    pub over_budget: usize,
+    pub spikes: Vec<Spike>,
+}
+
+/// The sampling profiler's part of a capture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sampling {
+    /// The folded stacks (`profile.folded`; `profile.txt` and
+    /// `profile.json` beside it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded: Option<String>,
+    /// Why there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Capture {
+    pub at: At,
+    /// Game ticks the window spanned.
+    pub ticks: u64,
+    /// False when a capture by ticks ran out of time (600 s) first.
+    pub complete: bool,
+    #[serde(flatten)]
+    pub stats: CaptureStats,
+    /// Every frame as a CSV row (present, end, tick, map, then each phase
+    /// in us and each counter).
+    pub csv: String,
+    /// Present when `sample` was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<Sampling>,
 }
 
 // ---- input ----

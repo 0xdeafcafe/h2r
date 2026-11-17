@@ -838,11 +838,11 @@ fn a_client_that_stops_reading_is_dropped() {
 
 /// One read of controller `handle` through the agent's tap, from a live
 /// pad that is all zeros.
-fn tap_read(t: &mut crate::AgentTap, handle: u32) -> input::gamepad::Gamepad {
+fn tap_read(t: &mut crate::AgentTap, handle: u32) -> ::input::gamepad::Gamepad {
     use xapi::tap::InputTap;
     let (mut status, mut p) = (0, [0; xapi::tap::PACKET]);
     t.read(handle, &mut status, &mut p);
-    input::gamepad::Gamepad::from_bytes(p[4..].try_into().unwrap())
+    ::input::gamepad::Gamepad::from_bytes(p[4..].try_into().unwrap())
 }
 
 #[test]
@@ -1043,4 +1043,197 @@ fn a_recording_left_running_is_written_when_the_game_exits() {
     let text = std::fs::read_to_string(dir.join("inputs/left.input")).unwrap();
     assert_eq!(xapi::tap::InputLog::parse(&text).unwrap().reads.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Frame stats in a jar: frames the test hands over as they "present".
+#[derive(Clone, Default)]
+struct Frames {
+    off: bool,
+    kept: Arc<Mutex<Option<Vec<timeline::phase::FrameSample>>>>,
+}
+
+impl Frames {
+    /// A frame of `ms` that ends now, `cpu` all of it.
+    fn present(&self, index: u64, ms: u64) {
+        let mut f = timeline::phase::FrameSample {
+            index,
+            end_ns: timeline::now_ns(),
+            total_ns: ms * 1_000_000,
+            ..Default::default()
+        };
+        f.phase_ns[timeline::phase::Phase::Guest as usize] = ms * 1_000_000;
+        f.counts[timeline::phase::Counter::Draws as usize] = ms * 10;
+        if let Some(v) = self.kept.lock().unwrap().as_mut() {
+            v.push(f);
+        }
+    }
+}
+
+impl FrameSource for Frames {
+    fn begin(&mut self) -> bool {
+        if self.off {
+            return false;
+        }
+        *self.kept.lock().unwrap() = Some(Vec::new());
+        true
+    }
+    fn end(&mut self) -> Option<Vec<timeline::phase::FrameSample>> {
+        self.kept.lock().unwrap().take()
+    }
+}
+
+struct FakeSampler(Arc<Mutex<Vec<String>>>);
+
+impl Sampler for FakeSampler {
+    fn start(&mut self, dir: &std::path::Path) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("start {}", dir.display()));
+        Ok(())
+    }
+    fn finish(&mut self) -> Result<PathBuf, String> {
+        self.0.lock().unwrap().push("finish".into());
+        Ok(PathBuf::from("/x/profile.folded"))
+    }
+}
+
+#[test]
+fn a_capture_by_ticks_reports_percentiles_spikes_with_their_tick_and_a_csv() {
+    let dir = scratch("capture");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let frames = Frames::default();
+    a.set_frame_source(Box::new(frames.clone()));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    ask(&a, c, 1, method::PROFILE_CAPTURE, json!({"ticks": 2}));
+    a.on_tick(&mut g); // starts at tick 100
+    frames.present(10, 48);
+    g.status.tick = Some(101);
+    a.on_tick(&mut g);
+    none(&rx);
+    frames.present(11, 16);
+    frames.present(12, 17);
+    g.status.tick = Some(102);
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    let r = &v["result"];
+    assert_eq!(r["frames"], 3, "{v}");
+    assert_eq!(r["ticks"], 2);
+    assert_eq!(r["complete"], true);
+    assert_eq!(r["frame_ms"]["max"], 48.0);
+    assert_eq!(r["frame_ms"]["p50"], 17.0);
+    assert_eq!(r["phases"]["cpu"]["total"], 81.0);
+    assert_eq!(r["counts"]["draws"]["max"], 480);
+    assert_eq!(r["over_budget"], 1);
+    let spike = &r["spikes"][0];
+    assert_eq!(spike["present"], 10);
+    assert_eq!(spike["tick"], 100);
+    assert_eq!(spike["map"], "03a_oldmombasa");
+    assert_eq!(spike["top"], json!(["cpu"]));
+    assert!(r.get("sampling").is_none(), "not asked for");
+    let csv = std::fs::read_to_string(r["csv"].as_str().unwrap()).unwrap();
+    assert_eq!(csv.lines().count(), 4);
+    assert!(csv.lines().nth(2).unwrap().starts_with("11,"));
+    assert!(csv.lines().nth(2).unwrap().contains(",101,03a_oldmombasa,"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_capture_by_time_settles_between_slices_and_samples_when_it_can() {
+    let dir = scratch("capture-ms");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let frames = Frames::default();
+    a.set_frame_source(Box::new(frames.clone()));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    // No sampler: the capture still runs, and says why there are no stacks.
+    ask(
+        &a,
+        c,
+        1,
+        method::PROFILE_CAPTURE,
+        json!({"ms": 1, "sample": true}),
+    );
+    a.between_slices(&mut g, 0);
+    thread::sleep(Duration::from_millis(5));
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["frames"], 0, "{v}");
+    assert!(
+        v["result"]["sampling"]["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("--features perf")
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    a.set_sampler(Box::new(FakeSampler(Arc::clone(&calls))));
+    ask(
+        &a,
+        c,
+        2,
+        method::PROFILE_CAPTURE,
+        json!({"ms": 1, "sample": true, "budget_ms": 10}),
+    );
+    a.between_slices(&mut g, 0);
+    frames.present(1, 12);
+    thread::sleep(Duration::from_millis(5));
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["sampling"]["folded"], "/x/profile.folded");
+    assert_eq!(v["result"]["over_budget"], 1);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].starts_with("start ") && calls[0].ends_with(".profile"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn captures_are_refused_when_badly_asked_busy_or_without_frame_stats() {
+    let a = Agent::new();
+    a.set_dir(scratch("capture-bad"));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.set_frame_source(Box::new(Frames {
+        off: true,
+        ..Default::default()
+    }));
+    ask(&a, c, 1, method::PROFILE_CAPTURE, json!({"ticks": 5}));
+    for (id, p) in [
+        (2, json!({})),
+        (3, json!({"ticks": 5, "ms": 5})),
+        (4, json!({"ticks": 0})),
+        (5, json!({"ms": 600_001})),
+        (6, json!({"ticks": 5, "budget_ms": 0})),
+        (7, json!({"ticks": 5, "spikes": 501})),
+    ] {
+        ask(&a, c, id, method::PROFILE_CAPTURE, p);
+    }
+    a.on_tick(&mut g);
+    assert_eq!(next(&rx)["error"]["code"], code::UNAVAILABLE);
+    for id in 2..=7 {
+        let v = next(&rx);
+        assert_eq!(
+            (v["id"].as_u64(), &v["error"]["code"]),
+            (Some(id), &json!(code::INVALID_PARAMS))
+        );
+    }
+    a.set_frame_source(Box::new(Frames::default()));
+    ask(&a, c, 8, method::PROFILE_CAPTURE, json!({"ticks": 50}));
+    ask(&a, c, 9, method::PROFILE_CAPTURE, json!({"ticks": 50}));
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(
+        (v["id"].as_u64(), &v["error"]["code"]),
+        (Some(9), &json!(code::UNAVAILABLE))
+    );
+    // The game exits: the running one is answered.
+    a.shutdown();
+    let v = next(&rx);
+    assert_eq!(
+        (v["id"].as_u64(), &v["error"]["code"]),
+        (Some(8), &json!(code::SHUTDOWN))
+    );
 }
