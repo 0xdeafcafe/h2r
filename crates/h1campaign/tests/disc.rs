@@ -827,7 +827,26 @@ fn a30_converts_onto_its_base_and_reads_back() {
             }
         }
         println!("sounds read back: {ours} converted, {} in all", ids.len());
-        assert_eq!(ours, r.sounds);
+        // The scripts' own sounds and the looping sounds' tracks.
+        assert!(ours >= r.sounds, "{ours} < {}", r.sounds);
+        // Each looping sound the scripts name is in the map under its
+        // Halo 1 name, or reported left out.
+        let lsnd = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"lsnd") && t.location.is_some())
+            .filter(|t| {
+                t.name
+                    .as_deref()
+                    .is_some_and(|n| h1.find(h1sounds::looping::LSND, n).is_some())
+            })
+            .count();
+        println!(
+            "looping sounds read back: {lsnd} ({} left out)",
+            r.looping_dropped.len()
+        );
+        assert_eq!(lsnd, r.looping);
+        assert!(r.looping > 0);
     }
 
     // Listed by the Halo 1 campaign manifest under the map's own path.
@@ -1126,6 +1145,9 @@ fn check_clusters(m: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], sbsp: TagId) -> Ve
 /// `+0x28..=+0x30` none, as on every retail image): a handle of 0 reads as
 /// resident in slot 0 and the pixels are never loaded. (The LOD pointers
 /// `+0x20`, `+0x24` are none on converted images but not on the base's.)
+/// And every image is a texture cache resource (flag `0x200`, as on every
+/// retail image; `h1bitmaps::convert::IMAGE_CACHED`): one without it is
+/// never loaded and its stage stays empty (the dark lightmap).
 fn check_images(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
     let ids: Vec<_> = m
         .tags()
@@ -1147,6 +1169,12 @@ fn check_images(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
                 if word(p + 0x74 * k + w) != u32::MAX {
                     bad.push(format!("bitmap {id:?} image {k} +{w:#x}"));
                 }
+            }
+            let flags = word(p + 0x74 * k + 0xc) >> 16;
+            if flags as u16 & h1bitmaps::convert::IMAGE_CACHED == 0 {
+                bad.push(format!(
+                    "bitmap {id:?} image {k} flags {flags:#x}: not a cache resource"
+                ));
             }
         }
     }
@@ -1188,6 +1216,14 @@ fn every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them() {
         for &id in &sbsp {
             bad.extend(check_clusters(&mut m, &done.bytes, id));
         }
+        let (heard, leaves) = check_sound(&mut m, &h1, &sbsp, &mut bad);
+        println!("{level}: {heard} of {leaves} collision leaves play Halo 1's sound");
+        if heard != leaves {
+            bad.push(format!(
+                "{} of {leaves} leaves play another cluster's sound",
+                leaves - heard
+            ));
+        }
         bad.extend(check_images(&mut m));
         println!("{level}: {} structures, {} problems", sbsp.len(), bad.len());
         if !bad.is_empty() {
@@ -1198,6 +1234,105 @@ fn every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them() {
     }
     assert!(levels > 0);
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// Ambient sound as the engine reads it (`h1convert::structure::Sound`):
+/// each structure's palettes (`sbsp +0xd4`, `+0xdc`) name the scenario's
+/// tags (`+0x250`, `+0x258`), every cluster's background sound and sound
+/// environment (`+0x72`, `+0x74`) is -1 or in its palette and matches the
+/// scenario's cluster data (`+0x290`), and every collision leaf's cluster
+/// is in range. Returns how many leaves play their Halo 1 cluster's
+/// background sound and environment, of how many.
+fn check_sound(
+    m: &mut Map<Cursor<Vec<u8>>>,
+    h1: &h1map::H1Map,
+    sbsp: &[TagId],
+    bad: &mut Vec<String>,
+) -> (usize, usize) {
+    let w = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let half = |b: &[u8], o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+    let block = |b: &[u8], at: u32, f: usize, len: usize| -> Vec<Vec<u8>> {
+        let (n, p) = (w(b, f) as usize, w(b, f + 4));
+        if n == 0 {
+            return Vec::new();
+        }
+        let p = p.wrapping_sub(at) as usize;
+        (0..n)
+            .map(|k| b[p + k * len..p + (k + 1) * len].to_vec())
+            .collect()
+    };
+    let scnr = m.scenario().unwrap().clone();
+    let sat = scnr.location.unwrap().address;
+    let s = m.read_tag_bytes(scnr.id).unwrap();
+    let palettes = [block(&s, sat, 0x250, 0x64), block(&s, sat, 0x258, 0x48)];
+    let data = block(&s, sat, 0x290, 0x34);
+    let ambience = h1convert::ambience::read(h1);
+    let written = h1convert::ambience::written(&ambience);
+    if palettes[0].len() != written[0] || palettes[1].len() != written[1] {
+        bad.push(format!(
+            "scenario palettes {:?}, converted {written:?}",
+            [palettes[0].len(), palettes[1].len()]
+        ));
+    }
+    let h1_bsps = h1.structure_bsps().unwrap();
+    let (mut heard, mut total) = (0, 0);
+    for (k, &id) in sbsp.iter().enumerate() {
+        let at = m.tag(id).unwrap().location.unwrap().address;
+        let b = m.read_tag_bytes(id).unwrap();
+        let own = [block(&b, at, 0xd4, 0x64), block(&b, at, 0xdc, 0x48)];
+        for j in 0..2 {
+            let tags = |p: &[Vec<u8>]| p.iter().map(|e| w(e, 0x24)).collect::<Vec<_>>();
+            if tags(&own[j]) != tags(&palettes[j]) {
+                bad.push(format!("bsp {k}: palette {j} is not the scenario's"));
+            }
+        }
+        let clusters = block(&b, at, 0x9c, 0xb0);
+        let zones: Vec<[i16; 2]> = clusters
+            .iter()
+            .map(|c| [half(c, 0x72), half(c, 0x74)])
+            .collect();
+        for (c, z) in zones.iter().enumerate() {
+            for j in 0..2 {
+                if z[j] < -1 || z[j] >= own[j].len() as i16 {
+                    bad.push(format!("bsp {k} cluster {c}: sound {j} is {}", z[j]));
+                }
+            }
+        }
+        if let Some(d) = data.get(k) {
+            let dat = |f: usize| {
+                let (n, p) = (w(d, f) as usize, w(d, f + 4).wrapping_sub(sat) as usize);
+                (0..n).map(|k| half(&s, p + 4 * k)).collect::<Vec<_>>()
+            };
+            let (bg, env) = (dat(0x08), dat(0x10));
+            let want: (Vec<i16>, Vec<i16>) = zones.iter().map(|z| (z[0], z[1])).unzip();
+            if (bg, env) != want {
+                bad.push(format!(
+                    "bsp {k}: the scenario's cluster data names other sounds"
+                ));
+            }
+        }
+        let leaves = block(&b, at, 0x2c, 8);
+        // Halo 1's: each leaf's cluster (+0x08) and that cluster's zone.
+        let src = h1.structure_bsp(&h1_bsps[k]).unwrap();
+        let h1_clusters = src.space.block_at(src.root, 0x134, 0x68).unwrap();
+        let h1_leaves = src.space.block_at(src.root, 0xe0, 0x10).unwrap();
+        for (i, l) in leaves.iter().enumerate() {
+            let c = half(l, 0) as usize;
+            let Some(z) = zones.get(c) else {
+                bad.push(format!("bsp {k} leaf {i}: cluster {c} of {}", zones.len()));
+                continue;
+            };
+            total += 1;
+            let want = h1_leaves
+                .get(i)
+                .and_then(|h| h1_clusters.get(half(h, 8) as usize))
+                .map(|hc| ambience.index(k, [half(hc, 4), half(hc, 6)], written));
+            if want == Some(*z) {
+                heard += 1;
+            }
+        }
+    }
+    (heard, total)
 }
 
 /// Every sound of a converted campaign level (`H1_LEVELS`, default a10)
@@ -1277,6 +1412,62 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
             }
         }
         println!("  {pods} lifepods");
+
+/// Every render model's materials (`mode +0x60`, `0x20` each) whose shader
+/// reference (`+0x08`, datum `+0x0c`) is NONE, as "name: material k". The
+/// shader draw begin `0x1bbf0` does not skip a NONE shader, and the draw
+/// `0x16b90` then reads tag slot `0xffff` as a `shad` (h1convert::sky).
+fn none_materials(m: &mut Map<Cursor<Vec<u8>>>) -> (usize, Vec<String>) {
+    let mem = map_memory(m);
+    let modes: Vec<(String, u32)> = m
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"mode"))
+        .filter_map(|t| Some((t.name.clone().unwrap_or_default(), t.location?.address)))
+        .collect();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for (name, at) in &modes {
+        let count = count_at(&mem, at + 0x60);
+        let first = count_at(&mem, at + 0x64);
+        for k in 0..count {
+            n += 1;
+            if count_at(&mem, first + k * 0x20 + 0xc) == u32::MAX {
+                bad.push(format!("{name}: material {k}"));
+            }
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn no_converted_model_on_any_campaign_level_has_a_none_material() {
+    let donors = donors();
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut failed = Vec::new();
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|l| l == level))
+        {
+            continue;
+        }
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::base_for(level));
+        let opts = Options {
+            objects: true,
+            donors: Some(&donors),
+            ..Default::default()
+        };
+        let done =
+            h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let (n, bad) = none_materials(&mut m);
+        println!("{level}: {n} materials, {} name no shader", bad.len());
+        if !bad.is_empty() {
+            failed.push(format!("{level}: {bad:#?}"));
+        }
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }

@@ -910,8 +910,12 @@ impl<'a> Converter<'a> {
 
     /// A `shad` per Halo 1 shader of `model`: a copy of the base's model
     /// shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
-    /// base and detail maps, converted by `h1bitmaps` (each once). Null
-    /// for a shader with no base map this reads, or with no template.
+    /// base and detail maps, converted by `h1bitmaps` (each once). A
+    /// shader with no base map this reads gets the base's model shader
+    /// itself, never null: the shader draw begin `0x1bbf0` does not skip a
+    /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
+    /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
+    /// template at all the materials stay null.
     fn model_shaders(&mut self, rep: &mut ObjectReport, model: &h1models::h1::Model) -> Vec<TagId> {
         let Some(template) = self.base.model_shader.clone() else {
             rep.no_home
@@ -938,11 +942,11 @@ impl<'a> Converter<'a> {
             })();
             if id.is_none() {
                 rep.no_home.push(format!(
-                    "model shader {}: no base map read; material null",
+                    "model shader {}: no base map read; the base's model shader stands in",
                     self.h1.tag(s.tag).map_or("?".into(), |t| t.name.clone())
                 ));
             }
-            out.push(id.unwrap_or(TagId::NULL));
+            out.push(id.unwrap_or(template.shader));
         }
         out
     }

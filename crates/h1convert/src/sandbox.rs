@@ -23,8 +23,10 @@ pub enum H2Item {
 /// Rows whose Halo 2 item depends on the game variant: in a precision
 /// variant (its primary starting weapon is the battle rifle, carbine or
 /// sniper rifle) the item becomes this instead. Evaluated when a game
-/// starts, from the variant; until that hook exists the converted maps
-/// place the default item (docs/game/h1-multiplayer.md).
+/// starts, from the variant: the converted maps place the default item and
+/// record each swap (`apply::precision_swaps`, the package manifest's
+/// `precision`), and `boot::precision` makes it when a precision variant
+/// starts (docs/game/h1-multiplayer.md).
 pub const PRECISION: &[(&str, H2Item)] = &[("assault rifle", H2Item::Weapon("battle_rifle"))];
 
 /// Halo 2 starting weapons that make a variant a precision one.
@@ -160,6 +162,15 @@ pub fn netgame_type(item: H2Item) -> u8 {
         H2Item::Equipment(_) => 9,
         H2Item::Vehicle(r) => vehicle_class(r).map_or(1, |c| c.netgame_type),
     }
+}
+
+/// The [`TABLE`] rows whose Halo 2 item is `item`, in table order.
+pub fn default_sources(item: H2Item) -> Vec<&'static str> {
+    TABLE
+        .iter()
+        .filter(|(_, i)| *i == item)
+        .map(|&(words, _)| words)
+        .collect()
 }
 
 /// The Halo 2 equivalent of a Halo 1 item or vehicle tag, by its path.

@@ -65,7 +65,7 @@ These are Halo 2's sequence and sprite layouts with 12-byte blocks.
 | `08` | u16 | Depth (volume slices; 1 otherwise) | V |
 | `0a` | u16 | Type: 0 2D, 1 3D, 2 cube, 3 white | V for 0..2; 3 never seen |
 | `0c` | u16 | Format, Halo 2's numbers: 0 A8, 1 Y8, 2 AY8, 3 A8Y8, 6 R5G6B5, 8 A1R5G5B5, 9 A4R4G4B4, 10 X8R8G8B8, 11 A8R8G8B8, 14 DXT1, 15 DXT3, 16 DXT5, 17 P8 bump | V by size for all; colour as Halo 2's (below) |
-| `0e` | u16 | Flags: 1 power of two, 2 compressed, 4 palettized, 8 swizzled, `0x10` linear | V: DXT `0x3`, P8 bump `0xd`, other swizzled `0x9`, linear `0x11`; `0x80` unknown, set on lightmaps and some others |
+| `0e` | u16 | Flags: 1 power of two, 2 compressed, 4 palettized, 8 swizzled, `0x10` linear | V: DXT `0x3`, P8 bump `0xd`, other swizzled `0x9`, linear `0x11`; `0x80` unknown, set on lightmaps and some others. Halo 2 adds `0x200` on every image (the texture cache loads it; without it nothing is bound, E `0x0012ce81`); the converter sets it (`IMAGE_CACHED`) |
 | `10`, `12` | i16 | Registration point | S |
 | `14` | u16 | Mipmap levels **below** the base | V: by size |
 | `18` | u32 | Pixel data file offset | V (above) |

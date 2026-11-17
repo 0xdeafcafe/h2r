@@ -91,7 +91,10 @@ impl Prepared {
             }
         }
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, section, &bounds)?;
-        report.pruned = prune(&mut fresh, base.index_slots() as usize);
+        // The precision swaps' collections are named by no placement: kept
+        // for `boot::precision` to swap in at game start.
+        let keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        report.pruned = prune(&mut fresh, base.index_slots() as usize, &keep);
         let (bytes, _) = fresh.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
@@ -452,8 +455,9 @@ fn named(payload: &TagPayload, out: &mut Vec<u32>) {
     }
 }
 
-/// The slots reachable from the scenario, the globals and [`KEEP_GROUPS`].
-fn reachable(set: &TagSet) -> Vec<bool> {
+/// The slots reachable from the scenario, the globals, [`KEEP_GROUPS`]
+/// and `keep`.
+fn reachable(set: &TagSet, keep: &[TagId]) -> Vec<bool> {
     let n = set.slots.len();
     let mut seen = vec![false; n];
     let mut todo = Vec::new();
@@ -461,6 +465,7 @@ fn reachable(set: &TagSet) -> Vec<bool> {
         let Some(t) = &s.tag else { continue };
         if t.id == set.scenario
             || t.id == set.globals
+            || keep.contains(&t.id)
             || KEEP_GROUPS.iter().any(|g| t.group == FourCC(**g))
             || s.name
                 .as_deref()
@@ -494,8 +499,9 @@ fn reachable(set: &TagSet) -> Vec<bool> {
 /// 2. the scenario's tag list ([`SCENARIO_RESOURCES`]) keeps a base tag
 ///    only when something else reaches it;
 /// 3. every base slot then unreachable ([`reachable`]) is emptied, its
-///    datum named by nothing.
-pub fn prune(set: &mut TagSet, first: usize) -> Pruned {
+///    datum named by nothing. The tags in `keep`, and what they reach,
+///    stay.
+pub fn prune(set: &mut TagSet, first: usize, keep: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
     let scenario = set.scenario;
     let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
@@ -524,7 +530,7 @@ pub fn prune(set: &mut TagSet, first: usize) -> Pruned {
         _ => None,
     };
     if let Some(list) = list {
-        let seen = reachable(set);
+        let seen = reachable(set, keep);
         let keep: Vec<u8> = list
             .as_chunks::<4>()
             .0
@@ -551,7 +557,7 @@ pub fn prune(set: &mut TagSet, first: usize) -> Pruned {
             }
         }
     }
-    let seen = reachable(set);
+    let seen = reachable(set, keep);
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;

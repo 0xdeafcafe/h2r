@@ -8,7 +8,8 @@
 //! has), become one raw resource, and LOD 0 points at it. LODs 1 and 2 (the
 //! chains from mip 1 and 2) stay absent, as Halo 2 leaves them for small
 //! textures. Each image's runtime ID (`+0x4c`) is the tag's own datum, as
-//! in every retail Halo 2 image; the other runtime bytes (`+0x09`, `+0x16`,
+//! in every retail Halo 2 image, and the flags gain [`IMAGE_CACHED`] as
+//! every retail image has; the other runtime bytes (`+0x09`, `+0x16`,
 //! `+0x17`), the pixel offset and the low-detail fields stay zero.
 //!
 //! Halo 2 layouts: `tags::records::{BitmapHeader, BitmapSequence,
@@ -50,6 +51,16 @@ mod h2 {
 /// `0x0012cc23`), so a zero there draws whatever slot 0 holds: Halo 1's
 /// textures and lightmap drew as one flat colour.
 pub const IMAGE_NONE_WORDS: [usize; 5] = [0x20, 0x24, h2::CACHE_HANDLES, 0x2c, 0x30];
+
+/// Image flag `0x200`: the pixels are a resource the texture cache loads.
+/// Every retail Halo 2 image has it (V: all 1,686 of Coagulation's and
+/// 2,231 of Delta Approach's: `0x203` DXT, `0x1209` swizzled, `0x290`
+/// linear); Halo 1's never do. Without it the cache takes the image as
+/// already built and hands back its runtime texture (`+0x50`), which is
+/// null, so nothing is bound (E `0x0012cd26`, `0x0012ce81`: `test byte
+/// [image+0Fh], 2`). That was the dark Halo 1 lightmap: the stage stayed
+/// empty and the lighting pass multiplied by zero.
+pub const IMAGE_CACHED: u16 = 0x200;
 
 /// Halo 2 LOD sizes are the layout rounded up to this.
 pub const LOD_ALIGN: usize = 128;
@@ -154,7 +165,7 @@ fn put_image(b: &mut Block, at: usize, img: &Image) {
         .put_u16(at + 6, img.height)
         .put_u16(at + 0xa, img.kind.raw())
         .put_u16(at + 0xc, img.format.raw())
-        .put_u16(at + 0xe, img.flags)
+        .put_u16(at + 0xe, img.flags | IMAGE_CACHED)
         .put_u16(at + 0x10, img.registration[0] as u16)
         .put_u16(at + 0x12, img.registration[1] as u16)
         .put_u16(at + 0x14, img.mip_count);

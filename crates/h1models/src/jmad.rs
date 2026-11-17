@@ -212,6 +212,31 @@ fn encode(
     Ok((blob, static_part.len(), animated_part.len()))
 }
 
+/// Each animation's Halo 2 name, in order, and whether it is a variant: Halo 1
+/// repeats a name for random permutations of one animation, and later ones
+/// become variants of the first (`:var<n>` on the action). A script that
+/// names a Halo 1 animation of this graph names the Halo 2 animation at the
+/// same index.
+pub fn animation_names(g: &Graph) -> Vec<(H2Name, bool)> {
+    let mut taken = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(g.animations.len());
+    for anim in &g.animations {
+        let mut name: H2Name = map_name(&anim.name);
+        let variant = taken.contains(&name.full());
+        if variant {
+            let action = name.action.clone();
+            let mut k = 1;
+            while taken.contains(&name.full()) {
+                name.action = format!("{action}:var{k}");
+                k += 1;
+            }
+        }
+        taken.insert(name.full());
+        out.push((name, variant));
+    }
+    out
+}
+
 /// Converts a Halo 1 animation graph. A graph without its own node block
 /// takes `skeleton` (its model's nodes, [`AnimNode::from_model`]).
 pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Converted, GraphReport)> {
@@ -244,25 +269,16 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     let mut records = Vec::new();
     let mut tree: BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>> =
         BTreeMap::new();
-    let mut taken = std::collections::HashSet::new();
+    let names = animation_names(g);
     for (i, anim) in g.animations.iter().enumerate() {
         if anim.frame_count == 0 {
             return Err(Error::Unsupported(format!("{}: no frames", anim.name)));
         }
-        let mut name: H2Name = map_name(&anim.name);
-        // Halo 1 repeats a name for random permutations of one animation;
-        // later ones become variants of the first.
-        if taken.contains(&name.full()) {
-            let action = name.action.clone();
-            let mut k = 1;
-            while taken.contains(&name.full()) {
-                name.action = format!("{action}:var{k}");
-                k += 1;
-            }
+        let (name, variant) = names[i].clone();
+        if variant {
             report.variants.push(anim.name.clone());
         }
         let full = name.full();
-        taken.insert(full.clone());
         report.names.push((anim.name.clone(), full.clone()));
         report.zero_rotations += anim.zero_rotations;
         if anim.frame_info_type != 0 {

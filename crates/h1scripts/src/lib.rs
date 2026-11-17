@@ -17,6 +17,7 @@
 pub mod catalog;
 pub mod compile;
 pub mod decompile;
+pub mod identified;
 pub mod layout;
 pub mod level;
 pub mod seats;

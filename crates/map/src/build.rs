@@ -418,6 +418,10 @@ pub struct TagSet {
     /// that grow a map at the bound: the bound is the largest retail map of
     /// the type, not a measured engine limit.
     pub check_tag_memory: bool,
+    /// Enforce the engine's file size limit for the cache type (default
+    /// true). Off for a caller that checks the built size itself, to say
+    /// by how much it is over.
+    pub check_file_size: bool,
 }
 
 /// Where things went in a built map.
@@ -500,6 +504,7 @@ impl TagSet {
             reverse_built: false,
             largest_built_first: false,
             check_tag_memory: true,
+            check_file_size: true,
         }
     }
     /// Declare a group and its ancestors (no-op if already declared).
@@ -719,6 +724,7 @@ impl TagSet {
             reverse_built: false,
             largest_built_first: false,
             check_tag_memory: true,
+            check_file_size: true,
             header_template: None,
             low_detail: None,
             pinned: Some(PinnedImage {
@@ -1552,7 +1558,7 @@ impl<'a> Builder<'a> {
         let metadata_at = file.len();
         file.extend_from_slice(&meta.bytes);
         let file_size = u32::try_from(file.len()).map_err(|_| Error::Limit)?;
-        if u64::from(file_size) > cache_size_limit(set.cache_type)? {
+        if set.check_file_size && u64::from(file_size) > cache_size_limit(set.cache_type)? {
             return Err(Error::Invalid("map exceeds the engine's cache size limit"));
         }
         debug_assert_eq!(metadata_at, index_at + index_size as usize);

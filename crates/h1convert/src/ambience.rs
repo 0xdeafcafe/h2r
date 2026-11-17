@@ -42,6 +42,11 @@ pub const BACKGROUND_SOUND: usize = 0x64;
 pub const SOUND_ENVIRONMENTS: usize = 0x258;
 pub const SOUND_ENVIRONMENT: usize = 0x48;
 
+/// Palette entries the engine can name: the ambience pass keeps a slot
+/// per entry in 64-entry arrays on its stack (E `0x0018d730`: `+0x38`,
+/// `+0x138`, `+0x338`, 4 bytes each), indexed by the cluster's entry.
+pub const MAX_PALETTE: usize = 64;
+
 /// One Halo 1 sound environment, converted.
 #[derive(Debug, Clone)]
 pub struct Environment {
@@ -58,6 +63,12 @@ pub struct Ambience {
     /// Background sounds: the palette entry's name and its looping sound.
     pub backgrounds: Vec<(String, Looping)>,
     pub environments: Vec<Environment>,
+    /// Per Halo 1 structure BSP, per entry of its own background sound
+    /// palette, the entry's index in [`Self::backgrounds`] (`None`: it
+    /// didn't convert). A cluster's `+0x04` indexes the BSP's palette.
+    pub bsp_backgrounds: Vec<Vec<Option<usize>>>,
+    /// The same for sound environments (cluster `+0x06`).
+    pub bsp_environments: Vec<Vec<Option<usize>>>,
     /// What didn't convert.
     pub notes: Vec<String>,
 }
@@ -88,6 +99,8 @@ pub fn read(h1: &H1Map) -> Ambience {
         }
     };
     for bsp in bsps {
+        out.bsp_backgrounds.push(Vec::new());
+        out.bsp_environments.push(Vec::new());
         let s = match h1.structure_bsp(&bsp) {
             Ok(s) => s,
             Err(e) => {
@@ -102,21 +115,28 @@ pub fn read(h1: &H1Map) -> Ambience {
                     let entry = entry_name(e);
                     let Some(t) = TagRef::read(e, 0x20).and_then(|r| h1.tag(r.id).ok()) else {
                         out.notes.push(format!("background sound {entry}: no lsnd"));
+                        push_index(&mut out.bsp_backgrounds, None);
                         continue;
                     };
-                    if out
+                    if let Some(k) = out
                         .backgrounds
                         .iter()
-                        .any(|(n, l)| *n == entry && l.name == t.name)
+                        .position(|(n, l)| *n == entry && l.name == t.name)
                     {
+                        push_index(&mut out.bsp_backgrounds, Some(k));
                         continue;
                     }
                     match h1sounds::looping::read_looping(h1, t) {
                         Ok(l) => {
                             out.notes.extend(l.notes.iter().cloned());
                             out.backgrounds.push((entry, l));
+                            let k = out.backgrounds.len() - 1;
+                            push_index(&mut out.bsp_backgrounds, Some(k));
                         }
-                        Err(e) => out.notes.push(format!("{}: {e}", t.name)),
+                        Err(e) => {
+                            out.notes.push(format!("{}: {e}", t.name));
+                            push_index(&mut out.bsp_backgrounds, None);
+                        }
                     }
                 }
             }
@@ -134,22 +154,31 @@ pub fn read(h1: &H1Map) -> Ambience {
                     else {
                         out.notes
                             .push(format!("sound environment {entry}: no snde"));
+                        push_index(&mut out.bsp_environments, None);
                         continue;
                     };
-                    if out
+                    if let Some(k) = out
                         .environments
                         .iter()
-                        .any(|v| v.entry == entry && v.name == t.name)
+                        .position(|v| v.entry == entry && v.name == t.name)
                     {
+                        push_index(&mut out.bsp_environments, Some(k));
                         continue;
                     }
                     match h1sounds::looping::read_environment(h1, t) {
-                        Ok(tag) => out.environments.push(Environment {
-                            entry,
-                            name: t.name.clone(),
-                            tag,
-                        }),
-                        Err(e) => out.notes.push(format!("{}: {e}", t.name)),
+                        Ok(tag) => {
+                            out.environments.push(Environment {
+                                entry,
+                                name: t.name.clone(),
+                                tag,
+                            });
+                            let k = out.environments.len() - 1;
+                            push_index(&mut out.bsp_environments, Some(k));
+                        }
+                        Err(e) => {
+                            out.notes.push(format!("{}: {e}", t.name));
+                            push_index(&mut out.bsp_environments, None);
+                        }
                     }
                 }
             }
@@ -161,7 +190,32 @@ pub fn read(h1: &H1Map) -> Ambience {
     out
 }
 
+fn push_index(per_bsp: &mut [Vec<Option<usize>>], k: Option<usize>) {
+    per_bsp.last_mut().expect("one per BSP").push(k);
+}
+
 impl Ambience {
+    /// Halo 1 BSP `bsp`'s background sound and sound environment palette
+    /// indices (a cluster's `+0x04`, `+0x06`; -1 none), as indices into
+    /// the converted palettes of which the first `written` entries were
+    /// written; -1 for none, or an entry that didn't convert or wasn't
+    /// written.
+    pub fn index(&self, bsp: usize, h1: [i16; 2], written: [usize; 2]) -> [i16; 2] {
+        let maps = [&self.bsp_backgrounds, &self.bsp_environments];
+        let mut out = [-1; 2];
+        for k in 0..2 {
+            let Ok(i) = usize::try_from(h1[k]) else {
+                continue;
+            };
+            if let Some(&Some(j)) = maps[k].get(bsp).and_then(|m| m.get(i))
+                && j < written[k].min(MAX_PALETTE)
+            {
+                out[k] = j as i16;
+            }
+        }
+        out
+    }
+
     /// Adds every looping sound (with its sounds) and sound environment.
     pub fn install(&self, set: &mut TagSet) -> Result<Installed> {
         let loops: Vec<Looping> = self.backgrounds.iter().map(|(_, l)| l.clone()).collect();
@@ -191,16 +245,100 @@ fn word(b: &[u8], at: usize) -> Result<u32> {
         .ok_or(Error::Invalid("scenario sound palette outside the tag"))
 }
 
+/// One background sound palette element (`0x64`) naming looping sound
+/// `id` as entry `name`; the scenario's and the structure's (`sbsp +0xd4`)
+/// hold the same.
+pub fn background_entry(name: &str, id: TagId) -> Vec<u8> {
+    let lsnd = FourCC(*b"lsnd").as_u32();
+    let mut e = named(BACKGROUND_SOUND, name);
+    put(&mut e, 0x20, lsnd);
+    put(&mut e, 0x24, id.0);
+    put(&mut e, 0x28, lsnd);
+    put(&mut e, 0x2c, u32::MAX);
+    put(&mut e, 0x44, 2.0f32.to_bits());
+    put(&mut e, 0x58, 1.0f32.to_bits());
+    e
+}
+
+/// One sound environment palette element (`0x48`, `sbsp +0xdc` too).
+pub fn environment_entry(name: &str, id: TagId) -> Vec<u8> {
+    let mut e = named(SOUND_ENVIRONMENT, name);
+    put(&mut e, 0x20, FourCC(*b"snde").as_u32());
+    put(&mut e, 0x24, id.0);
+    put(&mut e, 0x28, 1.0f32.to_bits());
+    put(&mut e, 0x2c, 2.0f32.to_bits());
+    e
+}
+
+fn named(len: usize, name: &str) -> Vec<u8> {
+    let mut e = vec![0u8; len];
+    let bytes = name.as_bytes();
+    let m = bytes.len().min(31);
+    e[..m].copy_from_slice(&bytes[..m]);
+    e
+}
+
+impl Installed {
+    /// At most [`MAX_PALETTE`] of each, as [`written`] counts them.
+    pub fn bounded(&self) -> Installed {
+        Installed {
+            backgrounds: self.backgrounds.iter().take(MAX_PALETTE).cloned().collect(),
+            environments: self
+                .environments
+                .iter()
+                .take(MAX_PALETTE)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The palette elements, background sounds then sound environments,
+    /// at most `room` of each (and [`MAX_PALETTE`]).
+    pub fn palettes(&self, room: [usize; 2]) -> [Vec<Vec<u8>>; 2] {
+        let take = |k: usize, n: usize| n.min(room[k]).min(MAX_PALETTE);
+        [
+            self.backgrounds
+                .iter()
+                .take(take(0, self.backgrounds.len()))
+                .map(|(n, id)| background_entry(n, *id))
+                .collect(),
+            self.environments
+                .iter()
+                .take(take(1, self.environments.len()))
+                .map(|(n, id)| environment_entry(n, *id))
+                .collect(),
+        ]
+    }
+}
+
+/// How many entries of each palette a rebuilt scenario holds: all of
+/// them, up to [`MAX_PALETTE`].
+pub fn written(a: &Ambience) -> [usize; 2] {
+    [
+        a.backgrounds.len().min(MAX_PALETTE),
+        a.environments.len().min(MAX_PALETTE),
+    ]
+}
+
+/// How many elements the scenario payload's palettes have room for: the
+/// base's own counts (its storage is reused in place).
+pub fn room(scnr: &[u8]) -> Result<[usize; 2]> {
+    Ok([
+        word(scnr, BACKGROUND_SOUNDS)? as usize,
+        word(scnr, SOUND_ENVIRONMENTS)? as usize,
+    ])
+}
+
 /// Writes `entries` into the palette block at `field` of a scenario
-/// payload loaded at `address`, `len`-byte elements made by `fill`, as
-/// many as the base's storage holds; the count becomes that. Returns it.
+/// payload loaded at `address`, `len`-byte elements, into the base's
+/// storage (they are at most as many as it holds, [`Installed::palettes`]
+/// with [`room`]); the count becomes theirs. Returns it.
 fn write_palette(
     scnr: &mut [u8],
     address: u32,
     field: usize,
     len: usize,
-    entries: &[(String, TagId)],
-    fill: impl Fn(&mut [u8], &str, TagId),
+    entries: &[Vec<u8>],
 ) -> Result<u32> {
     let room = word(scnr, field)? as usize;
     let n = room.min(entries.len());
@@ -212,13 +350,8 @@ fn write_palette(
     if start + room * len > scnr.len() {
         return Err(Error::Invalid("scenario sound palette outside the tag"));
     }
-    for (k, (name, id)) in entries.iter().take(n).enumerate() {
-        let e = &mut scnr[start + k * len..start + (k + 1) * len];
-        e.fill(0);
-        let bytes = name.as_bytes();
-        let m = bytes.len().min(31);
-        e[..m].copy_from_slice(&bytes[..m]);
-        fill(e, name, *id);
+    for (k, e) in entries.iter().take(n).enumerate() {
+        scnr[start + k * len..start + (k + 1) * len].copy_from_slice(e);
     }
     scnr[field..field + 4].copy_from_slice(&(n as u32).to_le_bytes());
     Ok(n as u32)
@@ -232,36 +365,23 @@ fn put(e: &mut [u8], at: usize, v: u32) {
 /// at the Halo 1 level's (module docs). Returns the entries written, per
 /// palette.
 pub fn patch_scenario(scnr: &mut [u8], address: u32, installed: &Installed) -> Result<[u32; 2]> {
-    let lsnd = FourCC(*b"lsnd").as_u32();
-    let backgrounds = write_palette(
-        scnr,
-        address,
-        BACKGROUND_SOUNDS,
-        BACKGROUND_SOUND,
-        &installed.backgrounds,
-        |e, _, id| {
-            put(e, 0x20, lsnd);
-            put(e, 0x24, id.0);
-            put(e, 0x28, lsnd);
-            put(e, 0x2c, u32::MAX);
-            put(e, 0x44, 2.0f32.to_bits());
-            put(e, 0x58, 1.0f32.to_bits());
-        },
-    )?;
-    let environments = write_palette(
-        scnr,
-        address,
-        SOUND_ENVIRONMENTS,
-        SOUND_ENVIRONMENT,
-        &installed.environments,
-        |e, _, id| {
-            put(e, 0x20, FourCC(*b"snde").as_u32());
-            put(e, 0x24, id.0);
-            put(e, 0x28, 1.0f32.to_bits());
-            put(e, 0x2c, 2.0f32.to_bits());
-        },
-    )?;
-    Ok([backgrounds, environments])
+    let [backgrounds, environments] = installed.palettes(room(scnr)?);
+    Ok([
+        write_palette(
+            scnr,
+            address,
+            BACKGROUND_SOUNDS,
+            BACKGROUND_SOUND,
+            &backgrounds,
+        )?,
+        write_palette(
+            scnr,
+            address,
+            SOUND_ENVIRONMENTS,
+            SOUND_ENVIRONMENT,
+            &environments,
+        )?,
+    ])
 }
 
 #[cfg(test)]

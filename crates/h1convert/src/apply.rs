@@ -51,6 +51,44 @@ pub struct Applied {
     pub removed: usize,
     /// Blocks the editor refused to empty, with its reason.
     pub kept: Vec<String>,
+    /// The item swaps a precision variant makes ([`precision_swaps`]):
+    /// `(default, precision)` collection datums, for rows some spawn uses.
+    pub precision: Vec<(TagId, TagId)>,
+}
+
+/// For each [`crate::sandbox::PRECISION`] row: the collection its Halo 1
+/// item becomes by default, and the one it becomes in a precision variant
+/// (the assault rifle: the SMG, the battle rifle). A pair is kept when
+/// both resolve in the base and some spawn of `plan` places the default.
+/// The default must be that row's alone, so every spawn of it came from
+/// the row's Halo 1 item and swapping it at game start (`boot::precision`)
+/// touches nothing else.
+pub fn precision_swaps(plan: &Plan, tags: &[(FourCC, TagId, String)]) -> Vec<(TagId, TagId)> {
+    let names: Vec<(String, String)> = tags
+        .iter()
+        .map(|(g, _, n)| (String::from_utf8_lossy(&g.0).into_owned(), n.clone()))
+        .collect();
+    let datum = |item| {
+        let name = resolve(item, &names)?;
+        tags.iter().find(|(_, _, n)| n == name).map(|t| t.1)
+    };
+    let mut out = Vec::new();
+    for &(words, swap) in crate::sandbox::PRECISION {
+        let Some(default) = crate::sandbox::h2_equivalent(words) else {
+            continue;
+        };
+        if crate::sandbox::default_sources(default) != [words]
+            || !plan.items.iter().any(|i| i.item == default)
+        {
+            continue;
+        }
+        if let (Some(a), Some(b)) = (datum(default), datum(swap))
+            && a != b
+        {
+            out.push((a, b));
+        }
+    }
+    out
 }
 
 /// The base's object placement blocks: its level's scenery, vehicles,
@@ -245,5 +283,6 @@ pub fn apply(
             out.vehicles += 1;
         }
     }
+    out.precision = precision_swaps(plan, tags);
     Ok(out)
 }

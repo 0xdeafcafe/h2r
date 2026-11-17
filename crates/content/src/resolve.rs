@@ -199,6 +199,9 @@ pub struct Library {
     cache_cap: u64,
     notices: Vec<String>,
     disc_hashes: Option<DiscHashes>,
+    /// The sandbox whose variant each converted map loads, kept across
+    /// [`Self::reopen`].
+    sandbox: Option<String>,
 }
 
 impl Library {
@@ -222,6 +225,7 @@ impl Library {
             cache_cap: DEFAULT_CACHE_CAP,
             notices: Vec::new(),
             disc_hashes: None,
+            sandbox: sandbox.map(str::to_owned),
         };
         let Ok(entries) = std::fs::read_dir(root) else {
             return lib;
@@ -303,7 +307,8 @@ impl Library {
     /// Scan the same directory again, keeping the cache cap and the shared
     /// disc hashes: what the folder holds now.
     pub fn reopen(&self) -> Self {
-        let mut lib = Self::open(&self.root).with_cache_cap(self.cache_cap);
+        let mut lib = Self::open_with_sandbox(&self.root, self.sandbox.as_deref())
+            .with_cache_cap(self.cache_cap);
         lib.disc_hashes = self.disc_hashes.clone();
         lib
     }
@@ -1247,6 +1252,10 @@ pub(crate) mod tests {
         assert_eq!(read(&r, b""), h2);
         assert_ne!(lib.packages()[0].id, id_h1);
         let key = lib.packages()[0].list_key;
+        // A rescan keeps the sandbox.
+        let mut lib = lib.reopen();
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h2, "reopened in Halo 2's sandbox");
         let lib = Library::open_with_sandbox(&t.0, Some("h1"));
         assert_eq!(lib.packages()[0].id, id_h1);
         assert_eq!(lib.packages()[0].list_key, key, "one list key for both");

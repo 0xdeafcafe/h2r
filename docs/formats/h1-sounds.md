@@ -248,6 +248,10 @@ gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
 the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
 on the Halo 1 disc converts, every named sound with it.
 
+The campaign converter (`h1campaign`, campaigns.md §9, "Music, ambience and the map
+file") installs the looping sounds a level's scripts name, as many as fit
+the map file's size limit.
+
 ### Proof (V)
 
 `converted_sounds_read_back_sample_identical` converts onto the Halo 2

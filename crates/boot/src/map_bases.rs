@@ -343,6 +343,7 @@ mod tests {
             None,
             Some(&over),
             Some(&maps),
+            None,
             hashes.clone(),
             &[],
         )
