@@ -335,6 +335,9 @@ pub struct Stats {
     pub scissor_split_draws: u64,
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
+    /// Lazy levels left as targets whose guest bytes were not read again:
+    /// the match they held was still those bytes (`H2_D3D_LEAVE_READ`).
+    pub rtt_leave_reads_skipped: u64,
     /// Render-to-texture host surfaces filled from guest memory.
     pub rtt_uploads: u64,
     /// Depth-buffer readbacks for textures that alias its memory
@@ -752,6 +755,10 @@ pub struct Device<B: Backend> {
     /// render-to-texture and a backend that samples depth surfaces);
     /// `H2_D3D_LAZY_DEPTH=0` turns it off.
     lazy_depth: bool,
+    /// A level left as a target is read from guest memory every time, even
+    /// when its match is already those bytes (`H2_D3D_LEAVE_READ=1`;
+    /// `Device::set_leave_read`).
+    leave_read: bool,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
@@ -893,6 +900,7 @@ impl<B: Backend> Device<B> {
             depth_alias: HashMap::default(),
             depth_level_tex: HashMap::default(),
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
+            leave_read: std::env::var_os("H2_D3D_LEAVE_READ").is_some_and(|v| v == "1"),
             rtt_synced: HashMap::default(),
             rtt_stores: HashMap::default(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),

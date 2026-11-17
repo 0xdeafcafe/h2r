@@ -814,6 +814,13 @@ impl<B: Backend> Device<B> {
         self.lazy_depth = on;
     }
 
+    /// Whether a lazy level left as a target is read from guest memory
+    /// every time (`H2_D3D_LEAVE_READ=1`), not only when its pages were
+    /// written since its match was made (the default).
+    pub fn set_leave_read(&mut self, on: bool) {
+        self.leave_read = on;
+    }
+
     /// Writes back the other levels drawn into whose memory overlaps
     /// `header`'s, before `header`'s surface is filled from or matched
     /// against that memory (two surface headers over one level).
@@ -1369,16 +1376,44 @@ impl<B: Backend> Device<B> {
         // over the same stores when the level is written back. Guest
         // bytes as they are now become the match, so only stores after
         // this count as the guest's.
+        self.resync_on_leave(mem, h)
+    }
+
+    /// Lazily, level `h` stops being a target and keeps its pixels on the
+    /// host: if drawn into, its guest bytes as they are now become the
+    /// match. When the match it holds already is those bytes (tracked
+    /// uploads, no exact store and no reported write to its pages since
+    /// the match was made), the match only moves forward and the level is
+    /// not read again: that read was a whole level's copy at every target
+    /// change. It trusts the tracker as
+    /// [`rtt_guest_stores`](Self::rtt_guest_stores) does for the same
+    /// question. `H2_D3D_LEAVE_READ=1` reads the level every time.
+    fn resync_on_leave(&mut self, mem: &dyn GuestMemory, h: u32) -> Result<(), D3dError> {
         let Some(t) = self.rtt.get(&h).copied() else {
             return Ok(());
         };
-        if t.dirty {
-            let bytes = mem.read_vec(t.data, t.len() as usize)?;
-            self.rtt_synced.insert(h, bytes);
-            self.rtt_stores.remove(&h);
-            let generation = self.tracker.generation();
-            self.rtt.get_mut(&h).expect("cached").generation = generation;
+        if !t.dirty {
+            return Ok(());
         }
+        let len = t.len() as usize;
+        let unchanged = !self.leave_read
+            && self.cfg.upload == UploadPolicy::Tracked
+            && self.rtt_synced.get(&h).is_some_and(|b| b.len() == len)
+            && self.rtt_stores.get(&h).is_none_or(Vec::is_empty)
+            && !self.tracker.dirty_since(t.data, t.len(), t.generation);
+        if unchanged {
+            self.stats.rtt_leave_reads_skipped += 1;
+        } else if let Some(bytes) = self.rtt_synced.get_mut(&h).filter(|b| b.len() == len) {
+            // The old match's buffer is refilled in place, not freed and
+            // made again (a read that faults copies nothing).
+            mem.read(t.data, bytes)?;
+        } else {
+            let bytes = mem.read_vec(t.data, len)?;
+            self.rtt_synced.insert(h, bytes);
+        }
+        self.rtt_stores.remove(&h);
+        let generation = self.tracker.generation();
+        self.rtt.get_mut(&h).expect("cached").generation = generation;
         Ok(())
     }
 
@@ -1397,17 +1432,7 @@ impl<B: Backend> Device<B> {
     /// now become the match, so only stores after this count as the
     /// guest's when it is written back.
     pub(super) fn leave_depth(&mut self, mem: &mut dyn GuestMemory, h: u32) -> Result<(), D3dError> {
-        let Some(t) = self.rtt.get(&h).copied() else {
-            return Ok(());
-        };
-        if t.dirty {
-            let bytes = mem.read_vec(t.data, t.len() as usize)?;
-            self.rtt_synced.insert(h, bytes);
-            self.rtt_stores.remove(&h);
-            let generation = self.tracker.generation();
-            self.rtt.get_mut(&h).expect("cached").generation = generation;
-        }
-        Ok(())
+        self.resync_on_leave(mem, h)
     }
 
     /// A draw samples texture `header`. When its memory is a dirty depth
