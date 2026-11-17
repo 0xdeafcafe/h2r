@@ -22,7 +22,7 @@ const MAX_FIRING_WEAPONS: usize = 256;
 const MAX_PENDING_HITS: usize = 256;
 
 pub struct Telemetry {
-    session: Mutex<Session>,
+    pub(crate) session: Mutex<Session>,
     sink: QueuedSink,
     disabled: AtomicBool,
     last_tick: Mutex<Option<u64>>,
@@ -40,7 +40,7 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-    fn new(session: Session, sink: QueuedSink) -> Self {
+    pub(crate) fn new(session: Session, sink: QueuedSink) -> Self {
         Self {
             session: Mutex::new(session),
             sink,
@@ -118,7 +118,7 @@ impl Telemetry {
     }
 
     /// The weapon fire hook: one shot of the weapon object `weapon`.
-    fn fired(&self, weapon: u32) {
+    pub(crate) fn fired(&self, weapon: u32) {
         if self.disabled() {
             return;
         }
@@ -131,7 +131,7 @@ impl Telemetry {
     }
 
     /// The damage hook: one damage report.
-    fn damaged(&self, hit: crate::event::HitRecord) {
+    pub(crate) fn damaged(&self, hit: crate::event::HitRecord) {
         if self.disabled() {
             return;
         }
@@ -140,6 +140,11 @@ impl Telemetry {
             hits.remove(0);
         }
         hits.push(hit);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_dropped_frames(&self) -> u64 {
+        self.sink.dropped_frames()
     }
 
     pub fn disabled(&self) -> bool {
@@ -152,7 +157,7 @@ impl Telemetry {
         }
     }
 
-    fn protect(&self, f: impl FnOnce() -> Result<(), String>) {
+    pub(crate) fn protect(&self, f: impl FnOnce() -> Result<(), String>) {
         if self.disabled() {
             return;
         }
@@ -167,7 +172,7 @@ impl Telemetry {
         }
     }
 
-    fn publish(&self) -> Result<(), String> {
+    pub(crate) fn publish(&self) -> Result<(), String> {
         let output = self.session.lock().unwrap().take_output();
         for output in output {
             match output {
@@ -178,7 +183,7 @@ impl Telemetry {
         Ok(())
     }
 
-    fn start(&self, guest: &runtime::Guest) -> Result<(), String> {
+    pub(crate) fn start(&self, guest: &runtime::Guest) -> Result<(), String> {
         let info = memory::game_info(guest).map_err(|e| format!("read game options: {e:?}"))?;
         let players = if info.is_match() {
             memory::players(guest).map_err(|e| format!("read players: {e:?}"))?
@@ -227,13 +232,22 @@ impl Telemetry {
         self.publish()
     }
 
-    fn sample(&self, guest: &runtime::Guest) -> Result<(), String> {
+    pub(crate) fn sample(&self, guest: &runtime::Guest) -> Result<(), String> {
+        if self.observe_tick(guest)? {
+            self.publish()?;
+        }
+        Ok(())
+    }
+
+    /// The tick's observation, into the session's output; false when the
+    /// game tick has not changed since the last one.
+    pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
         let mut snapshot =
             memory::snapshot(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
         {
             let mut last = self.last_tick.lock().unwrap();
             if *last == Some(snapshot.tick) {
-                return Ok(());
+                return Ok(false);
             }
             *last = Some(snapshot.tick);
         }
@@ -250,7 +264,7 @@ impl Telemetry {
             snapshot.bodies = world.bodies;
         }
         self.session.lock().unwrap().sample(&snapshot);
-        self.publish()
+        Ok(true)
     }
 
     fn end(&self, guest: &runtime::Guest) -> Result<(), String> {
@@ -306,7 +320,8 @@ pub struct TelemetryFeature(pub Arc<Telemetry>);
 
 impl feature::Feature for TelemetryFeature {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("live-telemetry", "Live telemetry").doc("docs/live/live-telemetry.md")
+        feature::Manifest::new("live-telemetry", "Live telemetry")
+            .doc("docs/live/live-telemetry.md")
     }
 
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {

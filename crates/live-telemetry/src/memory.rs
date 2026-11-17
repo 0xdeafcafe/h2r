@@ -760,6 +760,31 @@ pub(crate) mod fixture {
     pub const OBJECTS: u32 = 0x140000;
     pub const OBJECT_DATA: u32 = 0x141000;
     pub const BODY: u32 = 0x150000;
+    /// Bodies of slots past [`LOW_BODIES`] (only in [`large_memory`]).
+    pub const HIGH_BODY: u32 = 0x0100_0000;
+    /// Object slots whose bodies fit below the 0x200000 end of [`memory`].
+    pub const LOW_BODIES: u32 = (0x200000 - BODY) / 0x1000;
+    /// Room for scenario placement blocks (only in [`large_memory`]).
+    pub const SCENARIO: u32 = 0x0180_0000;
+
+    /// An object slot's body address: 4 KiB a slot.
+    pub fn body(slot: u32) -> u32 {
+        if slot < LOW_BODIES {
+            BODY + slot * 0x1000
+        } else {
+            HIGH_BODY + slot * 0x1000
+        }
+    }
+
+    /// [`memory`] with room for a full object table's bodies (every slot up
+    /// to [`super::layout::OBJECT_CAPACITY`]) and a scenario at [`SCENARIO`].
+    pub fn large_memory() -> Guest {
+        let mut guest = memory();
+        guest
+            .map_zeroed(HIGH_BODY, 0x0100_0000, Permissions::RW)
+            .unwrap();
+        guest
+    }
 
     pub fn memory() -> Guest {
         let mut guest = Guest::new();
@@ -887,9 +912,9 @@ pub(crate) mod fixture {
             .set_u8(header + super::layout::OBJECT_TYPE, 0)
             .unwrap();
         guest
-            .set_u32(header + super::layout::OBJECT_BODY, BODY + slot * 0x1000)
+            .set_u32(header + super::layout::OBJECT_BODY, body(slot))
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_PARENT, parent)
             .unwrap();
@@ -932,7 +957,7 @@ pub(crate) mod fixture {
     /// An AI biped at `slot`: an actor datum, team, and position `pos`.
     pub fn put_actor(guest: &mut Guest, slot: u32, team: i16, pos: [f32; 3]) {
         put_object(guest, slot, u32::MAX);
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::UNIT_ACTOR, 0xa000_0000 | slot)
             .unwrap();
@@ -952,7 +977,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, 1)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         for (i, value) in [10.0f32, 20.0, 30.0].into_iter().enumerate() {
             guest
                 .set_f32(body + super::layout::BODY_POSITION + 4 * i as u32, value)
@@ -977,7 +1002,7 @@ pub(crate) mod fixture {
                 super::layout::OBJECT_TYPE_MACHINE,
             )
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -1003,7 +1028,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, object_type)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -1024,7 +1049,7 @@ pub(crate) mod fixture {
     /// Gives the unit object at `slot` a definition, an aiming vector and
     /// a current weapon index.
     pub fn put_unit(guest: &mut Guest, slot: u32, definition: u32, aim: [f32; 3], index: i8) {
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_DEFINITION, definition)
             .unwrap();
@@ -1055,14 +1080,11 @@ pub(crate) mod fixture {
             )
             .unwrap();
         guest
-            .set_u32(
-                BODY + slot * 0x1000 + super::layout::BODY_DEFINITION,
-                definition,
-            )
+            .set_u32(body(slot) + super::layout::BODY_DEFINITION, definition)
             .unwrap();
         guest
             .set_u32(
-                BODY + unit_slot * 0x1000 + super::layout::UNIT_WEAPONS + 4 * index,
+                body(unit_slot) + super::layout::UNIT_WEAPONS + 4 * index,
                 object_datum(slot),
             )
             .unwrap();
