@@ -48,6 +48,11 @@ pub const ELEMENT_21C: usize = 0x40;
 /// Size of the element at `sbsp+0x234` written (one, zeroed; the engine
 /// reads `+0x20`, E `0x0003f927`).
 pub const ELEMENT_234: usize = 0x30;
+/// Size of an ambience (`sbsp+0x148`) or reverb (`sbsp+0x150`) sound
+/// cluster (E `0x0018d7ba`: index * 0x14).
+pub const SOUND_CLUSTER: usize = 0x14;
+/// Size of the one element at `sbsp+0x94` (zeroed in every retail map).
+pub const ELEMENT_94: usize = 0x24;
 
 /// Size of the audibility element at `sbsp+0x224` (one in every retail
 /// map; see [`Structure::audibility`]).
@@ -520,6 +525,71 @@ pub fn check_audibility(bytes: &[u8], address: u32) -> std::result::Result<(), S
     Ok(())
 }
 
+/// Checks the reads the engine makes with no count check, beyond
+/// [`check_audibility`]: each cluster's ambience (`+0x78`) and reverb
+/// (`+0x7a`) sound cluster indexes `+0x148` / `+0x150` (E `0x0018d7c0`,
+/// `0x0018dd20`), and each sound cluster's portal list (i16, low 15 bits a
+/// portal index into `+0x5c`) lies in the tag and names real portals.
+pub fn check_sound_clusters(bytes: &[u8], address: u32) -> std::result::Result<(), String> {
+    let word = |at: usize| -> std::result::Result<u32, String> {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("4")))
+            .ok_or(format!("{at:#x} is past the tag"))
+    };
+    let at = |a: u32, what: &str| -> std::result::Result<usize, String> {
+        a.checked_sub(address)
+            .map(|o| o as usize)
+            .ok_or(format!("{what} points before the tag"))
+    };
+    let n = word(0x9c)? as usize;
+    let clusters = at(word(0xa0)?, "clusters")?;
+    let portals = word(0x5c)? as usize;
+    for (field, index) in [(0x148usize, 0x78usize), (0x150, 0x7a)] {
+        let count = word(field)? as usize;
+        let base = if count > 0 {
+            at(word(field + 4)?, "sound clusters")?
+        } else {
+            0
+        };
+        if base + count * SOUND_CLUSTER > bytes.len() {
+            return Err(format!("+{field:#x} runs past the tag"));
+        }
+        for c in 0..n {
+            let e = clusters + c * CLUSTER + index;
+            let i = bytes
+                .get(e..e + 2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .ok_or("cluster past the tag")?;
+            if i < 0 || i as usize >= count {
+                return Err(format!(
+                    "cluster {c} names sound cluster {i} of +{field:#x}, which has {count}"
+                ));
+            }
+        }
+        for k in 0..count {
+            let e = base + k * SOUND_CLUSTER;
+            let list = word(e + 4)? as usize;
+            if list == 0 {
+                continue;
+            }
+            let p = at(word(e + 8)?, "portal list")?;
+            for j in 0..list {
+                let v = bytes
+                    .get(p + 2 * j..p + 2 * j + 2)
+                    .ok_or("portal list past the tag")?;
+                let portal = (u16::from_le_bytes([v[0], v[1]]) & 0x7fff) as usize;
+                if portal >= portals {
+                    return Err(format!(
+                        "+{field:#x}[{k}] names portal {portal} of {portals}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The eight block fields of a collision BSP as a [`Block`] whose blocks
 /// are fixups.
 pub fn collision_block(bsp: &Bsp) -> Block {
@@ -589,6 +659,27 @@ impl Structure<'_> {
         e
     }
 
+    /// One ambience (`sbsp+0x148`) or reverb (`sbsp+0x150`) sound
+    /// cluster holding every cluster, which every cluster names at `+0x78`
+    /// and `+0x7a`. The engine reads `[sbsp+0x14c] + 0x14 * cluster[+0x78]`
+    /// with no check (E `0x0018d7b4..0x0018d7c0`; the reverb twin at
+    /// `0x0018dd10`), so an empty block faults at address 4. Every retail
+    /// map has at least one of each.
+    ///
+    /// `+0x00` the palette entry (`+0xd4` background sounds, `+0xdc` sound
+    /// environments): none, -1 whether read as 16 or 32 bits (both
+    /// palettes are empty here); `+0x04` the enclosing portals (i16, top
+    /// bit the portal's side): none, so the walk at `0x0018d7c3` is
+    /// skipped; `+0x0c` the interior clusters (i16): all of them.
+    pub fn sound_cluster(&self) -> Block {
+        let n = self.clusters();
+        let mut e = Block::zeroed(SOUND_CLUSTER);
+        e.put_u32(0, u32::MAX);
+        let interior: Vec<u8> = (0..n as u16).flat_map(u16::to_le_bytes).collect();
+        e.block(0x0c, n as u32, Block::new(interior));
+        e
+    }
+
     /// Writes the BSP and lightmap into `set` as built payloads of the
     /// tags `sbsp` and `ltmp` (existing slots), each section's raw block as
     /// a new raw resource, and adds the BSP section. Returns its index in
@@ -623,6 +714,10 @@ impl Structure<'_> {
                 put16(b, o, 0xffff);
             }
             put16(b, 0x7e, 0);
+            // Ambience and reverb sound cluster 0 (E 0x0018d7b0,
+            // 0x0018dd10: indexed unchecked).
+            put16(b, 0x78, 0);
+            put16(b, 0x7a, 0);
             if s.indices.is_empty() {
                 // No raw block: pointer none, everything else zero.
                 put32(b, 0x28, u32::MAX);
@@ -708,6 +803,9 @@ impl Structure<'_> {
         }
         root.block(0x21c, 1, Block::zeroed(ELEMENT_21C));
         root.block(0x224, 1, self.audibility());
+        root.block(0x94, 1, Block::zeroed(ELEMENT_94));
+        root.block(0x148, 1, self.sound_cluster());
+        root.block(0x150, 1, self.sound_cluster());
         root.block(0x234, 1, Block::zeroed(ELEMENT_234));
 
         // Render info per cluster: i16 page, i8 palette -1 (the pages are
