@@ -52,3 +52,11 @@ tungstenite = "0.26"
 s3s = "0.17"
 s3s-fs = "0.17"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+# benches/telemetry.rs: process CPU time (getrusage).
+libc = "0.2"
+
+# Plain-loop benches, no Criterion (as crates/d3d):
+# `cargo bench -p live-server --bench telemetry`.
+[[bench]]
+name = "telemetry"
+harness = false

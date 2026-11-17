@@ -3465,6 +3465,7 @@ dependencies = [
  "hmac 0.12.1",
  "http-body-util",
  "hyper-util",
+ "libc",
  "live-proto",
  "mime_guess",
  "object_store",
