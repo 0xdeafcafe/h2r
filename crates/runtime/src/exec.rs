@@ -215,7 +215,32 @@ impl ExecCtx {
     where
         F: FnOnce(&mut CpuAbi, &mut ExecCtx) -> Result<TransferAbi, GuestFault> + Send + 'static,
     {
-        let Some(token) = self.continuations.insert(Box::new(continuation)) else {
+        self.call_guest_named(
+            cpu,
+            memory,
+            target,
+            std::any::type_name::<F>(),
+            continuation,
+        )
+    }
+    /// [`ExecCtx::call_guest`], naming the continuation for snapshot
+    /// quiescence reports ([`ExecCtx::live_continuations`]). Unnamed ones
+    /// are reported by their closure's type name.
+    pub fn call_guest_named<F>(
+        &mut self,
+        cpu: &mut CpuAbi,
+        memory: &mut Guest,
+        target: u32,
+        origin: &'static str,
+        continuation: F,
+    ) -> Result<TransferAbi, GuestFault>
+    where
+        F: FnOnce(&mut CpuAbi, &mut ExecCtx) -> Result<TransferAbi, GuestFault> + Send + 'static,
+    {
+        let Some(token) = self
+            .continuations
+            .insert(Box::new(continuation), origin, target)
+        else {
             return Ok(TransferAbi::fault(self.emit(Event::ContinuationLimit)));
         };
         match memory.call(cpu, target, token) {
@@ -238,6 +263,20 @@ impl ExecCtx {
     /// unwind. The caller must discard the corresponding guest stack frames.
     pub fn clear_continuations(&mut self) -> usize {
         self.continuations.clear()
+    }
+    /// Callback continuations still waiting for their guest call to
+    /// return. Each is Rust state a machine snapshot cannot save.
+    pub fn live_continuations(&self) -> Vec<crate::continuation::ContinuationInfo> {
+        self.continuations.live_list()
+    }
+    /// A delivered interrupt callback is running on this context: the
+    /// interrupted CPU state is held host-side until it returns.
+    pub fn interrupt_in_service(&self) -> bool {
+        self.interrupt_token.is_some()
+    }
+    /// A fault is waiting to end this context's next run.
+    pub fn fault_pending(&self) -> bool {
+        self.pending_fault.is_some()
     }
     pub(crate) fn continuation_live(&self, token: u32) -> bool {
         self.continuations.live(token)

@@ -19,6 +19,11 @@ use runtime::{CpuAbi, ExecCtx, GuestFault, Runtime, TransferAbi, abi};
 use crate::plan::{Chain, Plan};
 use crate::{Call, Flow, Hook, ImplFn, Obs, Run};
 
+/// The continuation that runs a chain's `after` hooks and observers when
+/// the hooked function returns; named in snapshot quiescence reports, with
+/// the shadow entry it called (docs/runtime/snapshots.md).
+pub const AFTER_HOOKS: &str = "feature: after hooks";
+
 /// What went in, and what was left out.
 #[derive(Debug, Default)]
 pub struct Installed {
@@ -353,7 +358,7 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
         let (after, observe_after) = (Arc::clone(&after), Arc::clone(&observe_after));
         let transfer = {
             let mut mem = rt.memory();
-            ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
+            ctx.call_guest_named(cpu, &mut mem, shadow, AFTER_HOOKS, move |cpu, ctx| {
                 for a in after.iter() {
                     a.announce();
                     (a.f)(&mut Call {

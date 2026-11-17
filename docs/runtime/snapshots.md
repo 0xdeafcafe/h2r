@@ -1,10 +1,12 @@
 # Machine snapshots (design)
 
-Status: phase 1 built ([below](#phase-1-what-was-built)): the file format,
-the guest RAM page codec, the store, the guest layout and RAM restore, and
-the time-stamp counter, all in `crates/snapshot` and `crates/runtime`, with
-the input tap's resume in `crates/xapi`. Nothing is wired into a running
-game yet. Everything after phase 1 on this page is design.
+Status: phases 1 and 2 built. Phase 1 ([below](#phase-1-what-was-built)):
+the file format, the guest RAM page codec, the store, the guest layout and
+RAM restore, and the time-stamp counter, in `crates/snapshot` and
+`crates/runtime`, with the input tap's resume in `crates/xapi`. Phase 2
+([below](#phase-2-the-quiescence-probe)): `Machine::quiescent`, per-feature
+snapshot policies and the opt-in `H2_SNAPSHOT_PROBE`. Nothing saves or
+loads a running game yet. Everything after phase 2 on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
 `state.load {name}`. A user plays to a heavy fight and saves; agents load
@@ -338,7 +340,7 @@ Each phase is proven by tests over synthetic state, as the agent API's are.
 None needs a game run until the last step of phase 5.
 
 1. **Container, RAM, store, runtime basics.** Built (below).
-2. **Quiescence probe.** A `Snapshot` capability for features
+2. **Quiescence probe.** Built (below). A `Snapshot` capability for features
    (`feature::Feature` gains "stateless", "has a section", or "forbids
    snapshots while live", defaulting to forbid, so an unaudited feature
    fails closed). `Machine::quiescent()` reports every blocker in the table
@@ -413,6 +415,68 @@ None needs a game run until the last step of phase 5.
   `Runtime::tsc_last`/`restore_tsc_last`.
 - `xapi::tap`: `Replayer::resume(log, next)` and `Recorder::resume(log)`,
   so replay or recording carries on from a snapshot's input cursor.
+
+## Phase 2: the quiescence probe
+
+What was built (**Code**, tests over synthetic machines):
+
+- `runtime`: every continuation records an origin and the guest address
+  it called (`ExecCtx::call_guest_named`; plain `call_guest` records the
+  closure's type name). `ExecCtx::live_continuations`,
+  `interrupt_in_service`, `fault_pending` report them.
+- `kernel::quiesce`: `Machine::quiescent()` returns every blocker:
+  continuations per thread (and on the DPC context), an interrupt
+  callback in service, a pending fault, queued interrupts, deferred
+  signals, a periodic handler that is running, a stopped machine. The
+  continuation every created thread holds for its whole life
+  (`THREAD_RETURN`, which only terminates the thread) is listed as
+  rebuildable, not as a blocker: a load can recreate it at the same token
+  (phase 3 must add that to `Continuations`). Tests in
+  `kernel/src/quiesce.rs` and `kernel/tests/quiesce.rs`, the latter over
+  guests that really run: threads waiting in the kernel are quiescent; a
+  thread blocked inside an override's guest callback is a blocker until
+  the callback returns.
+- `feature`: `Builder::snapshot(SnapshotPolicy)`: `Stateless`,
+  `ForbidWhileLive(fn)` (the function says, between slices, why it is
+  live), or, for a feature that says nothing, `Unaudited`, which blocks
+  every snapshot. `Plan::snapshot_blockers()` lists them;
+  `Plan::describe_target` names the hooked point behind an after-hook
+  continuation (`feature: after hooks`, called through a chain's shadow
+  entry).
+- `kernel::quiesce::Tally`: counts checks and blockers and makes the
+  rate-limited lines.
+- `boot/src/snapshot_probe.rs`: the probe.
+
+### Running the probe
+
+```sh
+H2_SNAPSHOT_PROBE=1 ...       # check at the end of the slice each game tick ends in
+H2_SNAPSHOT_PROBE=slice ...   # don't end slices early; check at the next boundary
+```
+
+`H2_SNAPSHOT_PROBE=1` installs a `snapshot_probe` feature whose tick
+observer counts ticks and calls `Runtime::request_preempt`, so the slice
+ends a few transfers after the tick, where `state.save` would act. That
+changes the schedule: don't compare a probed run with an unprobed one
+under lockstep. Every line starts with `snapshot-probe:`:
+
+```text
+snapshot-probe: on, checking at the end of the slice each game tick
+snapshot-probe: tick=812 machine=blocked [thread 1: continuation feature: after hooks -> 0x... (after hooks on <point> (0x...) [feature:label])] host_blockers=31
+snapshot-probe: tick=813 machine=quiescent host_blockers=31
+snapshot-probe: progress tick=1800 checked=1800 machine_quiescent=... (..%) fully_quiescent=0 (0.0%)
+snapshot-probe: summary checked=... machine_quiescent=... (..%) fully_quiescent=... (..%)
+snapshot-probe: top machine <count> (<%>) <blocker>
+snapshot-probe: top host <count> (<%>) feature <id>: not audited for snapshots
+```
+
+- A `tick=` line is printed only when the set of machine blockers
+  changes, at most 200 of them; a `progress` line every 1800 checks; the
+  `summary` and up to ten `top machine` and ten `top host` lines at exit.
+- **Machine** blockers are the hard question this phase exists to answer.
+  **Host** blockers are features and subsystems (d3d, dsound, xapi, bink,
+  live, lockstep) that haven't been audited yet. Every one is unaudited
+  today, so `fully_quiescent` is 0 until phase 3 and 4 audit them.
 
 ## Related
 

@@ -187,6 +187,8 @@ pub struct Plan {
     pub warnings: Vec<String>,
     /// Where our strings are served from, one line per source.
     pub locale: Vec<String>,
+    /// Each built feature's snapshot policy, in build order.
+    pub snapshot: Vec<crate::FeatureSnapshot>,
 }
 
 /// The `locale` facade's declarations (see [`crate::locale`]).
@@ -410,6 +412,7 @@ pub(crate) fn build(
             notes,
             warnings,
             locale: locale_lines,
+            snapshot: Vec::new(),
         })
     } else {
         Err(conflicts)
