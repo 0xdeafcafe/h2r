@@ -24,7 +24,7 @@ bytes, or read the disc at run time in `#[ignore]` tests.
 | 2 | Health | **Exception: keep Halo 1's** health bar and health packs. This needs a health system added to the Halo 2 engine (§6) |
 | 3 | Characters, weapons, vehicles | **Halo 1's own, converted**, by default. A setting switches to **Halo 2's** assets instead (§5) |
 | 4 | First walkable level | **a30** (Halo): open outdoor ground, the easiest first proof |
-| 5 | When conversion happens | **Offline, at import**: `h2 import halo1` is to write Halo 2 `.map` files into the data folder (today it copies the Halo 1 source maps only). The engine loads them like any other level |
+| 5 | When conversion happens | **Offline, at import**: `h2 import halo1` writes Halo 2 `.map` files into the data folder, and `h2 play` runs it by itself when `halo1.iso` is next to the Halo 2 disc (§10). The engine loads them like any other level |
 
 ## 1. Pipeline
 
@@ -63,11 +63,11 @@ Pieces:
   (`h2 h1 convert`), see [h1-multiplayer.md](h1-multiplayer.md).
   **`crates/h1campaign`** puts it and the other Halo 1 crates together for
   a campaign level (§9).
-- **The import command**, `h2 import halo1 [disc/halo1.iso]`, is built as
-  step 1 only: it copies the disc's campaign maps unchanged to
-  `<data>/campaigns/halo1/source/` with a SHA-256 manifest. The goal is
-  for it to run the whole pipeline for every level and write the maps,
-  plus the campaign's level list (§4).
+- **The import command**, `h2 import halo1 [disc/halo1.iso]`, converts
+  every campaign level and every multiplayer map into the data root, with
+  the campaign's level list (§4, §10). `h2 play`, `run`, `serve` and
+  `play --follow` run it before booting when `halo1.iso` is beside the
+  Halo 2 disc.
 
 ## 2. What each Halo 1 tag becomes
 
@@ -302,6 +302,103 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   c10, c20, c40, d20, d40);
 - the placement tail (`+0x34` on): zeros except the head, scenery
   included.
+
+## 10. Importing (**Built**: `cli::h1_import`)
+
+### Playing Halo 1 (the user's steps)
+
+1. Put your Halo: Combat Evolved disc image next to the Halo 2 one, named
+   `halo1.iso`: `disc/halo1.iso` beside `disc/halo2.iso` (another name
+   works if it is the only other Halo 1 image there; `mappack.iso` is never
+   taken for it).
+2. `cargo h2 play disc/halo2.iso` (or `play --follow`, `run`, `serve`).
+   The first start converts the disc before the window opens, a line per
+   map on stderr, `halo1: [3/36] campaign a50: done (5.4 s)`. On the
+   owner's discs (2026-11-17) that is 36 maps (ten levels, 13 multiplayer
+   maps in two sandboxes) in about 90 s of a release build, the disc's
+   hash included. Later starts print `halo1: up to date (36 maps from
+   halo1.iso)` and go straight on.
+3. Sign in, **Campaign**, then **Halo: Combat Evolved** in the picker:
+   the ten levels, a10 to d40, as far as the profile has got. Halo 1's
+   multiplayer maps are `h1_<map>` in the multiplayer map list (Custom
+   Game, Xbox Live), named as in Halo 1 (docs/game/h1-multiplayer.md
+   "Importing"). `--level a30` starts a converted level directly.
+
+`--no-halo1` or `H2_HALO1=0` (also `false`, `no`, `off`) skips the check.
+A failure never stops the game: a map that fails is a line,
+`halo1: [5/36] campaign b40: failed: <why>`, and the others are still
+there; a problem before any map (an unreadable disc, a bare `default.xbe`
+as the game disc) is `halo1: not imported: <why>`.
+
+By hand, the same import: `cargo h2 import halo1 [disc/halo1.iso]
+[--data DIR] [--disc disc/halo2.iso] [--force] [--dry-run]
+[--copy-source]`. `--data` defaults to the data root `h2 play` uses
+(`$TMPDIR/h2boot-data`); `--disc` (the Halo 2 disc, for the bases) to
+`$H2_DISC`, else `halo2.iso` beside the Halo 1 disc, else
+`disc/halo2.iso`. It exits non-zero when a map failed, after trying every
+map. `--copy-source` also copies the disc's campaign maps unchanged to
+`<data>/campaigns/halo1/source/` with a SHA-256 manifest (the old step 1).
+
+### What it writes
+
+| Job | Output | Read by |
+|---|---|---|
+| each of a10 .. d40 | `<data>/campaigns/halo1/<level>.map`, `campaign.toml` (`content::campaign_list::HALO1`) | the campaign picker and lists (`boot::campaigns`), `vfs::CampaignMapsBackend` as `maps\<level>.map`, `--level` (`level_boot::resolve_in`) |
+| each Halo 1 multiplayer map on the disc (`h1convert::convert::MAPS`), Halo 2 then Halo 1 sandbox | `<data>/maps/h1_<map>/{h2,h1}/h1_<map>.map`, `manifest.toml` | `boot::new_maps`, the `multiplayer.halo1_sandbox` setting picks the variant |
+
+Campaign levels go on their pinned base (§9); multiplayer maps on their
+default base, pinned (`h2 h1 convert` without `--fresh`).
+
+### The stamp, and when it converts again
+
+`<data>/campaigns/halo1/import.stamp` holds the Halo 1 disc's SHA-256,
+size and modification time, the converter version, and each map's
+outcome, written after every map (an interrupted import resumes). A start
+converts what is missing: a map not in the stamp, or stamped done but
+whose file is gone. Everything is converted again when:
+
+- **the converter version changes**: `CONVERTER_VERSION` in
+  `crates/cli/src/h1_import.rs`. **Bump it in the commit that changes what
+  the Halo 1 converters write** (h1convert, h1campaign, h1objects, h1ai,
+  h1scripts, h1sounds, h1bitmaps, h1models, h1sky, h1text, or the map
+  builder under them). `--follow` builds each new commit's `h2 play`, so
+  after such a merge the next F5 converts again with the new code;
+- the disc is another one (its hash; it is hashed again only when its size
+  or modification time changed);
+- `--force`, or the stamp is deleted.
+
+A map that failed is not tried again until one of those: a failure from
+a converter bug stays a failure until the converter changes.
+
+**Tests.** `cli` `h1_import::tests` (12): the job list (campaign in play
+order, then the multiplayer maps the disc has, both sandboxes); where each
+writes (the folders `boot::new_maps` and the campaigns read); the stamp
+reads back; an unchanged disc is not hashed again and keeps its outcomes,
+another disc or converter version starts again; what is pending; a map
+that fails or panics is recorded, the stamp saved after each, the rest
+converted; `H2_HALO1`/`--no-halo1`; finding `halo1.iso` (any case, or a
+Halo 1 image by its XBE) and never the game disc or `mappack.iso`; no
+Halo 1 disc, or a game "disc" that is no image, writes nothing.
+`boot` `campaigns::tests::a_halo1_import_is_picked_started_and_served`:
+an import's folder (stamp and `source/` included) lists Halo 1 in the
+picker after Halo 2 with the ten levels in order and named; each level's
+start record, looked up as `0x19c270` does after the lists are extended,
+names a scenario path `0x214db0` turns into `d:\maps\<level>.map`, and
+`CampaignMapsBackend` serves exactly the converted file there.
+`level_boot::tests::an_installed_campaign_level_resolves_by_map_or_scenario`:
+`--level a30` gets the campaign and map ids the lists give it.
+Against the discs (ignored): `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso
+cargo test --release -p cli --bin h2 h1_import::tests::real -- --ignored
+--nocapture` imports everything into a scratch data root, imports again
+(nothing to do), and checks `boot::new_maps` lists every `h1_<map>`, the
+picker's Halo 1 lists the ten levels, the VFS serves each level's map, and
+`--level` resolves each (`H1_JOBS=a30,bloodgulch` for some).
+
+**Found missing, and fixed:** `h2 play --level` and `H2_LEVEL` knew only
+the disc's levels, so a converted level could only be reached through the
+menus. `level_boot::resolve_in` also looks in the campaigns installed in
+the data root, with the ids `boot::campaigns` gives them; `h2 play` imports
+before it resolves the level.
 
 ## 8. Open questions
 

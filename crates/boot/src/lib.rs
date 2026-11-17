@@ -754,7 +754,7 @@ pub fn run_hosted_with_live(
     // (docs/runtime/level-boot.md).
     let level = match host.level.take() {
         Some(l) => Some(l),
-        None => level_boot::from_env(&opts.disc).context("H2_LEVEL")?,
+        None => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
     let perf_from = perf_from_var.as_deref().and_then(level_boot::PerfFrom::parse);

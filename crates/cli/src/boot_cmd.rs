@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
-  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack]
+  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
   h2 serve <disc.iso> [--socket PATH] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
@@ -19,6 +19,9 @@ const USAGE: &str = "usage:
   It refuses to when the disc, image or --out lies inside what it would empty.
 `run` installs a mappack.iso found next to the disc into --data (once; a warning
 never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.md).
+`run` and `serve` convert a halo1.iso found next to the disc into --data when
+it is new or the converter changed (a warning never stops the run);
+--no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
 when --out's dylib is current for this h2 and the image, 3 otherwise.
@@ -47,6 +50,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut fresh = false;
     let mut check = false;
     let mut no_mappack = false;
+    let mut no_halo1 = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -63,6 +67,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
             "--no-mappack" => no_mappack = true,
+            "--no-halo1" => no_halo1 = true,
             "--slices" => slices = val()?.parse()?,
             "--transfers" => transfers = val()?.parse()?,
             "-h" | "--help" => bail!("{USAGE}"),
@@ -116,6 +121,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
+    }
+    if crate::h1_import::auto_enabled(no_halo1) {
+        crate::h1_import::auto_import(&disc, &data);
     }
     let r = boot::run(
         &xbe,

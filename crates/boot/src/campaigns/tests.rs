@@ -546,3 +546,115 @@ fn real_disc_lists_take_both_campaigns() {
         );
     }
 }
+
+/// `0x214db0`: the file the cache loader opens for a scenario path: a `t:\`
+/// or `w:\` path as `<path>.map`, anything else as
+/// `d:\maps\<basename>.map` (docs/game/multiple-campaigns.md §3).
+fn map_file_of(scenario: &str) -> String {
+    let lower = scenario.to_ascii_lowercase();
+    if lower.starts_with("t:\\") || lower.starts_with("w:\\") {
+        return format!("{scenario}.map");
+    }
+    let base = scenario.rsplit('\\').next().unwrap_or(scenario);
+    format!("d:\\maps\\{base}.map")
+}
+
+/// What `h2 import halo1` leaves in `<data>/campaigns/halo1/`
+/// (docs/game/campaigns.md "Importing"), followed from the picker to the
+/// file the game opens: the picker lists Halo 1 after Halo 2; its level
+/// list holds the ten levels in play order with their names; each level's
+/// start record (`0x19c270` by the campaign and map id the menu selects)
+/// names a scenario path that `0x214db0` turns into `d:\maps\<level>.map`;
+/// and `vfs::CampaignMapsBackend`, given [`host_maps`], serves exactly the
+/// converted file there. The import's stamp and `source/` folder beside the
+/// maps change nothing.
+#[test]
+fn a_halo1_import_is_picked_started_and_served() {
+    use vfs::Backend;
+    let dir = std::env::temp_dir().join(format!("h2-campaigns-h1chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The disc: retail maps only.
+    let disc = dir.join("disc");
+    std::fs::create_dir_all(disc.join("maps")).unwrap();
+    std::fs::write(disc.join("maps/mainmenu.map"), b"retail mainmenu").unwrap();
+    std::fs::write(disc.join("maps/01a_tutorial.map"), b"retail tutorial").unwrap();
+    // The import's output.
+    let data = dir.join("data");
+    let h1 = data.join("campaigns/halo1");
+    std::fs::create_dir_all(h1.join("source")).unwrap();
+    std::fs::write(h1.join(cl::MANIFEST_FILE), HALO1).unwrap();
+    let levels = [
+        ("a10", "The Pillar of Autumn"),
+        ("a30", "Halo"),
+        ("a50", "The Truth and Reconciliation"),
+        ("b30", "The Silent Cartographer"),
+        ("b40", "Assault on the Control Room"),
+        ("c10", "343 Guilty Spark"),
+        ("c20", "The Library"),
+        ("c40", "Two Betrayals"),
+        ("d20", "Keyes"),
+        ("d40", "The Maw"),
+    ];
+    for (l, _) in levels {
+        std::fs::write(h1.join(format!("{l}.map")), format!("converted {l}")).unwrap();
+    }
+    std::fs::write(h1.join("import.stamp"), "converter=1\n").unwrap();
+    std::fs::write(h1.join("source/manifest.txt"), "x").unwrap();
+
+    let (ms, lines) = installed(&data, &|m| m == "01a_tutorial" || m == "mainmenu");
+    assert!(lines.is_empty(), "{lines:?}");
+    let retail: Vec<u32> = (0..15).map(|i| 0x65 + i).collect();
+    let built = cl::build(&ms, &[1], &retail).unwrap();
+    assert_eq!(built.len(), 1);
+    let b = &built[0];
+
+    // The picker: Halo 2, then Halo 1.
+    let picker = Picker::new(&built);
+    assert_eq!(picker.rows[1], (b.campaign_id, "Halo: Combat Evolved".to_string()));
+    assert_eq!(picker.campaign(1), Some(b.campaign_id));
+    // Its levels, in play order, with names.
+    let got: Vec<(&str, &str)> = b
+        .levels
+        .iter()
+        .map(|l| (l.map.as_str(), l.names[0].as_str()))
+        .collect();
+    assert_eq!(got, levels);
+
+    // The lists the game reads, extended (15 retail levels, 5 free slots).
+    let mut g = globals(15, 5, true);
+    extend(&mut g, &built, &REGION).unwrap();
+    game_reads(&g, &built);
+    let start = start_list(&g);
+    assert_eq!(
+        level_select_ids(&start, b.campaign_id),
+        b.levels.iter().map(|l| l.map_id).collect::<Vec<_>>()
+    );
+
+    // The VFS as boot builds it: our maps over the disc.
+    let state = State {
+        built: built.clone(),
+        selection: Selection::default(),
+        progress: Progress::memory(),
+    };
+    let maps = host_maps(&data, &state);
+    assert_eq!(maps.len(), 10);
+    let mut fs = vfs::CampaignMapsBackend::new(vfs::DirDiscBackend::open(&disc).unwrap(), maps);
+    for l in &b.levels {
+        // The menu's start: the selected map id, the campaign fixed to it.
+        let scenario = lookup(&start, b.campaign_id, l.map_id).expect("a start record");
+        let file = map_file_of(scenario);
+        assert_eq!(file, format!("d:\\maps\\{}.map", l.map));
+        let path = file.strip_prefix("d:\\").unwrap();
+        let want = format!("converted {}", l.map);
+        let meta = fs.stat(path).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+        assert_eq!(meta.end_of_file, want.len() as u64, "{path}");
+        let mut buf = vec![0u8; want.len()];
+        assert_eq!(fs.read_at(path, 0, &mut buf).unwrap(), want.len());
+        assert_eq!(buf, want.as_bytes(), "{path}");
+    }
+    // The disc's own maps are still the disc's.
+    let mut buf = [0u8; 15];
+    fs.read_at("maps\\mainmenu.map", 0, &mut buf).unwrap();
+    assert_eq!(&buf, b"retail mainmenu");
+    let _ = std::fs::remove_dir_all(&dir);
+}

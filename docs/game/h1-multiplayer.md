@@ -612,6 +612,29 @@ disc.
    model per variant are built (below). Next Halo 1's skies and a HUD
    with the health meter.
 
+## Importing (**Built**: `cli::h1_import`)
+
+Every Halo 1 multiplayer map on the disc, in both sandboxes, is converted
+by `h2 import halo1`, and by `h2 play` itself when the disc is there:
+
+1. Put your Halo: Combat Evolved disc image next to the Halo 2 one as
+   `halo1.iso` (`disc/halo1.iso` beside `disc/halo2.iso`).
+2. `cargo h2 play disc/halo2.iso`. The first start converts the disc's
+   maps (and the campaign), a line each: `halo1: [n/N] multiplayer
+   bloodgulch (Halo 1 sandbox): done (<seconds> s)`.
+3. The maps are `h1_<map>` in the multiplayer map list, under Halo 1's
+   names (Blood Gulch, Hang 'Em High, ...). The
+   `multiplayer.halo1_sandbox` setting picks which variant plays (Halo 1's
+   objects by default); it applies at the next start.
+
+Each map is `<data>/maps/h1_<map>/` with `h2/h1_<map>.map`,
+`h1/h1_<map>.map` and one `manifest.toml` listing both, on the map's
+default base (`MAPS`), pinned. When it converts again, the stamp, the
+converter version to bump (`CONVERTER_VERSION`, `crates/cli/src/h1_import.rs`),
+`--no-halo1` / `H2_HALO1=0` and the tests are in
+[campaigns.md](campaigns.md) §10. `h2 h1 convert` still converts one map
+by hand, into any `--out`.
+
 ## The setting and the map list (design)
 
 - **Row:** `multiplayer.halo1_sandbox`, a choice `halo1` (default) /

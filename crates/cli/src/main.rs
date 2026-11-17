@@ -18,6 +18,7 @@ mod emit_output;
 mod extract_shaders;
 mod fonts;
 mod h1_cmd;
+mod h1_import;
 mod lighting;
 mod lights;
 mod live_accounts;
@@ -101,10 +102,11 @@ const USAGE: &str = "usage: h2 <command> [disc]
   font <font> <text> --out <png>
                           render text with a /maps/fonts file; --all validates every font
                           (options --color RRGGBB[AA], --force, --disc <iso>)
-  import halo1 [iso] [--data DIR]
-                          check the Halo 1 disc (default disc/halo1.iso) and copy
-                          its campaign maps to <data>/campaigns/halo1/source/
-                          (docs/game/campaigns.md)
+  import halo1 [iso] [--data DIR] [--disc H2ISO] [--force]
+                          convert the Halo 1 disc (default disc/halo1.iso): its ten
+                          campaign levels and its multiplayer maps, into the data
+                          root `h2 play` reads; `h2 play` does it by itself when
+                          halo1.iso is next to the disc (docs/game/campaigns.md)
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
                           Halo 1 map's tags (docs/formats/h1-map-format.md)

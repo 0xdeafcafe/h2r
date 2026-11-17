@@ -39,7 +39,9 @@ builds each new commit in its own worktree under the cache dir (default
 F5 on \"Update ready\" restarts into the new build; F6 hides the banner.
 The game's data dir stays the same unless --fresh-data. Closing the window
 ends it. The child installs a mappack.iso beside the disc into its data dir
-as `h2 play` does (--no-mappack and H2_MAPPACK=0 reach it).";
+as `h2 play` does (--no-mappack and H2_MAPPACK=0 reach it), and converts a
+halo1.iso there again when a new build's converter version changed
+(--no-halo1 and H2_HALO1=0 reach it).";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
