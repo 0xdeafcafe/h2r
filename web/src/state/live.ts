@@ -35,7 +35,7 @@ function createLive() {
   let pending: WireEvent[] = [];
   let flushScheduled = false;
   let caughtUpAt: number | null = null;
-  let rest: Api = api(server());
+  let rest: Api = api(server(), () => reader());
   /** A one-use `read` token for the signed-in account (state/identity.ts
    *  sets it), or null: reads that depend on the reader use it. */
   let reader: () => Promise<string | null> = async () => null;
@@ -120,7 +120,7 @@ function createLive() {
     frameHub.clear();
     pending = [];
     caughtUpAt = null;
-    rest = api(target);
+    rest = api(target, () => reader());
     verifier = makeVerifier(target, rest);
     batch(() => {
       setState(reconcile(initialState()));
@@ -157,7 +157,8 @@ function createLive() {
   function openStream(my: number, r: Api, from: number | null) {
     client = new StreamClient(
       {
-        url: (from) => wsUrl(r.streamUrl(from)),
+        url: (from, auth) => wsUrl(r.streamUrl(from, auth)),
+        auth: () => r.readToken(),
         connect: (url) => {
           const ws = new WebSocket(url);
           // Frames come packed, as binary messages.
