@@ -153,6 +153,11 @@ moments, `5c` inertia matrices (2 x `0x24`), `68` powered mass points
 
 ## Building Halo 2 tags (Design)
 
+`Options::rebuild` (off by default) builds scenery with no template:
+the `scen`, its `hlmt` and its `mode`'s material list are written field by
+field from typed definitions. See [tag-definitions.md](tag-definitions.md)
+for the field-by-field comparison with the template path below.
+
 Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
 on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
