@@ -1224,3 +1224,5 @@ fn ai_status_comparisons_compare_combat_status_once() {
     // Under a tenth of the ladder's nodes per comparison.
     assert!(out.nodes.len() < 80, "{}", out.nodes.len());
 }
+
+mod cutscenes;

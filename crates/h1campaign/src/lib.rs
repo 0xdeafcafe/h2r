@@ -21,6 +21,7 @@
 //! the owner's discs at run time.
 #![forbid(unsafe_code)]
 
+pub mod cutscenes;
 pub mod donor;
 pub mod manifest;
 pub mod scenario;
@@ -152,10 +153,16 @@ pub struct Options<'a> {
     /// Retail maps to copy the characters the base lacks from
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
-    /// Halo 1's cinematics and the a10 tutorial: skipped (the default)
-    /// until cutscene animation and recordings are converted
-    /// (docs/game/campaigns.md, Cutscenes).
-    pub cutscenes: h1scripts::compile::Cutscenes,
+    /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
+    /// (the default) takes each level's own choice
+    /// ([`cutscenes::default_for`]; docs/game/campaigns.md, Cutscenes).
+    pub cutscenes: Option<h1scripts::compile::Cutscenes>,
+    /// The animation graphs and recorded animations the scripts name
+    /// ([`cutscenes`]); off measures what they cost.
+    pub cutscene_data: bool,
+    /// The animation graphs alone (their animation data is raw in the map
+    /// file, which the campaign cache bounds).
+    pub cutscene_graphs: bool,
 }
 
 impl Default for Options<'_> {
@@ -166,7 +173,9 @@ impl Default for Options<'_> {
             scripts: None,
             sounds: 0,
             donors: None,
-            cutscenes: Default::default(),
+            cutscenes: None,
+            cutscene_data: true,
+            cutscene_graphs: true,
         }
     }
 }
@@ -201,20 +210,76 @@ pub struct Report {
     pub scenario: scenario::ScenarioReport,
     /// Everything left out, one line each, with the reason.
     pub dropped: Vec<String>,
+    /// How lean the conversion had to be to fit (`convert`).
+    pub lean: Lean,
+    /// The map file's size, bytes.
+    pub file_size: u64,
+}
+
+/// The lean ladder: what a conversion of a level over the engine's tag
+/// memory bound leaves out, one more step each time (`convert`). Each step
+/// leaves out its own extra and every step before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lean {
+    /// Everything.
+    #[default]
+    Everything,
+    /// The empty squads kept only because the scripts name them.
+    EmptySquads,
+    /// The seat-mapping table.
+    SeatTable,
+    /// Halo 1's textures on object models (`h1objects`' shader copies and
+    /// bitmaps; the models draw with the base's model shader).
+    ObjectTextures,
+    /// The looping sounds (music and ambience) the scripts name.
+    Music,
+    /// The cutscenes' animation graphs and recorded animations
+    /// ([`cutscenes`]).
+    CutsceneData,
+    /// The level data the scripts name (cutscene flags, camera points,
+    /// titles, device groups): the calls naming it are stubbed
+    /// (`h1scripts::compile::INDEXED`), their other hooks stay `none`.
+    LevelData,
+}
+
+impl Lean {
+    /// The steps in order.
+    pub const LADDER: [Lean; 7] = [
+        Lean::Everything,
+        Lean::EmptySquads,
+        Lean::SeatTable,
+        Lean::ObjectTextures,
+        Lean::Music,
+        Lean::CutsceneData,
+        Lean::LevelData,
+    ];
+
+    /// The next step down, if any.
+    pub fn next(self) -> Option<Lean> {
+        let i = Self::LADDER.iter().position(|&l| l == self)?;
+        Self::LADDER.get(i + 1).copied()
+    }
+
+    /// Whether this conversion leaves out `step`'s extra.
+    pub fn leaves_out(self, step: Lean) -> bool {
+        step != Lean::Everything && self >= step
+    }
 }
 
 impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} on {}: {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}",
+            "{} on {}: {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x}, lean {:?}",
             self.level,
             self.base,
             self.tags_after,
             self.tags_after.saturating_sub(self.tags_before),
             self.metadata,
             self.memory,
-            self.metadata_max
+            self.metadata_max,
+            self.file_size,
+            self.lean
         )?;
         let grew: u32 = self.appended.iter().map(|a| a.1).sum();
         let top: Vec<String> = self
@@ -258,26 +323,36 @@ pub struct Converted {
 /// Converts the Halo 1 campaign level `h1` onto `base` (a retail Halo 2
 /// campaign map, normally [`BASE`]).
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
-    // A level at the bound (b40) is converted again without the extras the
-    // scripts only name: first the empty squads kept for their names, then
-    // the seat table, then Halo 1's textures on the objects' models
-    // (`h1objects`' shader copies and bitmaps; the models draw with the
-    // base's model shader), then the looping sounds (music), then the
-    // level data (`scenario::write`'s `lean`). Calls naming level data that is not there are stubbed
-    // (`h1scripts::compile::INDEXED`).
-    // A map file over the engine's size limit is converted again with that
-    // much less music (and 256 KiB of margin), down to none.
-    let mut lean = 0;
+    // A level over the tag memory bound (b40) is converted again a step
+    // further down the lean ladder ([`Lean`]). A map file over the
+    // engine's size limit is converted again with that much less music
+    // (and 256 KiB of margin), down to none, then without the cutscenes'
+    // animation graphs (their animation data is raw in the file), the
+    // same order as the ladder.
+    let mut lean = Lean::Everything;
     let mut music = u64::MAX;
+    let mut opts = Options { ..*opts };
     loop {
-        match convert_with(h1, base, opts, lean, music) {
-            Err(Error::TagMemory { .. }) if lean < 5 => lean += 1,
+        match convert_with(h1, base, &opts, lean, music) {
+            Err(Error::TagMemory { .. }) if lean.next().is_some() => {
+                lean = lean.next().expect("checked");
+            }
             Err(Error::FileSize {
                 need,
                 max,
                 music: m,
                 ..
             }) if m > 0 => music = m.saturating_sub(need - max + 0x4_0000),
+            Err(Error::FileSize { .. }) if opts.cutscene_graphs => opts.cutscene_graphs = false,
+            Ok(mut done) => {
+                if !opts.cutscene_graphs && !lean.leaves_out(Lean::CutsceneData) {
+                    done.report.dropped.push(
+                        "cutscene animation graphs: over the campaign cache's file size with them"
+                            .into(),
+                    );
+                }
+                return Ok(done);
+            }
             r => return r,
         }
     }
@@ -287,11 +362,12 @@ fn convert_with<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
     opts: &Options,
-    lean: u8,
+    lean: Lean,
     music: u64,
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
+        lean,
         level: level.clone(),
         base: base.header().name.clone(),
         tags_before: base.tags().len(),
@@ -302,7 +378,7 @@ fn convert_with<R: Read + Seek>(
     let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
     let objects_base = if opts.objects {
         let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
-        if lean >= 3 {
+        if lean.leaves_out(Lean::ObjectTextures) {
             b.model_shader = None;
         }
         Some(b)
@@ -420,6 +496,7 @@ fn convert_with<R: Read + Seek>(
                 .map_or(0, |s| s.looping_bytes),
         });
     }
+    report.file_size = bytes.len() as u64;
     let back = Map::from_reader(std::io::Cursor::new(bytes.as_slice()))?;
     report.tags_after = back.tags().len();
     report.metadata = back.header().meta_size;

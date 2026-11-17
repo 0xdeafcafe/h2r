@@ -135,18 +135,8 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   converter version 16) every such wait ended at once, so a level's
   dialogue played over itself. `sound_impulse_time_waits_on_the_playing_sound`
   checks the mapping on the discs.
-- **Inferred** (`INFERRED`): two Halo 2 builtins no retail script calls,
-  named from the XBE because the descriptor at that index has the Halo 1
-  builtin's signature and sits where Halo 1's table puts it between named
-  neighbours. `device_get_power` 255 (`(device) -> real`, between
-  `device_set_power` 254 and `device_set_position` 256; its evaluator
-  `0x002a4780` returns the device's float at `+0x134`; d40's control
-  rooms wait on it) and `unit_has_weapon_readied` 243 (`(unit
-  object_definition) -> boolean`, after `unit_has_weapon` 242; a30's
-  sniper tutorial). `Table::build` still checks their signatures.
-  Other unnamed descriptors with plausible signatures (241 `(unit) ->
-  short`, 600 `(sound) -> long`, 586 and 587 `() -> boolean`) are not
-  named: their neighbours do not pin them down.
+- **Named by position**: Halo 2 builtins no retail script calls, named
+  from the XBE (below, "Builtins named by position").
 - **`ai_status`** has no Halo 2 counterpart of the same scale. Halo 1's
   XBE help text gives its scale (0 inactive, 1 noncombat, 2 guarding, 3
   search/suspicious, 4 definite enemy, 5 visible enemy, 6 engaging);
@@ -178,6 +168,38 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   never call `!=`.
 - **Missing**: no name match, a different arity, a special form on one side
   only, or a parameter type Halo 2 lacks.
+
+### Builtins named by position
+
+`translate::Target::from_catalog` also names 25 Halo 2 builtins no retail
+script calls (`h1scripts::identified::IDENTIFIED`), so the Halo 1
+builtins of those names translate like any other. Halo 2's table keeps
+Halo 1's order with entries inserted between, so each is the only unnamed
+Halo 2 builtin between the named ones around it whose signature (by type
+name) is Halo 1's: the recordings 138 to 142 (between
+`physics_disable_character_ground_adhesion_forces` 129 and
+`texture_camera_set_object_marker` 144; E: the evaluators of 138, 139 and
+140 call one function, `0x001fb360`, with play flags 0, 8 and `0x10`,
+which reads the scenario's recorded animations), `object_set_facing` 106,
+`scenery_animation_start` 184 and `_at_frame` 188, `unit_open` 194,
+`unit_close` 195, `custom_animation_list` 205,
+`unit_custom_animation_at_frame` 206, `unit_is_playing_custom_animation`
+207, `unit_enter_vehicle` 216, `unit_suspended` 249, `camera_set_relative`
+451, `camera_set_animation` 452, `camera_set_first_person` 456,
+`camera_set_dead` 457 (an object in Halo 2), `object_pvs_set_camera` 471,
+`cinematic_set_title_delayed` 561, `vehicle_hover` 621 and `show_hud` 625
+(the first of three boolean-to-boolean builtins after
+`hud_cinematic_fade`; the weakest). For waits outside the cutscenes:
+`device_get_power` 255 (`(device) -> real`, between `device_set_power`
+254 and `device_set_position` 256; E: its evaluator `0x002a4780` returns
+the device's float at `+0x134`; d40's control rooms wait on it) and
+`unit_has_weapon_readied` 243 (`(unit object_definition) -> boolean`,
+after `unit_has_weapon` 242; a30's sniper tutorial). Other unnamed
+descriptors with plausible signatures (241 `(unit) -> short`, 600
+`(sound) -> long`, 586 and 587 `() -> boolean`) are not named: their
+neighbours do not pin them down. Each is added only when that index is
+unnamed and its signature matches. The neighbours and reasons are in the
+module. Only the recordings have more than position as evidence.
 
 Object, AI, device, trigger volume, cutscene, tag, enum and string ID values
 keep their Halo 1 token and become hooks (step 3); AI encounters map to
@@ -265,6 +287,11 @@ retail compiler writes them; literals keep their source type.
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
   `missing_globals` (4 across the campaign).
+- **Animation names**: a string literal right after an animation graph
+  literal (`custom_animation`, `scenery_animation_start`, ...) is hooked
+  with `h1_type` `compile::ANIMATION_NAME` and the token
+  `<graph>|<animation>`, so the converter can write the string ID of the
+  converted animation's name.
 - **Indexed values**: a cutscene flag, camera point, title or device group
   atom is an index the engine reads without a check (b40 faulted at
   `0x002a003f` in `object_teleport` on flag -1). `compile_with`'s
@@ -276,7 +303,8 @@ retail compiler writes them; literals keep their source type.
 - **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
   of the level's `cinematic_skip_start` script as `false` (Halo 1's path
   after a skip) and wakes a10's `fast_setup` where it wakes
-  `tutorial_setup`; `compile` keeps `Cutscenes::Play`. Why, and what each
+  `tutorial_setup`; `Cutscenes::PlayShortPaths` keeps the cinematics and
+  takes the short path; `compile` keeps `Cutscenes::Play`. Why, and what each
   level does: [campaigns.md](../game/campaigns.md) §9, Cutscenes.
 - **References** are Halo 1 group and tag name pairs; the converter maps them.
 
@@ -339,6 +367,7 @@ atom's index holds the atom's token as its name.
 | camera points | `0x4f0` (`0x68`, `+4`); position `+0x28`, orientation `+0x34` | `0x1e8` (`0x40`, `+4`); position `+0x28`, orientation `+0x34` | index |
 | titles | `0x4fc` (`0x60`, `+4`) | `0x1f0` (`0x24`, string ID `+0`) | index |
 | device groups | `0x288` (`0x34`, `+0`); initial value `+0x20`, flags `+0x24` | `0xa0` (`0x28`, `+0`); same fields | datum `(0xe564 + i) << 16 \| i` |
+| recorded animations | `0x36c` (`0x40`, `+0`); stream data reference `+0x2c` | `0x110` (`0x34`, `+0`); stream data reference `+0x2c` | index |
 | seat mappings | (seat text in the script) | `0x228` (8: unit `vehi` datum, seat mask) | `count << 16 \| first` |
 
 Evidence: Halo 1, a30 (every flag, camera point, title and device group

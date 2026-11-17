@@ -87,6 +87,10 @@ pub enum Cutscenes {
     /// ([`SHORT_PATHS`]) wakes the short path.
     #[default]
     Skip,
+    /// Play the cinematics, but wake the short path of a tutorial that
+    /// cannot finish ([`SHORT_PATHS`]; a10's cryo tutorial waits on look
+    /// tests Halo 2 has no builtin for).
+    PlayShortPaths,
 }
 
 /// The user script whose call guards every skippable Halo 1 cinematic.
@@ -135,6 +139,12 @@ pub const STATUS_LADDER: &[(&str, i32)] = &[
     ("ai_combat_status_alert", 2),
     ("ai_combat_status_idle", 1),
 ];
+
+/// The `h1_type` of a hook on an animation name: its token is
+/// `<graph tag name>|<Halo 1 animation name>`, and the converter writes the
+/// string ID of that animation's name in the converted `jmad`
+/// (`h1models::jmad::animation_names`).
+pub const ANIMATION_NAME: &str = "animation_name";
 
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
@@ -536,6 +546,35 @@ impl Compiler<'_> {
         Some((to, u16::try_from(i).ok()?))
     }
 
+    /// An animation name (a string literal right after an animation graph
+    /// literal, as in `custom_animation`, `scenery_animation_start` and
+    /// `camera_set_animation`) names an animation of that graph, which the
+    /// converter renames. Its hook gets [`ANIMATION_NAME`] as its `h1_type`
+    /// and `<graph>|<animation>` as its token. `compiled[k]` is `args[k]`
+    /// compiled.
+    fn mark_animation_names(&mut self, args: &[Datum], compiled: &[Datum]) -> Result<()> {
+        for k in 1..args.len().min(compiled.len()) {
+            let (g, a) = (*self.t.node(args[k - 1])?, *self.t.node(args[k])?);
+            let is = |n: &Node, ty: &str| {
+                n.atom() && !n.global() && self.h1.type_name(n.opcode()).ok() == Some(ty)
+            };
+            if !is(&g, "animation_graph") || !is(&a, "string") {
+                continue;
+            }
+            let token = format!(
+                "{}|{}",
+                self.t.string(g.string_offset())?,
+                self.t.string(a.string_offset())?
+            );
+            let slot = compiled[k].slot() as u16;
+            if let Some(h) = self.out.hooks.iter_mut().find(|h| h.slot == slot) {
+                h.h1_type = ANIMATION_NAME.to_owned();
+                h.token = token;
+            }
+        }
+        Ok(())
+    }
+
     /// The first of `args` that is an atom of an [`INDEXED`] type which
     /// will not resolve: its Halo 2 type name and token.
     fn unindexed_argument(&self, args: &[Datum]) -> Result<Option<(String, String)>> {
@@ -841,6 +880,7 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
+        self.mark_animation_names(&args, &out[offset..])?;
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(
@@ -901,7 +941,7 @@ impl Compiler<'_> {
                 _ => crate::decompile::literal(self.t, self.h1, n)?.into_bytes(),
             };
             if source == h2t::SCRIPT
-                && self.cutscenes == Cutscenes::Skip
+                && self.cutscenes != Cutscenes::Play
                 && let Some((to, i)) = self.short_path(&text)
             {
                 let bits = bits & 0xffff_0000 | u32::from(i);

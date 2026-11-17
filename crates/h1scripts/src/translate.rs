@@ -34,19 +34,6 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("sound_impulse_time", "sound_impulse_language_time"),
 ];
 
-/// Halo 2 builtins no retail script calls, so unnamed in the catalog, named
-/// here from the XBE: the descriptor at that index has the Halo 1
-/// builtin's signature and sits where Halo 1's table puts it among named
-/// neighbours. [`Table::build`] still checks the signature against Halo 1's.
-///
-/// - `device_get_power` 255: `(device) -> real`, between `device_set_power`
-///   (254) and `device_set_position` (256); its evaluator (`0x002a4780`)
-///   returns a device's float at `+0x134` (d40's control rooms).
-/// - `unit_has_weapon_readied` 243: `(unit object_definition) -> boolean`,
-///   after `unit_has_weapon` (242), as in Halo 1's table (a30's sniper
-///   tutorial).
-pub const INFERRED: &[(&str, u16)] = &[("device_get_power", 255), ("unit_has_weapon_readied", 243)];
-
 /// Halo 1 builtins whose Halo 2 counterpart takes different arguments, and
 /// the rewrite that bridges them.
 pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
@@ -114,15 +101,9 @@ pub struct Target {
 impl Target {
     /// The named builtins and types of an observed Halo 2 catalog.
     pub fn from_catalog(c: &hs::Catalog) -> Self {
-        let named = c.named_functions();
-        let inferred = INFERRED
-            .iter()
-            .filter(|(n, i)| !named.iter().any(|(j, m)| j == i || m == n))
-            .map(|&(n, i)| (i, n));
-        let builtins = named
-            .clone()
+        let mut builtins: HashMap<String, H2Builtin> = c
+            .named_functions()
             .into_iter()
-            .chain(inferred)
             .filter_map(|(i, name)| {
                 let f = c.function(i).ok()?;
                 Some((
@@ -136,6 +117,7 @@ impl Target {
                 ))
             })
             .collect();
+        crate::identified::name_unnamed(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),

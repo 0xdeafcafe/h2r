@@ -325,10 +325,7 @@ fn waits_on_stubs() {
     let table = Table::build(&catalog, &target);
     let missing = |i: u16| table.builtin(i).is_some_and(|t| t.kind == Kind::Missing);
     // Zero is done for every wait on these (`(= 0 x)`, `(sleep x)`).
-    const ZERO_DONE: &[&str] = &[
-        "recording_time",
-        "ai_going_to_vehicle",
-    ];
+    const ZERO_DONE: &[&str] = &["recording_time", "ai_going_to_vehicle"];
     let handled = |b: &str| {
         b == "ai_status"
             || ZERO_DONE.contains(&b)
