@@ -1199,3 +1199,62 @@ fn every_campaign_level_s_clusters_are_drawn_as_the_engine_reads_them() {
     assert!(levels > 0);
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+/// Every render model's materials (`mode +0x60`, `0x20` each) whose shader
+/// reference (`+0x08`, datum `+0x0c`) is NONE, as "name: material k". The
+/// shader draw begin `0x1bbf0` does not skip a NONE shader, and the draw
+/// `0x16b90` then reads tag slot `0xffff` as a `shad` (h1convert::sky).
+fn none_materials(m: &mut Map<Cursor<Vec<u8>>>) -> (usize, Vec<String>) {
+    let mem = map_memory(m);
+    let modes: Vec<(String, u32)> = m
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"mode"))
+        .filter_map(|t| Some((t.name.clone().unwrap_or_default(), t.location?.address)))
+        .collect();
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for (name, at) in &modes {
+        let count = count_at(&mem, at + 0x60);
+        let first = count_at(&mem, at + 0x64);
+        for k in 0..count {
+            n += 1;
+            if count_at(&mem, first + k * 0x20 + 0xc) == u32::MAX {
+                bad.push(format!("{name}: material {k}"));
+            }
+        }
+    }
+    (n, bad)
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn no_converted_model_on_any_campaign_level_has_a_none_material() {
+    let donors = donors();
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut failed = Vec::new();
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|l| l == level))
+        {
+            continue;
+        }
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::base_for(level));
+        let opts = Options {
+            objects: true,
+            donors: Some(&donors),
+            ..Default::default()
+        };
+        let done =
+            h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let (n, bad) = none_materials(&mut m);
+        println!("{level}: {n} materials, {} name no shader", bad.len());
+        if !bad.is_empty() {
+            failed.push(format!("{level}: {bad:#?}"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
