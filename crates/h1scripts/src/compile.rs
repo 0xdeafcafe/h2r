@@ -87,6 +87,10 @@ pub enum Cutscenes {
     /// ([`SHORT_PATHS`]) wakes the short path.
     #[default]
     Skip,
+    /// Play the cinematics, but wake the short path of a tutorial that
+    /// cannot finish ([`SHORT_PATHS`]; a10's cryo tutorial waits on look
+    /// tests Halo 2 has no builtin for).
+    PlayShortPaths,
 }
 
 /// The user script whose call guards every skippable Halo 1 cinematic.
@@ -112,6 +116,20 @@ pub const DONE_VALUES: &[(&str, i32)] = &[
     ("game_all_quiet", 1),
     ("game_safe_to_speak", 1),
 ];
+
+/// The Halo 1 builtin Halo 2 has no name for whose value is known when the
+/// level is converted: `(sound_impulse_time <sound>)`, the length of a
+/// dialogue line in ticks, which cutscenes sleep on after almost every
+/// line. Under [`Missing::Stub`] it compiles to a number literal hooked
+/// with this as its `h1_type` and the sound's tag name as its token; the
+/// converter writes the length (h1campaign, from Halo 1's `snd!`).
+pub const SOUND_LENGTH: &str = "sound_impulse_time";
+
+/// The `h1_type` of a hook on an animation name: its token is
+/// `<graph tag name>|<Halo 1 animation name>`, and the converter writes the
+/// string ID of that animation's name in the converted `jmad`
+/// (`h1models::jmad::animation_names`).
+pub const ANIMATION_NAME: &str = "animation_name";
 
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
@@ -513,6 +531,65 @@ impl Compiler<'_> {
         Some((to, u16::try_from(i).ok()?))
     }
 
+    /// `(sound_impulse_time <sound>)` under [`Missing::Stub`]: a number
+    /// literal of `expected`, 0 until the converter writes the sound's
+    /// length in ticks into it (a [`Hook`] whose `h1_type` is
+    /// [`SOUND_LENGTH`] and whose token is the sound's tag name). `None`
+    /// for any other call, or when the argument is not a sound literal.
+    fn sound_length(&mut self, name: &str, args: &[Datum], expected: u16) -> Result<Option<Datum>> {
+        if name != SOUND_LENGTH || args.len() != 1 || !is_number(expected) {
+            return Ok(None);
+        }
+        let n = *self.t.node(args[0])?;
+        if !n.atom() || n.global() || self.h1.type_name(n.opcode()).ok() != Some("sound") {
+            return Ok(None);
+        }
+        let token = self.t.string(n.string_offset())?.to_owned();
+        let d = self.number(expected, 0);
+        self.out.hooks.push(Hook {
+            slot: d.slot() as u16,
+            h2_type: expected,
+            type_name: self
+                .h2
+                .types
+                .get(expected as usize)
+                .cloned()
+                .unwrap_or_default(),
+            h1_type: SOUND_LENGTH.to_owned(),
+            token,
+        });
+        Ok(Some(d))
+    }
+
+    /// An animation name (a string literal right after an animation graph
+    /// literal, as in `custom_animation`, `scenery_animation_start` and
+    /// `camera_set_animation`) names an animation of that graph, which the
+    /// converter renames. Its hook gets [`ANIMATION_NAME`] as its `h1_type`
+    /// and `<graph>|<animation>` as its token. `compiled[k]` is `args[k]`
+    /// compiled.
+    fn mark_animation_names(&mut self, args: &[Datum], compiled: &[Datum]) -> Result<()> {
+        for k in 1..args.len().min(compiled.len()) {
+            let (g, a) = (*self.t.node(args[k - 1])?, *self.t.node(args[k])?);
+            let is = |n: &Node, ty: &str| {
+                n.atom() && !n.global() && self.h1.type_name(n.opcode()).ok() == Some(ty)
+            };
+            if !is(&g, "animation_graph") || !is(&a, "string") {
+                continue;
+            }
+            let token = format!(
+                "{}|{}",
+                self.t.string(g.string_offset())?,
+                self.t.string(a.string_offset())?
+            );
+            let slot = compiled[k].slot() as u16;
+            if let Some(h) = self.out.hooks.iter_mut().find(|h| h.slot == slot) {
+                h.h1_type = ANIMATION_NAME.to_owned();
+                h.token = token;
+            }
+        }
+        Ok(())
+    }
+
     /// The first of `args` that is an atom of an [`INDEXED`] type which
     /// will not resolve: its Halo 2 type name and token.
     fn unindexed_argument(&self, args: &[Datum]) -> Result<Option<(String, String)>> {
@@ -573,7 +650,10 @@ impl Compiler<'_> {
             return match self.policy {
                 Missing::Stub => Ok(match DONE_VALUES.iter().find(|d| d.0 == f.name) {
                     Some(&(_, v)) => self.number(expected, v),
-                    None => self.default(expected),
+                    None => match self.sound_length(&f.name, &args, expected)? {
+                        Some(d) => d,
+                        None => self.default(expected),
+                    },
                 }),
                 Missing::Extension => {
                     let fixed = self.h1.fixed_signature(index);
@@ -646,6 +726,7 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
+        self.mark_animation_names(&args, &out[offset..])?;
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(
@@ -706,7 +787,7 @@ impl Compiler<'_> {
                 _ => crate::decompile::literal(self.t, self.h1, n)?.into_bytes(),
             };
             if source == h2t::SCRIPT
-                && self.cutscenes == Cutscenes::Skip
+                && self.cutscenes != Cutscenes::Play
                 && let Some((to, i)) = self.short_path(&text)
             {
                 let bits = bits & 0xffff_0000 | u32::from(i);
@@ -760,6 +841,21 @@ impl Compiler<'_> {
         let text = String::from_utf8_lossy(&token).into_owned();
         self.hook(d, source, h1_source, &text);
         Ok(d)
+    }
+}
+
+fn is_number(t: u16) -> bool {
+    matches!(t, h2t::REAL | h2t::SHORT | h2t::LONG)
+}
+
+/// Encodes `ticks` as the data word of a number literal of Halo 2 type
+/// `ty` (real, short or long), for a [`SOUND_LENGTH`] hook.
+pub fn number_bits(ty: u16, ticks: i32) -> Option<u32> {
+    match ty {
+        h2t::REAL => Some((ticks as f32).to_bits()),
+        h2t::SHORT => Some(u32::from(ticks.clamp(0, i32::from(i16::MAX)) as u16)),
+        h2t::LONG => Some(ticks as u32),
+        _ => None,
     }
 }
 

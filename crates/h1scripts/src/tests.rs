@@ -1047,3 +1047,5 @@ fn calls_naming_an_unresolved_flag_are_stubbed() {
     assert!(!body[0].atom());
     assert!(body[1].atom() && body[1].opcode() == VOID);
 }
+
+mod cutscenes;
