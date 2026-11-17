@@ -858,15 +858,22 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         mem
     };
-    for (accounting, gate) in [(false, false), (true, false), (false, true), (true, true)] {
+    // The switches that change how a direct call settles the gate and the
+    // count: none, the lent gate, the view's budget with the lent count,
+    // and all three.
+    const GATE: &str = "#define H2_DIRECT_GATE 1\n";
+    const COUNT: &str = "#define H2_VIEW_BUDGET 1\n#define H2_DIRECT_COUNT 1\n";
+    let switches = [("", String::new()), ("-lent", GATE.into()), ("-count", COUNT.into()), ("-both", format!("{GATE}{COUNT}"))];
+    for (accounting, (tag, defines)) in [false, true].into_iter().flat_map(|a| switches.clone().map(|s| (a, s))) {
+        let gate = tag;
         let (_lib, dispatch) = compile_module_defines(
-            if gate { "held-gate-lent" } else { "held-gate" },
+            &format!("held-gate{tag}"),
             held_gate_functions(),
             false,
             true,
             emit::opt::Passes::ALL,
             emit::Codegen { accounting, ..emit::Codegen::default() },
-            if gate { "#define H2_DIRECT_GATE 1\n" } else { "" },
+            &defines,
         );
         let rt = Runtime::new(memory(), dispatch);
         for fault in [false, true] {
@@ -1434,6 +1441,16 @@ fn image_direct_gate_code_size() {
     image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true, ..emit::Codegen::default() });
 }
 
+/// As [`image_direct_gate_code_size`], for `H2_VIEW_BUDGET=1` and
+/// `H2_DIRECT_COUNT=1` together.
+/// `cargo test -p emit --release --test perf image_direct_count_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_direct_count_code_size() {
+    image_switch_code_size("H2_VIEW_BUDGET+H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+}
+
+/// `switch`: the names to set, joined by `+`.
 fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
     let name = format!("{switch} code size");
     let Some(path) = common::xbe_path() else {
@@ -1480,7 +1497,7 @@ fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
             c.args(emit::compile::CFLAGS);
             c.args(["-O2", "-DH2_FASTMEM=1", "-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1", "-DH2_DIRECT_CALLS=1"]);
             if inline {
-                c.arg(format!("-D{switch}=1"));
+                c.args(switch.split('+').map(|s| format!("-D{s}=1")));
             }
             let status = c.arg("-c").arg("-I").arg(&src).arg(s).arg("-o").arg(&obj).status().unwrap();
             assert!(status.success(), "{}", s.display());

@@ -79,12 +79,15 @@ pub(crate) struct DirectState {
     /// [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)):
     /// set just before the call, taken and cleared by the callee's entry.
     view: *mut crate::ffi::FastAccess,
+    /// The uncharged access count lent with `view`, or handed back to a
+    /// direct caller (h2gen.h `H2_DIRECT_COUNT`); 0 outside generated code.
+    acc: u64,
 }
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<Slot>() == 24 && size_of::<Frame>() == 16);
-    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 24 * 256 + 8);
+    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 24 * 256 + 16);
 };
 
 /// `h2_direct_slot` in h2gen.h.
@@ -135,6 +138,7 @@ impl Direct {
             frames: [Frame::default(); MAX_DEPTH as usize],
             slots: [Slot::default(); SLOTS],
             view: std::ptr::null_mut(),
+            acc: 0,
         });
         let owned = NonNull::from(Box::leak(state));
         (Direct { owned }, DirectPtr(owned.as_ptr()))
@@ -188,6 +192,7 @@ impl ExecCtx {
         let s = self.direct.state();
         s.view = std::ptr::null_mut();
         s.gate = 0;
+        s.acc = 0;
     }
     /// The runner is about to invoke a handler with `remaining` transfers
     /// left.

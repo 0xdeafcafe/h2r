@@ -946,9 +946,15 @@ fn a_direct_callee_borrows_its_callers_view() {
     // only A acquires, and B and C borrow, each still with its own
     // accesses to charge on the way out (the exit call that is left).
     assert_eq!((old_on[0], old_on[1], old_on[3]), (7, 7, 0), "{old_on:?}");
-    assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
-    // The charges before each direct call are the same.
-    assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    if std::env::var("H2_DIRECT_COUNT").as_deref() == Ok("1") {
+        // The count goes with the view and comes back: A charges the lot
+        // in its one exit, and no handler charges before a call.
+        assert_eq!(on, [1, 0, 0, 1], "{on:?}");
+    } else {
+        assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
+        // The charges before each direct call are the same.
+        assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    }
     // A call that falls back to the runner lends nothing: its callee
     // acquires, as through the runner. Past a cap of 0 that is every call,
     // as with direct calls disabled; past a cap of 1, B's calls of C.
