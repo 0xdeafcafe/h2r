@@ -8,7 +8,11 @@
 //!    else is shown in the menu and nothing is touched.
 //! 2. `git fetch <remote> <branch>`; when `<remote>/<branch>` moved and
 //!    HEAD is its ancestor, `git merge --ff-only` to it. A history that
-//!    does not fast-forward is shown, never merged or reset.
+//!    does not fast-forward is shown, never merged or reset. Before any of
+//!    it, a repository that uses Git LFS needs `git lfs` (else Blocked).
+//!    A merge that fails is undone (`reset --hard` to the old HEAD and
+//!    `clean -fd`), and so is dirt left by one the undo missed
+//!    (`State::merge_failed`); the user's own changes are never reset.
 //! 3. HEAD against the revision last installed (`update-state.json` in the
 //!    install dir): the changed files pick the builds. The server's crates
 //!    (live-server and its path dependencies, from `cargo metadata`) build
@@ -29,6 +33,7 @@
 //! runs one check at a time), into a target dir of their own; their
 //! output goes to `logs/update.log`.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -50,6 +55,12 @@ pub trait Git: Send + Sync {
     /// Whether `a` is an ancestor of `b` (or the same commit).
     fn is_ancestor(&self, a: &str, b: &str) -> Result<bool>;
     fn merge_ff_only(&self, rev: &str) -> Result<()>;
+    /// Why a merge cannot be attempted: the repository uses Git LFS and
+    /// `git lfs` is not available. None when it is fine.
+    fn lfs_problem(&self) -> Option<String>;
+    /// Puts the (dedicated) clone back to `rev`: `reset --hard` and
+    /// `clean -fd`, after a merge that failed halfway.
+    fn restore(&self, rev: &str) -> Result<()>;
     /// Paths changed between two commits.
     fn changed(&self, from: &str, to: &str) -> Result<Vec<String>>;
     /// A file at a revision; None when it does not exist there.
@@ -93,6 +104,11 @@ pub struct State {
     /// A revision whose build failed (not retried on the timer).
     pub failed: Option<String>,
     pub paused: bool,
+    /// The HEAD a `git merge --ff-only` failed from. While the clone is
+    /// dirty at exactly this revision, the dirt is the failed merge's and
+    /// the updater restores it; it is cleared once restored.
+    #[serde(default)]
+    pub merge_failed: Option<String>,
     /// Unix seconds of the last finished check.
     pub last_check: Option<i64>,
     /// The art extractor changed and nothing re-extracted it.
@@ -323,7 +339,21 @@ impl Updater<'_> {
                 self.cfg.branch
             )));
         }
-        let dirty = git.dirty()?;
+        if let Some(why) = git.lfs_problem() {
+            return Ok(Outcome::Blocked(why));
+        }
+        let mut dirty = git.dirty()?;
+        if !dirty.is_empty() {
+            let head = git.rev_parse("HEAD")?;
+            if state.merge_failed.as_deref() == Some(head.as_str()) {
+                // Left by our own failed merge (the restore failed too, or
+                // an older updater): not the user's. Put it back.
+                (self.progress)("restoring the checkout");
+                git.restore(&head).context("restoring the checkout")?;
+                state.merge_failed = None;
+                dirty = git.dirty()?;
+            }
+        }
         if !dirty.is_empty() {
             return Ok(Outcome::Blocked(format!(
                 "checkout has uncommitted changes ({} files)",
@@ -344,7 +374,20 @@ impl Updater<'_> {
                     short(&head)
                 )));
             }
-            git.merge_ff_only(&remote).context("git merge --ff-only")?;
+            if let Err(e) = git.merge_ff_only(&remote) {
+                // A merge that dies halfway leaves files changed; put the
+                // clone back so the next check can try again.
+                state.merge_failed = Some(head.clone());
+                return Err(match git.restore(&head) {
+                    Ok(()) => {
+                        state.merge_failed = None;
+                        e.context("git merge --ff-only")
+                    }
+                    Err(r) => e.context(format!(
+                        "git merge --ff-only (restoring the checkout failed too: {r:#})"
+                    )),
+                });
+            }
             head = remote;
         }
         if state.installed.as_deref() == Some(head.as_str()) {
@@ -519,14 +562,75 @@ fn captured(mut cmd: Command) -> Result<String> {
 pub struct SystemGit {
     pub repo: PathBuf,
     pub log: PathBuf,
+    /// git itself, when `[update] git` names it.
+    pub git: Option<PathBuf>,
+    /// The PATH children get (see [`tool_path`]): git runs its LFS filter
+    /// from it.
+    pub path: OsString,
 }
 
 impl SystemGit {
     fn git(&self) -> Command {
-        let mut c = Command::new("git");
-        c.arg("-C").arg(&self.repo);
+        let mut c = Command::new(self.git.as_deref().unwrap_or(Path::new("git")));
+        c.env("PATH", &self.path).arg("-C").arg(&self.repo);
         c
     }
+
+    /// Runs `c`, logging and returning stderr (one line) on failure.
+    fn run_logged(&self, mut c: Command) -> Result<()> {
+        log_line(&self.log, &format!("$ {c:?}"));
+        let out = c
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("running {:?}", c.get_program()))?;
+        let err = String::from_utf8_lossy(&out.stderr);
+        for line in err.lines() {
+            log_line(&self.log, line);
+        }
+        if out.status.success() {
+            return Ok(());
+        }
+        let one_line = err.lines().map(str::trim).collect::<Vec<_>>().join("; ");
+        bail!("exited {}: {one_line}", out.status.code().unwrap_or(-1))
+    }
+}
+
+/// Directories children should find tools in, however the menu bar was
+/// started: a LaunchAgent's PATH is just /usr/bin:/bin:/usr/sbin:/sbin.
+/// `extra` (from `[update] path`) first, then the inherited PATH, then
+/// Homebrew's two prefixes, `~/.cargo/bin` and `~/.bun/bin`; each once.
+pub fn tool_path(extra: &[PathBuf], home: Option<&Path>, inherited: Option<&OsStr>) -> OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut add = |d: PathBuf| {
+        if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    };
+    extra.iter().cloned().for_each(&mut add);
+    if let Some(p) = inherited {
+        std::env::split_paths(p).for_each(&mut add);
+    }
+    add("/opt/homebrew/bin".into());
+    add("/usr/local/bin".into());
+    if let Some(h) = home {
+        add(h.join(".cargo/bin"));
+        add(h.join(".bun/bin"));
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+/// [`tool_path`] from this process's HOME and PATH.
+pub fn system_tool_path(extra: &[PathBuf]) -> OsString {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    tool_path(extra, home.as_deref(), std::env::var_os("PATH").as_deref())
+}
+
+/// The `PATH` environment entry for the agents the menu bar writes.
+pub fn path_entry(extra: &[PathBuf]) -> (String, String) {
+    (
+        "PATH".into(),
+        system_tool_path(extra).to_string_lossy().into_owned(),
+    )
 }
 
 impl Git for SystemGit {
@@ -572,10 +676,35 @@ impl Git for SystemGit {
     fn merge_ff_only(&self, rev: &str) -> Result<()> {
         let mut c = self.git();
         c.args(["merge", "--ff-only", "--quiet", rev]);
-        match logged(c, &self.log)? {
-            0 => Ok(()),
-            code => bail!("git merge --ff-only exited {code}"),
+        self.run_logged(c)
+    }
+
+    fn lfs_problem(&self) -> Option<String> {
+        let attrs = fs::read_to_string(self.repo.join(".gitattributes")).ok()?;
+        if !attrs.contains("filter=lfs") {
+            return None;
         }
+        let mut c = self.git();
+        c.args(["lfs", "version"]);
+        match self.run_logged(c) {
+            Ok(()) => None,
+            Err(e) => Some(format!(
+                "git-lfs not found (install it: brew install git-lfs; or set [update] path): {e:#}"
+            )),
+        }
+    }
+
+    fn restore(&self, rev: &str) -> Result<()> {
+        // Only ever the dedicated update clone itself, never a parent repo.
+        if !self.repo.join(".git").exists() {
+            bail!("{} is not a git checkout", self.repo.display());
+        }
+        let mut c = self.git();
+        c.args(["reset", "--hard", "--quiet", rev]);
+        self.run_logged(c)?;
+        let mut c = self.git();
+        c.args(["clean", "-fd", "--quiet"]);
+        self.run_logged(c)
     }
 
     fn changed(&self, from: &str, to: &str) -> Result<Vec<String>> {
@@ -617,6 +746,8 @@ pub struct SystemBuilder {
     pub log: PathBuf,
     pub cargo: Option<PathBuf>,
     pub bun: Option<PathBuf>,
+    /// The PATH children get (see [`tool_path`]).
+    pub path: OsString,
 }
 
 impl SystemBuilder {
@@ -631,14 +762,16 @@ impl SystemBuilder {
         let mut c = Command::new("nice");
         c.args(["-n", "10"]).arg(program).current_dir(&self.repo);
         // cargo and rustup live beside each other; launchd's PATH lacks them.
-        if let Some(dir) = program.parent() {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let mut dirs = vec![dir.to_path_buf()];
-            dirs.extend(std::env::split_paths(&path));
-            if let Ok(joined) = std::env::join_paths(dirs) {
-                c.env("PATH", joined);
-            }
-        }
+        let mut dirs: Vec<PathBuf> = program
+            .parent()
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect();
+        dirs.extend(std::env::split_paths(&self.path));
+        c.env(
+            "PATH",
+            std::env::join_paths(dirs).unwrap_or_else(|_| self.path.clone()),
+        );
         c
     }
 }
@@ -653,6 +786,7 @@ impl Builder for SystemBuilder {
             "--no-deps",
             "--offline",
         ])
+        .env("PATH", &self.path)
         .current_dir(&self.repo);
         path_closure(&captured(c)?, package, &self.repo)
     }
@@ -688,7 +822,8 @@ impl Builder for SystemBuilder {
     fn sync_dir(&self, from: &Path, to: &Path) -> Result<()> {
         fs::create_dir_all(to)?;
         let mut c = Command::new("rsync");
-        c.arg("-a")
+        c.env("PATH", &self.path)
+            .arg("-a")
             .arg("--delete")
             .arg(format!("{}/", from.display()))
             .arg(format!("{}/", to.display()));
@@ -733,6 +868,12 @@ pub(crate) mod tests {
         pub art: Mutex<Vec<(String, u32)>>,
         pub calls: Mutex<Vec<String>>,
         pub fetch_fails: Mutex<bool>,
+        /// `git lfs` is unavailable (reason shown).
+        pub lfs_missing: Mutex<bool>,
+        /// The next merge dies halfway: the tree is left dirty, HEAD stays.
+        pub merge_fails: Mutex<bool>,
+        /// Restoring fails too.
+        pub restore_fails: Mutex<bool>,
     }
 
     impl FakeGit {
@@ -803,8 +944,24 @@ pub(crate) mod tests {
         fn is_ancestor(&self, a: &str, b: &str) -> Result<bool> {
             Ok(self.ancestor(a, b))
         }
+        fn lfs_problem(&self) -> Option<String> {
+            (*self.lfs_missing.lock().unwrap()).then(|| "git-lfs not found".to_string())
+        }
+        fn restore(&self, rev: &str) -> Result<()> {
+            self.calls.lock().unwrap().push(format!("restore {rev}"));
+            if *self.restore_fails.lock().unwrap() {
+                bail!("index.lock exists");
+            }
+            *self.head.lock().unwrap() = rev.into();
+            self.dirty.lock().unwrap().clear();
+            Ok(())
+        }
         fn merge_ff_only(&self, rev: &str) -> Result<()> {
             self.calls.lock().unwrap().push(format!("merge {rev}"));
+            if *self.merge_fails.lock().unwrap() {
+                *self.dirty.lock().unwrap() = vec![" M a".into(); 105];
+                bail!("exited 128: git-lfs: command not found; fatal: the remote end hung up");
+            }
             *self.head.lock().unwrap() = rev.into();
             Ok(())
         }
@@ -960,6 +1117,8 @@ pub(crate) mod tests {
             mappack: None,
             cargo: None,
             bun: None,
+            git: None,
+            path: Vec::new(),
         };
         let fake = FakeLaunchd::new();
         let ld = Launchd::new(fake.clone(), fake.domain.clone());
@@ -1179,6 +1338,203 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn tool_path_adds_the_usual_dirs_once() {
+        let home = Path::new("/Users/me");
+        let p = tool_path(
+            &[PathBuf::from("/x/bin")],
+            Some(home),
+            Some(OsStr::new("/usr/bin:/bin:/opt/homebrew/bin:/usr/bin")),
+        );
+        let dirs: Vec<String> = std::env::split_paths(&p)
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            dirs,
+            [
+                "/x/bin",
+                "/usr/bin",
+                "/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/Users/me/.cargo/bin",
+                "/Users/me/.bun/bin",
+            ]
+        );
+        // A LaunchAgent's PATH gains everything; nothing inherited is fine.
+        let p = tool_path(&[], None, None);
+        let dirs: Vec<_> = std::env::split_paths(&p).collect();
+        assert_eq!(
+            dirs,
+            [PathBuf::from("/opt/homebrew/bin"), "/usr/local/bin".into()]
+        );
+        let (k, v) = path_entry(&[]);
+        assert_eq!(k, "PATH");
+        assert!(v.contains("/opt/homebrew/bin"));
+    }
+
+    #[test]
+    fn missing_git_lfs_blocks_before_any_merge() {
+        let r = rig("lfs");
+        r.check(false);
+        r.git.calls();
+        r.git.push("a1", "b2", &["web/x"]);
+        *r.git.lfs_missing.lock().unwrap() = true;
+        assert_eq!(
+            r.check(false).outcome,
+            Outcome::Blocked("git-lfs not found".into())
+        );
+        assert!(r.git.calls().is_empty(), "no fetch, no merge");
+        assert_eq!(*r.git.head.lock().unwrap(), "a1");
+        // Installed: the next check merges as usual.
+        *r.git.lfs_missing.lock().unwrap() = false;
+        assert!(matches!(r.check(false).outcome, Outcome::Updated { .. }));
+        fs::remove_dir_all(&r.root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_merge_is_restored_and_retried() {
+        let r = rig("merge");
+        r.check(false);
+        r.builder.calls();
+        r.git.calls();
+        r.git.push("a1", "b2", &["web/x"]);
+        *r.git.merge_fails.lock().unwrap() = true;
+        let rep = r.check(false);
+        assert!(
+            matches!(rep.outcome, Outcome::Failed(ref e) if e.contains("git merge --ff-only") && e.contains("git-lfs: command not found")),
+            "{rep:?}"
+        );
+        assert_eq!(
+            r.git.calls(),
+            ["fetch origin master", "merge b2", "restore a1"]
+        );
+        assert!(r.git.dirty.lock().unwrap().is_empty(), "restored");
+        assert_eq!(r.state().merge_failed, None);
+        assert_eq!(r.state().failed, None, "the timer retries");
+
+        // Not Blocked forever: the next timer check merges and installs.
+        *r.git.merge_fails.lock().unwrap() = false;
+        assert!(matches!(r.check(false).outcome, Outcome::Updated { .. }));
+        assert_eq!(r.state().installed.as_deref(), Some("b2"));
+        fs::remove_dir_all(&r.root).unwrap();
+    }
+
+    #[test]
+    fn dirt_from_our_own_failed_merge_is_recovered_but_the_users_is_not() {
+        let r = rig("recover");
+        r.check(false);
+        r.builder.calls();
+        r.git.push("a1", "b2", &["web/x"]);
+        *r.git.merge_fails.lock().unwrap() = true;
+        *r.git.restore_fails.lock().unwrap() = true;
+        let rep = r.check(false);
+        assert!(
+            matches!(rep.outcome, Outcome::Failed(ref e) if e.contains("restoring the checkout failed")),
+            "{rep:?}"
+        );
+        assert_eq!(r.git.dirty.lock().unwrap().len(), 105);
+        assert_eq!(r.state().merge_failed.as_deref(), Some("a1"));
+
+        // Still failing to restore: a failure, not a block, and no merge.
+        r.git.calls();
+        assert!(matches!(r.check(false).outcome, Outcome::Failed(_)));
+        assert_eq!(r.git.calls(), ["restore a1"]);
+
+        // Restore works now: recovered, then the merge goes through.
+        *r.git.restore_fails.lock().unwrap() = false;
+        *r.git.merge_fails.lock().unwrap() = false;
+        assert!(matches!(r.check(false).outcome, Outcome::Updated { .. }));
+        assert_eq!(r.state().merge_failed, None);
+        assert_eq!(r.state().installed.as_deref(), Some("b2"));
+
+        // The user's dirt: no merge record, or a different HEAD: refused,
+        // never reset.
+        r.git.calls();
+        r.git
+            .dirty
+            .lock()
+            .unwrap()
+            .push(" M crates/cli/src/main.rs".into());
+        assert!(matches!(r.check(false).outcome, Outcome::Blocked(_)));
+        let mut st = r.state();
+        st.merge_failed = Some("a1".into());
+        st.save(&r.cfg.state_file()).unwrap();
+        assert!(matches!(r.check(false).outcome, Outcome::Blocked(_)));
+        assert!(r.git.calls().is_empty(), "no restore, no fetch");
+        assert_eq!(r.git.dirty.lock().unwrap().len(), 1);
+        fs::remove_dir_all(&r.root).unwrap();
+    }
+
+    /// The real git: `restore` puts a dirty clone back; `lfs_problem`
+    /// asks `git lfs version` only for repositories that use LFS.
+    #[test]
+    fn system_git_restores_and_checks_lfs() {
+        let root = std::env::temp_dir().join(format!("h2-menubar-restore-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        fs::write(root.join("a"), "one").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "one"]);
+        let head = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let git = SystemGit {
+            repo: root.clone(),
+            log: root.join("update.log"),
+            git: None,
+            path: system_tool_path(&[]),
+        };
+        fs::write(root.join("a"), "two").unwrap();
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/new"), "x").unwrap();
+        assert_eq!(git.dirty().unwrap().len(), 2);
+        git.restore(head.trim()).unwrap();
+        assert!(git.dirty().unwrap().is_empty());
+        assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "one");
+        assert!(!root.join("d/new").exists());
+
+        // No LFS attributes: nothing to check. With them and a git that
+        // has no lfs: the reason names git-lfs.
+        assert_eq!(git.lfs_problem(), None);
+        fs::write(root.join(".gitattributes"), "*.png filter=lfs diff=lfs\n").unwrap();
+        let fake = root.join("fake-git");
+        fs::write(
+            &fake,
+            "#!/bin/sh\necho \"git: 'lfs' is not a git command\" >&2\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let no_lfs = SystemGit {
+            git: Some(fake),
+            ..git
+        };
+        let why = no_lfs.lfs_problem().unwrap();
+        assert!(why.starts_with("git-lfs not found"), "{why}");
+        assert!(why.contains("not a git command"), "{why}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_failed_build_waits_for_update_now() {
         let r = rig("fail");
         r.check(false);
@@ -1392,6 +1748,8 @@ pub(crate) mod tests {
         let git = SystemGit {
             repo: clone.clone(),
             log: root.join("update.log"),
+            git: None,
+            path: system_tool_path(&[]),
         };
         assert_eq!(git.current_branch().unwrap(), "master");
         assert!(git.dirty().unwrap().is_empty());

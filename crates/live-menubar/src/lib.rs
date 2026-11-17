@@ -280,6 +280,8 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
                 mappack: None,
                 cargo: None,
                 bun: None,
+                git: None,
+                path: Vec::new(),
             });
             u.repo = repo;
         }
@@ -302,6 +304,11 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
     }
 
     let services = env.services.as_ref();
+    let extra_path: Vec<PathBuf> = cfg
+        .update
+        .as_ref()
+        .map(|u| u.path.clone())
+        .unwrap_or_default();
     if install_server {
         let log = cfg.logs_dir.join("server.log");
         let mut program = vec![
@@ -313,7 +320,7 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
         let spec = AgentSpec {
             label: cfg.server.label.clone(),
             program_arguments: program,
-            environment: Vec::new(),
+            environment: vec![update::path_entry(&extra_path)],
             stdout: Some(log.clone()),
             stderr: Some(log),
             run_at_load: true,
@@ -347,7 +354,7 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
                 "--token-file".into(),
                 token.to_string_lossy().into_owned(),
             ],
-            environment: Vec::new(),
+            environment: vec![update::path_entry(&extra_path)],
             stdout: Some(log.clone()),
             stderr: Some(log),
             run_at_load: true,
@@ -384,6 +391,8 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
                     Arc::new(update::SystemGit {
                         repo: u.repo.clone(),
                         log: log.clone(),
+                        git: u.git.clone(),
+                        path: update::system_tool_path(&u.path),
                     }),
                     Arc::new(update::SystemBuilder {
                         repo: u.repo.clone(),
@@ -391,6 +400,7 @@ pub fn main(args: Vec<String>, env: &Env) -> Result<()> {
                         log: log.clone(),
                         cargo: u.cargo.clone(),
                         bun: u.bun.clone(),
+                        path: update::system_tool_path(&u.path),
                     }),
                 ),
             };
@@ -742,6 +752,9 @@ mod tests {
         let text = fs::read_to_string(&cfg.server.plist).unwrap();
         assert!(text.contains("<string>--data</string>\n\t\t<string>/srv/live</string>"));
         assert!(text.contains("<string>serve</string>\n\t\t<string>--listen</string>\n\t\t<string>127.0.0.1:9100</string>"));
+        // A LaunchAgent starts with a short PATH: the plist carries the tool dirs.
+        assert!(text.contains("<key>PATH</key>"));
+        assert!(text.contains("/opt/homebrew/bin"));
         assert!(w.env.services.state(&cfg.server).is_running());
 
         main(
@@ -758,6 +771,7 @@ mod tests {
         let tunnel = cfg.tunnel.as_ref().unwrap();
         let text = fs::read_to_string(&tunnel.plist).unwrap();
         assert!(text.contains("<string>/opt/cf/cloudflared</string>"));
+        assert!(text.contains("<key>PATH</key>"));
         assert!(text.contains("<string>http://127.0.0.1:9100</string>"));
         assert!(text.contains(&format!("<string>{}</string>", token.display())));
         assert!(w.env.services.state(tunnel).is_running());
