@@ -279,7 +279,7 @@ them into a map with `map::build::TagSet` and reads them back through
 | squad | squad `encounter/squad` (Halo 1 scripts' own spelling, cut to 31 characters), in the encounter's group and zone; counts, delay and major upgrade carried over |
 | squad's attacking groups | an order of the squad's name over the areas of those letters (every area when none match), set as the squad's initial order |
 | squad starting location | starting location: position, facing as yaw; a location's own actor becomes its own character |
-| squad with no starting locations | left out, with a note: it can never spawn. On a30 these are mostly the empty attack/defend/retreat squads Halo 1 maneuvers actors into |
+| squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none` |
 | actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
 | command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
 | conversations, platoons, move positions, respawn | not converted (noted) |
@@ -334,7 +334,7 @@ below and 0.25 m above.
 | | a30 | a10 |
 |---|---|---|
 | squad groups, zones | 22 | 39 |
-| squads (left out for no starts) | 89 (90) | 114 (30) |
+| squads (no starts, left out until 2026-11-17) | 89 (90) | 114 (30) |
 | starting locations (off sectors) | 390 (24) | 296 (1) |
 | firing positions (flying, off sectors) | 4645 (584, 52) | 2381 (0, 7) |
 | orders, point sets | 92, 3 | 238, 124 |

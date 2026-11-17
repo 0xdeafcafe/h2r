@@ -883,6 +883,17 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             }
         }
         println!("{level}: {bsps} BSPs, switch_bsp to {switches:?}");
+        if let Some(r) = &done.report.scenario.scripts {
+            let left: usize = r.unresolved.iter().map(|u| u.1).sum();
+            println!(
+                "{level}: hooks {}, left none {} (before level data and seats: {}): {:?}; samples {:?}",
+                r.hooks,
+                left,
+                left + r.resolved_by_level,
+                r.unresolved,
+                r.samples
+            );
+        }
         println!(
             "{level}: {} reached nodes, {} unrunnable",
             sc.reachable(sc.roots()).unwrap().len(),

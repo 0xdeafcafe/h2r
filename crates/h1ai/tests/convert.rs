@@ -187,9 +187,15 @@ fn encounters_become_groups_zones_squads_and_orders() {
             .all(|f| f.surface == 7 && f.cluster == -1)
     );
 
-    // The empty squad is left out, with a note.
-    assert_eq!(ai.squads.len(), 2);
+    // The squad with no starting locations is kept, empty, with a note:
+    // scripts name it.
+    assert_eq!(ai.squads.len(), 3);
     assert!(plan.notes.iter().any(|n| n.contains("first/empty")));
+    let empty = &ai.squads[2];
+    assert_eq!(empty.name, "first/empty");
+    assert!(empty.starting_locations.is_empty());
+    assert_eq!((empty.normal_count, empty.insane_count), (0, 0));
+    assert_eq!(empty.initial_order, -1);
     let elites = &ai.squads[0];
     assert_eq!(elites.name, "first/elites");
     assert_eq!((elites.parent, elites.initial_zone, elites.team), (0, 0, 3));

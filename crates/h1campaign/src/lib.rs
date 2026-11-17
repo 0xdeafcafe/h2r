@@ -244,6 +244,24 @@ pub struct Converted {
 /// Converts the Halo 1 campaign level `h1` onto `base` (a retail Halo 2
 /// campaign map, normally [`BASE`]).
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
+    // A level at the bound (b40) is converted again without the extras the
+    // scripts only name: first the empty squads kept for their names, then
+    // the level data and seat table (`scenario::write`'s `lean`).
+    let mut lean = 0;
+    loop {
+        match convert_with(h1, base, opts, lean) {
+            Err(Error::TagMemory { .. }) if lean < 2 => lean += 1,
+            r => return r,
+        }
+    }
+}
+
+fn convert_with<R: Read + Seek>(
+    h1: &H1Map,
+    base: &mut Map<R>,
+    opts: &Options,
+    lean: u8,
+) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
         level: level.clone(),
@@ -296,6 +314,7 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
         &slots,
         objects_base.as_ref(),
         opts,
+        lean,
         &mut report,
     )?;
 

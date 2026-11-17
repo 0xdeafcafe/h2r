@@ -324,6 +324,9 @@ pub struct ScriptReport {
     pub hooks: usize,
     /// Hooks left `none`, by Halo 2 type name.
     pub unresolved: Vec<(String, usize)>,
+    /// Hooks the level data, seat table and tag-name lookups resolve (the
+    /// rest of `hooks` minus `unresolved` came from the other targets).
+    pub resolved_by_level: usize,
     /// A few unresolved tokens per type.
     pub samples: Vec<(String, String)>,
     /// Sounds the scripts name, converted (`h1sounds`), and those left out
@@ -391,13 +394,14 @@ impl std::fmt::Display for ScenarioReport {
         if let Some(s) = &self.scripts {
             writeln!(
                 f,
-                "  scripts: {} scripts, {} globals, {} nodes, {} hooks ({} left none: {:?}), {} missing calls stubbed, {} of {} references resolved",
+                "  scripts: {} scripts, {} globals, {} nodes, {} hooks ({} left none: {:?}; {} by level data, seats and tag names), {} missing calls stubbed, {} of {} references resolved",
                 s.scripts,
                 s.globals,
                 s.nodes,
                 s.hooks,
                 s.unresolved.iter().map(|u| u.1).sum::<usize>(),
                 s.unresolved,
+                s.resolved_by_level,
                 s.missing_calls,
                 s.references_resolved,
                 s.references
@@ -526,6 +530,7 @@ pub fn replaced_fields() -> Vec<u32> {
         }
     }
     v.extend(SCRIPT_FIELDS);
+    v.extend(h1scripts::level::H2_FIELDS);
     for (at, _) in [
         ai::SQUAD_GROUPS,
         ai::SQUADS,
@@ -539,8 +544,11 @@ pub fn replaced_fields() -> Vec<u32> {
     v
 }
 
-/// Writes the scenario layers into `set` (built from the base).
+/// Writes the scenario layers into `set` (built from the base). `lean` 1
+/// leaves out the empty squads kept only because scripts name them; 2 also
+/// the level data and seat table the scripts name (their hooks stay `none`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
+#[allow(clippy::too_many_arguments)]
 pub fn write(
     h1: &H1Map,
     set: &mut TagSet,
@@ -548,6 +556,7 @@ pub fn write(
     bsps: &[BspSlot],
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
+    lean: u8,
     report: &mut Report,
 ) -> Result<()> {
     let mut root = match &base.tree {
@@ -732,7 +741,19 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-    let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    // h1ai keeps squads with no starting locations (empty) so scripts can
+    // name them; only those the scripts name are worth their room.
+    let named = h1scripts::Tables::read(h1)
+        .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
+        .unwrap_or_default();
+    for e in &mut ai_src.encounters {
+        let encounter = e.name.clone();
+        e.squads.retain(|q| {
+            !q.starting_locations.is_empty()
+                || (lean == 0 && named.contains(&format!("{encounter}/{}", q.name)))
+        });
+    }
     let plan = h1ai::convert::convert(&ai_src, &Default::default());
     let mut chars = Vec::new();
     let resolve = |p: &str| -> Option<TagId> {
@@ -830,6 +851,7 @@ pub fn write(
                 },
                 &initial,
                 opts.sounds,
+                lean < 2,
             )?);
         }
         None => {
@@ -1130,6 +1152,7 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_scripts(
     h1: &H1Map,
     s: &crate::Scripting,
@@ -1138,6 +1161,7 @@ fn install_scripts(
     targets: &Targets,
     initial: &[String],
     max_sounds: usize,
+    level_data: bool,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
@@ -1157,10 +1181,53 @@ fn install_scripts(
             interned.insert(h.token.clone(), set.intern(&h.token)?);
         }
     }
-    let left = c.resolve_hooks(|h| match h.type_name.as_str() {
-        "string_id" => interned.get(&h.token).copied(),
-        "sound" => sounds.get(&h.token).map(|id| id.0),
-        _ => hook_value(h, targets),
+    // Level data the scripts name (cutscene flags, camera points, titles,
+    // device groups) and the seat-mapping table, in h1scripts.
+    let (level, seats) = if level_data {
+        let level =
+            h1scripts::level::Level::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
+        let seats = h1scripts::seats::Table::build(
+            c.hooks
+                .iter()
+                .filter(|h| h.type_name == "unit_seat_mapping")
+                .map(|h| h.token.as_str()),
+            &h1scripts::seats::units(set),
+        );
+        (level, seats)
+    } else {
+        Default::default()
+    };
+    for (at, stride, elements) in level.blocks() {
+        put_block(root, at, stride, elements);
+    }
+    let (at, stride) = h1scripts::seats::MAPPINGS;
+    put_block(root, at, stride, seats.elements());
+    let tags_by_name: HashMap<(FourCC, String), TagId> = set
+        .slots
+        .iter()
+        .filter_map(|s| {
+            let t = s.tag.as_ref()?;
+            Some(((t.group, s.name.clone()?), t.id))
+        })
+        .collect();
+    let mut resolved_by_level = 0;
+    let left = c.resolve_hooks(|h| {
+        match h.type_name.as_str() {
+            "string_id" => interned.get(&h.token).copied(),
+            "sound" => sounds.get(&h.token).map(|id| id.0),
+            _ if hook_value(h, targets).is_some() => hook_value(h, targets),
+            "unit_seat_mapping" => seats.values.get(&h.token).copied(),
+            ty => level.resolve(h).or_else(|| {
+                let g = h1scripts::level::tag_group(ty)?;
+                tags_by_name.get(&(g, h.token.clone())).map(|id| id.0)
+            }),
+        }
+        .inspect(|_| {
+            resolved_by_level += usize::from(
+                !matches!(h.type_name.as_str(), "string_id" | "sound")
+                    && hook_value(h, targets).is_none(),
+            );
+        })
     });
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
@@ -1199,6 +1266,7 @@ fn install_scripts(
         nodes: c.nodes.len(),
         hooks: c.hooks.len(),
         unresolved,
+        resolved_by_level,
         samples,
         sounds: sounds.len(),
         sounds_dropped,

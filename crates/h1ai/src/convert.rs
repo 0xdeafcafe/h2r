@@ -4,7 +4,7 @@
 //! |---|---|
 //! | encounter | squad group, and a zone of the same name |
 //! | encounter's firing positions, by group letter | the zone's firing positions, one area per letter used |
-//! | squad | squad (in the encounter's group and zone), with an order over the areas of its attacking groups; squads with no starting locations are left out |
+//! | squad | squad (in the encounter's group and zone), with an order over the areas of its attacking groups; squads with no starting locations are kept empty (no locations, no actors) so scripts can name them |
 //! | squad starting location | squad starting location |
 //! | actor variant (`actv` → `actr` type) | a retail `char`, nearest by species and rank ([`character_for`]) |
 //! | command list points | a point set of the same name |
@@ -258,14 +258,17 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
 
         for s in &e.squads {
             let name = name31(&format!("{}/{}", e.name, s.name));
-            // A Halo 1 squad with nowhere to start never spawns; Halo 2
-            // squads need a starting location, so it is left out.
-            if s.starting_locations.is_empty() {
+            // A Halo 1 squad with nowhere to start never spawns, but
+            // scripts still name it (migration targets, counts). It is kept
+            // with no starting locations and no actors, as retail Halo 2
+            // keeps squads that only vehicles, migrations and command
+            // scripts fill (06b: 28 of 170; `squad_flag_bits` survey).
+            let unplaced = s.starting_locations.is_empty();
+            if unplaced {
                 notes.push(format!(
-                    "{name}: no starting locations, left out ({} normal, {} legendary)",
+                    "{name}: no starting locations, kept empty ({} normal, {} legendary)",
                     s.normal_count, s.insane_count
                 ));
-                continue;
             }
             let character = char_of(s.actor);
             if character.is_none() {
@@ -291,19 +294,24 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     })
                     .collect();
             }
-            let order = ai.orders.len() as i16;
-            ai.orders.push(h2::Order {
-                name: name.clone(),
-                style: opts.order_style,
-                flags: 0,
-                force_combat_status: 0,
-                entry_script: String::new(),
-                follow_squad: -1,
-                follow_radius: 0.0,
-                primary_areas: set,
-                secondary_areas: Vec::new(),
-                endings: 0,
-            });
+            // An empty squad has no actors to order: no order (room).
+            let order = if unplaced {
+                -1
+            } else {
+                ai.orders.push(h2::Order {
+                    name: name.clone(),
+                    style: opts.order_style,
+                    flags: 0,
+                    force_combat_status: 0,
+                    entry_script: String::new(),
+                    follow_squad: -1,
+                    follow_radius: 0.0,
+                    primary_areas: set,
+                    secondary_areas: Vec::new(),
+                    endings: 0,
+                });
+                ai.orders.len() as i16 - 1
+            };
             let grenade = character.map(|c| characters[c].grenade).unwrap_or(0);
             let starting_locations = s
                 .starting_locations
@@ -334,8 +342,8 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 team: e.team,
                 parent: ei as i16,
                 delay: s.delay,
-                normal_count: s.normal_count,
-                insane_count: s.insane_count,
+                normal_count: if unplaced { 0 } else { s.normal_count },
+                insane_count: if unplaced { 0 } else { s.insane_count },
                 major_upgrade: s.major_upgrade,
                 vehicle: -1,
                 character: character.map(|c| c as i16).unwrap_or(-1),
