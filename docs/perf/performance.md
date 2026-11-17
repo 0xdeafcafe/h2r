@@ -621,3 +621,52 @@ changed round a loop reaching the next direct call, in all three modes),
 `tests/homes.rs` (what each statement keeps homed, the spill masks, and
 EFLAGS bit 1), and the retail entry path through generated C
 (`tests/entry.rs` with `H2_XBE`).
+
+## Runner transfers and the frame-stats clock (2026-11-17)
+
+Old Mombasa headless (PGO image, 2,000 draws) still spent about 17% of the
+game thread's on-CPU samples in the machinery around guest code, nearly all
+of it per runner transfer (~29k a frame): the runner loop itself, the
+resolve cache and its misses into the dispatch maps (`Dispatch::resolve`,
+`resolve_resume`, `resolve_with_generation`: 784 of 47,271 samples), the
+execute check (`check_execute`, two gate round trips and a page-table read:
+245), the interrupt check (`interrupt::deliver`, a call per transfer: 238),
+then the handler's entry (`h2abi_v1_fast_acquire`, the first access's gate
+take in `h2_access_cold`) and exit. Separately, with frame stats on, every
+D3D entry's phase switch read the clock through `Instant::elapsed`
+(`clock_gettime` → `mach_absolute_time`): 704 samples, 1.5%.
+
+What changed (runtime and timeline only; generated code is untouched, so
+no image rebuild is needed for it):
+
+- The per-context resolve cache has 4,096 entries (was 256), indexed by a
+  multiplicative hash of the target. Misses go out of line.
+- The execute check is remembered per cache entry against the guest's
+  *layout identity*: `Guest` takes a fresh, process-unique value at every
+  mapping or permission change (`refresh_fast_range`, `apply_unmap`, a new
+  `Guest`), and each memory guard publishes it as it ends. While it is
+  unchanged the check is one load; a fault is never remembered.
+- The interrupt check tests the queue's pending count inline first (the
+  other conditions are side-effect free, so the order changes nothing); the
+  continuation lookup on RETURN tests for a token address inline;
+  `fast_shared` (every handler entry) is an inline load with the one-time
+  set-up out of line.
+- `timeline::now_ns` reads `mach_absolute_time` directly on Apple
+  platforms, scaled by a fixed-point factor (6 ns a read against 25 ns).
+
+Proof: `exec::tests::a_remembered_execute_check_never_outlives_a_layout_change`
+(protect, unmap, map, another thread's protect and a replaced Guest, each
+seen at the next transfer, with the C RAM view on and off; it fails if the
+memo ignores the layout), `the_resolve_cache_answers_each_target_with_its_own_handler`
+(three times as many targets as entries), `timeline`'s
+`now_ns_is_monotonic_and_keeps_time_with_instant`, and the runtime and emit
+suites.
+
+Benchmarks: `runner_transfer_benchmark` (`crates/emit/tests/perf.rs`: eight
+indirect calls a loop trip into one of N callees that only `ret`, so 16
+runner transfers a trip) and `timeline`'s `now_ns_cost`:
+
+```sh
+cargo test -p emit --release --test perf runner_transfer_benchmark -- --ignored --nocapture
+cargo test -p timeline --release now_ns_cost -- --ignored --nocapture
+```

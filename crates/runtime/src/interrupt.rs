@@ -157,7 +157,25 @@ impl ExecCtx {
 /// At a safe point before `transfer` is dispatched: if an interrupt is due,
 /// push its frame and return the CALL that starts it. None leaves `cpu` and
 /// `transfer` untouched.
+///
+/// Every runner transfer comes here, and almost always nothing is queued:
+/// that one load is tested inline, first. The rest of the tests are the
+/// same side-effect-free conditions in [`deliver_queued`], so the order
+/// changes nothing.
+#[inline]
 pub(crate) fn deliver(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    transfer: TransferAbi,
+) -> Option<TransferAbi> {
+    if !ctx.runtime().interrupts.any_pending() {
+        return None;
+    }
+    deliver_queued(cpu, ctx, transfer)
+}
+
+#[inline(never)]
+fn deliver_queued(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     transfer: TransferAbi,

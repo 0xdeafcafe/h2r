@@ -50,11 +50,18 @@ pub struct ExecCtx {
     resolved: Box<ResolveCache>,
 }
 
-const RESOLVE_WAYS: usize = 256;
+/// Entries in the resolve cache. The game makes tens of thousands of
+/// runner transfers a frame, to thousands of distinct function entries and
+/// return sites; 256 entries missed often enough that the dispatch lock and
+/// hash lookups were a measurable part of a frame.
+const RESOLVE_WAYS: usize = 4096;
 
 #[derive(Clone)]
 struct Resolved {
     generation: u64,
+    /// The guest layout under which `pc` last passed the runner's execute
+    /// check (0: not yet), see [`ExecCtx::check_execute_cached`].
+    layout: u64,
     route: u32,
     pc: u32,
     handler: crate::dispatch::Handler,
@@ -62,14 +69,35 @@ struct Resolved {
     function: u32,
 }
 
+/// What [`ExecCtx::resolve_cached`] found for a transfer.
+pub(crate) struct Resolution {
+    pub handler: crate::dispatch::Handler,
+    pub selector: u32,
+    pub function: u32,
+    pub generation: u64,
+    /// The cache slot holding it, and the layout its execute check last
+    /// passed under there.
+    slot: usize,
+    layout: u64,
+}
+
 /// Direct-mapped by target pc. An entry is only used while its dispatch
 /// generation is current, so any `edit_dispatch` invalidates the whole cache.
-struct ResolveCache([Option<Resolved>; RESOLVE_WAYS]);
+struct ResolveCache(Box<[Option<Resolved>]>);
 
 impl Default for ResolveCache {
     fn default() -> Self {
-        Self(std::array::from_fn(|_| None))
+        Self(vec![None; RESOLVE_WAYS].into_boxed_slice())
     }
+}
+
+/// The cache slot for `pc`: a multiplicative hash, as function entries are
+/// 16-byte aligned and return sites cluster.
+#[inline]
+fn resolve_slot(pc: u32) -> usize {
+    const BITS: u32 = RESOLVE_WAYS.trailing_zeros();
+    const _: () = assert!(RESOLVE_WAYS.is_power_of_two());
+    (pc.wrapping_mul(0x9e37_79b1) >> (32 - BITS)) as usize
 }
 const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 const _: () = assert!(std::mem::offset_of!(ExecCtx, direct_ptr) == size_of::<*const u32>());
@@ -110,30 +138,74 @@ impl ExecCtx {
     /// [`Runtime::resolve`] through this context's cache, with the dispatch
     /// generation the answer belongs to. Failures are not cached: they end
     /// the run with a fault anyway.
-    pub(crate) fn resolve_cached(
-        &mut self,
-        t: TransferAbi,
-    ) -> Option<(crate::dispatch::Handler, u32, u32, u64)> {
-        let slot = (t.target_pc ^ (t.target_pc >> 8)) as usize % RESOLVE_WAYS;
+    #[inline]
+    pub(crate) fn resolve_cached(&mut self, t: TransferAbi) -> Option<Resolution> {
+        let slot = resolve_slot(t.target_pc);
         let generation = self.runtime.dispatch_generation();
         if let Some(e) = &self.resolved.0[slot]
             && e.generation == generation
             && e.pc == t.target_pc
             && e.route == t.route
         {
-            return Some((e.handler.clone(), e.selector, e.function, generation));
+            return Some(Resolution {
+                handler: e.handler.clone(),
+                selector: e.selector,
+                function: e.function,
+                generation,
+                slot,
+                layout: e.layout,
+            });
         }
+        self.resolve_miss(t, slot)
+    }
+    #[inline(never)]
+    fn resolve_miss(&mut self, t: TransferAbi, slot: usize) -> Option<Resolution> {
         let (generation, found) = self.runtime.resolve_with_generation(t);
         let (handler, selector, function) = found?;
         self.resolved.0[slot] = Some(Resolved {
             generation,
+            layout: 0,
             route: t.route,
             pc: t.target_pc,
             handler: handler.clone(),
             selector,
             function,
         });
-        Some((handler, selector, function, generation))
+        Some(Resolution {
+            handler,
+            selector,
+            function,
+            generation,
+            slot,
+            layout: 0,
+        })
+    }
+    /// The runner's execute check of a resolved target `pc`
+    /// ([`Runtime::check_execute`]), made only when the guest layout has
+    /// changed since `pc` last passed it from this cache entry. A layout
+    /// names one set of mappings and permissions and is never reused
+    /// (`Guest::layout_id`), so the answer under it cannot have changed; a
+    /// fault is never remembered.
+    #[inline]
+    pub(crate) fn check_execute_cached(
+        &mut self,
+        r: &Resolution,
+        pc: u32,
+    ) -> Result<(), GuestFault> {
+        // Read before checking: a change racing the check moves the layout
+        // past this value, and the next transfer checks again.
+        let layout = self.runtime.layout_epoch();
+        if r.layout == layout {
+            return Ok(());
+        }
+        self.runtime.check_execute(pc)?;
+        if let Some(e) = &mut self.resolved.0[r.slot]
+            && e.pc == pc
+            && e.generation == r.generation
+        {
+            e.layout = layout;
+        }
+        Ok(())
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
@@ -281,7 +353,13 @@ impl ExecCtx {
     pub(crate) fn continuation_live(&self, token: u32) -> bool {
         self.continuations.live(token)
     }
+    /// The runner asks at every RETURN; only token addresses can hold one,
+    /// so the usual return answers inline.
+    #[inline]
     pub(crate) fn take_continuation(&mut self, pc: u32) -> Option<Continuation> {
+        if !crate::continuation::is_token_address(pc) {
+            return None;
+        }
         self.continuations.take(pc)
     }
 
@@ -454,6 +532,113 @@ impl ExecCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guest::{Access, Permissions};
+    use crate::{Dispatch, Event, Runner, abi};
+
+    /// The runner remembers that a cached target passed its execute check
+    /// only for the guest layout it passed under: every protect, unmap,
+    /// map or whole-Guest replacement after it is seen at the next
+    /// transfer, with the C RAM view on or off, from this thread or another.
+    #[test]
+    fn a_remembered_execute_check_never_outlives_a_layout_change() {
+        const CODE: u32 = 0x0001_0000;
+        for fast in [false, true] {
+            let mut dispatch = Dispatch::default();
+            let _ = dispatch.register_override(CODE, "stop", |cpu, _, _| {
+                cpu.eax += 1;
+                Ok(TransferAbi::stop(0))
+            });
+            let rt = Runtime::new(Guest::new(), dispatch);
+            rt.memory()
+                .map_zeroed(CODE, 0x1000, Permissions::RX)
+                .unwrap();
+            if fast {
+                rt.fast_memory();
+            }
+            let mut ctx = ExecCtx::new(rt.clone(), 1);
+            let mut cpu = CpuAbi::default();
+            let mut run = |ctx: &mut ExecCtx| {
+                let before = cpu.eax;
+                let t = Runner::default().run(&mut cpu, ctx, CODE);
+                if t.kind == abi::STOP {
+                    assert_eq!(cpu.eax, before + 1);
+                    true
+                } else {
+                    assert!(
+                        matches!(ctx.event(t.event_id), Some(Event::MemoryFault { fault, .. })
+                            if fault.access == Access::Execute && fault.addr == CODE),
+                        "{t:?} {:?}",
+                        ctx.events()
+                    );
+                    assert_eq!(cpu.eax, before);
+                    false
+                }
+            };
+            assert!(run(&mut ctx));
+            assert!(run(&mut ctx), "cached and remembered");
+            rt.memory().protect(CODE, Permissions::READ).unwrap();
+            assert!(!run(&mut ctx), "protected after the check was remembered");
+            assert!(!run(&mut ctx), "a fault is not remembered");
+            rt.memory().protect(CODE, Permissions::RX).unwrap();
+            assert!(run(&mut ctx));
+            rt.memory().unmap(CODE, 0x1000).unwrap();
+            assert!(!run(&mut ctx), "unmapped");
+            rt.memory()
+                .map_zeroed(CODE, 0x1000, Permissions::RX)
+                .unwrap();
+            assert!(run(&mut ctx));
+            let other = rt.clone();
+            std::thread::spawn(move || other.memory().protect(CODE, Permissions::RW).unwrap())
+                .join()
+                .unwrap();
+            assert!(!run(&mut ctx), "protected by another thread");
+            rt.memory().protect(CODE, Permissions::RX).unwrap();
+            assert!(run(&mut ctx));
+            // A whole new Guest, with nothing executable: a fresh layout.
+            *rt.memory() = Guest::new();
+            assert!(!run(&mut ctx), "replaced Guest");
+            rt.memory()
+                .map_zeroed(CODE, 0x1000, Permissions::RX)
+                .unwrap();
+            assert!(run(&mut ctx));
+            // A guard that changes nothing leaves the layout, and the memo.
+            let layout = rt.layout_epoch();
+            let _ = rt.memory().u32(CODE);
+            assert_eq!(rt.layout_epoch(), layout);
+            assert!(run(&mut ctx));
+        }
+    }
+
+    /// Many distinct targets through one context: every slot of the
+    /// direct-mapped cache is answered for its own pc and route, whatever
+    /// else shares it.
+    #[test]
+    fn the_resolve_cache_answers_each_target_with_its_own_handler() {
+        const BASE: u32 = 0x0010_0000;
+        const N: u32 = 3 * RESOLVE_WAYS as u32;
+        let mut dispatch = Dispatch::default();
+        for i in 0..N {
+            let _ = dispatch.register_override(BASE + i * 16, "id", move |cpu, _, selector| {
+                cpu.eax = i;
+                cpu.ecx = selector;
+                Ok(TransferAbi::stop(0))
+            });
+        }
+        let rt = Runtime::new(Guest::new(), dispatch);
+        rt.memory()
+            .map_zeroed(BASE, N * 16, Permissions::RX)
+            .unwrap();
+        let mut ctx = ExecCtx::new(rt, 1);
+        let mut cpu = CpuAbi::default();
+        for round in 0..2 {
+            for i in (0..N).rev().step_by(7).chain(0..N) {
+                let t = Runner::default().run(&mut cpu, &mut ctx, BASE + i * 16);
+                assert_eq!(t.kind, abi::STOP, "round {round} target {i}");
+                assert_eq!((cpu.eax, cpu.ecx), (i, BASE + i * 16));
+            }
+        }
+    }
+
     #[test]
     fn wrapped_event_ids_skip_retained_records_and_zero() {
         let mut ctx = ExecCtx::new(Runtime::new(Guest::new(), crate::Dispatch::default()), 1);

@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::Instant;
 
 /// What an event is about. Each is one bit of the recording mask, so a
 /// trace can leave out the busy ones (`Hle` fires on every HLE call).
@@ -265,14 +264,75 @@ fn state() -> MutexGuard<'static, State> {
     .unwrap_or_else(|e| e.into_inner())
 }
 
-fn epoch() -> Instant {
-    static E: OnceLock<Instant> = OnceLock::new();
-    *E.get_or_init(Instant::now)
+/// Nanoseconds since the first use of the timeline in this process.
+///
+/// Frame stats read it at every phase switch, several times a draw, so it
+/// is the bare clock: on Apple platforms `mach_absolute_time` (the counter
+/// `Instant` reads, minus `clock_gettime`'s layers: about 6 ns a read
+/// against 25 ns for `Instant::elapsed` on an M-series core), scaled to
+/// nanoseconds by a fixed-point factor; elsewhere `Instant`.
+#[inline]
+pub fn now_ns() -> u64 {
+    clock::now_ns()
 }
 
-/// Nanoseconds since the first use of the timeline in this process.
-pub fn now_ns() -> u64 {
-    epoch().elapsed().as_nanos() as u64
+#[cfg(target_vendor = "apple")]
+mod clock {
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct Timebase {
+        numer: u32,
+        denom: u32,
+    }
+    unsafe extern "C" {
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+
+    /// The first reading, and ticks to nanoseconds as a 32.32 fixed-point
+    /// factor (exact when the timebase is 1/1; with Apple silicon's 125/3
+    /// it is off by under 4e-12, a nanosecond in four minutes).
+    struct Epoch {
+        start: u64,
+        scale: u128,
+    }
+
+    fn epoch() -> &'static Epoch {
+        static E: OnceLock<Epoch> = OnceLock::new();
+        E.get_or_init(|| {
+            let mut tb = Timebase { numer: 1, denom: 1 };
+            // SAFETY: `tb` is a valid out-pointer for the call.
+            if unsafe { mach_timebase_info(&mut tb) } != 0 || tb.denom == 0 {
+                tb = Timebase { numer: 1, denom: 1 };
+            }
+            Epoch {
+                // SAFETY: no preconditions.
+                start: unsafe { mach_absolute_time() },
+                scale: ((tb.numer as u128) << 32) / tb.denom as u128,
+            }
+        })
+    }
+
+    #[inline]
+    pub(super) fn now_ns() -> u64 {
+        let e = epoch();
+        // SAFETY: no preconditions.
+        let ticks = unsafe { mach_absolute_time() }.saturating_sub(e.start);
+        ((ticks as u128 * e.scale) >> 32) as u64
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+mod clock {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    #[inline]
+    pub(super) fn now_ns() -> u64 {
+        static E: OnceLock<Instant> = OnceLock::new();
+        E.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    }
 }
 
 /// True while `cat` is being recorded. One relaxed load.
@@ -346,7 +406,7 @@ fn ev(cat: Cat, track: Track, name: &'static str, phase: Phase, ts: u64) -> Ev {
 /// Start recording the categories in `config`, discarding anything
 /// recorded before. The frame counter is not reset.
 pub fn start(config: Config) {
-    epoch();
+    now_ns();
     {
         let mut s = state();
         s.events = Vec::with_capacity(config.capacity.min(1 << 16));
@@ -922,5 +982,48 @@ mod tests {
         let mut out = Vec::new();
         json_str(&mut out, "a\"b\\c\n").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "\"a\\\"b\\\\c\\u000a\"");
+    }
+
+    /// The bare clock never goes backwards and keeps time with `Instant`:
+    /// over an interval measured both ways they agree to well under a
+    /// percent (the slack is the reads' own spacing, not drift).
+    #[test]
+    fn now_ns_is_monotonic_and_keeps_time_with_instant() {
+        let mut last = now_ns();
+        for _ in 0..100_000 {
+            let t = now_ns();
+            assert!(t >= last, "{t} after {last}");
+            last = t;
+        }
+        let (i0, n0) = (std::time::Instant::now(), now_ns());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (n1, i1) = (now_ns(), std::time::Instant::now());
+        let clock = (n1 - n0) as f64;
+        let instant = (i1 - i0).as_nanos() as f64;
+        assert!(clock <= instant + 100.0, "{clock} ns inside {instant} ns");
+        assert!(clock > instant * 0.99, "{clock} ns against {instant} ns");
+    }
+
+    /// `cargo test -p timeline --release now_ns_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark"]
+    fn now_ns_cost() {
+        let n = 10_000_000u64;
+        let e = std::time::Instant::now();
+        let time = |f: &dyn Fn() -> u64| {
+            (0..5)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    let mut acc = 0u64;
+                    for _ in 0..n {
+                        acc = acc.wrapping_add(f());
+                    }
+                    std::hint::black_box(acc);
+                    s.elapsed().as_secs_f64() * 1e9 / n as f64
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        println!("Instant::elapsed: {:.2} ns/read", time(&|| e.elapsed().as_nanos() as u64));
+        println!("now_ns:           {:.2} ns/read", time(&now_ns));
     }
 }
