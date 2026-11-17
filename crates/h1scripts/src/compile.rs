@@ -1,0 +1,607 @@
+//! Translated Halo 1 scripts as Halo 2 syntax nodes and scenario tables.
+//!
+//! The output has Halo 2's wire layout ([`hs::Node`], `hs::Script`,
+//! `hs::Global`, `hs::Reference`) and goes into a Halo 2 scenario as
+//! `map::build` blocks ([`Compiled::install`]). Values that name things in
+//! the converted level (objects, AI, trigger volumes, cutscene points, tags,
+//! enum values, string IDs) cannot be known here: their atoms keep the Halo 1
+//! token in the string data, hold a placeholder value, and are listed as
+//! [`Hook`]s the converter fills in.
+
+use std::collections::HashMap;
+
+use hs::{Datum, Node};
+use map::build::Block;
+
+use crate::catalog::{Catalog, types};
+use crate::layout::Tables;
+use crate::translate::{Adapter, Kind, Table, Target};
+use crate::{Result, invalid};
+
+/// Halo 2 scenario fields the tables go in (docs/formats/haloscript.md).
+pub mod field {
+    /// Script string data (byte count, address).
+    pub const STRINGS: u32 = 0x1b0;
+    /// Scripts block.
+    pub const SCRIPTS: u32 = 0x1b8;
+    /// Globals block.
+    pub const GLOBALS: u32 = 0x1c0;
+    /// Script references block.
+    pub const REFERENCES: u32 = 0x1c8;
+    /// Syntax nodes block.
+    pub const NODES: u32 = 0x238;
+    /// Bytes of scenario these fields need.
+    pub const MIN_LEN: usize = 0x240;
+}
+
+/// Halo 2 value types the compiler writes by number (from Halo 2's type
+/// name table: `crates/hs` reads it from the XBE).
+mod h2t {
+    pub const FUNCTION_NAME: u16 = 2;
+    pub const PASSTHROUGH: u16 = 3;
+    pub const VOID: u16 = 4;
+    pub const BOOLEAN: u16 = 5;
+    pub const REAL: u16 = 6;
+    pub const SHORT: u16 = 7;
+    pub const LONG: u16 = 8;
+    pub const STRING: u16 = 9;
+    pub const SCRIPT: u16 = 10;
+    pub const STRING_ID: u16 = 11;
+}
+
+/// Node flags: atom, script call, global, retained (bit 3, on every node).
+const CALL: u16 = 8;
+const ATOM: u16 = 9;
+const SCRIPT_CALL: u16 = 10;
+const GLOBAL: u16 = 13;
+/// Placeholder value of a hooked atom: Halo 2's `none`.
+pub const NONE: u32 = u32::MAX;
+/// Most nodes Halo 2's syntax pool holds (`0x9000`).
+pub const MAX_NODES: usize = hs::MAX_NODES;
+/// First opcode of [`Missing::Extension`] calls: one past Halo 2's table.
+pub const EXTENSION_BASE: u16 = 0x8000;
+
+/// What to do with a call to a builtin Halo 2 lacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// Replace the call with a literal of the type its parent expects
+    /// (`false`, `0`, `none`, void). Retail Halo 2 runs the result.
+    Stub,
+    /// Keep the call, with opcode [`EXTENSION_BASE`] + the Halo 1 index and
+    /// the Halo 1 name as its head token, for the Rust HS VM to bind. Retail
+    /// Halo 2's interpreter cannot run it.
+    Extension,
+}
+
+/// A value the converter must supply: write it into node `slot`'s data word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hook {
+    /// The atom's slot in [`Compiled::nodes`].
+    pub slot: u16,
+    /// Halo 2 value type of the literal (its source type).
+    pub h2_type: u16,
+    /// Halo 2's name for that type.
+    pub type_name: String,
+    /// Halo 1's name for the literal's original type.
+    pub h1_type: String,
+    /// The token: an object, squad, flag or tag name, an enum value, or the
+    /// text to intern as a string ID.
+    pub token: String,
+}
+
+/// A call compiled under [`Missing`], or an engine global Halo 2 lacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unresolved {
+    /// The script or global it is in.
+    pub definition: String,
+    /// The Halo 1 builtin or engine global.
+    pub name: String,
+}
+
+/// Halo 2 script tables, ready to install.
+#[derive(Debug, Clone, Default)]
+pub struct Compiled {
+    /// Syntax nodes, every one live.
+    pub nodes: Vec<Node>,
+    /// String data.
+    pub strings: Vec<u8>,
+    /// Scripts, encoded (`hs::Script::SIZE` bytes each).
+    pub scripts: Vec<[u8; 40]>,
+    /// Globals, encoded.
+    pub globals: Vec<[u8; 40]>,
+    /// Halo 1's script references: group and tag name, for the converter to
+    /// resolve to Halo 2 tags.
+    pub references: Vec<(h1map::Group, String)>,
+    /// Atoms the converter must fill in.
+    pub hooks: Vec<Hook>,
+    /// Calls to builtins Halo 2 lacks, as compiled under [`Missing`].
+    pub missing: Vec<Unresolved>,
+    /// Engine globals Halo 2 lacks (compiled as literals).
+    pub missing_globals: Vec<Unresolved>,
+}
+
+/// Compiles every global and script of `t`.
+pub fn compile(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    reference_names: &[String],
+) -> Result<Compiled> {
+    let mut c = Compiler {
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        out: Compiled::default(),
+        interned: HashMap::new(),
+        definition: String::new(),
+    };
+    for (i, g) in t.globals.iter().enumerate() {
+        c.definition = g.name.clone();
+        let ty = c.ty(g.value_type)?;
+        let root = c.expr(g.root, ty)?;
+        c.out.globals.push(definition(&g.name, ty, 0, root, i)?);
+    }
+    for (i, s) in t.scripts.iter().enumerate() {
+        c.definition = s.name.clone();
+        let ty = c.ty(s.return_type)?;
+        let root = c.expr(s.root, ty)?;
+        c.out
+            .scripts
+            .push(definition(&s.name, s.kind, ty, root, i)?);
+    }
+    c.out.references = t
+        .references
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.group, reference_names.get(i).cloned().unwrap_or_default()))
+        .collect();
+    if c.out.nodes.len() > MAX_NODES {
+        return Err(invalid(format!(
+            "{} nodes, Halo 2 holds {MAX_NODES}",
+            c.out.nodes.len()
+        )));
+    }
+    Ok(c.out)
+}
+
+fn definition(name: &str, a: u16, b: u16, root: Datum, i: usize) -> Result<[u8; 40]> {
+    if name.len() >= 32 {
+        return Err(invalid(format!("definition {i}: name too long")));
+    }
+    let mut out = [0u8; 40];
+    out[..name.len()].copy_from_slice(name.as_bytes());
+    out[32..34].copy_from_slice(&a.to_le_bytes());
+    out[34..36].copy_from_slice(&b.to_le_bytes());
+    out[36..40].copy_from_slice(&root.0.to_le_bytes());
+    Ok(out)
+}
+
+struct Compiler<'a> {
+    t: &'a Tables,
+    h1: &'a Catalog,
+    table: &'a Table,
+    h2: &'a Target,
+    policy: Missing,
+    out: Compiled,
+    interned: HashMap<Vec<u8>, u32>,
+    definition: String,
+}
+
+/// A node before its slot is known to its parent: its fields.
+struct New {
+    opcode: u16,
+    ty: u16,
+    flags: u16,
+    string: u32,
+    data: u32,
+}
+
+impl Compiler<'_> {
+    fn ty(&self, h1: u16) -> Result<u16> {
+        self.table.ty(h1).ok_or_else(|| {
+            invalid(format!(
+                "{}: Halo 2 has no type {}",
+                self.definition,
+                self.h1.type_name(h1).unwrap_or("?")
+            ))
+        })
+    }
+
+    fn intern(&mut self, bytes: &[u8]) -> u32 {
+        if let Some(&at) = self.interned.get(bytes) {
+            return at;
+        }
+        let at = self.out.strings.len() as u32;
+        self.out.strings.extend_from_slice(bytes);
+        self.out.strings.push(0);
+        self.interned.insert(bytes.to_vec(), at);
+        at
+    }
+
+    /// Appends a node with no sibling; returns its datum.
+    fn push(&mut self, n: New) -> Datum {
+        let slot = self.out.nodes.len();
+        let salt = 0x8000 | (slot as u16 & 0x7fff);
+        let mut b = [0u8; Node::SIZE];
+        b[0..2].copy_from_slice(&salt.to_le_bytes());
+        b[2..4].copy_from_slice(&n.opcode.to_le_bytes());
+        b[4..6].copy_from_slice(&n.ty.to_le_bytes());
+        b[6..8].copy_from_slice(&n.flags.to_le_bytes());
+        b[8..12].copy_from_slice(&Datum::NULL.0.to_le_bytes());
+        b[12..16].copy_from_slice(&n.string.to_le_bytes());
+        b[16..20].copy_from_slice(&n.data.to_le_bytes());
+        self.out.nodes.push(Node::decode(&b).expect("20 bytes"));
+        Datum(u32::from(salt) << 16 | slot as u32)
+    }
+
+    fn set_next(&mut self, d: Datum, next: Datum) {
+        let mut b = self.out.nodes[d.slot()].encode();
+        b[8..12].copy_from_slice(&next.0.to_le_bytes());
+        self.out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
+    }
+
+    /// A call: the call node, its head atom, then the arguments chained.
+    fn call(&mut self, opcode: u16, flags: u16, ty: u16, name: &[u8], args: &[Datum]) -> Datum {
+        let string = self.intern(name);
+        let head = self.push(New {
+            opcode,
+            ty: h2t::FUNCTION_NAME,
+            flags: ATOM,
+            string,
+            data: 0,
+        });
+        let mut prev = head;
+        for &a in args {
+            self.set_next(prev, a);
+            prev = a;
+        }
+        self.push(New {
+            opcode,
+            ty,
+            flags,
+            string: 0,
+            data: head.0,
+        })
+    }
+
+    /// A literal of `ty`: the type's zero, or `none` (hooked when `token`).
+    fn literal(&mut self, ty: u16, source: u16, bits: u32, token: &[u8]) -> Datum {
+        let string = self.intern(token);
+        self.push(New {
+            opcode: source,
+            ty,
+            flags: ATOM,
+            string,
+            data: bits,
+        })
+    }
+
+    fn default(&mut self, ty: u16) -> Datum {
+        match ty {
+            h2t::VOID => self.literal(ty, h2t::VOID, 0, b""),
+            h2t::BOOLEAN => self.literal(ty, ty, 0, b"false"),
+            h2t::REAL => self.literal(ty, ty, 0, b"0"),
+            h2t::SHORT | h2t::LONG => self.literal(ty, ty, 0, b"0"),
+            h2t::STRING => {
+                let at = self.intern(b"");
+                self.push(New {
+                    opcode: ty,
+                    ty,
+                    flags: ATOM,
+                    string: at,
+                    data: at,
+                })
+            }
+            _ => self.literal(ty, ty, NONE, b"none"),
+        }
+    }
+
+    fn hook(&mut self, d: Datum, h2_type: u16, h1_type: u16, token: &str) {
+        self.out.hooks.push(Hook {
+            slot: d.slot() as u16,
+            h2_type,
+            type_name: self
+                .h2
+                .types
+                .get(h2_type as usize)
+                .cloned()
+                .unwrap_or_default(),
+            h1_type: self.h1.type_name(h1_type).unwrap_or("?").to_owned(),
+            token: token.to_owned(),
+        });
+    }
+
+    /// Compiles node `d` where its parent expects Halo 2 type `expected`.
+    fn expr(&mut self, d: Datum, expected: u16) -> Result<Datum> {
+        let n = *self.t.node(d)?;
+        if n.atom() {
+            return self.atom(&n, expected);
+        }
+        let head = *self.t.node(Datum(n.data()))?;
+        let token = self.t.string(head.string_offset())?.to_owned();
+        let mut args = Vec::new();
+        let mut a = head.next();
+        while a != Datum::NULL {
+            args.push(a);
+            a = self.t.node(a)?.next();
+        }
+        if n.script_call() {
+            return Ok(self.call(n.opcode(), SCRIPT_CALL, expected, token.as_bytes(), &[]));
+        }
+        let index = n.opcode();
+        let f = self.h1.function(index)?;
+        let tr = self
+            .table
+            .builtin(index)
+            .ok_or_else(|| invalid("no translation"))?;
+        let Some((h2_name, b)) = tr.target.clone().filter(|_| tr.kind != Kind::Missing) else {
+            self.out.missing.push(Unresolved {
+                definition: self.definition.clone(),
+                name: f.name.clone(),
+            });
+            return match self.policy {
+                Missing::Stub => Ok(self.default(expected)),
+                Missing::Extension => {
+                    let fixed = self.h1.fixed_signature(index);
+                    let mut out = Vec::new();
+                    for (k, &a) in args.iter().enumerate() {
+                        let h1_ty = if fixed {
+                            f.parameters[k]
+                        } else {
+                            self.t.node(a)?.value_type()
+                        };
+                        let ty = self.table.ty(h1_ty).unwrap_or(h2t::PASSTHROUGH);
+                        out.push(self.expr(a, ty)?);
+                    }
+                    Ok(self.call(
+                        EXTENSION_BASE + index,
+                        CALL,
+                        expected,
+                        f.name.as_bytes(),
+                        &out,
+                    ))
+                }
+            };
+        };
+        let mut out = Vec::new();
+        match tr.adapter {
+            Some(Adapter::Negate) => {
+                for &a in &args {
+                    let ty = self.ty(self.t.node(a)?.value_type())?;
+                    out.push(self.expr(a, ty)?);
+                }
+                let not = self
+                    .h2
+                    .builtins
+                    .get("not")
+                    .ok_or_else(|| invalid("Halo 2 `not` unknown"))?
+                    .clone();
+                let inner = self.call(b.index, CALL, not.parameters[0], h2_name.as_bytes(), &out);
+                return Ok(self.call(not.index, CALL, expected, b"not", &[inner]));
+            }
+            Some(Adapter::PrependNone) => {
+                let first = self.literal(b.parameters[0], b.parameters[0], NONE, b"none");
+                out.push(first);
+            }
+            _ => {}
+        }
+        let offset = out.len();
+        for (k, &a) in args.iter().enumerate() {
+            let ty = if b.special {
+                self.ty(self.t.node(a)?.value_type())?
+            } else {
+                *b.parameters
+                    .get(offset + k)
+                    .ok_or_else(|| invalid(format!("{token}: too many arguments for {h2_name}")))?
+            };
+            out.push(self.expr(a, ty)?);
+        }
+        if let Some(Adapter::AppendShort(v)) = tr.adapter {
+            let ty = *b
+                .parameters
+                .get(out.len())
+                .ok_or_else(|| invalid("adapter arity"))?;
+            let d = self.literal(ty, h2t::SHORT, v as u16 as u32, v.to_string().as_bytes());
+            self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
+            out.push(d);
+        }
+        if !b.special && out.len() != b.parameters.len() {
+            return Err(invalid(format!(
+                "{token}: {} arguments for {h2_name}",
+                out.len()
+            )));
+        }
+        Ok(self.call(b.index, CALL, expected, h2_name.as_bytes(), &out))
+    }
+
+    fn atom(&mut self, n: &Node, expected: u16) -> Result<Datum> {
+        // Numeric atoms may point past the string data (discarded source).
+        let token = || -> Result<Vec<u8>> { Ok(self.t.string_bytes(n.string_offset())?.to_vec()) };
+        if n.global() {
+            let token = token()?;
+            let index = n.data() as u16;
+            let name = String::from_utf8_lossy(&token).into_owned();
+            if index & 0x8000 == 0 {
+                let string = self.intern(&token);
+                return Ok(self.push(New {
+                    opcode: self.table.ty(n.opcode()).unwrap_or(n.opcode()),
+                    ty: expected,
+                    flags: GLOBAL,
+                    string,
+                    data: u32::from(index),
+                }));
+            }
+            let Some(&(h2_index, h2_ty)) = self.h2.externals.get(&name) else {
+                self.out.missing_globals.push(Unresolved {
+                    definition: self.definition.clone(),
+                    name,
+                });
+                return Ok(self.default(expected));
+            };
+            let string = self.intern(&token);
+            return Ok(self.push(New {
+                opcode: h2_ty,
+                ty: expected,
+                flags: GLOBAL,
+                string,
+                data: u32::from(h2_index | 0x8000),
+            }));
+        }
+        let h1_source = n.opcode();
+        let bits = n.data();
+        let scalar = match h1_source {
+            types::VOID => Some(h2t::VOID),
+            types::BOOLEAN => Some(h2t::BOOLEAN),
+            types::REAL => Some(h2t::REAL),
+            types::SHORT => Some(h2t::SHORT),
+            types::LONG => Some(h2t::LONG),
+            types::SCRIPT => Some(h2t::SCRIPT),
+            _ => None,
+        };
+        if let Some(source) = scalar {
+            let text = match source {
+                h2t::SCRIPT => token()?,
+                _ => crate::decompile::literal(self.t, self.h1, n)?.into_bytes(),
+            };
+            return Ok(self.literal(expected, source, bits, &text));
+        }
+        let token = token()?;
+        if h1_source == types::STRING && expected != h2t::STRING_ID {
+            let at = self.intern(&token);
+            return Ok(self.push(New {
+                opcode: h2t::STRING,
+                ty: expected,
+                flags: ATOM,
+                string: at,
+                data: at,
+            }));
+        }
+        // Symbolic: the converter supplies the value. A string where Halo 2
+        // wants a string ID becomes a string ID literal.
+        let source = if h1_source == types::STRING {
+            h2t::STRING_ID
+        } else {
+            match self.table.ty(h1_source) {
+                Some(t) if t == expected || !is_scalar(expected) => t,
+                _ => expected,
+            }
+        };
+        let d = self.literal(expected, source, NONE, &token);
+        let text = String::from_utf8_lossy(&token).into_owned();
+        self.hook(d, source, h1_source, &text);
+        Ok(d)
+    }
+}
+
+fn is_scalar(t: u16) -> bool {
+    (h2t::VOID..=h2t::STRING_ID).contains(&t)
+}
+
+impl Compiled {
+    /// Writes each hook's value into its atom: `resolve` returns the data
+    /// word for a hook, or `None` to leave `none`. Returns the hooks left.
+    pub fn resolve_hooks(&mut self, mut resolve: impl FnMut(&Hook) -> Option<u32>) -> Vec<Hook> {
+        let mut left = Vec::new();
+        for h in std::mem::take(&mut self.hooks) {
+            match resolve(&h) {
+                Some(v) => {
+                    let mut b = self.nodes[h.slot as usize].encode();
+                    b[16..20].copy_from_slice(&v.to_le_bytes());
+                    self.nodes[h.slot as usize] = Node::decode(&b).expect("20 bytes");
+                }
+                None => left.push(h.clone()),
+            }
+            self.hooks.push(h);
+        }
+        left
+    }
+
+    /// The tables as `map::build` blocks, installed into the scenario block
+    /// `scnr` (fields per [`field`]). `reference` maps each Halo 1 reference
+    /// to a Halo 2 group and tag; unresolved ones are dropped.
+    pub fn install(
+        &self,
+        scnr: &mut Block,
+        mut reference: impl FnMut(h1map::Group, &str) -> Option<(map::FourCC, map::TagId)>,
+    ) -> Result<()> {
+        if scnr.bytes.len() < field::MIN_LEN {
+            return Err(invalid("scenario block too short for script fields"));
+        }
+        let nodes: Vec<u8> = self.nodes.iter().flat_map(|n| n.encode()).collect();
+        scnr.block(field::NODES, self.nodes.len() as u32, Block::new(nodes));
+        scnr.data(field::STRINGS, Block::new(self.strings.clone()));
+        scnr.block(
+            field::SCRIPTS,
+            self.scripts.len() as u32,
+            Block::new(self.scripts.concat()),
+        );
+        scnr.block(
+            field::GLOBALS,
+            self.globals.len() as u32,
+            Block::new(self.globals.concat()),
+        );
+        let refs: Vec<_> = self
+            .references
+            .iter()
+            .filter_map(|(g, name)| reference(*g, name))
+            .collect();
+        let mut block = Block::zeroed(refs.len() * 8);
+        for (i, (group, id)) in refs.iter().enumerate() {
+            block.bytes[i * 8..i * 8 + 4]
+                .copy_from_slice(&u32::from_be_bytes(group.0).to_le_bytes());
+            block.tag_id(i as u32 * 8 + 4, *id);
+        }
+        scnr.block(field::REFERENCES, refs.len() as u32, block);
+        Ok(())
+    }
+
+    /// A minimal Halo 2 scenario payload holding only the script fields,
+    /// laid out from `base`, for `hs::Scenario::decode`. References are
+    /// written null.
+    pub fn scenario_bytes(&self, base: u32) -> Vec<u8> {
+        let mut out = vec![0u8; field::MIN_LEN];
+        let table = |out: &mut Vec<u8>, at: u32, count: usize, bytes: &[u8]| {
+            while !out.len().is_multiple_of(4) {
+                out.push(0);
+            }
+            let address = if count == 0 {
+                0
+            } else {
+                base + out.len() as u32
+            };
+            out[at as usize..at as usize + 4].copy_from_slice(&(count as u32).to_le_bytes());
+            out[at as usize + 4..at as usize + 8].copy_from_slice(&address.to_le_bytes());
+            out.extend_from_slice(bytes);
+        };
+        let nodes: Vec<u8> = self.nodes.iter().flat_map(|n| n.encode()).collect();
+        table(&mut out, field::NODES, self.nodes.len(), &nodes);
+        table(&mut out, field::STRINGS, self.strings.len(), &self.strings);
+        table(
+            &mut out,
+            field::SCRIPTS,
+            self.scripts.len(),
+            &self.scripts.concat(),
+        );
+        table(
+            &mut out,
+            field::GLOBALS,
+            self.globals.len(),
+            &self.globals.concat(),
+        );
+        let refs: Vec<u8> = self
+            .references
+            .iter()
+            .flat_map(|(g, _)| {
+                let mut r = [0xffu8; 8];
+                r[..4].copy_from_slice(&g.0.to_le_bytes());
+                r
+            })
+            .collect();
+        table(&mut out, field::REFERENCES, self.references.len(), &refs);
+        out
+    }
+}

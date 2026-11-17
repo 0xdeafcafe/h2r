@@ -2444,6 +2444,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1scripts"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "hs",
+ "map",
+ "thiserror 2.0.21",
+ "xbe",
+ "xiso",
+]
+
+[[package]]
 name = "h1sounds"
 version = "0.1.0"
 dependencies = [

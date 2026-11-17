@@ -78,7 +78,7 @@ Pieces:
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |
 | `actr` + `actv` | `char` | |
 | encounters, squads, firing positions, command lists | squads, zones, firing positions, orders | |
-| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)) |
+| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/h1scripts`, [h1-scripts.md](../formats/h1-scripts.md) |
 | `snd!` | `snd!` + `ugh!` | both Xbox ADPCM |
 | `ustr`, `hmt ` | string IDs, `unic` | |
 | recorded animations | recorded animations | versions differ |
