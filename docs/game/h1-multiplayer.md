@@ -535,6 +535,26 @@ alone: the schema gives it 4-byte elements where the object types table
 gives it `0x28`; settle that first. The dropped tags' raw data stays in
 the file, unused.
 
+**Then built from scratch (`h1convert::scratch`, converter version 27).**
+The pruned set is a step, not the output: `fresh::from_scratch` reads
+every tag by `(group, path)` through `tags::repo` (`scratch::LevelSource`:
+the conversion's tags from the pinned map it wrote, the rest from the
+retail base as it is on the disc), from the roots `matg`, the keep list
+and every tag the built scenario and structure name, and lays them out on
+a dense index of their own (`to_tag_set`); the scenario and structure are
+the fresh build's, their datums renamed (`scratch::Transfer`). Equal
+blocks are shared only within a tag, never across tags, and the sound
+gestalt not at all: the readers that take one tag's bytes
+(`tags::DecodedTag`, `SoundGestalt::decode`, the editor's patching) see
+each tag whole. If it fails, the pruned set is written
+(`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
+(4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
+slots, 0 dangling, 33.4 MB (pinned 48.6 MB); 4,380 tags identical to the
+pinned map's by name, address- and index-free, the scenario's 20 blocks
+and root, the sound gestalt (5,293 chunks), every bitmap and the 9
+languages' strings the same; 21,570 references resolve
+(`tests/fresh.rs`).
+
 **The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
 the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,
 256x128), names (`ui\shell\main_menu\mp_map_list`) and descriptions

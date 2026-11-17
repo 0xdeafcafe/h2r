@@ -26,6 +26,7 @@ pub mod globals;
 pub mod placements;
 pub mod query;
 pub mod sandbox;
+pub mod scratch;
 pub mod shaders;
 pub mod sky;
 pub mod slots;

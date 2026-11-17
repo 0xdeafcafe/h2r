@@ -28,8 +28,8 @@
 pub mod donor;
 pub mod manifest;
 pub mod profiles;
-pub mod scratch;
 pub mod scenario;
+pub mod scratch;
 pub mod structure;
 
 use std::io::{Read, Seek};
@@ -235,7 +235,12 @@ impl std::fmt::Display for Report {
             writeln!(
                 f,
                 "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSPs; {} datum words rewritten), {} dangling",
-                s.tags, s.from_base, s.from_level, s.built_here, s.words, s.dangling.len()
+                s.tags,
+                s.from_base,
+                s.from_level,
+                s.built_here,
+                s.words,
+                s.dangling.len()
             )?;
         } else if self.fresh {
             writeln!(
@@ -395,7 +400,9 @@ fn convert_with<R: Read + Seek>(
                 out
             }
             Err(e) => {
-                report.dropped.push(format!("from scratch: {e}; pruned instead"));
+                report
+                    .dropped
+                    .push(format!("from scratch: {e}; pruned instead"));
                 fresh(base, &set, bytes.clone(), &sections, &mut report)?
             }
         };

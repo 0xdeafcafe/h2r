@@ -4,7 +4,7 @@
 //! disk; counts go to stdout. `H1_MAPS=a,b` picks maps (default
 //! `bloodgulch`).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -29,12 +29,41 @@ fn word(b: &[u8], at: u32) -> u32 {
     u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap())
 }
 
-/// One element in address-free form: block addresses zeroed, each local
-/// raw pointer as the bytes it names (its paired size, else 16 bytes),
-/// external ones as they are.
-fn element(s: &Struct, e: &[u8], file: &[u8]) -> String {
+/// Every datum of `m`, as its tag's group and name.
+fn names(m: &M) -> HashMap<u32, String> {
+    m.tags()
+        .iter()
+        .map(|t| {
+            (
+                t.id.0,
+                format!("{} {}", t.group, t.name.as_deref().unwrap_or("?")),
+            )
+        })
+        .collect()
+}
+
+/// `m`'s tags by group and name.
+fn by_key(m: &M) -> HashMap<(FourCC, String), TagId> {
+    m.tags()
+        .iter()
+        .map(|t| ((t.group, t.name.clone().unwrap_or_default()), t.id))
+        .collect()
+}
+
+/// One element in address-free and index-free form: block addresses
+/// zeroed, every word that is a datum of the map as its tag's name, each
+/// local raw pointer as the bytes it names (its paired size, else 16
+/// bytes), external ones as they are.
+fn element(s: &Struct, e: &[u8], file: &[u8], ids: &HashMap<u32, String>) -> String {
     let mut bytes = e.to_vec();
     let mut raws = Vec::new();
+    let mut tags = Vec::new();
+    for k in (0..e.len() / 4 * 4).step_by(4) {
+        if let Some(n) = ids.get(&word(e, k as u32)) {
+            tags.push(format!("{k:#x} {n}"));
+            bytes[k..k + 4].fill(0);
+        }
+    }
     for (&o, f) in &s.fields {
         match f {
             Field::Block(_) => bytes[o as usize + 4..o as usize + 8].fill(0),
@@ -60,14 +89,20 @@ fn element(s: &Struct, e: &[u8], file: &[u8]) -> String {
             _ => {}
         }
     }
-    format!("{bytes:02x?} {raws:?}")
+    format!("{bytes:02x?} {raws:?} {tags:?}")
 }
 
 /// The tag's elements in visit order, address-free.
-fn canonical(s: &Struct, address: u32, mem: &Memory, file: &[u8]) -> Vec<String> {
+fn canonical(
+    s: &Struct,
+    address: u32,
+    mem: &Memory,
+    file: &[u8],
+    ids: &HashMap<u32, String>,
+) -> Vec<String> {
     let mut out = Vec::new();
     visit(s, address, mem, &mut |s, e, path| {
-        out.push(format!("{path:x?} {}", element(s, e, file)));
+        out.push(format!("{path:x?} {}", element(s, e, file, ids)));
     })
     .expect("visit");
     out
@@ -189,20 +224,43 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             pruned.resource_entries
         );
         assert!(pruned.tags() > 0, "nothing of the base pruned");
-        assert_eq!(f.tags().len() + pruned.tags(), m.tags().len());
         let mm = Memory::of(&mut m).unwrap();
         let fm = Memory::of(&mut f).unwrap();
+        let (mids, fids) = (names(&m), names(&f));
 
-        // The same index: every tag kept where it was, with data where it
-        // had; every converted tag kept.
-        let first = base.index_slots() as usize;
+        // Built from scratch (fresh::from_scratch): a dense index of its
+        // own, every tag one of the pinned map's by group and name, with
+        // data where it had; every converted tag kept.
+        let s = r
+            .scratch
+            .as_ref()
+            .unwrap_or_else(|| panic!("not built from scratch: {:?}", r.scratch_failed));
+        println!(
+            "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSP; {} datum words \
+             rewritten), {} dangling; index {} slots",
+            s.tags,
+            s.from_base,
+            s.from_level,
+            s.built_here,
+            s.words,
+            s.dangling.len(),
+            f.index_slots()
+        );
+        assert_eq!(f.index_slots() as usize, f.tags().len(), "index holes");
+        assert!(f.tags().len() < m.tags().len());
+        let (mk, fk) = (by_key(&m), by_key(&f));
+        let fid = |t: &map::Tag| {
+            fk.get(&(t.group, t.name.clone().unwrap_or_default()))
+                .copied()
+        };
+        let mid = |t: &map::Tag| mk[&(t.group, t.name.clone().unwrap_or_default())];
         for b in f.tags() {
-            let a = m.tag(b.id).unwrap();
-            assert_eq!((a.id, a.group, &a.name), (b.id, b.group, &b.name));
+            let a = m.tag(mid(b)).unwrap();
             assert_eq!(a.location.is_some(), b.location.is_some(), "{:?}", a.name);
         }
+        let first = base.index_slots() as usize;
         for a in m.tags().iter().filter(|t| t.id.index() >= first) {
-            assert!(f.tag(a.id).is_ok(), "{:?} pruned", a.name);
+            assert!(fid(a).is_some(), "{:?} pruned", a.name);
         }
 
         // Every reference resolves.
@@ -225,13 +283,13 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             };
             if skip.contains(&t.group.0)
                 || mm.region(a.address).is_none_or(|r| r.0 != a.address)
-                || f.tag(t.id).is_err()
+                || fid(&t).is_none()
             {
                 continue;
             }
-            let b = f.tag(t.id).unwrap().location.unwrap();
-            let x = canonical(s, a.address, &mm, &pinned);
-            let y = canonical(s, b.address, &fm, &fresh.bytes);
+            let b = f.tag(fid(&t).unwrap()).unwrap().location.unwrap();
+            let x = canonical(s, a.address, &mm, &pinned, &mids);
+            let y = canonical(s, b.address, &fm, &fresh.bytes, &fids);
             if x != y {
                 let i = x.iter().zip(&y).position(|(p, q)| p != q).unwrap_or(0);
                 panic!(
@@ -253,7 +311,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         );
         let (rx, ry) = (
             m.read_tag_bytes(scnr.id).unwrap(),
-            f.read_tag_bytes(scnr.id).unwrap(),
+            f.read_tag_bytes(f.scenario().unwrap().id).unwrap(),
         );
         let pruned_blocks: Vec<u32> = h1convert::fresh::BASE_PALETTES
             .iter()
@@ -287,8 +345,8 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
                 align: root.align,
                 fields: [(o, Field::Block(c.clone()))].into(),
             };
-            let x = canonical(&only, sa, &mm, &pinned);
-            let y = canonical(&only, sb, &fm, &fresh.bytes);
+            let x = canonical(&only, sa, &mm, &pinned, &mids);
+            let y = canonical(&only, sb, &fm, &fresh.bytes, &fids);
             if o == 0x210 {
                 // The descriptor's region words name each map's own region.
                 assert_eq!(x.len(), y.len());
@@ -303,7 +361,9 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
                 .fields
                 .iter()
                 .any(|(&o, f)| matches!(f, Field::Block(_)) && (o..o + 8).contains(&k));
-            if !in_block && word(&rx, k) != word(&ry, k) {
+            let (a, b) = (word(&rx, k), word(&ry, k));
+            let same = a == b || mids.get(&a).is_some_and(|n| fids.get(&b) == Some(n));
+            if !in_block && !same {
                 differ.push(k);
             }
         }
@@ -325,11 +385,27 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             ugh.location.unwrap().address,
         )
         .unwrap();
+        let ugh_f = f.tag(fid(&ugh).unwrap()).unwrap().clone();
         let gb = SoundGestalt::decode(
-            &f.read_tag_bytes(ugh.id).unwrap(),
-            f.tag(ugh.id).unwrap().location.unwrap().address,
+            &f.read_tag_bytes(ugh_f.id).unwrap(),
+            ugh_f.location.unwrap().address,
         )
         .unwrap();
+        // Datums name the same tags under the fresh index.
+        let mut gb = gb;
+        let to_pinned: HashMap<u32, u32> = f.tags().iter().map(|t| (t.id.0, mid(t).0)).collect();
+        let rename = |b: &mut Vec<u8>| {
+            for w in b.as_chunks_mut::<4>().0 {
+                if let Some(d) = to_pinned.get(&u32::from_le_bytes(*w)) {
+                    *w = d.to_le_bytes();
+                }
+            }
+        };
+        gb.flat.iter_mut().for_each(rename);
+        for n in gb.nested.iter_mut().flatten() {
+            rename(&mut n.bytes);
+            n.children.iter_mut().for_each(|c| rename(&mut c.bytes));
+        }
         assert_eq!((&ga.flat, &ga.nested), (&gb.flat, &gb.nested));
         assert_eq!(ga.chunks.len(), gb.chunks.len());
         let chunk = |c: &h1sounds::gestalt::Chunk, file: &[u8]| match c.pointer {
@@ -362,15 +438,14 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             file.get(at..at + r.size as usize)
                 .map(|b| format!("{b:02x?}"))
         };
-        let kept: HashSet<u32> = f.tags().iter().map(|t| t.id.0).collect();
         for t in m
             .tags()
             .to_vec()
             .iter()
-            .filter(|t| t.group == FourCC(*b"bitm") && kept.contains(&t.id.0))
+            .filter(|t| t.group == FourCC(*b"bitm") && fid(t).is_some())
         {
             let x = tags::DecodedTag::read(&mut m, t.id).unwrap();
-            let y = tags::DecodedTag::read(&mut f, t.id).unwrap();
+            let y = tags::DecodedTag::read(&mut f, fid(t).unwrap()).unwrap();
             let (tags::TagData::Bitmap(x), tags::TagData::Bitmap(y)) = (&x.data, &y.data) else {
                 unreachable!()
             };
@@ -415,7 +490,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             .find(|t| t.group == FourCC(*b"sbsp"))
             .unwrap();
         let (x, y) = (
-            m.read_tag_bytes(sbsp.id).unwrap(),
+            m.read_tag_bytes(mid(sbsp)).unwrap(),
             f.read_tag_bytes(sbsp.id).unwrap(),
         );
         assert_eq!(x.len(), y.len(), "structure size");

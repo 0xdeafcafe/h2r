@@ -68,6 +68,10 @@ pub struct FreshReport {
     /// Tags the schema cannot move, left without data, and why
     /// ([`check_refused`]).
     pub refused: Vec<(TagId, String)>,
+    /// The map from scratch ([`crate::scratch`]), or why not (the pruned
+    /// set is written instead).
+    pub scratch: Option<crate::scratch::ScratchReport>,
+    pub scratch_failed: Option<String>,
 }
 
 /// A fresh map.
@@ -85,7 +89,7 @@ impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
         let (pinned, bytes, section) = self.assemble(base, mopp)?;
-        let mut src = Map::from_reader(Cursor::new(bytes))?;
+        let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own
         // BSP regions and low-detail region are still there, unnamed:
@@ -101,6 +105,16 @@ impl Prepared {
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
         report.pruned = prune(&mut fresh, base.index_slots() as usize);
         check_refused(&mut fresh, &report)?;
+        drop(src);
+        // Then from scratch: the base's tags by path, only what is reached,
+        // on a dense index. The pruned set is the fallback.
+        match from_scratch(base, &pinned, &bytes, &fresh) {
+            Ok((set, r)) => {
+                fresh = set;
+                report.scratch = Some(r);
+            }
+            Err(e) => report.scratch_failed = Some(e.to_string()),
+        }
         let (bytes, _) = fresh.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
@@ -108,6 +122,37 @@ impl Prepared {
             report,
         })
     }
+}
+
+/// The map from scratch ([`crate::scratch`]): `base`'s tags (the retail
+/// map) and the conversion's (`pinned`, built as `bytes`) read by path,
+/// with `fresh`'s scenario and BSP.
+fn from_scratch<R: Read + Seek>(
+    base: &mut Map<R>,
+    pinned: &TagSet,
+    bytes: &[u8],
+    fresh: &TagSet,
+) -> Result<(TagSet, crate::scratch::ScratchReport)> {
+    use crate::scratch::{LevelSource, build, changed, file_bytes, low_detail};
+    use tags::repo::{MapSource, SharedFiles};
+    let repo = |e: tags::repo::Error| Error::Fresh(format!("from scratch: {e}"));
+    let schema = Schema::builtin();
+    let from_level = changed(base, pinned);
+    let low = low_detail(base)?;
+    let file = file_bytes(base)?;
+    let mut shared_base = SharedFiles::default();
+    shared_base.unread_ok = true;
+    let mut shared_level = SharedFiles::default();
+    shared_level.unread_ok = true;
+    let base_map = Map::from_reader(Cursor::new(&file[..]))?;
+    let level_map = Map::from_reader(Cursor::new(bytes))?;
+    let mut src = LevelSource {
+        base: MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?,
+        level: MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?,
+        from_level,
+    };
+    let from_level = src.from_level.clone();
+    build(&mut src, fresh, &MULTIPLAYER, &from_level, low)
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
