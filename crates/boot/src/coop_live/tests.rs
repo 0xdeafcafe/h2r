@@ -704,7 +704,15 @@ fn the_screens_and_the_hooks_share_the_plan() {
     let plan = r.build(&feature::Base).unwrap();
     let text = plan.text();
     assert!(
-        text.contains(FEATURE) && text.contains("open the co-op join screen"),
+        text.contains(FEATURE)
+            && text.contains("co-op mode for the co-op row")
+            && text.contains("co-op over two consoles"),
+        "{text}"
+    );
+    // The join screen opens itself only with our list screens.
+    assert_eq!(
+        text.contains("open the co-op join screen"),
+        list_ui(),
         "{text}"
     );
     assert!(
@@ -776,4 +784,95 @@ fn an_opened_screen_describes_its_rows_for_the_log() {
         "{d}"
     );
     assert_eq!(d.matches(" = ").count(), HOST_ROWS, "{d}");
+}
+
+// ---- the retail lobby ----
+
+/// The pending co-op mode is one per run: its tests take turns.
+static MODE_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn the_co_op_rows_press_turns_the_next_custom_game_mode_into_co_op_once() {
+    let _turn = MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    drop_coop_mode();
+    assert_eq!(lobby_mode(MODE_CUSTOM, now), MODE_CUSTOM, "nothing pending");
+    want_coop_mode();
+    assert_eq!(
+        lobby_mode(MODE_COOP, now),
+        MODE_COOP,
+        "another mode leaves it pending"
+    );
+    assert_eq!(lobby_mode(MODE_CUSTOM, now), MODE_COOP);
+    assert_eq!(lobby_mode(MODE_CUSTOM, now), MODE_CUSTOM, "once");
+    // A press whose session never came: a later custom game stays one.
+    want_coop_mode();
+    let late = now + COOP_MODE_WINDOW + std::time::Duration::from_secs(1);
+    assert_eq!(lobby_mode(MODE_CUSTOM, late), MODE_CUSTOM);
+    // Another row's press drops it.
+    want_coop_mode();
+    drop_coop_mode();
+    assert_eq!(lobby_mode(MODE_CUSTOM, now), MODE_CUSTOM);
+}
+
+#[test]
+fn the_lobbys_co_op_check_is_lifted_only_for_two_consoles_in_a_networked_campaign() {
+    let mut s = session(2, 2);
+    s.difficulty = 1;
+    s.class = 2;
+    assert!(lift_coop_check(START_COOP_OR_TEAMS, Some(&s)));
+    assert!(!lift_coop_check(START_READY, Some(&s)), "only state 7");
+    assert!(!lift_coop_check(START_COOP_OR_TEAMS, None));
+    let mut local = s;
+    local.class = 0;
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&local)),
+        "split screen stays retail"
+    );
+    let mut mp = s;
+    mp.difficulty = coop_probe::NO_DIFFICULTY;
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&mp)),
+        "teams in multiplayer"
+    );
+    let three = session(3, 3);
+    assert!(!lift_coop_check(START_COOP_OR_TEAMS, Some(&three)));
+    // The retail tail after a passing check.
+    assert_eq!(tail_state(0, false), START_COUNTDOWN);
+    assert_eq!(tail_state(-1, true), START_READY);
+    assert_eq!(tail_state(-1, false), START_NOT_LOADED);
+}
+
+#[test]
+fn the_retail_host_advertises_what_the_lobby_holds() {
+    let _turn = MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let live = Arc::new(FakeLive::default());
+    let (lobby, arm) = lobby_with(Arc::clone(&live));
+    lobby.open_retail();
+    drop_coop_mode();
+    assert_eq!(lobby.role(), Role::Host);
+    assert!(
+        arm.active() && arm.want().is_none(),
+        "armed; the lobby sets the level"
+    );
+    // No session yet: nothing advertised.
+    lobby.sync_retail();
+    assert!(live.coop.lock().unwrap().is_empty());
+    let level = lobby.levels()[1].clone();
+    let mut s = session(1, 1);
+    s.campaign = level.campaign;
+    s.map = level.map;
+    s.difficulty = 2;
+    lobby.observe(Some(s));
+    lobby.sync_retail();
+    lobby.sync_retail();
+    let calls = live.coop.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "once per change: {calls:?}");
+    let c = calls[0].0.clone().unwrap();
+    assert_eq!((c.level.as_str(), c.difficulty), (level.stem.as_str(), 2));
+    // The lobby's difficulty screen moves it.
+    s.difficulty = 3;
+    lobby.observe(Some(s));
+    lobby.sync_retail();
+    assert_eq!(live.coop.lock().unwrap().len(), 2);
 }

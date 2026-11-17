@@ -77,6 +77,10 @@ pub const ROW: i16 = 3;
 pub const COOP_ROW: i16 = 4;
 pub const DOWNLOAD_ROW: i16 = 5;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
+/// Retail row 2, Custom Game (`0x231001`: `0x199e2e(1)`, a Live squad
+/// session `0x59890(2, 0, 0)`, then the lobby mode `0x199a03(2)`). The
+/// Co-op Campaign row runs it with the mode turned to co-op.
+pub const RETAIL_CUSTOM_GAME_ROW: i16 = 2;
 /// The text `0x230f36` gives retail row 3, Content Download, so the moved
 /// row keeps the player's language.
 pub const DOWNLOAD_TEXT_ID: u32 = 0x1000_0445;

@@ -36,7 +36,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use feature::Flow;
@@ -389,6 +389,11 @@ struct Inner {
     profiles: Vec<String>,
     /// The last round trip between host and guest, in ms.
     ping: Option<u16>,
+    /// The last start state logged: (retail, ours).
+    start_state: Option<(u32, u32)>,
+    /// What the retail lobby's host last advertised: (campaign, map,
+    /// difficulty) of the session.
+    advertised: Option<(u32, u32, u16)>,
 }
 
 /// What the HLE does for the lobby; a trait so tests run without one.
@@ -777,10 +782,95 @@ impl Lobby {
             _ => None,
         }
     }
+    /// The co-op hooks are on.
+    pub fn armed(&self) -> bool {
+        self.arm.as_ref().is_some_and(|a| a.active())
+    }
+    /// What the start state hook answered; logged when it changes.
+    pub fn note_start_state(&self, retail: u32, ours: u32) {
+        let was = self.lock().start_state.replace((retail, ours));
+        if was != Some((retail, ours)) {
+            if retail == ours {
+                eprintln!("coop-live: lobby start state {retail}");
+            } else {
+                eprintln!(
+                    "coop-live: lobby start state {retail} (co-op wants one console) answered {ours} for two consoles"
+                );
+            }
+        }
+    }
+    /// The Co-op Campaign row in the retail lobby mode: host. The lobby
+    /// sets the level and difficulty itself, so the hooks arm with none.
+    pub fn open_retail(&self) {
+        {
+            let mut i = self.lock();
+            if i.role != Role::Host {
+                i.role = Role::Host;
+                i.advertised = None;
+                eprintln!("coop-live: hosting a co-op campaign in the game's own lobby");
+            }
+        }
+        if let Some(arm) = &self.arm {
+            arm.arm(None);
+        }
+        want_coop_mode();
+    }
+    /// The retail lobby as the host's session holds it (the pinger, no
+    /// guest memory held): the level and difficulty the lobby's own screens
+    /// chose, advertised to Live when they change. The level is the one
+    /// whose campaign and map ids the session holds; None while the lobby
+    /// is not a campaign.
+    pub fn sync_retail(&self) {
+        if list_ui() {
+            return;
+        }
+        let (role, s) = {
+            let i = self.lock();
+            (i.role.clone(), i.session)
+        };
+        if role != Role::Host {
+            return;
+        }
+        let Some(s) = s.filter(|s| s.is_campaign() && s.is_host()) else {
+            return;
+        };
+        let key = (s.campaign, s.map, s.difficulty);
+        if self.lock().advertised == Some(key) {
+            return;
+        }
+        let found = self
+            .levels
+            .iter()
+            .position(|l| l.campaign == s.campaign && l.map == s.map);
+        {
+            let mut i = self.lock();
+            if let Some(n) = found {
+                i.level = n;
+            }
+            i.difficulty = u8::try_from(s.difficulty).unwrap_or(0).min(3);
+            i.advertised = Some(key);
+        }
+        eprintln!(
+            "coop-live: the lobby holds {} on {}; advertised",
+            found.map_or_else(
+                || format!("campaign {} map {}", s.campaign, s.map),
+                |n| self.levels[n].label().to_owned()
+            ),
+            DIFFICULTIES[usize::from(self.difficulty())]
+        );
+        // A level we cannot name keeps what was advertised (the session
+        // stays co-op on the server).
+        if let (Some(live), Some(_)) = (&self.live, found) {
+            let profiles = self.lock().profiles.clone();
+            let skulls = (self.host_skulls)(&profiles);
+            live.set_coop(self.campaign(), (!skulls.is_empty()).then_some(skulls));
+        }
+    }
     /// One round of ping (the pinger thread, no guest memory held): a guest
     /// pings its host; a host reads its guest's report and advertises it.
     /// Logs when the number moves.
     pub fn ping_once(&self) {
+        self.sync_retail();
         let Some(live) = &self.live else { return };
         let ms = match self.role() {
             Role::Idle => None,
@@ -1147,7 +1237,77 @@ pub async fn guest_ready(cx: &Cx, lobby: &Lobby, screen: u32) -> Result<(), Entr
 /// Whether the join screen opens by itself (`H2_COOP_JOIN_SCREEN=0`: only
 /// from the Co-op Campaign row).
 fn auto_join_screen() -> bool {
-    std::env::var("H2_COOP_JOIN_SCREEN").map_or(true, |v| v != "0")
+    list_ui() && std::env::var("H2_COOP_JOIN_SCREEN").map_or(true, |v| v != "0")
+}
+
+/// Our list screens (host, friends, join) instead of the game's own co-op
+/// lobby: `H2_COOP_LIST_UI=1`. Off, the Co-op Campaign row opens the
+/// retail pregame lobby in co-op mode on a Live session
+/// (docs/live/live-coop.md, "The retail lobby").
+pub fn list_ui() -> bool {
+    std::env::var("H2_COOP_LIST_UI").is_ok_and(|v| v == "1")
+}
+
+// ---- the retail lobby ----
+
+/// The Co-op Campaign row ran the Custom Game row's path: its next lobby
+/// mode call (`LOBBY_MODE_SET(2)`) becomes co-op (0). Until when, so a
+/// failed session make never turns a later custom game into co-op.
+static COOP_MODE_PENDING: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// How long the row's press waits for its lobby mode call.
+const COOP_MODE_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+/// The lobby modes `LOBBY_MODE_SET` takes.
+pub const MODE_COOP: u32 = 0;
+pub const MODE_CUSTOM: u32 = 2;
+
+/// The Co-op Campaign row was pressed: the next custom game lobby is co-op.
+pub fn want_coop_mode() {
+    *COOP_MODE_PENDING.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(std::time::Instant::now() + COOP_MODE_WINDOW);
+}
+/// Another row: no co-op mode pending.
+pub fn drop_coop_mode() {
+    COOP_MODE_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+}
+/// The mode a `LOBBY_MODE_SET(mode)` call should set: co-op once, for the
+/// custom game mode the Co-op Campaign row's press asked for.
+pub fn lobby_mode(mode: u32, now: std::time::Instant) -> u32 {
+    let mut p = COOP_MODE_PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    match *p {
+        Some(until) if mode == MODE_CUSTOM => {
+            *p = None;
+            if now <= until { MODE_COOP } else { mode }
+        }
+        _ => mode,
+    }
+}
+
+/// The lobby start state (`LOBBY_START_STATE`) that means "the co-op check
+/// failed": two players, not both on this console.
+pub const START_COOP_OR_TEAMS: u32 = 7;
+pub const START_READY: u32 = 9;
+pub const START_NOT_LOADED: u32 = 8;
+pub const START_COUNTDOWN: u32 = 10;
+/// Whether a start state of 7 is the co-op check on a Live co-op lobby:
+/// a networked campaign session of two consoles and two players. Then the
+/// state is what the retail tail gives after a passing check.
+pub fn lift_coop_check(state: u32, s: Option<&coop_probe::Session>) -> bool {
+    state == START_COOP_OR_TEAMS
+        && s.is_some_and(|s| s.is_campaign() && s.class != 0 && s.peers == 2 && s.players == 2)
+}
+/// The retail tail after a passing co-op check (`0x19a4c5`): a countdown
+/// running gives 10, else everyone loaded 9, else 8.
+pub fn tail_state(countdown: i32, all_ready: bool) -> u32 {
+    if countdown >= 0 {
+        START_COUNTDOWN
+    } else if all_ready {
+        START_READY
+    } else {
+        START_NOT_LOADED
+    }
 }
 
 pub struct CoopScreens {
@@ -1174,6 +1334,44 @@ impl feature::Feature for CoopScreens {
             lobby.observe(coop_probe::read_session(&*g));
             lobby.set_profiles(crate::skulls::profiles_or_default(&*g).0);
         });
+        // The Co-op Campaign row's lobby: co-op mode, not custom game.
+        b.raw()
+            .before(&points::LOBBY_MODE_SET, "co-op mode for the co-op row", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut m = rt.memory();
+                let at = c.cpu.esp.wrapping_add(4);
+                let mode = m.u32(at)?;
+                let want = lobby_mode(mode, std::time::Instant::now());
+                if want != mode {
+                    m.set_u32(at, want)?;
+                    eprintln!(
+                        "coop-live: the Co-op Campaign row's lobby: mode {mode} (custom game) set as {want} (co-op campaign)"
+                    );
+                } else {
+                    eprintln!("coop-live: lobby mode {mode}");
+                }
+                Ok(Flow::Continue)
+            });
+        // The lobby's start state: its co-op check wants both players on
+        // one console; on a Live co-op lobby (armed) two consoles are the
+        // point.
+        {
+            let lobby = Arc::clone(&self.lobby);
+            let reentry = Arc::new(AtomicBool::new(false));
+            b.raw().before(
+                &points::LOBBY_START_STATE,
+                "co-op over two consoles",
+                move |c| {
+                    if reentry.load(Ordering::SeqCst) || !lobby.armed() {
+                        return Ok(Flow::Continue);
+                    }
+                    let (lobby, reentry) = (Arc::clone(&lobby), Arc::clone(&reentry));
+                    c.answer_async(move |cx| -> EntryFuture {
+                        Box::pin(start_state(cx, lobby, reentry))
+                    })
+                },
+            );
+        }
         if auto_join_screen() {
             let lobby = Arc::clone(&self.lobby);
             b.raw()
@@ -1203,6 +1401,44 @@ impl feature::Feature for CoopScreens {
         }
         Ok(())
     }
+}
+
+/// `LOBBY_START_STATE` on an armed console: the retail answer, unless it
+/// is the co-op check refusing two consoles ([`lift_coop_check`]), then
+/// the retail tail's ([`tail_state`]). Logs each change of answer.
+async fn start_state(
+    cx: Cx,
+    lobby: Arc<Lobby>,
+    reentry: Arc<AtomicBool>,
+) -> Result<Ret, EntryError> {
+    let progress = cx.arg(0)?;
+    reentry.store(true, Ordering::SeqCst);
+    let r = cx
+        .call(GuestCall::new(points::LOBBY_START_STATE.base).args([progress]))
+        .await;
+    reentry.store(false, Ordering::SeqCst);
+    let state = r?.eax;
+    let session = lobby.session();
+    let out = if lift_coop_check(state, session.as_ref()) {
+        let countdown = cx
+            .call(GuestCall::new(points::LOBBY_COUNTDOWN.base))
+            .await?
+            .eax as i32;
+        let ready = if countdown >= 0 {
+            false
+        } else {
+            cx.call(GuestCall::new(points::LOBBY_ALL_READY.base))
+                .await?
+                .eax
+                & 0xff
+                != 0
+        };
+        tail_state(countdown, ready)
+    } else {
+        state
+    };
+    lobby.note_start_state(state, out);
+    Ok(Ret::new(out, 4))
 }
 
 /// Opens our screen `loader` for player 0 (`OPEN_SCREEN(1, loader)`), then

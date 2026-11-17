@@ -151,7 +151,7 @@ pub mod layout {
 
 /// The network life cycle's state; the joinable predicate refuses 6 to 9.
 const LIFE_CYCLE: u32 = 0x0052_7334;
-const NO_DIFFICULTY: u16 = 0xffff;
+pub const NO_DIFFICULTY: u16 = 0xffff;
 /// Two machines, two players: where the probe stops.
 pub const MAX_PEERS: u32 = 2;
 pub const MAX_PLAYERS: u32 = 2;
