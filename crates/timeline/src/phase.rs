@@ -407,6 +407,18 @@ fn guest_thread_slow(tid: u32) {
     });
 }
 
+/// The phase this host thread's time is going to now: [`Phase::Render`]
+/// inside the render scope on its owner's slices, [`Phase::D3d`] inside a
+/// D3D entry, [`Phase::Guest`] while another guest thread's slice
+/// suspends the scope. `None` while stats are off. The access trap
+/// (`runtime::trap`) tags each hit with it.
+pub fn current() -> Option<Phase> {
+    if !enabled() {
+        return None;
+    }
+    LOCAL.with(|l| Phase::ALL.get(l.current.get() as usize).copied())
+}
+
 /// Nanoseconds this host thread has spent in `phase` inside guest scopes
 /// (open and on their owner's slices) since collection started, the
 /// running interval included. `None` while stats are off. The
