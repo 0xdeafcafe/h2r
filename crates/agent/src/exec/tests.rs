@@ -726,3 +726,54 @@ fn a_closed_connection_cannot_take_control() {
     a.between_slices(&mut level(), 0);
     assert_eq!(next(&rx2)["result"]["controller"], true);
 }
+
+/// Seen on the real main menu: its background runs `cinematic_start`.
+#[test]
+fn the_main_menu_is_menu_even_under_its_cutscene() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    a.set_cinematic(true);
+    ask(&a, c, 1, method::STATUS, Value::Null);
+    a.on_tick(&mut Fake {
+        status: GameStatus {
+            tick: Some(1),
+            map: Some("mainmenu".into()),
+            mode: Some("main_menu".into()),
+            bsp: Some(0),
+        },
+        ..Default::default()
+    });
+    assert_eq!(next(&rx)["result"]["at"]["phase"], "menu");
+}
+
+/// Seen on a real level: its first tick comes before the opening cutscene,
+/// so the stamp says how long the map has run.
+#[test]
+fn map_ticks_count_from_each_map_load() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    ask(
+        &a,
+        c,
+        1,
+        method::WAIT,
+        json!({"until": {"phase": "gameplay", "map_ticks": 3}}),
+    );
+    a.on_tick(&mut g);
+    a.on_tick(&mut g);
+    none(&rx);
+    a.on_tick(&mut g);
+    assert_eq!(next(&rx)["result"]["at"]["map_ticks"], 3);
+    g.status.map = Some("03b_newmombasa".into());
+    ask(&a, c, 2, method::STATUS, Value::Null);
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(
+        (
+            v["result"]["at"]["map_ticks"].clone(),
+            v["result"]["at"]["ticks"].clone()
+        ),
+        (json!(1), json!(4))
+    );
+}

@@ -66,6 +66,8 @@ struct State {
     /// When the status was last read between slices.
     slice_refresh: Option<Instant>,
     ticks: u64,
+    /// Ticks since the current map loaded.
+    map_ticks: u64,
     presents: u64,
     game: GameStatus,
     phase: Option<Phase>,
@@ -255,6 +257,7 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
+        s.map_ticks += 1;
         match s.stepping {
             Some(left) if left <= 1 => {
                 s.stepping = None;
@@ -356,11 +359,11 @@ impl State {
         if !self.no_tick_hook && !self.ticking() && !self.holding {
             return Phase::Loading;
         }
-        if self.cinematic {
-            return Phase::Cinematic;
-        }
+        // The main menu's background runs as a cutscene of its own
+        // (`cinematic_start` fires there), so the menu wins.
         match self.game.mode.as_deref() {
             Some("main_menu") => Phase::Menu,
+            Some("campaign" | "multiplayer") if self.cinematic => Phase::Cinematic,
             Some("campaign" | "multiplayer") => Phase::Gameplay,
             _ => Phase::Loading,
         }
@@ -370,6 +373,7 @@ impl State {
         At {
             tick: self.game.tick,
             ticks: self.ticks,
+            map_ticks: self.map_ticks,
             present: self.presents,
             map: self.game.map.clone(),
             mode: self.game.mode.clone(),
@@ -387,6 +391,9 @@ impl State {
             Where::Slice => Boundary::Slice,
         });
         let old = std::mem::replace(&mut self.game, reader.status());
+        if old.map != self.game.map {
+            self.map_ticks = 0;
+        }
         if old.map.is_some() && old.map != self.game.map {
             // A cutscene doesn't outlive its map.
             self.cinematic = false;
@@ -518,6 +525,7 @@ impl State {
         u.tick
             .is_none_or(|t| self.game.tick.is_some_and(|now| now >= t))
             && u.ticks.is_none_or(|n| passed >= n)
+            && u.map_ticks.is_none_or(|n| self.map_ticks >= n)
             && u.present.is_none_or(|p| self.presents >= p)
             && u.phase.is_none_or(|p| self.phase == Some(p))
             && u.map
