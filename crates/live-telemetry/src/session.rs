@@ -8,7 +8,7 @@ use live_proto::game::{
 
 use crate::event::{
     GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlacedObject, Placements,
-    PlayerState, Snapshot,
+    PlayerState, Snapshot, VehicleState,
 };
 use crate::layout;
 use crate::memory::yaw;
@@ -785,6 +785,17 @@ fn frame_vehicles(
             .and_then(|(d, t)| t.vehicle(d))
             .unwrap_or_else(|| UNKNOWN.into())
     };
+    let hex = |d: u32| format!("{d:08x}");
+    // The world scan's word on each vehicle: what it is mounted on and
+    // where it aims (a turret), also for one a rider read.
+    let scanned: BTreeMap<u32, &VehicleState> =
+        snapshot.vehicles.iter().map(|v| (v.datum, v)).collect();
+    let aim = |d: u32| {
+        scanned
+            .get(&d)
+            .and_then(|v| v.aim)
+            .filter(|a| finite_direction(*a))
+    };
     let mut seen = std::collections::BTreeSet::new();
     let ridden = snapshot
         .objects
@@ -797,12 +808,17 @@ fn frame_vehicles(
                 return None;
             }
             Some(FrameVehicle {
-                id: format!("{id:08x}"),
+                id: hex(id),
                 kind: kind(o.vehicle_definition),
                 pos: o.pos,
                 forward: o.forward,
                 up: o.up,
                 occupied: true,
+                parent: o
+                    .mount
+                    .or_else(|| scanned.get(&id).and_then(|v| v.parent))
+                    .map(hex),
+                aim: aim(id),
             })
         })
         .collect::<Vec<_>>();
@@ -816,12 +832,14 @@ fn frame_vehicles(
                 && seen.insert(v.datum)
         })
         .map(|v| FrameVehicle {
-            id: format!("{:08x}", v.datum),
+            id: hex(v.datum),
             kind: kind(v.definition),
             pos: v.pos,
             forward: v.forward,
             up: v.up,
             occupied: v.occupied,
+            parent: v.parent.map(hex),
+            aim: aim(v.datum),
         })
         .collect();
     world.sort_by_key(|v| !v.occupied);
@@ -1765,6 +1783,8 @@ mod tests {
                 forward: [0.0, 1.0, 0.0],
                 up: [0.0, 0.6, 0.8],
                 occupied: true,
+                parent: None,
+                aim: None,
             }]
         );
         assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
@@ -1956,8 +1976,14 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             occupied,
+            parent: None,
+            aim: None,
         };
-        state.vehicles = vec![vehicle(5, false), vehicle(6, true)];
+        // Vehicle 9 is vehicle 6's turret, aiming up and left.
+        let mut turret = vehicle(9, true);
+        turret.parent = Some(0x9006_0006);
+        turret.aim = Some([0.0, 0.6, 0.8]);
+        state.vehicles = vec![vehicle(5, false), vehicle(6, true), turret];
         state.machines = vec![
             machine(7, [1.0, 1.0, 1.0], Some(0.0)),
             machine(8, [2.0, 2.0, 2.0], None),
@@ -2023,10 +2049,15 @@ mod tests {
             vehicles,
             [
                 ("90060006", "warthog", true),
+                ("90090009", "warthog", true),
                 ("90050005", "warthog", false)
             ],
             "occupied first"
         );
+        assert_eq!(frame.vehicles[0].parent, None);
+        assert_eq!(frame.vehicles[0].aim, None);
+        assert_eq!(frame.vehicles[1].parent.as_deref(), Some("90060006"));
+        assert_eq!(frame.vehicles[1].aim, Some([0.0, 0.6, 0.8]));
         let machines: Vec<_> = frame
             .machines
             .iter()

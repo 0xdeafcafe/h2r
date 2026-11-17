@@ -116,7 +116,12 @@ A frame may also carry `vehicles` and `actors`, each left out when empty:
 true, since older senders listed only occupied vehicles); `id` is the
 object datum in hex, the value `FramePlayer.vehicle` and `FrameActor.vehicle`
 hold. `kind` is the `vehi` tag file stem (`warthog`, `ghost`, `banshee`,
-...), `forward` and `up` unit vectors in game coordinates. `actors` are the
+...), `forward` and `up` unit vectors in game coordinates. A turret (the
+Warthog's chaingun, the Scorpion's cannon) is a vehicle of its own with
+`parent`, the id of the vehicle it is mounted on (its `pos`, `forward`
+and `up` are then relative to that one); any vehicle may carry `aim`,
+where it points, a unit vector (normalised, refused when not finite or
+zero, as a player's). `actors` are the
 live AI-controlled bipeds, nearest to a player first, at most 128.
 `species` is the directory of the biped tag (`grunt`, `jackal`, `elite`,
 `marine`, `bugger`, `floodcombat_human`, `tartarus`, ...), lower case; `team` in campaign is `player`,

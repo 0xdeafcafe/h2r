@@ -762,11 +762,36 @@ pub struct Model {
     pub class: Option<String>,
     /// Weapons: their shots (crate::live_weapons).
     pub ballistics: Option<crate::live_weapons::Ballistics>,
+    /// Vehicles: moving parts drawn as meshes of their own (a turret and its
+    /// gun, see [`turret_parts`]), each a node under the root or under an
+    /// earlier part.
+    pub parts: Vec<Part>,
+}
+
+/// A separately posed piece of a model: its own node and mesh.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Part {
+    /// Node name: `turret_<n>`, `turret_<n>_pitch_<k>`.
+    pub name: String,
+    /// The part (index into [`Model::parts`]) it hangs from; `None`: the
+    /// model's root.
+    pub parent: Option<usize>,
+    /// Its frame in its parent's (the model's, for a root part), game
+    /// coordinates; rigid.
+    pub local: Mat4,
+    /// Its triangles in its own frame; materials index the model's.
+    pub primitives: Vec<Primitive>,
+    /// The node's `extras` (a turret's `{"turret": "<tag stem>"}`).
+    pub extras: serde_json::Map<String, Value>,
 }
 
 impl Model {
     pub fn triangles(&self) -> usize {
-        self.primitives.iter().map(|p| p.indices.len() / 3).sum()
+        self.primitives
+            .iter()
+            .chain(self.parts.iter().flat_map(|p| &p.primitives))
+            .map(|p| p.indices.len() / 3)
+            .sum()
     }
 
     /// Lowest and highest point of the mesh, game coordinates.
@@ -1006,98 +1031,106 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
 
     let skeleton = model.skeleton.as_ref().filter(|s| !s.joints.is_empty());
     let joint_count = skeleton.map_or(0, |s| s.joints.len());
-    let mut prims = Vec::new();
-    for p in model.primitives.iter().filter(|p| !p.indices.is_empty()) {
-        let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
-        let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for v in &pos {
-            for k in 0..3 {
-                lo[k] = lo[k].min(v[k]);
-                hi[k] = hi[k].max(v[k]);
+    // One mesh for the model's own primitives, then one per part.
+    let mut meshes: Vec<Vec<Value>> = Vec::new();
+    for group in std::iter::once(&model.primitives).chain(model.parts.iter().map(|p| &p.primitives))
+    {
+        let mut prims = Vec::new();
+        for p in group.iter().filter(|p| !p.indices.is_empty()) {
+            let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
+            let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
             }
-        }
-        let mut attributes = serde_json::Map::new();
-        let mut add = |name: &str, bytes: Vec<u8>, ty: &str, count: usize, minmax: bool| {
-            let bv = view(&mut bin, &bytes, Some(34962));
-            let mut a =
-                json!({"bufferView": bv, "componentType": 5126, "count": count, "type": ty});
-            if minmax {
-                a["min"] = json!(lo);
-                a["max"] = json!(hi);
-            }
-            accessors.push(a);
-            attributes.insert(name.into(), json!(accessors.len() - 1));
-        };
-        add(
-            "POSITION",
-            floats(&mut pos.iter().flatten().copied()),
-            "VEC3",
-            pos.len(),
-            true,
-        );
-        if nrm.len() == pos.len() {
+            let mut attributes = serde_json::Map::new();
+            let mut add = |name: &str, bytes: Vec<u8>, ty: &str, count: usize, minmax: bool| {
+                let bv = view(&mut bin, &bytes, Some(34962));
+                let mut a =
+                    json!({"bufferView": bv, "componentType": 5126, "count": count, "type": ty});
+                if minmax {
+                    a["min"] = json!(lo);
+                    a["max"] = json!(hi);
+                }
+                accessors.push(a);
+                attributes.insert(name.into(), json!(accessors.len() - 1));
+            };
             add(
-                "NORMAL",
-                floats(&mut nrm.iter().flatten().copied()),
+                "POSITION",
+                floats(&mut pos.iter().flatten().copied()),
                 "VEC3",
                 pos.len(),
-                false,
+                true,
             );
-        }
-        if p.uvs.len() == pos.len() {
-            add(
-                "TEXCOORD_0",
-                floats(&mut p.uvs.iter().flatten().copied()),
-                "VEC2",
-                pos.len(),
-                false,
+            if nrm.len() == pos.len() {
+                add(
+                    "NORMAL",
+                    floats(&mut nrm.iter().flatten().copied()),
+                    "VEC3",
+                    pos.len(),
+                    false,
+                );
+            }
+            if p.uvs.len() == pos.len() {
+                add(
+                    "TEXCOORD_0",
+                    floats(&mut p.uvs.iter().flatten().copied()),
+                    "VEC2",
+                    pos.len(),
+                    false,
+                );
+            }
+            if p.colours.len() == pos.len() {
+                add(
+                    "COLOR_0",
+                    floats(&mut p.colours.iter().flatten().copied()),
+                    "VEC4",
+                    pos.len(),
+                    false,
+                );
+            }
+            if joint_count > 0 && p.joints.len() == pos.len() && p.weights.len() == pos.len() {
+                add(
+                    "WEIGHTS_0",
+                    floats(&mut p.weights.iter().flatten().copied()),
+                    "VEC4",
+                    pos.len(),
+                    false,
+                );
+                let bytes: Vec<u8> = p
+                    .joints
+                    .iter()
+                    .flatten()
+                    .map(|&j| if usize::from(j) < joint_count { j } else { 0 })
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                let bv = view(&mut bin, &bytes, Some(34962));
+                accessors.push(json!({"bufferView": bv, "componentType": 5123, "count": pos.len(), "type": "VEC4"}));
+                attributes.insert("JOINTS_0".into(), json!(accessors.len() - 1));
+            }
+            let iv = view(
+                &mut bin,
+                &p.indices
+                    .iter()
+                    .flat_map(|i| i.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                Some(34963),
             );
+            accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"}));
+            let mut prim =
+                json!({"attributes": attributes, "indices": accessors.len() - 1, "mode": 4});
+            if p.material < materials.len() {
+                prim["material"] = json!(p.material);
+            }
+            prims.push(prim);
         }
-        if p.colours.len() == pos.len() {
-            add(
-                "COLOR_0",
-                floats(&mut p.colours.iter().flatten().copied()),
-                "VEC4",
-                pos.len(),
-                false,
-            );
-        }
-        if joint_count > 0 && p.joints.len() == pos.len() && p.weights.len() == pos.len() {
-            add(
-                "WEIGHTS_0",
-                floats(&mut p.weights.iter().flatten().copied()),
-                "VEC4",
-                pos.len(),
-                false,
-            );
-            let bytes: Vec<u8> = p
-                .joints
-                .iter()
-                .flatten()
-                .map(|&j| if usize::from(j) < joint_count { j } else { 0 })
-                .flat_map(u16::to_le_bytes)
-                .collect();
-            let bv = view(&mut bin, &bytes, Some(34962));
-            accessors.push(json!({"bufferView": bv, "componentType": 5123, "count": pos.len(), "type": "VEC4"}));
-            attributes.insert("JOINTS_0".into(), json!(accessors.len() - 1));
-        }
-        let iv = view(
-            &mut bin,
-            &p.indices
-                .iter()
-                .flat_map(|i| i.to_le_bytes())
-                .collect::<Vec<_>>(),
-            Some(34963),
-        );
-        accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"}));
-        let mut prim = json!({"attributes": attributes, "indices": accessors.len() - 1, "mode": 4});
-        if p.material < materials.len() {
-            prim["material"] = json!(p.material);
-        }
-        prims.push(prim);
+        meshes.push(prims);
     }
+    let prims = meshes[0].clone();
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
@@ -1210,6 +1243,38 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
             None => root_children.push(nodes.len() - 1),
         }
     }
+    // Parts: a node each, with its mesh when it has triangles.
+    let mut mesh_list: Vec<Value> = Vec::new();
+    if !prims.is_empty() {
+        mesh_list.push(json!({"name": model.mesh_name, "primitives": prims}));
+    }
+    let mut part_nodes: Vec<usize> = Vec::new();
+    for (i, part) in model.parts.iter().enumerate() {
+        let (t, r) = gltf_trs(&part.local);
+        let mut node = json!({"name": part.name, "translation": t, "rotation": r});
+        if !meshes[i + 1].is_empty() {
+            node["mesh"] = json!(mesh_list.len());
+            mesh_list.push(json!({"name": part.name, "primitives": meshes[i + 1]}));
+        }
+        if !part.extras.is_empty() {
+            node["extras"] = Value::Object(part.extras.clone());
+        }
+        nodes.push(node);
+        let at = nodes.len() - 1;
+        part_nodes.push(at);
+        match part.parent.filter(|&p| p < i) {
+            Some(p) => {
+                let parent = part_nodes[p];
+                let kids = nodes[parent]
+                    .as_object_mut()
+                    .expect("a node")
+                    .entry("children")
+                    .or_insert_with(|| json!([]));
+                kids.as_array_mut().expect("children").push(json!(at));
+            }
+            None => root_children.push(at),
+        }
+    }
     nodes[0]["children"] = json!(root_children);
     for (j, c) in children.into_iter().enumerate() {
         if !c.is_empty() {
@@ -1222,8 +1287,8 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         "scenes": [{"nodes": [0]}],
         "nodes": nodes,
     });
-    if !prims.is_empty() {
-        doc["meshes"] = json!([{"name": model.mesh_name, "primitives": prims}]);
+    if !mesh_list.is_empty() {
+        doc["meshes"] = json!(mesh_list);
         doc["accessors"] = json!(accessors);
     }
     if !materials.is_empty() {
@@ -1754,6 +1819,191 @@ pub(crate) fn variant_objects(map: &mut MapReader, object: TagId) -> Result<Vec<
         .collect())
 }
 
+/// The nodes that raise and lower a turret's gun, by name: the Warthog's
+/// chaingun and gauss `gun`, the Scorpion's `cannon` (and its coaxial
+/// `gun`), the Wraith's mortar `gun_arm`, the Spectre's `turret_gun`.
+pub const TURRET_PITCH_NODES: &[&str] = &["gun", "cannon", "gun_arm", "turret_gun"];
+
+/// The pitch nodes of a turret's skeleton: named in [`TURRET_PITCH_NODES`],
+/// with no such node above them.
+pub fn pitch_nodes(bones: &[Bone]) -> Vec<usize> {
+    let named = |i: usize| TURRET_PITCH_NODES.contains(&bones[i].name.as_str());
+    (0..bones.len())
+        .filter(|&i| {
+            named(i) && {
+                let mut up = bones[i].parent;
+                let mut hops = 0;
+                while let Some(p) = up.filter(|&p| p < bones.len() && hops < bones.len()) {
+                    if named(p) {
+                        return false;
+                    }
+                    up = bones[p].parent;
+                    hops += 1;
+                }
+                true
+            }
+        })
+        .collect()
+}
+
+/// For each bone, which of `roots` (by position) it is or hangs under.
+pub fn owners(bones: &[Bone], roots: &[usize]) -> Vec<Option<usize>> {
+    (0..bones.len())
+        .map(|i| {
+            let mut at = Some(i);
+            let mut hops = 0;
+            while let Some(n) = at.filter(|&n| n < bones.len() && hops <= bones.len()) {
+                if let Some(k) = roots.iter().position(|&r| r == n) {
+                    return Some(k);
+                }
+                at = bones[n].parent;
+                hops += 1;
+            }
+            None
+        })
+        .collect()
+}
+
+/// `src` with only the triangles whose first vertex's heaviest node passes
+/// `keep`, each piece's vertices cut down to those used.
+pub fn source_where(src: &Source, keep: impl Fn(usize) -> bool) -> Source {
+    let heaviest = |piece: &Piece, v: usize| -> usize {
+        let nodes = piece.nodes.get(v).copied().unwrap_or([0; 4]);
+        let weights = piece
+            .weights
+            .get(v)
+            .copied()
+            .unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        (0..4)
+            .max_by(|&a, &b| weights[a].total_cmp(&weights[b]))
+            .map_or(0, |k| nodes[k])
+    };
+    let pieces = src
+        .pieces
+        .iter()
+        .filter_map(|piece| {
+            let tris: Vec<[u32; 3]> = piece
+                .triangles
+                .iter()
+                .copied()
+                .filter(|t| {
+                    t.iter().all(|&i| (i as usize) < piece.positions.len())
+                        && keep(heaviest(piece, t[0] as usize))
+                })
+                .collect();
+            if tris.is_empty() {
+                return None;
+            }
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let mut out = Piece {
+                material: piece.material,
+                ..Piece::default()
+            };
+            let mut index = |i: u32, out: &mut Piece| -> u32 {
+                *map.entry(i).or_insert_with(|| {
+                    let v = i as usize;
+                    out.positions.push(piece.positions[v]);
+                    if let Some(n) = piece.normals.get(v) {
+                        out.normals.push(*n);
+                    }
+                    if let Some(uv) = piece.uvs.get(v) {
+                        out.uvs.push(*uv);
+                    }
+                    if let Some(n) = piece.nodes.get(v) {
+                        out.nodes.push(*n);
+                    }
+                    if let Some(w) = piece.weights.get(v) {
+                        out.weights.push(*w);
+                    }
+                    out.positions.len() as u32 - 1
+                })
+            };
+            for t in tris {
+                let t = t.map(|i| index(i, &mut out));
+                out.triangles.push(t);
+            }
+            Some(out)
+        })
+        .collect();
+    Source {
+        bones: src.bones.clone(),
+        markers: src.markers.clone(),
+        pieces,
+        materials: src.materials.clone(),
+        change_colour: src.change_colour.clone(),
+    }
+}
+
+/// A turret (`src`, at rest, attached to its vehicle at `at`) as parts: a
+/// `turret_<n>` part at `at` holding what turns with its yaw (all of it but
+/// the guns, plus `extra`, primitives already in its space), and under it
+/// a `turret_<n>_pitch_<k>` part per pitch node ([`pitch_nodes`]), its
+/// frame that node's rest origin with the turret's axes, holding what
+/// hangs from that node. Yaw turns a turret about its own up (z); pitch
+/// about its own y. Materials index `src`'s, offset by `material_base`.
+pub fn turret_parts(
+    src: &Source,
+    n: usize,
+    stem: &str,
+    at: &Mat4,
+    extra: Vec<Primitive>,
+    material_base: usize,
+) -> Vec<Part> {
+    let rest = rest_world(&src.bones);
+    let pitch = pitch_nodes(&src.bones);
+    let owner = owners(&src.bones, &pitch);
+    let owned = |node: usize| owner.get(node).copied().flatten();
+    let shift = |prims: Vec<Primitive>, by: [f32; 3]| -> Vec<Primitive> {
+        prims
+            .into_iter()
+            .map(|mut p| {
+                p.material += material_base;
+                for v in &mut p.positions {
+                    *v = [v[0] - by[0], v[1] - by[1], v[2] - by[2]];
+                }
+                // Parts are not skinned.
+                p.joints.clear();
+                p.weights.clear();
+                p
+            })
+            .collect()
+    };
+    let mut yaw = shift(
+        pose_mesh(&source_where(src, |node| owned(node).is_none()), &rest),
+        [0.0; 3],
+    );
+    yaw.extend(extra.into_iter().map(|mut p| {
+        p.joints.clear();
+        p.weights.clear();
+        p
+    }));
+    let mut extras = serde_json::Map::new();
+    extras.insert("turret".into(), json!(stem));
+    let mut parts = vec![Part {
+        name: format!("turret_{n}"),
+        parent: None,
+        local: *at,
+        primitives: yaw,
+        extras,
+    }];
+    for (k, &node) in pitch.iter().enumerate() {
+        let pivot = rest
+            .get(node)
+            .map_or([0.0; 3], |m| [m[3][0], m[3][1], m[3][2]]);
+        let prims = pose_mesh(&source_where(src, |b| owned(b) == Some(k)), &rest);
+        let mut local = IDENTITY;
+        local[3] = [pivot[0], pivot[1], pivot[2], 1.0];
+        parts.push(Part {
+            name: format!("turret_{n}_pitch_{k}"),
+            parent: Some(0),
+            local,
+            primitives: shift(prims, pivot),
+            extras: serde_json::Map::new(),
+        });
+    }
+    parts
+}
+
 /// Adds `child` (in its own model space) to `model` at `at` (the child's
 /// space in the model's): its materials after the model's, its triangles
 /// moved, and its seat nodes where the model has none of that name.
@@ -1810,6 +2060,10 @@ fn attach_objects(
             paint_vehicle(&mut child_src, &colours);
             let rest = rest_world(&child_src.bones);
             let mut child = vehicle(&child_src, &[], &Pose { nodes: Vec::new() })?;
+            // A turret on the vehicle itself becomes parts that aim; what
+            // it carries in turn joins its yaw part.
+            let turret = depth == 0;
+            let own = child.primitives.len();
             let inner = attach_objects(
                 map,
                 files,
@@ -1830,6 +2084,37 @@ fn attach_objects(
                 Some(c) => mat_mul(&at_parent, &invert_rigid(&c)),
                 None => at_parent,
             };
+            if turret {
+                let stem = map
+                    .tag(a.child)
+                    .ok()
+                    .and_then(|t| {
+                        t.name
+                            .as_deref()
+                            .map(|n| last_component(n).to_ascii_lowercase())
+                    })
+                    .unwrap_or_default();
+                let n = model.parts.iter().filter(|p| p.parent.is_none()).count();
+                let base = model.materials.len();
+                // Materials of attached objects inside the child already
+                // follow the child's own, so one offset serves both.
+                let extra: Vec<Primitive> = child
+                    .primitives
+                    .split_off(own)
+                    .into_iter()
+                    .map(|mut p| {
+                        p.material += base;
+                        p
+                    })
+                    .collect();
+                let parts = turret_parts(&child_src, n, &stem, &at, extra, base);
+                let first = model.parts.len();
+                model.parts.extend(parts.into_iter().map(|mut p| {
+                    p.parent = p.parent.map(|q| q + first);
+                    p
+                }));
+                child.primitives.clear();
+            }
             attach_model(model, child, &at);
             Ok(inner)
         })();

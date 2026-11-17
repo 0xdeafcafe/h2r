@@ -361,7 +361,8 @@ function addShaderPatch(mat: THREE.Material, key: string, patch: (shader: THREE.
   const before = shaderPatches.get(mat) ?? [];
   const patches = [...before, { key, patch }];
   shaderPatches.set(mat, patches);
-  mat.onBeforeCompile = (shader) => { for (const p of patches) p.patch(shader); };
+  // The prototype's step first: it hands the shader the game fog's uniform (sky3d.ts).
+  mat.onBeforeCompile = (shader, renderer) => { THREE.Material.prototype.onBeforeCompile.call(mat, shader, renderer); for (const p of patches) p.patch(shader); };
   // Programs are shared by what the patches are.
   mat.customProgramCacheKey = () => patches.map((p) => p.key).join("|");
 }

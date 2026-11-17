@@ -58,7 +58,7 @@ from the shader's passes, pictures as files beside `map.glb`, the gzip
 copy and the map pack maps; 15 vehicles in their own colours, the
 reflection tints and shaders whose compiled data another shader shares;
 16 vehicles' turrets and hull decals that double what is under them;
-17 the weather volumes and the sky light's glow).
+17 the weather volumes and the sky light's glow; 18 turrets as parts that aim).
 
 ### `map.glb`
 
@@ -747,11 +747,23 @@ Keys (what telemetry sends):
   `default`: the chaingun; `gauss` and `troop` are other variants). Each
   child is built like a vehicle at rest, in its own colours, its child
   marker (or its origin, when it names none) on the parent's marker in the
-  vehicle's pose, and its own attached objects in turn (two levels). Its
-  triangles and materials join the vehicle's mesh, and its seat nodes
-  join the vehicle's (`seat_gunner` on the Warthog's chaingun) unless the
-  vehicle has that name. `asset.extras.attached` lists the attached
-  objects' tag names. On the disc the Ghost and Banshee attach nothing:
+  vehicle's pose, and its own attached objects in turn (two levels). An
+  object attached to the vehicle itself is drawn as parts that aim (live
+  art 18): a `turret_<n>` node at its attachment frame, extras
+  `{"turret": "<tag stem>"}`, with a mesh of what turns with its yaw
+  (everything but its guns, and what it carries in turn), and under it a
+  `turret_<n>_pitch_<k>` node per gun, at that gun node's rest origin with
+  the turret's axes, with a mesh of what hangs from it. The guns are the
+  turret's nodes named `gun`, `cannon`, `gun_arm` or `turret_gun` with no
+  such node above them (the Warthog's chaingun and gauss `gun`, the
+  Scorpion's `cannon` and coaxial `gun`, the Wraith mortar's `gun_arm`,
+  the Spectre's `turret_gun`); a triangle goes with its first vertex's
+  heaviest node. A reader turns the yaw node about its own up (glTF +y)
+  and each gun about its own side (glTF +z, raising it); at rest they
+  are as the game models them. Parts are not skinned. Its materials join
+  the vehicle's, and its seat nodes join the vehicle's (`seat_gunner` on
+  the Warthog's chaingun) unless the vehicle has that name.
+  `asset.extras.attached` lists the attached objects' tag names. On the disc the Ghost and Banshee attach nothing:
   their guns are in their hull models.
 - **Vehicle colours.** Halo 2 paints a vehicle with its object's own
   change colours, not its driver's team (a red player's Banshee is as
@@ -1004,9 +1016,11 @@ Do not commit anything they write.
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
-- Vehicles are posed once: no turret aim, no wheel suspension. Turrets
-  are attached at rest (above) and part of the vehicle's mesh: they do not
-  turn with a frame, and a Warthog is always the chaingun one (a gauss
+- Vehicles are posed once: no wheel suspension. Turrets aim by their
+  parts (above), at rest until a frame says where; the gun nodes are
+  chosen by name, so a turret whose gun is named otherwise only turns in
+  yaw, and pitch is about the gun node's rest origin, which may not be
+  the game's exact hinge. A Warthog is always the chaingun one (a gauss
   Warthog is the same tag in another variant). A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.

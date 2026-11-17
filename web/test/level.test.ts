@@ -4,7 +4,7 @@ import { skipsOcclusion } from "../src/viewer/aopass";
 import { SEE_MAX, nextSee, seeTargets, seeThroughHidesAny, type SeeThrough } from "../src/viewer/cutaway";
 import { dressLayer, layerLook, layerOf } from "../src/viewer/layers3d";
 import { LevelLook } from "../src/viewer/level3d";
-import { fogRange, skyColour, skyOf, skyUrl } from "../src/viewer/sky3d";
+import { FOG_CLEAR, fogAmount, gameFog, skyColour, skyOf, skyUrl, useGameFog } from "../src/viewer/sky3d";
 import { ZONE_DWELL_MS, ZoneFollower, isBackdrop, layerNode, zoneInPlay, zoneLabel, zoneList, zoneVisibility, zoneWanted, type ZoneBox } from "../src/viewer/zones";
 
 describe("picking a level's zone", () => {
@@ -142,19 +142,41 @@ describe("a level's sky and fog", () => {
     expect(skyUrl("map.glb", "sky.glb")).toBe("sky.glb");
   });
 
-  test("the fog is measured from the point in focus, and never hides the far side of the level", () => {
+  test("the fog is measured from the point in focus, linear to the sky's density and no thicker", () => {
     const fog = { colour: [1, 1, 1] as [number, number, number], density: 0.5, start: 20, end: 60 };
-    // Clear up to start past the focus; as thick as the game's (a half) at end past it.
-    const r = fogRange(fog, 10);
-    expect(r.near).toBe(30);
-    const at = (d: number, x: { near: number; far: number }) => (d - x.near) / (x.far - x.near);
-    expect(at(70, r)).toBeCloseTo(0.5);
-    // Seen from afar, the level's far side (800 away) is no thicker than the game's most.
-    const wide = fogRange(fog, 300, 800);
-    expect(at(800, wide)).toBeCloseTo(0.5);
-    expect(at(300 + 60, wide)).toBeLessThan(0.5);
-    // A level that ends before the fog is thick changes nothing.
-    expect(fogRange(fog, 10, 40)).toEqual(r);
+    const f = gameFog(fog, 10);
+    expect(f).toEqual({ near: 30, far: 70, cap: 0.5 });
+    // Clear up to start past the focus.
+    expect(fogAmount(0, f)).toBe(0);
+    expect(fogAmount(30, f)).toBe(0);
+    // Linear on the way (the game's, not three's smoothstep).
+    expect(fogAmount(50, f)).toBeCloseTo(0.25, 9);
+    // The sky's most at end past it, and never more: the far side of a
+    // level seen from afar fades, it is not hidden.
+    expect(fogAmount(70, f)).toBeCloseTo(0.5, 9);
+    expect(fogAmount(10_000, f)).toBeCloseTo(0.5, 9);
+  });
+
+  test("odd fog numbers stay sane", () => {
+    const f = gameFog({ colour: [1, 1, 1], density: 3, start: 5, end: 5 }, -4);
+    expect(f.cap).toBe(1);
+    expect(f.near).toBe(5);
+    expect(f.far).toBeGreaterThan(f.near);
+    expect(Number.isFinite(fogAmount(6, f))).toBe(true);
+  });
+
+  test("three's fog is patched to the game's, once, with a shared cap every material gets", () => {
+    expect(useGameFog()).toBe(true);
+    expect(useGameFog()).toBe(true);
+    const chunks = THREE.ShaderChunk as unknown as Record<string, string>;
+    expect(chunks.fog_fragment).toContain("fogClear");
+    expect(chunks.fog_fragment).not.toContain("smoothstep( fogNear");
+    expect(chunks.fog_pars_fragment?.match(/uniform float fogClear;/g)?.length).toBe(1);
+    // The exponential haze is untouched.
+    expect(chunks.fog_fragment).toContain("exp( - fogDensity * fogDensity");
+    const shader = { uniforms: {} as Record<string, unknown>, vertexShader: "", fragmentShader: "" };
+    new THREE.MeshStandardMaterial().onBeforeCompile(shader as never, null as never);
+    expect(shader.uniforms.fogClear).toBe(FOG_CLEAR);
   });
 });
 

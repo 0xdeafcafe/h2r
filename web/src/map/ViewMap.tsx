@@ -237,6 +237,7 @@ export default function ViewMap(props: {
       if (feats) drawFeatures(ctx, feats, (x, y, z) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)]; }, Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k);
       // Vehicles, then the AI (small squares, never named), under the players.
       if (!props.mini) for (const veh of f.vehicles ?? []) {
+        if (veh.parent) continue; // a turret: drawn as its vehicle
         const [px, py] = worldToPixel(m, veh.x, veh.y, veh.z), [fx, fy] = worldToPixel(m, veh.x + veh.forward[0], veh.y + veh.forward[1], veh.z + veh.forward[2]);
         const [len, wid] = vehicleBox(veh.kind), unit = Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k, k = Math.max(unit, 9 / wid);
         if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;

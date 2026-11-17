@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BOOST, MAX_PITCH, SPEED_MAX, SPEED_MIN, addMoves, anglesOf, approach, deadzone, keyBoost, keyMove, lookStep, moveIsIdle, padInput, speedLabel, speedStep } from "../src/viewer/flycam";
+import { BOOST, LOOK_SPIKE, MAX_PITCH, MOUSE_LOOK, SPEED_MAX, SPEED_MIN, TOUCH_LOOK, addMoves, anglesOf, approach, deadzone, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, stickCurve, twoFingerMove, wheelPixels } from "../src/viewer/flycam";
 
 const keys = (...c: string[]) => new Set(c);
 const pad = (axes: number[], pressed: number[] = [], values: Record<number, number> = {}) => ({
@@ -70,6 +70,20 @@ describe("speed", () => {
   test("a big flick is a few notches, not a jump", () => {
     expect(speedStep(1, -10000)).toBeCloseTo(1.2 ** 3, 9);
   });
+  test("a trackpad's many small deltas add up to the same as one notch", () => {
+    let s = 1;
+    for (let i = 0; i < 20; i++) s = speedStep(s, -5);
+    expect(s).toBeCloseTo(speedStep(1, -100), 9);
+    // One small delta is a small change, not a whole notch.
+    expect(speedStep(1, -5)).toBeLessThan(1.02);
+  });
+  test("lines and pages are turned into pixels", () => {
+    expect(wheelPixels(3, 1)).toBeCloseTo(100, 9);
+    expect(wheelPixels(1, 2)).toBe(300);
+    expect(wheelPixels(42, 0)).toBe(42);
+    expect(wheelPixels(NaN, 0)).toBe(0);
+    expect(speedStep(1, 3, 1)).toBeCloseTo(speedStep(1, 100), 9);
+  });
   test("clamped, and no wheel is no change", () => {
     expect(speedStep(SPEED_MAX, -100)).toBe(SPEED_MAX);
     expect(speedStep(SPEED_MIN, 100)).toBe(SPEED_MIN);
@@ -135,5 +149,56 @@ describe("gamepad", () => {
   test("pad and keys add, still no longer than 1", () => {
     const m = addMoves({ right: 1, up: 0, forward: 0 }, { right: 0, up: 0, forward: 1 });
     expect(Math.hypot(m.right, m.forward)).toBeCloseTo(1, 9);
+  });
+});
+
+describe("pointer look", () => {
+  test("mouse pixels to radians; a finger turns further a pixel", () => {
+    expect(pointerLook(10, -5)).toEqual({ dx: 10 * MOUSE_LOOK, dy: -5 * MOUSE_LOOK });
+    expect(pointerLook(10, 0, TOUCH_LOOK).dx).toBeGreaterThan(pointerLook(10, 0).dx);
+  });
+  test("a pointer-lock spike is dropped", () => {
+    expect(pointerLook(LOOK_SPIKE + 1, 0)).toEqual({ dx: 0, dy: 0 });
+    expect(pointerLook(0, -(LOOK_SPIKE + 1))).toEqual({ dx: 0, dy: 0 });
+    expect(pointerLook(NaN, 0)).toEqual({ dx: 0, dy: 0 });
+    expect(pointerLook(LOOK_SPIKE, 0).dx).toBeCloseTo(LOOK_SPIKE * MOUSE_LOOK, 9);
+  });
+  test("left and right buttons look; middle does not", () => {
+    expect(looksWith(0)).toBe(true);
+    expect(looksWith(2)).toBe(true);
+    expect(looksWith(1)).toBe(false);
+  });
+});
+
+describe("two fingers", () => {
+  test("spreading flies forward, pinching back", () => {
+    const m = twoFingerMove([100, 100], [200, 100], [90, 100], [210, 100]);
+    expect(m.forward).toBeCloseTo(20, 9);
+    expect(m.right).toBeCloseTo(0, 9);
+    expect(m.up).toBeCloseTo(0, 9);
+    expect(twoFingerMove([90, 100], [210, 100], [100, 100], [200, 100]).forward).toBeCloseTo(-20, 9);
+  });
+  test("dragging both pushes the world: right slides the camera left, up slides it down", () => {
+    const m = twoFingerMove([100, 100], [200, 100], [130, 80], [230, 80]);
+    expect(m.forward).toBeCloseTo(0, 9);
+    expect(m.right).toBeCloseTo(-30, 9);
+    expect(m.up).toBeCloseTo(-20, 9);
+  });
+  test("one finger moving moves the midpoint half as far", () => {
+    const m = twoFingerMove([100, 100], [200, 100], [100, 120], [200, 100]);
+    expect(m.up).toBeCloseTo(10, 9);
+  });
+  test("garbage is no move", () => {
+    expect(moveIsIdle(twoFingerMove([NaN, 0], [1, 1], [0, 0], [1, 1]))).toBe(true);
+  });
+});
+
+describe("stick look curve", () => {
+  test("squared with the sign kept: fine near the middle, full at the edge", () => {
+    expect(stickCurve(0.5)).toBeCloseTo(0.25, 9);
+    expect(stickCurve(-0.5)).toBeCloseTo(-0.25, 9);
+    expect(stickCurve(1)).toBe(1);
+    expect(stickCurve(-1)).toBe(-1);
+    expect(padInput(pad([0, 0, 1, 0])).lookX).toBe(1);
   });
 });

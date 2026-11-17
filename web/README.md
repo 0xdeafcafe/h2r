@@ -274,8 +274,10 @@ and pan and zoom; without them it is the fitted grid as before. The "3D view"
 button opens the level in a window (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
 off by itself on a machine that can't keep up), orbit, top-down,
-follow-a-player and free-fly cameras (F; WASD, drag to look, wheel for
-speed, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
+follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
+either button to look or click to lock the mouse, wheel or trackpad for
+speed, Shift to go faster, one finger to look and two to fly on a touch
+screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
 window can be dragged, resized, maximised, or popped out to
 `/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
 replay session (`src/viewer/session.ts`), and a popped-out window keeps in
@@ -291,7 +293,12 @@ bipeds, campaign), both optional. A vehicle is drawn as its glb from the
 manifest's `models.vehicles`, turned by its forward and up, or as a box of
 about its kind's size; a player's vehicle takes a light wash of their
 colour. Whoever is in one is not drawn themselves: the vehicle stands for
-them and carries their label (seat nodes are not used yet). Actors are
+them and carries their label (seat nodes are not used yet). A turret
+(a vehicle with a `parent`: the Warthog's chaingun, the Scorpion's
+cannon) is not drawn on its own: its vehicle's model turns its
+`turret_<n>` part and raises its guns to the turret's `aim`, else its
+gunner's, eased (`viewer/turrets.ts`, `viewer/turrets3d.ts`), and its
+gunner rides the vehicle. Actors are
 sampled, eased and drawn through the same path as players (an index made
 from their id, negative so it never meets a player's): their species' glb
 in its own colours, else the spartan's untinted, else a small capsule, with
@@ -422,10 +429,14 @@ optional; a frame without them draws as before.
   (docs/live/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
   camera before everything else, moving with it but not turning, its
   additive layers left out; behind it is the sky's clear colour, else its
-  fog colour. The sky's fog is linear, clear up to its start past the
-  point in focus and as thick as the game's at its end, but stretched so
-  the far side of the level is never more fogged than the game's most:
-  an overview fades the far side instead of hiding it. With no sky the
+  fog colour. The sky's atmospheric fog is drawn as the game's, not
+  three's: clear up to its start past the point in focus, thickening
+  linearly to the sky's maximum density at its opaque distance and never
+  thicker beyond, so an overview fades the far side instead of hiding it.
+  `useGameFog` patches three's fog chunks for that (the cap is one shared
+  uniform every material's `onBeforeCompile` gets; a material that sets
+  its own must chain the prototype's). A sky without fog but with a
+  sun-lit glow keeps the exponential haze in the glow's colour. With no sky the
   view keeps its own gradient and haze. The occlusion pass leaves out
   anything see-through that writes no depth (`viewer/aopass.ts`).
 

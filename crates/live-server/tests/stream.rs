@@ -678,6 +678,8 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             forward: [2.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             occupied: true,
+            parent: None,
+            aim: None,
         }],
         actors: vec![FrameActor {
             id: "90070007".into(),

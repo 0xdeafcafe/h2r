@@ -25,8 +25,10 @@ use crate::game::{
     MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
 };
 
-/// The packed format's version, the first four bits of every frame.
-pub const VERSION: u64 = 1;
+/// The packed format's version, the first four bits of every frame. Version
+/// 2 adds a vehicle's parent and aim; version 1 frames (recorded ones, an
+/// older game's) still decode.
+pub const VERSION: u64 = 2;
 /// Positions are whole multiples of 1/512 world unit (about 6 mm).
 pub const POS_SCALE: f64 = 512.0;
 /// Yaw: a full turn in 4096 steps.
@@ -384,7 +386,11 @@ const VEHICLE: &[Field] = &[
     f(Kind::Dir),  // forward
     f(Kind::Dir),  // up
     f(Kind::Bool), // occupied
+    o(Kind::Id),   // parent (version 2)
+    o(Kind::Dir),  // aim (version 2)
 ];
+/// Version 1's vehicle: [`VEHICLE`] without its parent and aim.
+const VEHICLE_V1: &[Field] = VEHICLE.split_at(6).0;
 const ACTOR: &[Field] = &[
     k(Kind::Id),
     f(Kind::Str), // species
@@ -434,6 +440,23 @@ const LISTS: [(&[Field], usize); 5] = [
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
 ];
+/// Version 1's lists.
+const LISTS_V1: [(&[Field], usize); 5] = [
+    (PLAYER, MAX_PLAYERS),
+    (VEHICLE_V1, MAX_FRAME_VEHICLES),
+    (ACTOR, MAX_FRAME_ACTORS),
+    (MACHINE, MAX_FRAME_MACHINES),
+    (OBJECT, MAX_FRAME_OBJECTS),
+];
+
+/// The lists of a version this decoder reads.
+fn lists_of(version: u64) -> Option<&'static [(&'static [Field], usize); 5]> {
+    match version {
+        1 => Some(&LISTS_V1),
+        VERSION => Some(&LISTS),
+        _ => None,
+    }
+}
 
 type Entity = Vec<Val>;
 
@@ -519,6 +542,8 @@ fn vehicle_vals(v: &FrameVehicle) -> Result<Entity> {
         Val::Dir(oct(v.forward)?),
         Val::Dir(oct(v.up)?),
         Val::Bool(v.occupied),
+        opt(v.parent.as_deref(), id)?,
+        opt(v.aim, |a| oct(a).map(Val::Dir))?,
     ])
 }
 
@@ -713,6 +738,9 @@ fn vehicle_of(e: &Entity) -> Result<FrameVehicle> {
         forward: as_dir(&e[3])?,
         up: as_dir(&e[4])?,
         occupied: as_bool(&e[5])?,
+        // Version 1 vehicles have neither.
+        parent: e.get(6).map(as_opt_id).transpose()?.flatten(),
+        aim: e.get(7).map(as_opt_dir).transpose()?.flatten(),
     })
 }
 
@@ -1176,6 +1204,8 @@ fn read_delta(
 #[derive(Clone, Default)]
 struct StreamState {
     seq: u64,
+    /// The format version its frames were in.
+    version: u64,
     game_id: String,
     tick: u64,
     bsp: Option<u64>,
@@ -1303,6 +1333,7 @@ impl Encoder {
             }
         }
         state.seq = seq;
+        state.version = VERSION;
         state.game_id = frame.game_id.clone();
         state.tick = frame.tick;
         state.bsp = bsp;
@@ -1345,9 +1376,7 @@ impl Decoder {
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Decoded> {
         let mut r = BitReader::new(bytes);
         let version = r.bits(4)?;
-        if version != VERSION {
-            return Err(PackError::Version(version));
-        }
+        let lists = lists_of(version).ok_or(PackError::Version(version))?;
         let key = r.bit()?;
         let sid = r.eg(0)?;
         let seq = r.eg(8)?;
@@ -1356,12 +1385,14 @@ impl Decoder {
             &empty
         } else {
             match self.streams.get(&sid) {
-                Some(s) if s.seq.checked_add(1) == Some(seq) => s,
+                // A delta is against a frame of its own version.
+                Some(s) if s.seq.checked_add(1) == Some(seq) && s.version == version => s,
                 _ => return Err(PackError::Gap { sid, seq }),
             }
         };
         let mut state = StreamState {
             seq,
+            version,
             strings: prev.strings.clone(),
             ..StreamState::default()
         };
@@ -1388,7 +1419,7 @@ impl Decoder {
             state.strings.push(read_str_literal(&mut r)?);
         }
         let mut hits = Vec::new();
-        for (n, (schema, max)) in LISTS.iter().enumerate() {
+        for (n, (schema, max)) in lists.iter().enumerate() {
             if n == 3 {
                 hits = read_full(&mut r, HIT, MAX_FRAME_HITS, &state.strings)?;
             }

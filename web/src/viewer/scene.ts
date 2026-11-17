@@ -47,7 +47,9 @@ import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing,
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
-import { BOOST, FLY_KEYS, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, padInput, speedLabel, speedStep } from "./flycam";
+import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
+import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
+import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
@@ -120,6 +122,8 @@ interface VehicleObj {
   key: string;
   height: number;
   kind: string;
+  /** Its model's turrets (viewer/turrets.ts), in the glb's order. */
+  turrets: TurretObj[];
 }
 
 /** One shot on screen: a tracer and its muzzle flash. */
@@ -474,7 +478,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind };
+      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind, turrets: [] };
       this.looseMachines.set(m.id, o);
     }
     const mod = this.models, file = mod?.table.objects[m.kind];
@@ -843,46 +847,95 @@ export class ViewerScene {
     this.dirty = true;
   }
 
-  /** Mouse drag (or pointer lock) to look, the wheel for speed. */
+  /** Mouse drag (left or right button) or pointer lock to look, the wheel
+   *  for speed; on a touch screen one finger looks and two fly (spread to
+   *  go forward, drag to slide). */
   private listenFly(el: HTMLElement): () => void {
+    // Pointers down on the view, by id: where each was last.
+    const pointers = new Map<number, { x: number; y: number; touch: boolean }>();
     const down = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || e.button !== 0) return;
+      const touch = e.pointerType === "touch";
+      if (!f || (!touch && !looksWith(e.button))) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, touch });
       f.drag = true; f.moved = 0;
       el.setPointerCapture(e.pointerId);
     };
     const move = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || !(f.drag || document.pointerLockElement === el)) return;
-      f.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
-      this.flyLook(e.movementX * 0.0022, e.movementY * 0.0022);
+      if (!f) return;
+      if (document.pointerLockElement === el) {
+        const l = pointerLook(e.movementX, e.movementY);
+        this.flyLook(l.dx, l.dy);
+        return;
+      }
+      const p = pointers.get(e.pointerId);
+      if (!p || !f.drag) return;
+      const dx = e.clientX - p.x, dy = e.clientY - p.y;
+      f.moved += Math.abs(dx) + Math.abs(dy);
+      const touches = [...pointers.entries()].filter(([, q]) => q.touch);
+      if (p.touch && touches.length >= 2) {
+        // Two fingers: this one moved, the other stayed where it was.
+        const other = touches.find(([id]) => id !== e.pointerId)![1];
+        const m = twoFingerMove([p.x, p.y], [other.x, other.y], [e.clientX, e.clientY], [other.x, other.y]);
+        this.flyNudge(m, this.flyUnitsPerSecond(false) / 300);
+      } else {
+        const l = pointerLook(dx, dy, p.touch ? TOUCH_LOOK : MOUSE_LOOK);
+        this.flyLook(l.dx, l.dy);
+      }
+      p.x = e.clientX; p.y = e.clientY;
     };
     const up = (e: PointerEvent) => {
       const f = this.fly;
-      if (!f || !f.drag) return;
-      f.drag = false;
+      const p = pointers.get(e.pointerId);
+      pointers.delete(e.pointerId);
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-      // A click rather than a drag takes the mouse (Esc gives it back).
-      if (f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
+      if (!f || !p) return;
+      f.drag = pointers.size > 0;
+      // A left click rather than a drag takes the mouse (Esc gives it back).
+      if (!p.touch && e.button === 0 && f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
     };
+    // The right button looks, so it must not open the page's menu.
+    const menu = (e: MouseEvent) => { if (this.fly) e.preventDefault(); };
     const wheel = (e: WheelEvent) => {
       if (!this.fly) return;
       e.preventDefault();
-      this.flySpeed = speedStep(this.flySpeed, e.deltaY);
+      const next = speedStep(this.flySpeed, e.deltaY, e.deltaMode);
+      if (next === this.flySpeed) return;
+      this.flySpeed = next;
       this.onFlySpeed?.(speedLabel(this.flySpeed));
     };
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+    el.addEventListener("contextmenu", menu);
     el.addEventListener("wheel", wheel, { passive: false });
     return () => {
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      el.removeEventListener("contextmenu", menu);
       el.removeEventListener("wheel", wheel);
     };
+  }
+
+  /** How fast the flycam flies, world units a second. */
+  private flyUnitsPerSecond(boost: boolean) {
+    return this.scale * 6 * this.flySpeed * (boost ? BOOST : 1);
+  }
+
+  /** Moves the flycam at once by `m` (camera frame) times `k` world units. */
+  private flyNudge(m: FlyMove, k: number) {
+    const f = this.fly;
+    if (!f || moveIsIdle(m)) return;
+    this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
+    const fwd = this.camera.getWorldDirection(this.v1);
+    const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
+    this.camera.position.addScaledVector(fwd, m.forward * k).addScaledVector(right, m.right * k);
+    this.camera.position.y += m.up * k;
+    this.dirty = true;
   }
 
   /** One frame of flying: keys and the gamepad to a velocity (eased unless
@@ -891,9 +944,9 @@ export class ViewerScene {
     const f = this.fly!;
     const sec = dt / 1000;
     const pad = padInput(Array.from(navigator.getGamepads?.() ?? []).find((g) => g?.connected));
-    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * 2.2 * sec, pad.lookY * 2.2 * sec);
+    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * PAD_LOOK * sec, pad.lookY * PAD_LOOK * sec);
     const m = addMoves(keyMove(f.keys), pad.move);
-    const speed = this.scale * 6 * this.flySpeed * (keyBoost(f.keys) || pad.boost ? BOOST : 1);
+    const speed = this.flyUnitsPerSecond(keyBoost(f.keys) || pad.boost);
     this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
     const fwd = this.camera.getWorldDirection(this.v1);
     const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
@@ -941,7 +994,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "" };
+      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "", turrets: [] };
       this.vehicles.set(v.id, o);
     }
     const m = this.models;
@@ -954,6 +1007,7 @@ export class ViewerScene {
       if (o.model) o.group.remove(o.model);
       o.model = template ? this.library.instantiateVehicle(template, empty ? null : colour, empty) : null;
       if (o.model) o.group.add(o.model);
+      o.turrets = o.model ? findTurrets(o.model) : [];
       o.box.visible = !o.model;
       const [len, wid, tall] = vehicleBox(v.kind);
       o.box.scale.set(len, tall, wid);
@@ -1271,6 +1325,23 @@ export class ViewerScene {
     }
   }
 
+  /** Points a vehicle model's turrets along their aims (each eased, unless
+   *  `snap`); one without an aim this frame holds where it was. */
+  private aimTurrets(o: VehicleObj, aims: readonly TurretAim[], dt: number, snap: boolean) {
+    const kinds = o.turrets.map((t) => t.kind);
+    for (const a of aims) {
+      const t = o.turrets[pickTurret(kinds, a.kind)];
+      if (!t) continue;
+      const want = turretWant(t, a.aim);
+      const tau = snap || this.opts.reducedMotion ? 0 : 0.08;
+      const yaw = easeAngle(t.now.yaw, want.yaw, dt / 1000, tau), pitch = easeAngle(t.now.pitch, want.pitch, dt / 1000, tau);
+      if (Math.abs(yaw - t.now.yaw) + Math.abs(pitch - t.now.pitch) > 1e-5) this.dirty = true;
+      t.now.yaw = yaw;
+      t.now.pitch = pitch;
+    }
+    for (const t of o.turrets) poseTurret(t);
+  }
+
   private mark(i: number): MarkObj {
     let m = this.marks[i];
     if (!m) {
@@ -1313,11 +1384,15 @@ export class ViewerScene {
     this.updateMachines(frame.machines ?? [], dt, snap);
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
-    // Vehicles first: whoever is in one is drawn as the vehicle.
+    // Vehicles first: whoever is in one is drawn as the vehicle. A turret
+    // is drawn as part of the vehicle it is mounted on, aimed.
     smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });
+    const mounts = mountedTurrets(this.shownVehicles.values(), this.shown.values());
+    const hullOf = (id: string | null) => (id ? mounts.hullOf.get(id) ?? id : null);
     for (const [id, v] of this.shownVehicles) {
+      if (v.parent) continue;
       let colour: string | null = null;
-      for (const [index, s] of this.shown) if (s.vehicle === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
+      for (const [index, s] of this.shown) if (hullOf(s.vehicle) === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
       const o = this.vehicle(v, colour);
       const [x, y, z] = gameToGl(v.x, v.y, v.z);
       const k = o.model ? MODEL_SCALE : S;
@@ -1328,9 +1403,10 @@ export class ViewerScene {
       if (g.position.x !== x || g.position.y !== y || g.position.z !== z || g.scale.x !== k || q.x !== qx || q.y !== qy || q.z !== qz) this.dirty = true;
       g.position.set(x, y, z);
       g.scale.setScalar(k);
+      if (o.turrets.length) this.aimTurrets(o, mounts.aims.get(id) ?? [], dt, snap);
     }
     for (const [id, o] of this.vehicles) {
-      if (this.shownVehicles.has(id)) continue;
+      if (this.shownVehicles.has(id) && !this.shownVehicles.get(id)!.parent) continue;
       this.scene.remove(o.group);
       o.boxMat.dispose();
       this.vehicles.delete(id);
@@ -1340,7 +1416,7 @@ export class ViewerScene {
     for (const [index, s] of this.shown) {
       const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
       const p = this.player(index, info, !!s.actor);
-      const ride = s.vehicle ? this.vehicles.get(s.vehicle) : undefined;
+      const ride = s.vehicle ? this.vehicles.get(hullOf(s.vehicle)!) : undefined;
       if (ride && s.alive) {
         // In a vehicle: the vehicle stands for them, and carries their label.
         const g = p.group;

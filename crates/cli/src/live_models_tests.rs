@@ -2551,3 +2551,151 @@ fn an_attached_object_joins_the_mesh_where_its_marker_puts_it() {
         "the hull's seat wins"
     );
 }
+
+fn bone(name: &str, parent: Option<usize>, t: [f32; 3]) -> Bone {
+    Bone {
+        name: name.into(),
+        parent,
+        translation: t,
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn a_turrets_gun_nodes_are_the_first_named_ones_down_each_branch() {
+    // The Warthog chaingun's shape: the gun under the mount, barrels under the gun.
+    let chaingun = [
+        bone("stationary_mount", None, [0.0; 3]),
+        bone("gun_mount_base", Some(0), [0.0; 3]),
+        bone("chain", Some(1), [0.2, 0.1, 0.3]),
+        bone("gun", Some(1), [0.3, 0.0, 0.4]),
+        bone("barrels", Some(3), [0.1, 0.0, 0.1]),
+    ];
+    assert_eq!(pitch_nodes(&chaingun), [3]);
+    assert_eq!(
+        owners(&chaingun, &[3]),
+        [None, None, None, Some(0), Some(0)]
+    );
+    // The Scorpion's: the cannon and its coaxial gun side by side.
+    let cannon = [
+        bone("turret_rotator", None, [0.0; 3]),
+        bone("turret", Some(0), [0.0, 0.0, 0.5]),
+        bone("cannon", Some(1), [1.1, 0.0, 0.0]),
+        bone("gun", Some(1), [0.6, -0.2, 0.0]),
+    ];
+    assert_eq!(pitch_nodes(&cannon), [2, 3]);
+    assert_eq!(owners(&cannon, &[2, 3]), [None, None, Some(0), Some(1)]);
+    // A gun under a gun pitches with the upper one.
+    let nested = [
+        bone("gun_arm", None, [0.0; 3]),
+        bone("gun", Some(0), [1.0, 0.0, 0.0]),
+    ];
+    assert_eq!(pitch_nodes(&nested), [0]);
+    // A loop in bad data ends.
+    let looped = [bone("a", Some(1), [0.0; 3]), bone("b", Some(0), [0.0; 3])];
+    assert!(pitch_nodes(&looped).is_empty());
+    assert_eq!(owners(&looped, &[]), [None, None]);
+}
+
+/// A turret source: a base quad on node 1 and a gun quad on node 3 (the
+/// chaingun's `gun`, at rest two units up).
+fn turret_source() -> Source {
+    let mut base = quad_piece(0, 0.0);
+    base.nodes = vec![[1, 0, 0, 0]; 4];
+    let mut gun = quad_piece(0, 2.0);
+    gun.nodes = vec![[3, 1, 0, 0]; 4];
+    gun.weights = vec![[0.7, 0.3, 0.0, 0.0]; 4];
+    Source {
+        bones: vec![
+            bone("stationary_mount", None, [0.0; 3]),
+            bone("gun_mount_base", Some(0), [0.0; 3]),
+            bone("chain", Some(1), [0.0; 3]),
+            bone("gun", Some(1), [0.0, 0.0, 2.0]),
+        ],
+        markers: Vec::new(),
+        pieces: vec![base, gun],
+        materials: vec![Material::default()],
+        change_colour: vec![None],
+    }
+}
+
+#[test]
+fn a_source_cut_to_some_nodes_keeps_only_their_triangles_and_vertices() {
+    let src = turret_source();
+    let gun = source_where(&src, |n| n == 3);
+    assert_eq!(gun.pieces.len(), 1);
+    assert_eq!(gun.pieces[0].positions.len(), 4);
+    assert!(gun.pieces[0].positions.iter().all(|p| p[2] >= 2.0));
+    assert_eq!(gun.pieces[0].triangles.len(), 8);
+    let rest = source_where(&src, |n| n != 3);
+    assert!(rest.pieces[0].positions.iter().all(|p| p[2] <= 2.0));
+    assert!(source_where(&src, |_| false).pieces.is_empty());
+}
+
+#[test]
+fn a_turret_is_a_yaw_part_at_its_marker_with_its_gun_hung_from_its_pivot() {
+    let src = turret_source();
+    let at = trs([-0.6, 0.0, 0.75], [0.0, 0.0, 0.0, 1.0], 1.0);
+    let extra = vec![Primitive {
+        material: 4,
+        positions: vec![[9.0, 9.0, 9.0]],
+        indices: vec![0, 0, 0],
+        ..Primitive::default()
+    }];
+    let parts = turret_parts(&src, 0, "chaingun", &at, extra, 3);
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["turret_0", "turret_0_pitch_0"]);
+    assert_eq!(parts[0].parent, None);
+    assert_eq!(parts[0].local, at);
+    assert_eq!(parts[0].extras["turret"], "chaingun");
+    // The base plus what the turret carries; materials moved past the hull's.
+    assert_eq!(parts[0].primitives.len(), 2);
+    assert_eq!(parts[0].primitives[0].material, 3);
+    assert_eq!(parts[0].primitives[1].material, 4, "already offset");
+    assert!(parts[0].primitives[0].positions.iter().all(|p| p[2] <= 2.0));
+    // The gun: its frame at the gun node's rest origin, its triangles
+    // relative to it (the quad from z 2..4 becomes 0..2).
+    assert_eq!(parts[1].parent, Some(0));
+    assert!(close(&parts[1].local[3][..3], &[0.0, 0.0, 2.0]));
+    let zs: Vec<f32> = parts[1].primitives[0]
+        .positions
+        .iter()
+        .map(|p| p[2])
+        .collect();
+    assert!(close(&zs, &[0.0, 0.0, 2.0, 2.0]), "{zs:?}");
+    assert!(
+        parts
+            .iter()
+            .all(|p| p.primitives.iter().all(|q| q.joints.is_empty()))
+    );
+}
+
+#[test]
+fn turret_parts_are_glb_nodes_with_meshes_under_the_root_and_each_other() {
+    let src = turret_source();
+    let at = trs([-0.6, 0.0, 0.75], yaw(90.0), 1.0);
+    let mut model = vehicle(&src, &[], &Pose { nodes: Vec::new() }).unwrap();
+    let hull_triangles = model.triangles();
+    model.parts = turret_parts(&src, 0, "chaingun", &at, Vec::new(), 0);
+    assert_eq!(model.triangles(), 2 * hull_triangles);
+    let (doc, _) = parse_glb(&write_glb(&model));
+    let nodes = doc["nodes"].as_array().unwrap();
+    let find = |name: &str| nodes.iter().position(|n| n["name"] == name).unwrap();
+    let (yaw_node, pitch_node) = (find("turret_0"), find("turret_0_pitch_0"));
+    assert!(
+        doc["nodes"][0]["children"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(yaw_node))
+    );
+    assert_eq!(nodes[yaw_node]["children"], json!([pitch_node]));
+    assert_eq!(nodes[yaw_node]["extras"]["turret"], "chaingun");
+    let meshes = doc["meshes"].as_array().unwrap();
+    assert_eq!(meshes.len(), 3, "the hull's, the turret's, its gun's");
+    assert_ne!(nodes[yaw_node]["mesh"], nodes[pitch_node]["mesh"]);
+    // glTF is y up: the marker two units up the game's z is 0.75 up y.
+    let t = nodes[yaw_node]["translation"].as_array().unwrap();
+    assert!((t[1].as_f64().unwrap() - 0.75).abs() < 1e-6, "{t:?}");
+    let t = nodes[pitch_node]["translation"].as_array().unwrap();
+    assert!((t[1].as_f64().unwrap() - 2.0).abs() < 1e-6, "{t:?}");
+}

@@ -8,7 +8,7 @@
 // This file pulls in three.js, so it is only ever loaded lazily.
 
 import * as THREE from "three";
-import { SkyDome, fogRange, glowHaze, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
+import { FOG_CLEAR, SkyDome, gameFog, glowHaze, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
 import { waterUniforms } from "./water3d";
 import { WeatherLook, weatherOf } from "./weather3d";
 import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneBox, type ZoneEntry, type ZonePick } from "./zones";
@@ -62,6 +62,7 @@ export class LevelLook {
 
   /** `gradient` is the view's own sky, used when a level has none. */
   constructor(private scene: THREE.Scene, private gradient: THREE.Texture, private changed: () => void) {
+    useGameFog();
     this.haze = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x7f9fb6, 0.002);
     this.hazeColour.copy(this.haze.color);
     scene.add(this.weather.group);
@@ -191,8 +192,7 @@ export class LevelLook {
   skyShown(): boolean { return !!this.sky && this.skyOn; }
 
   /** Where the level is (its middle and radius in the scene): the far
-   *  haze is set by its size when the sky has no fog of its own, and the
-   *  sky's fog stretched to it. */
+   *  haze is set by its size when the sky has no fog of its own. */
   setExtent(centre: THREE.Vector3, radius: number) {
     this.centre.copy(centre);
     this.radius = radius;
@@ -220,7 +220,8 @@ export class LevelLook {
       this.scene.fog = this.haze;
       return;
     }
-    const r = fogRange(f, focus, camera.position.distanceTo(this.centre) + this.radius);
+    const r = gameFog(f, focus);
+    FOG_CLEAR.value = 1 - r.cap;
     this.fog.color.setRGB(f.colour[0], f.colour[1], f.colour[2], THREE.SRGBColorSpace);
     this.fog.near = r.near;
     this.fog.far = r.far;

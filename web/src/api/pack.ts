@@ -8,7 +8,8 @@
 
 import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "./types";
 
-export const PACK_VERSION = 1;
+/** The version written now; version 1 (vehicles without a parent and aim) still reads. */
+export const PACK_VERSION = 2;
 const POS_SCALE = 512;
 const ANGLE_BITS = 12;
 const DIR_BITS = 12;
@@ -113,7 +114,9 @@ const o = (kind: K, arg?: number): Field => ({ kind, arg, opt: true });
 const key = (kind: K, arg?: number): Field => ({ kind, arg, key: true });
 
 const PLAYER: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
-const VEHICLE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool)];
+/** Version 2 adds a vehicle's parent (a turret's vehicle) and aim. */
+const VEHICLE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool), o(K.Id), o(K.Dir)];
+const VEHICLE_V1 = VEHICLE.slice(0, 6);
 const ACTOR: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Angle), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Str), o(K.Id), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
 const HIT: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K.Str)];
 const MACHINE: Field[] = [o(K.Str), key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), o(K.Bits, DEVICE_BITS)];
@@ -121,6 +124,8 @@ const OBJECT: Field[] = [key(K.Bits, 4), key(K.Uint, 6), f(K.Bool), o(K.Pos), o(
 
 /** The delta-coded lists in wire order; hits go between actors and machines, always whole. */
 const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS_V1: [Field[], number][] = [[PLAYER, 16], [VEHICLE_V1, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
+const listsOf = (version: number) => (version === PACK_VERSION ? LISTS : version === 1 ? LISTS_V1 : null);
 
 type Entity = Val[];
 
@@ -273,7 +278,11 @@ function playerOf(e: Entity): FramePlayer {
 }
 
 function vehicleOf(e: Entity): FrameVehicle {
-  return { id: idText(e[0]!), kind: e[1] as string, pos: pos(e[2]!), forward: dir(e[3]!), up: dir(e[4]!), occupied: e[5] as boolean };
+  const v: FrameVehicle = { id: idText(e[0]!), kind: e[1] as string, pos: pos(e[2]!), forward: dir(e[3]!), up: dir(e[4]!), occupied: e[5] as boolean };
+  // Version 1 vehicles have neither.
+  if (e[6] != null) v.parent = idText(e[6]);
+  if (e[7] != null) v.aim = dir(e[7]);
+  return v;
 }
 
 function actorOf(e: Entity): FrameActor {
@@ -320,6 +329,8 @@ function objectOf(e: Entity): FrameObject {
 
 interface StreamState {
   seq: number;
+  /** The format version its frames were in. */
+  version: number;
   gameId: string;
   tick: number;
   bsp: number | null;
@@ -342,18 +353,20 @@ export class FrameDecoder {
   decode(bytes: Uint8Array): Decoded {
     const r = new BitReader(bytes);
     const version = r.bits(4);
-    if (version !== PACK_VERSION) throw new PackError(`packed frame version ${version} is not supported`);
+    const lists = listsOf(version);
+    if (!lists) throw new PackError(`packed frame version ${version} is not supported`);
     const keyframe = r.bit();
     const sid = r.eg(0);
     const seq = r.eg(8);
-    const empty: StreamState = { seq: 0, gameId: "", tick: 0, bsp: null, strings: [], lists: [[], [], [], [], []] };
+    const empty: StreamState = { seq: 0, version, gameId: "", tick: 0, bsp: null, strings: [], lists: [[], [], [], [], []] };
     let prev = empty;
     if (!keyframe) {
       const s = this.streams.get(sid);
-      if (!s || s.seq + 1 !== seq) throw new PackError(`delta frame ${seq} of stream ${sid} needs a keyframe first`, true);
+      // A delta is against a frame of its own version.
+      if (!s || s.seq + 1 !== seq || s.version !== version) throw new PackError(`delta frame ${seq} of stream ${sid} needs a keyframe first`, true);
       prev = s;
     }
-    const state: StreamState = { seq, gameId: prev.gameId, tick: prev.tick, bsp: prev.bsp, strings: prev.strings.slice(), lists: [] };
+    const state: StreamState = { seq, version, gameId: prev.gameId, tick: prev.tick, bsp: prev.bsp, strings: prev.strings.slice(), lists: [] };
     if (keyframe) {
       state.gameId = readStrLiteral(r);
       state.tick = r.eg(20);
@@ -366,7 +379,7 @@ export class FrameDecoder {
     if (fresh > MAX_NEW_STRINGS || state.strings.length + fresh > MAX_STRINGS) throw new PackError("too many strings");
     for (let i = 0; i < fresh; i++) state.strings.push(readStrLiteral(r));
     let hits: Entity[] = [];
-    LISTS.forEach(([schema, max], n) => {
+    lists.forEach(([schema, max], n) => {
       if (n === 3) hits = readFull(r, HIT, 64, state.strings);
       state.lists[n] = keyframe ? readFull(r, schema, max, state.strings) : readDelta(r, schema, max, prev.lists[n]!, state.strings);
     });

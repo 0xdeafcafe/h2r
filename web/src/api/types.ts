@@ -64,6 +64,12 @@ export interface FrameVehicle {
   up: [number, number, number];
   /** Someone is in it; absent (older senders) means occupied. */
   occupied?: boolean;
+  /** The vehicle it is mounted on, when it is a turret (the Warthog's
+   *  chaingun, the Scorpion's cannon): its `pos`, `forward` and `up` are
+   *  then relative to that one. */
+  parent?: string | null;
+  /** Where it aims (a turret), game coordinates. */
+  aim?: [number, number, number] | null;
 }
 
 /** Damage dealt: "p<index>" for players, else an object id. */
