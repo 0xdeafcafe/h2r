@@ -1075,10 +1075,10 @@ for the host's campaign`, `The lobby's difficulty differs`, `N consoles in
 the lobby`, `No lobby`) and Ready (closes the screen; the guest waits for
 the host's start in the lobby).
 
-**Text.** The retail lobby line "Playing a co-op campaign requires 2
-players on a single Xbox console" (string id `0x0e0001ec`,
-`coop_takes_two` in `mainmenu.map`'s strings) is the only "single Xbox"
-text on this path: the code names that id once, in the lobby's status
+**Text.** The retail lobby line saying co-op needs two players on one
+console (string id `0x0e0001ec`,
+`coop_takes_two` in `mainmenu.map`'s strings) is the only text of that kind
+on this path: the code names that id once, in the lobby's status
 line (`0x24ffc9`, at `0x2500ab`), for start state 7 in co-op mode
 (`0x199994`). Start Game (`0x251050`) acts only on state 9 and shows no
 dialog otherwise, so the status line is where a refused start explains

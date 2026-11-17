@@ -858,7 +858,7 @@ impl Lobby {
         "OK: the lobby holds the host's campaign".into()
     }
     /// The locale source: our text slots, and the retail co-op lobby line
-    /// ("... 2 players on a single Xbox console") replaced by ours on the
+    /// (co-op needs two players on one console) replaced by ours on the
     /// Live co-op path ([`Lobby::line_ours`]); split screen keeps the
     /// game's own.
     pub fn string(&self, id: u32) -> Option<u32> {

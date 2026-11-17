@@ -563,8 +563,8 @@ fn the_retail_co_op_line_is_ours_only_in_a_co_op_session() {
     assert_eq!(lobby.string(0x0e00_01ed), None, "another retail id");
 }
 
-/// Every line the lobby can show in place of "Playing a co-op campaign
-/// requires 2 players on a single Xbox console" fits the lobby's 52
+/// Every line the lobby can show in place of the retail line (co-op
+/// needs two players on one console) fits the lobby's 52
 /// characters a line, and none says "single".
 #[test]
 fn every_co_op_lobby_line_fits_and_none_says_single() {
