@@ -2,8 +2,11 @@
 
 Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `session.*`, `world.count`/`query`/`object`, `profile.counters`,
-`features.list`, `h2 serve` and `h2 agent`. Everything else on this page is
-design; its Rust and JSON blocks are sketches, not code that compiles.
+`features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
+`profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
+Everything else on this page is design; its Rust and JSON blocks are
+sketches, not code that compiles. The front end is the `h2 agent` CLI
+only: the MCP server is dropped (decided 2026-11-17).
 
 This page designs one interface through which an agent (or a script, or a
 test) can see and drive a running Halo 2. That means: what is on screen,
@@ -91,8 +94,8 @@ environment variable read at launch (**Code**: no listener outside
 
 ```
           agent (Claude, Codex, a script, a test)
-             │  MCP tools          │  `h2 agent …` CLI      │  JSONL scenario files
-             └──────────┬──────────┴────────────┬───────────┘
+                    │  `h2 agent …` CLI      │  JSONL scenario files
+                    └──────────┬─────────────┘
                         │ JSON-RPC 2.0, one Unix socket per game process
                         ▼
   ┌──────────────── game process (h2 play, or headless h2 serve) ─────────────┐
@@ -109,10 +112,11 @@ environment variable read at launch (**Code**: no listener outside
   with `H2_AGENT=<path>` (or `--agent`). Off by default; no listener, no
   cost. One client at a time holds control (`session.claim`); others may
   read. (**S**)
-- **Three front ends, one protocol.** An MCP server (`h2 agent mcp`) so
-  agents get typed tools; a CLI (`h2 agent <method> [json]`) for shells and
-  the user; and a scenario runner (`h2 agent run scenario.jsonl`) for
-  repeatable experiments. All three are thin; the protocol is the contract.
+- **Two front ends, one protocol.** A CLI (`h2 agent <method> [json]`)
+  for agents, shells and the user, and a scenario runner
+  (`h2 agent run scenario.jsonl`) for repeatable experiments. Both are
+  thin; the protocol is the contract. There is no MCP server: dropped
+  (decided 2026-11-17), the CLI is what agents use.
 - **Events.** `session.subscribe(["screen", "phase", "death", "checkpoint",
   "frame_budget_miss", …])` streams notifications, so a client waits on
   "the skulls page opened" instead of polling.
@@ -458,7 +462,7 @@ What it learned, and what this design takes from it:
 
 | Piece | Crate | Notes |
 |---|---|---|
-| Protocol types, method table, JSON schema | new `agent-proto` | no runtime deps; the MCP server and CLI use it too |
+| Protocol types, method table, JSON schema | new `agent-proto` | no runtime deps; the CLI uses it too |
 | Server thread and tick-boundary executor | new `agent` | installed through the feature registry as feature `agent`, `sim: Host` |
 | World reads | `live-telemetry::memory`, grown | shared with the Live service; one place for guest layouts |
 | UI stack and HUD | `agent` + `tags::ui` | static trees from tags, live state from the screen stack |
@@ -466,7 +470,7 @@ What it learned, and what this design takes from it:
 | Snapshots | `runtime`, `kernel`, `xapi` | serialisable host state; the biggest piece |
 | HS eval | `hs` | compile one expression; inject via the guest evaluator |
 | Overrides | `feature` | live-settable switches |
-| CLI, MCP, scenario runner | `cli` (`h2 agent`, `h2 serve`) | |
+| CLI, scenario runner | `cli` (`h2 agent`, `h2 serve`) | no MCP server (dropped) |
 
 ## Phases
 
@@ -476,7 +480,7 @@ synthetic guest memory and synthetic tags, as now.
 1. **Socket and status.** `H2_AGENT`, `session.*` (status, pause, step,
    wait, subscribe), `world.count`/`world.query` over what `live-telemetry`
    reads, `profile.counters` from frame stats, switches settable live, the
-   `fade` and `phase` stamp. CLI and MCP front ends. This alone fixes the
+   `fade` and `phase` stamp. The CLI front end. This alone fixes the
    black-frame captures and lets agents watch a session the user is playing.
 2. **UI.** The screen stack, focus, `ui.press`, `ui.activate`,
    `ui.navigate`, `ui.screenshot` with rects; native screens first, since
@@ -570,14 +574,122 @@ How it behaves (**Code**, with tests in `crates/agent`):
   between slices.
 
 Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
-input, overrides, experiments, live switch changes, the MCP front end.
+input, overrides, experiments, live switch changes. (The MCP front end
+is dropped, not pending.)
+
+## Phase 3 and 4: what was built
+
+Raw and recorded input (phase 3 without `state.*` and `hs.eval`), and a
+profile capture with spikes (phase 4 without owners or engine spans).
+Input is `crates/agent/src/tap.rs`, the capture `crates/agent/src/capture.rs`
+and `timeline::phase::capture_begin`/`capture_end`; boot puts the tap on
+`xapi` in `crates/boot/src/agent_glue.rs`.
+
+```sh
+h2 agent pad '{"player":0,"buttons":["a"],"hold_ticks":10}'
+h2 agent pad '{"sticks":{"left":[0,1]},"at_tick":"now","hold_ticks":90}'
+h2 agent input                                  # open ports, queues, mode
+h2 agent record courtyard                       # ...play or pad...
+h2 agent stop                                   # writes inputs/courtyard.input
+h2 agent replay courtyard
+h2 agent capture 900                            # 900 ticks, about 30 s
+h2 agent capture 10000ms sample                 # h2 built --features perf
+printf 'claim\npad {"buttons":["start"],"hold_ticks":2}\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
+```
+
+Methods added: `input.pad`, `input.clear`, `input.record`,
+`input.replay`, `input.stop`, `input.status`, `profile.capture`. All but
+`input.status` and `profile.capture` need `session.claim`; run alone, the
+CLI's input short forms claim for the call.
+
+How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
+`crates/timeline`):
+
+- **Where input goes in.** The agent's tap is an `xapi::tap::InputTap`,
+  the layer `H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use: it sees each
+  `XInputGetState` result just before the guest gets it, so the game reads
+  agent input exactly as it reads a pad. It wraps the tap those set: a
+  replay runs first (it stands in for the pad) and agent packets go on
+  top; a recording runs last, so it logs agent packets too. Taps are now
+  told which port each handle opened on (`InputTap::opened`), which is how
+  a packet for `player` 1 finds controller port 1. Without XAPI input,
+  input calls answer `UNAVAILABLE`.
+- **Pad packets.** `input.pad {player, at_tick | delay_ticks, hold_ticks,
+  buttons, sticks, triggers}`. `player` is the controller port (0 to 3).
+  The clock is the game's own tick (the stamp's `tick`): a packet holds
+  for reads made while the stamp reads `at_tick` to `at_tick + hold_ticks
+  - 1`, so `"now"` (the default) starts with the next read. `hold_ticks`
+  defaults to 1, at most 18000. A holding packet replaces the whole pad:
+  what it doesn't name is released and centred. Buttons are `a b x y black
+  white` (pressed fully), `start back dpad_up dpad_down dpad_left
+  dpad_right left_thumb right_thumb`; sticks are `[x, y]` from -1 to 1 (up
+  is +y); triggers 0 to 1. When two packets hold at once the later one
+  wins. The packet number moves whenever the pad the game gets changes,
+  as a real pad's does; until the first packet, reads pass untouched, so a
+  run with the agent on and no packets is byte for byte the same input.
+  Packets outlive the connection that sent them (so a one-shot `h2 agent
+  pad` works) and are dropped when the map changes, since the tick starts
+  again. The reply says `open: false` when the game hasn't opened that
+  controller: the packet is kept, but nothing reads it.
+- **Recording and replay.** `input.record {name, replace}` logs every
+  read (status, handle, the 22 bytes, the game tick) to the cache
+  directory's `inputs/<name>.input` in `xapi::tap`'s text format, the one
+  `H2_INPUT_RECORD` writes; it's written at `input.stop`, or when the game
+  exits. Names are letters, digits, `.`, `_`, `-`; an existing log is kept
+  unless `replace` is true. `input.replay {name}` answers reads from a log
+  read for read (keyed by read index, as `H2_INPUT_REPLAY`). `input.status`
+  and `input.stop` give its counts: `reads` in the log, `replayed`,
+  `matched` (same handle as recorded), `handle_mismatches` (the runs have
+  parted) and `past_end` (left live). One recording or replay at a time.
+  A replay only reproduces a run from the same starting state: until
+  `state.*` exists, that means starting both from the same boot.
+- **Capture.** `profile.capture {ticks | ms, budget_ms, spikes, sample}`
+  keeps every frame-stats row (`timeline::phase`, the numbers
+  `H2_FRAME_STATS` prints) over the window, then answers: `frames`, `fps`,
+  `frame_ms` and `busy_ms` (frame less pacing) as mean, p50, p95, p99, max
+  and total; the same for each phase (`cpu`, `decode`, `encode`, `submit`,
+  `gpu-wait`, `pace`, `render-wait`, `d3d`, and `render` when the
+  render-timing feature measures it); mean, max and total of each counter
+  (`draws`, `passes`, `uploads`, …); `over_budget`, the frames longer than
+  `budget_ms` (default 33.3); and `spikes`, the worst of them (20 by
+  default, at most 500), each with its present number, the game tick and
+  map it ended in, its own phases and counters, and its three biggest
+  phases (pacing left out). Every frame is also written as a CSV row
+  (present, end, tick, map, total and busy us, each phase in us, each
+  counter) under the cache directory's `captures/`, and the reply gives
+  its path. A frame belongs to the last tick that had ended when it did.
+  By ticks the window is 1 to 36000 game ticks (it gives up after 600 s
+  with `complete: false`); by `ms`, 1 to 600000. One capture at a time; it
+  is read-only, so it needs no claim. With frame stats off it answers
+  `UNAVAILABLE` (the agent starts a quiet collection when nothing else
+  does, so they are on unless something stopped them).
+- **Sampling.** `sample: true` also runs `perf::Session` over the window,
+  started on the game thread, and returns `sampling.folded`, the folded
+  stacks (`profile.txt` and `profile.json` beside it). Only an h2 built
+  with `--features perf` has the sampler; otherwise the capture still
+  runs and `sampling.unavailable` says why. Resolving the samples runs on
+  the game thread when the window ends and can take a while.
+- **World counts of effects, projectiles and particles.** Not built.
+  `live-telemetry` doesn't read them: its world scan reads every object
+  header, so projectiles would be a cheap count by the header's type byte
+  once the projectile type number is established here (only biped 0,
+  vehicle 1, weapon 2 and machine 7 are); effects and particles live in
+  their own datum arrays, whose guest addresses are research points.
+
+Not built in phases 3 and 4: `state.*` (machine snapshots are being
+designed separately), `hs.eval`, intent input (`look_at`, `move_to`),
+per-owner attribution and engine-phase spans, events for frame-budget
+misses, and the effect, projectile and particle counts above. Nothing
+here was run against the game: input reaching the guest is proven at the
+`xapi` tap with synthetic pads, captures with synthetic frames.
 
 ## Open decisions
 
 - **Who runs the game the API talks to.** Decided (2026-11-17): one
   shared headless `h2 serve` that the user starts from an image they
   built. Agents connect to it, one controller at a time, and never build.
-- **MCP versus CLI first.** Decided: the `h2 agent` CLI first.
+- **MCP versus CLI.** Decided (2026-11-17): the `h2 agent` CLI only. The
+  MCP front end is dropped.
 - **Snapshot depth.** Full machine snapshots (phase 5) are a large
   runtime change; the checkpoint fallback may be enough for a long time.
 

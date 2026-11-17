@@ -5,8 +5,8 @@
 //! from `session.subscribe` arrive as notifications with method `event`.
 //! Every result carries an [`At`] stamp saying which moment it describes.
 //!
-//! This crate has no game dependencies, so clients (`h2 agent`, an MCP
-//! server, tests) link it without the runtime.
+//! This crate has no game dependencies, so clients (`h2 agent`, tests)
+//! link it without the runtime.
 
 use std::collections::BTreeMap;
 
