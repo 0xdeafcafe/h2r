@@ -626,8 +626,15 @@ impl<'a> Converter<'a> {
                 None => "none (the template has no phmo)".into(),
             },
         );
-        for at in [h2::HLMT_VARIANTS, h2::HLMT_NODES] {
-            hlmt.bytes[at..at + 8].fill(0);
+        hlmt.bytes[h2::HLMT_VARIANTS..h2::HLMT_VARIANTS + 8].fill(0);
+        // One node per render-model node: the engine sizes an object's node
+        // matrices by this count, and the converted model and graph write
+        // one per their node (h1models::mode::hlmt_nodes).
+        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
+        if count == 0 {
+            hlmt.bytes[h2::HLMT_NODES..h2::HLMT_NODES + 8].fill(0);
+        } else {
+            hlmt.block(h2::HLMT_NODES as u32, count, nodes);
         }
         // Regions and their permutations, named as the converted model's.
         let mut regions = Block::zeroed(0x10 * h1_model.regions.len());
