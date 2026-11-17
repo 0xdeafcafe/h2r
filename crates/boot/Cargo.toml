@@ -58,6 +58,7 @@ perf = { path = "../perf", optional = true }
 perf = ["dep:perf"]
 
 [dev-dependencies]
+serde_json.workspace = true
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 

@@ -41,7 +41,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use settings::Store;
 
-use crate::layout_glue::{Gm, ID_BASE};
+use crate::layout_glue::Gm;
+#[cfg(test)]
+use crate::layout_glue::ID_BASE;
 use crate::list_class::{ListLayout, PictureSpec, Rows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::ui::{Chosen, LABEL_SLOT};

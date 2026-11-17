@@ -10,9 +10,13 @@
 //! - [`spec`]: a screen as data ([`spec::Describe`]) and the static checks.
 //! - [`screen`]: a declared screen ([`screen::KitScreen`]) on the list
 //!   class.
+//! - [`screens`]: our existing screens described, with samples.
+//! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 
 pub mod ids;
 pub mod input;
 pub mod lifecycle;
+pub mod preview;
 pub mod screen;
+pub mod screens;
 pub mod spec;

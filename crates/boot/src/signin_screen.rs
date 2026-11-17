@@ -51,6 +51,7 @@ use crate::account_screen::{LINE_CHARS, layout, recovery_lines, wrap};
 use crate::list_class::{self, Action, Button, Buttons, ListClass, LiveText, Rows, TextBlock};
 use crate::signin_keyboard::{self as keyboard, Field, Typing};
 use crate::ui::{Chosen, LABEL_SLOT};
+use crate::ui_kit::spec::{Describe, RowSpec, ScreenSpec};
 
 /// The screen id and feature id.
 pub const SCREEN: &str = "signin-code";
@@ -479,6 +480,52 @@ impl Rows for SigninRows {
     }
     fn write_texts(&self, m: &mut dyn engine::memory::GuestMemory) -> Result<(), MemFault> {
         self.poll_keyboard(m)
+    }
+}
+
+/// The prompt as the kit describes it (docs/game/ui-screens.md): one row,
+/// the description, the d-pad as digits and cursor.
+pub fn spec_for(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> ScreenSpec {
+    use crate::ui_kit::input::Input;
+    let (label, body) = page(prompt, entry, now);
+    let mut s = ScreenSpec::new(SCREEN, TITLE);
+    s.ids = vec![TITLE_ID];
+    s.description = Some(TEXT_BLOCK.into());
+    s.inputs = vec![
+        Input::Up,
+        Input::Down,
+        Input::Left,
+        Input::Right,
+        Input::A,
+        Input::B,
+        Input::Start,
+    ];
+    s.rows = vec![
+        RowSpec::action(&label)
+            .describe(&body.replace("\r\n", "\n"))
+            .ids(&[TEXT_IDS[0], TEXT_IDS[2]]),
+    ];
+    s
+}
+
+/// The code page for a sample gamertag and server, for previews.
+pub fn sample_spec() -> ScreenSpec {
+    let p = Prompt {
+        gamertag: "Chief".into(),
+        server_url: "https://live.example.net/".into(),
+        controller: 0,
+        phase: Phase::Code { error: None },
+    };
+    spec_for(Some(&p), &CodeEntry::default(), 0)
+}
+
+impl Describe for SigninRows {
+    fn spec(&self) -> ScreenSpec {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let entry = self.lock().entry.clone();
+        spec_for(self.hle.signin().as_ref(), &entry, now)
     }
 }
 

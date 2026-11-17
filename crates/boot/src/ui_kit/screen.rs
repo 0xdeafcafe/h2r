@@ -18,7 +18,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -28,8 +28,8 @@ use runtime::guest::Permissions;
 
 use crate::list_class::{Action, ListClass, ListLayout, OnFree, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
-use crate::ui_kit::ids::Family;
-use crate::ui_kit::input::{Input, OpenerGuard, Prompt};
+use crate::ui_kit::ids::{self, Family};
+use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
 use crate::ui_kit::lifecycle::{self, AfterClose};
 use crate::ui_kit::spec::{self, Describe, ListPlace, RowSpec, ScreenSpec, ValueStyle};
 
@@ -69,9 +69,11 @@ enum Kind {
     Text {
         get: Get<String>,
         max_chars: u16,
-        typed: Arc<dyn Fn(Option<&str>) -> String + Send + Sync>,
+        typed: Typed,
     },
 }
+
+type Typed = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
 
 /// One row: a label, its kind, its description.
 pub struct Row {
@@ -550,42 +552,40 @@ impl feature::Feature for KitTexts {
     }
 }
 
+const IDS: Family = ids::family("kit.example");
+
+/// The example screen of docs/game/ui-screens.md.
+pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
+    let grunts = Arc::new(AtomicUsize::new(0));
+    let (g, s) = (Arc::clone(&grunts), Arc::clone(&grunts));
+    let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
+        .row(
+            Row::value(
+                "Grunts",
+                &["On", "Off"],
+                move || g.load(Ordering::SeqCst),
+                move |v| {
+                    s.store(v, Ordering::SeqCst);
+                    format!("grunts {v}")
+                },
+            )
+            .describe("Grunts' heads pop."),
+        )
+        .row(Row::info("Status", || "Ready".into()))
+        .row(Row::text("Name", 15, || "Chief".into(), |t| format!("typed {t:?}")))
+        .row(Row::action("Start", || Then::Close).describe("Start the level."))
+        .prompts(&[
+            Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+            Prompt::new(&[Glyph::A], "Start"),
+            Prompt::new(&[Glyph::B], "Back"),
+        ]);
+    (screen, grunts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_kit::ids;
-    use crate::ui_kit::input::Glyph;
-    use std::sync::atomic::AtomicUsize;
 
-    const IDS: Family = ids::family("kit.example");
-
-    /// The example screen of docs/game/ui-screens.md.
-    pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
-        let grunts = Arc::new(AtomicUsize::new(0));
-        let (g, s) = (Arc::clone(&grunts), Arc::clone(&grunts));
-        let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
-            .row(
-                Row::value(
-                    "Grunts",
-                    &["On", "Off"],
-                    move || g.load(Ordering::SeqCst),
-                    move |v| {
-                        s.store(v, Ordering::SeqCst);
-                        format!("grunts {v}")
-                    },
-                )
-                .describe("Grunts' heads pop."),
-            )
-            .row(Row::info("Status", || "Ready".into()))
-            .row(Row::text("Name", 15, || "Chief".into(), |t| format!("typed {t:?}")))
-            .row(Row::action("Start", || Then::Close).describe("Start the level."))
-            .prompts(&[
-                Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-                Prompt::new(&[Glyph::A], "Start"),
-                Prompt::new(&[Glyph::B], "Back"),
-            ]);
-        (screen, grunts)
-    }
 
     #[test]
     fn rows_show_through_the_familys_slots() {
