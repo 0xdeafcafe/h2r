@@ -679,8 +679,14 @@ fn bench_scene(scene: &Scene) -> serde_json::Value {
     let snapshot = reads(&|| {
         crate::memory::snapshot(&world.guest).unwrap();
     });
+    // As the game thread scans: into last time's lists.
+    let scan = std::cell::RefCell::new((
+        crate::memory::ScanBuffers::default(),
+        crate::event::World::default(),
+    ));
     let world_scan = reads(&|| {
-        crate::memory::world(&world.guest).unwrap();
+        let (buffers, out) = &mut *scan.borrow_mut();
+        crate::memory::world_into(&world.guest, buffers, out).unwrap();
     });
     let summary = |b: &(Vec<u64>, Vec<u64>, Vec<u64>, u64, u64)| {
         let n = b.0.len() as f64;

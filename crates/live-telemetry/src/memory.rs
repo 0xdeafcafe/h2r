@@ -686,12 +686,24 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
 
 /// The placement kind of an object type whose placements frames track.
 fn placed_kind(object_type: u8) -> Option<ObjectKind> {
-    layout::PLACEMENT_BLOCKS
-        .iter()
-        .any(|(t, _, _)| *t == object_type)
-        .then(|| object_kind(object_type))
+    PLACED_KINDS
+        .get(usize::from(object_type))
+        .copied()
         .flatten()
 }
+
+/// [`placed_kind`] by object type, made once.
+static PLACED_KINDS: std::sync::LazyLock<[Option<ObjectKind>; 16]> =
+    std::sync::LazyLock::new(|| {
+        std::array::from_fn(|t| {
+            let t = t as u8;
+            layout::PLACEMENT_BLOCKS
+                .iter()
+                .any(|(block, _, _)| *block == t)
+                .then(|| object_kind(t))
+                .flatten()
+        })
+    });
 
 /// The scenario block an object type is placed by (the type table's order).
 pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
@@ -1719,6 +1731,14 @@ mod tests {
         assert_eq!(used.teams.len(), 2);
         assert_eq!(used.teams[1].score, 3);
         assert!(spare.is_empty(), "the old roster comes back empty");
+    }
+
+    #[test]
+    fn placed_kinds_are_the_placement_blocks_kinds() {
+        for t in 0..=u8::MAX {
+            let tracked = layout::PLACEMENT_BLOCKS.iter().any(|(b, _, _)| *b == t);
+            assert_eq!(placed_kind(t), object_kind(t).filter(|_| tracked), "{t}");
+        }
     }
 
     #[test]
