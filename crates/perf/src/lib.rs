@@ -8,6 +8,9 @@
 //! - [`profile::Session`]: the profiler plus a `timeline` capture (Chrome
 //!   trace JSON) around any run, from code or from `H2_PROFILE` /
 //!   `H2_TIMELINE`.
+//! - [`remote`]: profiles from a device that can't symbolise them (the
+//!   Xbox app): a module-relative dump there, resolved on the Mac against
+//!   the deployed binaries.
 //! - [`bench`]: repeatable scenarios ([`hotloop`], [`pushbuf`], [`boot`]),
 //!   results as JSON, and a regression comparison.
 //! - [`budget`]: a timeline trace split into per-frame self time per
@@ -21,6 +24,7 @@ pub mod cli;
 pub mod hotloop;
 pub mod profile;
 pub mod pushbuf;
+pub mod remote;
 pub mod sample;
 pub mod symbolize;
 

@@ -1,6 +1,7 @@
 //! The agent API's wire types (docs/runtime/agent-api.md).
 //!
-//! JSON-RPC 2.0 over a Unix socket: one JSON object per line each way.
+//! JSON-RPC 2.0 over a Unix socket or TCP ([`Endpoint`]): one JSON object
+//! per line each way.
 //! A request with an `id` gets exactly one response with that `id`; events
 //! from `session.subscribe` arrive as notifications with method `event`.
 //! Every result carries an [`At`] stamp saying which moment it describes.
@@ -10,10 +11,12 @@
 
 use std::collections::BTreeMap;
 
-#[cfg(unix)]
 mod client;
-#[cfg(unix)]
+mod endpoint;
+mod pad;
 pub use client::{CallError, Client};
+pub use endpoint::Endpoint;
+pub use pad::{PAD_BUTTONS, PadParams, PadStep};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,8 +24,13 @@ use serde_json::Value;
 /// Bumped when a method or a field changes meaning. Additions don't bump it.
 pub const PROTOCOL: u32 = 1;
 
-/// The environment variable naming the socket path the game listens on.
+/// The environment variable naming where the game listens: a Unix socket
+/// path, or `tcp://HOST:PORT` ([`Endpoint`]).
 pub const ENV: &str = "H2_AGENT";
+
+/// The TCP port the Xbox app listens on (docs/runtime/xbox.md, "Remote
+/// control").
+pub const XBOX_PORT: u16 = 4720;
 
 /// Where `h2 serve` listens and `h2 agent` connects when neither is told:
 /// `$H2_AGENT`, else the user's cache directory (`~/Library/Caches/h2recomp`
@@ -83,6 +91,25 @@ pub mod method {
 
     /// Methods that change the run; they need `session.claim` first.
     pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP];
+
+    // Host methods: answered only where the game's host registers them
+    // (`Agent::add_method`; boot's agent glue), so `session.methods` lists
+    // them only there.
+
+    /// Queue pad steps for player one ([`crate::PadParams`]).
+    pub const INPUT_PAD: &str = "input.pad";
+    /// Drop the queued steps and let go of everything.
+    pub const INPUT_RELEASE: &str = "input.release";
+    /// What the remote pad holds now and how many steps are queued.
+    pub const INPUT_STATE: &str = "input.state";
+    /// Start the in-process sampling profiler (`{"hz": 1000}`).
+    pub const SAMPLE_START: &str = "profile.sample.start";
+    /// Stop it and write the samples (`{"inline": true}` returns them too).
+    pub const SAMPLE_STOP: &str = "profile.sample.stop";
+    /// Whether it runs, for how long, and what the last dump was.
+    pub const SAMPLE_STATUS: &str = "profile.sample.status";
+    /// The newest host perf line (`boot::host_perf`).
+    pub const HOST_PERF: &str = "host.perf";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

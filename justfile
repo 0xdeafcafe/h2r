@@ -141,18 +141,19 @@ windows-dll *args:
       cargo h2 build "$iso" --out "$out"
     echo "windows-dll: h2game.dll and its stamp are in $out"
 
-# Build the Xbox app's signed package (platform/xbox/build.sh) [module=build|skip iso=]
+# Build the Xbox app's signed package (platform/xbox/build.sh) [maps=demo|all module=build|skip iso= mappack=]
 [group('xbox')]
 xbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     . scripts/just.sh
-    h2_args "module iso" "$@"
+    h2_args "maps module iso mappack" "$@"
     h2_xbox
-    maps=demo
     h2_build_args
     h2_iso
-    platform/xbox/build.sh "$iso" ${build_args[@]+"${build_args[@]}"}
+    if [ "${maps:-demo}" = all ]; then h2_mappack; else mappack=; fi
+    h2_size_warning xbox
+    platform/xbox/build.sh "$iso" ${build_args[@]+"${build_args[@]}"} ${mappack:+--mappack "$mappack"}
 
 # Install and launch the Xbox package through Device Portal [ip=ADDRESS]
 [group('xbox')]

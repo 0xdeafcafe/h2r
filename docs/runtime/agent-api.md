@@ -512,7 +512,11 @@ How it behaves (**Code**, with tests in `crates/agent`):
   else `$H2_AGENT`, else `~/Library/Caches/h2recomp/agent.sock`
   (`$XDG_CACHE_HOME` or `~/.cache` elsewhere), not `$TMPDIR`, which differs
   between agent sessions. A socket file nobody answers on is replaced; a
-  live one is an error. Unix only; elsewhere listening fails and says so.
+  live one is an error. `tcp://HOST:PORT` (as `--socket` or `H2_AGENT`)
+  listens or connects over TCP instead (`agent_proto::Endpoint`), which
+  is how the Xbox app is reached (`h2 agent --xbox HOST`, port 4720;
+  [xbox.md](xbox.md) "Remote control"). TCP has no authentication. Unix
+  sockets are Unix only; elsewhere use TCP.
 - **Where answers are read.** The `agent` feature observes `GAME_TICK`
   last, after telemetry and lockstep (`boot/tests/feature_plan.rs`), and
   answers there with `boundary: "tick"`. Between slices it answers what
@@ -569,8 +573,18 @@ How it behaves (**Code**, with tests in `crates/agent`):
   `H2_FEATURES=-agent` removes the hooks; requests then get answers only
   between slices.
 
+- **Host methods.** A host adds its own methods with
+  `Agent::add_method(name, Access::Read | Access::Act, f)`; an `Act`
+  method is refused (`NOT_CONTROLLER`) while another connection holds
+  control. `boot::agent_glue` adds `input.pad`, `input.release`,
+  `input.state` (player one's pad, `input::backend::remote`; on the shell
+  pads, not yet `h2 serve`'s headless pad), `profile.sample.start`,
+  `.stop` and `.status` (the in-process sampler, with boot's `perf`
+  feature; [xbox.md](xbox.md) "Profiling on the console") and
+  `host.perf` (the last host perf line).
+
 Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
-input, overrides, experiments, live switch changes, the MCP front end.
+overrides, experiments, live switch changes, the MCP front end.
 
 ## Open decisions
 

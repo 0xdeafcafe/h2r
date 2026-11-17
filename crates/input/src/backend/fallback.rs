@@ -19,6 +19,7 @@ pub struct KeyboardFallback {
     rumble: Rumble,
     previous_pad: Gamepad,
     keyboard_activity: u64,
+    remote: Option<crate::backend::remote::Remote>,
 }
 
 impl KeyboardFallback {
@@ -37,7 +38,15 @@ impl KeyboardFallback {
             rumble: Rumble::default(),
             previous_pad: Gamepad::default(),
             keyboard_activity: 0,
+            remote: None,
         }
+    }
+
+    /// Merges `remote`'s steps into player one too (the agent API's
+    /// `input.pad`; [`crate::backend::remote`]).
+    pub fn with_remote(mut self, remote: crate::backend::remote::Remote) -> Self {
+        self.remote = Some(remote);
+        self
     }
 }
 
@@ -118,7 +127,10 @@ impl HostBackend for KeyboardFallback {
         let mut out = vec![HostPad {
             id: HostPadId(0),
             name: "Player one (pad + keyboard/mouse)".into(),
-            state: HostPadState::from_gamepad(merge(gamepad, keyboard)),
+            state: HostPadState::from_gamepad(match self.remote.as_ref().filter(|r| r.busy()) {
+                Some(r) => merge(merge(gamepad, keyboard), r.state_at(std::time::Instant::now())),
+                None => merge(gamepad, keyboard),
+            }),
             physical: false,
             supports_rumble: true,
         }];
@@ -136,6 +148,9 @@ impl HostBackend for KeyboardFallback {
     fn state_read(&mut self, id: HostPadId) {
         if id == HostPadId(0) {
             self.keyboard.state_read(HostPadId(0));
+            if let Some(r) = &self.remote {
+                r.state_read();
+            }
             if let Some(backend) = &mut self.physical
                 && let Some(primary) = self.primary
             {
@@ -322,6 +337,51 @@ mod tests {
             "retain selected primary across enumeration reordering"
         );
     }
+    #[test]
+    fn remote_steps_merge_into_player_one_and_count_its_reads() {
+        use crate::backend::remote::{Remote, Step};
+        use crate::gamepad::Buttons;
+        let remote = Remote::new();
+        let keyboard = KeyboardMouse::new(Bindings::default());
+        let mut fb =
+            KeyboardFallback::new(keyboard, None, ConvertConfig::default()).with_remote(remote.clone());
+        let read = |fb: &mut KeyboardFallback| {
+            let pads = fb.poll();
+            assert_eq!(pads.len(), 1, "one player-one pad, remote or not");
+            pads[0].state.to_gamepad(&ConvertConfig::default(), false)
+        };
+        assert_eq!(read(&mut fb), Gamepad::default());
+        remote.replace([
+            Step {
+                pad: Gamepad {
+                    buttons: Buttons::START,
+                    thumb_ly: 32767,
+                    ..Gamepad::default()
+                },
+                hold: Some(std::time::Duration::ZERO),
+                reads: 1,
+            },
+            Step {
+                pad: Gamepad {
+                    analog: [255, 0, 0, 0, 0, 0, 0, 0],
+                    ..Gamepad::default()
+                },
+                hold: Some(std::time::Duration::ZERO),
+                reads: 1,
+            },
+        ]);
+        let g = read(&mut fb);
+        assert!(g.buttons.contains(Buttons::START));
+        assert!(g.thumb_ly > 30_000, "{}", g.thumb_ly);
+        // Not read by the guest yet: the press is still there.
+        assert!(read(&mut fb).buttons.contains(Buttons::START));
+        fb.state_read(HostPadId(0));
+        assert_eq!(read(&mut fb).analog[0], 255, "the next step once it was read");
+        fb.state_read(HostPadId(0));
+        assert_eq!(read(&mut fb), Gamepad::default(), "idle after the last step");
+        assert_eq!(remote.status().done, 2);
+    }
+
     #[test]
     fn last_used_device_follows_keyboard_and_pad_activity() {
         use crate::active::DeviceKind;

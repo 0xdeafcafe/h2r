@@ -2,6 +2,12 @@
 //! thread with Mach's `thread_suspend`, reads its registers with
 //! `thread_get_state`, walks its frame-pointer chain, and resumes it.
 //!
+//! On Windows (x86-64; the Xbox app, docs/runtime/xbox.md) it is
+//! `SuspendThread`, `GetThreadContext` and a copy of the live stack, then,
+//! with the thread running again, `RtlVirtualUnwind` over the copy (see
+//! `imp` there): Windows x64 code keeps no frame-pointer chain, and the
+//! unwinder's table lookup may take locks the suspended thread holds.
+//!
 //! Why this and not a signal or `sample(1)`: a `SIGPROF` handler runs on
 //! the target thread, which may be inside generated code holding the guest
 //! memory lock or inside malloc; `thread_get_state` needs no cooperation
@@ -30,8 +36,15 @@ pub struct ThreadTarget {
     pub name: String,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     port: u32,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     stack: (u64, u64),
+    /// A real handle to the thread (`DuplicateHandle` of the pseudo
+    /// handle), never closed: targets live as long as the process.
+    #[cfg(windows)]
+    handle: isize,
+    /// The thread's cycle count at the last sample: grown means it ran.
+    #[cfg(windows)]
+    cycles: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// One stack: `frames[0]` is the interrupted PC, then return addresses
@@ -70,7 +83,8 @@ pub struct Sampler {
 }
 
 /// Is sampling supported on this host?
-pub const SUPPORTED: bool = cfg!(target_os = "macos");
+pub const SUPPORTED: bool =
+    cfg!(any(target_os = "macos", all(windows, target_arch = "x86_64")));
 
 impl Sampler {
     /// Sample `targets` at `hz` (clamped to 1..=10000) until [`finish`].
@@ -80,7 +94,7 @@ impl Sampler {
         if !SUPPORTED {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "the sampling profiler is macOS-only (thread_get_state)",
+                "the sampling profiler runs on macOS and x86-64 Windows only",
             ));
         }
         if targets.is_empty() {
@@ -163,7 +177,7 @@ fn run(targets: Vec<ThreadTarget>, hz: u32, stop: &AtomicBool) -> RawProfile {
     out
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 struct Captured {
     depth: usize,
     lr: u64,
@@ -211,6 +225,19 @@ unsafe fn walk(mut fp: u64, stack: (u64, u64), buf: &mut [u64], mut depth: usize
         fp = next;
     }
     depth
+}
+
+/// Points every word of `words` that lies in the live stack range
+/// `[range.0, range.1)` at the same place in a copy of it starting at
+/// `to`: saved frame pointers and stack addresses in registers, so an
+/// unwinder walking the copy never reads the live stack.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn relocate(words: &mut [u64], range: (u64, u64), to: u64) {
+    for w in words {
+        if (range.0..range.1).contains(w) {
+            *w = *w - range.0 + to;
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -330,7 +357,30 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[path = "sample_windows.rs"]
+mod imp;
+
+#[cfg(all(windows, not(target_arch = "x86_64")))]
+mod imp {
+    use super::{Captured, ThreadTarget};
+    impl ThreadTarget {
+        pub fn current(name: impl Into<String>) -> ThreadTarget {
+            ThreadTarget {
+                name: name.into(),
+                port: 0,
+                stack: (0, 0),
+                handle: 0,
+                cycles: Default::default(),
+            }
+        }
+    }
+    pub(super) fn capture(_: &ThreadTarget, _: &mut [u64]) -> Option<Captured> {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod imp {
     use super::{Captured, ThreadTarget};
     impl ThreadTarget {
@@ -375,6 +425,13 @@ mod tests {
         let mut two = [0u64; 2];
         // SAFETY: as above.
         assert_eq!(unsafe { walk(base, range, &mut two, 0) }, 2);
+    }
+
+    #[test]
+    fn stack_addresses_move_into_the_copy() {
+        let mut w = [0x1000, 0x0fff, 0x1ff8, 0x2000, 7];
+        relocate(&mut w, (0x1000, 0x2000), 0x9000);
+        assert_eq!(w, [0x9000, 0x0fff, 0x9ff8, 0x2000, 7]);
     }
 
     #[test]

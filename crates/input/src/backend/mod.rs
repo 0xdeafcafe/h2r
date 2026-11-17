@@ -4,6 +4,7 @@
 pub mod fallback;
 pub mod keyboard;
 pub mod multi;
+pub mod remote;
 pub mod scripted;
 
 #[cfg(feature = "gilrs")]

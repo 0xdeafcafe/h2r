@@ -5,7 +5,9 @@ built entirely on a Mac. It is the Windows port
 ([windows.md](windows.md)) packaged as an app: the same runtime and
 generated module, cross-compiled for `x86_64-pc-windows-msvc`. Like the
 tvOS and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md)), it carries a
-trimmed disc and only the menu, The Heretic and Zanzibar are playable.
+trimmed disc by default (the menu, The Heretic and Zanzibar); `--maps all`
+packs every map, and the Multiplayer Map Pack with `--mappack`
+("Building").
 
 **Status (2026-11-16):** it runs on an Xbox Series X in Dev Mode, in App
 mode (not yet switched to Game). It finds the console's GPU (`SraKmd_arden`,
@@ -186,10 +188,29 @@ Then:
 platform/xbox/build.sh /abs/path/to/disc/halo2.iso [--no-module]
 ```
 
+Or `just xbox maps=all` (with `mappack=` for the map pack disc; `just`
+finds `disc/mappack.iso` itself and warns about the size).
+
+```sh
+platform/xbox/build.sh /abs/path/to/disc/halo2.iso --maps all --mappack /abs/path/to/disc/mappack.iso
+```
+
+`--maps demo` (the default) packs the menu, The Heretic and Zanzibar
+(about 1 GB). `--maps all` packs the whole disc. `--mappack ISO` (only with
+`--maps all`) runs `h2 import-mappack` into the package's
+`bootcache/h2data/`: the nine map pack content packages, which the app
+copies into `LocalState\h2data` at its first launch, because the app
+container can't clone or link out of the package and NTFS has no clones.
+Expect a package of 7 GB or more, and the same again in LocalState once
+launched. None of this changes the module.
+
 This fills `platform/xbox/build/` (not committed). `package/` is the
 package's contents. `h2recomp.msix` is the signed package, `h2recomp.cer` its
 certificate, and `h2recomp.aumid` the app's id
-(`h2recomp.Halo2_<publisher id>!App`, `uwp_host::identity`). The module is the
+(`h2recomp.Halo2_<publisher id>!App`, `uwp_host::identity`). `symbols/`
+keeps this build's `h2uwp.exe`, its lld linker map `h2uwp.map` and
+`h2game.dll`, which `xbox.sh profile` needs to name a console profile's
+frames ("Profiling on the console"). The module is the
 slow part: the whole-XBE lift and emit, then about 16 minutes of clang.
 `--no-module` keeps an existing one. Rebuild it after any change to the
 generator, the runtime ABI or `Cargo.lock`. Build it from the same tree as
@@ -349,8 +370,115 @@ host-timed waits on the game thread are the pacer's sleep (`pace`, which
 only sleeps when the guest is ahead of wall time) and the render thread's
 replies (`render-wait`).
 
+## Remote control
+
+The app runs the agent API ([agent-api.md](agent-api.md)) on TCP port
+4720 (`agent_proto::XBOX_PORT`), so the Mac drives the console the way it
+drives `h2 serve`. It is on by default (`uwp_host::switches`); an empty
+`LocalState\agent-off` turns it off, `agent-on` back on if the default
+ever changes. The log says `h2uwp: agent API on tcp://0.0.0.0:4720` at start.
+A port that won't bind is logged and the game runs without it.
+
+The manifest asks for `internetClientServer` and
+`privateNetworkClientServer` (with `internetClient`), which a UWP app
+needs to accept connections at all. **There is no authentication**: anyone
+on the LAN who reaches the port can press buttons and read the game. It is
+for a dev console on a home network only.
+
+```sh
+export H2_XBOX=10.0.3.29
+cargo h2 agent --xbox status                 # or --xbox 10.0.3.29; tcp://HOST:4720
+cargo h2 agent --xbox press a                # A for 150 ms
+cargo h2 agent --xbox press a+start 300
+cargo h2 agent --xbox stick left 0 1 2000    # full forward for 2 s
+cargo h2 agent --xbox pad '{"steps":[{"buttons":["a"],"ms":100},{"ms":500},{"buttons":["b"],"reads":2}]}'
+cargo h2 agent --xbox unpress                # drop what is queued, release all
+cargo h2 agent --xbox padstate
+cargo h2 agent --xbox hostperf               # the last host perf line
+cargo h2 agent --xbox watch phase map
+```
+
+`h2 agent --socket tcp://HOST:PORT` (or `H2_AGENT=tcp://...`) reaches any
+TCP endpoint, not only the console's.
+
+**The pad.** `input.pad` queues steps for player one (`input::backend::remote`),
+merged over a real pad and the keyboard. A step holds its buttons and
+sticks for `ms` and until the game has read the pad `reads` times (default
+once), so a short press is never lost to a slow frame. Buttons: `a b x y
+black white lt rt` (analog, fully pressed), `up down left right start back
+ls rs`; sticks are -1 to 1 (`left`, `right`), triggers 0 to 1 (`lt`, `rt`).
+`append` adds to what is queued, otherwise it replaces it. When the queue
+empties the pad is released. Pressing needs control (`session.claim`)
+only while another connection holds it.
+
+**Files and launching.** `platform/xbox/xbox.sh` wraps the Device Portal
+(the same credentials as `deploy.sh`) and `h2 agent`:
+
+```sh
+platform/xbox/xbox.sh level 03a_oldmombasa heroic   # boot straight into a level next launch, and relaunch
+platform/xbox/xbox.sh level menu                    # back to the menu
+platform/xbox/xbox.sh env H2_FRAME_STATS=1 H2_LEVEL=05a_deltaapproach
+platform/xbox/xbox.sh log | tail
+platform/xbox/xbox.sh get h2uwp.log /tmp/h2uwp.log
+platform/xbox/xbox.sh relaunch
+platform/xbox/xbox.sh agent press a
+```
+
+A UWP app gets no environment, so the app reads `LocalState\h2env` at
+launch: `H2_NAME=VALUE` lines (comments, blank lines, `export` and quotes
+allowed; anything not `H2_` is ignored and logged). `xbox.sh env` writes
+it, with no pairs deletes it; `level` writes `H2_LEVEL` and
+`H2_DIFFICULTY` and relaunches. Stopping is
+`DELETE /api/taskmanager/app?package=<base64 full name>&forcestop=yes`;
+LocalState files go through `/api/filesystem/apps/file` with
+`knownfolderid=LocalAppData` and `path=\LocalState`.
+
+## Profiling on the console
+
+The app has a sampling profiler (`perf::sample`, Windows x86-64 in
+`sample_windows.rs`). Each sample suspends the game thread, reads its
+registers and copies its stack into a buffer allocated beforehand, and
+resumes it (a few tens of microseconds). The copy is then unwound with
+`RtlLookupFunctionEntry` and `RtlVirtualUnwind` over each module's
+`.pdata`, as Chromium's sampler does: no lock is taken with the thread
+stopped. CPU-or-not comes from `QueryThreadCycleTime`. All of it is in
+`OneCoreUAP.lib`.
+
+The console can't name its frames, so it writes them module-relative
+(`perf::remote`, `h2prof 1`): `LocalState\profile.h2prof`. The Mac names
+them against the same build's `build/symbols/`: for `h2game.dll`, its
+exported `h2gen_module` table (each lifted function's guest address) and
+`.pdata` extents, with the names from `disc/ghidra-functions.tsv`; for
+`h2uwp.exe`, the linker map. No PDB is needed.
+
+```sh
+platform/xbox/xbox.sh profile 20         # 20 s at 1000 Hz, fetched and symbolised
+platform/xbox/xbox.sh profile 10 4000
+platform/xbox/xbox.sh symbolize /tmp/xbox-20261117-101500.h2prof
+cargo h2 agent --xbox sample-start 1000  # by hand
+cargo h2 agent --xbox sample-status
+cargo h2 agent --xbox sample-stop
+```
+
+`xbox.sh profile` prints the top table (guest names where known) and
+writes `profile.folded` (for a flame graph), `profile.txt` and
+`profile.json` next to the dump (`$TMPDIR`, or `H2_XBOX_PROFILE_DIR`). The
+symboliser is `cargo run -p perf --example remote_profile -- DUMP --image
+h2game.dll --image h2uwp.exe --map h2uwp.map --names TSV [--top N --cpu
+--by-category --full-stacks]`. A dump only resolves against the exact
+build that made it: rebuild, redeploy, profile again.
+
+Without the agent (it is off, or the port isn't reachable), the same run
+is two `h2env` lines: `H2_PERF_FROM=level` (or a present count) and
+`H2_SAMPLE_SECONDS=20` sample from the level's start and write the dump;
+then `xbox.sh get profile.h2prof` and `xbox.sh symbolize`.
+
 ## Known gaps
 
+- Remote control and the profiler are untested on the console: whether the
+  console's firewall lets port 4720 in for a Dev Mode app is unknown.
+  `xbox.sh agent status` is the first check; the `h2env` route above is
+  the fallback.
 - Pads (gilrs' WGI backend in the app container) are unverified. With no pad
   the log shows nothing, and with a failed backend it shows
   `app: gamepads unavailable`.
@@ -361,5 +489,7 @@ replies (`render-wait`).
 - Suspend does not trim GPU memory or save the game.
 - Other `canonicalize` users (`vfs::map_override` for `H2_MAP_DIR` and map
   packages, `content`) may hit the same container refusal when used.
-- The same trimmed disc as tvOS: the menu, The Heretic and Zanzibar only.
-  No Xbox Live, and no movies.
+- By default the same trimmed disc as tvOS (the menu, The Heretic and
+  Zanzibar); `--maps all` for the rest. No Xbox Live, and no movies.
+- The map pack is copied into LocalState at the first launch after an
+  install that carries it, which takes a while and doubles its space.

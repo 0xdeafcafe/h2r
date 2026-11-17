@@ -176,7 +176,21 @@ pub fn on_present(n: u64) {
     };
     st.last = now;
     drop(g);
-    eprintln!("{}", r.line());
+    let line = r.line();
+    eprintln!("{line}");
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), line));
+}
+
+/// The newest line and when it was printed.
+static LAST: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+
+/// The newest host perf line and how long ago it was printed (the agent
+/// API's `host.perf`).
+pub fn last_line() -> Option<(std::time::Duration, String)> {
+    LAST.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|(at, l)| (at.elapsed(), l.clone()))
 }
 
 /// One interval, as read.
