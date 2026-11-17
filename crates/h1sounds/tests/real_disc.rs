@@ -1,0 +1,495 @@
+//! Checks on the owner's discs, all `#[ignore]`d. No map bytes or samples
+//! are kept: everything is read and compared in memory.
+//!
+//! ```text
+//! H1_ISO=disc/halo1.iso cargo test -p h1sounds --release -- --ignored every_h1 --nocapture
+//! H2_DISC=disc/halo2.iso cargo test -p h1sounds --release -- --ignored retail_gestalts --nocapture
+//! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
+//!     cargo test -p h1sounds --release -- --ignored converted --nocapture
+//! ```
+
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufReader, Cursor};
+
+use h1map::H1Map;
+use h1sounds::gestalt::{SoundGestalt, blocks};
+use h1sounds::h1::{Compression, SND, Sound};
+use h1sounds::{class, convert_sound, decode_all, install_sounds};
+use map::build::TagSet;
+use map::{FourCC, Map, RawPointer, ResourceFile, TagId};
+
+fn h1_disc() -> xiso::Xiso<BufReader<std::fs::File>> {
+    let path = std::env::var("H1_ISO").expect("set H1_ISO to the Halo 1 disc");
+    xiso::Xiso::open(BufReader::new(std::fs::File::open(path).unwrap())).unwrap()
+}
+
+fn h1_maps() -> Vec<String> {
+    let mut iso = h1_disc();
+    let d = h1map::disc::Disc::open(&mut iso).unwrap();
+    d.maps
+        .iter()
+        .map(|e| h1map::disc::map_stem(e).to_string())
+        .collect()
+}
+
+fn h1_map(name: &str) -> H1Map {
+    let mut iso = h1_disc();
+    let d = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = d.map(name).expect("map on the disc").clone();
+    H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+}
+
+fn h2_disc() -> String {
+    std::env::var("H2_DISC").expect("set H2_DISC to the Halo 2 disc")
+}
+
+fn h2_stems() -> Vec<String> {
+    let mut iso =
+        xiso::Xiso::open(BufReader::new(std::fs::File::open(h2_disc()).unwrap())).unwrap();
+    iso.entries()
+        .unwrap()
+        .into_iter()
+        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+        .map(|e| {
+            e.path
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap()
+                .trim_end_matches(".map")
+                .to_string()
+        })
+        .collect()
+}
+
+fn h2_bytes(stem: &str) -> Vec<u8> {
+    let mut iso =
+        xiso::Xiso::open(BufReader::new(std::fs::File::open(h2_disc()).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            !e.is_dir && e.path.ends_with(&format!("/{stem}.map"))
+                || e.path == format!("{stem}.map")
+        })
+        .unwrap_or_else(|| panic!("{stem}.map on the Halo 2 disc"));
+    iso.read(&e).unwrap()
+}
+
+/// Every sound on every map decodes: each playable permutation's samples
+/// are whole ADPCM blocks inside the file, between the bitmaps and the tag
+/// data, overlapping nothing. Prints the census.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn every_h1_sound_decodes() {
+    let mut classes: BTreeMap<u16, (usize, Vec<String>)> = BTreeMap::new();
+    let mut formats: BTreeMap<(u16, u16, Compression), (usize, f64)> = BTreeMap::new();
+    let (mut sounds, mut playable, mut perms, mut chained, mut seconds) =
+        (0usize, 0usize, 0usize, 0usize, 0f64);
+    let (mut mouth, mut subtitles, mut promotions, mut multi_range) =
+        (0usize, 0usize, 0usize, 0usize);
+    let mut flags: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut mixed_compression = 0;
+    let mut failures = Vec::new();
+    let mut unmapped: BTreeSet<u16> = BTreeSet::new();
+    let maps = h1_maps();
+    for name in &maps {
+        let m = h1_map(name);
+        let file = m.bytes();
+        let tag_start = m.header().index_offset as usize;
+        let mut spans = Vec::new();
+        let mut n = 0;
+        for t in m.tags().iter().filter(|t| t.group == SND) {
+            let s = match Sound::read(&m, t) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!("{name} {}: {e}", t.name));
+                    continue;
+                }
+            };
+            n += 1;
+            sounds += 1;
+            let c = classes.entry(s.class).or_default();
+            c.0 += 1;
+            if c.1.len() < 3 {
+                c.1.push(t.name.clone());
+            }
+            if class::to_h2(s.class).is_err() {
+                unmapped.insert(s.class);
+            }
+            *flags.entry(s.flags).or_default() += 1;
+            promotions += usize::from(s.promotion_id().is_some());
+            multi_range += usize::from(s.pitch_ranges.len() > 1);
+            for r in &s.pitch_ranges {
+                for p in &r.permutations {
+                    perms += 1;
+                    chained += usize::from(p.next != h1sounds::h1::NO_NEXT);
+                    mouth += usize::from(p.mouth.size > 0);
+                    subtitles += usize::from(p.subtitles.size > 0);
+                    mixed_compression += usize::from(p.compression != s.compression);
+                    if p.samples.size > 0 {
+                        spans.push((p.samples.file_offset as usize, p.samples.size as usize));
+                    }
+                }
+            }
+            match decode_all(&s, file) {
+                Ok(all) => {
+                    let f = formats
+                        .entry((s.sample_rate, s.encoding, s.compression))
+                        .or_default();
+                    f.0 += 1;
+                    for (_, _, pcm) in &all {
+                        playable += 1;
+                        seconds += pcm.seconds();
+                        f.1 += pcm.seconds();
+                    }
+                }
+                Err(e) => failures.push(format!("{name} {}: {e}", t.name)),
+            }
+        }
+        // Samples: inside the file, before the tag data, never overlapping
+        // each other (shared samples are the same span).
+        spans.sort();
+        spans.dedup();
+        let overlaps = spans
+            .windows(2)
+            .filter(|w| w[0].0 + w[0].1 > w[1].0)
+            .count();
+        let past = spans.iter().filter(|s| s.0 + s.1 > tag_start).count();
+        let (lo, hi) = spans
+            .iter()
+            .fold((usize::MAX, 0), |(l, h), s| (l.min(s.0), h.max(s.0 + s.1)));
+        println!(
+            "{name:>12}: {n:>5} sounds, samples {lo:#x}..{hi:#x}, tag data {tag_start:#x}, {} spans, {overlaps} overlaps, {past} past tag data",
+            spans.len()
+        );
+        assert_eq!((overlaps, past), (0, 0), "{name}");
+    }
+    println!(
+        "\n{} maps, {sounds} sounds, {perms} permutations ({chained} continue another), {playable} playable, {:.1} h",
+        maps.len(),
+        seconds / 3600.0
+    );
+    println!(
+        "lip-sync on {mouth} permutations, subtitles on {subtitles}, {promotions} sounds promote, {multi_range} have several pitch ranges, {mixed_compression} permutations differ from their sound's compression"
+    );
+    println!("\nrate, encoding, compression: sounds, hours");
+    for ((r, e, c), (n, s)) in &formats {
+        println!("  {r} {e} {c:?}: {n}, {:.2}", s / 3600.0);
+    }
+    println!("\nflags: {flags:?}");
+    println!("\nclass: sounds, examples");
+    for (c, (n, ex)) in &classes {
+        let name = class::H1_NAMES
+            .get(usize::from(*c))
+            .copied()
+            .flatten()
+            .unwrap_or("?");
+        let h2 = class::to_h2(*c)
+            .ok()
+            .and_then(|v| class::H2_NAMES[usize::from(v)])
+            .unwrap_or("-");
+        println!("  {c:>2} {name} -> {h2}: {n}  {ex:?}");
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures: {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(20)]
+    );
+    assert!(unmapped.is_empty(), "classes with no mapping: {unmapped:?}");
+}
+
+struct Local<'a>(&'a [u8]);
+impl tags::sound::ResourceReader for Local<'_> {
+    fn check(&self, p: RawPointer, size: u32) -> tags::Result<()> {
+        if p.file != ResourceFile::Local || p.offset as usize + size as usize > self.0.len() {
+            return Err(tags::Error::Invalid("chunk not in this map"));
+        }
+        Ok(())
+    }
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        self.check(p, size)?;
+        Ok(self.0[p.offset as usize..][..size as usize].to_vec())
+    }
+}
+
+fn gestalt_of(bytes: &[u8]) -> (SoundGestalt, String) {
+    let mut m = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let t = m
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"ugh!"))
+        .unwrap()
+        .clone();
+    let b = m.read_tag_bytes(t.id).unwrap();
+    (
+        SoundGestalt::decode(&b, t.location.unwrap().address).unwrap(),
+        t.name.unwrap_or_default(),
+    )
+}
+
+/// Every retail gestalt is accounted for exactly once by the model, and
+/// survives a rebuild: a map rebuilt with its `ugh!` as a built tree
+/// decodes to the same gestalt, and every `snd!` still resolves. Prints
+/// what the converter relies on: the pitch range `+4`/`+6` rule, the
+/// `snd!` index bytes against the block counts, flags and classes.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn retail_gestalts_decode_and_rebuild() {
+    let mut classes: BTreeMap<u8, (usize, Vec<String>)> = BTreeMap::new();
+    let mut flags: BTreeMap<u16, usize> = BTreeMap::new();
+    let (mut rule_ok, mut rule_bad) = (0usize, 0usize);
+    let (mut chunk_flag, mut chunks) = (0usize, 0usize);
+    let mut idx_bad = BTreeMap::<&str, usize>::new();
+    let mut why = BTreeMap::<&str, usize>::new();
+    let mut plus4 = BTreeMap::<(u16, u16), usize>::new();
+    let mut flag_pos = BTreeMap::<(usize, usize, bool, bool), usize>::new();
+    for stem in h2_stems() {
+        eprintln!("{stem}");
+        let bytes = h2_bytes(&stem);
+        let (g, name) = gestalt_of(&bytes);
+        let counts: Vec<usize> = (0..11).map(|i| g.count(i)).collect();
+        println!("{stem:>22}: ugh! {name:?} counts {counts:?}");
+        // Pitch range +4/+6: a single permutation has +6 none; more than
+        // one own the runtime flag bits +6.. +6+n of block 7, which never
+        // overlap another range's and stay inside the block. +4 is 0 or none.
+        let mut bits = Vec::new();
+        for e in g.flat[blocks::PITCH_RANGES].chunks_exact(12) {
+            let (enc, fl, n) = (
+                u16::from_le_bytes([e[4], e[5]]),
+                u16::from_le_bytes([e[6], e[7]]),
+                u16::from_le_bytes([e[10], e[11]]),
+            );
+            *plus4.entry((n.min(2), enc)).or_default() += 1;
+            if n == 1 {
+                if fl == 0xffff {
+                    rule_ok += 1
+                } else {
+                    rule_bad += 1;
+                    *why.entry("single with +6").or_default() += 1
+                }
+            } else if fl == 0xffff {
+                rule_bad += 1;
+                *why.entry("several, +6 none").or_default() += 1;
+            } else if enc == 0 {
+                // The other retail form (+4 = 0): +6 is not a bit offset
+                // into block 7; not interpreted, and not what we write.
+                *why.entry("several, +4 = 0 (other form)").or_default() += 1;
+            } else {
+                bits.push((usize::from(fl), usize::from(n)));
+            }
+        }
+        bits.sort();
+        bits.dedup();
+        for (i, &(at, n)) in bits.iter().enumerate() {
+            let fits =
+                at + n <= counts[7] * 8 && bits.get(i + 1).is_none_or(|&(next, _)| at + n <= next);
+            if fits {
+                rule_ok += 1
+            } else if at + n > counts[7] * 8 {
+                rule_bad += 1;
+                *why.entry("past block 7").or_default() += 1
+            } else {
+                rule_bad += 1;
+                *why.entry("overlap").or_default() += 1
+            }
+        }
+        for c in &g.chunks {
+            chunks += 1;
+            chunk_flag += usize::from(c.size >> 31 != 0);
+        }
+        for p in g.flat[blocks::PERMUTATIONS].chunks_exact(16) {
+            let (first, n) = (
+                usize::from(u16::from_le_bytes([p[12], p[13]])),
+                usize::from(u16::from_le_bytes([p[14], p[15]])),
+            );
+            for (k, c) in g.chunks[first..first + n].iter().enumerate() {
+                if c.size >> 31 != 0 {
+                    *flag_pos
+                        .entry((
+                            n.min(3),
+                            k.min(2),
+                            k + 1 == n,
+                            c.size & 0x7fff_ffff == 0x7ff8,
+                        ))
+                        .or_default() += 1;
+                }
+            }
+        }
+        let mut m = Map::from_reader(Cursor::new(&bytes[..])).unwrap();
+        let ids: Vec<(TagId, String)> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, n) in &ids {
+            let h = m.read_tag_bytes(*id).unwrap();
+            *flags.entry(u16::from_le_bytes([h[0], h[1]])).or_default() += 1;
+            let c = classes.entry(h[2]).or_default();
+            c.0 += 1;
+            if c.1.len() < 3 && !c.1.contains(n) {
+                c.1.push(n.clone());
+            }
+            let mut bad = |what, v: usize, none: usize, count: usize| {
+                if v != none && v >= count {
+                    *idx_bad.entry(what).or_default() += 1;
+                }
+            };
+            bad("scale +b", usize::from(h[0xb]), 0xff, counts[1]);
+            bad("promotion +c", usize::from(h[0xc]), 0xff, counts[9]);
+            bad("custom playback +d", usize::from(h[0xd]), 0xff, counts[6]);
+            bad(
+                "extra info +e",
+                usize::from(u16::from_le_bytes([h[0xe], h[0xf]])),
+                0xffff,
+                counts[10],
+            );
+            bad(
+                "playback +6",
+                usize::from(u16::from_le_bytes([h[6], h[7]])),
+                0xffff,
+                counts[0],
+            );
+        }
+
+        // Rebuild with the gestalt as a built tree.
+        let mut set = TagSet::from_map(&mut m).unwrap();
+        let before = tags::sound::Gestalt::read(&mut m).unwrap();
+        SoundGestalt::from_set(&set)
+            .unwrap()
+            .install(&mut set, "x")
+            .unwrap();
+        let (out, _) = set.build().unwrap();
+        let (again, _) = gestalt_of(&out);
+        assert_eq!(again, g, "{stem}: the rebuilt gestalt differs");
+        let mut m2 = Map::from_reader(Cursor::new(&out[..])).unwrap();
+        let after = tags::sound::Gestalt::read(&mut m2).unwrap();
+        assert_eq!(after.chunks, before.chunks, "{stem}");
+        for (id, _) in &ids {
+            let h = tags::sound::read_header(&mut m2, *id).unwrap();
+            after.resolve(&h).unwrap();
+        }
+    }
+    println!("\npitch range +6 rule (distinct runs): {rule_ok} hold, {rule_bad} don't");
+    println!("  (permutations min 2, +4): {plus4:x?}; failures {why:?}");
+    println!("chunks with size bit 31: {chunk_flag} of {chunks}");
+    println!("  by (chunks min 3, index min 2, last, 0x7ff8): {flag_pos:?}");
+    println!("snd! index bytes out of their block: {idx_bad:?}");
+    println!("flags: {flags:x?}");
+    println!("\nclass: sounds, examples");
+    for (c, (n, ex)) in &classes {
+        let name = class::H2_NAMES
+            .get(usize::from(*c))
+            .copied()
+            .flatten()
+            .unwrap_or("?");
+        println!("  {c:>2} {name}: {n}  {ex:?}");
+    }
+}
+
+/// Converts Halo 1 sounds onto a Halo 2 base map, builds it, and reads every
+/// converted sound back through `crates/tags`' sound decoding and the audio
+/// crate's decoder: the PCM is sample-identical to the Halo 1 decode. All
+/// of beavercreek's sounds, and a30's dialogue (every `H1_DIALOG_STEP`th,
+/// default 4). The base map's own sounds still resolve to the same chunks.
+#[test]
+#[ignore = "reads both discs ($H1_ISO, $H2_DISC)"]
+fn converted_sounds_read_back_sample_identical() {
+    let base = std::env::var("H2_BASE").unwrap_or_else(|_| "beavercreek".into());
+    let step: usize = std::env::var("H1_DIALOG_STEP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+    for (h1, dialogue_only) in [("beavercreek", false), ("a30", true)] {
+        let m = h1_map(h1);
+        let mut picked = Vec::new();
+        for t in m.tags().iter().filter(|t| t.group == SND) {
+            let s = Sound::read(&m, t).unwrap();
+            if dialogue_only && !matches!(s.class, 19 | 44 | 46 | 47) {
+                continue;
+            }
+            picked.push((t.name.clone(), s));
+        }
+        if dialogue_only {
+            picked = picked.into_iter().step_by(step).collect();
+        }
+        let base_bytes = h2_bytes(&base);
+        let mut bm = Map::from_reader(Cursor::new(&base_bytes[..])).unwrap();
+        let before = tags::sound::Gestalt::read(&mut bm).unwrap();
+        let old: Vec<TagId> = bm
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
+            .map(|t| t.id)
+            .collect();
+        let mut set = TagSet::from_map(&mut bm).unwrap();
+        h1sounds::convert::make_index_room(&mut set);
+        let converted = picked
+            .iter()
+            .map(|(n, s)| (format!("halo1\\{n}"), convert_sound(s, m.bytes()).unwrap()))
+            .collect();
+        let ids = install_sounds(&mut set, converted).unwrap();
+        let (out, _) = set.build().unwrap();
+        let mut built = Map::from_reader(Cursor::new(&out[..])).unwrap();
+        let g = tags::sound::Gestalt::read(&mut built).unwrap();
+        assert_eq!(
+            &g.chunks[..before.chunks.len()],
+            &before.chunks[..],
+            "old chunks kept"
+        );
+        for id in old {
+            let h = tags::sound::read_header(&mut built, id).unwrap();
+            g.resolve(&h).unwrap();
+        }
+        let (mut perms, mut samples, mut secs) = (0usize, 0usize, 0f64);
+        for ((name, s), id) in picked.iter().zip(&ids) {
+            let h = tags::sound::read_header(&mut built, *id).unwrap();
+            assert_eq!(
+                built.tag(*id).unwrap().name.as_deref(),
+                Some(&*format!("halo1\\{name}"))
+            );
+            let resolved = g.resolve(&h).unwrap();
+            let channels = match h.encoding {
+                tags::sound::Encoding::Mono => 1,
+                tags::sound::Encoding::Stereo => 2,
+                e => panic!("{name}: {e:?}"),
+            };
+            assert_eq!(h.compression, tags::sound::Compression::XboxAdpcm, "{name}");
+            assert_eq!(h.sample_rate.hz(), Some(s.hz().unwrap()), "{name}");
+            let expect = decode_all(s, m.bytes()).unwrap();
+            let got: Vec<_> = resolved
+                .ranges
+                .iter()
+                .flat_map(|r| &r.permutations)
+                .map(|p| {
+                    let enc = g.read_encoded(p, &mut Local(&out)).unwrap();
+                    audio::adpcm::decode(&enc, channels).unwrap()
+                })
+                .collect();
+            assert_eq!(got.len(), expect.len(), "{name}: permutations");
+            let mut longest = 0;
+            for (a, (_, _, b)) in got.iter().zip(&expect) {
+                assert!(a == &b.samples, "{name}: PCM differs");
+                perms += 1;
+                samples += a.len();
+                secs += b.seconds();
+                longest = longest.max(b.frames());
+            }
+            assert_eq!(
+                u64::from(h.max_play_time),
+                longest as u64 * 1000 / u64::from(s.hz().unwrap()),
+                "{name}"
+            );
+        }
+        println!(
+            "{h1} onto {base}: {} sounds, {perms} permutations, {samples} samples ({secs:.1} s) identical; map {} -> {} bytes",
+            picked.len(),
+            base_bytes.len(),
+            out.len()
+        );
+    }
+}
