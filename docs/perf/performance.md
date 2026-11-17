@@ -621,3 +621,79 @@ changed round a loop reaching the next direct call, in all three modes),
 `tests/homes.rs` (what each statement keeps homed, the spill masks, and
 EFLAGS bit 1), and the retail entry path through generated C
 (`tests/entry.rs` with `H2_XBE`).
+
+## Runner transfers and the frame-stats clock (2026-11-17)
+
+Old Mombasa headless (PGO image, 2,000 draws) still spent about 17% of the
+game thread's on-CPU samples in the machinery around guest code, nearly all
+of it per runner transfer (~29k a frame): the runner loop itself, the
+resolve cache and its misses into the dispatch maps (`Dispatch::resolve`,
+`resolve_resume`, `resolve_with_generation`: 784 of 47,271 samples), the
+execute check (`check_execute`, two gate round trips and a page-table read:
+245), the interrupt check (`interrupt::deliver`, a call per transfer: 238),
+then the handler's entry (`h2abi_v1_fast_acquire`, the first access's gate
+take in `h2_access_cold`) and exit. Separately, with frame stats on, every
+D3D entry's phase switch read the clock through `Instant::elapsed`
+(`clock_gettime` → `mach_absolute_time`): 704 samples, 1.5%.
+
+What changed (runtime and timeline only; generated code is untouched, so
+no image rebuild is needed for it):
+
+- The per-context resolve cache has 4,096 entries (was 256), indexed by a
+  multiplicative hash of the target. Misses go out of line.
+- The execute check is remembered per cache entry against the guest's
+  *layout identity*: `Guest` takes a fresh, process-unique value at every
+  mapping or permission change (`refresh_fast_range`, `apply_unmap`, a new
+  `Guest`), and each memory guard publishes it as it ends. While it is
+  unchanged the check is one load; a fault is never remembered.
+- The interrupt check tests the queue's pending count inline first (the
+  other conditions are side-effect free, so the order changes nothing); the
+  continuation lookup on RETURN tests for a token address inline;
+  `fast_shared` (every handler entry) is an inline load with the one-time
+  set-up out of line.
+- `timeline::now_ns` reads `mach_absolute_time` directly on Apple
+  platforms, scaled by a fixed-point factor (6 ns a read against 25 ns).
+
+Proof: `exec::tests::a_remembered_execute_check_never_outlives_a_layout_change`
+(protect, unmap, map, another thread's protect and a replaced Guest, each
+seen at the next transfer, with the C RAM view on and off; it fails if the
+memo ignores the layout), `the_resolve_cache_answers_each_target_with_its_own_handler`
+(three times as many targets as entries), `timeline`'s
+`now_ns_is_monotonic_and_keeps_time_with_instant`, and the runtime and emit
+suites.
+
+Benchmarks: `runner_transfer_benchmark` (`crates/emit/tests/perf.rs`: eight
+indirect calls a loop trip into one of N callees that only `ret`, so 16
+runner transfers a trip) and `timeline`'s `now_ns_cost`:
+
+```sh
+cargo test -p emit --release --test perf runner_transfer_benchmark -- --ignored --nocapture
+cargo test -p timeline --release now_ns_cost -- --ignored --nocapture
+```
+
+Minimum of 9 trials, ns per runner transfer, quiet runs on a shared
+machine (later A/B rounds were swamped by other builds):
+
+| callees | before | after |
+|---:|---:|---:|
+| 16 | 39.4 | 39.2 |
+| 256 | 42.2 | 40.4 |
+| 1,024 | 48.9 | 42.2 |
+| 4,096 | 48.8 | 45.4 |
+
+With the targets inside the old cache nothing moves within noise; past it
+the misses are gone, and what is left at 1,024 and more is the callees' own
+code and data falling out of the CPU caches. `now_ns`: 8.8 ns a read
+against 25.1 ns for `Instant::elapsed`. Expected in the game, from the
+profile's own counts: most of the 784 miss samples, the 245 of the
+execute check, most of the 238 of the interrupt check, and two thirds of
+the 704 of the clock while frame stats are on, roughly 3% of the game
+thread's CPU.
+
+Left, by size: the handler's first access taking the gate in
+`h2_access_cold` at every runner entry (1,462 + `h2_gate_try` 307), which
+only fewer runner entries or a gate taken in the prologue would remove,
+both generated-code changes; the x87 transcendentals (`fyl2x` 536, `fcos`
+228, `f2xm1` 208, `fsin` 182: the correctly rounded `Wf<2>` series, which
+`H2_X87_NATIVE` does not cover, so f64 would change results); and the D3D
+write barrier's `take_dirty` and guard (about 700).

@@ -1,7 +1,7 @@
 //! Checked virtual mappings over one 64 MB physical store. Physical offsets
 //! identify aliases; high virtual addresses are never masked into RAM.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod state;
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
@@ -155,6 +155,15 @@ pub struct Guest {
     code: Vec<(u64, u64)>,
     next_id: u32,
     pub(crate) watch: crate::watch::WriteWatch,
+    /// Names the current mappings and permissions ([`Guest::layout_id`]).
+    layout: u64,
+}
+
+/// Layout identities, unique across every [`Guest`] in the process, so a
+/// replaced or restored Guest never repeats one an earlier layout had.
+static NEXT_LAYOUT: AtomicU64 = AtomicU64::new(1);
+fn fresh_layout() -> u64 {
+    NEXT_LAYOUT.fetch_add(1, Ordering::Relaxed)
 }
 
 fn overlaps(a: u64, a_end: u64, b: u64, b_end: u64) -> bool {
@@ -186,7 +195,16 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            layout: fresh_layout(),
         }
+    }
+    /// Identifies the mappings and their permissions: a new value, never
+    /// seen before, after any change to either (a map, protect or unmap,
+    /// a snapshot layout adopted). The runner remembers the layout a target
+    /// last passed its execute check under, and checks again only once this
+    /// has moved ([`crate::Runtime::layout_epoch`]).
+    pub(crate) fn layout_id(&self) -> u64 {
+        self.layout
     }
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
@@ -688,6 +706,7 @@ impl Guest {
         self.refresh_fast_range(start, end);
     }
     fn apply_unmap(&mut self, start: u64, end: u64) {
+        self.layout = fresh_layout();
         self.split_at(start);
         self.split_at(end);
         self.mappings
@@ -719,7 +738,10 @@ impl Guest {
     // Guest::map permits byte-granular mappings. Only a whole virtual page
     // backed by a whole aligned physical page can use the C copy/dirty-bit
     // protocol. Partial pages and shifted backing remain on checked_start.
+    // Every mapping and permission change ends here (or in apply_unmap),
+    // so this is where the layout moves on.
     fn refresh_fast_range(&mut self, start: u64, end: u64) {
+        self.layout = fresh_layout();
         let Some(pages) = &mut self.fast_pages else {
             return;
         };
