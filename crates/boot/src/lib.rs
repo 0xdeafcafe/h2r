@@ -324,6 +324,73 @@ pub struct Module {
     pub resumes: usize,
 }
 
+/// `module` relative to the package root `root`, for `LoadPackagedLibrary`,
+/// which takes only a path inside the package with no `..`: `None` when
+/// the module is elsewhere.
+pub fn package_relative(module: &Path, root: &Path) -> Option<PathBuf> {
+    let rel = module.strip_prefix(root).ok()?;
+    let normal = rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    (normal && !rel.as_os_str().is_empty()).then(|| rel.to_path_buf())
+}
+
+/// Opens the generated module. In a packaged (UWP) process on Windows a
+/// module inside the package is opened with `LoadPackagedLibrary`, the
+/// app container's loader (the Xbox app, docs/runtime/xbox.md); everything
+/// else, and every other platform, uses `dlopen` or `LoadLibraryExW`.
+unsafe fn open_module(path: &Path) -> Result<libloading::Library> {
+    #[cfg(windows)]
+    if let Some(root) = packaged::package_root()
+        && let Some(rel) = package_relative(path, &root)
+    {
+        return unsafe { packaged::load(&rel) };
+    }
+    Ok(unsafe { libloading::Library::new(path) }?)
+}
+
+#[cfg(windows)]
+mod packaged {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Path, PathBuf};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentPackagePath(length: *mut u32, path: *mut u16) -> i32;
+        fn LoadPackagedLibrary(name: *const u16, reserved: u32) -> *mut c_void;
+    }
+
+    /// The installed package's root, when this process has package identity.
+    pub fn package_root() -> Option<PathBuf> {
+        let mut len = 0u32;
+        // ERROR_INSUFFICIENT_BUFFER with the length when packaged,
+        // APPMODEL_ERROR_NO_PACKAGE otherwise.
+        // SAFETY: a null buffer with a zero length only asks for the length.
+        if unsafe { GetCurrentPackagePath(&mut len, std::ptr::null_mut()) } != 122 || len == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize];
+        // SAFETY: `buf` holds `len` units.
+        if unsafe { GetCurrentPackagePath(&mut len, buf.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        buf.truncate(buf.iter().position(|&c| c == 0).unwrap_or(buf.len()));
+        Some(PathBuf::from(std::ffi::OsString::from_wide(&buf)))
+    }
+
+    /// # Safety
+    /// As `libloading::Library::new`: the module's initialisers run.
+    pub unsafe fn load(rel: &Path) -> anyhow::Result<libloading::Library> {
+        let wide: Vec<u16> = rel.as_os_str().encode_wide().map(|c| if c == u16::from(b'/') { u16::from(b'\\') } else { c }).chain([0]).collect();
+        // SAFETY: NUL-terminated; the caller's contract for the rest.
+        let h = unsafe { LoadPackagedLibrary(wide.as_ptr(), 0) };
+        if h.is_null() {
+            anyhow::bail!("LoadPackagedLibrary({}): {}", rel.display(), std::io::Error::last_os_error());
+        }
+        // SAFETY: a module handle we own from here on.
+        Ok(unsafe { libloading::os::windows::Library::from_raw(h as isize) }.into())
+    }
+}
+
 /// Install `bridge` into a generated dylib's boot bridge: the whole table
 /// where it has `h2boot_install_v3`, else (a module built before
 /// `h2abi_v1_exit`) the v2 prefix, whose `charge` and `fast_release` its
@@ -355,7 +422,7 @@ pub unsafe fn install_bridge(lib: &libloading::Library, bridge: &shim::Bridge) -
 /// # Safety
 /// `path` must be a dylib produced by [`build`] for this host.
 pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) -> Result<Module> {
-    let lib = unsafe { libloading::Library::new(path) }.with_context(|| format!("loading {}", path.display()))?;
+    let lib = unsafe { open_module(path) }.with_context(|| format!("loading {}", path.display()))?;
     unsafe {
         let version: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib.get(b"h2gen_module_abi_version")?;
         if version() != runtime::cpu::ABI_VERSION {
@@ -1404,6 +1471,18 @@ mod tests {
         // What `h2 run`/`h2 play` look for is what `build` writes on this host.
         assert_eq!(DYLIB, Arch::host().module_file_name());
         assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
+    }
+
+    #[test]
+    fn a_packaged_module_is_named_relative_to_the_package_root() {
+        let root = Path::new("/pkg");
+        assert_eq!(package_relative(Path::new("/pkg/h2game.dll"), root), Some(PathBuf::from("h2game.dll")));
+        assert_eq!(package_relative(Path::new("/pkg/lib/h2game.dll"), root), Some(PathBuf::from("lib/h2game.dll")));
+        // Outside the package, the package itself, or climbing out: the
+        // ordinary loader.
+        assert_eq!(package_relative(Path::new("/other/h2game.dll"), root), None);
+        assert_eq!(package_relative(Path::new("/pkg"), root), None);
+        assert_eq!(package_relative(Path::new("/pkg/../x/h2game.dll"), root), None);
     }
 
     #[test]

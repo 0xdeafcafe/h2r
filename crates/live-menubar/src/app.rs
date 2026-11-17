@@ -110,6 +110,36 @@ fn build_menu(entries: &[Entry]) -> Result<(Menu, HashMap<ItemId, Widget>)> {
     Ok((menu, widgets))
 }
 
+/// The status glyph is a template image (black with alpha) that macOS
+/// tints for the menu bar's appearance. Template icons are a macOS API in
+/// tray-icon; elsewhere the glyph is set as a plain icon, so the crate
+/// still builds for the Windows cross-check (the menu bar app itself
+/// drives launchd and is only run on a Mac).
+trait StatusIcon {
+    fn with_status_icon(self, icon: Icon) -> Self;
+}
+
+impl StatusIcon for TrayIconBuilder {
+    #[cfg(target_os = "macos")]
+    fn with_status_icon(self, icon: Icon) -> Self {
+        self.with_icon_templated(icon)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn with_status_icon(self, icon: Icon) -> Self {
+        self.with_icon(icon)
+    }
+}
+
+/// [`StatusIcon`] for an icon already shown.
+fn set_status_icon(tray: &TrayIcon, icon: Icon) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    tray.set_icon_templated(Some(icon))?;
+    #[cfg(not(target_os = "macos"))]
+    tray.set_icon(Some(icon))?;
+    Ok(())
+}
+
 impl App {
     fn create_tray(&mut self) -> Result<()> {
         let entries = model(&self.snapshot, &self.cfg);
@@ -117,7 +147,7 @@ impl App {
         let state = overall(&self.snapshot);
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_icon_templated(icon(state)?)
+            .with_status_icon(icon(state)?)
             .with_tooltip("h2 Live")
             .build()
             .context("creating the tray icon")?;
@@ -137,7 +167,7 @@ impl App {
         let entries = model(&self.snapshot, &self.cfg);
         let state = overall(&self.snapshot);
         if state != tray.state {
-            tray.icon.set_icon_templated(Some(icon(state)?))?;
+            set_status_icon(&tray.icon, icon(state)?)?;
             tray.state = state;
         }
         let new_shape = shape(&entries);

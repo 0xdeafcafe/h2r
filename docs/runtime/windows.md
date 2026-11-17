@@ -2,9 +2,9 @@
 
 The goal is an Xbox Series X in Developer Mode, which runs UWP apps. This
 first step makes the runtime and the generated game module build for
-`x86_64-pc-windows-msvc`, cross-compiled from a Mac. There is no Windows
-host app yet: no UWP shell, no packaging. Nothing here has run on Windows.
-It is all compile- and link-checked on a Mac.
+`x86_64-pc-windows-msvc`, cross-compiled from a Mac. The UWP app and its
+package for the Xbox are in [xbox.md](xbox.md). Nothing here has run on
+Windows. It is all compile- and link-checked on a Mac.
 
 ## Toolchain (on the Mac)
 
@@ -43,7 +43,7 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 
 | | macOS | Windows |
 | --- | --- | --- |
-| compile | clang `-target arm64-apple-macos11` | the same clang, `-target x86_64-pc-windows-msvc -fms-runtime-lib=dll -isystem $H2_XWIN/crt/include -isystem $H2_XWIN/sdk/include/ucrt` |
+| compile | clang `-target arm64-apple-macos11` | the same clang, `-target x86_64-pc-windows-msvc -fms-runtime-lib=static -isystem $H2_XWIN/crt/include -isystem $H2_XWIN/sdk/include/ucrt` |
 | objects | `shard.arm64.<key>.o` | `shard.x86_64-windows.<key>.o` (keyed apart) |
 | archive | libtool | `llvm-lib` (Apple's libtool takes only Mach-O) |
 | link | `clang -dynamiclib` | `lld-link /dll /noimplib`, against the splat's CRT, UCRT and um libs |
@@ -87,10 +87,11 @@ never passed by value across the boundary.
 `X87Abi` bytes, native x87 and SSE use SSE2 and MXCSR as on Intel macOS,
 and Windows' default MXCSR (0x1F80) is the same.
 
-**The C runtime.** The module uses the DLL CRT (vcruntime140 and the
-api-ms-win-crt UCRT), which is the one Rust's msvc target links. The
-process therefore has one CRT. UWP needs the app-container flavour
-(`vcruntime140_app`); see the step 2 plan.
+**The C runtime.** The module links the static CRT (libcmt, libvcruntime,
+libucrt) and imports only from kernel32. The Xbox app container has no
+desktop `vcruntime140.dll`, and the xwin splat has no Store CRT
+(`vcruntime140_app`). The module keeps a CRT of its own; the generated C
+passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 
 ## What Windows gets in the runtime
 
@@ -112,30 +113,6 @@ process therefore has one CRT. UWP needs the app-container flavour
 | Ctrl-C in `h2 play` | signal watcher | none yet |
 | live-server identity files | mode 0600 | the profile directory's ACL |
 
-## Next: the UWP app on Xbox (not started)
+## Next: the UWP app on Xbox
 
-1. **Host crate** (`crates/uwp`, like `crates/apple-host`). It is a `cdylib` or
-   `staticlib` for `x86_64-uwp-windows-msvc`, a tier 3 Rust target built
-   with `-Zbuild-std`. It exports `h2uwp_start(panel, w, h)` and
-   `h2uwp_redraw()` around `app::embedded::Embedded`, plus suspend and
-   resume hooks. The XAML shell can be C++/WinRT, or Rust with the
-   `windows` crate. It owns a `SwapChainPanel` and a `CompositionTarget`
-   rendering tick. wgpu 30 has no `CoreWindow` surface, only
-   `SwapChainPanel`, `CompositionVisual` and `SurfaceHandle`. The game
-   module stays a DLL loaded with `LoadPackagedLibrary` (libloading's
-   `LoadLibraryExW` has to be checked inside the app container), with the
-   UWP CRT (`vcruntime140_app`; xwin can splat the store libs).
-2. **Paths.** `ApplicationData.Current.LocalFolder` is the data root
-   (`vfs::Config::new`). The disc is in the package, or in a LocalState
-   folder filled over the Device Portal file API.
-3. **Packaging from macOS.** Write the AppxManifest and assets, then `makeappx`
-   and `signtool` from the Windows SDK (Windows only), or
-   msix-packaging's `makemsix` and osslsigncode on macOS, signed with a
-   self-signed certificate whose subject matches the manifest's Publisher.
-4. **Deploy.** Use the Xbox Device Portal REST API over HTTPS with the
-   console's credentials: `POST /api/app/packagemanager/package?package=...`
-   (multipart: the msix and its dependencies), poll
-   `/api/app/packagemanager/state`, then launch with
-   `POST /api/taskmanager/app?appid=<base64 AUMID>`. Set the content type to
-   Game, either in Dev Home or through the portal's app details, to get game
-   resources.
+Built: see [xbox.md](xbox.md) (`crates/uwp-host`, `platform/xbox`).

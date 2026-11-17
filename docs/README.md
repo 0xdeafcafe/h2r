@@ -38,7 +38,8 @@ goals, the two-stage plan, the crate table and milestones.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
-- [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`), and the plan for a UWP app on Xbox Dev Mode (not started)
+- [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)
+- [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
 
 ## Input (`input/`)

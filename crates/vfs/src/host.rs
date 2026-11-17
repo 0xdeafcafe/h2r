@@ -283,8 +283,33 @@ fn allocated(host: &fs::Metadata) -> u64 {
         host.len().div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE
     }
 }
+/// Makes a directory's entries durable. On Windows there is nothing to do,
+/// and nothing that could be done: `File::open` on a directory fails with
+/// ERROR_ACCESS_DENIED (it needs FILE_FLAG_BACKUP_SEMANTICS), and NTFS
+/// journals directory changes itself. That failure stopped the hard disk
+/// from mounting on the Xbox (docs/runtime/xbox.md).
 fn sync_directory(path: &Path) -> Result<()> {
+    if cfg!(windows) {
+        let _ = path;
+        return Ok(());
+    }
     File::open(path)?.sync_all().map_err(Into::into)
+}
+
+/// `path` (already absolute) with its links resolved, so nested roots are
+/// caught below. Not on Windows: there `canonicalize` opens the directory
+/// and asks for its final path, which an Xbox app container refuses
+/// (ERROR_ACCESS_DENIED for the app's own LocalState); the absolute path is
+/// used as it is, and the roots are the app's own private directories.
+fn resolved(path: PathBuf) -> Result<PathBuf> {
+    if cfg!(windows) { Ok(path) } else { Ok(fs::canonicalize(path)?) }
+}
+
+/// Makes a file's data durable. Windows' FlushFileBuffers needs a handle
+/// with write access, which `File::open` does not give.
+fn sync_file(path: &Path) -> Result<()> {
+    let file = if cfg!(windows) { fs::OpenOptions::new().write(true).open(path)? } else { File::open(path)? };
+    file.sync_all().map_err(Into::into)
 }
 fn durable_create_dirs(path: &Path) -> Result<()> {
     let mut missing = Vec::new();
@@ -305,8 +330,8 @@ impl HostBackend {
         let metadata_root = std::path::absolute(metadata_root)?;
         durable_create_dirs(&root)?;
         durable_create_dirs(&metadata_root)?;
-        let root = fs::canonicalize(root)?;
-        let metadata_root = fs::canonicalize(metadata_root)?;
+        let root = resolved(root)?;
+        let metadata_root = resolved(metadata_root)?;
         if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
             return Err(Error::InvalidParameter);
         }
@@ -1169,7 +1194,11 @@ impl Backend for HostBackend {
         self.settle(&host)?;
         self.flush_metadata(path)?;
         self.drop_handle(&host);
-        File::open(host)?.sync_all()?;
+        if host.is_dir() {
+            sync_directory(&host)?;
+        } else {
+            sync_file(&host)?;
+        }
         #[cfg(test)]
         {
             self.cache.borrow_mut().data_syncs += 1;

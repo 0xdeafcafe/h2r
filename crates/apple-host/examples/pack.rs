@@ -1,15 +1,17 @@
-//! Packs what the tvOS or iOS app bundles, on the Mac (platform/tvos/build.sh,
-//! platform/ios/build.sh):
+//! Packs what the tvOS, iOS or Xbox app bundles, on the Mac
+//! (platform/tvos/build.sh, platform/ios/build.sh, platform/xbox/build.sh):
 //!
 //!     cargo run --release -p apple-host --example pack -- <halo2.iso> <out-dir> \
-//!         [--platform tvos|ios] [--gen DIR] [--no-module]
+//!         [--platform tvos|ios|xbox] [--gen DIR] [--no-module]
 //!
 //! * `<out>/disc/`: the disc files in `h2host::layout::DISC_FILES`, copied
 //!   with their tree (files already the right size are kept);
 //! * `<out>/h2game.framework/`: the generated module, lifted, emitted and
 //!   compiled for the platform (`H2_EMIT_TARGET=tvos` or `ios`,
 //!   `boot::build`) in `--gen` (default `$TMPDIR/h2<platform>-gen`), with
-//!   its stamp and an Info.plist;
+//!   its stamp and an Info.plist; for `xbox`, `<out>/h2game.dll` and
+//!   `<out>/h2game.dll.stamp` instead (`H2_EMIT_TARGET=windows`, which
+//!   needs `H2_XWIN`: platform/windows/env.sh);
 //! * `<out>/bootcache/`: the image's analysis, so the first launch on the
 //!   device need not analyse the XBE.
 //!
@@ -45,8 +47,8 @@ fn main() -> Result<()> {
         match a.as_str() {
             "--gen" => gen_dir = Some(PathBuf::from(args.next().context("--gen needs a directory")?)),
             "--platform" => {
-                let p = args.next().context("--platform needs tvos or ios")?;
-                platform = Platform::parse(&p).with_context(|| format!("--platform {p}: expected tvos or ios"))?;
+                let p = args.next().context("--platform needs tvos, ios or xbox")?;
+                platform = Platform::parse(&p).with_context(|| format!("--platform {p}: expected tvos, ios or xbox"))?;
             }
             "--no-module" => module = false,
             "--maps" => {
@@ -57,7 +59,7 @@ fn main() -> Result<()> {
         }
     }
     let [iso, out] = pos.as_slice() else {
-        bail!("usage: pack <halo2.iso> <out-dir> [--platform tvos|ios] [--gen DIR] [--no-module]");
+        bail!("usage: pack <halo2.iso> <out-dir> [--platform tvos|ios|xbox] [--gen DIR] [--no-module]");
     };
     let gen_dir = gen_dir
         .unwrap_or_else(|| std::env::temp_dir().join(format!("h2{}-gen", platform.emit_target())));
@@ -134,13 +136,24 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> R
     let xbe = boot::read_xbe(iso)?;
     let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
     let lib = boot::build(&xbe, gen_dir, jobs)?;
-    let fw = out.join("h2game.framework");
-    std::fs::create_dir_all(&fw)?;
-    std::fs::copy(&lib, fw.join("h2game"))?;
     let mut stamp = lib.as_os_str().to_owned();
     stamp.push(".stamp");
-    std::fs::copy(&stamp, fw.join("h2game.stamp"))?;
-    std::fs::write(fw.join("Info.plist"), platform.framework_plist())?;
+    let module = match platform.framework_plist() {
+        Some(plist) => {
+            let fw = out.join("h2game.framework");
+            std::fs::create_dir_all(&fw)?;
+            std::fs::copy(&lib, fw.join("h2game"))?;
+            std::fs::copy(&stamp, fw.join("h2game.stamp"))?;
+            std::fs::write(fw.join("Info.plist"), plist)?;
+            fw.join("h2game")
+        }
+        None => {
+            let dll = out.join(h2host::layout::DLL);
+            std::fs::copy(&lib, &dll)?;
+            std::fs::copy(&stamp, out.join(format!("{}.stamp", h2host::layout::DLL)))?;
+            dll
+        }
+    };
     // Only this build's analysis is for the app: the unread-target sets are
     // written on the device, and an older analysis (another analyzer or
     // Cargo.lock) would only be copied over and never match.
@@ -151,9 +164,9 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> R
         }
     }
     eprintln!(
-        "pack: module {:.0} MB in {} (the C and objects stay in {}; delete them when done)",
-        std::fs::metadata(fw.join("h2game"))?.len() as f64 / 1e6,
-        fw.display(),
+        "pack: module {:.0} MB at {} (the C and objects stay in {}; delete them when done)",
+        std::fs::metadata(&module)?.len() as f64 / 1e6,
+        module.display(),
         gen_dir.display()
     );
     Ok(())

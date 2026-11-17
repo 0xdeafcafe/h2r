@@ -1,4 +1,4 @@
-//! Where the tvOS and iOS apps find and keep things.
+//! Where the tvOS, iOS and Xbox (UWP) apps find and keep things.
 //!
 //! The bundle is read-only: the trimmed disc (`disc/`, a directory of the
 //! disc's files, served by `vfs::DirDiscBackend`), the generated module (an
@@ -14,6 +14,11 @@ use std::path::{Path, PathBuf};
 /// The generated module's framework inside the bundle (its `-install_name`
 /// is `@rpath/h2game.framework/h2game`, emit::compile::Arch::install_name).
 pub const FRAMEWORK: &str = "Frameworks/h2game.framework/h2game";
+
+/// The generated module in the Xbox app's package (crates/uwp-host,
+/// docs/runtime/xbox.md): a DLL at the package root, its stamp beside it as
+/// `h2game.dll.stamp`.
+pub const DLL: &str = "h2game.dll";
 
 /// The disc files the app bundles (`xiso::subset_matches` patterns): the
 /// XBE, the menu, the shared maps, The Heretic (`00a_introduction`),
@@ -37,6 +42,9 @@ pub const DISC_FILES: &[&str] = &[
 pub enum Platform {
     Tvos,
     Ios,
+    /// The UWP app on an Xbox in Dev Mode (crates/uwp-host): the module is
+    /// [`DLL`], cross-built with `H2_EMIT_TARGET=windows`.
+    Xbox,
 }
 
 impl Platform {
@@ -44,6 +52,7 @@ impl Platform {
         match s {
             "tvos" => Some(Platform::Tvos),
             "ios" => Some(Platform::Ios),
+            "xbox" => Some(Platform::Xbox),
             _ => None,
         }
     }
@@ -53,17 +62,27 @@ impl Platform {
         match self {
             Platform::Tvos => "tvos",
             Platform::Ios => "ios",
+            Platform::Xbox => "windows",
         }
     }
 
+    /// Whether the module goes in an Apple framework (with
+    /// [`Platform::framework_plist`]) or, for Xbox, is [`DLL`] at the
+    /// package root.
+    pub fn uses_framework(self) -> bool {
+        self != Platform::Xbox
+    }
+
     /// The module framework's `Info.plist`. Its minimum OS matches
-    /// emit's `TVOS_DEPLOYMENT_TARGET` / `IOS_DEPLOYMENT_TARGET`.
-    pub fn framework_plist(self) -> String {
+    /// emit's `TVOS_DEPLOYMENT_TARGET` / `IOS_DEPLOYMENT_TARGET`. `None`
+    /// for Xbox, which has no framework.
+    pub fn framework_plist(self) -> Option<String> {
         let (platform, min) = match self {
             Platform::Tvos => ("AppleTVOS", "17.0"),
             Platform::Ios => ("iPhoneOS", "17.0"),
+            Platform::Xbox => return None,
         };
-        format!(
+        Some(format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -93,7 +112,7 @@ impl Platform {
 </dict>
 </plist>
 "#
-        )
+        ))
     }
 }
 
@@ -122,6 +141,20 @@ impl Layout {
             bundled_cache: bundle.join("bootcache"),
             data: documents.unwrap_or(caches).join("h2data"),
             boot_cache: caches.join("h2boot-cache"),
+        }
+    }
+
+    /// The Xbox app's places: `package` is the installed package (read-only:
+    /// `Package.Current.InstalledLocation`), `local` the app's LocalFolder
+    /// (`ApplicationData.Current.LocalFolder`), which lasts across launches
+    /// and updates, so the hard disk, saves and both caches go there.
+    pub fn for_package(package: &Path, local: &Path) -> Self {
+        Self {
+            disc: package.join("disc"),
+            module: package.join(DLL),
+            bundled_cache: package.join("bootcache"),
+            data: local.join("h2data"),
+            boot_cache: local.join("h2boot-cache"),
         }
     }
 
@@ -223,11 +256,16 @@ mod tests {
     fn each_platform_packs_its_own_target_and_framework_plist() {
         assert_eq!(Platform::parse("tvos"), Some(Platform::Tvos));
         assert_eq!(Platform::parse("ios"), Some(Platform::Ios));
+        assert_eq!(Platform::parse("xbox"), Some(Platform::Xbox));
         assert_eq!(Platform::parse("macos"), None);
+        assert_eq!(Platform::Xbox.emit_target(), "windows");
+        assert!(!Platform::Xbox.uses_framework());
+        assert!(Platform::Tvos.uses_framework() && Platform::Ios.uses_framework());
         assert_eq!(Platform::Tvos.emit_target(), "tvos");
         assert_eq!(Platform::Ios.emit_target(), "ios");
-        let tv = Platform::Tvos.framework_plist();
-        let ios = Platform::Ios.framework_plist();
+        let tv = Platform::Tvos.framework_plist().unwrap();
+        let ios = Platform::Ios.framework_plist().unwrap();
+        assert_eq!(Platform::Xbox.framework_plist(), None);
         assert!(tv.contains("<string>AppleTVOS</string>") && !tv.contains("iPhoneOS"));
         assert!(ios.contains("<string>iPhoneOS</string>") && !ios.contains("AppleTVOS"));
         for p in [&tv, &ios] {
@@ -247,6 +285,23 @@ mod tests {
         assert_eq!(l.bundled_cache, Path::new("/b/H2.app/bootcache"));
         assert_eq!(l.data, Path::new("/c/Caches/h2data"));
         assert_eq!(l.boot_cache, Path::new("/c/Caches/h2boot-cache"));
+    }
+
+    #[test]
+    fn the_xbox_package_holds_the_dll_and_local_state_holds_the_writes() {
+        let l = Layout::for_package(Path::new("/pkg"), Path::new("/local"));
+        assert_eq!(l.disc, Path::new("/pkg/disc"));
+        assert_eq!(l.module, Path::new("/pkg/h2game.dll"));
+        assert_eq!(l.bundled_cache, Path::new("/pkg/bootcache"));
+        assert_eq!(l.data, Path::new("/local/h2data"));
+        assert_eq!(l.boot_cache, Path::new("/local/h2boot-cache"));
+        let b = temp("xbox");
+        let l = Layout::for_package(&b, &b.join("local"));
+        std::fs::create_dir_all(b.join("disc")).unwrap();
+        std::fs::write(b.join("h2game.dll"), b"").unwrap();
+        std::fs::write(b.join("h2game.dll.stamp"), b"x").unwrap();
+        assert!(l.missing().is_empty());
+        let _ = std::fs::remove_dir_all(&b);
     }
 
     #[test]

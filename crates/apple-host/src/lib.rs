@@ -215,7 +215,25 @@ fn start(
     caches: &Path,
     documents: Option<&Path>,
 ) -> Result<(app::embedded::Embedded, Arc<settings::Store>)> {
-    let layout = Layout::new(bundle, caches, documents);
+    // SAFETY: the host passes a live CAMetalLayer it keeps for the app's
+    // lifetime, on the main thread (h2host.h).
+    unsafe { start_in(layer, size, Layout::new(bundle, caches, documents)) }
+}
+
+/// Checks and prepares `layout`, then starts the game (`boot::run_hosted`,
+/// as `h2 play` runs it) into `layer` inside [`app::embedded::Embedded`],
+/// returning the shell and the settings it runs with. The Apple hosts reach
+/// it through [`h2host_start`]; the Xbox app (crates/uwp-host) calls it
+/// with [`Layout::for_package`].
+///
+/// # Safety
+/// `layer` is a live host surface ([`app::embedded::host_surface`]) kept
+/// alive while the returned shell is; main (UI) thread only.
+pub unsafe fn start_in(
+    layer: *mut c_void,
+    size: (u32, u32),
+    layout: Layout,
+) -> Result<(app::embedded::Embedded, Arc<settings::Store>)> {
     let missing = layout.missing();
     if !missing.is_empty() {
         anyhow::bail!("the app bundle is incomplete: {}", missing.join("; "));
@@ -242,8 +260,7 @@ fn start(
     }
     let store = Arc::new(store);
     let config = app::embedded::device_config();
-    // SAFETY: the host passes a live CAMetalLayer it keeps for the app's
-    // lifetime, on the main thread (h2host.h).
+    // SAFETY: the caller's contract.
     let shell = unsafe {
         app::embedded::Embedded::start(config, layer, size, guest(layout, Arc::clone(&store)))
     }?;
@@ -392,8 +409,9 @@ pub unsafe extern "C" fn h2host_status(host: *mut H2Host) -> i32 {
     code
 }
 
-/// [`h2host_status`]'s code and text for a guest that has ended.
-fn stopped(e: &app::GuestExit) -> (i32, String) {
+/// [`h2host_status`]'s code and text for a guest that has ended; the
+/// Xbox app logs the same text.
+pub fn stopped(e: &app::GuestExit) -> (i32, String) {
     match e {
         app::GuestExit::Returned => (1, "The game ended.".to_owned()),
         app::GuestExit::Failed(why) => (2, format!("the game failed: {why}")),

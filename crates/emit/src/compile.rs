@@ -295,12 +295,19 @@ pub fn xwin_dir() -> Result<PathBuf, Error> {
 }
 
 /// The Windows target's clang arguments past `-target`, for the splat at
-/// `xwin`: the DLL C runtime (msvcrt/ucrt, the CRT the Rust host links, so
-/// the process has one) and the CRT and UCRT headers as system headers.
+/// `xwin`: the static C runtime (libcmt, libvcruntime, libucrt) and the
+/// CRT and UCRT headers as system headers.
+///
+/// Static, because the Xbox (a UWP app container) has no desktop
+/// `vcruntime140.dll`, only the Store framework package's
+/// `vcruntime140_app.dll`, which xwin does not splat
+/// (docs/runtime/xbox.md). The module keeps a CRT of its own: the
+/// generated C uses only the memory and math functions and never passes
+/// CRT state (heap blocks, `FILE*`, errno) across the host boundary.
 pub fn windows_target_args(xwin: &Path) -> Vec<String> {
     let include = |p: &str| xwin.join(p).to_string_lossy().into_owned();
     vec![
-        "-fms-runtime-lib=dll".into(),
+        "-fms-runtime-lib=static".into(),
         "-isystem".into(),
         include("crt/include"),
         "-isystem".into(),
@@ -1106,7 +1113,7 @@ mod tests {
         let xwin = Path::new("/x");
         assert_eq!(
             windows_target_args(xwin),
-            ["-fms-runtime-lib=dll", "-isystem", "/x/crt/include", "-isystem", "/x/sdk/include/ucrt"]
+            ["-fms-runtime-lib=static", "-isystem", "/x/crt/include", "-isystem", "/x/sdk/include/ucrt"]
         );
         let link = windows_link_args(xwin, Path::new("/o/h2game.dll"), &[PathBuf::from("/o/a.o"), PathBuf::from("/o/b.o")]);
         let link: Vec<&str> = link.iter().map(|a| a.to_str().unwrap()).collect();

@@ -35,7 +35,9 @@ favours the parts that editing and modding touch:
 4. Physics and AI, last. Their floating-point behaviour needs the most care.
 
 Platform code (window, input, audio, file access) lives in its own layer,
-so a tvOS, iOS or Xbox port only swaps that layer.
+so a tvOS, iOS or Xbox port only swaps that layer (docs/runtime/tvos.md,
+docs/runtime/ios.md; Windows in docs/runtime/windows.md, the Xbox app in
+docs/runtime/xbox.md).
 
 ## The path to good Rust
 
@@ -141,6 +143,7 @@ Every crate below is on master. "Done" means it does what its row says;
 | `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
 | `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
 | `apple-host` | The tvOS and iOS apps' Rust half: a static library the UIKit hosts in `platform/tvos` and `platform/ios` call to boot the game ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)) | in progress |
+| `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
 | `cloud-saves` | Cloud saves on the Live service: merge an account's saves at sign-in, push changes as the game writes them ([live-cloud-saves.md](live/live-cloud-saves.md)) | in progress |
 | `live-menubar` | The optional menu bar app for a Live server run by launchd (`h2 live menubar`; [live-hosting.md](live/live-hosting.md)) | done |
 | `h1map`   | Halo 1 Xbox cache (v5) reader ([h1-map-format.md](formats/h1-map-format.md)) | done |

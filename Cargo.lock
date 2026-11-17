@@ -7035,6 +7035,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "uwp-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "apple-host",
+ "d3d",
+ "png",
+ "sha2 0.10.9",
+ "vfs",
+ "windows",
+ "windows-core",
+ "windows-numerics",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
