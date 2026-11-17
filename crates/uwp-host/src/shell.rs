@@ -199,6 +199,19 @@ fn run() -> Result<()> {
     target.SetRoot(&visual)?;
     let panel: ISwapChainPanelNative = Panel { compositor: compositor.clone(), visual: visual.clone() }.into();
 
+    // The host perf line (docs/runtime/xbox.md, "Where frame time goes"):
+    // on by default; LocalState\host-perf-off turns it off.
+    let perf = crate::switches::host_perf(&local);
+    eprintln!(
+        "h2uwp: host perf line {} (LocalState\\{} or {} overrides)",
+        if perf { "on" } else { "off" },
+        crate::switches::HOST_PERF_OFF,
+        crate::switches::HOST_PERF_ON
+    );
+    if perf && std::env::var_os("H2_HOST_PERF").is_none() {
+        // SAFETY: before the guest, render and audio threads exist.
+        unsafe { std::env::set_var("H2_HOST_PERF", "1") };
+    }
     if std::env::var_os("H2_PIPELINE_CACHE").is_none() {
         // SAFETY: before the guest, render and audio threads exist.
         unsafe { std::env::set_var("H2_PIPELINE_CACHE", local.join("cache").join(d3d::pipeline_store::FILE_NAME)) };

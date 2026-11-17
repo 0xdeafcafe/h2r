@@ -27,6 +27,7 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod host_perf;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -1048,6 +1049,10 @@ pub fn run_hosted_with_live(
     let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
+    // 5 s of where frame time goes on this host (host_perf.rs); it starts
+    // frame stats quietly if nothing else has.
+    let host_perf = host_perf::start_from_env(host.render_thread || d3d_glue::render_thread_requested());
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
@@ -1113,7 +1118,9 @@ pub fn run_hosted_with_live(
             audio_idle = 0;
         }
         if let Some(x) = &xa
-            && xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))).is_err()
+            && timeline::host::INPUT
+                .time(|| xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))))
+                .is_err()
         {
             input_errors += 1;
         }
@@ -1153,6 +1160,9 @@ pub fn run_hosted_with_live(
     let secs = t.elapsed().as_secs_f64();
     #[cfg(feature = "perf")]
     drop(perf_session.take());
+    if host_perf {
+        host_perf::stop();
+    }
     if frame_stats && let Some(report) = timeline::phase::stop() {
         eprint!("{report}");
     }

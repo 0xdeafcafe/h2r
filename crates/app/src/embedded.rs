@@ -52,6 +52,14 @@ pub mod host_surface {
     pub fn instance() -> wgpu::Instance {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = backends();
+        // The swap chain kind and whether acquire waits on DXGI's frame
+        // latency object, once (the Xbox's frame pacing, docs/runtime/xbox.md).
+        #[cfg(windows)]
+        eprintln!(
+            "app: dx12 presentation {:?}, frame latency waitable object {:?}",
+            desc.backend_options.dx12.presentation_system,
+            desc.backend_options.dx12.latency_waitable_object
+        );
         wgpu::Instance::new(desc)
     }
 
@@ -110,6 +118,17 @@ impl Embedded {
             "app: {} ({:?}), surface {:?} {}x{}, features {:?}",
             info.name, info.backend, surface.config.format, size.0, size.1, ctx.caps
         );
+        // What the display side runs with, once: the present mode asked
+        // for and what the surface offers (AutoVsync is Fifo where offered),
+        // the swap chain's frame latency, and the CPUs this process may use.
+        eprintln!(
+            "app: present mode {:?} (surface offers {:?}), max frame latency {}, alpha {:?}, {} logical CPUs",
+            surface.config.present_mode,
+            caps_present_modes(&ctx, &surface),
+            surface.config.desired_maximum_frame_latency,
+            surface.config.alpha_mode,
+            std::thread::available_parallelism().map_or(0, |n| n.get())
+        );
         let (sink, source) = frame::channel(&ctx);
         let life = Lifecycle::new();
         // As in `h2 play`, the guest's DirectSound opens the device itself;
@@ -151,8 +170,20 @@ impl Embedded {
     /// Draws the newest guest frame, letterboxed as `config` says. Call it
     /// from the display link.
     pub fn redraw(&mut self) {
+        // The host perf line (timeline::host): this thread's CPU time and
+        // where it waits.
+        timeline::host::sample_thread(timeline::host::Role::Ui);
         let frame = self.source.latest();
-        let Some(target) = self.surface.acquire(&self.ctx) else {
+        let t = timeline::host::enabled().then(Instant::now);
+        let target = self.surface.acquire(&self.ctx);
+        if let Some(t) = t {
+            let ns = t.elapsed().as_nanos() as u64;
+            timeline::host::ACQUIRE.record(ns);
+            if target.is_none() {
+                timeline::host::ACQUIRE_MISSED.record(ns);
+            }
+        }
+        let Some(target) = target else {
             return;
         };
         let view = target.texture.create_view(&Default::default());
@@ -183,8 +214,9 @@ impl Embedded {
             self.config.filter,
             wgpu::Color::BLACK,
         );
-        self.ctx.queue.submit([enc.finish()]);
-        self.ctx.queue.present(target);
+        let cmd = enc.finish();
+        timeline::host::UI_SUBMIT.time(|| self.ctx.queue.submit([cmd]));
+        timeline::host::PRESENT.time(|| self.ctx.queue.present(target));
     }
 
     /// The player-one pad's handle: whether the game's virtual keyboard has
@@ -229,6 +261,11 @@ impl Embedded {
             restart_requested: false,
         }
     }
+}
+
+/// The present modes the host's surface offers.
+fn caps_present_modes(ctx: &GfxContext, surface: &WindowSurface) -> Vec<wgpu::PresentMode> {
+    surface.surface.get_capabilities(&ctx.adapter).present_modes
 }
 
 /// The shell settings a tvOS or iOS host starts from: full screen with the

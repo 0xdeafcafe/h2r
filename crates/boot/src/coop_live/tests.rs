@@ -163,6 +163,79 @@ fn level_select_names_are_read_from_the_globals_records() {
     assert!(level_names(&[0; 8], &mut read).is_empty(), "a short tag");
 }
 
+/// A fresh directory under the system temp dir, removed on drop.
+struct TempDisc(std::path::PathBuf);
+
+impl TempDisc {
+    fn new(tag: &str) -> Self {
+        let d = std::env::temp_dir().join(format!("coop-disc-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        TempDisc(d)
+    }
+}
+
+impl Drop for TempDisc {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_disc_directory_is_listed_not_opened_and_matched_without_case() {
+    let d = TempDisc::new("lookup");
+    std::fs::create_dir_all(d.0.join("MAPS")).unwrap();
+    std::fs::write(d.0.join("MAPS").join("MainMenu.MAP"), b"x").unwrap();
+    std::fs::create_dir_all(d.0.join("maps2").join("mainmenu.map")).unwrap();
+    assert_eq!(
+        dir_disc_file(&d.0, &["maps", "mainmenu.map"]),
+        Some(d.0.join("MAPS").join("MainMenu.MAP"))
+    );
+    assert_eq!(dir_disc_file(&d.0, &["maps", "shared.map"]), None);
+    // A directory is not the file, and a file is not a directory on the way.
+    assert_eq!(dir_disc_file(&d.0, &["maps2", "mainmenu.map"]), None);
+    assert_eq!(dir_disc_file(&d.0, &["maps", "mainmenu.map", "x"]), None);
+}
+
+/// The Xbox app's disc is a directory, and its container refuses opening
+/// a directory (`opening ...\disc: Access is denied`): the levels come
+/// from the directory's `maps/mainmenu.map` file instead.
+#[test]
+fn the_levels_of_a_disc_directory_come_from_its_mainmenu_file() {
+    let d = TempDisc::new("dir");
+    let e = format!("{:#}", disc_levels(&d.0).unwrap_err());
+    assert!(e.contains("has no maps/mainmenu.map"), "{e}");
+    std::fs::create_dir_all(d.0.join("Maps")).unwrap();
+    std::fs::write(d.0.join("Maps").join("mainmenu.map"), vec![0u8; 4096]).unwrap();
+    let e = format!("{:#}", disc_levels(&d.0).unwrap_err());
+    assert!(
+        e.contains("parsing mainmenu.map"),
+        "read the file, not the directory: {e}"
+    );
+    assert!(
+        !e.contains("opening") && !e.contains("reading the disc"),
+        "{e}"
+    );
+}
+
+/// Against your disc: the levels from a directory holding only the
+/// image's `maps/mainmenu.map` match the image's.
+#[test]
+#[ignore = "reads $H2_DISC (the retail disc image)"]
+fn a_disc_directory_gives_the_images_levels() {
+    let disc = std::path::PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(&disc).unwrap())).unwrap();
+    let e = iso.find("maps/mainmenu.map").unwrap();
+    let bytes = iso.read(&e).unwrap();
+    let d = TempDisc::new("image");
+    std::fs::create_dir_all(d.0.join("maps")).unwrap();
+    std::fs::write(d.0.join("maps").join("mainmenu.map"), bytes).unwrap();
+    let from_dir = disc_levels(&d.0).unwrap();
+    assert!(from_dir.len() >= 10, "{from_dir:?}");
+    assert_eq!(from_dir, disc_levels(&disc).unwrap());
+}
+
 #[test]
 #[ignore = "reads $H2_DISC (the retail disc image)"]
 fn the_discs_co_op_levels_have_ids_and_names() {

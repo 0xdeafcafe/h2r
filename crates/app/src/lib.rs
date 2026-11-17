@@ -362,7 +362,7 @@ impl GuestHost {
             let action = self.pacer.decide(guest_ticks, self.epoch.elapsed());
             *self.pace_stats.lock().unwrap_or_else(|e| e.into_inner()) = self.pacer.stats();
             if let PaceAction::Sleep(d) = action
-                && self.life.sleep(d) == Control::Stop
+                && pace_sleep(&self.life, d) == Control::Stop
             {
                 return Control::Stop;
             }
@@ -388,6 +388,24 @@ impl GuestHost {
     pub fn frame_stats(&self) -> FrameStats {
         self.sink.stats()
     }
+}
+
+/// The pacer's sleep: frame stats count it as `pace`, not as guest CPU
+/// (`h2 play` wraps its whole tick in `pace`; the Apple and Xbox apps'
+/// guest did not), and the host perf line records how long it took against what it asked
+/// for (`timeline::host::OVERSLEEP`: the host timer's granularity).
+fn pace_sleep(life: &Lifecycle, d: Duration) -> Control {
+    let _pace = timeline::phase::enter(timeline::phase::Phase::Pace);
+    if !timeline::host::enabled() {
+        return life.sleep(d);
+    }
+    let t = Instant::now();
+    let c = life.sleep(d);
+    let took = t.elapsed();
+    timeline::host::SLEEP.record(took.as_nanos() as u64);
+    // A stop or a pause ends the sleep early; that is no oversleep.
+    timeline::host::OVERSLEEP.record(took.saturating_sub(d).as_nanos() as u64);
+    c
 }
 
 /// Another handle on the same wgpu objects (all wgpu handles are shared
@@ -603,5 +621,33 @@ mod closer_tests {
         c.attach(life.clone(), wake);
         assert!(life.should_stop());
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::*;
+
+    /// The pacer's sleep is `pace` in frame stats (in the apps it used to
+    /// count as guest CPU) and the host perf line sees it, with what it
+    /// overslept.
+    #[test]
+    fn a_pacing_sleep_is_pace_time_and_reaches_the_host_perf_gauges() {
+        timeline::phase::start(timeline::phase::Config::live(10_000_000_000)).unwrap();
+        timeline::host::set_enabled(true);
+        let before = timeline::phase::thread_ns(timeline::phase::Phase::Pace).unwrap();
+        let life = Lifecycle::new();
+        assert_eq!(
+            pace_sleep(&life, Duration::from_millis(5)),
+            Control::Continue
+        );
+        let paced = timeline::phase::thread_ns(timeline::phase::Phase::Pace).unwrap() - before;
+        let slept = timeline::host::SLEEP.take();
+        let over = timeline::host::OVERSLEEP.take();
+        timeline::host::set_enabled(false);
+        timeline::phase::stop();
+        assert!(paced >= 5_000_000, "{paced}");
+        assert!(slept.n >= 1 && slept.max_ns >= 5_000_000, "{slept:?}");
+        assert!(over.n >= 1, "{over:?}");
     }
 }

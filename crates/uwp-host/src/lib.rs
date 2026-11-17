@@ -7,12 +7,14 @@
 //! chain to that sprite. Everything else here is portable and runs on the
 //! Mac, where the package is built: the manifest and its images
 //! ([`manifest`]), the package identity the Device Portal launches by
-//! ([`identity`]), and the check that the binaries import only what an
-//! app container on the console has ([`imports`]).
+//! ([`identity`]), the check that the binaries import only what an
+//! app container on the console has ([`imports`]), and the switches that
+//! stand in for environment variables ([`switches`]).
 
 pub mod identity;
 pub mod imports;
 pub mod manifest;
+pub mod switches;
 
 #[cfg(windows)]
 pub mod shell;
