@@ -796,7 +796,7 @@ weather, not Halo 1's. The structure side is also the render lane's
    environments fill the scenario's palettes ("Ambient sound"). Each
    cluster names its pair (above), on campaign levels too, and
    `h1campaign` converts its scripts' `looping_sound` references with
-   `h1sounds::looping` (campaigns.md, "Music and the map file"). The
+   `h1sounds::looping` (campaigns.md, "Music, ambience and the map file"). The
    scenery palette at `+0x58` is settled (`0x28`) and pruned.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models

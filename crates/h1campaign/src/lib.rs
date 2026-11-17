@@ -85,13 +85,17 @@ pub enum Error {
         fields: String,
     },
     /// The converted map file is over the engine's size limit for its cache
-    /// type, with `music` bytes of looping sound samples in it.
-    #[error("{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music)")]
+    /// type, with `music` bytes of the scripts' looping sounds' samples and
+    /// `ambience` bytes of the clusters' background sounds' in it.
+    #[error(
+        "{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music, {ambience:#x} of ambience)"
+    )]
     FileSize {
         level: String,
         need: u64,
         max: u64,
         music: u64,
+        ambience: u64,
     },
 }
 
@@ -214,6 +218,13 @@ pub struct Report {
     pub lean: Lean,
     /// The map file's size, bytes.
     pub file_size: u64,
+    /// Each conversion retried before this one, and why (`convert`).
+    pub retries: Vec<String>,
+    /// Raw bytes (sound samples) the clusters' background sounds added
+    /// (`h1convert::ambience`).
+    pub ambience_bytes: u64,
+    /// Background sounds left silent for the map file's size limit.
+    pub ambience_silenced: Vec<String>,
 }
 
 /// The lean ladder: what a conversion of a level over the engine's tag
@@ -270,7 +281,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} on {}: {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x}, lean {:?}",
+            "{} on {}: {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} (ambience {:#x}), lean {:?}",
             self.level,
             self.base,
             self.tags_after,
@@ -279,6 +290,7 @@ impl std::fmt::Display for Report {
             self.memory,
             self.metadata_max,
             self.file_size,
+            self.ambience_bytes,
             self.lean
         )?;
         let grew: u32 = self.appended.iter().map(|a| a.1).sum();
@@ -304,6 +316,12 @@ impl std::fmt::Display for Report {
         for d in &self.dropped {
             writeln!(f, "  dropped: {d}")?;
         }
+        for a in &self.ambience_silenced {
+            writeln!(f, "  silenced for file size: {a}")?;
+        }
+        for r in &self.retries {
+            writeln!(f, "  retried: {r}")?;
+        }
         Ok(())
     }
 }
@@ -326,31 +344,53 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     // A level over the tag memory bound (b40) is converted again a step
     // further down the lean ladder ([`Lean`]). A map file over the
     // engine's size limit is converted again with that much less music
-    // (and 256 KiB of margin), down to none, then without the cutscenes'
-    // animation graphs (their animation data is raw in the file), the
-    // same order as the ladder.
+    // (and 256 KiB of margin), down to none; then with that much less of
+    // the clusters' background sounds (an entry left out stays in the
+    // palette, silent), down to none; then without the cutscenes'
+    // animation graphs (their animation data is raw in the file), which
+    // the cutscenes need to play.
     let mut lean = Lean::Everything;
     let mut music = u64::MAX;
+    let mut ambience = u64::MAX;
     let mut opts = Options { ..*opts };
+    // Each retry and why, for the report.
+    let mut retries = Vec::new();
     loop {
-        match convert_with(h1, base, &opts, lean, music) {
-            Err(Error::TagMemory { .. }) if lean.next().is_some() => {
+        match convert_with(h1, base, &opts, lean, [music, ambience]) {
+            Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
                 lean = lean.next().expect("checked");
+                retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));
             }
             Err(Error::FileSize {
                 need,
                 max,
                 music: m,
                 ..
-            }) if m > 0 => music = m.saturating_sub(need - max + 0x4_0000),
-            Err(Error::FileSize { .. }) if opts.cutscene_graphs => opts.cutscene_graphs = false,
+            }) if m > 0 => {
+                music = m.saturating_sub(need - max + 0x4_0000);
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} with {m:#x} of music: music to {music:#x}"
+                ));
+            }
+            Err(Error::FileSize {
+                need,
+                max,
+                ambience: a,
+                ..
+            }) if a > 0 => {
+                ambience = a.saturating_sub(need - max + 0x4_0000);
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music, with {a:#x} of ambience: ambience to {ambience:#x}"
+                ));
+            }
+            Err(Error::FileSize { need, max, .. }) if opts.cutscene_graphs => {
+                opts.cutscene_graphs = false;
+                retries.push(format!(
+                    "file {need:#x} over {max:#x} without music or ambience: no cutscene animation graphs"
+                ));
+            }
             Ok(mut done) => {
-                if !opts.cutscene_graphs && !lean.leaves_out(Lean::CutsceneData) {
-                    done.report.dropped.push(
-                        "cutscene animation graphs: over the campaign cache's file size with them"
-                            .into(),
-                    );
-                }
+                done.report.retries = retries;
                 return Ok(done);
             }
             r => return r,
@@ -363,7 +403,7 @@ fn convert_with<R: Read + Seek>(
     base: &mut Map<R>,
     opts: &Options,
     lean: Lean,
-    music: u64,
+    [music, ambience_budget]: [u64; 2],
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
@@ -374,7 +414,8 @@ fn convert_with<R: Read + Seek>(
         ..Report::default()
     };
     let scnr = scenario::BaseScenario::read(base)?;
-    let ambience = h1convert::ambience::read(h1);
+    let mut ambience = h1convert::ambience::read(h1);
+    report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
     let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
     let objects_base = if opts.objects {
         let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
@@ -394,7 +435,9 @@ fn convert_with<R: Read + Seek>(
 
     // The level's background sounds and sound environments, which the
     // clusters and the scenario's palettes name.
+    let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
     let sounds = ambience.install(&mut set)?.bounded();
+    report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
     // under Halo 1's names.
@@ -494,6 +537,7 @@ fn convert_with<R: Read + Seek>(
                 .scripts
                 .as_ref()
                 .map_or(0, |s| s.looping_bytes),
+            ambience: report.ambience_bytes,
         });
     }
     report.file_size = bytes.len() as u64;

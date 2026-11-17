@@ -411,7 +411,7 @@ scenario's old range and being appended (`0xb512c` bytes). The lean
 ladder (`h1campaign::Lean`) drops the graphs and recordings
 (`CutsceneData`) after the music and before the level data; a level over
 the campaign cache's file size is converted again with less music, then
-without the graphs alone (Engine caps, "Music and the map file"). To play b40's cutscenes, b40 needs
+without the background sounds, then without the graphs (Engine caps, "Music, ambience and the map file"). To play b40's cutscenes, b40 needs
 its level data plus the cinematics' graphs and 24 recordings back, which
 is what dropping the base level's unreachable tags (`h1convert::fresh`'s
 prune, for campaign) would free; d40 needs `0x1baa00` bytes of file, which
@@ -534,22 +534,28 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   74 calls naming a flag, camera point, title or device group are
   stubbed (the insertion's teleports and camera moves among them), and
   it has no music.
-- **Music and the map file.** Halo 2's campaign map file is capped at
-  `0x11800000` bytes (`map::writer::cache_size_limit`, the header
-  validator's table at `0x00214ed0`). The base's file (its own raw
-  data kept whole) with each level's BSPs and sounds leaves from under
-  1 MB (d40) to about 50 MB (a50) for music, which Halo 1 ships as Xbox
-  ADPCM, kept as it is. The looping
-  sounds go in in the order the scripts first name them while their
-  samples fit: a level over the cap (`Error::FileSize`) is converted
-  again with that many fewer music bytes (and 256 KiB margin), once on
-  every level so far. Per level, looping sounds in / named (2026-11-17,
-  `every_campaign_level_converts`): a10 4/25, a30 16/16, a50 20/24, b30
-  14/14, b40 0/16 (tag memory), c10 11/15, c20 7/8, c40 8/19, d20
-  14/20, d40 2/29. A track left out leaves its `sound_looping_start`
-  hook `none` (Halo 2 plays nothing). Fitting the rest needs room in
-  the file: dropping the base's raw data no converted tag reaches (its
-  own sounds, bitmaps and models) is the likely next step.
+- **Music, ambience and the map file.** Halo 2's campaign map file is
+  capped at `0x11800000` bytes (`map::writer::cache_size_limit`, the
+  header validator's table at `0x00214ed0`). On the pinned base (its own
+  raw kept whole) a level's BSPs, textures, sounds and the clusters'
+  background sounds (`h1convert::ambience`, from `0x177810` bytes on c20
+  to `0xc8a108` on c10) leave little for the scripts' looping sounds,
+  which Halo 1 ships as Xbox ADPCM, kept as they are. A level over the cap
+  (`Error::FileSize`) is converted again with that many fewer music bytes
+  (and 256 KiB margin; the looping sounds go in in the order the scripts
+  first name them while they fit), down to none; then with that many
+  fewer background sound bytes (`scenario::bound_ambience`: an entry left
+  out keeps its palette slot and tracks, with null sounds, so the
+  clusters' indices stand), down to none; then without the cutscenes'
+  animation graphs, which the cutscenes need. Each retry is in the
+  report (`Report::retries`). Only d40 goes past the music: without music
+  it is still `0x12254800`, so its 13 background sounds are silenced and
+  its graphs dropped (`0x118f0c00` without them). The sound-zone split of
+  the clusters (`h1convert::structure::sound_zones`) costs next to
+  nothing: Halo 1's sections already outnumber the zones everywhere but
+  c40's BSPs 3 and 4 (1 and 2 sections to 4: 322 and 710 vertices more).
+  Building the levels fresh (no pinned base, its unreachable raw
+  dropped) frees 30 to 60 MB of file a level and is the fix.
 
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,

@@ -1581,7 +1581,7 @@ fn install_looping_sounds(
 
 /// A converted sound's sample bytes in the map file, each chunk rounded up
 /// to the builder's 0x1000 alignment at most.
-fn sample_bytes(s: &h1sounds::ConvertedSound) -> u64 {
+pub(crate) fn sample_bytes(s: &h1sounds::ConvertedSound) -> u64 {
     s.ranges
         .iter()
         .flat_map(|r| &r.permutations)
@@ -1640,4 +1640,34 @@ fn install_named_sounds(
         }
     }
     Ok((HashMap::new(), all))
+}
+
+/// Bounds the clusters' background sounds' samples to `budget` bytes: the
+/// palette's entries in order while they fit; the rest keep their palette
+/// entry and their tracks (so the clusters' indices and the tag's shape
+/// stand) but no sounds: each track's and detail's sound is a null
+/// reference. Returns the silenced ones' names.
+pub fn bound_ambience(a: &mut h1convert::ambience::Ambience, budget: u64) -> Vec<String> {
+    if budget == u64::MAX {
+        return Vec::new();
+    }
+    let mut counted: Vec<String> = Vec::new();
+    let mut bytes = 0u64;
+    let mut silenced = Vec::new();
+    for (entry, l) in &mut a.backgrounds {
+        let new: u64 = l
+            .sounds
+            .iter()
+            .filter(|(n, _)| !counted.contains(n))
+            .map(|(_, s)| sample_bytes(s))
+            .sum();
+        if bytes + new <= budget {
+            bytes += new;
+            counted.extend(l.sounds.iter().map(|(n, _)| n.clone()));
+            continue;
+        }
+        silenced.push(format!("{entry} ({})", l.name));
+        l.sounds.clear();
+    }
+    silenced
 }

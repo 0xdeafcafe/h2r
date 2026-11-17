@@ -664,9 +664,9 @@ fn cutscenes_convert_and_read_back() {
         let w = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
         let with_data = !r.lean.leaves_out(h1campaign::Lean::CutsceneData);
         if !with_data
-            || r.dropped
+            || r.retries
                 .iter()
-                .any(|d| d.starts_with("cutscene animation"))
+                .any(|d| d.ends_with("no cutscene animation graphs"))
         {
             // What the graphs would need: every graph the scripts name.
             let mut need = 0;

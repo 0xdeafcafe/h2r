@@ -50,6 +50,8 @@ pub struct Prepared {
     /// cluster (`h1convert::structure::sound_zones`).
     pub sound_clusters: Vec<[i16; 2]>,
     pub sound_leaves: Vec<u16>,
+    /// Sections and vertices before the sound-zone split.
+    pub unsplit: (usize, usize),
 }
 
 /// Counts for one BSP.
@@ -68,6 +70,9 @@ pub struct BspReport {
     /// Shader copies drawing Halo 1's textures, Halo 1 bitmaps converted
     /// for them, and materials left on the base's textures (with why).
     pub textures: (usize, usize, Vec<String>),
+    /// The sound-zone split (`h1convert::structure::sound_zones`):
+    /// sections and vertices before it.
+    pub unsplit: (usize, usize),
 }
 
 impl std::fmt::Display for BspReport {
@@ -76,7 +81,7 @@ impl std::fmt::Display for BspReport {
             f,
             "bsp {}: {} cluster(s), {} vertices, {} triangles, {} materials, {} collision surfaces, \
              {} lightmap pages, pathfinding {} sectors / {} links, Halo 1 textures on {} shader \
-             copies ({} bitmaps, {} notes){}",
+             copies ({} bitmaps, {} notes), split for sound from {} sections / {} vertices{}",
             self.index,
             self.clusters,
             self.vertices,
@@ -89,6 +94,8 @@ impl std::fmt::Display for BspReport {
             self.textures.0,
             self.textures.1,
             self.textures.2.len(),
+            self.unsplit.0,
+            self.unsplit.1,
             if self.flipped {
                 ", winding flipped"
             } else {
@@ -146,6 +153,7 @@ pub fn prepare_all<R: Read + Seek>(
             sectors: p.pathfinding.sectors.len(),
             links: p.pathfinding.links.len(),
             flipped: false,
+            unsplit: p.unsplit,
             textures: (
                 p.textures.copies.len(),
                 p.textures.bitmaps.len(),
@@ -195,6 +203,10 @@ fn prepare<R: Read + Seek>(
         })
         .collect();
     let mut sections = structure::pack(&meshes, &material);
+    let unsplit = (
+        sections.len(),
+        sections.iter().map(|s| s.vertices.len()).sum(),
+    );
     // Ambient sound: the scenario's palettes are rebuilt, so every entry
     // up to the engine's bound is written (`scenario::write`).
     let written = h1convert::ambience::written(ambience);
@@ -284,6 +296,7 @@ fn prepare<R: Read + Seek>(
         lightmap,
         pathfinding,
         sound_clusters,
+        unsplit,
         sound_leaves,
     })
 }
