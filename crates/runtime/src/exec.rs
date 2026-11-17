@@ -237,9 +237,47 @@ impl ExecCtx {
     where
         F: FnOnce(&mut CpuAbi, &mut ExecCtx) -> Result<TransferAbi, GuestFault> + Send + 'static,
     {
+        self.push_continuation(cpu, memory, target, origin, None, Box::new(continuation))
+    }
+    /// [`ExecCtx::call_guest_named`] for a continuation a snapshot load can
+    /// make again: its closure must depend only on `origin`, `target`,
+    /// `state` and the context it runs on (its thread id, the runtime), so
+    /// that whoever owns `origin` can rebuild it at the same token. Snapshot
+    /// quiescence lists it as rebuildable instead of as a blocker
+    /// (docs/runtime/snapshots.md, "Rebuildable continuations").
+    pub fn call_guest_rebuildable<F>(
+        &mut self,
+        cpu: &mut CpuAbi,
+        memory: &mut Guest,
+        target: u32,
+        origin: &'static str,
+        state: [u32; 4],
+        continuation: F,
+    ) -> Result<TransferAbi, GuestFault>
+    where
+        F: FnOnce(&mut CpuAbi, &mut ExecCtx) -> Result<TransferAbi, GuestFault> + Send + 'static,
+    {
+        self.push_continuation(
+            cpu,
+            memory,
+            target,
+            origin,
+            Some(state),
+            Box::new(continuation),
+        )
+    }
+    fn push_continuation(
+        &mut self,
+        cpu: &mut CpuAbi,
+        memory: &mut Guest,
+        target: u32,
+        origin: &'static str,
+        state: Option<[u32; 4]>,
+        continuation: Continuation,
+    ) -> Result<TransferAbi, GuestFault> {
         let Some(token) = self
             .continuations
-            .insert(Box::new(continuation), origin, target)
+            .insert(continuation, origin, target, state)
         else {
             return Ok(TransferAbi::fault(self.emit(Event::ContinuationLimit)));
         };

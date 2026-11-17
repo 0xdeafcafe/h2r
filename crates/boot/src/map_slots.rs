@@ -151,6 +151,9 @@ impl feature::Feature for MapSlots {
                 }
             },
         );
+        // Its throttle is wall-clock time, not machine state; which package
+        // served each copied map is the VFS's state, saved with the VFS.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

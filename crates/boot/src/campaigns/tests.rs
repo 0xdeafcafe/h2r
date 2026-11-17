@@ -733,3 +733,18 @@ fn every_lookup_caller_finds_a_halo1_level() {
     assert_eq!(state.lookup_campaign(h1, 0x65), Some(1));
     assert_eq!(lookup(&start, fixed(h1, 0x65), 0x65), Some("scenarios\\solo\\l0\\l0"));
 }
+
+#[test]
+fn snapshots_wait_while_the_level_select_is_built_or_a_request_passes() {
+    let s = Selection::default();
+    assert_eq!(s.snapshot_live(), None);
+    s.set(2);
+    assert_eq!(s.snapshot_live(), None, "the campaign shown is menu state");
+    s.set_building(true);
+    assert!(s.snapshot_live().is_some());
+    s.set_building(false);
+    s.let_through();
+    assert!(s.snapshot_live().is_some());
+    assert!(s.take_pass());
+    assert_eq!(s.snapshot_live(), None);
+}

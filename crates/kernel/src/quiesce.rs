@@ -10,8 +10,9 @@ use runtime::ContinuationInfo;
 
 /// The continuation every created thread holds for its whole life: it
 /// terminates the thread when the start routine returns. It captures only
-/// the thread id, so a load can make it again (at the same token): it does
-/// not block a snapshot.
+/// the thread id, so it is made with `call_guest_rebuildable` and a load
+/// can make it again at the same token: it does not block a snapshot.
+/// Every continuation made that way is listed as rebuildable.
 pub const THREAD_RETURN: &str = "kernel: thread return";
 /// The continuation of a DPC routine that has not returned.
 pub const DPC_RETURN: &str = "kernel: DPC return";
@@ -84,7 +85,9 @@ impl std::fmt::Display for Blocker {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Quiescence {
     pub blockers: Vec<Blocker>,
-    /// Continuations a load can rebuild ([`THREAD_RETURN`]), by thread.
+    /// Continuations a load can rebuild (made with
+    /// `ExecCtx::call_guest_rebuildable`, such as [`THREAD_RETURN`]), by
+    /// thread.
     pub rebuildable: Vec<(u32, ContinuationInfo)>,
 }
 
@@ -109,7 +112,7 @@ impl Machine {
             .chain(self.dpc_thread().map(|t| (DPC_THREAD_ID, &t.ctx)));
         for (thread, ctx) in contexts {
             for c in ctx.live_continuations() {
-                if c.origin == THREAD_RETURN && thread != DPC_THREAD_ID {
+                if c.state.is_some() {
                     q.rebuildable.push((thread, c));
                 } else {
                     q.blockers.push(Blocker::Continuation {
@@ -424,6 +427,14 @@ mod tests {
         let mut cpu = t.cpu;
         let done = |_: &mut CpuAbi, _: &mut runtime::ExecCtx| Ok(TransferAbi::stop(0));
         let transfer = match origin {
+            Some(THREAD_RETURN) => t.ctx.call_guest_rebuildable(
+                &mut cpu,
+                &mut rt.memory(),
+                0x40_0100,
+                THREAD_RETURN,
+                [0; 4],
+                done,
+            ),
             Some(o) => t
                 .ctx
                 .call_guest_named(&mut cpu, &mut rt.memory(), 0x40_0100, o, done),
@@ -485,6 +496,39 @@ mod tests {
         assert!(q.is_quiescent(), "{q:?}");
         assert_eq!(q.rebuildable.len(), 1);
         assert_eq!(q.rebuildable[0].1.origin, THREAD_RETURN);
+    }
+
+    #[test]
+    fn rebuildability_comes_from_the_recorded_state_not_the_name() {
+        let mut m = machine();
+        let rt = Arc::clone(&m.runtime);
+        let t = m.thread_mut(1).unwrap();
+        let mut cpu = t.cpu;
+        let done = |_: &mut CpuAbi, _: &mut runtime::ExecCtx| Ok(TransferAbi::stop(0));
+        t.ctx
+            .call_guest_named(&mut cpu, &mut rt.memory(), 0x40_0100, THREAD_RETURN, done)
+            .unwrap();
+        let q = m.quiescent();
+        assert_eq!(q.blockers.len(), 1, "{q:?}");
+        assert!(q.rebuildable.is_empty());
+
+        let mut m = machine();
+        let rt = Arc::clone(&m.runtime);
+        let t = m.thread_mut(1).unwrap();
+        let mut cpu = t.cpu;
+        t.ctx
+            .call_guest_rebuildable(
+                &mut cpu,
+                &mut rt.memory(),
+                0x40_0100,
+                "test: kernel call return",
+                [0x1234, 7, 0, 0],
+                done,
+            )
+            .unwrap();
+        let q = m.quiescent();
+        assert!(q.is_quiescent(), "{q:?}");
+        assert_eq!(q.rebuildable[0].1.state, Some([0x1234, 7, 0, 0]));
     }
 
     #[test]

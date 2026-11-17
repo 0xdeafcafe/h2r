@@ -21,6 +21,18 @@ use runtime::{TransferAbi, guest::Permissions};
 /// internal range, which starts at 0xa1000000).
 pub const SHADOW_BASE: u32 = 0xa0ff_0000;
 
+/// The continuation the kernel-call trace wraps around every kernel call
+/// (docs/runtime/snapshots.md, "Rebuildable continuations"). Its state is
+/// [`return_state`]: the caller's return address and the trace record's
+/// sequence number. Rebuilt after a load it returns to the caller; the
+/// trace record is gone, and `finish` of an unknown sequence does nothing.
+pub const KERNEL_CALL_RETURN: &str = "trace: kernel call return";
+
+/// The state of a [`KERNEL_CALL_RETURN`] continuation.
+pub fn return_state(ret_pc: u32, seq: u64) -> [u32; 4] {
+    [ret_pc, seq as u32, (seq >> 32) as u32, 0]
+}
+
 #[derive(Debug, Clone)]
 pub struct Call {
     pub seq: u64,
@@ -177,7 +189,12 @@ pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, li
                 // into the same slot.
                 cpu.esp = cpu.esp.wrapping_add(4);
                 let t2 = Arc::clone(&t);
-                ctx.call_guest(cpu, &mut mem, shadow, move |cpu, _ctx| {
+                // Rebuildable: a thread can wait in a kernel call for its
+                // whole life (a worker in NtWaitForSingleObjectEx), and
+                // this continuation then sits under every snapshot. It
+                // needs only the caller's return address and the record's
+                // sequence number ([`return_state`]).
+                ctx.call_guest_rebuildable(cpu, &mut mem, shadow, KERNEL_CALL_RETURN, return_state(ret_pc, seq), move |cpu, _ctx| {
                     t2.lock().unwrap().finish(seq, cpu.eax);
                     Ok(TransferAbi::ret(ret_pc))
                 })
@@ -322,5 +339,36 @@ mod tests {
         assert_eq!(t.calls.len(), 100);
         t.finish(42, 7);
         assert_eq!(t.calls[42].result, Some(7));
+    }
+
+    #[test]
+    fn a_kernel_call_waiting_under_the_trace_is_rebuildable() {
+        let mut g = runtime::Guest::new();
+        g.map_zeroed(0x10000, 0x10000, Permissions::RW).unwrap();
+        let rt = runtime::Runtime::new(g, runtime::Dispatch::default());
+        install_bounded(&rt, None, 8).unwrap();
+        let mut ctx = runtime::ExecCtx::new(Arc::clone(&rt), 3);
+        let mut cpu = runtime::CpuAbi { esp: 0x1f000, ..runtime::CpuAbi::xbox_thread() };
+        // The caller's return address; the arguments above it are zero.
+        rt.memory().set_u32(0x1f000, 0x1234).unwrap();
+        // The call goes no further than the kernel (none is installed): as
+        // for a thread blocked in it, the trace's continuation stays live.
+        let _ = runtime::Runner::default().run(&mut cpu, &mut ctx, runtime::kernel::function_token(234));
+        let live = ctx.live_continuations();
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0].origin, KERNEL_CALL_RETURN);
+        assert_eq!(live[0].target, SHADOW_BASE + 234 * 4);
+        assert_eq!(live[0].state, Some(return_state(0x1234, 0)));
+        assert_eq!(return_state(0x1234, 0x1_0000_0002), [0x1234, 2, 1, 0]);
+    }
+
+    #[test]
+    fn finishing_an_unknown_call_does_nothing() {
+        // What a rebuilt continuation does after a load: its record is gone.
+        let mut t = bounded(4);
+        let s = t.push(call(1));
+        t.finish(s + 100, 7);
+        assert_eq!(t.calls[0].result, None);
+        assert!(t.evicted_open.is_empty());
     }
 }

@@ -478,6 +478,59 @@ snapshot-probe: top host <count> (<%>) feature <id>: not audited for snapshots
   live, lockstep) that haven't been audited yet. Every one is unaudited
   today, so `fully_quiescent` is 0 until phase 3 and 4 audit them.
 
+### Rebuildable continuations
+
+A continuation made with `ExecCtx::call_guest_rebuildable(.., origin,
+state: [u32; 4], ..)` promises that its closure depends only on `origin`,
+`target`, `state` and the context it runs on. Quiescence lists it as
+rebuildable, with its state, instead of as a blocker. Phase 3 makes it
+again at load: a registry from `origin` to a factory, and a
+`Continuations` insert at a given token (the token is on the guest stack,
+so it must be the same). Two exist (**Code**):
+
+| Origin | Made by | State | Rebuilt as |
+|---|---|---|---|
+| `kernel: thread return` | `Machine::collect_threads`, every created thread's start routine | none | terminate the thread with success |
+| `trace: kernel call return` | `boot::trace::install_bounded`, every kernel call, through the shadow `0xa0ff0000 + 4 * ordinal` | caller's return address, trace sequence number | return to the caller; the trace record is gone, and `finish` of an unknown one does nothing |
+
+### First run: Old Mombasa, 2026-11-17
+
+`H2_SNAPSHOT_PROBE=1`, headless, 5256 ticks checked (run by the
+coordinator; the log is outside the repository). `machine_quiescent` was 0.
+There was one machine blocker, on every tick: thread 3's
+`boot::trace::install_bounded` continuation calling `0xa0ff03a8`, the trace
+shadow of ordinal 234, `NtWaitForSingleObjectEx`. That is a worker thread
+waiting in the kernel for its whole life, under the kernel-call trace's
+wrapper, which is always installed. Nothing else: no after-hook or async
+entry continuation was live at any tick boundary, no interrupt in service,
+no queued interrupt. The wrapper is now rebuildable (above), so the next
+run should show the machine quiescent at tick boundaries (**S** until it
+is run).
+
+Host blockers were the eleven features on in that run, all unaudited, and
+the host subsystems. The features are now audited:
+
+| Feature | Policy | Why |
+|---|---|---|
+| `engine-leaves` | stateless | pure functions of guest memory; string sources fixed at boot |
+| `render-loop` | stateless | a port's state is in its continuation, which the machine check reports |
+| `controls-text` | stateless | an async port: its future is parked in a continuation |
+| `ui-strings` | stateless | strings written and addresses fixed at install |
+| `level-boot` | stateless | `LOADED_AT` is a host mark for perf sessions; the game never reads it |
+| `map-slots` | stateless | a wall-clock throttle; which package served a map is VFS state |
+| `snapshot_probe` | stateless | an observer |
+| `layouts-value` | forbid while live | between the Controls row text's before and after hooks |
+| `campaigns` | forbid while live | while the level select is built, or a request is to be let through; the campaign shown is menu state, and in a game the level's campaign comes from the map |
+| `campaigns-screen` (and every list class) | forbid while live | while our loader runs the Controls constructor; layouts and loaders are fixed at build, `Shown` is set up again before a screen draws |
+| `h1-health` | forbid while live | while a damage update or body restore is between its hooks. The model follows the loaded map (`set_mode` at game start, from guest memory) and the meter is published every tick, so a load must call `set_mode` again from the loaded map (phase 3) |
+| `touch-glue` | forbid while live | while touch controls are shown: unapplied touch input is host state |
+
+Still unaudited: the features that were off in that run (skulls, co-op,
+aim assist, sign-in strings, kit screens, settings rows) and the host
+subsystems (d3d, dsound, xapi, bink, live, lockstep), which are phase 4.
+The D3D frame wait keeps Rust state across yields that no machine check
+sees, so `host d3d` stays a blocker until phase 4 audits it.
+
 ## Related
 
 - [agent-api.md](agent-api.md): the `state` methods and phases

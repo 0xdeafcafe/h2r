@@ -12,6 +12,10 @@
 
 use std::sync::Arc;
 
+/// The continuation an async entry's body is parked in while its guest
+/// call runs; named in snapshot quiescence reports.
+pub const ASYNC_ENTRY: &str = "feature: async entry";
+
 use engine::entry::{self, Cx, EntryError, EntryFn, EntryFuture, Mem, Regs, Step};
 use engine::memory::GuestMemory;
 use runtime::guest::{Access, FaultReason};
@@ -135,7 +139,7 @@ fn drive(
                     *reg = v;
                 }
             }
-            ctx.call_guest(cpu, &mut mem, c.target, move |cpu, ctx| {
+            ctx.call_guest_named(cpu, &mut mem, c.target, ASYNC_ENTRY, move |cpu, ctx| {
                 entry::resume(&r.cx, regs(cpu));
                 // Whatever the callee popped, the stack is ours again.
                 cpu.esp = sp;

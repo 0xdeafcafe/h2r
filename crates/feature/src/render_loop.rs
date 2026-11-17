@@ -52,6 +52,9 @@ impl Feature for RenderLoop {
                     run(cpu, ctx, Entries::start)
                 });
         }
+        // A port's state lives in the continuation it is parked in, which
+        // the machine's quiescence check reports.
+        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
