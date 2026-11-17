@@ -622,8 +622,23 @@ impl<'a> Converter<'a> {
             return Ok(None);
         };
         let mode_tag = self.h1_tag(mode_id)?;
-        let (h1_model, mode) =
-            h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+        let (h1_model, mode) = match self.done.get(&mode_tag.id.0) {
+            // Converted already (shared by two objects): only the Halo 1
+            // model is needed again.
+            Some(_) => h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?,
+            None => {
+                let (h1_model, _) =
+                    h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+                let shaders = self.model_shaders(rep, &h1_model);
+                let opts = ModelOptions { shaders };
+                let mode = h1models::mode::convert_model(
+                    &h1_model,
+                    h1models::short_name(&mode_tag.name),
+                    &opts,
+                )?;
+                (h1_model, mode)
+            }
+        };
         let mode = self.cached(mode_tag, mode)?;
         let coll = match obj.collision {
             Some(c) => {
@@ -750,6 +765,55 @@ impl<'a> Converter<'a> {
             i += 1;
         }
         Ok(top)
+    }
+
+    /// A `shad` per Halo 1 shader of `model`: a copy of the base's model
+    /// shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
+    /// base and detail maps, converted by `h1bitmaps` (each once). Null
+    /// for a shader with no base map this reads, or with no template.
+    fn model_shaders(&mut self, rep: &mut ObjectReport, model: &h1models::h1::Model) -> Vec<TagId> {
+        let Some(template) = self.base.model_shader.clone() else {
+            rep.no_home
+                .push("model shaders: the base has no model shader to copy; materials null".into());
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for s in &model.shaders {
+            let id = (|| -> Option<TagId> {
+                let tag = self.h1.tag(s.tag).ok()?;
+                if let Some(id) = self.done.get(&tag.id.0) {
+                    return Some(*id);
+                }
+                let maps = h1convert::textures::h1_maps_of(self.h1, tag)?;
+                let base = self.bitmap(maps.base?)?;
+                let detail = maps.detail.and_then(|d| self.bitmap(d));
+                let (tree, _) = template.copy(base, detail);
+                let conv = Converted {
+                    group: FourCC(*b"shad"),
+                    root: tree,
+                    raw: Vec::new(),
+                };
+                self.cached(tag, conv).ok()
+            })();
+            if id.is_none() {
+                rep.no_home.push(format!(
+                    "model shader {}: no base map read; material null",
+                    self.h1.tag(s.tag).map_or("?".into(), |t| t.name.clone())
+                ));
+            }
+            out.push(id.unwrap_or(TagId::NULL));
+        }
+        out
+    }
+
+    /// The Halo 1 bitmap `id`, converted once.
+    fn bitmap(&mut self, id: h1map::TagId) -> Option<TagId> {
+        let tag = self.h1.tag(id).ok()?;
+        if let Some(t) = self.done.get(&tag.id.0) {
+            return Some(*t);
+        }
+        let (_, conv, _) = h1bitmaps::convert_bitmap(self.h1, tag).ok()?;
+        self.cached(tag, conv).ok()
     }
 
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {

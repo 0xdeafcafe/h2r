@@ -57,6 +57,8 @@ pub struct FreshReport {
     pub sound_chunks: usize,
     /// Bytes of the low-detail bitmap region copied.
     pub low_detail: u32,
+    /// The base's tags nothing reaches, dropped ([`prune`]).
+    pub pruned: Pruned,
 }
 
 /// A fresh map.
@@ -87,7 +89,8 @@ impl Prepared {
                 bounds.push(u32::try_from(l.space.file_offset).unwrap_or(u32::MAX));
             }
         }
-        let report = unpin_all(&pinned, &mut src, &mut fresh, section, &bounds)?;
+        let mut report = unpin_all(&pinned, &mut src, &mut fresh, section, &bounds)?;
+        report.pruned = prune(&mut fresh, base.index_slots() as usize);
         let (bytes, _) = fresh.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
@@ -352,4 +355,201 @@ fn scenario<R: Read + Seek>(
         .ok_or(Error::Invalid("no scenario slot"))?
         .payload = TagPayload::Built(root);
     Ok(())
+}
+
+/// What [`prune`] dropped.
+#[derive(Debug, Clone, Default)]
+pub struct Pruned {
+    /// Scenario palette entries naming a base tag, nulled.
+    pub palette_entries: usize,
+    /// Scenario `+0x3d8` entries naming a base tag nothing else reaches.
+    pub resource_entries: usize,
+    /// Tags dropped, by group.
+    pub groups: std::collections::BTreeMap<String, usize>,
+}
+
+impl Pruned {
+    /// Tags dropped.
+    pub fn tags(&self) -> usize {
+        self.groups.values().sum()
+    }
+}
+
+/// Scenario palettes whose base entries are nulled: `(offset, element)`,
+/// the tag reference at `+0`. Sound scenery `+0xe0`, light fixtures
+/// `+0xf0`, crates `+0x330` (`tags::object::OBJECT_TYPES`, the schema).
+/// The scenery palette (`+0x58`) is left: the schema's element size for
+/// it (4) disagrees with the object table's.
+pub const BASE_PALETTES: [(u32, usize); 3] = [(0xe0, 0x28), (0xf0, 0x28), (0x330, 0x28)];
+
+/// The scenario's tag list (`+0x3d8`, a datum each).
+pub const SCENARIO_RESOURCES: u32 = 0x3d8;
+
+/// Groups kept whole, reached or not: what the engine may find without a
+/// reference from the scenario or the globals. None is confirmed in the
+/// XBE yet; these are the groups retail maps hold one of (or that hold
+/// shared tables: the sound gestalt, strings, vertex and shader programs).
+pub const KEEP_GROUPS: [&[u8; 4]; 11] = [
+    b"matg", b"scnr", b"ugh!", b"unic", b"mulg", b"stem", b"spas", b"vrtx", b"pmov", b"sncl",
+    b"snmx",
+];
+
+/// Tags kept whole by name prefix: the engine's own defaults, which
+/// templates name in ways the tree walk doesn't see (D: a `stem` names an
+/// `spas` the fresh tree holds no word of).
+pub const KEEP_PREFIXES: [&str; 2] = ["shaders\\", "rasterizer\\"];
+
+fn child_mut(b: &mut map::build::Block, at: u32) -> Option<(u32, &mut map::build::Block)> {
+    b.fixups.iter_mut().find_map(|f| match &mut f.kind {
+        FixupKind::Block { count, child } if f.offset == at && *count > 0 => Some((*count, child)),
+        _ => None,
+    })
+}
+
+/// Every datum a payload names: 4-aligned words of every block (a word
+/// that happens to equal a datum only keeps a tag), tag-reference and
+/// datum fixups, and an alias's owner.
+fn named(payload: &TagPayload, out: &mut Vec<u32>) {
+    fn walk(b: &map::build::Block, out: &mut Vec<u32>) {
+        out.extend(
+            b.bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w)),
+        );
+        for f in &b.fixups {
+            match &f.kind {
+                FixupKind::Block { child, .. }
+                | FixupKind::Data(child)
+                | FixupKind::Pointer(child) => walk(child, out),
+                FixupKind::TagRef(t) | FixupKind::TagId(t) => out.push(t.0),
+                FixupKind::TagOffset { tag, .. } => out.push(tag.0),
+                _ => {}
+            }
+        }
+    }
+    match payload {
+        TagPayload::Built(b) => walk(b, out),
+        TagPayload::Pinned { bytes, .. } => out.extend(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w)),
+        ),
+        TagPayload::Alias { tag, .. } => out.push(tag.0),
+        TagPayload::Empty => {}
+    }
+}
+
+/// The slots reachable from the scenario, the globals and [`KEEP_GROUPS`].
+fn reachable(set: &TagSet) -> Vec<bool> {
+    let n = set.slots.len();
+    let mut seen = vec![false; n];
+    let mut todo = Vec::new();
+    for (i, s) in set.slots.iter().enumerate() {
+        let Some(t) = &s.tag else { continue };
+        if t.id == set.scenario
+            || t.id == set.globals
+            || KEEP_GROUPS.iter().any(|g| t.group == FourCC(**g))
+            || s.name
+                .as_deref()
+                .is_some_and(|n| KEEP_PREFIXES.iter().any(|p| n.starts_with(p)))
+        {
+            seen[i] = true;
+            todo.push(i);
+        }
+    }
+    let mut words = Vec::new();
+    while let Some(i) = todo.pop() {
+        let Some(t) = &set.slots[i].tag else { continue };
+        words.clear();
+        named(&t.payload, &mut words);
+        for &w in &words {
+            let k = (w & 0xffff) as usize;
+            if k < n && !seen[k] && set.slots[k].tag.as_ref().is_some_and(|t| t.id.0 == w) {
+                seen[k] = true;
+                todo.push(k);
+            }
+        }
+    }
+    seen
+}
+
+/// Drops the base's tags nothing reaches from a fresh set (`first` is the
+/// first slot the conversion added; those are never dropped):
+///
+/// 1. each base tag in the scenario's [`BASE_PALETTES`] is nulled (no
+///    placement names it: the conversion removed the base's placements);
+/// 2. the scenario's tag list ([`SCENARIO_RESOURCES`]) keeps a base tag
+///    only when something else reaches it;
+/// 3. every base slot then unreachable ([`reachable`]) is emptied, its
+///    datum named by nothing.
+pub fn prune(set: &mut TagSet, first: usize) -> Pruned {
+    let mut out = Pruned::default();
+    let scenario = set.scenario;
+    let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
+    if let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) {
+        for (at, size) in BASE_PALETTES {
+            if let Some((count, palette)) = child_mut(root, at) {
+                for k in 0..count as usize {
+                    let e = k * size;
+                    let Some(d) = palette.bytes.get(e + 4..e + 8) else {
+                        break;
+                    };
+                    let d = u32::from_le_bytes(d.try_into().expect("4"));
+                    if is_base(d) {
+                        palette.bytes[e..e + 8].fill(0xff);
+                        out.palette_entries += 1;
+                    }
+                }
+            }
+        }
+    }
+    // The tag list, against what the rest reaches.
+    let list = match set.tag_mut(scenario).map(|t| &mut t.payload) {
+        Some(TagPayload::Built(root)) => {
+            child_mut(root, SCENARIO_RESOURCES).map(|(_, b)| std::mem::take(&mut b.bytes))
+        }
+        _ => None,
+    };
+    if let Some(list) = list {
+        let seen = reachable(set);
+        let keep: Vec<u8> = list
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|w| {
+                let d = u32::from_le_bytes(**w);
+                let ok = !is_base(d) || seen.get((d & 0xffff) as usize).copied().unwrap_or(false);
+                if !ok {
+                    out.resource_entries += 1;
+                }
+                ok
+            })
+            .flatten()
+            .copied()
+            .collect();
+        if let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) {
+            for f in &mut root.fixups {
+                if f.offset == SCENARIO_RESOURCES
+                    && let FixupKind::Block { count, child } = &mut f.kind
+                {
+                    *count = (keep.len() / 4) as u32;
+                    child.bytes = keep.clone();
+                }
+            }
+        }
+    }
+    let seen = reachable(set);
+    for (i, s) in set.slots.iter_mut().enumerate().take(first) {
+        if seen[i] {
+            continue;
+        }
+        if let Some(t) = s.tag.take() {
+            *out.groups.entry(t.group.to_string()).or_default() += 1;
+        }
+    }
+    out
 }

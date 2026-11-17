@@ -253,8 +253,15 @@ fn bsp_descriptor(scnr: &[u8], address: u32) -> Result<(u32, TagId, TagId)> {
 /// environment palette), `+0x378` 2 `DECR` (decorator sets: the base's
 /// grass and rocks, placed by its own clusters). The converted clusters
 /// name no background sound or sound environment (palette entry -1,
-/// [`crate::structure`]) and no decorator.
-pub const BASE_BLOCKS: [(usize, &str); 3] = [
+/// [`crate::structure`]) and no decorator. `+0xe8` (0x6c each, D: 21 on
+/// Coagulation, 10 on Beaver Creek) places light fixtures: `+0x00` an
+/// index into the `ligh` palette at `+0xf0` (0x28 each, the tag at `+0`;
+/// 6 and 2 entries), `+0x02` the object name (-1 on all), `+0x08` the
+/// position, inside the base's level on both. Neither base's scenario
+/// names a `deca` from any block (their 51 decals are effects'), so there
+/// are no placed decals to empty.
+pub const BASE_BLOCKS: [(usize, &str); 4] = [
+    (0xe8, "light fixtures"),
     (0x250, "background sounds"),
     (0x258, "sound environments"),
     (0x378, "decorators"),
@@ -262,8 +269,8 @@ pub const BASE_BLOCKS: [(usize, &str); 3] = [
 
 /// Empties each of [`BASE_BLOCKS`] in a scenario payload: count and
 /// pointer zero. Returns the elements dropped, per block.
-pub fn clear_base_blocks(scnr: &mut [u8]) -> Result<[u32; 3]> {
-    let mut dropped = [0; 3];
+pub fn clear_base_blocks(scnr: &mut [u8]) -> Result<[u32; 4]> {
+    let mut dropped = [0; 4];
     for (k, (at, _)) in BASE_BLOCKS.iter().enumerate() {
         let field = scnr
             .get_mut(*at..*at + 8)

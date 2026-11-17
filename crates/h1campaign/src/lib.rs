@@ -246,11 +246,13 @@ pub struct Converted {
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
     // A level at the bound (b40) is converted again without the extras the
     // scripts only name: first the empty squads kept for their names, then
-    // the level data and seat table (`scenario::write`'s `lean`).
+    // the level data and seat table (`scenario::write`'s `lean`), then
+    // Halo 1's textures on the objects' models (`h1objects`' shader copies
+    // and bitmaps; the models draw with the base's model shader).
     let mut lean = 0;
     loop {
         match convert_with(h1, base, opts, lean) {
-            Err(Error::TagMemory { .. }) if lean < 2 => lean += 1,
+            Err(Error::TagMemory { .. }) if lean < 3 => lean += 1,
             r => return r,
         }
     }
@@ -272,7 +274,11 @@ fn convert_with<R: Read + Seek>(
     let scnr = scenario::BaseScenario::read(base)?;
     let bsps = structure::prepare_all(h1, base, &scnr, &mut report)?;
     let objects_base = if opts.objects {
-        Some(h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?)
+        let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
+        if lean >= 3 {
+            b.model_shader = None;
+        }
+        Some(b)
     } else {
         None
     };

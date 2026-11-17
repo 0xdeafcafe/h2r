@@ -179,14 +179,30 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         let mut m = Map::from_reader(Cursor::new(pinned.clone())).unwrap();
         let mut f = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
         f.validate_checksum().unwrap();
-        assert_eq!(f.tags().len(), m.tags().len());
+        // The base's tags nothing reaches are dropped (fresh::prune).
+        let pruned = &r.pruned;
+        println!(
+            "  pruned {} base tags {:?}; {} palette entries nulled, {} tag list entries dropped",
+            pruned.tags(),
+            pruned.groups,
+            pruned.palette_entries,
+            pruned.resource_entries
+        );
+        assert!(pruned.tags() > 0, "nothing of the base pruned");
+        assert_eq!(f.tags().len() + pruned.tags(), m.tags().len());
         let mm = Memory::of(&mut m).unwrap();
         let fm = Memory::of(&mut f).unwrap();
 
-        // The same index: every tag where it was, with data where it had.
-        for (a, b) in m.tags().iter().zip(f.tags()) {
+        // The same index: every tag kept where it was, with data where it
+        // had; every converted tag kept.
+        let first = base.index_slots() as usize;
+        for b in f.tags() {
+            let a = m.tag(b.id).unwrap();
             assert_eq!((a.id, a.group, &a.name), (b.id, b.group, &b.name));
             assert_eq!(a.location.is_some(), b.location.is_some(), "{:?}", a.name);
+        }
+        for a in m.tags().iter().filter(|t| t.id.index() >= first) {
+            assert!(f.tag(a.id).is_ok(), "{:?} pruned", a.name);
         }
 
         // Every reference resolves.
@@ -207,7 +223,10 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             let (Some(a), Some(s)) = (t.location, schema.groups.get(&t.group)) else {
                 continue;
             };
-            if skip.contains(&t.group.0) || mm.region(a.address).is_none_or(|r| r.0 != a.address) {
+            if skip.contains(&t.group.0)
+                || mm.region(a.address).is_none_or(|r| r.0 != a.address)
+                || f.tag(t.id).is_err()
+            {
                 continue;
             }
             let b = f.tag(t.id).unwrap().location.unwrap();
@@ -236,7 +255,16 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             m.read_tag_bytes(scnr.id).unwrap(),
             f.read_tag_bytes(scnr.id).unwrap(),
         );
-        for &(o, n) in &r.scenario_blocks {
+        let pruned_blocks: Vec<u32> = h1convert::fresh::BASE_PALETTES
+            .iter()
+            .map(|p| p.0)
+            .chain([h1convert::fresh::SCENARIO_RESOURCES])
+            .collect();
+        for &(o, n) in r
+            .scenario_blocks
+            .iter()
+            .filter(|b| !pruned_blocks.contains(&b.0))
+        {
             let Some(Field::Block(c)) = root.fields.get(&o) else {
                 unreachable!()
             };
@@ -334,11 +362,12 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             file.get(at..at + r.size as usize)
                 .map(|b| format!("{b:02x?}"))
         };
+        let kept: HashSet<u32> = f.tags().iter().map(|t| t.id.0).collect();
         for t in m
             .tags()
             .to_vec()
             .iter()
-            .filter(|t| t.group == FourCC(*b"bitm"))
+            .filter(|t| t.group == FourCC(*b"bitm") && kept.contains(&t.id.0))
         {
             let x = tags::DecodedTag::read(&mut m, t.id).unwrap();
             let y = tags::DecodedTag::read(&mut f, t.id).unwrap();

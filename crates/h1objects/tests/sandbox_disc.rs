@@ -80,7 +80,8 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     assert_eq!(done.manifest.variants[0].origin.sandbox, "h1");
 
     let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
-    // The Halo 1 objects, then Halo 1's textures (bitmaps, shader copies).
+    // The Halo 1 objects, then Halo 1's textures (bitmaps, shader copies;
+    // a structure bitmap an object already added is reused).
     let textures = p.textures.bitmaps.len()
         + p.textures.copies.len()
         + p.skies
@@ -88,7 +89,48 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             .iter()
             .map(|s| 1 + usize::from(s.model.is_some()))
             .sum::<usize>();
-    assert_eq!(out.index_slots() as usize, first + added + textures);
+    let slots = out.index_slots() as usize;
+    assert!(
+        (first + added..=first + added + textures).contains(&slots),
+        "{slots} slots"
+    );
+    // Halo 1's textures on the converted models: each material names a
+    // copy of the base's model shader whose bitmaps include one this
+    // conversion added (a Halo 1 bitmap).
+    let modes: Vec<(TagId, String)> = out
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"mode") && (t.id.0 & 0xffff) as usize >= first)
+        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    let (mut drawn, mut null) = (0, 0);
+    for (id, name) in &modes {
+        let b = out.read_tag_bytes(*id).unwrap();
+        let at = out.tag(*id).unwrap().location.unwrap().address;
+        let w = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let (count, start) = (w(0x60) as usize, w(0x64));
+        for k in 0..count {
+            let e = (start - at) as usize + 0x20 * k;
+            let shader = TagId(w(e + 0xc));
+            if shader.0 == u32::MAX {
+                null += 1;
+                continue;
+            }
+            let (template, bitmaps) = scenario_edit::scene::shader_bitmaps(&mut out, shader)
+                .unwrap_or_else(|e| panic!("{name} material {k}: {e}"));
+            assert_eq!(template, h1convert::textures::MODEL_TEMPLATE, "{name}");
+            assert!(
+                bitmaps.iter().any(|b| (b.0 & 0xffff) as usize >= first),
+                "{name} material {k} draws no Halo 1 bitmap"
+            );
+            drawn += 1;
+        }
+    }
+    eprintln!(
+        "models: {} converted, {drawn} materials with Halo 1 textures, {null} null",
+        modes.len()
+    );
+    assert!(drawn > 0 && drawn >= 4 * null, "{drawn} drawn, {null} null");
     let ctx = tags::object::Context::read(&mut out).unwrap();
     let names: std::collections::HashMap<TagId, (FourCC, String)> = out
         .tags()

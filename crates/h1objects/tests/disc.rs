@@ -204,13 +204,16 @@ fn bloodgulch_sandbox_converts_and_reads_back() {
     let count = tree.tags.len();
     let mut set = TagSet::from_map(&mut base_map).unwrap();
     // A pinned index cannot grow, so the tree takes over slots the
-    // converted map does not need: Coagulation's own level bitmaps, which no
-    // object references.
+    // converted map does not need: Coagulation's own level tags (bitmaps,
+    // shaders, scenery), which no object references. The level itself
+    // (scenario, structure, lightmap) stays. The models' Halo 1 bitmaps and
+    // shader copies need more than the bitmaps alone.
+    let level = [*b"scnr", *b"sbsp", *b"ltmp"];
     let donors: Vec<TagId> = base_map
         .tags()
         .iter()
         .filter(|t| {
-            t.group == FourCC(*b"bitm")
+            !level.contains(&t.group.0)
                 && t.name
                     .as_deref()
                     .is_some_and(|n| n.starts_with("scenarios\\"))
@@ -235,6 +238,10 @@ fn bloodgulch_sandbox_converts_and_reads_back() {
         .collect();
     let mut live = 0;
     for id in &ids {
+        // A bitmap names no tag, and its pixel headers can look like one.
+        if tags_by_id.get(&id.0) == Some(&FourCC(*b"bitm")) {
+            continue;
+        }
         let b = out.read_tag_bytes(*id).unwrap();
         for at in (0..b.len().saturating_sub(7)).step_by(4) {
             let w = u32::from_le_bytes(b[at..at + 4].try_into().unwrap());

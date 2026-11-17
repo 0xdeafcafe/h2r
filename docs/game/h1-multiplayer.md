@@ -177,14 +177,17 @@ geometry. They aren't removed, since scripts, the kill list and BSP
 switches (`scnr+0x130`, `0xe` entries, E `0x0014b6d6`) hold their
 indices; each origin moves to `(0, 0, -1e6)`, where nothing ever is.
 
-Not cleared yet: decals, lights and decorators. Their scenario blocks
-aren't located in engine code yet (the trigger volumes above were found
-by following the scenario pointer `[0x4e0350]`; the same scan lists
-every scenario block the engine reads, `h1mp-scripts/scnr.py` in the
-reading notes). They don't affect loading as far as known, but would show
-up in the wrong place: decals stuck to air, lights shining from nowhere.
-Decorators may matter more, if their placements carry cluster indices
-past the converted structure's clusters; check first.
+**Lights (emptied, `convert::BASE_BLOCKS`).** `scnr+0xe8` is the light
+fixture placements, `0x6c` each: `+0x00` an index into the light
+palette at `+0xf0` (`0x28` each, its tag reference at `+0`), `+0x02` a
+name (-1), `+0x08` the position. Coagulation has 21, Beaver Creek 10, all
+placed for the base's geometry; the block is emptied with the
+decorators, background sounds and sound environments.
+
+**Decals.** The base has no placed decals: no scenario block on
+Coagulation or Beaver Creek names a `deca`. Their 51 `deca` tags come
+from effects (bullet holes, scorch marks), which Halo 1's objects use too,
+so nothing is emptied for decals.
 
 ## The converted structure BSP (**Built** as `h1convert::structure`)
 
@@ -436,6 +439,26 @@ and manifest are the same as without it:
 cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 ```
 
+**The base's unreachable tags are dropped (`fresh::prune`).** After the
+fresh tree is built, the base's palette entries at `scnr+0xe0` (scenery),
+`+0xf0` (lights) and `+0x330` (sound scenery) are nulled, and the
+scenario's tag list at `+0x3d8` (4-byte datums) keeps only base tags
+still reachable. Then every base tag nothing reaches from `scnr`, `matg`
+or the kept roots loses its slot (the slot stays, empty, so indices
+don't move). Roots kept whatever references them (`fresh::KEEP_GROUPS`):
+`matg`, `scnr`, `ugh!`, `unic`, `mulg`, `stem`, `spas`, `vrtx`, `pmov`,
+`sncl`, `snmx`, and every tag named under `shaders\` or `rasterizer\`
+(`KEEP_PREFIXES`: a `stem` names `spas` passes by a word the tree doesn't
+hold as a reference). No group the engine walks on its own is confirmed
+in the XBE yet; the list is the conservative guess a game run tests.
+Blood Gulch on Coagulation drops 227 tags (76 `bitm`, 44 `shad`, 14
+`snd!`, 12 `mode`, 11 `hlmt`, 10 `lsnd`, 10 `scen`, ...), 13 palette
+entries and 19 tag list entries; all 21580 references in the kept tags
+still resolve (`tests/fresh.rs`). The scenery palette at `+0x58` is left
+alone: the schema gives it 4-byte elements where the object types table
+gives it `0x28`; settle that first. The dropped tags' raw data stays in
+the file, unused.
+
 **The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
 the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,
 256x128), names (`ui\shell\main_menu\mp_map_list`) and descriptions
@@ -643,16 +666,15 @@ disc.
 
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
-2. **Decals and lights** of the base (above); decorators, background
-   sounds and sound environments are emptied (`convert::BASE_BLOCKS`).
-   The base's other tags (Coagulation's scenery, sound scenery, its
-   structure's shaders) stay in the fresh map, unplaced; dropping them
-   needs a reachability walk from `scnr` and `matg` and a game run to
-   show nothing in the engine walks a group by itself.
+2. ~~**Decals and lights** of the base~~: lights emptied, no placed
+   decals (above); the base's unreachable tags are dropped in fresh
+   builds (`fresh::prune`, above). Left: Halo 1's own background sounds
+   (`lsnd`) and sound environments for the clusters, through a shared
+   `h1sounds` `lsnd` converter that `h1campaign`'s `looping_sound`
+   hooks can call too; and the scenery palette at `+0x58`.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
-   `senv`/`swat` shaders: done (above). Next: Halo 1's tiling scales, the
-   other shader types (`soso`, `schi`, `sgla`, `smet`, `sotr`) and object
-   and scenery models (`h1objects` keeps Halo 2 shaders on them).
+   `senv`/`swat` shaders: done (above), and object and scenery models
+   (item 6). Next: Halo 1's tiling scales.
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at
@@ -677,10 +699,10 @@ disc.
 5. **The setting and the map list** (below): built, with its row.
 6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
    model per variant are built (below), and Halo 1's skies. Next a HUD
-   with the health meter, and Halo 1's textures on the converted object
-   models (their materials name no shader yet: a copy per `soso`, base
-   `+0xa4`, detail `+0xdc`, on a base model shader, as `textures` does
-   for the structure).
+   with the health meter. Halo 1's textures on the converted object
+   models are built (below). Neither the structure nor converted models
+   list predicted resources yet; whether the copies' bitmaps need to be
+   listed is for the render lane's next round and a game run.
 
 ## Importing (**Built**: `cli::h1_import`)
 
@@ -784,6 +806,20 @@ maps were installed in the Halo 1 sandbox (the boot reads
 Halo 2 sandbox; Halo 1's campaign level names (`a10` to `d40`) are Halo
 1's. `H2_HEALTH_MODEL` still overrides. The HUD meter is the window's
 until a converted HUD has a body widget.
+
+**Object and scenery textures (Built, `textures::ModelTemplate`).**
+Each Halo 1 model shader gets a Halo 2 `shad` copy: the base's first
+`objects\` shader on `shaders\shader_templates\opaque\tex_bump`
+(by name, so the pick is stable), its base map swapped for the Halo 1
+shader's base map, its detail for the Halo 1 detail map (else the base's
+`default_detail`) and its bump for `default_vector` (Halo 1 model
+shaders have no bump). The maps come from `textures::h1_maps_of`, which
+reads `soso` (base `+0xa4`, detail `+0xdc`), `senv`, `swat`, `smet`,
+`schi`, `sotr` and `sgla`. `h1objects` converts each map once
+(`h1bitmaps`) and names the copies in the model's materials;
+campaign scenery goes through `h1objects` too, so it gets them as well.
+On Blood Gulch's sandbox 17 models are converted, 81 materials draw
+Halo 1 textures and 5 name no Halo 1 shader (`tests/sandbox_disc.rs`).
 
 ### Design notes
 
