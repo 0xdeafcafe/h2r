@@ -254,8 +254,8 @@ What each layer writes, from the base map up:
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
-| Scripts | `h1scripts` with `Missing::Stub` and `Cutscenes::Skip` (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([h1-scripts.md](../formats/h1-scripts.md), "Level data the scripts name") | Looping sounds (`lsnd` is not converted), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
-| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit | Every other sound; `lsnd` (looping) |
+| Scripts | `h1scripts` with `Missing::Stub` and `Cutscenes::Skip` (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([h1-scripts.md](../formats/h1-scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
+| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`), in first-use order while they fit the map file (Music, below) | Every other sound; looping sounds past the map file's size limit |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
 ### Cutscenes (skipped by default)
@@ -292,6 +292,48 @@ of zero (`DONE_VALUES`, every use in the ten levels read):
 `ai_conversation_status` 5, `ai_command_list_status` 2,
 `game_all_quiet` and `game_safe_to_speak` true. The four waits on
 `(= 1 (ai_command_list_status ...))` (a10, b40, c20, d40) still hold.
+
+### Waits on stubs (playing a level through)
+
+`h1scripts`' disc test `waits_on_stubs` counts, per level, the
+`sleep_until` and `if` conditions that read a stubbed builtin, and which
+of them nothing handles (a stub not in `DONE_VALUES`, not `ai_status`,
+and not one whose zero is already the done value: `sound_impulse_time`,
+`recording_time`, `ai_going_to_vehicle`). What reads a stub most, over
+all ten levels (uses, before this round):
+
+| Stub | Uses | Now |
+|---|---|---|
+| `ai_status` | 35 (a50 16, b40 17, b30 2) | `ai_combat_status` on Halo 1's scale (h1-scripts.md, Step 2) |
+| `ai_conversation_status` | 34 | done value 5 |
+| `ai_command_list_status` | 20 | done value 2 |
+| `game_all_quiet` | 17 | done value true |
+| `ai_living_fraction` | 14 (a30) | `ai_strength` |
+| `device_get_power` | 8 (d40) | Halo 2's unnamed builtin 255 (`INFERRED`) |
+| `player0_joystick_set_is_normal` | 7 | `false` (help text only) |
+| `game_time` | 6 (a30) | `0`, or'd with a seat test |
+| `game_safe_to_speak` | 5 | done value true |
+| `ai_going_to_vehicle` | 5 | `0` (none is going) |
+| `sound_impulse_time` | 4 (a10) | `0` (the line is over) |
+| `hud_get_timer_ticks` | 3 (d40) | done value 32767: the escape timer never runs out |
+| `ai_conversation_line` | 1 (b30) | done value 99 |
+
+`ai_living_count`, `ai_strength`, `unit_get_health`, `volume_test_objects`
+and `objects_can_see_object`/`_flag` translate directly; they are not
+stubs.
+
+Waits still on an unhandled stub, by level (2026-11-17):
+
+- a10: 11 `sleep_until` and 6 `if`, all in the cryo tutorial (the
+  `player_action_test_*` look and move tests, joystick and pitch help
+  text), which the cutscene skip never runs.
+- a30: 7 and 2: `game_time` (6, each or'd with a test that ends it when
+  the player boards), the night vision tutorial
+  (`unit_solo_player_integrated_night_vision_is_active`), joystick help.
+- a50: 1, `ai_allegiance_broken` (the traitor branch: `false`, the
+  marines stay friendly).
+- b40: 2 `if`s on joystick help text; c40: 1.
+- b30, c10, c20, d20, d40: none.
 
 Placed objects Halo 1 leaves to the scripts are no longer created at
 load (Objects, above): a10's x10 crew in the space BSP (`keyes_x10_space`,
@@ -374,8 +416,12 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   with starting locations are always kept; the empty ones the scripts
   name (migration and attach targets, mostly) only while the total fits.
   a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out,
-  and the scripts' names for them resolve to their encounter's squad
-  group. Every other level fits with them (the most: c40, 227).
+  and the scripts' names for them resolve to a sibling squad (the
+  encounter's first converted one), or the encounter's squad group if it
+  has none. A squad group is no stand-in for a squad: Halo 2's
+  `ai_migrate` ignores a destination with either top bit set
+  (`0x002a54cc`), and `ai_attach_units` reads the low 16 bits as a squad
+  index (`0x0027305e`) (h1-ai.md). Every other level fits with them (the most: c40, 227).
   Survey: `ai_counts_against_the_caps`, `empty_squad_uses`.
 - **Cutscene flags, camera points, titles and device groups.** The
   engine indexes these blocks without a check (b40 faulted at
@@ -385,11 +431,30 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   reached atom of these types against its converted block on all ten
   levels. Names resolve without case (b30 and d40 named 3 and 9 flags
   and a device group in another case and lost them).
-- **b40's level data.** b40 is at the tag memory bound. The lean
-  retries now drop the seat table before the level data, but b40 still
-  converts without its level data (`0xc21000` of `0xc24000`): its 74
-  calls naming a flag, camera point, title or device group are stubbed
-  (the insertion's teleports and camera moves among them).
+- **b40's level data.** b40 is at the tag memory bound. A level over
+  it is converted again leaner (`h1campaign::convert`), dropping in
+  turn: the empty squads kept for their names, the seat table, Halo 1's
+  textures on object models, the music, the level data. b40 still
+  converts only without its level data (`0xc22000` of `0xc24000`): its
+  74 calls naming a flag, camera point, title or device group are
+  stubbed (the insertion's teleports and camera moves among them), and
+  it has no music.
+- **Music and the map file.** Halo 2's campaign map file is capped at
+  `0x11800000` bytes (`map::writer::cache_size_limit`, the header
+  validator's table at `0x00214ed0`). The base's file (its own raw
+  data kept whole) with each level's BSPs and sounds leaves from under
+  1 MB (d40) to about 50 MB (a50) for music, which Halo 1 ships as Xbox
+  ADPCM, kept as it is. The looping
+  sounds go in in the order the scripts first name them while their
+  samples fit: a level over the cap (`Error::FileSize`) is converted
+  again with that many fewer music bytes (and 256 KiB margin), once on
+  every level so far. Per level, looping sounds in / named (2026-11-17,
+  `every_campaign_level_converts`): a10 4/25, a30 16/16, a50 20/24, b30
+  14/14, b40 0/16 (tag memory), c10 11/15, c20 7/8, c40 8/19, d20
+  14/20, d40 2/29. A track left out leaves its `sound_looping_start`
+  hook `none` (Halo 2 plays nothing). Fitting the rest needs room in
+  the file: dropping the base's raw data no converted tag reaches (its
+  own sounds, bitmaps and models) is the likely next step.
 
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,

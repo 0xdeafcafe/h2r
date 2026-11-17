@@ -827,7 +827,26 @@ fn a30_converts_onto_its_base_and_reads_back() {
             }
         }
         println!("sounds read back: {ours} converted, {} in all", ids.len());
-        assert_eq!(ours, r.sounds);
+        // The scripts' own sounds and the looping sounds' tracks.
+        assert!(ours >= r.sounds, "{ours} < {}", r.sounds);
+        // Each looping sound the scripts name is in the map under its
+        // Halo 1 name, or reported left out.
+        let lsnd = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"lsnd") && t.location.is_some())
+            .filter(|t| {
+                t.name
+                    .as_deref()
+                    .is_some_and(|n| h1.find(h1sounds::looping::LSND, n).is_some())
+            })
+            .count();
+        println!(
+            "looping sounds read back: {lsnd} ({} left out)",
+            r.looping_dropped.len()
+        );
+        assert_eq!(lsnd, r.looping);
+        assert!(r.looping > 0);
     }
 
     // Listed by the Halo 1 campaign manifest under the map's own path.

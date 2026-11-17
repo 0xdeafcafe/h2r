@@ -105,12 +105,35 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 /// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
 /// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
 /// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
-/// are true.
+/// are true; the HUD timer never runs out; a conversation is past any line.
 pub const DONE_VALUES: &[(&str, i32)] = &[
     ("ai_conversation_status", 5),
     ("ai_command_list_status", 2),
     ("game_all_quiet", 1),
     ("game_safe_to_speak", 1),
+    // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
+    // as failed; Halo 2 has no HUD timer, so it never runs out.
+    ("hud_get_timer_ticks", 32767),
+    // b30: `(< 1 (ai_conversation_line jeep_load))`, a line past the first.
+    ("ai_conversation_line", 99),
+];
+
+/// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:
+/// the Halo 2 engine global a status must reach, and the Halo 1 value.
+/// Halo 1's XBE describes its scale as 0 inactive, 1 noncombat, 2
+/// guarding, 3 search/suspicious, 4 definite enemy (heard or magic
+/// awareness), 5 visible enemy, 6 engaging in combat; Halo 2's globals are
+/// the ones its scripts compare with (`ai_combat_status_idle` to
+/// `_dangerous`, ascending: every retail comparison reads them so). A
+/// visible enemy counts as engaging, which is what Halo 1's waits on
+/// `(= (ai_status x) 6)` ask for.
+pub const STATUS_LADDER: &[(&str, i32)] = &[
+    ("ai_combat_status_visible", 6),
+    ("ai_combat_status_certain", 5),
+    ("ai_combat_status_uninspected", 4),
+    ("ai_combat_status_active", 3),
+    ("ai_combat_status_alert", 2),
+    ("ai_combat_status_idle", 1),
 ];
 
 /// Halo 2 value types whose value indexes a scenario block the engine
@@ -539,6 +562,168 @@ impl Compiler<'_> {
         Ok(None)
     }
 
+    /// Halo 1's `(ai_status x)` on Halo 2's `ai_combat_status`, as Halo 1's
+    /// scale ([`STATUS_LADDER`]): `(if (>= (ai_combat_status x)
+    /// ai_combat_status_visible) 6 (if ... 0))`. `None` when Halo 2's
+    /// builtins or engine globals for it are not known.
+    fn status_ladder(&mut self, args: &[Datum], expected: u16) -> Result<Option<Datum>> {
+        let (Some(status), Some(ge), Some(iff), [arg]) = (
+            self.h2.builtins.get("ai_combat_status").cloned(),
+            self.h2.builtins.get(">=").cloned(),
+            self.h2.builtins.get("if").cloned(),
+            args,
+        ) else {
+            return Ok(None);
+        };
+        let mut globals = Vec::new();
+        for &(name, v) in STATUS_LADDER {
+            let Some(&(index, ty)) = self.h2.externals.get(name) else {
+                return Ok(None);
+            };
+            globals.push((name, index, ty, v));
+        }
+        let ai = status.parameters[0];
+        let mut out = self.number(expected, 0);
+        for &(name, index, ty, v) in globals.iter().rev() {
+            let x = self.expr(*arg, ai)?;
+            let s = self.call(status.index, CALL, h2t::SHORT, b"ai_combat_status", &[x]);
+            let string = self.intern(name.as_bytes());
+            let g = self.push(New {
+                opcode: ty,
+                ty: h2t::SHORT,
+                flags: GLOBAL,
+                string,
+                data: u32::from(index | 0x8000),
+            });
+            let cond = self.call(ge.index, CALL, h2t::BOOLEAN, b">=", &[s, g]);
+            let then = self.number(expected, v);
+            out = self.call(iff.index, CALL, expected, b"if", &[cond, then, out]);
+        }
+        Ok(Some(out))
+    }
+
+    /// Halo 1's `(op (ai_status x) k)` with `op` a comparison and `k` a
+    /// number (every use in the ten levels), as one comparison of Halo 2's
+    /// `ai_combat_status` with the [`STATUS_LADDER`] global for `k`: the
+    /// same truth as [`Self::status_ladder`] at a tenth of its nodes (b40
+    /// is at the tag memory bound). `None` when it does not have that shape.
+    fn status_compare(&mut self, op: &str, args: &[Datum], expected: u16) -> Result<Option<Datum>> {
+        let [a, b] = args else { return Ok(None) };
+        let is_status = |c: &Self, d: Datum| -> Result<Option<Datum>> {
+            let n = *c.t.node(d)?;
+            if n.atom()
+                || n.script_call()
+                || c.h1
+                    .function(n.opcode())
+                    .map_or(true, |f| f.name != "ai_status")
+            {
+                return Ok(None);
+            }
+            let head = *c.t.node(Datum(n.data()))?;
+            let arg = head.next();
+            Ok((arg != Datum::NULL && c.t.node(arg)?.next() == Datum::NULL).then_some(arg))
+        };
+        let number = |c: &Self, d: Datum| -> Result<Option<i32>> {
+            let n = *c.t.node(d)?;
+            if !n.atom() || n.global() {
+                return Ok(None);
+            }
+            // The value, not the token: a literal's string offset is not
+            // always in the table.
+            let Ok(text) = crate::decompile::literal(c.t, c.h1, &n) else {
+                return Ok(None);
+            };
+            let v = text.trim().parse::<f32>().ok();
+            Ok(v.filter(|v| v.fract() == 0.0).map(|v| v as i32))
+        };
+        let (arg, k, op) = match (is_status(self, *a)?, number(self, *b)?) {
+            (Some(x), Some(k)) => (x, k, op),
+            _ => match (number(self, *a)?, is_status(self, *b)?) {
+                (Some(k), Some(x)) => (
+                    x,
+                    k,
+                    match op {
+                        "<" => ">",
+                        ">" => "<",
+                        "<=" => ">=",
+                        ">=" => "<=",
+                        o => o,
+                    },
+                ),
+                _ => return Ok(None),
+            },
+        };
+        // Halo 1's status is at least `k` exactly when Halo 2's reaches the
+        // ladder's global for `k`.
+        let (k, at_least) = match op {
+            ">=" => (k, true),
+            ">" => (k + 1, true),
+            "<" => (k, false),
+            "<=" => (k + 1, false),
+            "=" => {
+                let (Some(lo), Some(hi), Some(and)) = (
+                    self.status_threshold(arg, k, true, h2t::BOOLEAN)?,
+                    self.status_threshold(arg, k + 1, false, h2t::BOOLEAN)?,
+                    self.h2.builtins.get("and").cloned(),
+                ) else {
+                    return Ok(None);
+                };
+                return Ok(Some(self.call(
+                    and.index,
+                    CALL,
+                    expected,
+                    b"and",
+                    &[lo, hi],
+                )));
+            }
+            _ => return Ok(None),
+        };
+        self.status_threshold(arg, k, at_least, expected)
+    }
+
+    /// `(>= (ai_combat_status x) G)` (or `<` when not `at_least`) for the
+    /// [`STATUS_LADDER`] global of Halo 1 status `k`; a constant outside
+    /// the scale.
+    fn status_threshold(
+        &mut self,
+        arg: Datum,
+        k: i32,
+        at_least: bool,
+        ty: u16,
+    ) -> Result<Option<Datum>> {
+        if k <= 0 || k > 6 {
+            return Ok(Some(self.number(ty, i32::from((k <= 0) == at_least))));
+        }
+        let name = if at_least { ">=" } else { "<" };
+        let (Some(status), Some(cmp), Some(&(global, _))) = (
+            self.h2.builtins.get("ai_combat_status").cloned(),
+            self.h2.builtins.get(name).cloned(),
+            STATUS_LADDER.iter().find(|r| r.1 == k),
+        ) else {
+            return Ok(None);
+        };
+        let Some(&(index, gty)) = self.h2.externals.get(global) else {
+            return Ok(None);
+        };
+        let x = self.expr(arg, status.parameters[0])?;
+        let c = self.call(status.index, CALL, h2t::SHORT, b"ai_combat_status", &[x]);
+        let string = self.intern(global.as_bytes());
+        let g = self.push(New {
+            opcode: gty,
+            ty: h2t::SHORT,
+            flags: GLOBAL,
+            string,
+            data: u32::from(index | 0x8000),
+        });
+        Ok(Some(self.call(
+            cmp.index,
+            CALL,
+            ty,
+            name.as_bytes(),
+            &[c, g],
+        )))
+    }
+
     /// Compiles node `d` where its parent expects Halo 2 type `expected`.
     fn expr(&mut self, d: Datum, expected: u16) -> Result<Datum> {
         let n = *self.t.node(d)?;
@@ -565,6 +750,16 @@ impl Compiler<'_> {
             .table
             .builtin(index)
             .ok_or_else(|| invalid("no translation"))?;
+        if matches!(f.name.as_str(), "=" | "<" | ">" | "<=" | ">=")
+            && let Some(d) = self.status_compare(&f.name, &args, expected)?
+        {
+            return Ok(d);
+        }
+        if f.name == "ai_status"
+            && let Some(d) = self.status_ladder(&args, expected)?
+        {
+            return Ok(d);
+        }
         let Some((h2_name, b)) = tr.target.clone().filter(|_| tr.kind != Kind::Missing) else {
             self.out.missing.push(Unresolved {
                 definition: self.definition.clone(),
