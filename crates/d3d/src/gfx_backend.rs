@@ -298,7 +298,7 @@ impl GfxBackend {
             merge_discards: merge_discards_from_env(
                 std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref(),
             ),
-            merge_masks: std::env::var("H2_GFX_MERGE_PASSES").as_deref() == Ok("loose"),
+            merge_masks: merge_masks_from_env(std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref()),
             counter: None,
             reports: HashMap::new(),
             unsubmitted_reports: Vec::new(),
@@ -444,13 +444,14 @@ impl GfxBackend {
         self.merge_discards = on;
     }
 
-    /// The loose merge rule (`H2_GFX_MERGE_PASSES=loose`, off by default):
-    /// no draw starts a render pass of its own for the merge rules, not
-    /// after a partly masked draw either. Counted draws and target switches
-    /// still split. Not exact: it is there to measure what the mask splits
-    /// cost in a level (`pass_mask`, `pass_nocolor`, `pass_discard` in the
-    /// frame stats) and, with the merge self-check
-    /// ([`set_merge_check`](Self::set_merge_check)), what they buy.
+    /// The loose merge rule (the default; `H2_GFX_MERGE_PASSES=fast` or
+    /// `exact` turns it off): no draw starts a render pass of its own for
+    /// the merge rules, not after a partly masked draw either. Counted
+    /// draws and target switches still split. Not exact: on Old Mombasa
+    /// it took a 1000-draw frame from about 193 render passes to 41, and
+    /// the merge self-check ([`set_merge_check`](Self::set_merge_check))
+    /// found 12 of a 970-draw frame's pixels off, by up to 3 levels
+    /// (docs/graphics/graphics.md, "Merged passes").
     pub fn set_merge_masks(&mut self, on: bool) {
         self.merge_masks = on;
     }
@@ -1928,6 +1929,12 @@ fn merge_discards_from_env(value: Option<&str>) -> bool {
     value != Some("exact")
 }
 
+/// The loose merge rule ([`GfxBackend::set_merge_masks`]) for a value of
+/// `H2_GFX_MERGE_PASSES`: on unless it is `fast` or `exact`.
+fn merge_masks_from_env(value: Option<&str>) -> bool {
+    !matches!(value, Some("fast" | "exact"))
+}
+
 /// Whether a merged draw writing `mask` starts a render pass of its own
 /// after a draw in the same pending pass that wrote `prev` (`None` for the
 /// first draw): after a partly masked draw, unless it writes the same
@@ -2021,7 +2028,7 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_discards_from_env, merge_split};
+    use super::{merge_discards_from_env, merge_masks_from_env, merge_split};
     use wgpu::ColorWrites as W;
 
     #[test]
@@ -2031,6 +2038,16 @@ mod tests {
             assert!(merge_discards_from_env(Some(v)), "{v:?}");
         }
         assert!(!merge_discards_from_env(Some("exact")));
+    }
+
+    #[test]
+    fn the_loose_merge_rule_is_the_default_and_fast_or_exact_turn_it_off() {
+        assert!(merge_masks_from_env(None));
+        for v in ["loose", "1", ""] {
+            assert!(merge_masks_from_env(Some(v)), "{v:?}");
+        }
+        assert!(!merge_masks_from_env(Some("fast")));
+        assert!(!merge_masks_from_env(Some("exact")));
     }
 
     #[test]

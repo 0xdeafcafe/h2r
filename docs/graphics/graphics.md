@@ -414,7 +414,7 @@ render pass and 38cd3f7 onwards at 200, and the later commits in that
 range (compile workers, render thread, W-buffer) change neither count
 nor cost.
 
-**The fast rule** (the default; `H2_GFX_MERGE_PASSES=fast` names it,
+**The fast rule** (the default until 2026-11-18; `H2_GFX_MERGE_PASSES=fast`,
 `GfxBackend::set_merge_discards`) gives a discarding draw a render pass
 of its own only after a partly masked draw (`merge_split` in
 `d3d::gfx_backend`), which is the one trigger the menu cases share.
@@ -434,6 +434,21 @@ visible: the differences are a few levels on edge pixels, and merged
 passes already accept that trade. Whether the exact rule is exact on
 that level frame was not checked: the self-check ran only with the fast
 rule on.
+
+**The loose rule** (the default since 2026-11-18;
+`H2_GFX_MERGE_PASSES=loose`, `GfxBackend::set_merge_masks`) drops the
+merge-rule splits altogether: no draw starts a render pass of its own
+because of the draw before it. Counted draws and target switches still
+split. On Old Mombasa (presents 4000-7000, 1x) it took a 1000-draw frame
+from about 193 render passes to 41 and a 2000-draw frame from 297 to 43,
+and the render thread's encode plus submit at 2000 draws from about 28 to
+16 ms. Most of the splits it removes were discarding draws after a
+partly masked one (`pass_discard` in the frame stats, 149 of the 193).
+The merge self-check at frame 5000 (970 draws) found two passes off:
+1 pixel by 1 level (draws 836-837) and 11 pixels by up to 3 (draws
+897-898). It became the default on the owner's call: edge pixels a few
+levels off, for render-thread headroom in heavy scenes.
+`H2_GFX_MERGE_PASSES=fast` goes back to the fast rule.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 
