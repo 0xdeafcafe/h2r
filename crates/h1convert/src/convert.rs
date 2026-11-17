@@ -157,6 +157,9 @@ pub struct Prepared {
     /// ([`crate::shaders::pick`]): its index among the base's materials
     /// and its tag name.
     pub material_shaders: Vec<(usize, String)>,
+    /// Halo 1's own textures on copies of those shaders
+    /// ([`crate::textures`]), added when the map is built.
+    pub textures: crate::textures::Retexture,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
@@ -395,6 +398,19 @@ pub fn prepare<R: Read + Seek>(
         .into_iter()
         .map(|i| (i, base_shaders[i].name.clone()))
         .collect();
+    // Halo 1's own textures on copies of the picked shaders. A map whose
+    // shaders can't be read keeps the base's (with a note saying why).
+    let picks: Vec<(usize, String)> = material_shaders
+        .iter()
+        .map(|m| m.0)
+        .zip(materials.iter().cloned())
+        .collect();
+    let textures = crate::textures::plan(h1, base, &templates, &picks).unwrap_or_else(|e| {
+        crate::textures::Retexture {
+            notes: vec![format!("the base's textures kept: {e}")],
+            ..Default::default()
+        }
+    });
 
     // The base's lightmap bitmap's slot takes the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;
@@ -434,6 +450,7 @@ pub fn prepare<R: Read + Seek>(
         sections,
         materials,
         material_shaders,
+        textures,
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
@@ -457,6 +474,15 @@ fn fnv(bytes: &[u8]) -> u32 {
 }
 
 impl Prepared {
+    /// Each structure material's base material and Halo 1 shader name.
+    pub fn texture_picks(&self) -> Vec<(usize, String)> {
+        self.material_shaders
+            .iter()
+            .zip(&self.materials)
+            .map(|((i, _), n)| (*i, n.clone()))
+            .collect()
+    }
+
     /// The package manifest for `map_bytes`.
     pub fn manifest(&self, map_bytes: &[u8]) -> Manifest {
         let name = map_name(&self.h1_name);
@@ -585,19 +611,20 @@ impl Prepared {
                     .for_each(|f| geometry.extend(f.to_le_bytes()))
             });
         }
+        // Halo 1's own textures: new bitmaps and shader copies, and the
+        // material heads naming them.
+        let (templates, materials) =
+            self.textures
+                .install(&mut set, &self.templates, &self.texture_picks())?;
         let structure = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
             sections: &self.sections,
-            materials: &self
-                .material_shaders
-                .iter()
-                .map(|m| m.0)
-                .collect::<Vec<_>>(),
+            materials: &materials,
             bounds: self.bounds,
             mopp,
             checksum: fnv(&geometry),
-            templates: &self.templates,
+            templates: &templates,
             lightmap_bitmap,
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;

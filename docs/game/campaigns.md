@@ -231,7 +231,7 @@ What each layer writes, from the base map up:
 
 | Layer | Written | Left out |
 |---|---|---|
-| Structure | Each Halo 1 BSP into the base's BSP slot of the same index, with `h1convert::structure` (collision, render geometry, materials matched to the base's shaders, Halo 1's lightmap as a new `bitm`, MOPP, audibility, sound clusters) and pathfinding generated from the collision at `sbsp+0xc4` | BSPs past the base's 3 slots: a10 6, a50 1, b40 10, c10 3, c20 1, c40 10, d20 2, d40 7 (a30, b30: none) |
+| Structure | Each Halo 1 BSP into the base's BSP slot of the same index, with `h1convert::structure` (collision, render geometry, materials matched to the base's shaders (Halo 1's own textures on copies of them come from `h1convert::textures`: `plan` before building, `Retexture::install` after the predicted-datum tags, then the returned templates and material indices into `Structure`; not called from `h1campaign` yet), Halo 1's lightmap as a new `bitm`, MOPP, audibility, sound clusters) and pathfinding generated from the collision at `sbsp+0xc4` | BSPs past the base's 3 slots: a10 6, a50 1, b40 10, c10 3, c20 1, c40 10, d20 2, d40 7 (a30, b30: none) |
 | Sky | Halo 1's skies (`h1sky`), every cluster on the first | |
 | Scenario | The base `scnr` relocated as a block tree, replaced fields emptied; BSP descriptors through `FixupKind::Bsp` | |
 | Player | The level's starting locations, each on the base's first element. The cyborg is converted and set as the campaign players' unit (`matg +0x138` elements 0 and 1, `h1convert::globals::set_player_unit`); Halo 1 health follows from the map name (`boot::health`) | |

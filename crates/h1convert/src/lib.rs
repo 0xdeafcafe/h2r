@@ -28,6 +28,7 @@ pub mod sandbox;
 pub mod shaders;
 pub mod slots;
 pub mod structure;
+pub mod textures;
 
 /// Why a conversion was refused.
 #[derive(Debug, thiserror::Error)]
@@ -75,6 +76,9 @@ pub enum Error {
     /// The Halo 1 sandbox's objects couldn't be added.
     #[error("Halo 1 objects: {0}")]
     Objects(String),
+    /// Halo 1's textures couldn't be planned (a base shader unreadable).
+    #[error("textures: {0}")]
+    Textures(String),
     /// A converted tag couldn't be installed.
     #[error("installing a converted tag: {0}")]
     Install(#[from] h1models::Error),

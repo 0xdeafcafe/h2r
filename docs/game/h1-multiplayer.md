@@ -227,10 +227,41 @@ The base's old BSP region stays in the file, unused.
   wrong: `disc_maps.rs` decodes every image of every converted map
   through `assets::decode_image` and compares it with the base's, and all
   are identical (1618 images on Beaver Creek, 1686 on Coagulation). The
-  CLI prints each choice (`shader <Halo 1> -> <Halo 2>`). Halo 1's own
-  textures replace these once they convert. One collision material per
+  CLI prints each choice (`shader <Halo 1> -> <Halo 2>`); the chosen
+  shader is then the template for Halo 1's own textures (next). One
+  collision material per
   Halo 1 collision material, copies of the base's first (no pointers in
   it), `+0x0a` = -1.
+- **Halo 1's own textures** (`h1convert::textures`). For each Halo 1
+  environment (`senv`) or water (`swat`) shader, its bitmaps by role:
+  `senv` base map `+0x88`, primary detail `+0xb8` (else micro detail
+  `+0xfc`), bump `+0x128`; `swat` base `+0x4c` (offsets from a sweep of
+  every shader on the 13 maps). The chosen base shader's roles come from
+  its compiled passes (`tags::material`): base is stage 0 of the first
+  pass with a bitmap, detail its stage 1, bump any parameter bitmap in
+  `P8Bump` (format 17 in both games; a Halo 1 bump is swapped only when
+  it is `P8Bump` too). The Halo 1 bitmaps are converted by
+  `h1bitmaps::convert_bitmap` and added as new `bitm` tags under their
+  Halo 1 names; a new `shad`, named after the Halo 1 shader, is the
+  chosen shader's whole tree (the schema's depth-first copy,
+  `Relocator::to_built`) in which every bitmap parameter (postprocess
+  `+0x20`, its parameters `+0x04`, stride `0xc`, datum at `+0`) holding
+  a swapped role's datum names the Halo 1 bitmap. The copy points at
+  nothing of the chosen shader's, so it holds in the fresh build too
+  (`tests/fresh.rs`: every reference of the fresh Blood Gulch
+  resolves); the blocks on the path to the parameters drop their
+  sharing key, the rest keep it. A material head is appended per
+  copy and the structure material points at it. `textures::plan` runs in
+  `prepare`, `Retexture::install` in `assemble` after the tags whose
+  datums are predicted (objects, collections). Shaders of other types
+  (`soso`, `schi`, `sgla`, ...) keep the base's, and the CLI says so.
+  Left out: Halo 1's detail and bump tiling scales (the template's stay),
+  the detail blend function, and the shader's `+0x2c` block (it still
+  names the chosen shader's bitmaps; the draw path reads the
+  parameters). On blend-detail templates (`tex_bump_detail_blend_detail`,
+  Coagulation's ground) stage 1 of the first pass is the second blended
+  base (`coag_grass`), so Halo 1's detail map lands there: a game run
+  shows whether that reads well.
 - **The sky is the base's.** Cluster `+0x6e` is the cluster's sky index
   into the scenario's skies (`scnr+0x8`, 8-byte references; E
   `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to the first sky
@@ -546,7 +577,16 @@ All 13 multiplayer maps on the Halo 1 disc convert
 build), each map reads back with a valid checksum, and its bitmaps are
 the base's, pixel for pixel, but for the lightmap. The test also checks,
 on every map: each drawn part's material names the shader `shaders::pick`
-chose, none of those shaders' bitmaps is an `unwrapped` one, the texture
+chose (or, with Halo 1's textures, its copy: same template, the same
+bitmaps but each swapped role's, which is the Halo 1 bitmap), none of those
+shaders' bitmaps is an `unwrapped` one; every added Halo 1 bitmap decodes
+(Halo 2's decoder, the converted map's own raw data) to the pixels
+`h1bitmaps` decodes from Halo 1, every image (Halo 1 bitmaps / shader
+copies / shaders left on the base's: beavercreek 25/14/4, bloodgulch
+18/10/7, boardingaction 17/10/4, carousel 17/8/10, chillout 24/15/7,
+damnation 21/12/6, hangemhigh 21/9/1, longest 21/9/5, prisoner 23/10/8,
+putput 16/11/2, ratrace 29/13/6, sidewinder 24/12/5, wizard 14/7/3; the
+whole test now takes 14 minutes in a debug build); the texture
 and lightmap coordinates read back as written; the lightmap names the
 converted bitmap, every lit cluster's page is one of its images, and each
 page decodes (Halo 2's decoder, the converted map's own raw data) to the
@@ -583,9 +623,10 @@ disc.
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. **Decals, lights, decorators** of the base (above).
-3. ~~**Lightmaps**~~: done (above). Next, **Halo 1's own textures** on
-   per-shader Halo 2 shaders (base shaders are chosen by name until then;
-   `h2 h1 convert` marks each as the base's stand-in).
+3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
+   `senv`/`swat` shaders: done (above). Next: Halo 1's tiling scales, the
+   other shader types (`soso`, `schi`, `sgla`, `smet`, `sotr`) and object
+   and scenery models (`h1objects` keeps Halo 2 shaders on them).
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at
