@@ -17,7 +17,8 @@ use super::{Action, App};
 /// injects another.
 pub type Converter = fn(&[u8], Vec<u8>, Sandbox) -> Result<Converted, h1convert::Error>;
 
-/// `h1convert::convert::convert` over bytes.
+/// `h1convert::convert::convert` over bytes; the Halo 1 sandbox's objects
+/// converted by `h1objects` (`convert::halo1::convert_halo1`).
 pub fn h1convert_convert(
     h1_file: &[u8],
     base: Vec<u8>,
@@ -25,7 +26,16 @@ pub fn h1convert_convert(
 ) -> Result<Converted, h1convert::Error> {
     let h1 = h1map::H1Map::from_reader(h1_file)?;
     let mut base = map::Map::from_reader(Cursor::new(base))?;
-    h1convert::convert::convert(&h1, content::Sha256::of(h1_file), &mut base, sandbox)
+    let sha = content::Sha256::of(h1_file);
+    match sandbox {
+        Sandbox::Halo2 => h1convert::convert::convert(&h1, sha, &mut base, sandbox),
+        Sandbox::Halo1 => {
+            let templates = h1objects::base::Base::read(&mut base)
+                .map_err(|e| h1convert::Error::Objects(e.to_string()))?;
+            let mut objects = h1objects::sandbox::Objects::new(&h1, &templates);
+            h1convert::convert::halo1::convert_halo1(&h1, sha, &mut base, &mut objects)
+        }
+    }
 }
 
 /// The Halo 2 map a Halo 1 map is converted onto: h1convert's choice
@@ -52,7 +62,7 @@ pub fn explain(e: &h1convert::Error) -> String {
             thousands(*n)
         ),
         h1convert::Error::Halo1Sandbox => {
-            "The Halo 1 sandbox isn't built yet: convert with the Halo 2 sandbox.".into()
+            "This conversion has no Halo 1 objects: convert with the Halo 2 sandbox.".into()
         }
         other => format!("The conversion failed: {other}"),
     }

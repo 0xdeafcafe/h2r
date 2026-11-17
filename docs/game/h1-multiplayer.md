@@ -54,10 +54,8 @@ a tag slot: it gives the base's existing `sbsp` and `ltmp` slots new
 `Built` payloads in a new BSP section, and grows only blocks (spawn points,
 flags, equipment) through fixups or the scenario editor's metadata append.
 So it works whether or not `h2 map testbuild`'s `fresh` variant loads.
-If `fresh` loads (the index tail can be dropped), the next step is to let
-the converter add tags (Halo 1 sandbox tags) to the pinned base; if it
-doesn't, Halo 1 sandbox tags must replace unused base slots instead. That
-choice only matters for phase 4.
+The Halo 1 sandbox adds tags: `TagSet::add_tag` grows a pinned set's
+index and keeps its tail (below, "Halo 1 sandbox").
 
 ## Halo 1 data read (**Built**)
 
@@ -374,8 +372,11 @@ hash as well as the map (the `[origin]` below needs it, and `H1Map` holds
 the inflated bytes, not the file). It is `prepare`, then the MOPP code
 from `convert::structure_mopp`, then `Prepared::build`.
 `structure_mopp` calls `mopp::build_structure(&bsp)`
-([mopp.md](../formats/mopp.md)). `Sandbox::Halo1` returns
-`Error::Halo1Sandbox` until phase 4.
+([mopp.md](../formats/mopp.md)). `prepare` and `convert` with
+`Sandbox::Halo1` return `Error::Halo1Sandbox`: the Halo 1 sandbox is
+`convert::halo1::{prepare_halo1, convert_halo1}`, which take the objects'
+converter (`h1objects::sandbox::Objects::new(&h1, &Base::read(&mut base)?)`;
+below, "Halo 1 sandbox"). `h2 h1 convert` and the editor call it.
 
 ```sh
 cargo h2 h1 convert disc/halo1.iso beavercreek --out ~/h2-h1maps [--sandbox h2] [--base beavercreek] [--disc disc/halo2.iso] [--force]
@@ -413,7 +414,7 @@ sha256 = "<the map's SHA-256>"
 origin = { game = "halo1", map = "beavercreek", sandbox = "h2", source_sha256 = "<the Halo 1 map file's SHA-256>" }
 
 [[variant]]
-file = "h1/h1_beavercreek.map"   # once the Halo 1 sandbox exists
+file = "h1/h1_beavercreek.map"
 sha256 = "..."
 origin = { game = "halo1", map = "beavercreek", sandbox = "h1", source_sha256 = "..." }
 ```
@@ -429,12 +430,14 @@ variant: `h1` if the package has it, else the first. Retail-style and
 other manifests parse and resolve unchanged (the existing content
 tests).
 
-**Not done yet:** the sandbox setting and `boot::new_maps` choosing by
-it. The plan: a `multiplayer.halo1_sandbox` `settings::Def` (choice
-`h1`/`h2`, default `h1`, `Restart`) in `boot::setting_defs`; the library
-gets the choice (`Manifest::select_variant(Some(..))` in place of `None`
-in `content::resolve::load`, through a `Library` option that
-`new_maps::install` sets from the setting).
+**The setting (Built):** `multiplayer.halo1_sandbox` in
+`boot::setting_defs` (`HALO1_SANDBOX`: `h1` default or `h2`, `Restart`,
+`H2_HALO1_SANDBOX`). `boot::new_maps::install` reads it and opens the
+library with `content::Library::open_with_sandbox`, so the next boot
+installs that variant of each converted map
+(`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`).
+It has no menu row yet: `h2 settings set multiplayer.halo1_sandbox h2`
+or `settings.toml` set it.
 
 ## Vehicles
 
@@ -505,13 +508,14 @@ shader the conversion doesn't use; `h2 h1 convert` names each one.
 
 ## What isn't placed, and why
 
-Every placement a conversion leaves out is one of these, and `h2 h1
-convert` lists each with its position (`not placed: ...`):
+Every placement the Halo 2 sandbox leaves out is one of these (the Halo 1
+sandbox leaves out race flags only), and `h2 h1 convert` lists each with
+its position (`not placed: ...`):
 
 | Left out | Why |
 |---|---|
 | Race flags (`RaceTrack`, `RaceVehicle`) | Halo 2 has no race game type |
-| Health packs | Halo 2's sandbox has no health pickup; they return with the Halo 1 sandbox (health, phase 4) |
+| Health packs | The base has no health pickup; the Halo 1 sandbox places Halo 1's |
 | Active camouflage | The base has no collection for it (`invisibility`; Beaver Creek and Coagulation have none). A built `itmc` would do, as for vehicles |
 | Overshield | The base has no collection for it (`super_shield`; Coagulation has none) |
 
@@ -574,8 +578,10 @@ disc.
    writes `+0x4c`, `+0x94`, `+0x148` and `+0x1d0` empty without an engine
    reading that allows it (above).
 4. **Precision variants** at round start (the AR rule above).
-5. **The setting and the map list** (below).
-6. **Halo 1 sandbox** (below), and Halo 1's skies with it.
+5. **The setting and the map list** (below): the setting is built; its
+   menu row isn't.
+6. **Halo 1 sandbox**: objects placed (below). Next the cyborg as the
+   player, the health model per variant, and Halo 1's skies.
 
 ## The setting and the map list (design)
 
@@ -600,7 +606,42 @@ disc.
   variant; the `MapId` (content hash) differs per variant; online, the
   host's variant is used.
 
-## Halo 1 sandbox (design, phase 4)
+## Halo 1 sandbox (**Built**: `convert::halo1`, `h1objects::sandbox`)
+
+`h2 h1 convert --sandbox h1` builds the same structure, spawns and flags
+as the Halo 2 variant, and places every Halo 1 item and vehicle spawn as
+the Halo 1 object itself: `h1objects` converts each `weap`, `eqip` and
+`vehi` (and what they reference: `proj`, models, collision, animations)
+onto a Halo 2 template ([h1-objects.md](../formats/h1-objects.md)), and
+the conversion adds the tags to the pinned base after its own slots.
+Nothing is left out but race flags. Slot `n` of a set made from a map gets
+salt `0xe174 + n` (`TagSet::from_map`), so the spawns name each new tag's
+datum before it exists (`convert::halo1::added_datum`), and the build
+checks the datums came out so.
+
+Each netgame equipment spawn names its object, not a collection. The
+spawner rolls an `itmc` or `vehc` and places any other object tag as it
+is (E `0x0015aad0`); a respawn time of 0 on a non-collection takes the
+engine's default (E `0x0015ac83`). Type 0 (weapons) keeps a weapon the
+globals' weapon list doesn't know (E `0x0015a640`: `0x0015eb80` returns
+-1 and the item is kept); vehicle types 1 to 7 and the powerup types keep
+the item while the variant leaves the map's default (E `0x0015a4d0`,
+`0x0015a5b0`). Types: weapons 0; warthog 1, ghost 2, scorpion 3; grenades
+8; camouflage, overshield and the health pack 9.
+
+`h1objects/tests/sandbox_disc.rs` converts Blood Gulch onto Coagulation
+and reads every netgame equipment spawn of the built map back: 43 of 43
+(35 items, 8 vehicles), each naming a tag this conversion added, of its
+group, with a render model (`tags::object::Context`). 68 tags are added:
+8 weapons with their projectiles, camouflage, overshield, the health pack
+(on the overshield template), both grenades, warthog, ghost and scorpion.
+
+**Not done yet:** players are still Halo 2's biped (the cyborg biped
+converts, but `matg`'s player representation isn't patched), and the
+shared health subsystem below isn't switched on per variant.
+
+### Design notes
+
 
 `weap`, `proj`, `bipd`, `vehi`, `eqip` and their `mod2`/`coll`/`phys`,
 `antr` and effects, converted per [campaigns.md](campaigns.md) §2, with

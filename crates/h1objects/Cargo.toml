@@ -17,3 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 xiso.workspace = true
+# The Halo 1 sandbox proof (tests/sandbox_disc.rs): the converted map's
+# source hash and its netgame equipment read back.
+content.workspace = true
+scenario-edit = { path = "../scenario-edit", default-features = false }

@@ -680,7 +680,17 @@ fn convert(args: &[String]) -> Result<()> {
     let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
         .with_context(|| format!("reading {base_name}.map"))?;
     let sha = content::Sha256::of(&file);
-    let p = prepare(&h1, sha, &mut base, a.sandbox)?;
+    // The Halo 1 sandbox places Halo 1 objects, converted and added as
+    // new tags (docs/game/h1-multiplayer.md, "Halo 1 sandbox").
+    let p = match a.sandbox {
+        Sandbox::Halo2 => prepare(&h1, sha, &mut base, a.sandbox)?,
+        Sandbox::Halo1 => {
+            let templates = h1objects::base::Base::read(&mut base)
+                .with_context(|| format!("reading {base_name}'s object templates"))?;
+            let mut objects = h1objects::sandbox::Objects::new(&h1, &templates);
+            h1convert::convert::halo1::prepare_halo1(&h1, sha, &mut base, &mut objects)?
+        }
+    };
     let name = map_name(&h1_name);
     let vertices: usize = p.sections.iter().map(|s| s.vertices.len()).sum();
     let triangles: usize = p.sections.iter().map(|s| s.indices.len() / 3).sum();
@@ -727,6 +737,12 @@ fn convert(args: &[String]) -> Result<()> {
                 .map_or_else(String::new, |v| format!(" (variant {v})")),
             c.replaces
         );
+    }
+    if let Some(o) = &p.objects {
+        println!("  Halo 1 objects: {} tags added", o.count);
+        for n in &o.notes {
+            println!("    {n}");
+        }
     }
     for u in p.applied.unresolved.iter().chain(&p.dropped) {
         println!("  not placed: {u}");

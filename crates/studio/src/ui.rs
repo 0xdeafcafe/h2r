@@ -1431,7 +1431,7 @@ fn convert_controls(
             ConvertSandbox::Halo2,
             "Halo 2 (nearest weapons and vehicles)",
         ),
-        (ConvertSandbox::Halo1, "Halo 1 (its own; not built yet)"),
+        (ConvertSandbox::Halo1, "Halo 1 (its own weapons and vehicles)"),
     ] {
         if ui.radio_button_bool(label, app.convert_sandbox == s) && app.convert_sandbox != s {
             actions.push(Action::SetConvertSandbox(s));

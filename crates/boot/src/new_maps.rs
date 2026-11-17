@@ -120,7 +120,10 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
     let mut chosen: Vec<Package> = Vec::new();
     let mut library = None;
     if maps.is_dir() {
-        let mut lib = Library::open(&maps);
+        // Converted Halo 1 maps: the sandbox the setting names.
+        let (store, _) = crate::setting_defs::load(data_root, &[]);
+        let sandbox = crate::setting_defs::halo1_sandbox(&store);
+        let mut lib = Library::open_with_sandbox(&maps, Some(sandbox));
         let names: BTreeSet<String> = lib
             .packages()
             .iter()

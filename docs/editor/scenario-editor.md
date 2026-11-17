@@ -26,8 +26,9 @@ Addresses are guest virtual addresses of the 1.0 XBE.
 
 The `scnr` root holds each block as a `(count, address)` pair. Every block
 this editor reads lies inside the scenario tag's own payload, or (a block
-it grew, §6) in the ordinary metadata past every tag; a block anywhere
-else, or two placement blocks that share bytes, make the read fail.
+it grew, §6) in ordinary metadata no tag owns (past every tag when it
+grew; a later `map::build` may add tags after it); a block anywhere else,
+or two placement blocks that share bytes, make the read fail.
 
 | Block | `scnr` | Stride | Stride evidence |
 |---|---|---|---|
@@ -103,8 +104,7 @@ rolls each with `collection_select`. Shown, not editable: the other bytes
 - `Scenario::read` keeps each block's elements as raw bytes, plus a copy
   of the source bytes, and the scenario object names block (`scnr+0x48`,
   §6). A block may lie in the scenario's payload or, when this editor grew
-  it, in the ordinary metadata past every tag; anywhere else the read
-  fails.
+  it, in ordinary metadata no tag owns; anywhere else the read fails.
 - `Scenario::set(block, index, field, value)` validates and writes one
   field: editable only, finite floats, nonnegative scale, integers in
   range for the type, palette index -1 or inside the palette, tag

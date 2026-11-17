@@ -19,6 +19,8 @@ use crate::apply::{Applied, apply};
 use crate::structure::{Mesh, Section, Structure, Templates};
 use crate::{Error, Result, collision, placements, shaders, slots, structure};
 
+pub mod halo1;
+
 /// Size of a collection's (`itmc`, `vehc`) root.
 pub const COLLECTION_ROOT: usize = 0xc;
 /// Size of a collection entry.
@@ -163,6 +165,11 @@ pub struct Prepared {
     /// the Halo 1 structure has no lightmap bitmap or the base none to
     /// replace: then every cluster is unlit.
     pub lightmap: Option<Lightmap>,
+    /// The Halo 1 sandbox's converted objects, added first when the map
+    /// is built ([`halo1::prepare_halo1`]); `None` for the Halo 2 sandbox.
+    pub objects: Option<halo1::ObjectTags>,
+    /// The index slot the first of them takes.
+    objects_first: usize,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -267,7 +274,8 @@ pub fn park_trigger_volumes(scnr: &mut [u8], address: u32) -> Result<usize> {
 
 /// Everything short of writing: placements onto the base's scenario, the
 /// collision BSP, the render geometry and the base's templates. Fails for
-/// [`Sandbox::Halo1`], which isn't built yet.
+/// [`Sandbox::Halo1`], whose objects come from outside: use
+/// [`halo1::prepare_halo1`].
 pub fn prepare<R: Read + Seek>(
     h1: &H1Map,
     source_sha256: Sha256,
@@ -424,6 +432,8 @@ pub fn prepare<R: Read + Seek>(
         trigger_volumes,
         bounds: src.world_bounds(),
         lightmap,
+        objects: None,
+        objects_first: 0,
         scenario,
         sbsp,
         ltmp,
@@ -524,6 +534,9 @@ impl Prepared {
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        if let Some(objects) = &self.objects {
+            halo1::install(objects, self.objects_first, &mut set)?;
+        }
 
         self.add_collections(base, &mut set)?;
 
