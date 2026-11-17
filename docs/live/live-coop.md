@@ -1475,7 +1475,11 @@ Checked in the code, not by a run:
 | Sound | The guests run `--no-audio`. |
 | Map pack, Halo 1 | Not installed into the games' data (`--no-mappack --no-halo1`) unless `--extras`. |
 
-The windows open on top of each other; move one aside.
+Each window's title names its game and role (`Halo 2 — Alpha (host)`,
+`Halo 2 — Bravo (guest)`; `h2 play --title`), and the windows sit side by
+side across the main screen, the host leftmost: `h2 play --tile I/N`
+sizes a window to column I of N (the largest 4:3 that fits under the menu
+bar) and places it there (`app::tile`).
 
 ### 12.3 The checklist
 
@@ -1510,7 +1514,10 @@ another of its rows", or that the co-op hooks are off; for steps 4 and 5,
 7, which guest never opened Xbox Live (so the host had nobody online to
 invite); for step 9, accept by hand, or (with `--auto`) accepted but not
 joined; for step 11, nobody pressed Start Game, or the lobby's start check
-never asked about co-op.
+never asked about co-op. For steps 3 to 6, when the host walked none of
+its path but a guest did (picked a lobby mode, a campaign's difficulty,
+one of our Live rows), it says "you drove Charlie's window (it started a
+campaign or lobby itself); drive Alpha (host), the leftmost window".
 
 It ends with the first step not seen ("stopped at step 9: ...", with its
 reason) and lines

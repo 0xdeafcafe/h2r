@@ -161,11 +161,23 @@ fn each_game_has_its_own_ports_data_live_directory_and_socket() {
             "http://127.0.0.1:8075",
             "--gamertag",
             "Alpha",
+            "--title",
+            "Halo 2 — Alpha (host)",
+            "--tile",
+            "0/3",
             "--no-mappack",
             "--no-halo1",
         ])
     );
     assert!(games[1].args.contains(&"--no-audio".into()));
+    // Told apart by their titles, side by side, the host leftmost.
+    assert!(
+        games[2]
+            .args
+            .windows(2)
+            .any(|w| w == ["--title", "Halo 2 — Charlie (guest)"])
+    );
+    assert!(games[2].args.windows(2).any(|w| w == ["--tile", "2/3"]));
     assert!(games[1].args.contains(&"--no-gamepads".into()));
     assert!(!games[0].args.contains(&"--no-gamepads".into()));
     // Without --auto, nothing automatic.

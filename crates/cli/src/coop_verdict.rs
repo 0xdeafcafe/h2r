@@ -290,6 +290,22 @@ fn opened_live_menu(lines: &[(&str, &str)], tag: &str) -> bool {
         || said(lines, tag, "coop-live: Live menu row ")
 }
 
+/// Whether `tag` walked any of the host's menu path: picked a lobby mode,
+/// a campaign's difficulty (the Skulls page), one of our Live rows, Co-op
+/// Campaign, or a lobby start.
+fn host_path(lines: &[(&str, &str)], tag: &str) -> bool {
+    const PATH: [&str; 7] = [
+        "coop-live: lobby mode",
+        "skulls page:",
+        "coop-live: Live menu row ",
+        "coop-live: hosting",
+        "custom games: row chosen",
+        "coop-live: the lobby holds",
+        "coop-live: lobby start state",
+    ];
+    PATH.iter().any(|p| said(lines, tag, p))
+}
+
 /// Why step `n` was not seen on the games `missing`, when the log says
 /// more than "not seen": usually the press before it that nobody made.
 fn why(
@@ -307,6 +323,23 @@ fn why(
         .map(String::as_str)
         .filter(|g| !opened_live_menu(lines, g))
         .collect();
+    // A guest walking the host's path (a campaign, a lobby, Co-op
+    // Campaign) while the host walked none of it: the wrong window.
+    if (3..=6).contains(&n) && !host_path(lines, host) {
+        let drove: Vec<&str> = roles
+            .guests
+            .iter()
+            .map(String::as_str)
+            .filter(|g| host_path(lines, g))
+            .collect();
+        if !drove.is_empty() {
+            return Some(format!(
+                "you drove {}'s window (it started a campaign or lobby itself); drive {host} (host), \
+                 the leftmost window, titled \"Halo 2 — {host} (host)\"",
+                drove.join(" and ")
+            ));
+        }
+    }
     match n {
         1 => Some(format!(
             "{first} never signed in: it was still building or starting, or its window closed first"
@@ -763,5 +796,71 @@ mod tests {
         let (n, why) = stopped(&l, true);
         assert_eq!(n, 1);
         assert!(why.starts_with("Bravo never signed in"), "{why}");
+    }
+
+    /// The 2026-11-17 second run: Charlie's window was driven into a solo
+    /// campaign; Alpha never left its main menu.
+    #[test]
+    fn a_guest_driven_down_the_hosts_path_is_named() {
+        let roles = Roles {
+            host: "Alpha".into(),
+            guests: vec!["Bravo".into(), "Charlie".into()],
+        };
+        let mut text = roles.header();
+        for (t, tag, line) in [
+            (
+                0.049,
+                "Alpha",
+                "live: playing as Alpha (0009d7e882ecd47d) on http://127.0.0.1:8075",
+            ),
+            (
+                0.261,
+                "Charlie",
+                "live: playing as Charlie (000921eea626d1f4) on http://127.0.0.1:8075",
+            ),
+            (
+                0.261,
+                "Bravo",
+                "live: playing as Bravo (0009f6de65cac40f) on http://127.0.0.1:8075",
+            ),
+            (1.302, "Charlie", "coop-live: 15 campaign levels (15 named)"),
+            (1.343, "Alpha", "coop-live: 15 campaign levels (15 named)"),
+            (1.550, "Bravo", "coop-live: 15 campaign levels (15 named)"),
+            (265.962, "Charlie", "coop-live: lobby mode 4294967295"),
+            (
+                287.874,
+                "Charlie",
+                "skulls page: Charlie has no skulls collected; starting as retail",
+            ),
+        ] {
+            text.push_str(&format_line(t, tag, line));
+            text.push('\n');
+        }
+        let v = verdict(&text, true).unwrap();
+        let s = v.stopped_at().unwrap();
+        assert_eq!(s.n, 3);
+        assert_eq!(
+            s.why.as_deref(),
+            Some(
+                "you drove Charlie's window (it started a campaign or lobby itself); drive Alpha \
+                 (host), the leftmost window, titled \"Halo 2 — Alpha (host)\""
+            )
+        );
+        // Once the host walks its own path, the guest's walk is not the reason.
+        text.push_str(&format_line(
+            300.0,
+            "Alpha",
+            "custom games: row chosen active",
+        ));
+        text.push('\n');
+        let v = verdict(&text, true).unwrap();
+        assert!(
+            v.stopped_at()
+                .unwrap()
+                .why
+                .as_deref()
+                .unwrap()
+                .contains("picked another of its rows")
+        );
     }
 }

@@ -37,8 +37,10 @@ H2_COOP_MAX_PLAYERS), each with
 its own data and Live directory under --root, its own XNet ports (--port,
 31000, then 10 up per game, on --ip, this Mac's LAN address by default) and
 its own agent socket (`h2 agent --socket <path> status`). The host's window
-opens first; the others once it is signed in (its first start may build
-the game into --out; the others never build at the same time).
+opens first (its first start may build the game into --out); the others
+once it is signed in, so they never build at the same time. Each window's
+title names its game and role (Halo 2 — Alpha (host)), and the windows
+sit side by side across the main screen, the host leftmost.
 
 Input: each window takes the keyboard while it has focus. The pads go to
 the host (--pad guest gives them to the first guest; the others have
@@ -251,6 +253,12 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                 "--gamertag".into(),
                 tag.to_string(),
             ];
+            args.extend([
+                "--title".into(),
+                window_title(tag, host),
+                "--tile".into(),
+                format!("{i}/{}", opts.players),
+            ]);
             if let Some(out) = &opts.out {
                 args.extend(["--out".into(), out.display().to_string()]);
             }
@@ -301,6 +309,11 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
             }
         })
         .collect()
+}
+
+/// A game's window title: which game it is, and whether it hosts.
+pub fn window_title(tag: &str, host: bool) -> String {
+    format!("Halo 2 — {tag} ({})", if host { "host" } else { "guest" })
 }
 
 /// This Mac's LAN address (the one a packet to the internet would leave
