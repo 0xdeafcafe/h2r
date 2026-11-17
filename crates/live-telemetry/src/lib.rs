@@ -9,6 +9,7 @@ mod hooks;
 mod layout;
 mod memory;
 mod motion;
+mod pipeline;
 mod server;
 mod session;
 mod sink;
@@ -25,5 +26,6 @@ pub use memory::{
     active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, players, snapshot,
     team_scores, world, yaw,
 };
-pub use sink::{JsonlSink, QueuedSink, Sink};
+pub use pipeline::Pipeline;
+pub use sink::{JsonlSink, Sink};
 pub use tags::{MapFile, MapIdLocator, MapLocator, TagNames};

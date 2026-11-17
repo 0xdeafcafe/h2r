@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
@@ -176,6 +174,18 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
 /// when the player's datum and name are unchanged, so a steady roster
 /// decodes no names.
 pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Vec<PlayerState>> {
+    let mut out = Vec::with_capacity(previous.len());
+    players_into(guest, previous, &mut out)?;
+    Ok(out)
+}
+
+/// [`players_after`] into `out` (cleared first), reusing its allocation.
+fn players_into(
+    guest: &Guest,
+    previous: &mut [PlayerState],
+    out: &mut Vec<PlayerState>,
+) -> ReadResult<()> {
+    out.clear();
     let array = ptr(guest, layout::PLAYERS_PTR)?;
     // A null data pointer is an error, as a null array is.
     ptr(guest, array + layout::DATUM_DATA)?;
@@ -183,7 +193,6 @@ pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
-    let mut out = Vec::with_capacity(previous.len());
     let mut units = [0; players::NAME_UNITS];
     for (handle, player) in players.live(guest, 16).map_err(fault)? {
         if !player.listed(guest).map_err(fault)? {
@@ -230,30 +239,42 @@ pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<
             stats,
         });
     }
-    Ok(out)
+    Ok(())
 }
 
 pub fn team_scores(guest: &Guest, players: &[PlayerState]) -> ReadResult<Vec<TeamScore>> {
+    let mut out = Vec::new();
+    team_scores_into(guest, players, &mut out)?;
+    Ok(out)
+}
+
+/// [`team_scores`] into `out` (cleared first): each team with a player on
+/// it, in team order.
+fn team_scores_into(
+    guest: &Guest,
+    players: &[PlayerState],
+    out: &mut Vec<TeamScore>,
+) -> ReadResult<()> {
+    out.clear();
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     if guest.u32(statborg)? == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let teams: BTreeSet<i32> = players
-        .iter()
-        .map(|p| p.player.team)
-        .filter(|t| (0..8).contains(t))
-        .collect();
-    teams
-        .into_iter()
-        .map(|team| {
-            let row = engine + layout::ENGINE_TEAM_STATS + team as u32 * layout::TEAM_STAT_SIZE;
-            Ok(TeamScore {
-                team,
-                score: i64::from(i16(guest.u16(row + layout::STAT_SCORE)?)),
-            })
-        })
-        .collect()
+    let mut on = [false; 8];
+    for team in players.iter().map(|p| p.player.team) {
+        if let Some(on) = usize::try_from(team).ok().and_then(|t| on.get_mut(t)) {
+            *on = true;
+        }
+    }
+    for (team, _) in (0..).zip(on).filter(|(_, on)| *on) {
+        let row = engine + layout::ENGINE_TEAM_STATS + team as u32 * layout::TEAM_STAT_SIZE;
+        out.push(TeamScore {
+            team,
+            score: i64::from(i16(guest.u16(row + layout::STAT_SCORE)?)),
+        });
+    }
+    Ok(())
 }
 
 /// Object lookups for one observation: the objects array's data pointer,
@@ -331,6 +352,24 @@ fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
     Ok([f(0), f(4), f(8)])
 }
 
+// The body's position, forward and up lie end to end.
+const _: () = assert!(
+    layout::BODY_FORWARD == layout::BODY_POSITION + 12
+        && layout::BODY_UP == layout::BODY_POSITION + 24
+);
+
+/// A body's position, forward and up, in one read (it faults where any of
+/// the three would).
+fn pose(guest: &Guest, body: u32) -> ReadResult<[[f64; 3]; 3]> {
+    let b = guest.read::<36>(body + layout::BODY_POSITION)?;
+    let f = |i: usize| f64::from(f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]));
+    Ok([
+        [f(0), f(4), f(8)],
+        [f(12), f(16), f(20)],
+        [f(24), f(28), f(32)],
+    ])
+}
+
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
 /// within 10% of unit length (the "likely" offset must not send garbage).
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
@@ -390,9 +429,7 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
         .ok()
         .map(|t| t as i16)
         .filter(|t| *t >= 0);
-    let mut pos = vector(guest, body + layout::BODY_POSITION)?;
-    let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
-    let mut up = vector(guest, body + layout::BODY_UP)?;
+    let [mut pos, mut forward, mut up] = pose(guest, body)?;
     let mut vehicle_definition = None;
     let mut mount = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
@@ -406,9 +443,7 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
             let mounted = vehicle_mount(objects, parent_body)?;
             let at = mounted.map_or(parent_body, |(_, b)| b);
             mount = mounted.map(|(m, _)| m);
-            pos = vector(guest, at + layout::BODY_POSITION)?;
-            forward = vector(guest, at + layout::BODY_FORWARD)?;
-            up = vector(guest, at + layout::BODY_UP)?;
+            [pos, forward, up] = pose(guest, at)?;
             Some(parent)
         }
         _ => None,
@@ -651,12 +686,24 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
 
 /// The placement kind of an object type whose placements frames track.
 fn placed_kind(object_type: u8) -> Option<ObjectKind> {
-    layout::PLACEMENT_BLOCKS
-        .iter()
-        .any(|(t, _, _)| *t == object_type)
-        .then(|| object_kind(object_type))
+    PLACED_KINDS
+        .get(usize::from(object_type))
+        .copied()
         .flatten()
 }
+
+/// [`placed_kind`] by object type, made once.
+static PLACED_KINDS: std::sync::LazyLock<[Option<ObjectKind>; 16]> =
+    std::sync::LazyLock::new(|| {
+        std::array::from_fn(|t| {
+            let t = t as u8;
+            layout::PLACEMENT_BLOCKS
+                .iter()
+                .any(|(block, _, _)| *block == t)
+                .then(|| object_kind(t))
+                .flatten()
+        })
+    });
 
 /// The scenario block an object type is placed by (the type table's order).
 pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
@@ -684,15 +731,17 @@ fn placed(
     body: u32,
     out: &mut Vec<PlacedObject>,
 ) -> ReadResult<()> {
-    let index = guest.u16(body + layout::BODY_PLACEMENT_INDEX)? as i16;
+    // The parent and the placement index in one read.
+    const PARENT: usize = 0;
+    const INDEX: usize = (layout::BODY_PLACEMENT_INDEX - layout::BODY_PARENT) as usize;
+    let b = guest.read::<{ INDEX + 2 }>(body + layout::BODY_PARENT)?;
+    let index = i16::from_le_bytes([b[INDEX], b[INDEX + 1]]);
     let netgame = guest.u8(body + layout::BODY_NETGAME_EQUIPMENT)? as i8;
     if index < 0 && netgame < 0 {
         return Ok(());
     }
-    let parented = guest.u32(body + layout::BODY_PARENT)? != u32::MAX;
-    let pos = vector(guest, body + layout::BODY_POSITION)?;
-    let forward = vector(guest, body + layout::BODY_FORWARD)?;
-    let up = vector(guest, body + layout::BODY_UP)?;
+    let parented = u32::from_le_bytes(b[PARENT..PARENT + 4].try_into().unwrap()) != u32::MAX;
+    let [pos, forward, up] = pose(guest, body)?;
     let mut push = |kind, index| {
         out.push(PlacedObject {
             kind,
@@ -793,14 +842,7 @@ pub fn placements(guest: &Guest) -> ReadResult<Placements> {
 /// has a parent).
 fn transform(guest: &Guest, body: u32) -> ReadResult<(Option<u32>, [[f64; 3]; 3])> {
     let definition = Some(guest.u32(body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
-    Ok((
-        definition,
-        [
-            vector(guest, body + layout::BODY_POSITION)?,
-            vector(guest, body + layout::BODY_FORWARD)?,
-            vector(guest, body + layout::BODY_UP)?,
-        ],
-    ))
+    Ok((definition, pose(guest, body)?))
 }
 
 /// The active structure BSP index, `None` when negative.
@@ -860,6 +902,34 @@ pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
     })
+}
+
+/// [`snapshot`] into `out`, reusing its lists' allocations (the world
+/// lists, shots and hits are left as they are). Names come from `out`'s
+/// last roster while they are unchanged ([`players_after`]); `spare` is a
+/// second roster list, swapped with it. After an error `out` is partly
+/// filled.
+pub fn snapshot_into(
+    guest: &Guest,
+    out: &mut Snapshot,
+    spare: &mut Vec<PlayerState>,
+) -> ReadResult<()> {
+    let mut previous = std::mem::replace(&mut out.players, std::mem::take(spare));
+    let read = players_into(guest, &mut previous, &mut out.players);
+    previous.clear();
+    *spare = previous;
+    read?;
+    team_scores_into(guest, &out.players, &mut out.teams)?;
+    let lookups = Objects::new(guest);
+    out.objects.clear();
+    for p in &out.players {
+        out.objects.push(object_in(&lookups, p.unit)?);
+    }
+    let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
+    out.tick = game_tick(guest)?;
+    out.has_stats = guest.u32(engine + layout::ENGINE_STATBORG)? != 0;
+    out.bsp = active_bsp(guest).ok().flatten();
+    Ok(())
 }
 
 /// The scenario tag datum of the loaded map's tag index, to check a
@@ -1634,6 +1704,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             [fixture::object_datum(2)]
         );
+    }
+
+    #[test]
+    fn a_snapshot_into_a_used_one_reads_what_a_fresh_one_does() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "A", 1, true, fixture::object_datum(1));
+        fixture::put_player(&mut guest, 1, "B", 0, false, u32::MAX);
+        fixture::put_player(&mut guest, 2, "C", 1, false, u32::MAX);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        let mut used = snapshot(&guest).unwrap();
+        let mut spare = Vec::new();
+        // Players leave and are renamed; teams and objects follow.
+        let third = fixture::PLAYER_DATA + 2 * layout::PLAYER_SIZE;
+        guest.set_u16(third + layout::PLAYER_FLAGS, 2).unwrap();
+        fixture::put_player(&mut guest, 1, "Bo", 0, false, u32::MAX);
+        let team = fixture::ENGINE + layout::ENGINE_TEAM_STATS + layout::TEAM_STAT_SIZE;
+        guest.set_u16(team + layout::STAT_SCORE, 3).unwrap();
+        guest
+            .set_u32(fixture::TIME + layout::TIME_TICK, 77)
+            .unwrap();
+        snapshot_into(&guest, &mut used, &mut spare).unwrap();
+        let fresh = snapshot(&guest).unwrap();
+        assert_eq!(used, fresh);
+        assert_eq!(used.players.len(), 2);
+        assert_eq!(used.teams.len(), 2);
+        assert_eq!(used.teams[1].score, 3);
+        assert!(spare.is_empty(), "the old roster comes back empty");
+    }
+
+    #[test]
+    fn placed_kinds_are_the_placement_blocks_kinds() {
+        for t in 0..=u8::MAX {
+            let tracked = layout::PLACEMENT_BLOCKS.iter().any(|(b, _, _)| *b == t);
+            assert_eq!(placed_kind(t), object_kind(t).filter(|_| tracked), "{t}");
+        }
     }
 
     #[test]
