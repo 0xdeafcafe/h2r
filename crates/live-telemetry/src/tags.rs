@@ -41,11 +41,23 @@ const DAMAGE_EFFECT: [u8; 4] = *b"jpt!";
 const KEPT: [[u8; 4]; 5] = [BIPED, WEAPON, VEHICLE, MACHINE, DAMAGE_EFFECT];
 
 /// Names of a map's biped, weapon, vehicle, machine and damage-effect tags
-/// by full salted datum.
+/// by full salted datum, as the frame ids made from them: worked out once
+/// when the table is made, not for every entity of every frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TagNames {
     scenario: u32,
-    names: HashMap<u32, ([u8; 4], String)>,
+    names: HashMap<u32, Named>,
+}
+
+/// A kept tag's group and the frame ids of its name.
+#[derive(Debug, Clone, PartialEq)]
+struct Named {
+    group: [u8; 4],
+    /// A biped's species ([`species_of`]); any other tag's file stem
+    /// ([`stem_of`]).
+    id: Option<String>,
+    /// A biped's directory ([`dir_of`]: an AI biped's species).
+    dir: Option<String>,
 }
 
 impl TagNames {
@@ -58,7 +70,22 @@ impl TagNames {
             names: rows
                 .into_iter()
                 .filter(|(_, group, _)| KEPT.contains(group))
-                .map(|(datum, group, name)| (datum, (group, name)))
+                .map(|(datum, group, name)| {
+                    let named = if group == BIPED {
+                        Named {
+                            group,
+                            id: species_of(&name),
+                            dir: dir_of(&name),
+                        }
+                    } else {
+                        Named {
+                            group,
+                            id: stem_of(&name),
+                            dir: None,
+                        }
+                    };
+                    (datum, named)
+                })
                 .collect(),
         }
     }
@@ -86,42 +113,39 @@ impl TagNames {
         self.scenario == guest_scenario
     }
 
-    fn name(&self, datum: u32, group: [u8; 4]) -> Option<&str> {
-        self.names
-            .get(&datum)
-            .filter(|(g, _)| *g == group)
-            .map(|(_, name)| name.as_str())
+    fn named(&self, datum: u32, group: [u8; 4]) -> Option<&Named> {
+        self.names.get(&datum).filter(|n| n.group == group)
     }
 
     /// The species of the biped whose definition is `datum`.
     pub fn species(&self, datum: u32) -> Option<String> {
-        species_of(self.name(datum, BIPED)?)
+        self.named(datum, BIPED)?.id.clone()
     }
 
     /// The file stem of the weapon whose definition is `datum`.
     pub fn weapon(&self, datum: u32) -> Option<String> {
-        stem_of(self.name(datum, WEAPON)?)
+        self.named(datum, WEAPON)?.id.clone()
     }
 
     /// The file stem of the vehicle whose definition is `datum`.
     pub fn vehicle(&self, datum: u32) -> Option<String> {
-        stem_of(self.name(datum, VEHICLE)?)
+        self.named(datum, VEHICLE)?.id.clone()
     }
 
     /// The file stem of the machine whose definition is `datum`.
     pub fn machine(&self, datum: u32) -> Option<String> {
-        stem_of(self.name(datum, MACHINE)?)
+        self.named(datum, MACHINE)?.id.clone()
     }
 
     /// The file stem of the damage effect (`jpt!`) `datum`.
     pub fn damage_effect(&self, datum: u32) -> Option<String> {
-        stem_of(self.name(datum, DAMAGE_EFFECT)?)
+        self.named(datum, DAMAGE_EFFECT)?.id.clone()
     }
 
     /// An AI biped's species: the directory of its biped tag
     /// (`objects\characters\grunt\grunt` -> `grunt`).
     pub fn actor_species(&self, datum: u32) -> Option<String> {
-        dir_of(self.name(datum, BIPED)?)
+        self.named(datum, BIPED)?.dir.clone()
     }
 }
 

@@ -870,11 +870,19 @@ impl Guest {
         (p.permissions & need != 0).then_some(p.physical as usize + off)
     }
 
+    /// Inlined for the fast page table's one-lookup case, so a fixed-size
+    /// read (`u32`, `f32`, a host struct) becomes a load at the call site;
+    /// everything else takes [`read_bytes_slow`](Self::read_bytes_slow).
+    #[inline]
     pub fn read_bytes(&self, addr: u32, out: &mut [u8], alignment: u32) -> Result<(), GuestFault> {
         if let Some(at) = self.fast_offset(addr, out.len(), 1, alignment) {
             out.copy_from_slice(&self.ram[at..at + out.len()]);
             return Ok(());
         }
+        self.read_bytes_slow(addr, out, alignment)
+    }
+    #[inline(never)]
+    fn read_bytes_slow(&self, addr: u32, out: &mut [u8], alignment: u32) -> Result<(), GuestFault> {
         let Some(mut index) = self.checked_start(addr, out.len(), Access::Read, alignment)? else {
             return Ok(());
         };
@@ -978,6 +986,7 @@ impl Guest {
         cpu.esp = cpu.esp.wrapping_add(4).wrapping_add(cleanup);
         Ok(crate::TransferAbi::ret(target))
     }
+    #[inline]
     pub fn read<const N: usize>(&self, addr: u32) -> Result<[u8; N], GuestFault> {
         let mut out = [0; N];
         self.read_bytes(addr, &mut out, 1)?;
@@ -986,6 +995,7 @@ impl Guest {
     pub fn write<const N: usize>(&mut self, addr: u32, v: [u8; N]) -> Result<(), GuestFault> {
         self.write_bytes(addr, &v, 1)
     }
+    #[inline]
     pub fn u8(&self, addr: u32) -> Result<u8, GuestFault> {
         Ok(self.read::<1>(addr)?[0])
     }
@@ -1002,6 +1012,7 @@ impl Guest {
 macro_rules! scalar {
     ($read:ident, $write:ident, $ty:ty) => {
         impl Guest {
+            #[inline]
             pub fn $read(&self, addr: u32) -> Result<$ty, GuestFault> {
                 self.read(addr).map(<$ty>::from_le_bytes)
             }

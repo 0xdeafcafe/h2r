@@ -51,6 +51,25 @@ pub struct LiveFrame {
     pub keyframe: bool,
     /// `None` when the frame would not pack (the stream skips it).
     pub packed: Option<Vec<u8>>,
+    /// The JSON stream message, made by the first JSON reader that sends
+    /// the frame and shared by the rest ([`LiveFrame::json_message`]).
+    json: std::sync::OnceLock<axum::extract::ws::Utf8Bytes>,
+}
+
+impl LiveFrame {
+    /// The frame as a JSON reader's `frame` stream message: serialised once
+    /// however many JSON readers there are (it is the same for all of them;
+    /// visibility only decides who gets it).
+    pub fn json_message(&self) -> axum::extract::ws::Utf8Bytes {
+        self.json
+            .get_or_init(|| {
+                let message = live_proto::StreamMessage::Frame {
+                    frame: Box::new(self.frame.clone()),
+                };
+                serde_json::to_string(&message).expect("serializes").into()
+            })
+            .clone()
+    }
 }
 
 struct FrameClock {
@@ -101,6 +120,7 @@ impl FrameClock {
             seq,
             keyframe,
             packed,
+            json: Default::default(),
         });
         if keyframe {
             self.since_key.clear();

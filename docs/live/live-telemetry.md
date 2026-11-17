@@ -484,14 +484,70 @@ payload and the signature).
 | campaign, game's sink worker | 59.0 µs | 38.7 µs |
 | campaign, server | 206 µs | 146 µs |
 
-The server's JSON cost is per reader (each reader got its own JSON
-message); packed frames are encoded once per frame for every reader.
+Packed frames are encoded once per frame for every reader, and since
+2026-11-17 so is a JSON reader's `frame` message (`LiveFrame::json_message`):
+before, each JSON reader cloned and serialised the frame itself, about
+160 µs a frame a reader for a 47 KB campaign-sized frame.
 
 On the game thread, for a campaign scene of 60 actors, 8 vehicles, 12
 machines and 90 placed objects (synthetic guest memory): the object-table
 scan takes 38 µs without the placement reads and 54 µs with them, the frame
 build 14 µs; serialising stays off the game thread, on the sink worker.
 At 15 frames a second that is under 0.1% of a core.
+
+### Benchmarks
+
+`scripts/telemetry-bench.sh [out dir]` runs every stage and writes its
+JSON to the directory (default `$TMPDIR/telemetry-bench`). No game data and
+no game run are needed. Each stage runs alone as well:
+
+- Game thread, sink worker and wire:
+  `cargo test --release -p live-telemetry --lib bench -- --ignored --nocapture --test-threads=1`
+  (`crates/live-telemetry/src/bench.rs`, `guest.json`). Three synthetic
+  scenes in fixture guest memory: `mp16` (16 players, 2 weapons each, 12
+  vehicles and 4 turrets, 5 riders, 200 placed scenery and 24 placed
+  weapons, 296 objects), `mp16_1000` (the same at 984 objects) and
+  `campaign100` (1 player, 100 armed actors with 6 riding, 30 bodies, 16
+  vehicles and 6 turrets, 30 machines, 600 scenery, 930 objects). Each
+  scene runs a minute of 30 Hz ticks through the hooks' own entry points
+  (weapon fire and damage hooks, then the tick's observation and publish),
+  timed and allocation-counted on the calling thread; the best of five
+  runs by median frame tick is kept. Then the frames are packed as the
+  server sink packs them. The bench runs ticks back to back, so the sink's
+  two-frame queue is full and `publish` includes dropping the frame on the
+  game thread (1 to 6 µs); in real time the worker takes it.
+- Server: `cargo bench -p live-server --bench telemetry`
+  (`crates/live-server/benches/telemetry.rs`, `server.json`): packed
+  ingest at 15 Hz a game, signed event batches of 1 and 32, and stream
+  fan-out to 1, 10 and 100 loopback readers (packed and JSON).
+- Web: `cd web && bun run bench:telemetry` (`web/bench/telemetry.bench.ts`,
+  `web.json`): packed decode, the frame hub and a repaint's sampling.
+
+`scenes_produce_the_golden_output` (not ignored) hashes every frame of the
+first twelve ticks of each scene, so a speed-up cannot change what is sent.
+
+Game thread, median µs per tick and allocations per tick, on a loaded
+development Mac (load average 40 to 80, so absolute numbers vary by 10 to
+20%), before and after the 2026-11-17 telemetry-perf lane:
+
+| scene | frame tick before | after | allocs before | after | other tick before | after | µs per second at 30 Hz before | after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mp16 | 60.4 | 27.7 | 332 | 284 | 16.4 | 10.2 | 1151 | 567 |
+| mp16_1000 | 135.5 | 53.5 | 397 | 344 | 16.0 | 10.4 | 2272 | 958 |
+| campaign100 | 213.0 | 103.5 | 922 | 891 | 2.1 | 1.6 | 3227 | 1576 |
+
+What changed: guest scalar reads inline their fast-page case
+(`runtime::Guest::read_bytes`), a vector is one 12-byte read, the object
+scan reuses its lists between frame ticks (it allocated and freed about
+200 KiB a frame), tag names hold their frame ids instead of parsing the
+tag path per entity, and frame objects match placements in one pass. The
+remaining allocations are the frame itself (an id, species, weapon and
+team string per entity).
+
+Wire, packed with a keyframe every 150 frames: `mp16` 316 B a frame (278
+KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 397 B (349 KiB),
+`campaign100` 1251 B (1.1 MiB a minute; JSON 31 MiB). The worker packs a
+frame in 13, 20 and 65 µs.
 
 ## Runtime validation needed first
 

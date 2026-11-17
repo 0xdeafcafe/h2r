@@ -930,24 +930,40 @@ fn frame_objects(
     let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let unit = |v: [f64; 3]| {
         let len = dot(v, v).sqrt();
-        (len.is_finite() && len > 1e-6).then(|| v.map(|c| c / len))
+        (len.is_finite() && len > 1e-6).then(|| [v[0] / len, v[1] / len, v[2] / len])
     };
+    // Each kind's run of `found` (one slot a placement, `placements.kinds`
+    // holds each kind once), by kind; one pass over `placed` fills them all.
+    const KINDS: usize = 32;
+    let mut runs = [(0usize, 0usize); KINDS];
+    let mut total = 0;
+    for (kind, poses) in &placements.kinds {
+        if let Some(run) = runs.get_mut(*kind as usize) {
+            *run = (total, poses.len());
+            total += poses.len();
+        }
+    }
+    found.clear();
+    found.resize(total, NONE);
+    for (n, p) in placed.iter().enumerate() {
+        let Some(&(start, len)) = runs.get(p.kind as usize) else {
+            continue;
+        };
+        if usize::from(p.index) >= len {
+            continue;
+        }
+        let slot = &mut found[start + usize::from(p.index)];
+        // One on its spawn beats one a player holds.
+        if *slot == NONE || (placed[*slot as usize].parented && !p.parented) {
+            *slot = n as u32;
+        }
+    }
     let mut out = Vec::new();
     for (kind, poses) in &placements.kinds {
-        found.clear();
-        found.resize(poses.len(), NONE);
-        for (n, p) in placed.iter().enumerate() {
-            if p.kind != *kind {
-                continue;
-            }
-            let Some(slot) = found.get_mut(usize::from(p.index)) else {
-                continue;
-            };
-            // One on its spawn beats one a player holds.
-            if *slot == NONE || (placed[*slot as usize].parented && !p.parented) {
-                *slot = n as u32;
-            }
-        }
+        let Some(&(start, len)) = runs.get(*kind as usize) else {
+            continue;
+        };
+        let found = &found[start..start + len];
         let held_is_gone = matches!(
             kind,
             ObjectKind::Weapon | ObjectKind::Equipment | ObjectKind::NetgameEquipment

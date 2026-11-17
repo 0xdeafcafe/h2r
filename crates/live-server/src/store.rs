@@ -38,6 +38,42 @@ impl NewEvent {
     }
 }
 
+/// Opens stored events' JWS for their bodies, as [`NewEvent::decode`]
+/// does, keeping the last batch it opened: a batch's events are adjacent
+/// rows with the same JWS, so a page of them opens (base64 and JSON) the
+/// batch once, not once a row.
+#[derive(Default)]
+pub(crate) struct BatchDecoder {
+    batch: Option<(String, Vec<EventBody>)>,
+}
+
+impl BatchDecoder {
+    pub(crate) fn decode(
+        &mut self,
+        jws: String,
+        jws_index: Option<usize>,
+    ) -> Result<NewEvent, SignError> {
+        let Some(i) = jws_index else {
+            return NewEvent::decode(jws, None);
+        };
+        if self.batch.as_ref().is_none_or(|(open, _)| *open != jws) {
+            self.batch = None;
+            let bodies = SignedEvent::open_batch(&jws)?.1;
+            self.batch = Some((jws.clone(), bodies));
+        }
+        let (_, bodies) = self.batch.as_ref().expect("opened above");
+        let body = bodies
+            .get(i)
+            .cloned()
+            .ok_or(SignError::Malformed("jws_index out of range"))?;
+        Ok(NewEvent {
+            jws,
+            jws_index,
+            body,
+        })
+    }
+}
+
 /// One event as stored. `version` counts from 0 within its stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordedEvent {
@@ -579,5 +615,34 @@ mod tests {
     #[tokio::test]
     async fn memory_store_conforms() {
         conformance::run(&MemoryStore::new(), "mem").await;
+    }
+
+    #[test]
+    fn batch_decoder_opens_what_each_row_would() {
+        let key = live_proto::sign::KeyPair::generate();
+        let bodies = |n: u64| -> Vec<EventBody> {
+            (0..3)
+                .map(|i| conformance::event(&key, "s", n * 10 + i).body)
+                .collect()
+        };
+        let one = live_proto::sign::sign_batch(&key, &bodies(1));
+        let two = live_proto::sign::sign_batch(&key, &bodies(2));
+        let single = conformance::event(&key, "s", 99).jws;
+        // Rows as a page holds them: a batch, a single event, the batch
+        // again (not adjacent), another batch.
+        let rows = [
+            (one.clone(), Some(0)),
+            (one.clone(), Some(1)),
+            (single, None),
+            (one.clone(), Some(2)),
+            (two.clone(), Some(0)),
+            (two, Some(2)),
+        ];
+        let mut batches = BatchDecoder::default();
+        for (jws, index) in rows {
+            let expected = NewEvent::decode(jws.clone(), index).unwrap();
+            assert_eq!(batches.decode(jws, index).unwrap(), expected);
+        }
+        assert!(batches.decode(one, Some(3)).is_err(), "out of range");
     }
 }

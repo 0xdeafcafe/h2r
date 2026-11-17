@@ -16,5 +16,5 @@
     "noEmit": true,
     "types": ["bun", "vite/client"]
   },
-  "include": ["src", "mock", "test", "vite.config.ts"]
+  "include": ["src", "mock", "test", "bench", "vite.config.ts"]
 }

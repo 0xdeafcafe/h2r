@@ -254,12 +254,12 @@ fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
         .map(|(kind, body)| (kind, body.addr)))
 }
 
+/// Three `f32`s in one guest read: the same bytes as three reads, and a
+/// fault where any of them would fault.
 fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
-    let mut out = [0.0; 3];
-    for (i, value) in out.iter_mut().enumerate() {
-        *value = f64::from(guest.f32(address + 4 * i as u32)?);
-    }
-    Ok(out)
+    let b = guest.read::<12>(address)?;
+    let f = |i: usize| f64::from(f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]));
+    Ok([f(0), f(4), f(8)])
 }
 
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
@@ -267,14 +267,18 @@ fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
     let v = vector(guest, body + layout::UNIT_AIM)?;
     let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    Ok((v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len)).then(|| v.map(|c| c / len)))
+    Ok(
+        (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
+            .then(|| [v[0] / len, v[1] / len, v[2] / len]),
+    )
 }
 
 /// The weapon the unit holds: current weapon index `+0x212` into the four
 /// weapon datums at `+0x218`. The weapon must be a live weapon object
 /// parented to this unit (`0x00101fb0` finds a weapon's owner through its
 /// parent).
-fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>> {
+/// With the weapon, its body (for the magazine).
+fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<(Weapon, u32)>> {
     let index = guest.u8(body + layout::UNIT_WEAPON_INDEX)? as i8;
     if !(0..layout::UNIT_WEAPON_SLOTS).contains(&index) {
         return Ok(None);
@@ -287,7 +291,7 @@ fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>
         return Ok(None);
     }
     let definition = guest.u32(weapon + layout::BODY_DEFINITION)?;
-    Ok((definition != u32::MAX).then_some(Weapon { datum, definition }))
+    Ok((definition != u32::MAX).then_some((Weapon { datum, definition }, weapon)))
 }
 
 pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
@@ -302,8 +306,9 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // (a stale weapon datum, a "likely" offset) drops the field, not the
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
-    let weapon = held_weapon(guest, datum, body).ok().flatten();
-    let motion = motion(guest, kind, body, weapon);
+    let held = held_weapon(guest, datum, body).ok().flatten();
+    let weapon = held.map(|(w, _)| w);
+    let motion = motion(guest, kind, body, held.map(|(_, b)| b));
     let team = guest
         .u16(body + layout::UNIT_TEAM)
         .ok()
@@ -362,7 +367,8 @@ fn vehicle_mount(guest: &Guest, body: u32) -> ReadResult<Option<(u32, u32)>> {
 
 /// A unit's movement and inventory state; each field independently `None`
 /// when its read faults or reads as nonsense.
-fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion {
+/// `weapon` is the held weapon's body.
+fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
     let velocity = vector(guest, body + layout::BODY_VELOCITY)
         .ok()
         .filter(|v| v.iter().all(|c| c.is_finite()))
@@ -396,8 +402,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion 
         Ok(slots)
     })()
     .ok();
-    let magazine = weapon.and_then(|w| {
-        let (_, weapon_body) = object_body(guest, w.datum).ok().flatten()?;
+    let magazine = weapon.and_then(|weapon_body| {
         let reserve = guest
             .u16(weapon_body + layout::WEAPON_MAGAZINE_RESERVE)
             .ok()? as i16;
@@ -428,15 +433,50 @@ pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
 /// vehicle (occupied when any biped's parent is it) and every machine. Only
 /// those objects' bodies are read; a fault on one object skips it.
 pub fn world(guest: &Guest) -> ReadResult<World> {
+    let mut out = World::default();
+    world_into(guest, &mut ScanBuffers::default(), &mut out)?;
+    Ok(out)
+}
+
+/// The world scan's working lists, kept between ticks for their allocations.
+#[derive(Default)]
+pub struct ScanBuffers {
+    headers: Vec<u8>,
+    /// Vehicles a biped is parented to.
+    ridden: Vec<u32>,
+}
+
+/// [`world`] into `out`, reusing its lists' (and `buffers`') allocations
+/// from the last tick: once they have grown, the scan allocates nothing.
+/// After an error `out` is empty.
+pub fn world_into(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
+    clear(out);
+    let scanned = scan(guest, buffers, out);
+    if scanned.is_err() {
+        clear(out);
+    }
+    scanned
+}
+
+fn clear(world: &mut World) {
+    world.actors.clear();
+    world.vehicles.clear();
+    world.machines.clear();
+    world.placed.clear();
+    world.bodies.clear();
+}
+
+fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let high_water = guest
         .u32(array + layout::DATUM_HIGH_WATER)?
         .min(layout::OBJECT_CAPACITY);
     let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let mut headers = vec![0; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
-    guest.read_bytes(data, &mut headers, 1)?;
-    let mut out = World::default();
-    let mut ridden = BTreeSet::new();
+    let ScanBuffers { headers, ridden } = buffers;
+    headers.clear();
+    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
+    guest.read_bytes(data, headers, 1)?;
+    ridden.clear();
     const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
     for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
         let salt = u16::from_le_bytes([header[0], header[1]]);
@@ -456,7 +496,7 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                 if let Ok(parent) = guest.u32(body + layout::BODY_PARENT)
                     && parent != u32::MAX
                 {
-                    ridden.insert(parent);
+                    ridden.push(parent);
                 }
                 let Ok(depleted) = guest
                     .u16(body + layout::BODY_DAMAGE_FLAGS)
@@ -525,10 +565,11 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
             _ => {}
         }
     }
+    ridden.sort_unstable();
     for v in &mut out.vehicles {
-        v.occupied = ridden.contains(&v.datum);
+        v.occupied = ridden.binary_search(&v.datum).is_ok();
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The placement kind of an object type whose placements frames track.
@@ -760,6 +801,31 @@ pub(crate) mod fixture {
     pub const OBJECTS: u32 = 0x140000;
     pub const OBJECT_DATA: u32 = 0x141000;
     pub const BODY: u32 = 0x150000;
+    /// Bodies of slots past [`LOW_BODIES`] (only in [`large_memory`]).
+    pub const HIGH_BODY: u32 = 0x0100_0000;
+    /// Object slots whose bodies fit below the 0x200000 end of [`memory`].
+    pub const LOW_BODIES: u32 = (0x200000 - BODY) / 0x1000;
+    /// Room for scenario placement blocks (only in [`large_memory`]).
+    pub const SCENARIO: u32 = 0x0180_0000;
+
+    /// An object slot's body address: 4 KiB a slot.
+    pub fn body(slot: u32) -> u32 {
+        if slot < LOW_BODIES {
+            BODY + slot * 0x1000
+        } else {
+            HIGH_BODY + slot * 0x1000
+        }
+    }
+
+    /// [`memory`] with room for a full object table's bodies (every slot up
+    /// to [`super::layout::OBJECT_CAPACITY`]) and a scenario at [`SCENARIO`].
+    pub fn large_memory() -> Guest {
+        let mut guest = memory();
+        guest
+            .map_zeroed(HIGH_BODY, 0x0100_0000, Permissions::RW)
+            .unwrap();
+        guest
+    }
 
     pub fn memory() -> Guest {
         let mut guest = Guest::new();
@@ -887,9 +953,9 @@ pub(crate) mod fixture {
             .set_u8(header + super::layout::OBJECT_TYPE, 0)
             .unwrap();
         guest
-            .set_u32(header + super::layout::OBJECT_BODY, BODY + slot * 0x1000)
+            .set_u32(header + super::layout::OBJECT_BODY, body(slot))
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_PARENT, parent)
             .unwrap();
@@ -932,7 +998,7 @@ pub(crate) mod fixture {
     /// An AI biped at `slot`: an actor datum, team, and position `pos`.
     pub fn put_actor(guest: &mut Guest, slot: u32, team: i16, pos: [f32; 3]) {
         put_object(guest, slot, u32::MAX);
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::UNIT_ACTOR, 0xa000_0000 | slot)
             .unwrap();
@@ -952,7 +1018,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, 1)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         for (i, value) in [10.0f32, 20.0, 30.0].into_iter().enumerate() {
             guest
                 .set_f32(body + super::layout::BODY_POSITION + 4 * i as u32, value)
@@ -977,7 +1043,7 @@ pub(crate) mod fixture {
                 super::layout::OBJECT_TYPE_MACHINE,
             )
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -1003,7 +1069,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, object_type)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -1024,7 +1090,7 @@ pub(crate) mod fixture {
     /// Gives the unit object at `slot` a definition, an aiming vector and
     /// a current weapon index.
     pub fn put_unit(guest: &mut Guest, slot: u32, definition: u32, aim: [f32; 3], index: i8) {
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_DEFINITION, definition)
             .unwrap();
@@ -1055,14 +1121,11 @@ pub(crate) mod fixture {
             )
             .unwrap();
         guest
-            .set_u32(
-                BODY + slot * 0x1000 + super::layout::BODY_DEFINITION,
-                definition,
-            )
+            .set_u32(body(slot) + super::layout::BODY_DEFINITION, definition)
             .unwrap();
         guest
             .set_u32(
-                BODY + unit_slot * 0x1000 + super::layout::UNIT_WEAPONS + 4 * index,
+                body(unit_slot) + super::layout::UNIT_WEAPONS + 4 * index,
                 object_datum(slot),
             )
             .unwrap();

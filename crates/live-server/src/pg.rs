@@ -15,7 +15,9 @@ use live_proto::sign::chain_hash;
 use sqlx::Row;
 use sqlx::postgres::{PgListener, PgPool, PgPoolOptions, PgRow};
 
-use crate::store::{EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{
+    BatchDecoder, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError, Wake,
+};
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// Any constant works; it only has to be ours.
@@ -99,13 +101,15 @@ fn to_i64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-fn decode(row: &PgRow) -> Result<RecordedEvent, StoreError> {
+fn decode(row: &PgRow, batches: &mut BatchDecoder) -> Result<RecordedEvent, StoreError> {
     let position = row.get::<i64, _>("position") as u64;
     let index = row.get::<Option<i32>, _>("jws_index").map(|i| i as usize);
-    let e = NewEvent::decode(row.get("jws"), index).map_err(|e| StoreError::Corrupt {
-        position,
-        reason: e.to_string(),
-    })?;
+    let e = batches
+        .decode(row.get("jws"), index)
+        .map_err(|e| StoreError::Corrupt {
+            position,
+            reason: e.to_string(),
+        })?;
     Ok(RecordedEvent {
         position,
         version: row.get::<i64, _>("version") as u64,
@@ -224,7 +228,8 @@ impl EventStore for PostgresStore {
         .bind(&q.exclude)
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(decode).collect()
+        let mut batches = BatchDecoder::default();
+        rows.iter().map(|row| decode(row, &mut batches)).collect()
     }
 
     async fn head(&self) -> Result<u64, StoreError> {

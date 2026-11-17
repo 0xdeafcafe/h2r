@@ -1,6 +1,8 @@
 //! Non-invasive live game-state observation for the retail Halo 2 runtime.
 //! Guest hooks always run the original function; transport is asynchronous.
 
+#[cfg(test)]
+mod bench;
 mod config;
 mod event;
 mod hooks;
