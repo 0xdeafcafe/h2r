@@ -105,10 +105,10 @@ pub fn jobs(stems: &[String]) -> Vec<Job<'static>> {
     let mut out: Vec<Job> = CAMPAIGN_LEVELS
         .iter()
         .filter(|l| has(l))
-        .map(|l| Job::Campaign(*l))
+        .map(|l| Job::Campaign(l))
         .collect();
     for (m, _, _) in h1convert::convert::MAPS.iter().filter(|(m, _, _)| has(m)) {
-        out.extend(SANDBOXES.map(|s| Job::Multiplayer(*m, s)));
+        out.extend(SANDBOXES.map(|s| Job::Multiplayer(m, s)));
     }
     out
 }
