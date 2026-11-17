@@ -8,6 +8,17 @@ import { ApiError } from "../api/http";
 import { parseCoopGames, type CoopGame } from "../lib/coop";
 import { parseSession, parseSessions, type Session } from "../lib/sessions";
 import { live } from "./live";
+import { identity } from "./identity";
+import { issueToken } from "../admin/token";
+import { READ } from "../lib/coop";
+
+/** A one-use `read` token for the signed-in account, or null when nobody is
+ *  signed in or the server hasn't said who it is: then reads are anonymous. */
+async function readToken(): Promise<string | null> {
+  const me = identity.me(), wk = live.wellKnown();
+  if (!me || !wk) return null;
+  try { return await issueToken(me, wk.id, READ); } catch { return null; }
+}
 
 export const SESSIONS_REFRESH_MS = 4000;
 
@@ -60,14 +71,15 @@ export function useSessions(everyMs = SESSIONS_REFRESH_MS): { items: Accessor<Se
 export type CoopStatus = "loading" | "ok" | "unsupported" | "error";
 
 /** Finished co-op games, newest first, for one player (a gamertag) or all.
- *  Refreshed slowly: they only change when a game ends. */
+ *  Refreshed slowly: they only change when a game ends. Signed in, it asks
+ *  as that account, so friends-only games it may see are in the list. */
 export function useCoopGames(player?: Accessor<string | undefined>, limit = 50, everyMs = 15000): { items: Accessor<CoopGame[]>; status: Accessor<CoopStatus> } {
   const [items, setItems] = createSignal<CoopGame[]>([]);
   const [status, setStatus] = createSignal<CoopStatus>("loading");
   poll(async (signal) => {
     const who = player?.();
     try {
-      const page = await live.api().coopGames({ player: who, limit }, signal);
+      const page = await live.api().coopGames({ player: who, limit }, signal, await readToken());
       if (player?.() !== who) return;
       setItems(parseCoopGames(page.items));
       setStatus("ok");
@@ -75,7 +87,7 @@ export function useCoopGames(player?: Accessor<string | undefined>, limit = 50, 
       if (signal.aborted) return;
       if (e instanceof ApiError && e.status === 404) { setItems([]); setStatus("unsupported"); } else setStatus("error");
     }
-  }, () => { player?.(); setItems([]); setStatus("loading"); }, everyMs);
+  }, () => { player?.(); identity.me(); setItems([]); setStatus("loading"); }, everyMs);
   return { items, status };
 }
 

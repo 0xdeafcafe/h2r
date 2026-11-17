@@ -9,7 +9,7 @@ import { gameImage, mapTitle } from "../state/gameart";
 import { mapKey } from "../lib/gameart";
 import { live } from "../state/live";
 import { now } from "../lib/now";
-import { coopPlayers, difficultyName, gametype, isCoop, keepSelection, kind, levelName, listed, mapName, openFor, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../lib/sessions";
+import { coopPlayers, difficultyName, gametype, isCoop, keepSelection, kind, levelName, listed, mapName, openFor, pingText, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../lib/sessions";
 import { useSession, useSessions } from "../state/sessions";
 import { customMapBadge, pictureChoice } from "../lib/maps";
 import { packageImage, packageLookup } from "../state/maps";
@@ -75,6 +75,9 @@ function Facts(props: { session: Session }) {
     <dl>
       <Show when={isCoop(s()) && s().campaign}>
         {(c) => <><dt>campaign</dt><dd>{levelName(c())}</dd><dt>difficulty</dt><dd>{difficultyName(c().difficulty)}</dd><dt>players</dt><dd>{coopPlayers(s(), (x) => live.state.accounts[x]?.gamertag).join(", ")}</dd></>}
+      </Show>
+      <Show when={isCoop(s()) && pingText(s())}>
+        {(p) => <><dt>ping</dt><dd>{p()}</dd></>}
       </Show>
       <Show when={!isCoop(s())}>
       <Show

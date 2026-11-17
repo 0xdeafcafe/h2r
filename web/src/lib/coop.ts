@@ -2,7 +2,7 @@
 // (docs/live/live-api.md "Co-op games"). The server derives them from the
 // co-op sessions that closed after a guest joined. Everything here is pure.
 
-import { difficultyName, levelName, parseCampaign, type Campaign } from "./sessions";
+import { difficultyName, levelName, parseCampaign, type Campaign, type Visibility } from "./sessions";
 
 export interface CoopPlayer {
   xuid: string;
@@ -21,7 +21,14 @@ export interface CoopGame {
   ended: string;
   /** `closed`, `host_left` or `expired`. */
   end_reason: string;
+  /** How the session was listed when it closed; the server shows a
+   *  friends-only or invite-only game only to who may see it. Older servers
+   *  don't say: public. */
+  visibility: Visibility;
 }
+
+/** The token method a reader signs to say who it is (live-security.md §3). */
+export const READ = "read";
 
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
@@ -40,7 +47,8 @@ export function parseCoopGame(raw: unknown): CoopGame | null {
   const started = str(r.started), ended = str(r.ended);
   if (!id || !host || !campaign || !started || !ended) return null;
   const players = Array.isArray(r.players) ? r.players.map(player).filter((p): p is CoopPlayer => p !== null) : [];
-  return { session_id: id, host, players: players.length ? players : [host], campaign, started, ended, end_reason: str(r.end_reason) ?? "closed" };
+  return { session_id: id, host, players: players.length ? players : [host], campaign, started, ended, end_reason: str(r.end_reason) ?? "closed",
+    visibility: r.visibility === "friends" || r.visibility === "invite" ? r.visibility : "public" };
 }
 
 export function parseCoopGames(items: unknown): CoopGame[] {

@@ -11,8 +11,10 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const r = await fetch(url, { signal, headers: { accept: "application/json" } });
+async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const r = await fetch(url, { signal, headers });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
     try {
@@ -142,9 +144,11 @@ export function api(t: ServerTarget) {
     /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors. */
     sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
     /** Finished co-op campaign games, newest first (docs/live/live-api.md "Co-op games"); one page.
-     *  `player` is a gamertag or XUID. A server without the endpoint answers 404. */
-    coopGames: async (q: { player?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal) =>
-      page<unknown>(await getJson(u("/coop/games", q), s)),
+     *  `player` is a gamertag or XUID. A server without the endpoint answers 404. `bearer`, a
+     *  `read` token, says who reads: friends-only games show to their players and the host's
+     *  friends, invite-only ones to their players; without it only public ones. */
+    coopGames: async (q: { player?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal, bearer?: string | null) =>
+      page<unknown>(await getJson(u("/coop/games", q), s, bearer)),
     /** One session by id, open or not. */
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */

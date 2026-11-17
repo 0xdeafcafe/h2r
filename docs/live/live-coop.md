@@ -1114,9 +1114,13 @@ profiles' (`skulls::coop_start`); our own skulls (from 15) are not carried.
   returns the joined session as the server last described it, asking again.
 - **Server and web.** `GET /v1/sessions?flags=coop`; finished co-op games
   at `GET /v1/coop/games` (a closed `coop` session that a guest joined: the
-  host and everyone who joined, the campaign, start and end), shown on the
-  web's Games page (Campaign) and a player's Co-op tab; co-op sessions show
-  as "Co-op campaign" with level, difficulty and players in Find a game;
+  host and everyone who joined, the campaign, start and end, the session's
+  visibility), shown on the web's Games page (Campaign) and a player's
+  Co-op tab. A friends-only game shows only to who played in it and the
+  host's friends, an invite-only one only to who played in it, admins see
+  all (live-api.md, "Co-op games"); the same holds for the game's telemetry
+  in the games list and player pages. Co-op sessions show as "Co-op
+  campaign" with level, difficulty, players and the host's ping in Find a game;
   friends' activity shows in the friends lists.
 
 ### 10.3 The hooks (the probe as a feature)
