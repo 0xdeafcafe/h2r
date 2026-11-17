@@ -1,0 +1,180 @@
+play: $TMPDIR/h2boot/libh2game.dylib was built from another image or generator; rebuilding
+analyze: 10.3s, 18647 functions
+lift: 0.4s, 18647 lifted, 0 not lifted
+plan: 1.0s (IR passes and owner shapes)
+emit: 1.6s, 18647 owners, 1007 files (0 rewritten), 561.0 MB of C, 18854 entries, 64140 resumes
+clang (arm64): 1001 compiled, 0 reused, 1.4s keying (dependency scans, hashing, pins), 1200.7s compiling, 1.1s archive, 537.2 MB of objects
+link: 0.8s -> $TMPDIR/h2boot/libh2game.dylib
+build: 1217.6s
+live: signing in to http://127.0.0.1:8075
+live: playing as Alpha (0009d7e882ecd47d) on http://127.0.0.1:8075
+cloud saves: up to date for Alpha on http://127.0.0.1:8075 (state in /Users/u/Library/Application Support/h2recomp/coop-test/alpha/data/cloud-saves/localhost/0009d7e882ecd47d)
+app: Apple M1 Max (Metal), surface Bgra8Unorm
+play: controller speaker on the Steam Controller's trackpads, as haptics
+fallback: unread jump-table targets from $TMPDIR/h2boot-cache/unread-9c29175742280993-9d045a0e910d21c7.txt
+registered 18854 entries, 64140 resumes in 2.5s
+map packages: 0 package(s) in /Users/u/Library/Application Support/h2recomp/coop-test/alpha/data/maps
+fallback: analyzed the image for the interpreter in 0.0s
+d3d: rendering at 1x; the guest sees a 1x reference
+agent: listening on /Users/u/Library/Caches/h2recomp/coop-alpha.sock (docs/runtime/agent-api.md)
+coop-live: co-op takes up to 3 players (coop.max_players)
+coop-live: 15 campaign levels (15 named)
+feature plan: feature live-telemetry: on
+feature plan: feature map-slots: on
+feature plan: feature video-screen: on
+feature plan: feature settings-rows: on
+feature plan: feature skulls-screen: on
+feature plan: feature skulls-page: on
+feature plan: feature skulls-mp-screen: on
+feature plan: feature skulls-mp-row: on
+feature plan: feature controls-rows: on
+feature plan: feature layouts-value: on
+feature plan: feature controls-text: on
+feature plan: feature ui-strings: on
+feature plan: feature signin-strings: on
+feature plan: feature signin-code: on
+feature plan: feature skulls: on
+feature plan: feature skulls-mp: on
+feature plan: feature skulls-custom: on
+feature plan: feature h1-health: on
+feature plan: feature aim-assist: on
+feature plan: feature touch-glue: on
+feature plan: feature agent: on
+feature plan: feature engine-leaves: on
+feature plan: feature render-timing: off (switched off)
+feature plan: feature render-loop: on
+feature plan: feature coop-live: on
+feature plan: feature coop-players: on
+feature plan: feature coop-screen: on
+feature plan: feature coop-friends: on
+feature plan: feature coop-join: on
+feature plan: feature coop-screens: on
+feature plan: 0x00063e00 SESSION_JOINABLE: before [coop-live:joinable campaign] -> original
+feature plan: 0x0006e720 SESSION_GAME_LIMITS: original -> after [coop-live:peer limit 2]
+feature plan: 0x0006ec80 SESSION_GAME_START: before [coop-live:one peer for the campaign check] -> original -> after [coop-live:restore the peer count, report]
+feature plan: 0x000d5de0 OBJECT_DAMAGE_UPDATE: before [h1-health:note a player's health] -> original -> after [h1-health:hold the body's health]
+feature plan: 0x000d6790 BODY_RESTORE: observe_before [h1-health:note the health pack] -> original -> observe_after [h1-health:log the health pack]
+feature plan: 0x000d9640 DAMAGE_REPORT: observe_before [live-telemetry:hits] -> original
+feature plan: 0x000fda00 WEAPON_FROM_PLACEMENT: before [skulls-mp:Famine halves the rounds] -> original -> after [skulls-mp:Famine puts the rounds back]
+feature plan: 0x00104150 WEAPON_FIRE: observe_before [live-telemetry:shots] -> original
+feature plan: 0x0011c1b0 BSP_SWITCH: observe_before [coop-live:bsp switch, coop-players:bsp switch] -> original
+feature plan: 0x00123e20 GAME_STATE_SAVE: observe_before [coop-live:checkpoint save] -> original
+feature plan: 0x00123f60 GAME_STATE_REVERT: observe_before [coop-live:checkpoint revert] -> original
+feature plan: 0x00137fe0 GAME_TICK: before [skulls-custom:our skulls' calls, coop-live:host lobby setup] -> original -> after [touch-glue:touch look and layout, skulls-custom:our skulls] -> observe_after [coop-live:session, mode and hashes, coop-screens:co-op texts and lobby, h1-health:publish the health meter, live-telemetry:sample, skulls:watch the skulls, agent:serve]
+feature plan: 0x00138110 OPTIONS_NEW: before [coop-live:restore the peer count] -> original
+feature plan: 0x001389c0 GAME_END: original -> observe_after [coop-live:close the hash log, live-telemetry:end]
+feature plan: 0x0013939b HUD_SHOWN: before [skulls-mp:Blind hides the HUD] -> original
+feature plan: 0x0014d3a0 PLAYER_UPDATE: before [coop-players:players 3+: follow player 0] -> original
+feature plan: 0x0014ef00 PLAYER_SPAWN_LOCATION: original -> after [coop-players:players 3+: a spot even when blocked]
+feature plan: 0x0014f2e0 PLAYER_SPAWN: before [coop-players:players 3+: spawn next to player 0] -> original
+feature plan: 0x0015ce70 PLAYER_KILLED: observe_before [live-telemetry:kill] -> original
+feature plan: 0x00165f16 FIRST_PERSON_RENDER: before [skulls-mp:Blind hides the weapon] -> original
+feature plan: 0x00185be0 PLAYER_CONTROL_UPDATE: before [aim-assist:touch player's aim assist (open)] -> original -> after [aim-assist:touch player's aim assist (close)]
+feature plan: 0x0018e790 OPTIONS_QUEUE: before [skulls:apply the selection] -> original
+feature plan: 0x0018f000 GAME_ACTIVATE: before [aim-assist:weapon aim assist, skulls-mp:the host's skulls] -> original -> observe_after [coop-live:open the hash log, h1-health:pick and say the health model, live-telemetry:match start]
+feature plan: 0x00199a03 LOBBY_MODE_SET: before [coop-screens:co-op mode for the co-op row] -> original
+feature plan: 0x0019a2ce LOBBY_START_STATE: before [coop-screens:co-op over 2 to N consoles] -> original
+feature plan: 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
+feature plan: 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
+feature plan: 0x001a50a0 AIM_ASSIST_PARAMS: original -> after [aim-assist:touch player's weapon cone]
+feature plan: 0x001df3e0 SKULL_STOCK: before [skulls:note the skull] -> original -> after [skulls:record the pickup]
+feature plan: 0x00223240 RENDER_FRAME: original -> observe_after [map-slots:drop outdated map slots]
+feature plan: 0x0029ffb0 SCRIPT_TELEPORT: observe_before [coop-players:player0/1 teleported] -> original
+feature plan: 0x002a9740 CINEMATIC_START: observe_before [coop-live:cinematic start, coop-players:cinematic start] -> original -> observe_after [agent:cinematic-start]
+feature plan: 0x002a9760 CINEMATIC_STOP: observe_before [coop-live:cinematic stop, coop-players:cinematic stop] -> original -> observe_after [agent:cinematic-stop]
+feature plan: 0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original
+feature plan: 0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original
+feature plan: 0x002b7581 VARIANT_OPTIONS_ROW_TEXT: before [skulls-mp-row:the Skulls row's text] -> original
+feature plan: 0x002b75e8 VARIANT_OPTIONS_ROW_CHOSEN: before [skulls-mp-row:the Skulls row's press] -> original
+feature plan: 0x002c8548 CONTROLS_ROW_TEXT: before [controls-rows:our rows' text, layouts-value:layout value pending] -> implement controls-text:ported row text -> after [layouts-value:layout value done]
+feature plan: 0x002c8719 CONTROLS_ROW_CHOSEN: before [controls-rows:our rows' press] -> original
+feature plan: 0x002c9d38 DIFFICULTY_ROW_CHOSEN: before [skulls-page:the Skulls page before the level] -> original
+feature plan: 0xa0f01000 entry video-screen:loader
+feature plan: 0xa0f01010 entry video-screen:row text
+feature plan: 0xa0f01020 entry video-screen:row chosen
+feature plan: 0xa0f01030 entry video-screen:set up pane
+feature plan: 0xa0f01040 entry video-screen:loader slot
+feature plan: 0xa0f03000 entry skulls-screen:loader
+feature plan: 0xa0f03010 entry skulls-screen:row text
+feature plan: 0xa0f03020 entry skulls-screen:row chosen
+feature plan: 0xa0f03030 entry skulls-screen:event
+feature plan: 0xa0f03040 entry skulls-screen:destructor
+feature plan: 0xa0f03050 entry skulls-screen:set up pane
+feature plan: 0xa0f03060 entry skulls-screen:loader slot
+feature plan: 0xa0f06000 entry skulls-mp-screen:loader
+feature plan: 0xa0f06010 entry skulls-mp-screen:row text
+feature plan: 0xa0f06020 entry skulls-mp-screen:row chosen
+feature plan: 0xa0f06030 entry skulls-mp-screen:set up pane
+feature plan: 0xa0f06040 entry skulls-mp-screen:loader slot
+feature plan: 0xa0f0a000 entry signin-code:loader
+feature plan: 0xa0f0a010 entry signin-code:row text
+feature plan: 0xa0f0a020 entry signin-code:row chosen
+feature plan: 0xa0f0a030 entry signin-code:event
+feature plan: 0xa0f0a040 entry signin-code:set up pane
+feature plan: 0xa0f0a050 entry signin-code:loader slot
+feature plan: 0xa0f0e000 entry coop-screen:loader
+feature plan: 0xa0f0e010 entry coop-screen:row text
+feature plan: 0xa0f0e020 entry coop-screen:row chosen
+feature plan: 0xa0f0e030 entry coop-screen:event
+feature plan: 0xa0f0e040 entry coop-screen:set up pane
+feature plan: 0xa0f0e050 entry coop-screen:loader slot
+feature plan: 0xa0f10000 entry coop-friends:loader
+feature plan: 0xa0f10010 entry coop-friends:row text
+feature plan: 0xa0f10020 entry coop-friends:row chosen
+feature plan: 0xa0f10030 entry coop-friends:set up pane
+feature plan: 0xa0f10040 entry coop-friends:loader slot
+feature plan: 0xa0f12000 entry coop-join:loader
+feature plan: 0xa0f12010 entry coop-join:row text
+feature plan: 0xa0f12020 entry coop-join:row chosen
+feature plan: 0xa0f12030 entry coop-join:event
+feature plan: 0xa0f12040 entry coop-join:set up pane
+feature plan: 0xa0f12050 entry coop-join:loader slot
+feature plan: locale source ui-strings:our strings (served by engine-leaves)
+feature plan: locale source signin-strings:signin text (served by engine-leaves)
+feature plan: locale source coop-screens:co-op texts (served by engine-leaves)
+feature plan: warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
+skulls: hooks installed via feature plan at 0x1df3e0 (pickup), 0x18e790 (campaign start), 0x137fe0 (tick watch); saving to /Users/u/Library/Application Support/h2recomp/coop-test/alpha/data/settings.toml
+skulls-mp: hooks installed via feature plan at 0x18f000 (multiplayer start), 0x13939b (Blind: HUD), 0x165f16 (Blind: first-person weapon), 0xfda00 (Famine: placed weapons); offered: Famine, Blind, Low Gravity (each once the host's profile has collected it)
+skulls-custom: hooks installed via feature plan at 0x137fe0 (tick: calls, effects, hidden skulls); hidden: Acrophobia on Uprising, Low Gravity on Delta Halo, Fall Damage on Metropolis, Unlimited Ammo on Outskirts, Unlimited Grenades on Sacred Icon, Invincible on The Great Journey
+health: hooks installed via feature plan at 0xd5de0 (regeneration), 0xd6790 (health pack log); model now Halo 2
+entry 0x002d0aee, running
+play: audio on coreaudio:BuiltInSpeakerDevice at 44100 Hz
+cloud saves: save/SaveImage.xbx: uploaded (changed here)
+cloud saves: save/TitleImage.xbx: uploaded (changed here)
+cloud saves: save/TitleMeta.xbx: uploaded (changed here)
+feature: OPTIONS_NEW before coop-live:restore the peer count active
+feature: OPTIONS_QUEUE before skulls:apply the selection active
+feature: GAME_ACTIVATE before aim-assist:weapon aim assist active
+feature: GAME_ACTIVATE before skulls-mp:the host's skulls active
+layouts: screen tag active
+feature: LOCALE_FIND implement engine-leaves:locale_string_id_find active
+community variants: 12 added to the built-in list
+feature: BSP_SWITCH observe_before coop-live:bsp switch active
+feature: BSP_SWITCH observe_before coop-players:bsp switch active
+feature: GAME_ACTIVATE observe_after coop-live:open the hash log active
+feature: GAME_ACTIVATE observe_after h1-health:pick and say the health model active
+health: game start: Halo 2 model
+feature: GAME_ACTIVATE observe_after live-telemetry:match start active
+feature: PLAYER_CONTROL_UPDATE before aim-assist:touch player's aim assist (open) active
+feature: AIM_ASSIST_PARAMS after aim-assist:touch player's weapon cone active
+feature: PLAYER_CONTROL_UPDATE after aim-assist:touch player's aim assist (close) active
+fov: camera active
+feature: FIRST_PERSON_RENDER before skulls-mp:Blind hides the weapon active
+feature: HUD_SHOWN before skulls-mp:Blind hides the HUD active
+feature: RENDER_FRAME observe_after map-slots:drop outdated map slots active
+feature: GAME_TICK before skulls-custom:our skulls' calls active
+feature: GAME_TICK before coop-live:host lobby setup active
+feature: PLAYER_UPDATE before coop-players:players 3+: follow player 0 active
+feature: CINEMATIC_START observe_before coop-live:cinematic start active
+feature: CINEMATIC_START observe_before coop-players:cinematic start active
+feature: CINEMATIC_START observe_after agent:cinematic-start active
+feature: OBJECT_DAMAGE_UPDATE before h1-health:note a player's health active
+feature: OBJECT_DAMAGE_UPDATE after h1-health:hold the body's health active
+feature: GAME_TICK after touch-glue:touch look and layout active
+feature: GAME_TICK after skulls-custom:our skulls active
+feature: GAME_TICK observe_after coop-live:session, mode and hashes active
+feature: GAME_TICK observe_after coop-screens:co-op texts and lobby active
+feature: GAME_TICK observe_after h1-health:publish the health meter active
+feature: GAME_TICK observe_after live-telemetry:sample active
+feature: GAME_TICK observe_after skulls:watch the skulls active
+feature: GAME_TICK observe_after agent:serve active
