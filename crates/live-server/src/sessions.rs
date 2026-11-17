@@ -299,6 +299,23 @@ impl Live {
         viewer == Viewer::Admin || game_shows_to(&self.model.read(), &f.frame.game_id, viewer)
     }
 
+    /// Whether each of `games` shows to `viewer`, under one read of the
+    /// model.
+    pub fn games_show<'a>(
+        &self,
+        games: impl IntoIterator<Item = &'a str>,
+        viewer: Viewer,
+    ) -> Vec<bool> {
+        if viewer == Viewer::Admin {
+            return games.into_iter().map(|_| true).collect();
+        }
+        let s = self.model.read();
+        games
+            .into_iter()
+            .map(|id| game_shows_to(&s, id, viewer))
+            .collect()
+    }
+
     fn viewer_of(&self, author: &Author) -> Viewer {
         if self.admins.is_admin(author, &self.model.read()) {
             return Viewer::Admin;

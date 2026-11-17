@@ -155,7 +155,10 @@ pub struct Live {
     policy: Policy,
     applied: watch::Receiver<u64>,
     feed: broadcast::Sender<Arc<RecordedEvent>>,
+    /// Every sent frame, for JSON stream readers.
     pub(crate) frames: broadcast::Sender<Arc<crate::games::LiveFrame>>,
+    /// Packed frames, batched a tick at a time for packed readers.
+    pub(crate) packed: crate::packed::Hub,
     pub(crate) ingest: crate::games::IngestState,
     jtis: ReplayGuard,
     writes: RateLimiter,
@@ -438,6 +441,7 @@ impl Live {
             applied: applied.clone(),
             feed,
             frames: broadcast::channel(256).0,
+            packed: Default::default(),
             ingest: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
@@ -470,6 +474,17 @@ impl Live {
                 tokio::time::sleep(every).await;
                 let Some(live) = weak.upgrade() else { return };
                 live.sweep().await;
+            }
+        });
+        // Packed readers' batches, a tick at a time.
+        let weak = Arc::downgrade(&live);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::packed::TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(live) = weak.upgrade() else { return };
+                live.publish_packed();
             }
         });
         Ok(live)

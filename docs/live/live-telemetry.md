@@ -656,6 +656,31 @@ push 7 µs either way, repaint 160 → 95 µs (vehicles 33 → 12, machines
 cached on the decoded entity, and a frame's sampled lists are made once
 per frame and shared across repaints.
 
+The fifth lane batches packed frames once for every reader: ingest appends
+each game's packed frames to a pending buffer, and every 100 ms the server
+publishes one tick (every game's batch, and their bytes back to back) to
+readers of all games, and each game's batch alone to readers of that game,
+who are not woken by the others (`crates/live-server/src/packed.rs`). A
+reader that may see every game and follows every stream sends the tick's
+bytes as they are; otherwise it copies the records that follow what it was
+sent. Readers never get a frame twice or an older one (the sequence rule
+in `Follow`), so a reader that joins mid-game or falls behind is sent each
+stream from its keyframe, and the ticks that repeat it are trimmed; the
+wire is unchanged. Fan-out CPU per frame above the no-reader run, 8 games
+at 15 Hz, before and after back to back at a load average of 11 to 15:
+
+| packed readers | before µs/frame/reader | after | total before | after |
+|---|---:|---:|---:|---:|
+| 1, every game | 34.3 | 17.7 | 34 | 18 |
+| 10, every game | 26.8 | 11.9 | 268 | 119 |
+| 100, every game | 17.5 | 9.3 | 1747 | 933 |
+| 8, one game each | 14.1 | 8.2 | 113 | 65 |
+| 80, one game each | 14.4 | 4.2 | 1155 | 340 |
+
+JSON readers are unchanged (60 to 67 µs a frame a reader at 100). What
+remains for a packed reader is a WebSocket send each tick and, in this
+in-process bench, the reader's own receive.
+
 ## Runtime validation needed first
 
 Unit tests use synthetic guest memory and do not execute the game. Before
