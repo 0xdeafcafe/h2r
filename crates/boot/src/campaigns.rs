@@ -50,6 +50,8 @@ pub const MATG_START: u32 = 0x170;
 pub const MATG_UI: u32 = 0x178;
 pub const UI_CAMPAIGNS: u32 = 0;
 pub const UI_LEVELS: u32 = 8;
+/// A card's reference group, `bitm` as the guest stores it.
+pub const CARD_GROUP: u32 = u32::from_be_bytes(*b"bitm");
 /// The menu's selection: campaign id, map id, difficulty.
 pub const SELECTED_CAMPAIGN: u32 = 0x0054_e7c0;
 pub const SELECTED_MAP: u32 = 0x0054_e7c4;
@@ -293,6 +295,17 @@ fn store<M: Gm>(
 /// map name through the start list; else the free slot's own; else the
 /// list's first.
 pub fn extend<M: Gm>(m: &mut M, built: &[Built], region: &Region) -> Result<Extended, String> {
+    extend_with_cards(m, built, region, &BTreeMap::new())
+}
+
+/// [`extend`], a level in `cards` (its card's `bitm` datum by map name,
+/// `campaign_cards`) showing its own picture.
+pub fn extend_with_cards<M: Gm>(
+    m: &mut M,
+    built: &[Built],
+    region: &Region,
+    cards: &BTreeMap<String, u32>,
+) -> Result<Extended, String> {
     let mut r = Extended::default();
     let Some(matg) = m.u32(GLOBALS_TAG).filter(|&a| a != 0) else {
         r.no_lists = true;
@@ -360,17 +373,22 @@ pub fn extend<M: Gm>(m: &mut M, built: &[Built], region: &Region) -> Result<Exte
                 u32_at(e, cl::UI_LEVEL_PICTURE + 4),
             ]
         });
-        // A level with a picture of its own choosing carries it; others
-        // take the free slot's (marked by FREE here).
+        // A level with its own card shows it; one with a picture of its
+        // own choosing carries that; others take the free slot's (marked
+        // by FREE here).
         let new: Vec<Vec<u8>> = built
             .iter()
             .flat_map(|b| {
                 b.levels.iter().map(|l| {
-                    let own = l
-                        .picture
-                        .as_ref()
-                        .and_then(|p| retail.get(p))
-                        .and_then(|&id| picture_of(id));
+                    let card = cards
+                        .get(&l.map.to_ascii_lowercase())
+                        .map(|&datum| [CARD_GROUP, datum]);
+                    let own = card.or_else(|| {
+                        l.picture
+                            .as_ref()
+                            .and_then(|p| retail.get(p))
+                            .and_then(|&id| picture_of(id))
+                    });
                     cl::ui_level_record(b.campaign_id, l, own.unwrap_or([FREE, FREE]))
                 })
             })
@@ -629,6 +647,9 @@ pub struct State {
     pub built: Vec<Built>,
     pub selection: Selection,
     pub progress: Progress,
+    /// The level cards' datums in mainmenu, once the VFS has served it
+    /// (`campaign_cards`).
+    pub cards: crate::campaign_cards::Table,
 }
 
 impl State {
@@ -802,6 +823,7 @@ pub fn boot_state(data_root: &Path, disc: &Path) -> Option<State> {
         built,
         selection: Selection::default(),
         progress,
+        cards: Default::default(),
     })
 }
 
