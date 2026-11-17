@@ -1,0 +1,13 @@
+[package]
+name = "h1scripts"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+hs.workspace = true
+map.workspace = true
+xbe.workspace = true
+xiso.workspace = true
+thiserror.workspace = true

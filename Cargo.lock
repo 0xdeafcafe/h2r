@@ -2378,6 +2378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1ai"
+version = "0.1.0"
+dependencies = [
+ "h1convert",
+ "h1map",
+ "map",
+ "pathfind",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "h1bitmaps"
 version = "0.1.0"
 dependencies = [
@@ -2427,6 +2440,31 @@ dependencies = [
  "map",
  "tags",
  "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
+name = "h1objects"
+version = "0.1.0"
+dependencies = [
+ "h1convert",
+ "h1map",
+ "h1models",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
+name = "h1scripts"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "hs",
+ "map",
+ "thiserror 2.0.21",
+ "xbe",
  "xiso",
 ]
 
