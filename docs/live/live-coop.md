@@ -1342,9 +1342,10 @@ screens stay behind `H2_COOP_LIST_UI=1`.
 - `LOBBY_MODE_SET`, "co-op mode for the co-op row": within 5 s of that
   press, the next mode 2 becomes mode 0, once. Every other row drops the
   request.
-- `LOBBY_START_STATE`, "co-op over two consoles": while co-op is armed,
+- `LOBBY_START_STATE`, "co-op over 2 to N consoles": while co-op is armed,
   a 7 is answered with the tail's own result (10, 9 or 8) when the
-  session is a networked campaign with two peers and two players. The
+  session is a networked campaign of 2 to `coop.max_players` consoles
+  with one player each (section 12). The
   session start that follows is the probe's synchronous path (section 9).
 - The pinger thread's tick (`Lobby::sync_retail`): the host advertises
   the level and difficulty the lobby holds, so the guest's join reads
@@ -1366,7 +1367,7 @@ fast). Ping stays on the web.
 3. Press Y, invite a friend; the friend accepts and lands in the same
    lobby, showing the host's level and difficulty and both gamertags.
 4. Start Game. Expect
-   `coop-live: lobby start state 7 (co-op wants one console) answered 9 for two consoles`,
+   `coop-live: lobby start state 7 (co-op wants one console) answered 9 for 2 consoles` (the number of consoles in the lobby),
    then the probe's session start lines (section 9.2).
 
 Also to check: whether the Live menu's cursor comes back on Custom Game

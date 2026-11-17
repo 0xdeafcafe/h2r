@@ -816,18 +816,26 @@ impl Lobby {
     pub fn armed(&self) -> bool {
         self.arm.as_ref().is_some_and(|a| a.active())
     }
-    /// What the start state hook answered; logged when it changes.
-    pub fn note_start_state(&self, retail: u32, ours: u32) {
-        let was = self.lock().start_state.replace((retail, ours));
-        if was != Some((retail, ours)) {
-            if retail == ours {
-                eprintln!("coop-live: lobby start state {retail}");
-            } else {
-                eprintln!(
-                    "coop-live: lobby start state {retail} (co-op wants one console) answered {ours} for two consoles"
-                );
-            }
+    /// What the start state hook answered for a lobby of `consoles`;
+    /// logged when it changes.
+    pub fn note_start_state(&self, retail: u32, ours: u32, consoles: u32) {
+        if let Some(line) = self.start_state_line(retail, ours, consoles) {
+            eprintln!("{line}");
         }
+    }
+    /// The log line for a start state answer, when it changed.
+    pub fn start_state_line(&self, retail: u32, ours: u32, consoles: u32) -> Option<String> {
+        let was = self.lock().start_state.replace((retail, ours));
+        if was == Some((retail, ours)) {
+            return None;
+        }
+        Some(if retail == ours {
+            format!("coop-live: lobby start state {retail}")
+        } else {
+            format!(
+                "coop-live: lobby start state {retail} (co-op wants one console) answered {ours} for {consoles} consoles"
+            )
+        })
     }
     /// The Co-op Campaign row in the retail lobby mode: host. The lobby
     /// sets the level and difficulty itself, so the hooks arm with none.
@@ -1403,7 +1411,7 @@ impl feature::Feature for CoopScreens {
             let reentry = Arc::new(AtomicBool::new(false));
             b.raw().before(
                 &points::LOBBY_START_STATE,
-                "co-op over two consoles",
+                "co-op over 2 to N consoles",
                 move |c| {
                     if reentry.load(Ordering::SeqCst) || !lobby.armed() {
                         return Ok(Flow::Continue);
@@ -1483,7 +1491,7 @@ async fn start_state(
     } else {
         state
     };
-    lobby.note_start_state(state, out);
+    lobby.note_start_state(state, out, session.as_ref().map_or(0, |s| s.peers));
     Ok(Ret::new(out, 4))
 }
 
