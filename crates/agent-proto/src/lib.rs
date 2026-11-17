@@ -249,6 +249,11 @@ pub struct At {
     pub tick: Option<u64>,
     /// Ticks the server has seen since the game started; never resets.
     pub ticks: u64,
+    /// Ticks since the current map loaded. A level's scripts start its
+    /// opening cutscene in its first ticks, so "in control" is better
+    /// asked as `{"phase":"gameplay","map_ticks":30}` than as the phase
+    /// alone.
+    pub map_ticks: u64,
     /// Frames presented so far.
     pub present: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +310,9 @@ pub struct Until {
     /// This many more ticks have passed since the wait began.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks: Option<u64>,
+    /// At least this many ticks since the current map loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_ticks: Option<u64>,
     /// The present count is at least this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub present: Option<u64>,
@@ -706,6 +714,7 @@ mod tests {
         let at = At {
             tick: Some(5),
             ticks: 5,
+            map_ticks: 5,
             present: 9,
             map: None,
             mode: None,

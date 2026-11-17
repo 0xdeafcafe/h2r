@@ -521,8 +521,12 @@ How it behaves (**Code**, with tests in `crates/agent`):
   (`boundary: "slice"`) once no tick has come for 500 ms.
 - **Phase.** `loading` (no tick for 500 ms), `menu` (mode `main_menu`),
   `gameplay` (campaign or multiplayer), `cinematic` (between HaloScript's
-  `cinematic_start` and `cinematic_stop`, observed; cleared when the map
-  changes). Fades to black aren't detected yet.
+  `cinematic_start` and `cinematic_stop` in a campaign or multiplayer game,
+  observed; cleared when the map changes). The main menu is always `menu`:
+  its background runs `cinematic_start` too. A level's first tick comes
+  before its scripts start the opening cutscene, so every stamp has
+  `map_ticks` (ticks since the map loaded) and `wait` takes it: ask for
+  `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black aren't detected yet.
 - **World.** Players (their units), AI bipeds, vehicles, machines and dead
   bodies, from `live-telemetry::memory`. Ids keep the datum's salt:
   a slot reused by another object answers `gone` (code 3). `near` sorts
