@@ -602,6 +602,14 @@ pub trait Backend: Send {
     fn drop_pixel_count(&mut self, ticket: u64) {
         let _ = ticket;
     }
+    /// Whether the report behind `ticket` is still only recorded, not yet
+    /// on its way to the GPU: [`try_pixel_count`](Self::try_pixel_count)
+    /// would submit it. A poller that should not force that (the render
+    /// thread landing counts after each batch) skips it. Default false.
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        let _ = ticket;
+        false
+    }
     /// A colour surface that is also a texture, for a render-to-texture
     /// level. The default is [`create_surface`](Self::create_surface).
     fn create_texture_target(
