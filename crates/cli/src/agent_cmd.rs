@@ -30,7 +30,14 @@ or a short form:
   resume                 session.resume
   step <ticks>           session.step
   wait <JSON until> [timeout_ms]
+  pad <JSON>             input.pad, e.g. '{\"player\":0,\"buttons\":[\"a\"],\"hold_ticks\":10}'
+                         or '{\"sticks\":{\"left\":[0,1]},\"at_tick\":\"now\",\"hold_ticks\":90}'
+  clear [player]         input.clear: drop queued pad packets
+  input                  input.status
   sleep <ms>             (scripts only) wait before the next line
+
+Input calls (pad, clear) need control. Run alone, they claim it for the
+call; queued packets outlive the connection and play out.
 
 The socket is --socket, else $H2_AGENT, else the cache directory's
 h2recomp/agent.sock, where `h2 serve` listens by default. Results print as
@@ -78,11 +85,20 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "watch" => watch(&mut c, &rest[1..]),
         _ => {
             let (m, p) = parse_call(&rest)?;
+            if claims_alone(&m) {
+                call(&mut c, method::CLAIM, Value::Null)?;
+            }
             let v = call(&mut c, &m, p)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
     }
+}
+
+/// Input methods need control; run alone, the call claims it first. (A
+/// pause or step alone would end with the connection, so those don't.)
+fn claims_alone(m: &str) -> bool {
+    m.starts_with("input.") && method::CONTROL.contains(&m)
 }
 
 fn call(c: &mut Client, m: &str, p: Value) -> Result<Value> {
@@ -190,6 +206,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "claim" => Some(method::CLAIM),
         "release" => Some(method::RELEASE),
         "resume" => Some(method::RESUME),
+        "input" => Some(method::INPUT_STATUS),
         _ => None,
     };
     if let Some(m) = bare {
@@ -217,6 +234,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             },
         ),
         "step" => (method::STEP, json!({ "ticks": number(arg, "step")? })),
+        "pad" => {
+            let p = json_arg(arg)?;
+            if !p.is_object() {
+                bail!("pad needs a JSON packet, e.g. '{{\"buttons\":[\"a\"]}}'");
+            }
+            (method::INPUT_PAD, p)
+        }
+        "clear" => (
+            method::INPUT_CLEAR,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "player": number(arg, "clear")? }),
+            },
+        ),
         "wait" => {
             let until = json_arg(arg)?;
             if until.is_null() {
@@ -285,6 +316,24 @@ mod tests {
             c(r#"world.query {"limit": 1}"#),
             ("world.query".into(), json!({"limit": 1}))
         );
+        assert_eq!(
+            c(r#"pad {"buttons": ["a"], "hold_ticks": 4}"#),
+            (
+                "input.pad".into(),
+                json!({"buttons": ["a"], "hold_ticks": 4})
+            )
+        );
+        assert_eq!(c("clear 1"), ("input.clear".into(), json!({"player": 1})));
+        assert_eq!(c("input"), ("input.status".into(), Value::Null));
+    }
+
+    #[test]
+    fn input_calls_alone_claim_control_and_others_do_not() {
+        assert!(claims_alone("input.pad"));
+        assert!(claims_alone("input.clear"));
+        assert!(!claims_alone("input.status"));
+        assert!(!claims_alone("session.pause"));
+        assert!(!claims_alone("world.count"));
     }
 
     #[test]
@@ -297,6 +346,9 @@ mod tests {
             "status now",
             "dance",
             "query {}  extra",
+            "pad",
+            "pad [1]",
+            "clear x",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

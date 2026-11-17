@@ -17,6 +17,7 @@ mod exec;
 mod reader;
 #[cfg(unix)]
 mod server;
+mod tap;
 
 pub use exec::{Agent, ConnId, Page, TICK_STALE, query};
 pub use reader::{
@@ -24,6 +25,7 @@ pub use reader::{
 };
 #[cfg(unix)]
 pub use server::Server;
+pub use tap::{AgentTap, Chain, gamepad};
 
 /// The socket is a Unix socket; elsewhere listening fails with a clear error.
 #[cfg(not(unix))]

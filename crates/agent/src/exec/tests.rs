@@ -835,3 +835,101 @@ fn a_client_that_stops_reading_is_dropped() {
     a.between_slices(&mut level(), 0);
     assert_eq!(next(&rx2)["result"]["controller"], true);
 }
+
+/// One read of controller `handle` through the agent's tap, from a live
+/// pad that is all zeros.
+fn tap_read(t: &mut crate::AgentTap, handle: u32) -> input::gamepad::Gamepad {
+    use xapi::tap::InputTap;
+    let (mut status, mut p) = (0, [0; xapi::tap::PACKET]);
+    t.read(handle, &mut status, &mut p);
+    input::gamepad::Gamepad::from_bytes(p[4..].try_into().unwrap())
+}
+
+#[test]
+fn a_pad_packet_needs_control_and_reaches_the_guest_read_at_its_tick() {
+    use xapi::tap::InputTap;
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    // No tap yet: the game has no XAPI input.
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    ask(&a, c, 2, method::INPUT_PAD, json!({"buttons": ["a"]}));
+    a.on_tick(&mut g);
+    next(&rx);
+    assert_eq!(next(&rx)["error"]["code"], code::UNAVAILABLE);
+
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    let (other, orx) = client(&a);
+    ask(&a, other, 3, method::INPUT_PAD, json!({"buttons": ["a"]}));
+    a.on_tick(&mut g);
+    assert_eq!(next(&orx)["error"]["code"], code::NOT_CONTROLLER);
+
+    // The stamp's tick is 100: a packet at 101 held for 2 ticks.
+    ask(
+        &a,
+        c,
+        4,
+        method::INPUT_PAD,
+        json!({"at_tick": 101, "hold_ticks": 2, "buttons": ["a"], "sticks": {"left": [0, 1]}}),
+    );
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["from_tick"], 101);
+    assert_eq!(v["result"]["until_tick"], 103);
+    assert_eq!(v["result"]["open"], true);
+    assert_eq!(tap_read(&mut tap, 0x5800_0000).analog[0], 0, "not yet");
+    for tick in [101, 102] {
+        g.status.tick = Some(tick);
+        a.on_tick(&mut g);
+        let pad = tap_read(&mut tap, 0x5800_0000);
+        assert_eq!((pad.analog[0], pad.thumb_ly), (255, 32767), "tick {tick}");
+    }
+    g.status.tick = Some(103);
+    a.on_tick(&mut g);
+    assert_eq!(tap_read(&mut tap, 0x5800_0000).analog[0], 0, "released");
+
+    ask(&a, c, 5, method::INPUT_STATUS, Value::Null);
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(v["result"]["open"], json!([0]));
+    assert_eq!(v["result"]["tap"], true);
+    assert_eq!(v["result"]["queued"], json!({}));
+}
+
+#[test]
+fn bad_pad_packets_are_refused_and_a_map_change_drops_the_queue() {
+    use xapi::tap::InputTap;
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0004, 1);
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    ask(&a, c, 2, method::INPUT_PAD, json!({"player": 7}));
+    ask(&a, c, 3, method::INPUT_PAD, json!({"hold_ticks": 0}));
+    ask(&a, c, 4, method::INPUT_PAD, json!({"buttons": ["turbo"]}));
+    ask(&a, c, 5, method::INPUT_PAD, json!({"at_tick": "later"}));
+    ask(
+        &a,
+        c,
+        6,
+        method::INPUT_PAD,
+        json!({"player": 1, "at_tick": "now", "hold_ticks": 600, "buttons": ["start"]}),
+    );
+    a.on_tick(&mut g);
+    next(&rx);
+    for id in 2..=5 {
+        let v = next(&rx);
+        assert_eq!(v["id"], id);
+        assert_eq!(v["error"]["code"], code::INVALID_PARAMS, "{v}");
+    }
+    let v = next(&rx);
+    assert_eq!(v["result"]["from_tick"], 100);
+    assert_eq!(v["result"]["open"], true);
+    assert_ne!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
+    g.status.map = Some("04a_gasgiant".into());
+    g.status.tick = Some(1);
+    a.on_tick(&mut g);
+    assert_eq!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
+}

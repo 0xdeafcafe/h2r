@@ -32,6 +32,14 @@ pub fn default_socket() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os(ENV).filter(|p| !p.is_empty()) {
         return p.into();
     }
+    cache_dir().join("agent.sock")
+}
+
+/// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
+/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
+/// The agent keeps its input logs (`inputs/`) and captures (`captures/`)
+/// here, never in the repository.
+pub fn cache_dir() -> std::path::PathBuf {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let cache = if cfg!(target_os = "macos") {
         home.map(|h| h.join("Library/Caches"))
@@ -40,10 +48,7 @@ pub fn default_socket() -> std::path::PathBuf {
             .map(Into::into)
             .or_else(|| home.map(|h| h.join(".cache")))
     };
-    cache
-        .unwrap_or_else(std::env::temp_dir)
-        .join("h2recomp")
-        .join("agent.sock")
+    cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
 }
 
 /// Method names. `session.methods` lists them at run time.
@@ -62,6 +67,9 @@ pub mod method {
     pub const WORLD_OBJECT: &str = "world.object";
     pub const PROFILE_COUNTERS: &str = "profile.counters";
     pub const FEATURES: &str = "features.list";
+    pub const INPUT_PAD: &str = "input.pad";
+    pub const INPUT_CLEAR: &str = "input.clear";
+    pub const INPUT_STATUS: &str = "input.status";
 
     /// Every method, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
@@ -79,10 +87,13 @@ pub mod method {
         WORLD_OBJECT,
         PROFILE_COUNTERS,
         FEATURES,
+        INPUT_PAD,
+        INPUT_CLEAR,
+        INPUT_STATUS,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
-    pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP];
+    pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP, INPUT_PAD, INPUT_CLEAR];
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
@@ -657,6 +668,135 @@ pub struct Counters {
     pub counts: BTreeMap<String, f64>,
 }
 
+// ---- input ----
+
+/// Controller ports (players) a pad packet can name.
+pub const PORTS: u32 = 4;
+
+/// When a pad packet starts: a game tick, or `"now"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AtTick {
+    /// The game's own tick (the stamp's `tick`): the packet applies to
+    /// reads made once the stamp reads at least this.
+    Tick(u64),
+    /// `"now"`: from the next read.
+    Now(Now),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Now {
+    Now,
+}
+
+/// A button of the Xbox pad. `a` to `white` are the pressure-sensitive
+/// ones (pressed fully); the rest are digital.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    A,
+    B,
+    X,
+    Y,
+    Black,
+    White,
+    Start,
+    Back,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    /// Left stick click.
+    LeftThumb,
+    /// Right stick click.
+    RightThumb,
+}
+
+/// Stick positions, each axis -1 (left, down) to 1 (right, up).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sticks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<[f64; 2]>,
+}
+
+/// Trigger pressure, 0 to 1.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Triggers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<f64>,
+}
+
+/// `input.pad`: one timed packet for one player's controller. While it
+/// holds, it replaces what that controller's reads give the game, the
+/// whole pad: what isn't named is released and centred.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PadParams {
+    /// The controller port, 0 to 3 (default 0).
+    #[serde(default)]
+    pub player: u32,
+    /// When it starts (default `"now"`). Exclusive with `delay_ticks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_tick: Option<AtTick>,
+    /// Start this many ticks from now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ticks: Option<u64>,
+    /// How many ticks it holds (default 1, at most 18000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buttons: Vec<Button>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticks: Option<Sticks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggers: Option<Triggers>,
+}
+
+impl PadParams {
+    pub const DEFAULT_HOLD: u64 = 1;
+    pub const MAX_HOLD: u64 = 18_000;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Padded {
+    pub at: At,
+    pub player: u32,
+    /// The game tick it starts at, and the first tick it no longer holds.
+    pub from_tick: u64,
+    pub until_tick: u64,
+    /// Packets queued for this player, this one included.
+    pub queued: usize,
+    /// Whether the game has this player's controller open. A packet for a
+    /// controller it hasn't opened is kept, but no read sees it.
+    pub open: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClearParams {
+    /// Only this player's packets (default: every player's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputStatus {
+    pub at: At,
+    /// Pad packets queued (waiting or holding), per player.
+    pub queued: BTreeMap<u32, usize>,
+    /// Controller ports the game has open.
+    pub open: Vec<u32>,
+    /// Whether the input tap is installed (the game has XAPI input).
+    pub tap: bool,
+}
+
 // ---- features ----
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -759,6 +899,30 @@ mod tests {
             }
             .is_empty()
         );
+    }
+
+    #[test]
+    fn a_pad_packet_starts_at_a_tick_or_now() {
+        let p: PadParams = serde_json::from_value(json!({
+            "player": 1, "at_tick": "now", "buttons": ["a", "dpad_up"],
+            "sticks": {"left": [0.0, 1.0]}, "triggers": {"right": 0.5}
+        }))
+        .unwrap();
+        assert_eq!(p.at_tick, Some(AtTick::Now(Now::Now)));
+        assert_eq!(p.buttons, [Button::A, Button::DpadUp]);
+        let p: PadParams = serde_json::from_value(json!({"at_tick": 120})).unwrap();
+        assert_eq!(p.at_tick, Some(AtTick::Tick(120)));
+        for bad in [
+            json!({"at_tick": "soon"}),
+            json!({"buttons": ["turbo"]}),
+            json!({"stick": {}}),
+            json!({"sticks": {"left": [0.0]}}),
+        ] {
+            assert!(
+                serde_json::from_value::<PadParams>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

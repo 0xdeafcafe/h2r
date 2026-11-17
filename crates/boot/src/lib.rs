@@ -957,6 +957,7 @@ pub fn run_hosted_with_live(
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
+    let input_replay = lockstep_config.replay.is_some();
     let mut harness = if lockstep_config.enabled() {
         let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
@@ -968,7 +969,7 @@ pub fn run_hosted_with_live(
     };
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
     let agent = match agent_glue::socket_from_env() {
-        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path)?),
+        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
     // The Rust datum, tag and locale functions, when H2_FEATURES has

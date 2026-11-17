@@ -8,13 +8,15 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+use crate::tap::{self as input, AgentTap, Chain, Input};
 use std::time::{Duration, Instant};
 
 use agent_proto::{
-    At, Boundary, CountParams, Counters, Counts, Event, EventKind, Features, GroupBy, Kind,
-    Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams, ObjectResult, PROTOCOL,
-    PauseParams, Phase, QueryParams, QueryResult, Request, Response, RpcError, Status, StepParams,
-    SubscribeParams, Until, WaitParams, Waited, code, method,
+    At, Boundary, ClearParams, CountParams, Counters, Counts, Event, EventKind, Features, GroupBy,
+    InputStatus, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams, ObjectResult,
+    PROTOCOL, PadParams, Padded, PauseParams, Phase, QueryParams, QueryResult, Request, Response,
+    RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -82,6 +84,9 @@ struct State {
     /// The tick observer isn't installed (switched off, or the plan left
     /// it out): nothing can pause, and world reads come between slices.
     no_tick_hook: bool,
+    /// Pad packets and the controllers the game has open, shared with the
+    /// input tap.
+    input: Arc<Mutex<Input>>,
 }
 
 struct Conn {
@@ -245,6 +250,13 @@ impl Agent {
         }
         drop(s);
         self.shared.wake.notify_all();
+    }
+
+    /// The input tap for `xapi`, wrapping the one already there (`inner`,
+    /// from `H2_INPUT_RECORD` or `H2_INPUT_REPLAY`) where `Chain` says.
+    pub fn input_tap(&self, inner: Option<(Box<dyn xapi::tap::InputTap>, Chain)>) -> AgentTap {
+        let input = Arc::clone(&self.lock().input);
+        AgentTap::new(input, inner)
     }
 
     pub fn is_paused(&self) -> bool {
@@ -415,8 +427,13 @@ impl State {
             self.map_ticks += 1;
         }
         if old.map.is_some() && old.map != self.game.map {
-            // A cutscene doesn't outlive its map.
+            // A cutscene doesn't outlive its map, nor do pad packets (the
+            // game's tick starts again).
             self.cinematic = false;
+            input::lock(&self.input).clear(None);
+        }
+        if let Some(t) = self.game.tick {
+            input::lock(&self.input).set_clock(t);
         }
         let old_phase = self.phase;
         self.phase = Some(self.phase_now());
@@ -576,7 +593,7 @@ impl State {
         if method::CONTROL.contains(&m) && self.controller != Some(conn) {
             return Some(Err(RpcError::new(
                 code::NOT_CONTROLLER,
-                "session.claim first: only the controlling connection may pause or step",
+                "session.claim first: only the controlling connection may pause, step or send input",
             )));
         }
         if self.no_tick_hook && (m == method::PAUSE || m == method::STEP) {
@@ -711,6 +728,12 @@ impl State {
                 at: self.at(),
                 plan: self.plan.clone(),
             })),
+            method::INPUT_PAD => params::<PadParams>(p).and_then(|pp| self.pad(&pp).map(to_value)),
+            method::INPUT_CLEAR => params::<ClearParams>(p).map(|cp| {
+                let cleared = input::lock(&self.input).clear(cp.player);
+                serde_json::json!({ "at": self.at(), "cleared": cleared })
+            }),
+            method::INPUT_STATUS => Ok(to_value(self.input_status())),
             other => Err(RpcError::new(
                 code::METHOD_NOT_FOUND,
                 format!("no method {other}; session.methods lists them"),
@@ -799,6 +822,38 @@ impl State {
                 e.data = Some(to_value(self.at()));
                 Err(e)
             }
+        }
+    }
+
+    fn pad(&self, p: &PadParams) -> Result<Padded, RpcError> {
+        let mut i = input::lock(&self.input);
+        if !i.tap {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "this game has no input tap (it runs without XAPI input)",
+            ));
+        }
+        let q = i
+            .push(p)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
+        drop(i);
+        Ok(Padded {
+            at: self.at(),
+            player: p.player,
+            from_tick: q.from,
+            until_tick: q.until,
+            queued: q.queued,
+            open: q.open,
+        })
+    }
+
+    fn input_status(&self) -> InputStatus {
+        let i = input::lock(&self.input);
+        InputStatus {
+            at: self.at(),
+            queued: i.queued_by_port(),
+            open: i.open_ports(),
+            tap: i.tap,
         }
     }
 

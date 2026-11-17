@@ -2,10 +2,13 @@
 //!
 //! Listens on the socket, adds the `agent` feature (a tick observer that
 //! answers requests at tick boundaries), and answers between slices when
-//! the game isn't ticking. Frame stats are collected for a live window when
+//! the game isn't ticking. With XAPI input, the agent's input tap goes on
+//! `xapi` (`input.pad`), wrapping the one `H2_INPUT_RECORD` or
+//! `H2_INPUT_REPLAY` set. Frame stats are collected for a live window when
 //! nothing else started them, so `profile.counters` has frames to report.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
@@ -23,8 +26,16 @@ pub fn socket_from_env() -> Option<PathBuf> {
 }
 
 impl AgentGlue {
-    /// Listens at `path` and adds the feature to `registry`.
-    pub fn install(registry: &mut feature::Registry, path: PathBuf) -> Result<AgentGlue> {
+    /// Listens at `path`, adds the feature to `registry`, and puts the input
+    /// tap on `xapi`. `replaying`: the tap already there is a replay, which
+    /// stands in for the live pad (agent packets go on top of it);
+    /// otherwise it is a recording, which sees agent packets too.
+    pub fn install<S: xapi::Storage>(
+        registry: &mut feature::Registry,
+        path: PathBuf,
+        xapi: Option<&Mutex<xapi::Xapi<S>>>,
+        replaying: bool,
+    ) -> Result<AgentGlue> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
@@ -40,6 +51,19 @@ impl AgentGlue {
                 )
             }
             Err(e) => anyhow::bail!("agent: {e}"),
+        }
+        match xapi {
+            Some(x) => {
+                let mut x = x.lock().unwrap_or_else(|e| e.into_inner());
+                let chain = if replaying {
+                    agent::Chain::Before
+                } else {
+                    agent::Chain::After
+                };
+                let inner = x.take_input_tap().map(|t| (t, chain));
+                x.set_input_tap(Some(Box::new(agent.input_tap(inner))));
+            }
+            None => eprintln!("agent: no XAPI input; input.pad is unavailable"),
         }
         // H2_FRAME_STATS and `h2 play` start their own collection; only
         // start a quiet one when neither will.

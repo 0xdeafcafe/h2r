@@ -163,6 +163,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         if device_type != self.config.devices.gamepad || slot != 0 {
             return Err(Error::INVALID_PARAMETER);
         }
+        let port_number = port;
         let port = PortIndex::new(port as usize).ok_or(Error::INVALID_PARAMETER)?;
         let parameters = if polling == 0 {
             PollingParameters::default()
@@ -197,12 +198,18 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
                 last_state,
             },
         );
+        if let Some(tap) = self.input_tap.as_mut() {
+            tap.opened(token, port_number);
+        }
         Ok(token)
     }
 
     pub fn input_close(&mut self, handle: u32) -> Result<()> {
         let opened = self.handles.remove(&handle).ok_or(Error::INVALID_HANDLE)?;
         self.input.close(opened.device_handle);
+        if let Some(tap) = self.input_tap.as_mut() {
+            tap.closed(handle);
+        }
         Ok(())
     }
 

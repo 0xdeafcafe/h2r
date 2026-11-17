@@ -30,6 +30,13 @@ pub trait InputTap: Send {
     /// (1167 for a pad removed since the handle was opened); `packet` is what
     /// is written to the guest's `XINPUT_STATE`.
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]);
+
+    /// The guest opened `handle` on controller `port` (`XInputOpen`), so a
+    /// tap that acts per player knows which port a read is for.
+    fn opened(&mut self, _handle: u32, _port: u32) {}
+
+    /// The guest closed `handle` (`XInputClose`).
+    fn closed(&mut self, _handle: u32) {}
 }
 
 /// One guest read.
