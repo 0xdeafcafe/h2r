@@ -51,6 +51,11 @@ export interface SampledVehicle {
   up: Aim;
   /** False when nobody is in it (drawn dimmer). */
   occupied: boolean;
+  /** A turret: the vehicle it is mounted on. Sampled at that one's place
+   *  (the frames send a turret's parent-relative one); drawn as part of it. */
+  parent?: string;
+  /** Where it aims (a turret), game coordinates, unit length. */
+  aim?: Aim;
 }
 
 /** One piece of damage, as the views draw it. */
@@ -329,7 +334,23 @@ function fromFrameVehicle(v: FrameVehicle): SampledVehicle | null {
   const id = cleanId(v?.id), kind = cleanId(v?.kind);
   if (!id || !isPos(v.pos)) return null;
   const forward = cleanAim(v.forward) ?? [1, 0, 0];
-  return { id, kind: kind ?? "vehicle", x: v.pos[0], y: v.pos[1], z: v.pos[2], forward, up: cleanAim(v.up) ?? [0, 0, 1], occupied: v.occupied !== false };
+  const out: SampledVehicle = { id, kind: kind ?? "vehicle", x: v.pos[0], y: v.pos[1], z: v.pos[2], forward, up: cleanAim(v.up) ?? [0, 0, 1], occupied: v.occupied !== false };
+  const parent = cleanId(v.parent), aim = cleanAim(v.aim);
+  if (parent && parent !== id) out.parent = parent;
+  if (aim) out.aim = aim;
+  return out;
+}
+
+/** Puts each turret where the vehicle it is mounted on is (when that one
+ *  is in the list). */
+function seatTurrets(list: SampledVehicle[]): SampledVehicle[] {
+  if (!list.some((v) => v.parent)) return list;
+  const byId = new Map(list.map((v) => [v.id, v]));
+  for (const v of list) {
+    const p = v.parent ? byId.get(v.parent) : undefined;
+    if (p && !p.parent) Object.assign(v, { x: p.x, y: p.y, z: p.z, forward: p.forward, up: p.up });
+  }
+  return list;
 }
 
 /** The vehicles at a (fractional) tick. One in only the earlier frame
@@ -340,7 +361,7 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
   if (i < 0) return [];
   const fa = frames[i]!, fb = frames[i + 1];
   const from = (fa.vehicles ?? []).map(fromFrameVehicle).filter((v): v is SampledVehicle => !!v);
-  if (!fb || fb.tick <= fa.tick) return from;
+  if (!fb || fb.tick <= fa.tick) return seatTurrets(from);
   const t = Math.min(1, Math.max(0, (tick - fa.tick) / (fb.tick - fa.tick)));
   const next = new Map<string, SampledVehicle>();
   for (const raw of fb.vehicles ?? []) { const v = fromFrameVehicle(raw); if (v) next.set(v.id, v); }
@@ -350,15 +371,20 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
     next.delete(a.id);
     if (!b) { if (t < 0.5) out.push(a); continue; }
     if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(t < 0.5 ? a : b); continue; }
-    out.push({
+    const v: SampledVehicle = {
       id: a.id, kind: t < 0.5 ? a.kind : b.kind,
       x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
       forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
       occupied: t < 0.5 ? a.occupied : b.occupied,
-    });
+    };
+    const parent = t < 0.5 ? a.parent : b.parent;
+    if (parent) v.parent = parent;
+    const aim = a.aim && b.aim ? nlerpAim(a.aim, b.aim, t) : t < 0.5 ? a.aim : b.aim;
+    if (aim) v.aim = aim;
+    out.push(v);
   }
   if (t >= 0.5) for (const b of next.values()) out.push(b);
-  return out;
+  return seatTurrets(out);
 }
 
 // ---- machines ----

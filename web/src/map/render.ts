@@ -384,6 +384,8 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   // Vehicles, then the AI, under the players.
   if (!s.mini) {
     for (const veh of s.vehicles ?? []) {
+      // A turret is drawn as the vehicle it is mounted on.
+      if (veh.parent) continue;
       const [len, wid] = vehicleBox(veh.kind);
       const k = Math.max(v.scale, 9 / wid);
       if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;

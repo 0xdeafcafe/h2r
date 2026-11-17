@@ -293,7 +293,12 @@ bipeds, campaign), both optional. A vehicle is drawn as its glb from the
 manifest's `models.vehicles`, turned by its forward and up, or as a box of
 about its kind's size; a player's vehicle takes a light wash of their
 colour. Whoever is in one is not drawn themselves: the vehicle stands for
-them and carries their label (seat nodes are not used yet). Actors are
+them and carries their label (seat nodes are not used yet). A turret
+(a vehicle with a `parent`: the Warthog's chaingun, the Scorpion's
+cannon) is not drawn on its own: its vehicle's model turns its
+`turret_<n>` part and raises its guns to the turret's `aim`, else its
+gunner's, eased (`viewer/turrets.ts`, `viewer/turrets3d.ts`), and its
+gunner rides the vehicle. Actors are
 sampled, eased and drawn through the same path as players (an index made
 from their id, negative so it never meets a player's): their species' glb
 in its own colours, else the spartan's untinted, else a small capsule, with
