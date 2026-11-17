@@ -566,3 +566,25 @@ fn menu_documentation_is_only_a_runtime_inspection_pointer() {
     assert!(!section.contains('|') && !section.contains("0x"));
     assert!(!doc.contains("mainmenu_"));
 }
+
+/// The cast rules of `0x0020a290` and the table `0x0020a1a0` fills.
+#[test]
+fn castable_follows_the_retail_converter() {
+    use crate::castable;
+    // Same type, passthrough, and anything to a name or object type.
+    assert!(castable(12, 12));
+    assert!(castable(12, 3));
+    assert!(castable(56, 9));
+    assert!(castable(51, 50));
+    assert!(castable(50, 57));
+    // The table's entries.
+    assert!(castable(4, 9) && castable(4, 61) && !castable(4, 0));
+    assert!(castable(5, 9) && castable(5, 6) && !castable(5, 11));
+    assert!(castable(6, 7) && castable(6, 44) && castable(6, 49) && !castable(6, 50));
+    assert!(castable(7, 6) && castable(8, 7) && !castable(7, 5));
+    assert!(castable(31, 19) && castable(31, 55) && castable(31, 61) && !castable(31, 9));
+    // b30's fault: no string to unit_seat_mapping (nor string_id: the
+    // compiler writes those as string ID literals).
+    assert!(!castable(12, 9));
+    assert!(!castable(11, 9));
+}

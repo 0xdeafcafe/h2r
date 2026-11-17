@@ -125,7 +125,9 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   which is also a cast, so it counts as an adapter).
 - **Adapter**: `Coerce` when the arity matches but types differ (argument
   nodes take Halo 2's parameter types and Halo 2's interpreter casts; a
-  marker-name string becomes a `string_id` literal); or one of `ADAPTERS`:
+  marker-name string becomes a `string_id` literal; a string the
+  interpreter cannot cast becomes a hook of the expected type, below); or
+  one of `ADAPTERS`:
   `ai_place` gains a `short` count, `unit_exit_vehicle` gains a `short` mode
   (1, what every retail Halo 2 call passes), `device_group_set` gains `none`
   as its device, and `!=` becomes `(not (= a b))` because Halo 2's scripts
@@ -194,6 +196,18 @@ retail compiler writes them; literals keep their source type.
   adapter defaults) holds `none` (`0xffffffff`), keeps its token, and is listed
   in `Compiled::hooks` with its slot, Halo 2 type and Halo 1 type.
   `Compiled::resolve_hooks` writes the converter's values in.
+- **Casts**: Halo 2's interpreter casts every value to its node's type
+  through a table with no null check (`hs::castable`, haloscript.md). A
+  string literal stays a string only where that cast exists; elsewhere it
+  becomes a hook of the expected type. A seat name where Halo 2 wants a
+  `unit_seat_mapping` (`count << 16 | first` into the scenario's mapping
+  table; retail `0x10004`) is written 0, an empty mapping, until the
+  converter builds that table: b30's first fault was such a string, cast
+  through a null table entry (call to address 0). The disc test
+  `every_level_s_scripts_run_on_the_retail_interpreter` (h1campaign)
+  checks every reached node of every level that converts against the
+  cast rules and the builtin table; `hs`'s `casts_disc` checks the same
+  rules clean on all 30 retail scenarios (295,322 reached nodes).
 - **Missing builtins** follow `Missing`: `Stub` replaces the call with the
   expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it;
   `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1

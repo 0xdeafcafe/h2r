@@ -13,6 +13,7 @@
 //! ```
 #![forbid(unsafe_code)]
 
+mod cast;
 mod catalog;
 mod check;
 mod expression;
@@ -21,6 +22,10 @@ mod source;
 pub mod vm;
 mod wire;
 
+pub use cast::{Unrunnable, castable};
+pub mod casts {
+    pub use crate::cast::types;
+}
 pub use catalog::*;
 pub use check::*;
 pub use expression::*;

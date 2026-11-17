@@ -168,7 +168,8 @@ no per-script call list or script-derived summary is retained here.
 - Frame `+0`: parent pointer; `+4`: current expression datum; `+8`: result
   destination; `+0xc`: u16 local byte cursor; locals begin at `+0xe`. Frame push
   at `0x00209aa0–0x00209acf` places the next frame at old frame + cursor + `0x10`.
-  Return `0x00209ae0` converts the value to the expression's expected type,
+  Return `0x00209ae0` converts the value to the expression's expected type
+  (casts: `hs::castable`, below),
   writes through the saved destination and restores the parent frame. These
   are guest stack addresses, not Rust references.
 - `0x002099f0` evaluates atoms immediately or pushes a call frame. Thread flag
@@ -291,3 +292,19 @@ recursion; emitted occurrences and unique node counts are reported separately.
 back to a cache. `--builtins` traverses reachability without rendering source.
 All HS output modes treat a closed output pipe as normal termination and
 propagate other write failures.
+
+## Casts (E)
+
+`0x0020a290(value, to = cx, from = dx)` converts every evaluated value to
+its node's type: literal atoms from their source type (node `+2`,
+`0x00209a88`), globals from the global's type (`0x00209a33`), calls from the
+return type (`0x00209ae0`). It returns the value unchanged when the types
+match, `from` is passthrough (3), `to` is a name type (56..61), or `to` is an
+object type (50..55) and `from` is not a name; a name to an object goes
+through `0x000bb760`. Anything else calls `[0x004f5770 + (to * 62 + from) * 4]`
+without a null check. `0x0020a1a0` fills only: void from 5..61; boolean from
+real, short, long, string; real from short, long, 44..49; short from real,
+long; long from real, short; object_list from ai, 50..55, 56..61.
+`hs::castable` is this rule; `Scenario::unrunnable` lists the reached nodes
+that break it or call a builtin past the table or without an evaluator.
+V: none on the 30 retail scenarios (`tests/casts_disc.rs`).
