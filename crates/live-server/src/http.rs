@@ -765,16 +765,32 @@ async fn run_stream(
         }
         batch.flush(&mut socket).await?;
     }
+    // One timer each for the token's end and the packed batch, made once
+    // and moved when they change (not made anew for every message).
+    let token_end = |exp: i64| {
+        let wait = (exp + TOKEN_LEEWAY_S - crate::app::now()).max(0) as u64;
+        tokio::time::Instant::now() + Duration::from_secs(wait)
+    };
+    let deadline =
+        tokio::time::sleep_until(expires.map_or_else(tokio::time::Instant::now, token_end));
+    tokio::pin!(deadline);
+    let mut deadline_for = expires;
+    let flush = tokio::time::sleep(Duration::ZERO);
+    tokio::pin!(flush);
+    let mut flush_at = None;
     loop {
-        let deadline = async {
-            match expires {
-                Some(exp) => {
-                    let wait = (exp + TOKEN_LEEWAY_S - crate::app::now()).max(0) as u64;
-                    tokio::time::sleep(Duration::from_secs(wait)).await
-                }
-                None => std::future::pending().await,
+        if deadline_for != expires {
+            deadline_for = expires;
+            if let Some(exp) = expires {
+                deadline.as_mut().reset(token_end(exp));
             }
-        };
+        }
+        if batch.due != flush_at {
+            flush_at = batch.due;
+            if let Some(at) = flush_at {
+                flush.as_mut().reset(at);
+            }
+        }
         tokio::select! {
             event = feed.recv() => match event {
                 Ok(e) => {
@@ -813,7 +829,7 @@ async fn run_stream(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            _ = batch.due() => batch.flush(&mut socket).await?,
+            _ = &mut flush, if flush_at.is_some() => batch.flush(&mut socket).await?,
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
@@ -830,7 +846,7 @@ async fn run_stream(
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
                 Some(Ok(_)) => {}
             },
-            _ = deadline => {
+            _ = &mut deadline, if expires.is_some() => {
                 close(&mut socket, CLOSE_UNAUTHORIZED, "token expired").await;
                 return Ok(());
             }
@@ -869,14 +885,6 @@ impl PackedBatch {
         live_proto::pack::push_record(&mut self.bytes, packed);
         self.due
             .get_or_insert_with(|| tokio::time::Instant::now() + PACKED_BATCH);
-    }
-
-    /// Resolves when the batch should go out (never while it is empty).
-    async fn due(&self) {
-        match self.due {
-            Some(at) => tokio::time::sleep_until(at).await,
-            None => std::future::pending().await,
-        }
     }
 
     async fn flush(&mut self, socket: &mut WebSocket) -> Result<(), String> {
