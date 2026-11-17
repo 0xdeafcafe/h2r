@@ -560,6 +560,11 @@ impl State {
             .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
         let _ = self.set_activity(activity.as_deref());
     }
+    pub fn set_coop_ping(&mut self, ms: Option<u16>) {
+        let session = self.session();
+        self.sessions
+            .set_coop_ping(ms, self.service.as_ref(), session.as_ref());
+    }
     pub fn coop(&self) -> Option<live_proto::session::Campaign> {
         self.sessions.coop().cloned()
     }

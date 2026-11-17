@@ -31,7 +31,7 @@ mod qos_memory;
 mod sessions;
 pub use sessions::{
     LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, SkullsProbe,
-    Visibility, VisibilityProbe,
+    Visibility, VisibilityProbe, ping_moved,
 };
 mod state;
 pub use state::coop_activity;
@@ -400,6 +400,41 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_coop(campaign, skulls)
+    }
+    /// Co-op ping, the guest's side (docs/live/live-coop.md, "Ping"): one
+    /// ping to the host's QoS responder (its XNet endpoint's port + 2),
+    /// carrying `report`, our last round trip, for the host to show. The
+    /// round trip in ms, None when no echo came back within `timeout`.
+    /// Blocks up to `timeout` with no lock held.
+    pub fn ping_host(
+        &self,
+        host: std::net::SocketAddrV4,
+        report: Option<u16>,
+        timeout: std::time::Duration,
+    ) -> Option<u16> {
+        let qos = std::net::SocketAddrV4::new(*host.ip(), host.port().wrapping_add(2));
+        qos::ping(qos, report.unwrap_or(0), timeout).map(qos::round_trip_ms)
+    }
+    /// Co-op ping, the host's side: keeps the QoS responder up (it answers
+    /// the guest's pings), and returns the slowest round trip a guest
+    /// reported in the last `fresh`.
+    pub fn guest_ping(&self, fresh: std::time::Duration) -> Option<u16> {
+        if let Err(e) = self.network.ensure_responder() {
+            eprintln!("live: co-op ping: the QoS responder did not start: {e}");
+        }
+        self.network
+            .reported_pings(fresh)
+            .into_iter()
+            .map(|(_, ms)| ms)
+            .max()
+    }
+    /// A co-op host's round trip to its guest, for its sessions (None: no
+    /// guest). No guest memory access.
+    pub fn set_coop_ping(&self, ms: Option<u16>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_coop_ping(ms)
     }
     /// The co-op campaign armed with [`Hle::set_coop`], if any.
     pub fn coop(&self) -> Option<live_proto::session::Campaign> {
