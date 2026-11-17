@@ -340,11 +340,12 @@ impl Machine {
                     let kernel = Arc::clone(&self.kernel);
                     // Owned completion survives child waits/stops and runs
                     // only when the guest SystemRoutine actually returns.
-                    record.resume = ctx.call_guest_named(
+                    record.resume = ctx.call_guest_rebuildable(
                         &mut cpu,
                         &mut self.runtime.memory(),
                         entry,
                         crate::quiesce::THREAD_RETURN,
+                        [0; 4],
                         move |_, ctx| {
                             let mut core = kernel.lock();
                             core.terminate(
