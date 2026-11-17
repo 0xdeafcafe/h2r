@@ -314,3 +314,170 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
     }
     assert!(bad.is_empty(), "{} shaders: {bad:#?}", bad.len());
 }
+
+/// The metadata of `m` as one region, for reading blocks wherever they lie.
+fn memory(m: &mut Map<Cursor<Vec<u8>>>) -> tags::schema::Memory {
+    let space = m.metadata_space().unwrap();
+    let meta = m
+        .read_file_range(space.file_offset, u64::from(space.size))
+        .unwrap();
+    tags::schema::Memory::from_regions(
+        vec![(space.virtual_base, meta)],
+        vec![(space.virtual_base, space.virtual_base + space.size)],
+    )
+}
+
+/// Every `vehi`'s `+0x2f8` elements (`0x2a0` each) as (name, element,
+/// count at `+0x38`). The load-time loop `0x205550` (from `0x11c8f3`)
+/// writes that many `0x90`-byte entries from element `+0x60`: room for 4.
+fn vehicle_physics_counts(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<(String, u32, u32)> {
+    let mem = memory(m);
+    let word = |a: u32| {
+        mem.slice(a, 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let mut out = Vec::new();
+    for t in m.tags().to_vec() {
+        let Some(loc) = t.location else { continue };
+        if t.group != FourCC(*b"vehi") {
+            continue;
+        }
+        let name = t.name.clone().unwrap_or_default();
+        let count = word(loc.address + 0x2f8).unwrap_or(u32::MAX);
+        let first = word(loc.address + 0x2fc).unwrap_or(0);
+        for k in 0..count.min(16) {
+            let n = word(first + k * 0x2a0 + 0x38).unwrap_or(u32::MAX);
+            out.push((name.clone(), k, n));
+        }
+        if count > 16 {
+            out.push((name, count, u32::MAX));
+        }
+    }
+    out
+}
+
+/// Halo 1 multiplayer map `name` from the disc, if the disc has it (the
+/// Xbox release lacks the PC-only maps).
+fn h1_map(name: &str) -> Option<H1Map> {
+    let path = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = disc.map(name)?.clone();
+    Some(H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap())
+}
+
+/// The fresh build of every Halo 1 multiplayer map (`$H1_MAPS`, comma
+/// separated, narrows it) in both sandboxes.
+fn every_fresh_map(
+    mut each: impl FnMut(&str, Sandbox, &h1convert::convert::Prepared, &h1convert::fresh::Fresh),
+) {
+    let only = std::env::var("H1_MAPS").ok();
+    for (name, _, base_name) in h1convert::convert::MAPS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|m| m == name))
+        {
+            continue;
+        }
+        let Some(h1) = h1_map(name) else {
+            println!("{name}: not on the disc");
+            continue;
+        };
+        let sha = content::Sha256::of(name.as_bytes());
+        for sandbox in [Sandbox::Halo2, Sandbox::Halo1] {
+            let mut base = h2_map(base_name);
+            let p = if sandbox == Sandbox::Halo1 {
+                let templates = Base::read(&mut base).unwrap();
+                let mut objects = Objects::new(&h1, &templates);
+                prepare_halo1(&h1, sha, &mut base, &mut objects)
+            } else {
+                h1convert::convert::prepare(&h1, sha, &mut base, sandbox)
+            }
+            .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
+            let mopp = structure_mopp(&p.collision).unwrap();
+            let fresh = p
+                .build_fresh(&mut base, &mopp)
+                .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
+            each(name, sandbox, &p, &fresh);
+        }
+    }
+}
+
+/// The fresh map keeps no template address: a converted vehicle built on
+/// a retail one carried the template's `+0x2f8` block by its pinned
+/// address, which in a fresh map holds other bytes, so the load loop
+/// `0x205550` read a junk count and wrote past its element (pc `0x205574`,
+/// Blood Gulch and Sidewinder in the Halo 1 sandbox).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_vehicle_s_physics_entries_fit_their_element() {
+    let mut bad = Vec::new();
+    let mut vehicles = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let counts = vehicle_physics_counts(&mut out);
+        println!(
+            "{name} {sandbox:?}: {} vehicle elements, rehomed {:#?}",
+            counts.len(),
+            fresh.report.rehomed
+        );
+        vehicles += counts.len();
+        for (v, k, n) in counts {
+            if n > 4 {
+                bad.push(format!("{name} {sandbox:?} {v} [{k}]: {n:#x}"));
+            }
+        }
+        for s in &fresh.report.stale {
+            bad.push(format!("{name} {sandbox:?}: stale {s}"));
+        }
+    });
+    assert!(vehicles > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Each starting location's bytes after position and facing.
+fn starting_locations(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<([f32; 3], Vec<u8>)> {
+    let s = Scenario::read(m).unwrap();
+    let block = s.block(BlockKind::StartingLocations);
+    (0..block.len())
+        .map(|i| {
+            let e = block.entry(i).unwrap();
+            let f = |at: usize| f32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+            ([f(0), f(4), f(8)], e[0x10..0x34].to_vec())
+        })
+        .collect()
+}
+
+/// Every converted starting location is in open space with the converted
+/// collision's floor under it (Battle Creek's player died at spawn and
+/// never respawned: not from where it stood).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_starting_location_stands_on_the_converted_floor() {
+    for base in ["beavercreek", "coagulation"] {
+        for (p, rest) in starting_locations(&mut h2_map(base)) {
+            println!("retail {base} {p:?} {rest:02x?}");
+        }
+    }
+    let mut bad = Vec::new();
+    every_fresh_map(|name, sandbox, p, fresh| {
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let spawns = starting_locations(&mut out);
+        for (k, (at, rest)) in spawns.iter().enumerate() {
+            let up = [at[0], at[1], at[2] + 0.1];
+            let open = h1convert::query::leaf_at(&p.collision, up).is_some();
+            // How far below the location the floor is, within 2 units.
+            let floor = h1convert::query::first_hit(&p.collision, up, [at[0], at[1], at[2] - 2.0])
+                .map(|t| t * 2.1 - 0.1);
+            if k < 3 {
+                println!("{name} {sandbox:?} [{k}] {at:?} open {open} floor {floor:?} {rest:02x?}");
+            }
+            if !open || floor.is_none() {
+                bad.push(format!(
+                    "{name} {sandbox:?} [{k}] {at:?}: open {open}, floor {floor:?}"
+                ));
+            }
+        }
+    });
+    assert!(bad.is_empty(), "{bad:#?}");
+}

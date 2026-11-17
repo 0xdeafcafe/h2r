@@ -427,3 +427,43 @@ fn a_whole_map_unpins_with_its_raw_copied_and_reads_back_the_same() {
         assert_eq!(x, y, "same tree, same datums and strings");
     }
 }
+
+#[test]
+fn a_built_copy_of_a_tag_s_root_keeps_its_blocks_once_rehomed() {
+    // A conversion copies a template's root bytes and replaces some
+    // fields: the rest still hold the template's addresses, which an
+    // unpinned map does not keep.
+    let (mut map, ids) = invented(4, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let mut u = transplant::Unpinner::new(&schema, &mut map).unwrap();
+    u.unpin(&mut map, &ids, &mut set).unwrap().unwrap();
+    let old = Memory::of(&mut map).unwrap();
+    let from = map.tag(ids[1]).unwrap().location.unwrap().address;
+    let root = old.slice(from, expected().size).unwrap().to_vec();
+    let mut copy = map::build::Block::new(root);
+    let (n, refused) = u
+        .rehome(&expected(), &mut copy, 1, &mut map, &mut set)
+        .unwrap();
+    assert_eq!((n, refused), (1, vec![]), "the 0x8 block, once");
+    // Again: nothing left to rehome, the fixup child is walked.
+    assert_eq!(
+        u.rehome(&expected(), &mut copy, 1, &mut map, &mut set)
+            .unwrap(),
+        (0, vec![])
+    );
+    set.tag_mut(ids[3]).unwrap().payload = TagPayload::Built(copy);
+    let mut out = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    let new = Memory::of(&mut out).unwrap();
+    let to = out.tag(ids[3]).unwrap().location.unwrap().address;
+    let (mut x, mut y) = (
+        read_tree(&expected(), from, &old).unwrap(),
+        read_tree(&expected(), to, &new).unwrap(),
+    );
+    for tr in [&mut x, &mut y] {
+        tr.bytes[0x20..0x24].fill(0);
+    }
+    assert_eq!(x, y, "the copy reads back as the template");
+}
