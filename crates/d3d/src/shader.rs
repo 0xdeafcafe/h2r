@@ -17,28 +17,40 @@ pub const PROGRAM_SLOTS: usize = 136;
 /// Vertex shader constant registers (`c[-96..95]`, stored 0..191).
 pub const CONSTANTS: usize = 192;
 
-/// A draw's constant registers ([`ShaderInputs::constants`]).
-pub type Constants = Box<[[f32; 4]; CONSTANTS]>;
+/// A draw's constant registers ([`ShaderInputs::constants`]), shared by
+/// the draws that see the same registers.
+pub type Constants = std::sync::Arc<[[f32; 4]; CONSTANTS]>;
 
 /// Constant blocks of draws already run, for the next draws to fill: with
 /// the render thread, a draw's 3 KiB block was allocated on the game
-/// thread and freed on the render thread, every draw, and the allocator
-/// returned the freed pages to the system (`madvise`) as fast.
+/// thread and freed on the render thread, and the allocator returned the
+/// freed pages to the system (`madvise`) as fast.
 static SPARE_CONSTANTS: std::sync::Mutex<Vec<Constants>> = std::sync::Mutex::new(Vec::new());
 
 /// Most blocks kept spare (6 MiB).
 const SPARE_CONSTANT_BLOCKS: usize = 2048;
 
-/// A constant block to overwrite: a spare one, or a new one.
+/// A constant block no one else holds, to overwrite: a spare one, or a
+/// new one. Spares still shared are let go (their holders free them).
 pub fn spare_constants() -> Constants {
-    let spare = SPARE_CONSTANTS.lock().ok().and_then(|mut s| s.pop());
-    spare.unwrap_or_else(|| Box::new([[0.0; 4]; CONSTANTS]))
+    if let Ok(mut s) = SPARE_CONSTANTS.lock() {
+        while let Some(mut c) = s.pop() {
+            if std::sync::Arc::get_mut(&mut c).is_some() {
+                return c;
+            }
+        }
+    }
+    std::sync::Arc::new([[0.0; 4]; CONSTANTS])
 }
 
 /// Keeps the blocks of draws already run for [`spare_constants`], up to a
-/// limit (the rest are freed); takes the lock once.
+/// limit, taking the lock once. Blocks other draws or the device still
+/// hold are only let go.
 pub fn recycle_constants(blocks: &mut Vec<Constants>) {
-    if let Ok(mut s) = SPARE_CONSTANTS.lock() {
+    blocks.retain(|c| std::sync::Arc::strong_count(c) == 1);
+    if !blocks.is_empty()
+        && let Ok(mut s) = SPARE_CONSTANTS.lock()
+    {
         let room = SPARE_CONSTANT_BLOCKS.saturating_sub(s.len());
         s.extend(blocks.drain(..).take(room));
     }
@@ -147,14 +159,17 @@ pub struct ShaderInputs {
     pub provided_inputs: u16,
     /// `SetVertexData*` defaults for registers the layout does not supply.
     pub vertex_defaults: [[f32; 4]; 16],
-    /// Constant registers, hardware order (index = register + 96).
-    pub constants: Box<[[f32; 4]; CONSTANTS]>,
+    /// Constant registers, hardware order (index = register + 96). Shared
+    /// with the draws before while no register changes.
+    pub constants: Constants,
     /// The 60-dword `D3DPIXELSHADERDEF`, or `None` for the fixed-function
-    /// combiner D3D derives from the texture-stage states.
-    pub pixel_shader: Option<Box<[u32; 60]>>,
+    /// combiner D3D derives from the texture-stage states. Shared with the
+    /// draw before when its words are the same.
+    pub pixel_shader: Option<std::sync::Arc<[u32; 60]>>,
     /// Render-state slots 0..57 (`PS*`: combiner inputs/outputs/constants as
     /// the guest last wrote them; constants can change without a new PSDEF).
-    pub combiner_state: Box<[u32; 57]>,
+    /// Shared with the draw before when the words are the same.
+    pub combiner_state: std::sync::Arc<[u32; 57]>,
     /// Device `+0x788` at the draw: whether the definition bound by
     /// `SetPixelShader` had a final combiner (`PSDEF[8] | PSDEF[9]`, latched
     /// at bind). The lazy commit reads this, not the definition, so it
@@ -267,8 +282,14 @@ mod tests {
     #[test]
     fn constant_blocks_are_reused() {
         let mut block = super::spare_constants();
-        block[7] = [1.0, 2.0, 3.0, 4.0];
+        std::sync::Arc::get_mut(&mut block).expect("unshared")[7] = [1.0, 2.0, 3.0, 4.0];
         let at = &*block as *const _;
+        // A block still held elsewhere is not kept.
+        let held = super::spare_constants();
+        let mut shared = vec![held.clone()];
+        super::recycle_constants(&mut shared);
+        assert!(shared.is_empty());
+        assert_eq!(std::sync::Arc::strong_count(&held), 1);
         let mut spent = vec![block];
         super::recycle_constants(&mut spent);
         assert!(spent.is_empty());

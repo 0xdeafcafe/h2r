@@ -696,6 +696,15 @@ pub struct Device<B: Backend> {
     microcode_memo: Option<Microcode>,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
     constants: Box<[u32; CONSTANTS * 4]>,
+    /// Bumped by every write to [`Self::constants`].
+    constants_generation: u64,
+    /// The block the last draw took and [`Self::constants_generation`]
+    /// then: the next draws share it until a register changes.
+    draw_constants: Option<(u64, crate::shader::Constants)>,
+    /// The last draw's PSDEF and combiner words, shared with the next
+    /// draws while they read the same.
+    draw_pixel_shader: Option<Arc<[u32; 60]>>,
+    draw_combiner: Option<Arc<[u32; 57]>>,
     viewport: Viewport,
     transforms: HashMap<u32, [f32; 16]>,
     scissors: Vec<Rect>,
@@ -874,6 +883,10 @@ impl<B: Backend> Device<B> {
             program_start: 0,
             microcode_memo: None,
             constants: Box::new([0; CONSTANTS * 4]),
+            constants_generation: 0,
+            draw_constants: None,
+            draw_pixel_shader: None,
+            draw_combiner: None,
             viewport: Viewport {
                 x: 0,
                 y: 0,
@@ -976,17 +989,36 @@ impl<B: Backend> Device<B> {
         std::array::from_fn(|c| f32::from_bits(self.constants[4 * r + c]))
     }
 
-    /// Every constant register, boxed for a draw: filled in place in the
-    /// heap (a 3 KiB array built on the stack and then moved into its box
-    /// was a second copy per draw), a spare block of a draw already run
-    /// when there is one ([`crate::shader::spare_constants`]); every
-    /// register is overwritten.
-    fn constants_box(&self) -> Box<[[f32; 4]; CONSTANTS]> {
-        let mut b = crate::shader::spare_constants();
+    /// Every constant register for a draw: the last draw's block while no
+    /// register has changed since, else one filled in place in the heap (a
+    /// 3 KiB array built on the stack and then moved was a second copy), a
+    /// spare block of a draw already run when there is one
+    /// ([`crate::shader::spare_constants`]); every register is overwritten.
+    fn draw_constants(&mut self) -> crate::shader::Constants {
+        if let Some((generation, c)) = &self.draw_constants
+            && *generation == self.constants_generation
+        {
+            return c.clone();
+        }
+        let mut c = crate::shader::spare_constants();
+        let b = Arc::get_mut(&mut c).expect("a spare block is unshared");
         for (reg, words) in b.iter_mut().zip(self.constants.as_chunks::<4>().0) {
             *reg = words.map(f32::from_bits);
         }
-        b
+        self.draw_constants = Some((self.constants_generation, c.clone()));
+        c
+    }
+
+    /// `words` shared: the block in `last` when it holds the same words,
+    /// else a new one, kept in `last` for the next draw.
+    fn shared_words<const N: usize>(
+        last: &mut Option<Arc<[u32; N]>>,
+        words: &[u32; N],
+    ) -> Arc<[u32; N]> {
+        match last {
+            Some(a) if **a == *words => a.clone(),
+            _ => last.insert(Arc::new(*words)).clone(),
+        }
     }
 
     fn live(&self, entry: &'static str) -> Result<(), D3dError> {
@@ -1269,6 +1301,7 @@ impl<B: Backend> Device<B> {
         self.program.fill(0);
         self.program_start = 0;
         self.constants.fill(0);
+        self.constants_generation += 1;
         self.viewport = Viewport {
             x: 0,
             y: 0,
@@ -1645,6 +1678,8 @@ impl<B: Backend> Device<B> {
                             self.stats.hw_methods += 1;
                         }
                         None => {
+                            // Any method may load constants.
+                            self.constants_generation += 1;
                             let mut mems = Memories {
                                 constants: &mut self.constants,
                                 program: &mut self.program,
@@ -2476,6 +2511,7 @@ impl<B: Backend> Device<B> {
         let words = mem.read_words(data, dwords as usize)?;
         let first = first as usize;
         self.constants[first..first + words.len()].copy_from_slice(&words);
+        self.constants_generation += 1;
         if shadow {
             let base = self.cfg.layout.vs_constants + 4 * first as u32;
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -3319,7 +3355,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn shader_inputs(
-        &self,
+        &mut self,
         mem: &dyn GuestMemory,
         vertex: VertexProcessing,
         layout: &VertexLayout,
@@ -3332,17 +3368,19 @@ impl<B: Backend> Device<B> {
             .fold(0u16, |m, a| m | 1 << (a.register.0 & 15));
         let pixel_shader = if self.pixel_shader != 0 {
             let def = mem.read_u32(at(self.pixel_shader, 8)?)?;
-            Some(Box::new(crate::guest::read_array::<60>(mem, def)?))
+            let words = crate::guest::read_array::<60>(mem, def)?;
+            Some(Self::shared_words(&mut self.draw_pixel_shader, &words))
         } else {
             None
         };
+        let combiner: &[u32; 57] = words.render[..57].try_into().expect("57 slots");
         Ok(ShaderInputs {
             vertex,
             provided_inputs: provided,
             vertex_defaults: *self.immediate.registers(),
-            constants: self.constants_box(),
+            constants: self.draw_constants(),
             pixel_shader,
-            combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
+            combiner_state: Self::shared_words(&mut self.draw_combiner, combiner),
             final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,
             affine_projection: mem.read_u32(self.cfg.layout.device + field::FLAGS)? & 0x02 != 0,
         })
