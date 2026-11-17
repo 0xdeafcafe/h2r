@@ -90,6 +90,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [map-format.md](formats/map-format.md) (**start here**): the cache file (v8) format and the `map` reader; read before the tag docs
 - [map-builder.md](formats/map-builder.md): writing whole maps from a tag set (`map::build`): layout, fixups, retail round trips
 - [tag-schema.md](formats/tag-schema.md): tag layouts inferred from every retail map; relocating any retail tag (`tags::schema`), shuffle proof, coverage
+- [tag-repo.md](formats/tag-repo.md): the loose tag repository: one position-independent file per tag (`tags::repo`), `h2 tags extract` / `h2 tags build`, variants, rebuild proof
 - [animation.md](formats/animation.md): animation graphs (`jmad`) and frame decompression (`h2 anim`)
 - [bitmaps.md](formats/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`, `h2 bitmap`)
 - [collision.md](formats/collision.md): collision and physics model tags (`h2 collision`)

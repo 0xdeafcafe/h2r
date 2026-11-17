@@ -244,6 +244,36 @@ fn run(
             println!("  lossy {k}");
         }
         failures += c.differ.len() + c.missing.len();
+        // The same tags onto the disc map's own file (BSP regions and
+        // lossy tags pinned).
+        let mut r = TagRepo::for_map(&dir, stem)?;
+        let (set, onto) = tags::repo::build::onto_retail(schema, open(*base, *size)?, &mut r)?;
+        let (bytes, layout) = set.build()?;
+        let built = Map::from_reader(std::io::Cursor::new(bytes))?;
+        let mut none = SharedFiles::default();
+        none.unread_ok = true;
+        let mut b = MapSource::new(schema, built, &mut none)?;
+        let mut s = MapSource::new(schema, open(*base, *size)?, &mut sh)?;
+        let c = compare(&mut b, &mut s)?;
+        println!(
+            "{stem} onto the disc map: {} tags from the repository ({} aliases), {} pinned ({} lossy, {} missing), {} raw copied, {} raw pointers into the file kept; file {} MB; same {}, differ {}, missing {}, refused {}",
+            onto.replaced,
+            onto.aliases,
+            onto.pinned,
+            onto.lossy.len(),
+            onto.missing.len(),
+            onto.build.raw.0,
+            onto.build.external,
+            layout.file_size >> 20,
+            c.same,
+            c.differ.len(),
+            c.missing.len(),
+            c.refused.len()
+        );
+        for (k, d) in c.differ.iter().take(8) {
+            println!("  differs {k}: {d}");
+        }
+        failures += c.differ.len() + c.missing.len();
     }
     assert_eq!(failures, 0);
     Ok(())
@@ -287,6 +317,47 @@ fn probe_bsp_block() -> Res<()> {
                     .join(" ")
             );
         }
+    }
+    Ok(())
+}
+
+/// Why variants differ: for a kept repository (`H2_REPO_DIR`) and a map
+/// (`H2_PROBE_MAP`), the first differing canonical line of a few variants
+/// per group.
+#[test]
+#[ignore = "needs a repository"]
+fn probe_variants() -> Res<()> {
+    let dir = std::env::var_os("H2_REPO_DIR").ok_or("set H2_REPO_DIR")?;
+    let map = std::env::var("H2_PROBE_MAP")?;
+    let main = TagRepo::open(&dir)?;
+    let mut per_map = TagRepo::for_map(&dir, &map)?;
+    let m = main.manifest(&map)?;
+    let mut shown = std::collections::BTreeMap::<String, usize>::new();
+    for (k, v) in &m.tags {
+        if v.is_none() {
+            continue;
+        }
+        let n = shown.entry(k.group.to_string()).or_default();
+        if *n >= 3 {
+            continue;
+        }
+        *n += 1;
+        let a = tags::repo::canonical(&TagRepo::open(&dir)?.read(k)?.ok_or("main")?);
+        let b = tags::repo::canonical(&per_map.read(k)?.ok_or("variant")?);
+        let i = a
+            .iter()
+            .zip(&b)
+            .position(|(x, y)| x != y)
+            .unwrap_or(a.len().min(b.len()));
+        let cut =
+            |s: Option<&String>| s.map_or("(end)".to_owned(), |s| s.chars().take(300).collect());
+        println!(
+            "{k} line {i} of {}/{}:\n  main    {}\n  variant {}",
+            a.len(),
+            b.len(),
+            cut(a.get(i)),
+            cut(b.get(i))
+        );
     }
     Ok(())
 }

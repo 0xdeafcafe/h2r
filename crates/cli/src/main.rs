@@ -46,6 +46,7 @@ mod live_recovery;
 mod lockstep_cmd;
 mod mappack_cmd;
 mod map_testbuild;
+mod tag_repo_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
@@ -231,6 +232,13 @@ fn main() -> Result<()> {
     }
     if cmd == "map" {
         return map_testbuild::run(args.collect());
+    }
+    if cmd == "tags" {
+        let rest: Vec<String> = args.collect();
+        if tag_repo_cmd::handles(&rest) {
+            return tag_repo_cmd::run(rest);
+        }
+        return maps::run(&cmd, rest);
     }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());

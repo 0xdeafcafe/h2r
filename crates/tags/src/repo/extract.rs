@@ -192,6 +192,8 @@ pub struct MapSource<'s, R> {
     bsp_memory: HashMap<u64, Memory>,
     /// Keep the bytes of every raw resource read, for [`MapSource::take_raw`].
     pub keep_raw: bool,
+    /// Which cache this map is to the others (`Local` for a level).
+    own_file: ResourceFile,
     kept: Vec<([u8; 32], Vec<u8>)>,
 }
 
@@ -203,6 +205,12 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
         shared: &'s mut SharedFiles<R>,
     ) -> Result<Self> {
         let rel = Relocator::new(schema, &mut map)?;
+        let own_file = match map.header().cache_type {
+            map::CacheType::MainMenu => ResourceFile::MainMenu,
+            map::CacheType::Shared => ResourceFile::Shared,
+            map::CacheType::SinglePlayerShared => ResourceFile::SinglePlayerShared,
+            _ => ResourceFile::Local,
+        };
         let tags = map.tags().to_vec();
         let strings = map.strings().to_vec();
         let groups = map.groups().to_vec();
@@ -225,6 +233,7 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
             raws: HashMap::new(),
             bsp_memory: HashMap::new(),
             keep_raw: false,
+            own_file,
             kept: Vec::new(),
         })
     }
@@ -691,7 +700,13 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
             }
         };
         self.src.raws.insert(hash, (p.file, p.offset, len));
-        let origin = match p.file {
+        // A shared cache's own resources are where every other map points
+        // at them: the same tag reads the same from either.
+        let file = match p.file {
+            ResourceFile::Local => self.src.own_file,
+            f => f,
+        };
+        let origin = match file {
             ResourceFile::Local => Origin::Local,
             file => Origin::External {
                 file,

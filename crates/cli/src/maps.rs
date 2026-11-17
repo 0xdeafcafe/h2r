@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use map::{FourCC, Map};
 
-const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 maps install [--data DIR] [--disc disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
+const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 maps install [--data DIR] [--disc disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tags extract ... / h2 tags build ... (the tag repository; h2 tags extract --help)\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
 
 pub(super) fn run(command: &str, args: Vec<String>) -> Result<()> {
     if command == "maps" && args.first().is_some_and(|a| a == "install") {

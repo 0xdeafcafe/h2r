@@ -64,6 +64,9 @@ struct Ctx<'a> {
     report: BuildReport,
     /// Content hash per (tag, node) for sharing keys.
     hashes: HashMap<(usize, u32), u64>,
+    /// Local resources already in a pinned file prefix, by hash: pointed
+    /// at there instead of copied.
+    in_prefix: HashMap<[u8; 32], u32>,
 }
 
 /// Turn `tags` (a closure: every reference should be among them) into a set.
@@ -119,6 +122,7 @@ pub fn to_tag_set(
         sections: HashMap::new(),
         report: BuildReport::default(),
         hashes: HashMap::new(),
+        in_prefix: HashMap::new(),
     };
     let mut payloads = Vec::new();
     for (ti, t) in tags.iter().enumerate() {
@@ -190,6 +194,13 @@ impl Ctx<'_> {
                 Ok(RawRef::External { file, offset })
             }
             Origin::Local => {
+                if let Some(&offset) = self.in_prefix.get(&r.hash) {
+                    self.report.external += 1;
+                    return Ok(RawRef::External {
+                        file: map::ResourceFile::Local,
+                        offset,
+                    });
+                }
                 if let Some(&id) = self.raw_ids.get(&r.hash) {
                     return Ok(RawRef::Local(id));
                 }
@@ -375,4 +386,149 @@ pub fn from_repo(
     }
     let (set, report) = to_tag_set(&mut repo, &closure.tags, &opts)?;
     Ok((set, report, closure))
+}
+
+/// What [`onto_retail`] did.
+#[derive(Clone, Debug, Default)]
+pub struct OntoReport {
+    /// Tags of the retail map now built from the source.
+    pub replaced: usize,
+    /// Of them, aliases of a replaced tag.
+    pub aliases: usize,
+    /// Tags left pinned: not movable in the retail map (slot 0, BSP-region
+    /// tags, `scnr`, tags others point into), lossy in the source, or not
+    /// in it.
+    pub pinned: usize,
+    /// Of the pinned, those the source lacks.
+    pub missing: Vec<TagKey>,
+    /// Of the pinned, those the source has with losses.
+    pub lossy: Vec<TagKey>,
+    /// The tree conversion's counts.
+    pub build: BuildReport,
+}
+
+/// The retail map decomposed with every tag pinned
+/// ([`TagSet::from_map`]), then every tag that can move
+/// ([`crate::schema::Relocator::movable`], slot 0 apart) and that `src` has
+/// exactly replaced by `src`'s tree, laid out anew. References resolve to
+/// the retail datums by key; local raw resources point at the retail
+/// file's copy (same bytes, by hash) instead of being copied. The BSP
+/// regions, the scenario and anything lossy stay the disc's bytes: a load
+/// test of the repository's contents that does not depend on the parts the
+/// schema cannot rebuild.
+pub fn onto_retail<R: std::io::Read + std::io::Seek>(
+    schema: &crate::schema::Schema,
+    mut retail: map::Map<R>,
+    src: &mut dyn TagSource,
+) -> Result<(TagSet, OntoReport)> {
+    let rel = crate::schema::Relocator::new(schema, &mut retail)?;
+    let movable: std::collections::HashSet<TagId> = rel
+        .movable()
+        .into_iter()
+        .filter(|id| id.index() != 0)
+        .collect();
+    drop(rel);
+    let mut set = TagSet::from_map(&mut retail)?;
+    set.reverse_built = true;
+    let tags = retail.tags().to_vec();
+    // Where the retail file holds each local resource, by hash.
+    let mut none = super::SharedFiles::default();
+    none.unread_ok = true;
+    let mut own = super::MapSource::new(schema, retail, &mut none)?;
+    let mut in_prefix = HashMap::new();
+    for t in &tags {
+        if !movable.contains(&t.id) {
+            continue;
+        }
+        if let Ok(tag) = own.extract(t.id)?
+            && let Some(tree) = tag.tree()
+        {
+            for r in &tree.raws {
+                if r.origin == Origin::Local
+                    && let Some((map::ResourceFile::Local, offset, _)) = own.raw_place(&r.hash)
+                {
+                    in_prefix.insert(r.hash, offset);
+                }
+            }
+        }
+    }
+    drop(own);
+    let ids: HashMap<TagKey, TagId> = tags
+        .iter()
+        .map(|t| {
+            (
+                TagKey::new(t.group, t.name.clone().unwrap_or_default()),
+                t.id,
+            )
+        })
+        .collect();
+    let mut report = OntoReport::default();
+    let mut chosen = Vec::new();
+    for t in &tags {
+        let key = TagKey::new(t.group, t.name.clone().unwrap_or_default());
+        if !movable.contains(&t.id) {
+            report.pinned += 1;
+            continue;
+        }
+        match src.read(&key)? {
+            None => {
+                report.pinned += 1;
+                report.missing.push(key);
+            }
+            Some(tag) => {
+                let lossy = tag
+                    .tree()
+                    .is_some_and(|tr| !tr.losses.is_empty() || tr.region == Region::Bsp);
+                if lossy {
+                    report.pinned += 1;
+                    report.lossy.push(key);
+                } else {
+                    chosen.push((t.id, tag));
+                }
+            }
+        }
+    }
+    let replaced: std::collections::HashSet<TagId> = chosen.iter().map(|c| c.0).collect();
+    let mut cx = Ctx {
+        ids: &ids,
+        set: &mut set,
+        src,
+        raw_ids: HashMap::new(),
+        sections: HashMap::new(),
+        report: BuildReport::default(),
+        hashes: HashMap::new(),
+        in_prefix,
+    };
+    let mut payloads = Vec::new();
+    for (ti, (id, tag)) in chosen.iter().enumerate() {
+        let payload = match &tag.body {
+            Body::Tree(tree) => {
+                let mut root = cx.block(ti, &tag.key, tree, 0, 0)?;
+                root.share = None;
+                TagPayload::Built(root)
+            }
+            Body::Alias { owner, offset } => {
+                let o = ids[owner];
+                if !replaced.contains(&o) {
+                    // Its owner stays where it is, so it does too.
+                    continue;
+                }
+                report.aliases += 1;
+                TagPayload::Alias {
+                    tag: o,
+                    offset: *offset,
+                }
+            }
+        };
+        payloads.push((*id, payload));
+    }
+    report.build = cx.report;
+    // Aliases the retail map has of a replaced tag that the source holds
+    // as trees of their own (or not at all) still follow their owner.
+    for (id, payload) in payloads {
+        set.tag_mut(id).expect("in the set").payload = payload;
+        report.replaced += 1;
+    }
+    report.pinned += chosen.len() - report.replaced;
+    Ok((set, report))
 }
