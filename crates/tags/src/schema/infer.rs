@@ -19,6 +19,11 @@
 //!    instance's value is null or resolves in its own map's tag index or
 //!    string table, and at least one resolves.
 //!
+//! 4. **Raw-resource pointers.** An offset is one when every instance is
+//!    `0xffffffff`, 0, or a file offset (with its selector) past the header
+//!    and before the selected file's index, with at least two distinct
+//!    values, all 4-aligned and not all multiples of 64 KiB.
+//!
 //! Offsets are claimed in that order, lowest first, and never overlap.
 //! Ambiguous fields (always zero, or mixed evidence) are left out; the
 //! relocation check ([`super::walk`]) then refuses any tag where such a word
@@ -65,6 +70,15 @@ pub struct MapSample {
     pub groups: HashSet<u32>,
     /// String lengths by index (`None` for a missing entry).
     pub string_lengths: Vec<Option<usize>>,
+    /// Map file length.
+    pub file_size: u32,
+    /// End of local raw data: local raw pointers fall in `0x800..raw_end`
+    /// (the tag index offset).
+    pub raw_end: u32,
+    /// Lengths of `mainmenu.map`, `shared.map` and `single_player_shared.map`
+    /// by raw-pointer selector (index 0 unused), when they are in the
+    /// corpus; 0 when not (then pointers into them are not accepted).
+    pub external: [u32; 4],
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -144,6 +158,9 @@ impl MapSample {
                 .iter()
                 .map(|s| s.as_ref().map(String::len))
                 .collect(),
+            file_size: map.header().file_size,
+            raw_end: map.header().index_offset,
+            external: [0; 4],
         })
     }
 
@@ -164,6 +181,23 @@ impl MapSample {
         let j = self.ordinary[i];
         let u = &self.tags[j as usize];
         (a < u.end()).then_some(j)
+    }
+
+    /// A raw-resource pointer: `(null, valid)`. Null is `0xffffffff` (or 0);
+    /// valid is an offset past the header and inside the selected file's
+    /// raw data.
+    fn raw_ok(&self, v: u32) -> (bool, bool) {
+        if v == u32::MAX || v == 0 {
+            return (true, false);
+        }
+        let sel = (v >> 30) as usize;
+        let off = v & 0x3fff_ffff;
+        let end = if sel == 0 {
+            self.raw_end
+        } else {
+            self.external[sel]
+        };
+        (false, off >= 0x800 && off < end)
     }
 
     fn datum_ok(&self, v: u32) -> bool {
@@ -189,6 +223,21 @@ type Inst = (u16, u32, u32, u32);
 /// the schema so far, and the next round's boundaries are the arrays found
 /// plus the candidates outside them.
 pub fn infer(maps: &mut [MapSample]) -> Schema {
+    let mut external = [0; 4];
+    for m in maps.iter() {
+        let sel = match m.name.as_str() {
+            "mainmenu" => 1,
+            "shared" => 2,
+            "single_player_shared" => 3,
+            _ => continue,
+        };
+        external[sel] = m.file_size;
+    }
+    for m in maps.iter_mut() {
+        if m.external == [0; 4] {
+            m.external = external;
+        }
+    }
     let mut schema = infer_round(maps);
     for _ in 0..ROUNDS {
         for sample in maps.iter_mut() {
@@ -398,6 +447,34 @@ fn node(maps: &[MapSample], insts: &[Inst], depth: usize) -> Option<Struct> {
                 s.fields.insert(o as u32, kind.clone());
                 claimed[o..o + 4].fill(true);
             }
+        }
+    }
+    // 4. Raw-resource pointers: every instance null or a plausible offset,
+    // and at least two distinct non-null values (one repeated constant is
+    // too little evidence).
+    for o in (0..(size as usize).saturating_sub(3)).step_by(4) {
+        if !free(&claimed, o, 4) {
+            continue;
+        }
+        let mut seen = HashSet::new();
+        let mut tz = 32;
+        let ok = elements().all(|(i, e)| {
+            let v = u32_at(&tag(i).bytes, e + o);
+            let (null, valid) = sample(i).raw_ok(v);
+            if valid {
+                tz = tz.min((v & 0x3fff_ffff).trailing_zeros());
+                if seen.len() < 2 {
+                    seen.insert(v);
+                }
+            }
+            null || valid
+        });
+        // Offsets that are all multiples of 64 KiB are round numbers (floats
+        // with short mantissas, flag words), not resources; real ones are
+        // at least 4-aligned (bitmap pixels are 0x200-aligned).
+        if ok && seen.len() >= 2 && (2..16).contains(&tz) {
+            s.fields.insert(o as u32, Field::Raw);
+            claimed[o..o + 4].fill(true);
         }
     }
     Some(s)

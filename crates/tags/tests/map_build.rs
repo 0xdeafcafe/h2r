@@ -481,3 +481,81 @@ fn load_test_variants_read_back() -> Res<()> {
     }
     Ok(())
 }
+
+/// A decomposed retail map gains `H2_GROW_TAGS` (default 500) new tags of a
+/// new group, with the index tail kept (the entry table moves to the end of
+/// the metadata) and cleared (the entries grow in place). Every old tag
+/// reads back byte-identical at its address, and every new one reads back.
+#[test]
+#[ignore = "needs the owner's ISO"]
+fn retail_maps_gain_tags() -> Res<()> {
+    let Some(disc) = std::env::var_os("H2_DISC") else {
+        return Ok(());
+    };
+    let n: usize = std::env::var("H2_GROW_TAGS").map_or(Ok(500), |v| v.parse())?;
+    // Maps at the tag-memory bound (shared, mainmenu, ...) cannot grow.
+    let stems = std::env::var("H2_BUILD_MAPS").unwrap_or_else(|_| "lockout,01a_tutorial".into());
+    for stem in stems.split(',') {
+        let (mut map, _) = open_disc_map(&disc, stem)?;
+        for clear in [false, true] {
+            let mut set = TagSet::from_map(&mut map)?;
+            if clear {
+                set.pinned.as_mut().unwrap().clear_index_tail();
+            }
+            let group = FourCC(*b"grow");
+            set.add_group(group, None, None);
+            let ids: Vec<TagId> = (0..n)
+                .map(|i| {
+                    let mut b = map::build::Block::zeroed(0x20);
+                    b.put_u32(0, i as u32)
+                        .string_id(4, &format!("grown string {i}"));
+                    set.add_tag(group, &format!("grown\\tag_{i}"), TagPayload::Built(b))
+                })
+                .collect::<Result<_, _>>()?;
+            let bytes = set.build()?.0;
+            let mut grown = Map::from_reader(Cursor::new(bytes))?;
+            grown.validate_checksum()?;
+            let h = grown.header().clone();
+            let index = grown.read_file_range(h.index_offset.into(), h.index_size.into())?;
+            let t = u32::from_le_bytes(index[8..12].try_into().unwrap());
+            let in_index = t < 0x8006_1000 + h.index_size;
+            for old in map.tags().to_vec() {
+                let new = grown.tag(old.id)?.clone();
+                assert_eq!(
+                    (new.group, &new.name, new.location.map(|l| l.address)),
+                    (old.group, &old.name, old.location.map(|l| l.address))
+                );
+                if old.location.is_some() {
+                    assert!(
+                        map.read_tag_bytes(old.id)? == grown.read_tag_bytes(old.id)?,
+                        "{}",
+                        old.id
+                    );
+                }
+            }
+            for (i, id) in ids.iter().enumerate() {
+                let t = grown.tag(*id)?.clone();
+                assert_eq!(t.name.as_deref(), Some(format!("grown\\tag_{i}").as_str()));
+                let b = grown.read_tag_bytes(*id)?;
+                assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), i as u32);
+                let sid = u32::from_le_bytes(b[4..8].try_into().unwrap());
+                assert_eq!(
+                    grown.strings()[(sid & 0xff_ffff) as usize].as_deref(),
+                    Some(format!("grown string {i}").as_str())
+                );
+            }
+            println!(
+                "{stem}: +{n} tags ({} slots), tail {}: entries {} (table at {t:#x}), every old and new tag reads back",
+                grown.index_slots(),
+                if clear { "cleared" } else { "kept" },
+                if in_index {
+                    "in the index region"
+                } else {
+                    "moved to the metadata end"
+                },
+            );
+            assert_eq!(in_index, clear);
+        }
+    }
+    Ok(())
+}
