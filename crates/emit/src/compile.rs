@@ -56,7 +56,7 @@ pub const CFLAGS: &[&str] = &[
 /// the release level (LIFTER.md §1); `lines` keeps guest-address line
 /// tables for backtraces and stepping at about two thirds of the compile
 /// time of `full` (`-g`), whose variable-level info is the bulk of the
-/// object size.
+/// object size. [`profile_flags_for`] takes a target's own default level.
 pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<String>, Error> {
     let opt = opt.unwrap_or("1");
     if !["0", "1", "g", "s", "2"].contains(&opt) {
@@ -84,10 +84,18 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
 /// pointers invoking the handler in the target's direct slot
 /// (`H2_INDIRECT_CALLS`).
-pub fn cflags() -> Result<Vec<String>, Error> {
+///
+/// These are the flags for `arch`: [`Arch::codegen_flags`] after
+/// [`CFLAGS`], and its default level ([`Arch::default_opt`]) when `H2_OPT`
+/// is unset. A macOS, tvOS or iOS object's flags are the same as before
+/// targets had flags of their own. The stamp ([`boot`'s `build_stamp`])
+/// takes them for the target it builds for, so a module cross-built for
+/// Windows matches what the app computes on the device.
+pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
-    v.extend(profile_flags(env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
+    v.extend(arch.codegen_flags().iter().map(|s| s.to_string()));
+    v.extend(profile_flags_for(arch, env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
     for (name, default) in [
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
@@ -106,6 +114,18 @@ pub fn cflags() -> Result<Vec<String>, Error> {
         }
     }
     Ok(v)
+}
+
+/// [`cflags_for`] the host: what a test compiling generated C for this
+/// process uses.
+pub fn cflags() -> Result<Vec<String>, Error> {
+    cflags_for(Arch::host())
+}
+
+/// [`profile_flags`] with `arch`'s default level ([`Arch::default_opt`])
+/// when `opt` is unset.
+pub fn profile_flags_for(arch: Arch, opt: Option<&str>, debug: Option<&str>) -> Result<Vec<String>, Error> {
+    profile_flags(Some(opt.unwrap_or(arch.default_opt())), debug)
 }
 
 /// A `0`/`1` switch: unset or empty takes `default`.
@@ -279,6 +299,43 @@ impl Arch {
     /// A macOS target (the ones `h2 build` runs on).
     pub fn is_macos(self) -> bool {
         matches!(self, Arch::Arm64 | Arch::X86_64)
+    }
+
+    /// The optimisation level (`H2_OPT`) a generated object of this target
+    /// compiles at when `H2_OPT` is unset. `1` (LIFTER.md §1) except on
+    /// Windows, which is `2`: the Xbox package's stamp is computed on the
+    /// console with `H2_OPT` unset (`pack` refuses it), so its level has to
+    /// be the target's default, and on the console's Zen 2 the generated
+    /// code is CPU-bound where -O1 leaves about a sixth more instructions
+    /// than -O2 (docs/runtime/xbox.md).
+    pub fn default_opt(self) -> &'static str {
+        match self {
+            Arch::X86_64Windows => "2",
+            Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => "1",
+        }
+    }
+
+    /// Code generation flags of this target's own, after [`CFLAGS`] and
+    /// part of every object's key and the module stamp. None for the Apple
+    /// targets.
+    ///
+    /// Windows: clang's x86-64 baseline has no FMA, so the native x87
+    /// path's exactness check (`__builtin_fma`, h2x87_native.h) was a call
+    /// to the static UCRT's `fma`, a software routine with its own stack
+    /// cookie, on every native FMUL, FDIV and FSQRT. `x86-64-v3` (AVX2,
+    /// FMA, BMI1/2, LZCNT, MOVBE: Haswell and every Zen, so the Series
+    /// consoles' Zen 2 and any desktop since 2013) makes it one
+    /// `vfmadd`; `-mtune=znver2` schedules for the console. The ISA does
+    /// not change a result: contraction stays off (`-ffp-contract=off`).
+    /// MSVC targets keep `errno` for math by default, which turns each
+    /// `sqrt` into an inline `sqrtsd` plus a call for a negative operand;
+    /// generated code never reads `errno`, and the Apple targets already
+    /// default to `-fno-math-errno`.
+    pub fn codegen_flags(self) -> &'static [&'static str] {
+        match self {
+            Arch::X86_64Windows => &["-march=x86-64-v3", "-mtune=znver2", "-fno-math-errno"],
+            Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => &[],
+        }
     }
 }
 
@@ -825,7 +882,7 @@ pub fn build_tiered(
     // h2gen.h includes h2simd.h, h2x87.h and h2fastmem.h: all are support
     // headers' identity.
     let support = [read("h2gen.h")?, read("h2simd.h")?, read("h2x87.h")?, read("h2fastmem.h")?].concat();
-    let flags = cflags()?;
+    let flags = cflags_for(arch)?;
     let toolchain = toolchain_identity(cc);
     let abi = read("h2abi.h")?;
     let common = common_key(&support, &abi, arch, &flags, &toolchain);
@@ -1006,7 +1063,7 @@ pub fn build_tiered(
 /// (`lld-link`, exporting what the sources mark `H2_EXPORT`).
 pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &Path) -> Result<(), Error> {
     let cc = compiler()?;
-    let flags = cflags()?;
+    let flags = cflags_for(build.arch)?;
     let target = build.arch.target_args()?;
     let mut args: Vec<PathBuf> = build.objects.clone();
     for (name, text) in extra {
@@ -1291,6 +1348,105 @@ mod tests {
         let key = |o, d| common_key(b"a", b"b", Arch::Arm64, &f(o, d), "t");
         assert_ne!(key(None, None), key(Some("0"), None), "opt level");
         assert_ne!(key(None, None), key(None, Some("full")), "debug level");
+    }
+
+    #[test]
+    fn windows_defaults_to_o2_and_the_apple_targets_to_o1() {
+        assert_eq!(Arch::X86_64Windows.default_opt(), "2");
+        for arch in [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos, Arch::Arm64Ios] {
+            assert_eq!(arch.default_opt(), "1", "{arch:?}");
+            assert_eq!(profile_flags_for(arch, None, None).unwrap(), profile_flags(None, None).unwrap(), "{arch:?}");
+        }
+        let f = |o| profile_flags_for(Arch::X86_64Windows, o, Some("none")).unwrap();
+        assert_eq!(f(None), ["-O2"]);
+        assert_eq!(f(Some("1")), ["-O1"], "H2_OPT still wins");
+        assert!(profile_flags_for(Arch::X86_64Windows, Some("3"), None).is_err());
+        // What the build compiles with and the stamp records: with H2_OPT
+        // unset (as `pack` requires), Windows objects are -O2.
+        if std::env::var_os("H2_OPT").is_none() {
+            let win = cflags_for(Arch::X86_64Windows).unwrap();
+            assert!(win.iter().any(|f| f == "-O2") && !win.iter().any(|f| f == "-O1"), "{win:?}");
+            let mac = cflags_for(Arch::Arm64).unwrap();
+            assert!(mac.iter().any(|f| f == "-O1") && !mac.iter().any(|f| f == "-O2"), "{mac:?}");
+        }
+    }
+
+    #[test]
+    fn only_windows_has_codegen_flags_and_they_follow_cflags() {
+        assert_eq!(Arch::X86_64Windows.codegen_flags(), ["-march=x86-64-v3", "-mtune=znver2", "-fno-math-errno"]);
+        for arch in [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos, Arch::Arm64Ios] {
+            assert!(arch.codegen_flags().is_empty(), "{arch:?}");
+            let flags = cflags_for(arch).unwrap();
+            assert!(!flags.iter().any(|f| f.starts_with("-march") || f.starts_with("-mtune") || f == "-fno-math-errno"), "{flags:?}");
+        }
+        assert_eq!(cflags().unwrap(), cflags_for(Arch::host()).unwrap());
+        let win = cflags_for(Arch::X86_64Windows).unwrap();
+        assert_eq!(&win[..CFLAGS.len()], CFLAGS);
+        // After -fno-fast-math, which would otherwise restore MSVC's
+        // math-errno default.
+        let at = |f: &str| win.iter().position(|x| x == f).unwrap();
+        assert!(at("-fno-fast-math") < at("-fno-math-errno"));
+        let mac = cflags_for(Arch::Arm64).unwrap();
+        assert_ne!(
+            common_key(b"a", b"b", Arch::X86_64Windows, &win, "t"),
+            common_key(b"a", b"b", Arch::X86_64Windows, &mac, "t"),
+            "the flags are in the object key"
+        );
+        // A cold tier changes only the level.
+        let tiers = Tiers::new("1", "0x00100000").unwrap();
+        let cold = tiers.cold_flags(&win);
+        assert!(cold.iter().any(|f| f == "-march=x86-64-v3") && cold.iter().any(|f| f == "-fno-math-errno"));
+    }
+
+    /// The point of the Windows flags, on the compiler: the native x87
+    /// path's `__builtin_fma` becomes an instruction rather than a call to
+    /// the UCRT's software `fma`, and `sqrt` needs no errno call.
+    #[test]
+    fn windows_flags_make_fma_and_sqrt_instructions() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED windows_flags_make_fma_and_sqrt_instructions: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-win-flags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("probe.c");
+        std::fs::write(
+            &src,
+            "double probe_fma(double a, double b, double c) { return __builtin_fma(a, b, c); }\n\
+             double probe_sqrt(double x) { return __builtin_sqrt(x); }\n",
+        )
+        .unwrap();
+        let object = |name: &str, flags: &[String]| {
+            let out = dir.join(name);
+            let o = Command::new(&cc)
+                .args(flags)
+                .args(["-target", Arch::X86_64Windows.triple(), "-c"])
+                .arg(&src)
+                .arg("-o")
+                .arg(&out)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            std::fs::read(out).unwrap()
+        };
+        // COFF keeps a symbol name of up to 8 bytes in place, NUL-padded.
+        let calls = |object: &[u8], name: &[u8]| {
+            let mut needle = name.to_vec();
+            needle.resize(8, 0);
+            object.windows(8).any(|w| w == needle)
+        };
+        let mut baseline: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
+        baseline.push("-O1".into());
+        let before = object("baseline.o", &baseline);
+        if !calls(&before, b"fma") || !calls(&before, b"sqrt") {
+            eprintln!("SKIPPED windows_flags_make_fma_and_sqrt_instructions: this clang inlines both already");
+        } else {
+            let after = object("windows.o", &cflags_for(Arch::X86_64Windows).unwrap());
+            assert!(!calls(&after, b"fma"), "fma is still a call");
+            assert!(!calls(&after, b"sqrt"), "sqrt still calls for errno");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

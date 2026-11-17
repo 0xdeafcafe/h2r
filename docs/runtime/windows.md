@@ -44,12 +44,24 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 | | macOS | Windows |
 | --- | --- | --- |
 | compile | clang `-target arm64-apple-macos11` | the same clang, `-target x86_64-pc-windows-msvc -fms-runtime-lib=static -isystem $H2_XWIN/crt/include -isystem $H2_XWIN/sdk/include/ucrt` |
+| codegen | `-O1` (`H2_OPT`) | `-O2` unless `H2_OPT` says otherwise, and `-march=x86-64-v3 -mtune=znver2 -fno-math-errno` (`Arch::default_opt`, `Arch::codegen_flags`) |
 | objects | `shard.arm64.<key>.o` | `shard.x86_64-windows.<key>.o` (keyed apart) |
 | archive | libtool | `llvm-lib` (Apple's libtool takes only Mach-O) |
 | link | `clang -dynamiclib` | `lld-link /dll /noimplib`, against the splat's CRT, UCRT and um libs |
 | module | `libh2game.dylib` | `h2game.dll` |
 | exports | every global | only what is marked `H2_EXPORT` (see below) |
 | stamp | unchanged | ends `target x86_64-pc-windows-msvc` |
+
+**Code generation.** The Xbox package cannot pass `H2_OPT` (the console
+computes the module stamp with it unset), so the Windows target's own
+default is `-O2`; the stamp records the target's flags, so a cross-built
+module and the console agree. `x86-64-v3` (AVX2, FMA, BMI1/2, LZCNT, MOVBE)
+runs on Haswell and every Zen, the Series consoles' Zen 2 included; without
+it the native x87 path's `__builtin_fma` was a call to the static UCRT's
+software `fma` on every native FMUL, FDIV and FSQRT. MSVC targets default
+to `errno` for math, which adds a call to every `sqrt`; the generated code
+never reads `errno`, and the Apple targets already default to
+`-fno-math-errno`. A CPU older than Haswell cannot load the module.
 
 `lld-link` and `llvm-lib` are found through `H2_LLD` and `H2_LLVM` (set by
 `env.sh`), then `PATH`, then Homebrew's usual prefixes
