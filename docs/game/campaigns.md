@@ -229,7 +229,13 @@ built map named by `$H1_SWEEP_MAP`, by `object_sweep_is_clean_on_the_retail_base
 follows every object palette entry and AI character through its tag
 references: each names a tag of its group with data, and each `hlmt`
 has at least its render model's nodes and its physics model's
-rigid-body nodes (h1-objects.md, Nodes). Clean on 05a as shipped.
+rigid-body nodes (h1-objects.md, Nodes). It starts from the skies too,
+and checks every tag it reaches and every tag those name for root
+blocks that are never empty on 05a (groups with at least 20 tags) yet
+empty here: the engine indexes some without a count check (`mode +0x34`,
+h1-models.md). Clean on 05a as shipped. It also prints placement scales:
+05a leaves `+0x20` at 0 on 528 of 634 placements (32 of 34 weapons, all
+45 equipment, all 4 vehicles), so the converter's 0 matches retail.
 `h1_trigger_volumes_read` checks a30's trigger volumes (`scnr+0x360`,
 `0x60` each, name at `+4`: printable names, unit forward and up vectors).
 
