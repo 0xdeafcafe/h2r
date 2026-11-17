@@ -41,7 +41,11 @@ impl KeyboardFallback {
     }
 }
 
-fn merge(mut pad: Gamepad, keyboard: Gamepad) -> Gamepad {
+/// `keyboard` over `pad`: buttons of either, the harder press of each
+/// analog button, and each stick from whichever is pushed further
+/// (`keyboard` on a tie). The agent's pad steps merge over a controller's
+/// read the same way ([`crate::backend::remote`]).
+pub fn merge(mut pad: Gamepad, keyboard: Gamepad) -> Gamepad {
     pad.buttons = pad.buttons | keyboard.buttons;
     for (pressure, key) in pad.analog.iter_mut().zip(keyboard.analog) {
         *pressure = (*pressure).max(key);

@@ -1,19 +1,22 @@
 //! The agent API's wire types (docs/runtime/agent-api.md).
 //!
-//! JSON-RPC 2.0 over a Unix socket: one JSON object per line each way.
+//! JSON-RPC 2.0 over a Unix socket or TCP ([`Endpoint`]): one JSON object
+//! per line each way.
 //! A request with an `id` gets exactly one response with that `id`; events
 //! from `session.subscribe` arrive as notifications with method `event`.
 //! Every result carries an [`At`] stamp saying which moment it describes.
 //!
-//! This crate has no game dependencies, so clients (`h2 agent`, an MCP
-//! server, tests) link it without the runtime.
+//! This crate has no game dependencies, so clients (`h2 agent`, tests)
+//! link it without the runtime.
 
 use std::collections::BTreeMap;
 
-#[cfg(unix)]
 mod client;
-#[cfg(unix)]
+mod endpoint;
+mod pad;
 pub use client::{CallError, Client};
+pub use endpoint::Endpoint;
+pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,8 +24,13 @@ use serde_json::Value;
 /// Bumped when a method or a field changes meaning. Additions don't bump it.
 pub const PROTOCOL: u32 = 1;
 
-/// The environment variable naming the socket path the game listens on.
+/// The environment variable naming where the game listens: a Unix socket
+/// path, or `tcp://HOST:PORT` ([`Endpoint`]).
 pub const ENV: &str = "H2_AGENT";
+
+/// The TCP port the Xbox app listens on (docs/runtime/xbox.md, "Remote
+/// control").
+pub const XBOX_PORT: u16 = 4720;
 
 /// Where `h2 serve` listens and `h2 agent` connects when neither is told:
 /// `$H2_AGENT`, else the user's cache directory (`~/Library/Caches/h2recomp`
@@ -32,6 +40,14 @@ pub fn default_socket() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os(ENV).filter(|p| !p.is_empty()) {
         return p.into();
     }
+    cache_dir().join("agent.sock")
+}
+
+/// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
+/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
+/// The agent keeps its input logs (`inputs/`) and captures (`captures/`)
+/// here, never in the repository.
+pub fn cache_dir() -> std::path::PathBuf {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let cache = if cfg!(target_os = "macos") {
         home.map(|h| h.join("Library/Caches"))
@@ -40,10 +56,7 @@ pub fn default_socket() -> std::path::PathBuf {
             .map(Into::into)
             .or_else(|| home.map(|h| h.join(".cache")))
     };
-    cache
-        .unwrap_or_else(std::env::temp_dir)
-        .join("h2recomp")
-        .join("agent.sock")
+    cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
 }
 
 /// Method names. `session.methods` lists them at run time.
@@ -61,6 +74,7 @@ pub mod method {
     pub const WORLD_QUERY: &str = "world.query";
     pub const WORLD_OBJECT: &str = "world.object";
     pub const PROFILE_COUNTERS: &str = "profile.counters";
+    pub const PROFILE_CAPTURE: &str = "profile.capture";
     pub const FEATURES: &str = "features.list";
 
     /// Every method, in the order `session.methods` lists them.
@@ -78,11 +92,38 @@ pub mod method {
         WORLD_QUERY,
         WORLD_OBJECT,
         PROFILE_COUNTERS,
+        PROFILE_CAPTURE,
         FEATURES,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
     pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP];
+
+    // Host methods: answered only where they are registered
+    // (`Agent::add_method`): the input methods by the agent's input tap
+    // when the game has XAPI input, the rest by boot's agent glue. So
+    // `session.methods` lists them only there.
+
+    /// Queue pad steps for a player ([`crate::PadParams`]).
+    pub const INPUT_PAD: &str = "input.pad";
+    /// Drop the queued steps and let go of everything.
+    pub const INPUT_RELEASE: &str = "input.release";
+    /// What each pad holds now, what is queued, and recording or replay.
+    pub const INPUT_STATE: &str = "input.state";
+    /// Log every controller read to a named input log.
+    pub const INPUT_RECORD: &str = "input.record";
+    /// Answer controller reads from a named input log.
+    pub const INPUT_REPLAY: &str = "input.replay";
+    /// End the recording (writing it) or the replay.
+    pub const INPUT_STOP: &str = "input.stop";
+    /// Start the in-process sampling profiler (`{"hz": 1000}`).
+    pub const SAMPLE_START: &str = "profile.sample.start";
+    /// Stop it and write the samples (`{"inline": true}` returns them too).
+    pub const SAMPLE_STOP: &str = "profile.sample.stop";
+    /// Whether it runs, for how long, and what the last dump was.
+    pub const SAMPLE_STATUS: &str = "profile.sample.status";
+    /// The newest host perf line (`boot::host_perf`).
+    pub const HOST_PERF: &str = "host.perf";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
@@ -657,6 +698,193 @@ pub struct Counters {
     pub counts: BTreeMap<String, f64>,
 }
 
+/// `profile.capture`: every frame over a window, by game ticks or wall
+/// time (one of them).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureParams {
+    /// Game ticks to capture (1 to 36000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u64>,
+    /// Milliseconds to capture (1 to 600000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// A frame longer than this is a spike (default 33.3, 30 fps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<f64>,
+    /// List at most this many spikes, worst first (default 20, at most
+    /// 500). `over_budget` counts them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spikes: Option<usize>,
+    /// Also run the sampling profiler over the window (an h2 built with
+    /// `--features perf` only).
+    #[serde(default)]
+    pub sample: bool,
+}
+
+impl CaptureParams {
+    pub const MAX_TICKS: u64 = 36_000;
+    pub const MAX_MS: u64 = 600_000;
+    pub const DEFAULT_BUDGET_MS: f64 = 33.3;
+    pub const DEFAULT_SPIKES: usize = 20;
+    pub const MAX_SPIKES: usize = 500;
+}
+
+/// Milliseconds per frame over a capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhaseStats {
+    pub mean: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub max: f64,
+    /// Summed over every frame.
+    pub total: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CountStats {
+    /// Per frame.
+    pub mean: f64,
+    pub max: u64,
+    pub total: u64,
+}
+
+/// A frame over the budget, with its own breakdown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Spike {
+    /// The present that ended it (frame stats count frames by present).
+    pub present: u64,
+    /// The game tick it fell in, and the map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// Wall time, and wall time less pacing.
+    pub ms: f64,
+    pub busy_ms: f64,
+    /// Each phase it spent time in, ms.
+    pub phases: BTreeMap<String, f64>,
+    /// Each counter it counted.
+    pub counts: BTreeMap<String, u64>,
+    /// Its biggest phases, biggest first (pacing left out).
+    pub top: Vec<String>,
+}
+
+/// What a capture's frames say.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureStats {
+    pub frames: usize,
+    pub wall_ms: f64,
+    pub fps: f64,
+    /// Whole-frame wall time.
+    pub frame_ms: PhaseStats,
+    /// Wall time less pacing: what frames cost.
+    pub busy_ms: PhaseStats,
+    /// Per phase (`cpu`, `decode`, `encode`, `submit`, `gpu-wait`, `pace`,
+    /// `render-wait`, `d3d`, and `render` when measured).
+    pub phases: BTreeMap<String, PhaseStats>,
+    /// Per counter (`draws`, `passes`, `uploads`, …).
+    pub counts: BTreeMap<String, CountStats>,
+    pub budget_ms: f64,
+    /// Frames over the budget; `spikes` lists the worst of them.
+    pub over_budget: usize,
+    pub spikes: Vec<Spike>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Capture {
+    pub at: At,
+    /// Game ticks the window spanned.
+    pub ticks: u64,
+    /// False when a capture by ticks ran out of time (600 s) first.
+    pub complete: bool,
+    #[serde(flatten)]
+    pub stats: CaptureStats,
+    /// Every frame as a CSV row (present, end, tick, map, then each phase
+    /// in us and each counter).
+    pub csv: String,
+    /// Present when `sample` was asked for: what the sampler answered when
+    /// the window ended (`profile.sample.stop`'s answer: the dump's `file`,
+    /// `samples`, ...), or `{"unavailable": why}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<Value>,
+}
+
+// ---- input ----
+
+/// Controller ports (players) a pad step can name.
+pub const PORTS: u32 = 4;
+
+/// `input.record`: start logging every controller read the game makes
+/// to the cache directory's `inputs/<name>.input` (an `xapi::tap` input
+/// log, the format `H2_INPUT_RECORD` writes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordParams {
+    pub name: String,
+    /// Overwrite a log of that name (default: refuse).
+    #[serde(default)]
+    pub replace: bool,
+}
+
+/// `input.replay`: answer the game's controller reads from a log, read
+/// for read, from now on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayParams {
+    pub name: String,
+}
+
+/// Whether a log name is safe as a file name: letters, digits, `.`, `_`
+/// and `-`, at most 64, not starting with `.`.
+pub fn valid_log_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// What a replay has done so far (`xapi::tap::ReplayStats`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayCounts {
+    /// Reads in the log.
+    pub reads: u64,
+    /// Reads answered from the log.
+    pub replayed: u64,
+    /// Of those, reads of the same controller handle as in the recording.
+    pub matched: u64,
+    /// Reads of a different handle: the runs opened their controllers
+    /// differently, so they have already parted.
+    pub handle_mismatches: u64,
+    /// Reads after the log ran out, left live.
+    pub past_end: u64,
+}
+
+/// What the input tap is doing besides pad packets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum InputMode {
+    Live,
+    Recording {
+        name: String,
+        path: String,
+        /// Reads logged so far.
+        reads: u64,
+        /// The game tick it started at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_tick: Option<u64>,
+    },
+    Replaying {
+        name: String,
+        path: String,
+        #[serde(flatten)]
+        counts: ReplayCounts,
+    },
+}
+
 // ---- features ----
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -759,6 +987,33 @@ mod tests {
             }
             .is_empty()
         );
+    }
+
+    #[test]
+    fn log_names_stay_file_names() {
+        for ok in ["courtyard", "03a.fight-2", "A_b"] {
+            assert!(valid_log_name(ok), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", ".hidden", "sp ace", &"x".repeat(65)] {
+            assert!(!valid_log_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn input_modes_are_tagged_and_flat() {
+        let v = serde_json::to_value(InputMode::Replaying {
+            name: "a".into(),
+            path: "/c/a.input".into(),
+            counts: ReplayCounts {
+                reads: 3,
+                replayed: 2,
+                matched: 2,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(v["mode"], "replaying");
+        assert_eq!(v["matched"], 2);
     }
 
     #[test]

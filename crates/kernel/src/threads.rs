@@ -270,6 +270,14 @@ impl Machine {
     pub fn thread(&self, id: u32) -> Option<&Thread> {
         self.threads.get(&id)
     }
+    #[cfg(test)]
+    pub(crate) fn thread_mut(&mut self, id: u32) -> Option<&mut Thread> {
+        self.threads.get_mut(&id)
+    }
+    /// The machine stopped: `run` returns the same outcome again.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.is_some()
+    }
     /// The CPU/context of the last DPC routine run (`DPC_THREAD_ID`). A
     /// `RunOutcome::Stopped` naming that thread refers to this context.
     pub fn dpc_thread(&self) -> Option<&Thread> {
@@ -332,10 +340,11 @@ impl Machine {
                     let kernel = Arc::clone(&self.kernel);
                     // Owned completion survives child waits/stops and runs
                     // only when the guest SystemRoutine actually returns.
-                    record.resume = ctx.call_guest(
+                    record.resume = ctx.call_guest_named(
                         &mut cpu,
                         &mut self.runtime.memory(),
                         entry,
+                        crate::quiesce::THREAD_RETURN,
                         move |_, ctx| {
                             let mut core = kernel.lock();
                             core.terminate(
@@ -732,20 +741,26 @@ impl Machine {
             core.dpc_complete = false;
             let old_irql = core.dispatch_level(&mut memory)?;
             let kernel = Arc::clone(&self.kernel);
-            let resume = ctx.call_guest(&mut cpu, &mut memory, routine, move |cpu, ctx| {
-                if let Some(expected_esp) = expected_esp
-                    && cpu.esp != expected_esp
-                {
-                    return Ok(TransferAbi::fault(ctx.emit(Event::InterruptImbalance {
-                        name,
-                        target: routine,
-                        expected_esp,
-                        actual_esp: cpu.esp,
-                    })));
-                }
-                kernel.lock().dpc_complete = true;
-                Ok(TransferAbi::stop(0))
-            })?;
+            let resume = ctx.call_guest_named(
+                &mut cpu,
+                &mut memory,
+                routine,
+                crate::quiesce::DPC_RETURN,
+                move |cpu, ctx| {
+                    if let Some(expected_esp) = expected_esp
+                        && cpu.esp != expected_esp
+                    {
+                        return Ok(TransferAbi::fault(ctx.emit(Event::InterruptImbalance {
+                            name,
+                            target: routine,
+                            expected_esp,
+                            actual_esp: cpu.esp,
+                        })));
+                    }
+                    kernel.lock().dpc_complete = true;
+                    Ok(TransferAbi::stop(0))
+                },
+            )?;
             (resume, old_irql)
         };
         crate::push_bounded(

@@ -17,6 +17,7 @@ use input::bindings::{Bindings, Control, Input};
 const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
+          [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
@@ -94,6 +95,10 @@ https://HOST (or --tunnel-name NAME --hostname HOST) it runs named tunnel NAME
 at that lasting URL instead, first logging in to Cloudflare (a browser link),
 creating the tunnel and routing HOST to it if any of that is missing;
 --no-tunnel-setup skips those steps (docs/live/live-hosting.md).
+
+--title names the window (Halo 2 by default); --tile I/N sizes it to
+column I (from 0) of N across the main screen and places it there, so
+several games sit side by side (`h2 coop test` does both).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
@@ -555,6 +560,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
             }
             "--nearest" => config.filter = app::Filter::Nearest,
             "--fullscreen" => config.fullscreen = true,
+            "--title" => config.title = val()?,
+            "--tile" => {
+                let v = val()?;
+                config.tile = Some(
+                    app::tile::parse(&v)
+                        .with_context(|| format!("--tile {v}: column I of N, as 0/2\n\n{USAGE}"))?,
+                );
+            }
             "--no-audio" => audio = false,
             "--no-mappack" => no_mappack = true,
             "--no-halo1" => no_halo1 = true,

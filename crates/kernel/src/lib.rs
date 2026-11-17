@@ -22,6 +22,7 @@ mod objects;
 pub mod ord;
 pub mod pacer;
 pub mod periodic;
+pub mod quiesce;
 pub mod rawdisk;
 mod rtl;
 mod sections;
@@ -41,6 +42,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
+pub use quiesce::{Blocker, Quiescence};
 pub use threads::{Machine, RunOutcome, Thread};
 
 /// Host-memory budgets for state that accumulates over a long run. Guest code

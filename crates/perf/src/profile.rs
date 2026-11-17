@@ -152,6 +152,53 @@ pub struct Summary {
     pub guest_insns: Vec<Row>,
 }
 
+impl Summary {
+    /// The summary as an aligned text table (`profile.txt`).
+    pub fn text(&self) -> String {
+        let s = self;
+        let mut o = String::new();
+        let _ = writeln!(
+            o,
+            "{} samples ({} on cpu) over {:.2}s at {} Hz on {}; {} missed; mean pause {:.1} us",
+            s.samples,
+            s.on_cpu,
+            s.wall_secs,
+            s.hz,
+            s.threads.join(", "),
+            s.missed,
+            s.mean_pause_us
+        );
+        let mut section = |title: &str, rows: &[Row], cat: bool| {
+            if rows.is_empty() {
+                return;
+            }
+            let _ = writeln!(o, "\n{title}");
+            for r in rows {
+                let c = match (cat, r.category) {
+                    (true, Some(c)) => c.name(),
+                    (true, None) => "-",
+                    (false, _) => "",
+                };
+                let _ = writeln!(
+                    o,
+                    "  {:>6.2}% {:>8}  {:<9} {}",
+                    r.percent, r.samples, c, r.name
+                );
+            }
+        };
+        section("by category", &s.categories, false);
+        section("self (charged frame)", &s.self_top, true);
+        section(
+            "guest functions, including services they called",
+            &s.guest_total,
+            false,
+        );
+        section("guest functions, own code", &s.guest_self, false);
+        section("guest instructions", &s.guest_insns, false);
+        o
+    }
+}
+
 fn top(counts: HashMap<(String, Option<Category>), u64>, n: usize, total: u64) -> Vec<Row> {
     let mut v: Vec<_> = counts.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.0.cmp(&b.0.0)));
@@ -281,47 +328,7 @@ impl Profile {
 
     /// The summary as an aligned text table.
     pub fn table(&self, r: &Render) -> String {
-        let s = self.summary(r);
-        let mut o = String::new();
-        let _ = writeln!(
-            o,
-            "{} samples ({} on cpu) over {:.2}s at {} Hz on {}; {} missed; mean pause {:.1} us",
-            s.samples,
-            s.on_cpu,
-            s.wall_secs,
-            s.hz,
-            s.threads.join(", "),
-            s.missed,
-            s.mean_pause_us
-        );
-        let mut section = |title: &str, rows: &[Row], cat: bool| {
-            if rows.is_empty() {
-                return;
-            }
-            let _ = writeln!(o, "\n{title}");
-            for r in rows {
-                let c = match (cat, r.category) {
-                    (true, Some(c)) => c.name(),
-                    (true, None) => "-",
-                    (false, _) => "",
-                };
-                let _ = writeln!(
-                    o,
-                    "  {:>6.2}% {:>8}  {:<9} {}",
-                    r.percent, r.samples, c, r.name
-                );
-            }
-        };
-        section("by category", &s.categories, false);
-        section("self (charged frame)", &s.self_top, true);
-        section(
-            "guest functions, including services they called",
-            &s.guest_total,
-            false,
-        );
-        section("guest functions, own code", &s.guest_self, false);
-        section("guest instructions", &s.guest_insns, false);
-        o
+        self.summary(r).text()
     }
 
     /// Write `profile.folded`, `profile.txt` and `profile.json` into `dir`.
@@ -430,6 +437,14 @@ pub fn register_current_thread(name: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(ThreadTarget::current(name));
+}
+
+/// The threads [`register_current_thread`] has registered.
+pub fn registered_threads() -> Vec<ThreadTarget> {
+    EXTRA_THREADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// A profiling and/or timeline run around some code. Start it on the

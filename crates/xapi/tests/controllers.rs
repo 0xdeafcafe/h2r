@@ -670,3 +670,41 @@ fn an_input_tap_records_what_the_guest_read_and_a_replay_gives_it_back() {
         seen[0]
     );
 }
+
+#[test]
+fn an_input_tap_is_told_which_port_each_handle_opened_and_when_it_closed() {
+    use xapi::tap::{InputTap, PACKET};
+    #[derive(Default)]
+    struct Seen(Arc<Mutex<Vec<String>>>);
+    impl InputTap for Seen {
+        fn read(&mut self, handle: u32, _: &mut u32, _: &mut [u8; PACKET]) {
+            self.0.lock().unwrap().push(format!("read {handle:x}"));
+        }
+        fn opened(&mut self, handle: u32, port: u32) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("open {handle:x} {port}"));
+        }
+        fn closed(&mut self, handle: u32) {
+            self.0.lock().unwrap().push(format!("close {handle:x}"));
+        }
+    }
+    let (mut xapi, mut memory, _pads) = initialized();
+    let seen = Seen::default();
+    let log = Arc::clone(&seen.0);
+    xapi.set_input_tap(Some(Box::new(seen)));
+    let handle = xapi.input_open(&memory, 0x100, 0, 0, 0).unwrap();
+    xapi.input_get_state(&mut memory, handle, 0x400).unwrap();
+    xapi.input_close(handle).unwrap();
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            format!("open {handle:x} 0"),
+            format!("read {handle:x}"),
+            format!("close {handle:x}")
+        ]
+    );
+    assert!(xapi.take_input_tap().is_some());
+    assert!(xapi.take_input_tap().is_none());
+}

@@ -96,3 +96,35 @@ portal_install() {
 portal_find_package() {
   jq -r --arg n "$2" '.InstalledPackages[] | select(.Name == $n or ((.PackageFamilyName // "") | startswith($n + "_")) or ((.PackageFullName // "") | startswith($n + "_"))) | "\(.PackageFullName) \(.PackageRelativeId)"' "$1" | head -n 1
 }
+
+# The app's LocalState through the portal's file API (the LocalAppData
+# known folder of package $1, path \LocalState). Each prints the body;
+# the status goes to PORTAL_STATUS_FILE.
+portal_localstate_query() {
+  printf 'knownfolderid=LocalAppData&packagefullname=%s&path=%%5CLocalState' "$1"
+}
+
+# portal_localstate_get FULLNAME NAME
+portal_localstate_get() {
+  portal_curl GET "/api/filesystem/apps/file?$(portal_localstate_query "$1")&filename=$2"
+}
+
+# portal_localstate_put FULLNAME FILE NAME
+portal_localstate_put() {
+  portal_curl POST "/api/filesystem/apps/file?$(portal_localstate_query "$1")" -F "file=@$2;filename=$3"
+}
+
+# portal_localstate_rm FULLNAME NAME
+portal_localstate_rm() {
+  portal_curl DELETE "/api/filesystem/apps/file?$(portal_localstate_query "$1")&filename=$2"
+}
+
+# portal_stop_app FULLNAME: ends the app (the task manager's stop).
+portal_stop_app() {
+  portal_curl DELETE "/api/taskmanager/app?package=$(portal_b64 "$1")&forcestop=yes"
+}
+
+# portal_launch AUMID FULLNAME
+portal_launch() {
+  portal_curl POST "/api/taskmanager/app?appid=$(portal_b64 "$1")&package=$(portal_b64 "$2")" -H "Content-Length: 0" -d ""
+}

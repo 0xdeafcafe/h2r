@@ -29,6 +29,7 @@ pub mod lifecycle;
 pub mod mailbox;
 pub mod overlay;
 pub mod pacing;
+pub mod tile;
 pub mod scale;
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 mod shell;
@@ -63,6 +64,9 @@ pub struct AppConfig {
     pub title: String,
     /// Initial inner size in logical points.
     pub window_size: (u32, u32),
+    /// Column `.0` of `.1` across the primary screen ([`tile::tile`]),
+    /// in place of `window_size` and the system's placement.
+    pub tile: Option<(u32, u32)>,
     /// Start in borderless fullscreen.
     pub fullscreen: bool,
     /// Displayed shape of the guest frame.
@@ -128,6 +132,7 @@ impl Default for AppConfig {
         Self {
             title: "h2recomp".into(),
             window_size: (1280, 960),
+            tile: None,
             fullscreen: false,
             aspect: DisplayAspect::Standard,
             scaling: Scaling::Fit,
@@ -441,6 +446,8 @@ fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
         .flatten();
     let keyboard = if config.keyboard {
         let kb = KeyboardMouse::new(config.bindings.clone());
+        // The agent API's `input.pad` doesn't come through here: it merges
+        // over the guest's controller reads at XAPI (crates/agent's tap).
         manager.add_backend(Box::new(input::backend::fallback::KeyboardFallback::new(
             kb.clone(),
             physical,

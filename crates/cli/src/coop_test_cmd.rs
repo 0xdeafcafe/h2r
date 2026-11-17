@@ -37,16 +37,23 @@ H2_COOP_MAX_PLAYERS), each with
 its own data and Live directory under --root, its own XNet ports (--port,
 31000, then 10 up per game, on --ip, this Mac's LAN address by default) and
 its own agent socket (`h2 agent --socket <path> status`). The host's window
-opens first; the others once it is signed in (its first start may build
-the game into --out; the others never build at the same time).
+opens first (its first start may build the game into --out); the others
+once it is signed in, so they never build at the same time. Each window's
+title names its game and role (Halo 2 — Alpha (host)), and the windows
+sit side by side across the main screen, the host leftmost.
 
 Input: each window takes the keyboard while it has focus. The pads go to
 the host (--pad guest gives them to the first guest; the others have
 none). The guests play without sound.
 
+Once the host is at its main menu (asked over its agent socket), one line
+says what to press next. The menus are yours: on every window, Xbox Live
+(that signs the game in, so the host sees the guests online); on the host,
+Co-op Campaign, a level and difficulty, then Start Game.
+
 --auto: the host invites the guests to its lobby by itself, and each guest
-accepts by itself, as if pressed through the friends list. You still sign
-each game in to Xbox Live, pick Co-op Campaign on the host, and start.
+accepts by itself, as if pressed through the friends list. Without it,
+invite from the host's lobby (Y, the friends list) and accept on the guest.
 
 Every game's whole stderr goes to <root>/logs/<time>/<gamertag>.log, and
 their co-op lines (coop-live, coop-probe, coop-auto, skulls, session) to
@@ -246,6 +253,12 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                 "--gamertag".into(),
                 tag.to_string(),
             ];
+            args.extend([
+                "--title".into(),
+                window_title(tag, host),
+                "--tile".into(),
+                format!("{i}/{}", opts.players),
+            ]);
             if let Some(out) = &opts.out {
                 args.extend(["--out".into(), out.display().to_string()]);
             }
@@ -296,6 +309,11 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
             }
         })
         .collect()
+}
+
+/// A game's window title: which game it is, and whether it hosts.
+pub fn window_title(tag: &str, host: bool) -> String {
+    format!("Halo 2 — {tag} ({})", if host { "host" } else { "guest" })
 }
 
 /// This Mac's LAN address (the one a packet to the internet would leave
@@ -502,6 +520,7 @@ fn test(opts: Opts) -> Result<()> {
             for g in waiting.drain(..) {
                 sup.spawn(&exe, g)?;
             }
+            say_next_steps_at_the_menu(games[0].agent.clone(), next_steps(&roles, opts.auto));
         }
         if sup.all_exited() {
             break;
@@ -524,6 +543,73 @@ fn test(opts: Opts) -> Result<()> {
     }
     println!("log: {}", merged.display());
     Ok(())
+}
+
+/// What the user presses next, once the host is at its main menu.
+pub fn next_steps(roles: &Roles, auto: bool) -> String {
+    let host = &roles.host;
+    let guests = roles.guests.join(" and ");
+    let joining = if auto {
+        format!("{guests} get the invitation and join by themselves")
+    } else {
+        format!("in the lobby press Y and invite {guests}; on {guests}, accept in the friends list")
+    };
+    format!(
+        "coop test: next, on {guests}'s window{s}: Xbox Live (to sign in). Then on {host}'s window: \
+         Xbox Live > Co-op Campaign > pick a level and difficulty; {joining}; then Start Game on {host}.",
+        s = if roles.guests.len() > 1 { "s" } else { "" },
+    )
+}
+
+/// How long the host may take from its sign-in to its main menu (the
+/// intro, the profile screen) before the line is said anyway.
+const MENU_WAIT: Duration = Duration::from_secs(600);
+
+/// Says `line` once the game at `socket` is at its main menu (phase
+/// `menu` for 2 s, `session.wait` over the agent API), or, if that can't
+/// be asked, says it anyway, as what to do once it is.
+fn say_next_steps_at_the_menu(socket: PathBuf, line: String) {
+    let _ =
+        std::thread::Builder::new()
+            .name("coop-menu".into())
+            .spawn(move || match wait_for_menu(&socket, MENU_WAIT) {
+                Ok(()) => eprintln!("{line}"),
+                Err(e) => {
+                    eprintln!("{line} (once at the main menu; asking the game failed: {e:#})")
+                }
+            });
+}
+
+/// Waits until the game at `socket` has been in its menu for 60 ticks:
+/// connects (retrying while the socket is not up yet), then
+/// `session.wait {"phase":"menu","map_ticks":60}`.
+#[cfg(unix)]
+pub fn wait_for_menu(socket: &Path, within: Duration) -> Result<()> {
+    let deadline = Instant::now() + within;
+    let mut client = loop {
+        match agent_proto::Client::connect(socket) {
+            Ok(c) => break c,
+            Err(e) if Instant::now() >= deadline => {
+                return Err(e).with_context(|| format!("connecting to {}", socket.display()));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+        }
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    client.set_timeout(Some(left + Duration::from_secs(5)))?;
+    let ms = left.as_millis().clamp(1, 600_000) as u64;
+    client
+        .call(
+            agent_proto::method::WAIT,
+            serde_json::json!({"until": {"phase": "menu", "map_ticks": 60}, "timeout_ms": ms}),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn wait_for_menu(_: &Path, _: Duration) -> Result<()> {
+    bail!("the agent API needs Unix sockets")
 }
 
 /// A UTC `YYYYMMDD-HHMMSS` for unix time `secs`, naming a run's logs.

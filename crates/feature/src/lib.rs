@@ -23,6 +23,7 @@ pub mod locale;
 pub mod plan;
 pub mod render_loop;
 pub mod render_timing;
+pub mod snapshot;
 pub mod switches;
 
 use std::sync::Arc;
@@ -38,6 +39,7 @@ pub use engine::entry::{Cx, EntryFuture, GuestCall, Ret};
 pub use entry::Entry;
 pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
+pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
 
 /// What a feature is, for switches and the plan text.
@@ -298,6 +300,8 @@ pub struct Registry {
     locale: locale::Sources,
     /// The feature whose `LOCALE_FIND` implementation serves the sources.
     locale_server: Option<&'static str>,
+    /// Each built feature's snapshot policy ([`Builder::snapshot`]).
+    snapshot: Vec<snapshot::FeatureSnapshot>,
 }
 
 impl Registry {
@@ -312,6 +316,7 @@ impl Registry {
             sources: Vec::new(),
             locale: locale::Sources::default(),
             locale_server: None,
+            snapshot: Vec::new(),
         }
     }
 
@@ -338,6 +343,7 @@ impl Registry {
             sources: Vec::new(),
             locale: self.locale.clone(),
             serves_locale: false,
+            snapshot: None,
         };
         match feature.build(&mut b) {
             Ok(()) => {
@@ -348,8 +354,13 @@ impl Registry {
                     entries,
                     sources,
                     serves_locale,
+                    snapshot,
                     ..
                 } = b;
+                self.snapshot.push(snapshot::FeatureSnapshot {
+                    id: m.id,
+                    policy: snapshot.unwrap_or(SnapshotPolicy::Unaudited),
+                });
                 self.entries.extend(entries);
                 self.sources.extend(sources);
                 if serves_locale {
@@ -380,6 +391,7 @@ impl Registry {
             shared: self.locale,
             server: self.locale_server,
         };
+        let snapshot = self.snapshot;
         plan::build(
             self.features,
             self.hooks,
@@ -389,6 +401,10 @@ impl Registry {
             locale,
             addrs,
         )
+        .map(|mut plan| {
+            plan.snapshot = snapshot;
+            plan
+        })
     }
 }
 
@@ -406,9 +422,16 @@ pub struct Builder<'r> {
     sources: Vec<locale::Source>,
     locale: locale::Sources,
     serves_locale: bool,
+    snapshot: Option<SnapshotPolicy>,
 }
 
 impl<'r> Builder<'r> {
+    /// What this feature holds outside guest RAM, for machine snapshots
+    /// (docs/runtime/snapshots.md). A feature that never says is
+    /// [`SnapshotPolicy::Unaudited`] and blocks every snapshot.
+    pub fn snapshot(&mut self, policy: SnapshotPolicy) {
+        self.snapshot = Some(policy);
+    }
     /// The feature being built.
     pub fn id(&self) -> &'static str {
         self.feature

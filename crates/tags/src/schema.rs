@@ -296,7 +296,7 @@ pub struct Walk {
     pub pointers: Vec<(u32, u32, u32)>,
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
 }
 
@@ -567,9 +567,25 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
 /// that holds an address in the tag (`own`) or in a known space, or a BSP
 /// descriptor matching no region: `(offset, value)`. Raw fields are checked
 /// too: one holding an address is a misclassified pointer.
-fn stray(s: &Struct, elem: &[u8], own: (u32, u32), mem: &Memory) -> Option<(u32, u32)> {
+pub(crate) fn stray(s: &Struct, elem: &[u8], own: (u32, u32), mem: &Memory) -> Option<(u32, u32)> {
+    stray_with(s, elem, own, mem, false)
+}
+
+/// [`stray`]; with `raw_ok`, raw fields are trusted (a pointer into
+/// `shared.map` has the selector bits of a metadata address).
+pub(crate) fn stray_with(
+    s: &Struct,
+    elem: &[u8],
+    own: (u32, u32),
+    mem: &Memory,
+    raw_ok: bool,
+) -> Option<(u32, u32)> {
     let mut covered = vec![false; elem.len()];
-    for (&o, f) in s.fields.iter().filter(|(_, f)| !matches!(f, Field::Raw)) {
+    for (&o, f) in s
+        .fields
+        .iter()
+        .filter(|(_, f)| raw_ok || !matches!(f, Field::Raw))
+    {
         covered[o as usize..(o + f.width()) as usize].fill(true);
     }
     for (&o, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Bsp)) {
@@ -596,6 +612,19 @@ fn check_subtree(
     mem: &Memory,
     path: &mut Vec<u32>,
 ) -> Result<(), Detail> {
+    check_subtree_with(s, at, count, own, mem, path, false)
+}
+
+/// [`check_subtree`], with raw fields trusted when `raw_ok`.
+pub(crate) fn check_subtree_with(
+    s: &Struct,
+    at: u32,
+    count: u32,
+    own: (u32, u32),
+    mem: &Memory,
+    path: &mut Vec<u32>,
+    raw_ok: bool,
+) -> Result<(), Detail> {
     let fail = |refusal, path: &[u32], offset, value| Detail {
         refusal,
         path: path.to_vec(),
@@ -612,7 +641,7 @@ fn check_subtree(
     for i in 0..count {
         let e = (i * s.size) as usize;
         let elem = &bytes[e..e + s.size as usize];
-        if let Some((k, v)) = stray(s, elem, own, mem) {
+        if let Some((k, v)) = stray_with(s, elem, own, mem, raw_ok) {
             return Err(fail(Refusal::UnknownPointer, path, k, v));
         }
         for (&o, f) in &s.fields {
@@ -621,7 +650,7 @@ fn check_subtree(
                 let a = u32_at(elem, o as usize + 4);
                 if c != 0 && a != 0 {
                     path.push(o);
-                    check_subtree(child, a, c, own, mem, path)?;
+                    check_subtree_with(child, a, c, own, mem, path, raw_ok)?;
                     path.pop();
                 }
             }

@@ -28,6 +28,7 @@ pub mod fov_row;
 pub mod game_glue;
 pub mod health;
 pub mod host_perf;
+pub mod sampling;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -61,6 +62,7 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod video_screen;
+pub mod snapshot_probe;
 pub mod sse;
 pub mod sweep_diag;
 pub mod touch_glue;
@@ -957,6 +959,7 @@ pub fn run_hosted_with_live(
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
+    let input_replay = lockstep_config.replay.is_some();
     let mut harness = if lockstep_config.enabled() {
         let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
@@ -968,7 +971,18 @@ pub fn run_hosted_with_live(
     };
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
     let agent = match agent_glue::socket_from_env() {
-        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path)?),
+        // Over TCP (the Xbox app) a refused port must not stop the game:
+        // it runs on, undriven, and says why.
+        Some(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
+            match agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    eprintln!("agent: not listening: {e:#}");
+                    None
+                }
+            }
+        }
+        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
     // The Rust datum, tag and locale functions, when H2_FEATURES has
@@ -1006,6 +1020,9 @@ pub fn run_hosted_with_live(
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
         custom_games::set_coop_row(on);
     }
+    // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
+    // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
+    let mut snapshot_probe = snapshot_probe::Probe::from_env(&mut features)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
@@ -1071,6 +1088,17 @@ pub fn run_hosted_with_live(
     let mut audio_idle = 0u64;
     // H2_AUDIO_STATS=1: a line of audio health every few seconds.
     let mut audio_report = ds.as_ref().and_then(|_| dsound_glue::AudioReport::from_env());
+    if let Some(p) = &mut snapshot_probe {
+        let installed: [(&'static str, bool); 6] = [
+            ("d3d", d3d_calls.is_some()),
+            ("dsound", ds.is_some()),
+            ("xapi", xa.is_some()),
+            ("bink", opts.bink),
+            ("live", _live.is_some()),
+            ("lockstep", harness.is_some()),
+        ];
+        p.set_host(installed.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect());
+    }
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
@@ -1096,6 +1124,11 @@ pub fn run_hosted_with_live(
     }
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
+    // The sampler's main target (agent glue sets it too).
+    #[cfg(feature = "perf")]
+    if sampling::seconds_from_env().is_some() {
+        sampling::set_game_thread();
+    }
     for slice in 0..opts.max_slices {
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
@@ -1116,7 +1149,14 @@ pub fn run_hosted_with_live(
                 _ => eprintln!("perf: session from present {n}"),
             }
             perf_session = perf::Session::from_env();
+            // H2_SAMPLE_SECONDS: the in-process sampler's dump instead
+            // (sampling.rs; for the Xbox app, which can't symbolise).
+            if let Some(s) = sampling::seconds_from_env() {
+                sampling::start_timed(s);
+            }
         }
+        #[cfg(feature = "perf")]
+        sampling::tick();
         if let Some(pad) = &pad {
             script.step(slice, pad);
         }
@@ -1154,6 +1194,9 @@ pub fn run_hosted_with_live(
         if let Some(a) = &agent {
             a.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        if let Some(p) = &mut snapshot_probe {
+            p.after_slice(&m, &plan);
+        }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
             && audio_errors.len() < 8
@@ -1172,6 +1215,9 @@ pub fn run_hosted_with_live(
     }
     if let Some(a) = &ds {
         a.output.halt();
+    }
+    if let Some(p) = &snapshot_probe {
+        p.finish();
     }
     // H2_PGO=gen: the run is over (a present count, the slice limit, the
     // host); the training profile is complete.

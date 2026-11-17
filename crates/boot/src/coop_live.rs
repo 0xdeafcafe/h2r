@@ -24,10 +24,12 @@
 //! join screen (host, level, difficulty, skulls, handshake, Ready) at the
 //! next tick (`H2_COOP_JOIN_SCREEN=0` leaves it to the Co-op Campaign row).
 //!
-//! **Text.** While a console hosts or joined a co-op session, the retail
-//! lobby line that says co-op needs two players on one console (string id
-//! [`COOP_TAKES_TWO`]) reads [`LOBBY_LINE`] instead; split screen keeps the
-//! game's own text. Every text of these screens is ours, written into guest
+//! **Text.** On the Live co-op path the retail lobby line that says co-op
+//! needs two players on one console (string id [`COOP_TAKES_TWO`], the only
+//! place the game uses it) reads ours instead ([`line_for`]): from the
+//! Co-op Campaign row on, and on a friend's console in the host's lobby
+//! before it knows it is a co-op guest. Alone, it says to invite a friend
+//! first. Split screen keeps the game's own text. Every text of these screens is ours, written into guest
 //! memory slots ([`Texts`]) when it changes.
 //!
 //! The state is pure ([`Lobby`]) and tested without a guest.
@@ -58,9 +60,44 @@ pub const FEATURE: &str = "coop-screens";
 /// The retail lobby line "co-op needs 2 players on a single console"
 /// (`coop_takes_two` in the main menu's strings).
 pub const COOP_TAKES_TWO: u32 = 0x0e00_01ec;
-/// What it says in a co-op session over Live.
+/// What it says in a co-op session over Live, when nothing more is known.
 pub const LOBBY_LINE: &str = "Co-op over Xbox Live: 2 players, one per console.\r\n\
-                              Invite a friend from Co-op Campaign.";
+                              Press Y in the lobby to invite a friend.";
+/// The host alone in its lobby: Start Game does nothing until a friend
+/// joins (`0x251050` acts only on start state 9; there is no dialog).
+pub const INVITE_FIRST: &str = "Invite a friend first: co-op over Xbox Live\r\n\
+                                needs at least 2 consoles. Press Y for Friends.";
+/// A guest's lobby: the host starts.
+pub const GUEST_LINE: &str = "Co-op over Xbox Live: one player per console.\r\n\
+                              Waiting for the host to start the game.";
+/// More players than consoles (someone signed in a second controller).
+pub const ONE_PER_CONSOLE: &str = "Co-op over Xbox Live: one player per console.\r\n\
+                                   Sign out the extra players to start.";
+
+/// What the retail lobby line (start state 7 in co-op mode, `0x2500ab`)
+/// says on a console in a Live co-op lobby, from what it knows: its role,
+/// and the squad session the tick read (`None`: not read yet). Each line
+/// fits the lobby's 52 characters.
+pub fn line_for(role: &Role, s: Option<&coop_probe::Session>, max: u32) -> String {
+    let host = match (role, s) {
+        (Role::Guest(_), _) => false,
+        (Role::Host, _) => true,
+        (Role::Idle, Some(s)) => s.is_host(),
+        (Role::Idle, None) => true,
+    };
+    if !host {
+        return GUEST_LINE.into();
+    }
+    match s {
+        Some(s) if s.peers < 2 => INVITE_FIRST.into(),
+        Some(s) if s.peers > max => format!(
+            "Co-op over Xbox Live takes up to {max} consoles;\r\n{} are in this lobby.",
+            s.peers
+        ),
+        Some(s) if s.players > s.peers => ONE_PER_CONSOLE.into(),
+        _ => lobby_line(max),
+    }
+}
 
 /// The lobby line for a co-op limit of `max` players: [`LOBBY_LINE`] for
 /// two, else "up to `max`". Each line fits the lobby's 52 characters.
@@ -69,7 +106,7 @@ pub fn lobby_line(max: u32) -> String {
         return LOBBY_LINE.into();
     }
     format!(
-        "Xbox Live co-op: up to {max} players, one per console.\r\nInvite friends from Co-op Campaign."
+        "Xbox Live co-op: up to {max} players, one per console.\r\nPress Y in the lobby to invite friends."
     )
 }
 
@@ -821,15 +858,36 @@ impl Lobby {
         "OK: the lobby holds the host's campaign".into()
     }
     /// The locale source: our text slots, and the retail co-op lobby line
-    /// replaced by [`LOBBY_LINE`] while hosting or joined (split screen
-    /// keeps the game's own).
+    /// (co-op needs two players on one console) replaced by ours on the
+    /// Live co-op path ([`Lobby::line_ours`]); split screen keeps the
+    /// game's own.
     pub fn string(&self, id: u32) -> Option<u32> {
         if id == COOP_TAKES_TWO {
             return self
-                .in_coop()
+                .line_ours()
                 .then(|| self.texts.address(Texts::id(LINE_SLOT)))?;
         }
         self.texts.address(id)
+    }
+    /// Whether the retail co-op lobby line is ours: hosting (from the
+    /// moment the Co-op Campaign row is chosen) or joined, or, with Live
+    /// on, in a networked squad session (class not 0) before this console
+    /// knows it is a co-op guest: a friend who accepted an invitation sits
+    /// in the host's co-op lobby before the host's advertisement says
+    /// co-op. Split screen (no session, or class 0) keeps the game's text.
+    pub fn line_ours(&self) -> bool {
+        let i = self.lock();
+        i.role != Role::Idle || (self.live.is_some() && i.session.is_some_and(|s| s.class != 0))
+    }
+    /// The lobby line for now ([`line_for`]), into its slot; written to
+    /// the guest at the tick.
+    pub fn refresh_line(&self) {
+        let (role, s) = {
+            let i = self.lock();
+            (i.role.clone(), i.session)
+        };
+        self.texts
+            .set(LINE_SLOT, &line_for(&role, s.as_ref(), self.max_players()));
     }
     /// The texts' guest address (the feature's allocation).
     pub fn set_text_base(&self, base: u32) {
@@ -891,6 +949,7 @@ impl Lobby {
                 eprintln!("coop-live: hosting a co-op campaign in the game's own lobby");
             }
         }
+        self.refresh_line();
         if let Some(arm) = &self.arm {
             arm.arm(None);
         }
@@ -1424,8 +1483,9 @@ impl feature::Feature for CoopScreens {
         let lobby = Arc::clone(&self.lobby);
         b.frame().on_tick("co-op texts and lobby", move |o| {
             let mut g = o.guest();
-            let _ = lobby.texts.write(&mut *g);
             lobby.observe(coop_probe::read_session(&*g));
+            lobby.refresh_line();
+            let _ = lobby.texts.write(&mut *g);
             lobby.set_profiles(crate::skulls::profiles_or_default(&*g).0);
         });
         // The Co-op Campaign row's lobby: co-op mode, not custom game.

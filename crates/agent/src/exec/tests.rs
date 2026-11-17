@@ -835,3 +835,468 @@ fn a_client_that_stops_reading_is_dropped() {
     a.between_slices(&mut level(), 0);
     assert_eq!(next(&rx2)["result"]["controller"], true);
 }
+
+/// One read of controller `handle` through the agent's tap, from a live
+/// pad that is all zeros.
+fn tap_read(t: &mut crate::AgentTap, handle: u32) -> ::input::gamepad::Gamepad {
+    use xapi::tap::InputTap;
+    let (mut status, mut p) = (0, [0; xapi::tap::PACKET]);
+    t.read(handle, &mut status, &mut p);
+    ::input::gamepad::Gamepad::from_bytes(p[4..].try_into().unwrap())
+}
+
+#[test]
+fn pad_steps_reach_the_guest_read_at_their_tick_and_respect_control() {
+    use xapi::tap::InputTap;
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    // No tap yet: the game has no XAPI input, so no input methods.
+    ask(
+        &a,
+        c,
+        1,
+        method::INPUT_PAD,
+        json!({"steps": [{"buttons": ["a"]}]}),
+    );
+    a.on_tick(&mut g);
+    assert_eq!(next(&rx)["error"]["code"], code::METHOD_NOT_FOUND);
+
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    // Acting needs no claim while nobody holds control...
+    ask(
+        &a,
+        c,
+        2,
+        method::INPUT_PAD,
+        json!({"steps": [{"buttons": ["b"]}]}),
+    );
+    a.on_tick(&mut g);
+    assert_eq!(next(&rx)["result"]["queued"], 1);
+    // ...but only the controller may once someone does.
+    ask(&a, c, 3, method::CLAIM, Value::Null);
+    let (other, orx) = client(&a);
+    ask(
+        &a,
+        other,
+        4,
+        method::INPUT_PAD,
+        json!({"steps": [{"buttons": ["a"]}]}),
+    );
+    a.on_tick(&mut g);
+    next(&rx);
+    assert_eq!(next(&orx)["error"]["code"], code::NOT_CONTROLLER);
+    ask(&a, other, 5, method::INPUT_STATE, Value::Null);
+    a.on_tick(&mut g);
+    // Reading is open; the step starts at the game's next read.
+    assert_eq!(next(&orx)["result"]["pad"]["queued"], 1);
+
+    // The stamp's tick is 100: a step from 101 held for 2 ticks, replacing b.
+    ask(
+        &a,
+        c,
+        6,
+        method::INPUT_PAD,
+        json!({"at_tick": 101, "steps": [{"ticks": 2, "buttons": ["a"], "left": [0, 1]}]}),
+    );
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["queued"], 1, "{v}");
+    assert_eq!(v["result"]["open"], true);
+    assert_eq!(v["result"]["at"]["tick"], 100);
+    assert_eq!(tap_read(&mut tap, 0x5800_0000).analog[0], 0, "not yet");
+    for tick in [101, 102] {
+        g.status.tick = Some(tick);
+        a.on_tick(&mut g);
+        let pad = tap_read(&mut tap, 0x5800_0000);
+        assert_eq!((pad.analog[0], pad.thumb_ly), (255, 32767), "tick {tick}");
+    }
+    g.status.tick = Some(103);
+    a.on_tick(&mut g);
+    assert_eq!(tap_read(&mut tap, 0x5800_0000).analog[0], 0, "released");
+
+    ask(&a, c, 7, method::INPUT_STATE, Value::Null);
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(v["result"]["open"], json!([0]));
+    assert_eq!(v["result"]["mode"], "live");
+    assert_eq!(v["result"]["pads"][0]["done"], 1);
+    assert_eq!(v["result"]["pads"][0]["active"], false);
+}
+
+#[test]
+fn bad_pad_steps_are_refused_and_a_map_change_drops_the_queue() {
+    use xapi::tap::InputTap;
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0004, 1);
+    let step = json!([{"buttons": ["start"]}]);
+    ask(
+        &a,
+        c,
+        1,
+        method::INPUT_PAD,
+        json!({"player": 7, "steps": step}),
+    );
+    ask(
+        &a,
+        c,
+        2,
+        method::INPUT_PAD,
+        json!({"steps": [{"hold_ticks": 1}]}),
+    );
+    ask(
+        &a,
+        c,
+        3,
+        method::INPUT_PAD,
+        json!({"steps": [{"buttons": ["turbo"]}]}),
+    );
+    ask(
+        &a,
+        c,
+        4,
+        method::INPUT_PAD,
+        json!({"at_tick": "later", "steps": step}),
+    );
+    ask(
+        &a,
+        c,
+        5,
+        method::INPUT_PAD,
+        json!({"player": 1, "at_tick": "now", "steps": [{"ticks": 600, "buttons": ["start"]}]}),
+    );
+    a.on_tick(&mut g);
+    for id in 1..=4 {
+        let v = next(&rx);
+        assert_eq!(v["id"], id);
+        assert_eq!(v["error"]["code"], code::INVALID_PARAMS, "{v}");
+    }
+    let v = next(&rx);
+    assert_eq!(
+        (
+            v["result"]["player"].as_u64(),
+            v["result"]["open"].as_bool()
+        ),
+        (Some(1), Some(true))
+    );
+    assert_ne!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
+    g.status.map = Some("04a_gasgiant".into());
+    g.status.tick = Some(1);
+    a.on_tick(&mut g);
+    assert_eq!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
+    // input.release lets go of every player.
+    ask(
+        &a,
+        c,
+        6,
+        method::INPUT_PAD,
+        json!({"player": 1, "steps": step}),
+    );
+    ask(&a, c, 7, method::INPUT_RELEASE, Value::Null);
+    a.on_tick(&mut g);
+    next(&rx);
+    assert_eq!(next(&rx)["result"]["pad"]["active"], false);
+    assert_eq!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
+}
+
+/// A scratch directory for files the agent writes.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("h2-agent-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+#[test]
+fn a_recording_over_the_api_is_written_by_name_and_replays_with_its_counts() {
+    use xapi::tap::InputTap;
+    let dir = scratch("record");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let (c, rx) = client(&a);
+    let mut g = level();
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    let call = |id: u64, m: &str, p: Value, g: &mut Fake| {
+        ask(&a, c, id, m, p);
+        a.on_tick(g);
+        next(&rx)
+    };
+    for bad in [json!({"name": "../escape"}), json!({"name": ""})] {
+        assert_eq!(
+            call(2, method::INPUT_RECORD, bad, &mut g)["error"]["code"],
+            code::INVALID_PARAMS
+        );
+    }
+    let v = call(3, method::INPUT_RECORD, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["result"]["mode"], "recording", "{v}");
+    let v = call(
+        4,
+        method::INPUT_PAD,
+        json!({"steps": [{"buttons": ["y"], "ticks": 3}]}),
+        &mut g,
+    );
+    assert!(v["result"].is_object(), "{v}");
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        seen.push(tap_read(&mut tap, 0x5800_0000));
+    }
+    let v = call(5, method::INPUT_STATE, Value::Null, &mut g);
+    assert_eq!(
+        (v["result"]["mode"].as_str(), v["result"]["reads"].as_u64()),
+        (Some("recording"), Some(4))
+    );
+    let v = call(6, method::INPUT_STOP, Value::Null, &mut g);
+    let path = v["result"]["path"].as_str().unwrap().to_owned();
+    assert_eq!(path, dir.join("inputs/fight.input").display().to_string());
+    assert_eq!(v["result"]["reads"], 4);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .starts_with(xapi::tap::HEADER)
+    );
+    assert_eq!(
+        call(7, method::INPUT_STOP, Value::Null, &mut g)["error"]["code"],
+        code::INVALID_REQUEST
+    );
+    // Taken again only when asked to replace it.
+    let v = call(8, method::INPUT_RECORD, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["error"]["code"], code::INVALID_PARAMS);
+
+    let v = call(9, method::INPUT_REPLAY, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["result"]["reads"], 4, "{v}");
+    let mut got = Vec::new();
+    for _ in 0..5 {
+        got.push(tap_read(&mut tap, 0x5800_0000));
+    }
+    assert_eq!(got[..4], seen[..]);
+    let v = call(10, method::INPUT_STATE, Value::Null, &mut g);
+    let r = &v["result"];
+    assert_eq!(r["mode"], "replaying");
+    assert_eq!(
+        (r["replayed"].as_u64(), r["matched"].as_u64()),
+        (Some(4), Some(4))
+    );
+    assert_eq!(r["past_end"], 1);
+    let v = call(11, method::INPUT_REPLAY, json!({"name": "other"}), &mut g);
+    assert!(v["error"].is_object());
+    let v = call(12, method::INPUT_STOP, Value::Null, &mut g);
+    assert_eq!(v["result"]["mode"], "replaying");
+    assert_eq!(
+        call(13, method::INPUT_REPLAY, json!({"name": "missing"}), &mut g)["error"]["code"],
+        code::INVALID_PARAMS
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_recording_left_running_is_written_when_the_game_exits() {
+    use xapi::tap::InputTap;
+    let dir = scratch("exit");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let (c, rx) = client(&a);
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    ask(&a, c, 2, method::INPUT_RECORD, json!({"name": "left"}));
+    a.on_tick(&mut level());
+    next(&rx);
+    tap_read(&mut tap, 0x5800_0000);
+    a.shutdown();
+    let text = std::fs::read_to_string(dir.join("inputs/left.input")).unwrap();
+    assert_eq!(xapi::tap::InputLog::parse(&text).unwrap().reads.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Frame stats in a jar: frames the test hands over as they "present".
+#[derive(Clone, Default)]
+struct Frames {
+    off: bool,
+    kept: Arc<Mutex<Option<Vec<timeline::phase::FrameSample>>>>,
+}
+
+impl Frames {
+    /// A frame of `ms` that ends now, `cpu` all of it.
+    fn present(&self, index: u64, ms: u64) {
+        let mut f = timeline::phase::FrameSample {
+            index,
+            end_ns: timeline::now_ns(),
+            total_ns: ms * 1_000_000,
+            ..Default::default()
+        };
+        f.phase_ns[timeline::phase::Phase::Guest as usize] = ms * 1_000_000;
+        f.counts[timeline::phase::Counter::Draws as usize] = ms * 10;
+        if let Some(v) = self.kept.lock().unwrap().as_mut() {
+            v.push(f);
+        }
+    }
+}
+
+impl FrameSource for Frames {
+    fn begin(&mut self) -> bool {
+        if self.off {
+            return false;
+        }
+        *self.kept.lock().unwrap() = Some(Vec::new());
+        true
+    }
+    fn end(&mut self) -> Option<Vec<timeline::phase::FrameSample>> {
+        self.kept.lock().unwrap().take()
+    }
+}
+
+struct FakeSampler(Arc<Mutex<Vec<String>>>);
+
+impl Sampler for FakeSampler {
+    fn start(&mut self) -> Result<(), String> {
+        self.0.lock().unwrap().push("start".into());
+        Ok(())
+    }
+    fn finish(&mut self) -> Result<Value, String> {
+        self.0.lock().unwrap().push("finish".into());
+        Ok(json!({"file": "/x/profile.h2prof", "samples": 12}))
+    }
+}
+
+#[test]
+fn a_capture_by_ticks_reports_percentiles_spikes_with_their_tick_and_a_csv() {
+    let dir = scratch("capture");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let frames = Frames::default();
+    a.set_frame_source(Box::new(frames.clone()));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    ask(&a, c, 1, method::PROFILE_CAPTURE, json!({"ticks": 2}));
+    a.on_tick(&mut g); // starts at tick 100
+    frames.present(10, 48);
+    g.status.tick = Some(101);
+    a.on_tick(&mut g);
+    none(&rx);
+    frames.present(11, 16);
+    frames.present(12, 17);
+    g.status.tick = Some(102);
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    let r = &v["result"];
+    assert_eq!(r["frames"], 3, "{v}");
+    assert_eq!(r["ticks"], 2);
+    assert_eq!(r["complete"], true);
+    assert_eq!(r["frame_ms"]["max"], 48.0);
+    assert_eq!(r["frame_ms"]["p50"], 17.0);
+    assert_eq!(r["phases"]["cpu"]["total"], 81.0);
+    assert_eq!(r["counts"]["draws"]["max"], 480);
+    assert_eq!(r["over_budget"], 1);
+    let spike = &r["spikes"][0];
+    assert_eq!(spike["present"], 10);
+    assert_eq!(spike["tick"], 100);
+    assert_eq!(spike["map"], "03a_oldmombasa");
+    assert_eq!(spike["top"], json!(["cpu"]));
+    assert!(r.get("sampling").is_none(), "not asked for");
+    let csv = std::fs::read_to_string(r["csv"].as_str().unwrap()).unwrap();
+    assert_eq!(csv.lines().count(), 4);
+    assert!(csv.lines().nth(2).unwrap().starts_with("11,"));
+    assert!(csv.lines().nth(2).unwrap().contains(",101,03a_oldmombasa,"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_capture_by_time_settles_between_slices_and_samples_when_it_can() {
+    let dir = scratch("capture-ms");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let frames = Frames::default();
+    a.set_frame_source(Box::new(frames.clone()));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    // No sampler: the capture still runs, and says why there are no stacks.
+    ask(
+        &a,
+        c,
+        1,
+        method::PROFILE_CAPTURE,
+        json!({"ms": 1, "sample": true}),
+    );
+    a.between_slices(&mut g, 0);
+    thread::sleep(Duration::from_millis(5));
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["frames"], 0, "{v}");
+    assert!(
+        v["result"]["sampling"]["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("--features perf")
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    a.set_sampler(Box::new(FakeSampler(Arc::clone(&calls))));
+    ask(
+        &a,
+        c,
+        2,
+        method::PROFILE_CAPTURE,
+        json!({"ms": 1, "sample": true, "budget_ms": 10}),
+    );
+    a.between_slices(&mut g, 0);
+    frames.present(1, 12);
+    thread::sleep(Duration::from_millis(5));
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["sampling"]["file"], "/x/profile.h2prof");
+    assert_eq!(v["result"]["over_budget"], 1);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(*calls, ["start", "finish"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn captures_are_refused_when_badly_asked_busy_or_without_frame_stats() {
+    let a = Agent::new();
+    a.set_dir(scratch("capture-bad"));
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.set_frame_source(Box::new(Frames {
+        off: true,
+        ..Default::default()
+    }));
+    ask(&a, c, 1, method::PROFILE_CAPTURE, json!({"ticks": 5}));
+    for (id, p) in [
+        (2, json!({})),
+        (3, json!({"ticks": 5, "ms": 5})),
+        (4, json!({"ticks": 0})),
+        (5, json!({"ms": 600_001})),
+        (6, json!({"ticks": 5, "budget_ms": 0})),
+        (7, json!({"ticks": 5, "spikes": 501})),
+    ] {
+        ask(&a, c, id, method::PROFILE_CAPTURE, p);
+    }
+    a.on_tick(&mut g);
+    assert_eq!(next(&rx)["error"]["code"], code::UNAVAILABLE);
+    for id in 2..=7 {
+        let v = next(&rx);
+        assert_eq!(
+            (v["id"].as_u64(), &v["error"]["code"]),
+            (Some(id), &json!(code::INVALID_PARAMS))
+        );
+    }
+    a.set_frame_source(Box::new(Frames::default()));
+    ask(&a, c, 8, method::PROFILE_CAPTURE, json!({"ticks": 50}));
+    ask(&a, c, 9, method::PROFILE_CAPTURE, json!({"ticks": 50}));
+    a.on_tick(&mut g);
+    let v = next(&rx);
+    assert_eq!(
+        (v["id"].as_u64(), &v["error"]["code"]),
+        (Some(9), &json!(code::UNAVAILABLE))
+    );
+    // The game exits: the running one is answered.
+    a.shutdown();
+    let v = next(&rx);
+    assert_eq!(
+        (v["id"].as_u64(), &v["error"]["code"]),
+        (Some(8), &json!(code::SHUTDOWN))
+    );
+}

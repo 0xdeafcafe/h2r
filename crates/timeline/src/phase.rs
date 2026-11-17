@@ -767,6 +767,29 @@ pub fn stop() -> Option<String> {
     Some(report)
 }
 
+/// Starts keeping every published frame, for a capture over a window
+/// (the agent API's `profile.capture`), replacing one already running.
+/// False while stats are off.
+pub fn capture_begin() -> bool {
+    match global().as_mut() {
+        Some(r) => {
+            r.capture = Some(Vec::new());
+            true
+        }
+        None => false,
+    }
+}
+
+/// Ends a capture: the frames published since [`capture_begin`], in order
+/// (at most [`CAPTURE_MAX`]). `None` with no capture running, or when
+/// collection stopped or restarted meanwhile.
+pub fn capture_end() -> Option<Vec<FrameSample>> {
+    global().as_mut()?.capture.take()
+}
+
+/// The most frames one capture keeps (over an hour at 60 fps).
+pub const CAPTURE_MAX: usize = 1 << 18;
+
 /// Summary of the rolling window, for an overlay.
 pub fn window_summary() -> Option<Summary> {
     global().as_ref()?.window_summary()
@@ -852,6 +875,8 @@ pub struct Recorder {
     worst: Vec<FrameSample>,
     /// Since the last [`take_interval`].
     interval: Interval,
+    /// Every frame since [`capture_begin`], while a capture runs.
+    capture: Option<Vec<FrameSample>>,
 }
 
 /// The window never holds more frames than this.
@@ -871,6 +896,7 @@ impl Recorder {
             count_sum: [0; COUNTERS],
             worst: Vec::new(),
             interval: Interval::default(),
+            capture: None,
         }
     }
 
@@ -917,6 +943,11 @@ impl Recorder {
         }
         self.window.push_back(s);
         self.interval.add(&s);
+        if let Some(c) = self.capture.as_mut()
+            && c.len() < CAPTURE_MAX
+        {
+            c.push(s);
+        }
         let window_ns = if self.config.window_ns == 0 {
             Config::DEFAULT_WINDOW_NS
         } else {
@@ -1277,6 +1308,20 @@ mod tests {
         assert_eq!(first.counts[Counter::Uploads as usize], 3);
         assert_eq!(first.counts[Counter::ReadBytes as usize], 123);
         assert!(r.pending.is_empty());
+    }
+
+    #[test]
+    fn a_capture_keeps_every_frame_pushed_while_it_runs() {
+        let mut r = Recorder::new(Config::live(1_000_000_000), None);
+        r.push(frame(0, 10, 10));
+        r.capture = Some(Vec::new());
+        for i in 1..=3 {
+            r.push(frame(i, 10 + i * 20, 20));
+        }
+        let got = r.capture.take().unwrap();
+        assert_eq!(got.iter().map(|f| f.index).collect::<Vec<_>>(), [1, 2, 3]);
+        r.push(frame(4, 100, 20));
+        assert!(r.capture.is_none());
     }
 
     #[test]

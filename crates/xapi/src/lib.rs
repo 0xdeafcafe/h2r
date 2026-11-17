@@ -119,6 +119,12 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         self.input_tap = tap;
     }
 
+    /// Takes the tap out, so another can wrap it (the agent API's input
+    /// tap chains the one `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` set).
+    pub fn take_input_tap(&mut self) -> Option<Box<dyn tap::InputTap>> {
+        self.input_tap.take()
+    }
+
     pub fn mount_utility_drive(&mut self, format: bool) -> Result<()> {
         self.storage
             .mount_utility(self.config.utility_partition, format)

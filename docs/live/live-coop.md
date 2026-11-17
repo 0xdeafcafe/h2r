@@ -1075,18 +1075,33 @@ for the host's campaign`, `The lobby's difficulty differs`, `N consoles in
 the lobby`, `No lobby`) and Ready (closes the screen; the guest waits for
 the host's start in the lobby).
 
-**Text.** While a console hosts or joined a co-op session, the retail
-lobby line about co-op needing two players on one console (string id
-`0x0e0001ec`, `coop_takes_two` in `mainmenu.map`'s strings) reads:
+**Text.** The retail lobby line saying co-op needs two players on one
+console (string id `0x0e0001ec`,
+`coop_takes_two` in `mainmenu.map`'s strings) is the only text of that kind
+on this path: the code names that id once, in the lobby's status
+line (`0x24ffc9`, at `0x2500ab`), for start state 7 in co-op mode
+(`0x199994`). Start Game (`0x251050`) acts only on state 9 and shows no
+dialog otherwise, so the status line is where a refused start explains
+itself. On the Live co-op path it reads ours (`coop_live::line_for`):
 
-```text
-Co-op over Xbox Live: 2 players, one per console.
-Invite a friend from Co-op Campaign.
-```
+| When | Line |
+|---|---|
+| Co-op Campaign chosen, no session read yet | `Co-op over Xbox Live: 2 players, one per console.` / `Press Y in the lobby to invite a friend.` (`up to N players` above 2) |
+| the host alone in its session | `Invite a friend first: co-op over Xbox Live` / `needs at least 2 consoles. Press Y for Friends.` |
+| more players than consoles | `Co-op over Xbox Live: one player per console.` / `Sign out the extra players to start.` |
+| more consoles than the limit | `Co-op over Xbox Live takes up to N consoles;` / `M are in this lobby.` |
+| a guest (joined, or in a host's networked lobby before it knows) | `Co-op over Xbox Live: one player per console.` / `Waiting for the host to start the game.` |
 
-Split screen keeps the game's own text: the locale source answers that id
-only in a co-op session. Every text of the co-op screens is ours: guest
-memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
+It is ours from the moment the Co-op Campaign row is chosen (the role is
+the host's before the row's original runs), and, with Live on, on any
+console in a networked squad session (class not 0): a friend who accepted
+an invitation sits in the host's co-op lobby before the host's
+advertisement says co-op, and read the retail line until then. The tick
+reads the session, picks the line and writes it, in that order.
+
+Split screen keeps the game's own text: no session, or a local one (class
+0), and not hosting or joined. So does a system link lobby with Live off.
+Every text of the co-op screens is ours: guest memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
 is drawn and every tick. Not `0x20ffe000`, the first choice: the community
 variants answer index `0xffe0xx` whatever the top byte, so the co-op screen
 showed their names (a test now checks every id against every private range).
@@ -1414,12 +1429,23 @@ It:
    `live: playing as Alpha` (after any build into `--out`) the guests'
    windows, the same way with their own data. `--dry-run` prints these
    lines, variables included, and starts nothing.
-4. Writes every line of each game to `<root>/logs/<time>/<gamertag>.log`
+4. Once the host is at its main menu (it asks the host's agent socket:
+   `session.wait {"phase":"menu","map_ticks":60}`, up to 10 minutes),
+   prints one line saying what to press next, for example:
+   `coop test: next, on Bravo's window: Xbox Live (to sign in). Then on
+   Alpha's window: Xbox Live > Co-op Campaign > pick a level and
+   difficulty; Bravo get the invitation and join by themselves; then Start
+   Game on Alpha.` If the socket can't be asked, the same line comes with
+   "once at the main menu".
+5. Writes every line of each game to `<root>/logs/<time>/<gamertag>.log`
    and its co-op lines (`coop-live`, `coop-probe`, `coop-auto`, `skulls`,
-   `session`, `game start`, `live: playing as`, `custom games`, panics) to
-   `coop.log` there, as `[+SECONDS] GAMERTAG | line`, also shown on the
-   terminal as they come.
-5. When the last window closes (Ctrl-C closes them; twice exits at once),
+   `session`, `game start: options`, `live: playing as`, `custom games`,
+   `agent: listening`, panics) to `coop.log` there, as `[+SECONDS]
+   GAMERTAG | line`, also shown on the terminal as they come. Boot-time
+   dumps that only name a co-op hook are left out: the `feature plan:`
+   lines, each hook's first `feature: ... active`, `health:` lines and the
+   features' `hooks installed via feature plan` summaries.
+6. When the last window closes (Ctrl-C closes them; twice exits at once),
    prints the checklist and the log's path.
 
 ### 12.1 What `--auto` does
@@ -1433,12 +1459,12 @@ on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
 invitation. They print `coop-auto: invited Bravo to session <id>` and
 `coop-auto: accepting Alpha's invitation to session <id>`.
 
-Menus are still yours: there is no input over the agent API yet, and
-pressing through screens by timing would break with any change to load
-times. With `--auto`, on each window: sign in to Xbox Live; on the host,
-Co-op Campaign, a level and difficulty; on both, Ready; on the host, Start.
-Without `--auto`, invite from the lobby's Y (friends list) and accept on
-the guest, as on a console.
+Menus are still yours: there is no input over the agent API yet (see
+12.5). With `--auto`: on every window, Xbox Live (that signs the game in
+to Live; until then the host sees nobody online and a guest can't take an
+invitation); on the host, Co-op Campaign, a level and difficulty, then
+Start Game. Without `--auto`, invite from the lobby's Y (friends list) and
+accept on the guest, as on a console.
 
 Not established without a game run: that the title reads an invitation
 accepted this way (`XOnlineFriendsGetAcceptedGameInvite`, which the
@@ -1464,7 +1490,11 @@ Checked in the code, not by a run:
 | Sound | The guests run `--no-audio`. |
 | Map pack, Halo 1 | Not installed into the games' data (`--no-mappack --no-halo1`) unless `--extras`. |
 
-The windows open on top of each other; move one aside.
+Each window's title names its game and role (`Halo 2 — Alpha (host)`,
+`Halo 2 — Bravo (guest)`; `h2 play --title`), and the windows sit side by
+side across the main screen, the host leftmost: `h2 play --tile I/N`
+sizes a window to column I of N (the largest 4:3 that fits under the menu
+bar) and places it there (`app::tile`).
 
 ### 12.3 The checklist
 
@@ -1490,7 +1520,22 @@ is for printed its line:
 | 14 | the host simulates | host | `simulation mode sync-server` |
 | 15 | the guest follows | guests | `simulation mode sync-client` |
 
-It ends with the first step not seen ("stopped at step 9: ...") and lines
+A step not seen comes with the likely reason in plain words, most often a
+press nobody made: for step 3, "Alpha never opened the Xbox Live menu" (no
+`custom games:` line from the Live menu), "opened the Xbox Live menu but
+never picked Co-op Campaign" (rows drawn, no co-op row chosen), "picked
+another of its rows", or that the co-op hooks are off; for steps 4 and 5,
+"picked Co-op Campaign but the lobby did not open in co-op mode"; for step
+7, which guest never opened Xbox Live (so the host had nobody online to
+invite); for step 9, accept by hand, or (with `--auto`) accepted but not
+joined; for step 11, nobody pressed Start Game, or the lobby's start check
+never asked about co-op. For steps 3 to 6, when the host walked none of
+its path but a guest did (picked a lobby mode, a campaign's difficulty,
+one of our Live rows), it says "you drove Charlie's window (it started a
+campaign or lobby itself); drive Alpha (host), the leftmost window".
+
+It ends with the first step not seen ("stopped at step 9: ...", with its
+reason) and lines
 that look like trouble (`ping: no answer`, `returned 0 (refused)`,
 `could not invite`, `could not accept`, `did not open`, panics). What to
 send back: `coop.log`, and the two whole logs if it stopped early.
@@ -1503,8 +1548,56 @@ pads and `--auto` variables; the shell lines; accounts and friendships made
 against an embedded server, reused on a second run, and a lost key saying
 `--fresh`; two stand-in games (shell scripts) through the log merger with
 the host's sign-in starting the next; the checklist from canned logs (a
-whole run, a run that stopped, a run without `--auto`); `H2_LIVE_DIR`; and
-the automatic invite and acceptance between two HLEs and a server.
+whole run, a run that stopped, a run without `--auto`); the reason given
+for each step a missing press explains (3: no Live menu, no co-op row,
+another row, hooks off; 5; 7: a guest not in Xbox Live; 8; 9 with and
+without `--auto`; 11; 1); the filter over the host's log of the
+2026-11-17 three-game run, cut to its main menu
+(`crates/cli/src/coop_verdict/host-at-menu.log`, our own lines, paths
+shortened): only the co-op lines kept, no feature plan; the next-steps
+line; the wait for the main menu against a stand-in agent socket;
+`H2_LIVE_DIR`; and the automatic invite and acceptance between two HLEs
+and a server.
+
+### 12.5 Driving the host's menus (not built)
+
+`--auto` stops at the menus. What exists to press through them:
+
+- `--input-timeline FILE` (`input::backend::scripted::Timeline`,
+  docs/input/input.md): pad frames at absolute guest times, played *instead
+  of* live input, from launch. It knows nothing of the screen, so a press
+  lands where the menu happens to be: the intro, the profile screen, the
+  Live sign-in and the session made by Co-op Campaign take different
+  times on every run (the host's first start here built for 20 minutes
+  before its window even opened). The window's keyboard and pads are off
+  while it plays.
+- `H2_BOOT_INPUT`: presses counted in scheduler slices, for headless
+  runs; the same blindness, and slices are not even time.
+- The agent API (docs/runtime/agent-api.md) designs `input.pad` (timed
+  packets through the normal input path) and the `ui` domain (which screen
+  is open, which row has focus) and events like `screen`, but phase 1 has
+  neither: only `session.*`, `world.*`, `profile.counters` and
+  `features.list`. `session.wait` can wait for `phase: menu`, not for
+  "the Xbox Live menu with Co-op Campaign focused".
+
+What it would take, in order: (1) `input.pad` on the agent socket, a queue
+the xapi input glue drains ahead of live input (the boot already merges a
+keyboard pad for `H2_BOOT_INPUT`, so the path exists); (2) enough of `ui`
+to know the screen and focused row: the open screen's tag id (the Live
+menu is screen id `custom_games::SCREEN_ID`) and the list's cursor, read
+on the tick like the other answers; (3) a short script in the harness:
+wait for the main menu, press down to Xbox Live and A, wait for the Live
+menu, move to the Co-op Campaign row and A, wait for `coop-live: hosting`,
+then the level and difficulty screens, then Start once every guest is in.
+Each step waits on what the screen says, not on time.
+
+Risk: (1) is small and testable without the game; (2) needs the screen
+stack's layout, which is partly traced (`layout_glue`, the screen loaders)
+and would need a game run to confirm; (3) depends on row order, which our
+own Live menu rows change (Co-op Campaign moved the rows down), and on
+the profile screen, which a fresh data dir shows and a reused one may not.
+A press in the wrong place is harmless in the menus but confusing in a
+report. Until (1) and (2) exist, the line in step 4 above is the guide.
 
 ## 13. More than two players
 

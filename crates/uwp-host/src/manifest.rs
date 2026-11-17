@@ -154,6 +154,8 @@ impl Manifest {
   </Applications>
   <Capabilities>
     <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
   </Capabilities>
 </Package>
 "##,
@@ -205,6 +207,12 @@ mod tests {
         assert!(x.contains(r#"<Application Id="App" Executable="h2uwp.exe" EntryPoint="h2uwp.App">"#));
         // An app container: no full trust, no restricted capabilities.
         assert!(!x.contains("runFullTrust") && !x.contains("rescap"));
+        // Inbound connections for the agent API (docs/runtime/xbox.md,
+        // "Remote control"): from the LAN whether the console's network
+        // counts as public or private.
+        for c in ["internetClient", "internetClientServer", "privateNetworkClientServer"] {
+            assert!(x.contains(&format!(r#"<Capability Name="{c}" />"#)), "{c}");
+        }
         // Every image it names is one `write` makes, with Windows separators.
         for a in ASSETS {
             assert!(x.contains(&a.path.replace('/', "\\")), "{}", a.path);

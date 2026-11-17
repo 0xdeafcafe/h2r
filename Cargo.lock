@@ -53,12 +53,14 @@ dependencies = [
  "agent-proto",
  "engine",
  "feature",
+ "input",
  "live-proto",
  "live-telemetry",
  "runtime",
  "serde",
  "serde_json",
  "timeline",
+ "xapi",
 ]
 
 [[package]]
@@ -5918,6 +5920,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "snapshot"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "lockstep",
+ "runtime",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6318,6 +6331,7 @@ name = "tags"
 version = "0.1.0"
 dependencies = [
  "map",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "xiso",
 ]
