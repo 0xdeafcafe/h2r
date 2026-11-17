@@ -1050,6 +1050,10 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
         Command::new(&cc)
             .args(&target)
             .args(generate.then_some(pgo::GEN_FLAG))
+            // The instrumented image is too big for compact unwind: ld64
+            // asserts that a function's offset fits in 24 bits. DWARF
+            // unwind info serves the training run.
+            .args(generate.then_some(["-Xlinker", "-no_compact_unwind"]).into_iter().flatten())
             .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
             .arg(build.arch.install_name(out))
             .arg("-o")
