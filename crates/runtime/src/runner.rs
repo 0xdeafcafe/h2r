@@ -45,6 +45,9 @@ impl Runner {
         mut transfer: TransferAbi,
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
+        // H2_ENTRY_STATS: what returned `transfer`.
+        let stats = crate::entry_stats::enabled();
+        let mut came = crate::entry_stats::Came::Start;
         loop {
             if let Some(id) = ctx.pending_fault.take() {
                 return TransferAbi::fault(id);
@@ -98,6 +101,7 @@ impl Runner {
             if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
                 ctx.defer_preempt(reasons);
                 transfer = call;
+                came = crate::entry_stats::Came::Interrupt;
                 continue;
             }
             if let Some(stop) = ctx.preempt_decide(reasons, transfer) {
@@ -131,6 +135,10 @@ impl Runner {
                 && let Some(continuation) = ctx.take_continuation(transfer.target_pc)
             {
                 cpu.eip = transfer.target_pc;
+                if stats {
+                    crate::entry_stats::note(crate::entry_stats::CONTINUATION, &transfer);
+                    came = crate::entry_stats::Came::Rust;
+                }
                 ctx.direct_begin(remaining);
                 transfer = execute(
                     Invocation::Continuation(continuation),
@@ -185,6 +193,18 @@ impl Runner {
             cpu.eip = transfer.target_pc;
             ctx.frames.enter(function);
             let generated = matches!(handler, Handler::Native(_));
+            if stats {
+                use crate::entry_stats as es;
+                let c = if generated {
+                    let routed = transfer.route == abi::ENTRY && matches!(transfer.kind, abi::CALL | abi::JUMP);
+                    let slot = routed.then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
+                    es::cause(came, &transfer, slot)
+                } else {
+                    es::RUST_HANDLER
+                };
+                es::note(c, &transfer);
+                came = if generated { es::Came::Native } else { es::Came::Rust };
+            }
             // Direct calls the handler makes spend this run's transfers.
             ctx.direct_begin(remaining);
             transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);

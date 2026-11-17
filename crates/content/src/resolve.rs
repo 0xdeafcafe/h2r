@@ -70,6 +70,10 @@ pub struct Package {
     pub dir: PathBuf,
     pub manifest: Manifest,
     pub id: MapId,
+    /// What the map list keys this package by: [`Manifest::variants_key`]
+    /// for a package with variants (one list ID whichever is loaded), else
+    /// [`Self::id`].
+    pub list_key: MapId,
 }
 
 impl Package {
@@ -202,6 +206,14 @@ impl Library {
     /// empty library; packages that cannot be read are skipped with a
     /// notice.
     pub fn open(root: impl AsRef<Path>) -> Self {
+        Self::open_with_sandbox(root, None)
+    }
+
+    /// [`Self::open`], loading `sandbox`'s variant (`h1` or `h2`) of each
+    /// package that has variants ([`Manifest::select_variant`]; the
+    /// default's when it has none of that sandbox). `boot::new_maps` passes
+    /// the `multiplayer.halo1_sandbox` setting (docs/game/h1-multiplayer.md).
+    pub fn open_with_sandbox(root: impl AsRef<Path>, sandbox: Option<&str>) -> Self {
         let root = root.as_ref();
         let mut lib = Self {
             root: root.to_path_buf(),
@@ -229,7 +241,7 @@ impl Library {
             .collect();
         dirs.sort();
         for dir in dirs {
-            match load(&dir) {
+            match load(&dir, sandbox) {
                 Ok(p) => lib.packages.push(p),
                 Err(e) => lib
                     .notices
@@ -391,17 +403,26 @@ impl Library {
     }
 }
 
-fn load(dir: &Path) -> Result<Package, ResolveError> {
+fn load(dir: &Path, sandbox: Option<&str>) -> Result<Package, ResolveError> {
     let dir = dir.canonicalize()?;
     let text =
         std::fs::read_to_string(dir.join(MANIFEST_FILE)).map_err(|e| ResolveError::File {
             file: MANIFEST_FILE.into(),
             why: e.to_string(),
         })?;
-    let manifest = Manifest::from_toml(&text)?;
+    // A converted map with one whole map per sandbox: load the chosen
+    // variant, else the default (docs/game/h1-multiplayer.md).
+    let full = Manifest::from_toml(&text)?;
+    let manifest = full.select_variant(sandbox);
     manifest.validate_in(&dir)?;
     let id = manifest.map_id();
-    Ok(Package { dir, manifest, id })
+    let list_key = full.variants_key().unwrap_or(id);
+    Ok(Package {
+        dir,
+        manifest,
+        id,
+        list_key,
+    })
 }
 
 /// `file` in package `dir`, opened, after checking it is a regular file
@@ -1187,6 +1208,55 @@ pub(crate) mod tests {
             .resolve("mymap", &mut &b""[..])
             .unwrap_err();
         assert!(e.to_string().contains("mymap.map does not match"), "{e}");
+    }
+
+    #[test]
+    fn a_converted_package_resolves_its_default_variant() {
+        let t = Temp::new();
+        let d = t.0.join("h1_gulch");
+        std::fs::create_dir_all(d.join("h1")).unwrap();
+        std::fs::create_dir_all(d.join("h2")).unwrap();
+        let (h1, h2) = (
+            synthetic_map(&payload(0x200, 1)),
+            synthetic_map(&payload(0x200, 2)),
+        );
+        std::fs::write(d.join("h1/h1_gulch.map"), &h1).unwrap();
+        std::fs::write(d.join("h2/h1_gulch.map"), &h2).unwrap();
+        let variant = |s: &str, bytes: &[u8]| {
+            format!(
+                "[[variant]]\nfile = \"{s}/h1_gulch.map\"\nsha256 = \"{}\"\n\
+                 origin = {{ game = \"halo1\", map = \"gulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
+                Sha256::of(bytes),
+                Sha256([7; 32])
+            )
+        };
+        let head =
+            "[package]\nformat = 1\nname = \"Gulch\"\n[base]\nmap = \"h1_gulch\"\nderived = true\n";
+        let write = |variants: &str| {
+            std::fs::write(d.join(MANIFEST_FILE), format!("{head}{variants}")).unwrap();
+        };
+        write(&format!("{}{}", variant("h2", &h2), variant("h1", &h1)));
+        let mut lib = Library::open(&t.0);
+        assert_eq!(lib.packages().len(), 1, "{:?}", lib.take_notices());
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h1, "Halo 1's sandbox by default");
+        let id_h1 = lib.packages()[0].id;
+        // The setting asks for Halo 2's: that one, with its own MapId.
+        let mut lib = Library::open_with_sandbox(&t.0, Some("h2"));
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h2);
+        assert_ne!(lib.packages()[0].id, id_h1);
+        let key = lib.packages()[0].list_key;
+        let lib = Library::open_with_sandbox(&t.0, Some("h1"));
+        assert_eq!(lib.packages()[0].id, id_h1);
+        assert_eq!(lib.packages()[0].list_key, key, "one list key for both");
+        assert_ne!(key, id_h1);
+        // Only the Halo 2 variant: that one, with its own MapId.
+        write(&variant("h2", &h2));
+        let mut lib = Library::open(&t.0);
+        let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
+        assert_eq!(read(&r, b""), h2);
+        assert_ne!(lib.packages()[0].id, id_h1);
     }
 
     #[test]

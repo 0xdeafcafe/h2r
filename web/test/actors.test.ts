@@ -5,7 +5,7 @@ import type { Frame, FrameActor, FramePlayer, FrameVehicle } from "../src/api/ty
 import { MAX_ACTORS, actorIndex, sampleActors, sampleBsp, sampleFrames, sampleVehicles, type SampledPlayer, type SampledVehicle } from "../src/state/frames";
 import { ShotQueue } from "../src/map/shots";
 import { vehicleColour } from "../src/map/render";
-import { VEHICLE_TINT, actorColour, bipedFile, parseModels, vehicleBasis, vehicleBox, vehicleFile, vehicleTint } from "../src/viewer/models";
+import { EMPTY_VEHICLE_SHADE, actorColour, bipedFile, parseModels, vehicleBasis, vehicleBox, vehicleFile } from "../src/viewer/models";
 import { ModelLibrary } from "../src/viewer/players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "../src/viewer/sync";
 import { MOCK_ACTORS, ZONE_TICKS, campaignHook } from "../mock/campaign";
@@ -192,12 +192,6 @@ describe("models for vehicles and AI", () => {
     expect(actorColour("7")).toBe(actorColour(null));
   });
 
-  test("a vehicle takes only a light wash of its player's colour", () => {
-    expect(vehicleTint([1, 0, 0])).toEqual([1, 1 - VEHICLE_TINT, 1 - VEHICLE_TINT]);
-    expect(vehicleTint([1, 1, 1])).toEqual([1, 1, 1]);
-    expect(VEHICLE_TINT).toBeLessThan(0.5);
-  });
-
   const parse = (bytes: Uint8Array) => new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, "");
   const files: Record<string, Uint8Array> = {
     "warthog.glb": encodeModelGlb(MOCK_VEHICLES.warthog!()),
@@ -207,7 +201,7 @@ describe("models for vehicles and AI", () => {
   const settle = () => new Promise((r) => setTimeout(r, 20));
   const mats = (o: THREE.Object3D) => { const out: THREE.MeshStandardMaterial[] = []; o.traverse((c) => { const m = c as THREE.Mesh; if (m.isMesh) out.push(m.material as THREE.MeshStandardMaterial); }); return out; };
 
-  test("a vehicle glb is fetched once; a player's copy is washed, an AI's is as it comes", async () => {
+  test("a vehicle glb is fetched once; it keeps its own colours whoever drives it, and darkens empty", async () => {
     const calls: string[] = [];
     const lib = new ModelLibrary(() => {}, (url) => { calls.push(url); return parse(files[url]!); });
     expect(lib.vehicle("warthog.glb")).toBeNull();
@@ -215,13 +209,16 @@ describe("models for vehicles and AI", () => {
     const t = lib.vehicle("warthog.glb")!;
     expect(t.height).toBeCloseTo(0.9, 5);
     expect(t.root.getObjectByName("seat_driver")).toBeDefined();
-    const plain = lib.instantiateVehicle(t, null), red = lib.instantiateVehicle(t, "#ff0000"), red2 = lib.instantiateVehicle(t, "#ff0000");
-    const base = mats(t.root).find((m) => m.name === "hull")!, hull = mats(red).find((m) => m.name === "hull")!;
-    expect(mats(plain).find((m) => m.name === "hull")).toBe(base);
-    expect(hull).not.toBe(base);
-    expect(hull.color.r).toBeCloseTo(base.color.r, 6);
-    expect(hull.color.g).toBeCloseTo(base.color.g * (1 - VEHICLE_TINT), 6);
-    expect(mats(red2).find((m) => m.name === "hull")).toBe(hull);
+    const plain = lib.instantiateVehicle(t, null), red = lib.instantiateVehicle(t, "#ff0000");
+    const empty = lib.instantiateVehicle(t, null, true), empty2 = lib.instantiateVehicle(t, "#0000ff", true);
+    const hullOf = (o: THREE.Object3D) => mats(o).find((m) => m.name === "hull")!;
+    const base = hullOf(t.root);
+    expect(hullOf(plain)).toBe(base);
+    // Halo 2 does not repaint a vehicle for its driver's team.
+    expect(hullOf(red)).toBe(base);
+    expect(hullOf(empty)).not.toBe(base);
+    expect(hullOf(empty).color.g).toBeCloseTo(base.color.g * EMPTY_VEHICLE_SHADE, 6);
+    expect(hullOf(empty2)).toBe(hullOf(empty));
     expect(calls).toEqual(["warthog.glb"]);
     lib.dispose();
   });

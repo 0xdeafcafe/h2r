@@ -2,7 +2,8 @@
 
 `crates/live-telemetry` observes the retail game state described in
 [live-gamestate.md](live-gamestate.md) and produces the events and frames in
-[live-api.md](live-api.md). It is opt-in and defaults to off. The crate does
+[live-api.md](live-api.md). It is on when Live is on or `H2_TELEMETRY_FILE` is
+set ([Server ingest](#server-ingest)), and `H2_TELEMETRY=0` turns it off. The crate does
 not change guest state or return telemetry failures to the game.
 
 ## Sampling and hooks
@@ -69,6 +70,13 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   is read like a player's unit (position, or its vehicle's; aim; held
   weapon). Nearest to any player first, at most 128. A fault on one biped
   skips it; a failed scan sends no actors.
+- Bodies: the same scan keeps every biped with the body-depleted flag (the
+  game leaves a body in the world until it clears it away). A body that
+  was never a player's unit (an AI's, or one the level starts with) is
+  sent after the living actors as an actor with stance `dead` (no aim,
+  weapon or actions), nearest first, at most 32 and within the 128; it
+  keeps the id it had alive. A dead player's `pos` and `yaw` are their
+  body's while it lasts, then where they fell (the origin before this).
 - `team` is the unit's `+0x138`; in campaign it is named (likely names),
   elsewhere sent as the number.
 - `species` is the biped tag's directory; vehicles' `kind` the `vehi`
@@ -80,7 +88,13 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   sent actor rides uses the transform the rider read. A vehicle whose
   vectors are not finite and non-zero is left out. A vehicle parented to
   another object (a turret on the scarab or a dropship) is sent with its
-  parent-relative `+0x64`.
+  parent-relative `+0x64`. A turret (a vehicle whose parent is a vehicle:
+  the Warthog's chaingun, the Scorpion's cannon, the Wraith's mortar) also
+  sends `parent`, that vehicle's id, and every vehicle its own `aim`, the
+  unit aiming vector at `+0x168` (vehicles are units; dropped unless
+  finite and near unit length): where a turret points. A gunner's
+  `vehicle` is the turret; their position and the turret's as a rider
+  reads it are the vehicle the turret is mounted on.
 
 And, from the same scan and the units' own memory
 ([live-gamestate.md](live-gamestate.md), "Unit stance, actions, damage and
@@ -229,7 +243,8 @@ chain, or signatures.
 
 ## Server ingest
 
-Starting `h2 play --live` enables telemetry automatically: boot reads the
+Starting `h2 play` with Live on (`--live`, `--live-server` or
+`--live-local`) enables telemetry automatically: boot reads the
 first account in the Live `accounts.json`, uses its private JWK, and uses the
 Live `server_url`. No telemetry-specific account flags or key environment
 variables are needed. Set `H2_TELEMETRY=0` to disable both Live and file
@@ -365,7 +380,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 1 |
+| version | `u(4)`, 2 (1 still reads: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -398,7 +413,7 @@ change in its quantised value, so jitter below the quantum costs nothing.
 | list | fields (key in bold) |
 |---|---|
 | player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade |
-| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)` |
+| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string |
 | machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
@@ -420,7 +435,10 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Recorded `GameFrame` events written before packed frames hold the
+know. Version 2 (vehicles' parent and aim) is written now; decoders still
+read version 1 (recorded frames, an older game's stream), and a delta only
+applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
+is a version 1 stream both decoders are tested on. Recorded `GameFrame` events written before packed frames hold the
 JSON frame (no `packed` field) and stay readable: the server's
 `?format=json` returns them as they are, `?format=packed` packs them on
 the fly, and the web's `recordedFrame` reads both. The ingest socket takes
@@ -466,14 +484,95 @@ payload and the signature).
 | campaign, game's sink worker | 59.0 µs | 38.7 µs |
 | campaign, server | 206 µs | 146 µs |
 
-The server's JSON cost is per reader (each reader got its own JSON
-message); packed frames are encoded once per frame for every reader.
+Packed frames are encoded once per frame for every reader, and since
+2026-11-17 so is a JSON reader's `frame` message (`LiveFrame::json_message`):
+before, each JSON reader cloned and serialised the frame itself, about
+160 µs a frame a reader for a 47 KB campaign-sized frame.
 
 On the game thread, for a campaign scene of 60 actors, 8 vehicles, 12
 machines and 90 placed objects (synthetic guest memory): the object-table
 scan takes 38 µs without the placement reads and 54 µs with them, the frame
 build 14 µs; serialising stays off the game thread, on the sink worker.
 At 15 frames a second that is under 0.1% of a core.
+
+### Benchmarks
+
+`scripts/telemetry-bench.sh [out dir]` runs every stage and writes its
+JSON to the directory (default `$TMPDIR/telemetry-bench`). No game data and
+no game run are needed. Each stage runs alone as well:
+
+- Game thread, sink worker and wire:
+  `cargo test --release -p live-telemetry --lib bench -- --ignored --nocapture --test-threads=1`
+  (`crates/live-telemetry/src/bench.rs`, `guest.json`). Three synthetic
+  scenes in fixture guest memory: `mp16` (16 players, 2 weapons each, 12
+  vehicles and 4 turrets, 5 riders, 200 placed scenery and 24 placed
+  weapons, 296 objects), `mp16_1000` (the same at 984 objects) and
+  `campaign100` (1 player, 100 armed actors with 6 riding, 30 bodies, 16
+  vehicles and 6 turrets, 30 machines, 600 scenery, 930 objects). Each
+  scene runs a minute of 30 Hz ticks through the hooks' own entry points
+  (weapon fire and damage hooks, then the tick's observation and publish),
+  timed and allocation-counted on the calling thread; the best of five
+  runs by median frame tick is kept. Then the frames are packed as the
+  server sink packs them. The bench runs ticks back to back, so the sink's
+  two-frame queue is full and `publish` includes dropping the frame on the
+  game thread (1 to 6 µs); in real time the worker takes it.
+- Server: `cargo bench -p live-server --bench telemetry`
+  (`crates/live-server/benches/telemetry.rs`, `server.json`): packed
+  ingest at 15 Hz a game, signed event batches of 1 and 32, and stream
+  fan-out to 1, 10 and 100 loopback readers (packed and JSON).
+- Web: `cd web && bun run bench:telemetry` (`web/bench/telemetry.bench.ts`,
+  `web.json`): packed decode, the frame hub and a repaint's sampling.
+
+`scenes_produce_the_golden_output` (not ignored) hashes every frame of the
+first twelve ticks of each scene, so a speed-up cannot change what is sent.
+
+Game thread, median µs per tick and allocations per tick, on a loaded
+development Mac (load average 40 to 80, so absolute numbers vary by 10 to
+20%), before and after the 2026-11-17 telemetry-perf lane:
+
+| scene | frame tick before | after | allocs before | after | other tick before | after | µs per second at 30 Hz before | after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mp16 | 60.4 | 27.7 | 332 | 284 | 16.4 | 10.2 | 1151 | 567 |
+| mp16_1000 | 135.5 | 53.5 | 397 | 344 | 16.0 | 10.4 | 2272 | 958 |
+| campaign100 | 213.0 | 103.5 | 922 | 891 | 2.1 | 1.6 | 3227 | 1576 |
+
+What changed: guest scalar reads inline their fast-page case
+(`runtime::Guest::read_bytes`), a vector is one 12-byte read, the object
+scan reuses its lists between frame ticks (it allocated and freed about
+200 KiB a frame), tag names hold their frame ids instead of parsing the
+tag path per entity, and frame objects match placements in one pass. The
+remaining allocations are the frame itself (an id, species, weapon and
+team string per entity).
+
+Wire on that lane's fixture, packed with a keyframe every 150 frames: `mp16` 316 B a frame (278
+KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 397 B (349 KiB),
+`campaign100` 1251 B (1.1 MiB a minute; JSON 31 MiB). The worker packs a
+frame in 13, 20 and 65 µs.
+
+The second lane (same day) moved the scenes' fixture off `sin`/`cos`
+(release builds fuse them into `sincos`, a ulp apart from debug, so the
+golden hash differed between profiles), which shifts every number a
+little; its before is measured on the new fixture, at a load average of
+10 to 25:
+
+| scene | frame tick before | after | allocs before | after | other tick before | after | allocs before | after | µs per second at 30 Hz before | after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| mp16 | 26.3 | 22.0 | 284 | 219 | 9.1 | 5.7 | 85 | 20 | 531 | 416 |
+| mp16_1000 | 51.7 | 46.0 | 344 | 279 | 9.5 | 5.9 | 85 | 20 | 918 | 779 |
+| campaign100 | 92.2 | 77.7 | 891 | 883 | 1.5 | 1.2 | 21 | 13 | 1406 | 1184 |
+
+What changed: object lookups read the objects array's header once per
+observation, not once per datum; the session compares the roster in place
+and copies it only when it changed; the roster read keeps each name from
+the last tick while the player's datum and name units are unchanged; frame
+ids are written without the formatter and actors lend their object state
+instead of copying it. The remaining allocations are the frame itself (an
+id, species, weapon, stance and team string per entity).
+
+Wire, packed with a keyframe every 150 frames: `mp16` 325 B a frame (286
+KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 407 B (357 KiB),
+`campaign100` 1330 B (1.2 MiB a minute; JSON 30 MiB). The worker packs a
+frame in 13, 20 and 63 µs.
 
 ## Runtime validation needed first
 

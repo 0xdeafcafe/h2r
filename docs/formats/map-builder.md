@@ -3,14 +3,15 @@
 Status: **Built** (2026-11-16) for the cache layout, string IDs, tag
 names, tag index, metadata with fixups, raw resources, BSP regions and
 the checksum. Proven by synthetic tests and by retail round trips on all
-30 maps of the owner's disc. Nothing here has been loaded by the game yet
-(see "Not verified").
+30 maps of the owner's disc. Maps it writes for the Halo 1 converter load
+and play in the game (owner, 2026-11-17).
 
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
 an existing map in place. The builder in `crates/map/src/build.rs` writes
-a whole v8 cache from a `TagSet` instead. The Halo 1 campaign converter
-([campaigns.md](../game/campaigns.md) on the `campaigns` branch) and maps
-made from scratch ([maps.md](../game/maps.md) §4) both need it.
+a whole v8 cache from a `TagSet` instead. The Halo 1 converter
+(`crates/h1convert`, [h1-multiplayer.md](../game/h1-multiplayer.md)) uses it to
+write a converted structure BSP and lightmap into a base map, and maps made
+from scratch ([maps.md](../game/maps.md) §4) need it too.
 
 Evidence labels are those of [map-format.md](map-format.md): **V** checked
 on the owner's disc, **Design** an implementation choice.
@@ -62,6 +63,7 @@ and BSP sections. Each tag's payload is one of:
 | `Built(Block)` | A tree of blocks the builder lays out. Any address. |
 | `Pinned { address, bytes }` | Opaque bytes that must stay at one ordinary-metadata address, because they may hold pointers nobody has described. |
 | `Empty` | No ordinary metadata; index address and size are zero. Retail BSP and lightmap tags, whose bytes sit in a BSP region. |
+| `Alias { tag, offset }` | No bytes of its own: index size 0 and the address of `tag` plus `offset`, wherever that tag lands. Retail caches have such tags (whole tags the compiler shared, e.g. one `hlmt` standing for two names). |
 
 A `Block` is bytes, an alignment (default 4) and a list of fixups. A fixup
 names an offset in the block and what goes there:
@@ -76,6 +78,15 @@ names an offset in the block and what goes there:
 | `StringId(s)` | 4 | the string's ID, interning it if new |
 | `Raw(RawRef)` | 4 | `Local(raw)` the placed file offset; `External { file, offset }` the offset with the selector of `mainmenu.map`, `shared.map` or `single_player_shared.map`; `Null` is `ffffffff` |
 | `Bsp { section, field }` | 4 | a built BSP region's file offset, size or virtual base |
+| `TagOffset { count, tag, offset }` | 8 | count, then the placed address of `tag` plus `offset`: a block pointer into another tag's (or the tag's own) bytes, resolved after every tag is placed. Ordinary metadata only. |
+
+`Block::phase` (default 0) places a block at an address congruent to
+`phase` modulo its alignment instead of a multiple of it. With
+`TagOffset`, a retail tag can move as **one flat block in its source
+layout** (`tags::schema::Relocator::to_built_source`): its bytes as they
+are, every pointer a `TagOffset`, placed at its old address modulo 16 so
+every array inside keeps its alignment. Its size never changes, so a map
+already at the tag-memory bound still fits.
 
 Children are laid out after their parent, depth first, each at its own
 alignment, so a tag's tree is contiguous and the index size covers all of
@@ -83,7 +94,7 @@ it. The builder rejects fixups that overlap or run past their block, a
 block count that does not divide its child's bytes, and references to
 datums not in the set. Bytes without a fixup are copied unchanged, so a
 converter writes scalars directly and leaves only layout-dependent fields
-to fixups. `TagSet::add_tag` gives slot `n` the datum
+to fixups. `TagSet::find(group, name)` looks a tag up by name. `TagSet::add_tag` gives slot `n` the datum
 `(salt_base + n) << 16 | n`.
 
 Retail tags enter the set through `TagSet::from_map`, which pins every tag
@@ -141,7 +152,10 @@ zero for a map built from scratch.
 
 **Limits** (Design, from the engine checks in map-format.md): the file
 must stay under the per-type cache size limit, and `+0x1c` under
-`max_metadata_size(cache_type)` (the largest retail map of the type).
+`max_metadata_size(cache_type)` (the largest retail map of the type on the
+disc), or under the pinned source map's own `+0x1c` if that is larger: the
+map-pack maps `turf` (0x68b000), `gemini` and `triplicate` are above the
+multiplayer bound (0x62c000) as shipped, and load.
 Slots are capped at `0xffff`. A string ID must be under 128 bytes (its
 fixed slot) and its index under 2^24.
 
@@ -164,8 +178,8 @@ To keep opaque bytes valid, a decomposed map keeps:
   low-detail bitmaps, locale text and the old tables. File offsets inside
   pinned tags stay right because this prefix does not move;
 - the whole index region, including the uninterpreted tail. The builder
-  rewrites only the header, groups and entries, and refuses to grow them
-  past the original entries;
+  rewrites only the header, groups and entries, and never overwrites a
+  nonzero tail byte (see "Adding tags to a pinned map");
 - `D`, the largest BSP region and the metadata base and size, so BSP and
   metadata addresses do not move;
 - nonzero metadata bytes that no tag owns (one range per retail map).
@@ -175,6 +189,56 @@ zeroed); one that grew goes after the prefix. Built tags are placed
 first-fit into metadata no pinned bytes use (ranges of tags that became
 built, padding, slack up to the old size), then after it. With
 `reuse_free_space = false` every built tag goes after the old region.
+`reverse_built = true` places built tags in reverse slot order (used to
+move retail tags away from their old addresses while reusing freed space).
+`check_tag_memory = false` skips the tag-memory bound below; only for
+offline round trips of maps already at the bound.
+
+A `Block` with a sharing key (`Block::shared(key)`) is placed once per
+region: every later block with the same key gets the first one's address
+and is not written again. The relocator keys every array this way so
+blocks the retail compiler shared stay shared.
+
+### Header template and low-detail bitmaps (unpinned sets)
+
+A set with no `PinnedImage` normally starts from a zero header. Two fields
+let it carry what a decomposed map would have pinned:
+
+- `header_template: Option<Vec<u8>>`: a whole `0x800`-byte header used for
+  the fields the builder doesn't own (any other length is an error). The
+  builder still writes its own fields over it. A pinned set ignores it.
+- `low_detail: Option<RawId>`: a raw resource holding the low-detail
+  bitmap region. The builder writes its file offset at `+0x158` and its
+  length at `+0x15c`.
+
+`h1convert::fresh` sets both from the base map
+(`a_header_template_and_low_detail_raw_reach_the_header` tests them).
+
+### Adding tags to a pinned map
+
+`add_tag` on a set from `TagSet::from_map` works; the index grows at build
+time (Design, **V** offline):
+
+- where the tail bytes the new entries need are zero (always after
+  `PinnedImage::clear_index_tail`), the entries grow in place, up to the
+  index region's size;
+- otherwise, the whole entry table moves to the end of the ordinary
+  metadata, 16-aligned, and the index header's entry pointer (`+8`) points
+  there. The header and groups stay in the index region, the tail stays
+  untouched, and the old entries are zeroed. The reader follows the
+  pointer into the metadata (base from header `+0x1c - +0x18`), and
+  `from_map` of such a map works (the old table becomes unowned bytes).
+  Groups may grow only into the old entries' space.
+
+Neither has been loaded by the game. Clearing the tail risks whatever the
+tail is for; moving the table risks an engine that expects the entries in
+the index region (the index header's explicit pointer suggests it reads
+them through the pointer). Retail proof, nothing written:
+`H2_DISC=disc/halo2.iso cargo test --release -p tags --test map_build retail_maps_gain_tags -- --ignored --nocapture`
+adds 500 tags (a new group, string IDs) to lockout and 01a_tutorial, with
+the tail kept and cleared: every old tag reads back byte-identical at its
+address and every new tag reads back. Maps at the tag-memory bound
+(`shared`, `mainmenu`, ...) cannot grow at all.
 
 ## What is verified
 
@@ -230,11 +294,74 @@ tag a map uses has metadata in that map; shared maps are only reached
 through raw pointers); retail salts start at `0xe174` for slot 0 and grow
 with the slot but skip values (lockout slot 3 is `0xe178`).
 
+## Load tests (`h2 map testbuild`)
+
+Two maps for the game to load, through the `H2_MAP_DIR` override
+([storage.md](../runtime/storage.md), "Map overrides"). Each goes in its
+own folder under the disc's file name, so the override serves it for that
+level:
+
+```sh
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout
+```
+
+| Folder | What changed from the disc's map | Risk it tests |
+|---|---|---|
+| `moved/` | Every bitmap rebuilt as a block tree and appended after the old metadata (all at new addresses), every local LOD's pixels copied to new raw data at new file offsets. Everything else pinned. | that the engine follows fixed-up pointers to moved tags and moved raw data; alignment of moved pixel data |
+| `fresh/` | Every tag byte-identical at its address, but the index tail cleared to zero and the header rebuilt from zeros (only what the builder writes, plus the low-detail fields the bitmaps index into) | the index tail and the zeroed header fields of a map built from scratch |
+
+The command checks each map reads back with the same tags and a valid
+checksum before writing. `--force` replaces earlier output. If `fresh`
+fails, bisect with `--keep-tail` (writes `fresh-keep-tail/`: header still
+from scratch) and `--keep-header` (writes `fresh-keep-header/`: tail still
+cleared). With both, the map is the disc's byte for byte. With either flag only the
+fresh variant is written.
+
+Salts are **not** tested: pinned tags hold datums in bytes nobody has
+described, so renumbering them needs full relocation of every group. The
+salt risk stays open until a map built entirely from built tags loads.
+
+Run each one (Lockout is multiplayer, so this starts a local Slayer game,
+[level-boot.md](../runtime/level-boot.md)):
+
+```sh
+H2_MAP_DIR=~/h2-testmaps/moved cargo h2 play disc/halo2.iso --level lockout
+H2_MAP_DIR=~/h2-testmaps/fresh cargo h2 play disc/halo2.iso --level lockout
+# only if fresh fails:
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-tail
+H2_MAP_DIR=~/h2-testmaps/fresh-keep-tail cargo h2 play disc/halo2.iso --level lockout
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-header
+H2_MAP_DIR=~/h2-testmaps/fresh-keep-header cargo h2 play disc/halo2.iso --level lockout
+```
+
+**Success:** the log shows `map override: maps\lockout from …/lockout.map`
+and `level boot: lockout loaded at present N`, and the level looks and
+plays like the disc's: same textures everywhere (for `moved`, no black,
+missing or garbled surfaces), no crash walking round the map.
+
+**What a failure means:**
+
+- `moved` fails to load, or textures are wrong or garbled, and `fresh`
+  is fine: the engine doesn't accept moved bitmaps or moved pixel data.
+  Garbled only at certain sizes points at raw alignment (`0x200` now).
+  A crash means something outside the bitmap points into a bitmap's old
+  bytes (aliasing), or the engine needs metadata in its original order.
+- `fresh` fails but `fresh-keep-tail` works: the engine needs the index
+  tail. Maps built from scratch must generate it; find out what it is
+  first.
+- `fresh` fails but `fresh-keep-header` works: the engine needs one of
+  the header fields we leave zero (most likely the dependency identities
+  at `+0x174..+0x198`, which the copy path compares with the shared maps).
+- Both bisect variants fail: both parts matter; try with both flags (the
+  disc's own bytes) to rule out the override itself.
+- No `map override` line: the file name or folder is wrong; the override
+  wasn't used.
+
 ## Not verified (needs a game run, or more work)
 
-- **No built map has been loaded by the game.** The round trips prove the
-  layout is the retail one and that our reader agrees, not that the engine
-  accepts a map whose tags moved.
+- **Only converted Halo 1 maps have been loaded by the game.** The round
+  trips prove the layout is the retail one and that our reader agrees, not
+  that the engine accepts any map whose tags moved.
 - **The index tail.** A map built from scratch has only the index header,
   groups and entries in its index region. Retail maps carry about
   `0x38000` more bytes there, loaded into memory before the BSP space.
@@ -255,6 +382,9 @@ with the slot but skip values (lockout slot 3 is `0xe178`).
 - Aliasing: a pointer from a pinned tag into a moved tag's old bytes (the
   lighting decoder found sky children aliasing other sky payloads) breaks
   silently. Only bitmaps move today, and nothing is known to alias them.
-- Layouts beyond bitmaps: every other group stays pinned until its whole
-  layout is known. The Halo 1 converter builds tags from scratch, so it
-  writes every field itself and does not depend on this.
+- Layouts beyond bitmaps: [tag-schema.md](tag-schema.md) infers a layout
+  for every group from all retail maps and relocates 90 % of retail tags
+  (`tags::schema::Relocator`), proven offline by a shuffle of all 39 maps.
+  Not yet loaded by the game. The Halo 1 converter builds only the structure
+  BSP and lightmap from scratch (writing every field itself); the scenario
+  and other tags are the base map's, patched in place as pinned bytes.

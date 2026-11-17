@@ -25,21 +25,24 @@
 //!   complete and the newest motor speeds are readable from
 //!   [`KeyboardMouse::rumble`]. Set it before the manager's first `sync`: a
 //!   pad's capabilities are fixed when it is inserted.
+//! * On-screen touch controls ([`crate::touch`], the iOS app) are merged in
+//!   as one more pad: [`KeyboardMouse::touch_update`]. Their buttons add to
+//!   the keys, the triggers take the larger pull, the move stick the larger
+//!   deflection, and their look adds to the mouse's. Using them marks the
+//!   last-used device as a pad, so the game shows pad prompts.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::backend::HostBackend;
 use crate::bindings::{Bindings, Control, Input, MouseButton, canonical_key};
 use crate::gamepad::Rumble;
-use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
+use crate::host::{HostButton, HostButtons, HostPad, HostPadId, HostPadState};
 
-/// The read interval at which `delta * sensitivity` is the deflection.
-pub const LOOK_FRAME: Duration = Duration::from_nanos(1_000_000_000 / 60);
-
-/// Mouse motion older than this, with no guest read in between, is dropped.
-pub const STALE_MOTION: Duration = Duration::from_secs(1);
+use crate::look::LookMotion;
+pub use crate::look::{LOOK_FRAME, STALE_MOTION};
+use crate::touch::{TouchFrame, TouchPad, TouchTuning};
 
 /// Where the pad gets the time (wall clock by default; tests inject one).
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -102,16 +105,13 @@ struct Inner {
     activity: u64,
     keys: HashSet<String>,
     mouse: HashSet<MouseButton>,
-    /// Mouse motion the guest has not read yet.
-    delta: (f64, f64),
-    /// The part of `delta` in the newest reported state.
-    sampled: (f64, f64),
-    /// When the current read interval began: the last guest read, or the
-    /// first motion after none was pending.
-    since: Option<Instant>,
+    /// Mouse motion the guest has not read yet (`crate::look`).
+    look: LookMotion,
     enabled: bool,
     rumble_supported: bool,
     rumble: Rumble,
+    /// On-screen touch controls (`crate::touch`).
+    touch: TouchPad,
 }
 
 impl Inner {
@@ -122,12 +122,11 @@ impl Inner {
         self.text.blocked.clear();
         self.mouse.clear();
         self.drop_motion();
+        self.touch.release();
     }
 
     fn drop_motion(&mut self) {
-        self.delta = (0.0, 0.0);
-        self.sampled = (0.0, 0.0);
-        self.since = None;
+        self.look.clear();
     }
 
     fn held(&self, c: Control) -> bool {
@@ -152,12 +151,11 @@ impl KeyboardMouse {
                 activity: 0,
                 keys: HashSet::new(),
                 mouse: HashSet::new(),
-                delta: (0.0, 0.0),
-                sampled: (0.0, 0.0),
-                since: None,
+                look: LookMotion::default(),
                 enabled: true,
                 rumble_supported: false,
                 rumble: Rumble::default(),
+                touch: TouchPad::default(),
             })),
             clock,
             active: Default::default(),
@@ -343,12 +341,6 @@ impl KeyboardMouse {
         if dx.is_finite() && dy.is_finite() {
             let now = (self.clock)();
             let mut i = self.lock();
-            if i.since
-                .is_none_or(|t| now.saturating_duration_since(t) > STALE_MOTION)
-            {
-                i.drop_motion();
-                i.since = Some(now);
-            }
             if i.enabled
                 && i.bindings.mouse.look
                 && i.bindings.mouse.sensitivity > 0.0
@@ -357,9 +349,53 @@ impl KeyboardMouse {
                 i.activity = i.activity.wrapping_add(1);
                 self.active.set(crate::active::DeviceKind::Keyboard);
             }
-            i.delta.0 += dx;
-            i.delta.1 += dy;
+            i.look.add(now, dx, dy);
         }
+    }
+
+    /// One report from the on-screen touch controls ([`crate::touch`]).
+    /// Returns the touch pad's own state as it stands, for the host's log
+    /// (reading it spends nothing the guest has not seen). Ignored while the
+    /// pad is disabled.
+    pub fn touch_update(&self, frame: &TouchFrame) -> HostPadState {
+        let now = (self.clock)();
+        let mut i = self.lock();
+        if !i.enabled {
+            return HostPadState::default();
+        }
+        i.touch.update(frame, now);
+        if i.touch.active() {
+            // Touch controls are a pad: the game shows pad prompts.
+            self.active.set(crate::active::DeviceKind::Xbox);
+        }
+        i.touch.clone().state(now)
+    }
+
+    /// Player one's state for the touch controls' auto-fire
+    /// (`crate::touch_layout`).
+    pub fn set_touch_context(&self, context: crate::touch_layout::Context) {
+        self.lock().touch.set_context(context);
+    }
+
+    /// The touch controls' tuning (from the settings).
+    pub fn set_touch_tuning(&self, tuning: TouchTuning) {
+        self.lock().touch.set_tuning(tuning);
+    }
+
+    pub fn touch_tuning(&self) -> TouchTuning {
+        self.lock().touch.tuning()
+    }
+
+    /// Whether the touch controls hold crouch down (a toggled crouch
+    /// included), for the host to light its crouch button.
+    pub fn touch_crouched(&self) -> bool {
+        self.lock().touch.crouch_down()
+    }
+
+    /// The touch controls went away (a pad connected, the keyboard came
+    /// up, the app left the screen): let go of everything they held.
+    pub fn touch_release(&self) {
+        self.lock().touch.release();
     }
 
     /// Focus lost: release everything.
@@ -406,19 +442,23 @@ impl KeyboardMouse {
             axis(i.held(RightStickDown), i.held(RightStickUp)),
         );
         let m = i.bindings.mouse;
-        if m.look && i.delta != (0.0, 0.0) {
-            let sign = if m.invert_y { 1.0 } else { -1.0 }; // mouse up (dy < 0) looks up
-            let interval = i
-                .since
-                .map_or(LOOK_FRAME, |t| now.saturating_duration_since(t))
-                .max(LOOK_FRAME);
-            let k = f64::from(m.sensitivity) * LOOK_FRAME.as_secs_f64() / interval.as_secs_f64();
-            // Unclamped here: the vector is scaled back to the unit circle
-            // below, which keeps the direction of a fast flick.
-            s.right_stick.0 = (f64::from(s.right_stick.0) + i.delta.0 * k) as f32;
-            s.right_stick.1 = (f64::from(s.right_stick.1) + sign * i.delta.1 * k) as f32;
+        // Mouse up (dy < 0) looks up. Unclamped here: the vector is scaled
+        // back to the unit circle below, which keeps a fast flick's direction.
+        let (lx, ly) = i.look.stick(now, f64::from(m.sensitivity), m.invert_y);
+        if m.look {
+            s.right_stick.0 = (f64::from(s.right_stick.0) + lx) as f32;
+            s.right_stick.1 = (f64::from(s.right_stick.1) + ly) as f32;
         }
-        i.sampled = i.delta;
+        let t = i.touch.state(now);
+        s.buttons = HostButtons::from_bits(s.buttons.bits() | t.buttons.bits());
+        s.left_trigger = s.left_trigger.max(t.left_trigger);
+        s.right_trigger = s.right_trigger.max(t.right_trigger);
+        let strength = |(x, y): (f32, f32)| x.hypot(y);
+        if strength(t.left_stick) > strength(s.left_stick) {
+            s.left_stick = t.left_stick;
+        }
+        s.right_stick.0 += t.right_stick.0;
+        s.right_stick.1 += t.right_stick.1;
         // Synthesised directions have no physical gate. Normalise here so
         // calibrated hardware and scripted reports can retain independent axes.
         for stick in [&mut s.left_stick, &mut s.right_stick] {
@@ -455,10 +495,8 @@ impl HostBackend for KeyboardMouse {
     fn state_read(&mut self, _id: HostPadId) {
         let now = (self.clock)();
         let mut i = self.lock();
-        i.delta.0 -= i.sampled.0;
-        i.delta.1 -= i.sampled.1;
-        i.sampled = (0.0, 0.0);
-        i.since = Some(now);
+        i.look.read(now);
+        i.touch.read(now);
     }
 
     fn set_rumble(&mut self, _id: HostPadId, rumble: Rumble) {
@@ -602,6 +640,109 @@ mod tests {
         let k = KeyboardMouse::new(Bindings::default());
         assert!(!k.key_down("Nonsense"));
         assert!(k.key_down("KeyQ"));
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+    use crate::backend::fallback::KeyboardFallback;
+    use crate::gamepad::{AnalogButton, Buttons};
+    use crate::host::ConvertConfig;
+    use crate::touch::{CrouchMode, TouchFrame, bits};
+
+    fn gp(k: &KeyboardMouse) -> crate::gamepad::Gamepad {
+        k.state().to_gamepad(&ConvertConfig::default(), false)
+    }
+
+    #[test]
+    fn touch_fire_reaches_player_one_as_a_full_right_trigger() {
+        let k = KeyboardMouse::new(Bindings::default());
+        let mut p1 = KeyboardFallback::new(k.clone(), None, ConvertConfig::default());
+        k.touch_update(&TouchFrame {
+            buttons: bits::RIGHT_TRIGGER,
+            ..Default::default()
+        });
+        let pads = p1.poll();
+        assert_eq!(pads.len(), 1);
+        let g = pads[0]
+            .state
+            .to_gamepad(&ConvertConfig::default(), pads[0].physical);
+        assert_eq!(g.analog[AnalogButton::RightTrigger.index()], 255);
+        assert_eq!(
+            k.active_device().get(),
+            Some(crate::active::DeviceKind::Xbox),
+            "pad prompts"
+        );
+        k.touch_update(&TouchFrame::default());
+        let g = p1.poll()[0]
+            .state
+            .to_gamepad(&ConvertConfig::default(), false);
+        assert_eq!(g.analog[AnalogButton::RightTrigger.index()], 0);
+    }
+
+    #[test]
+    fn touch_merges_with_keys_and_mouse() {
+        let k = KeyboardMouse::new(Bindings::default());
+        k.key_down("Space"); // A
+        k.touch_update(&TouchFrame {
+            buttons: bits::LEFT_THUMB | bits::RIGHT_THUMB | bits::START,
+            move_offset: Some((0.0, -500.0)),
+            ..Default::default()
+        });
+        let g = gp(&k);
+        assert_eq!(
+            g.analog[AnalogButton::A.index()],
+            255,
+            "the key still counts"
+        );
+        assert!(g.buttons.contains(Buttons::LEFT_THUMB), "crouch");
+        assert!(g.buttons.contains(Buttons::RIGHT_THUMB), "zoom");
+        assert!(g.buttons.contains(Buttons::START));
+        assert_eq!(g.thumb_ly, 32767, "the touch stick is the stronger one");
+        // Crouch is a toggle: it stays down after the tap.
+        k.touch_update(&TouchFrame::default());
+        assert!(gp(&k).buttons.contains(Buttons::LEFT_THUMB));
+        assert!(k.touch_crouched());
+        k.touch_release();
+        assert!(!k.touch_crouched());
+        assert!(
+            !gp(&k).buttons.contains(Buttons::LEFT_THUMB),
+            "hiding stands up"
+        );
+    }
+
+    #[test]
+    fn touch_look_is_held_until_the_guest_reads_it() {
+        let k = KeyboardMouse::new(Bindings::default());
+        let mut backend = k.clone();
+        k.touch_update(&TouchFrame {
+            look: (3.0, 0.0),
+            ..Default::default()
+        });
+        let g = gp(&k);
+        assert!(g.thumb_rx > 0);
+        assert_eq!(gp(&k), g);
+        backend.state_read(HostPadId(0));
+        assert_eq!(gp(&k).thumb_rx, 0);
+    }
+
+    #[test]
+    fn touch_tuning_is_kept_and_a_disabled_pad_ignores_touch() {
+        let k = KeyboardMouse::new(Bindings::default());
+        let t = TouchTuning {
+            crouch: CrouchMode::Hold,
+            ..TouchTuning::default()
+        };
+        k.set_touch_tuning(t);
+        assert_eq!(k.touch_tuning(), t);
+        k.set_enabled(false);
+        k.touch_update(&TouchFrame {
+            buttons: bits::A,
+            ..Default::default()
+        });
+        k.set_enabled(true);
+        assert_eq!(gp(&k).analog[AnalogButton::A.index()], 0);
     }
 }
 

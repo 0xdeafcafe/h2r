@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 12;
+pub const EXTRACTOR_VERSION: u32 = 18;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -455,10 +455,15 @@ pub fn cache_type(head: &[u8]) -> Option<CacheType> {
     Some(u32::from_le_bytes(word.try_into().ok()?).into())
 }
 
-/// A map file on the disc and its cache type.
+/// A map file on the disc (or from a map pack) and its cache type.
 pub(crate) struct MapFile {
     entry: xiso::Entry,
     cache_type: Option<CacheType>,
+    /// Where it is when not on the retail disc: the host file and the
+    /// map's first byte in it (`crate::live_mappack`).
+    host: Option<(PathBuf, u64)>,
+    /// What the map list says about a map pack map.
+    pub(crate) pack: Option<crate::live_mappack::PackMap>,
 }
 
 impl MapFile {
@@ -479,6 +484,8 @@ pub struct Disc {
     partition: u64,
     entries: Vec<xiso::Entry>,
     maps: Vec<MapFile>,
+    /// What [`cache_key`] hashes, so added maps can join it.
+    parts: Vec<(String, u32, u32, Vec<u8>)>,
     /// [`cache_key`] of the maps.
     pub key: String,
 }
@@ -504,6 +511,8 @@ impl Disc {
             maps.push(MapFile {
                 entry: e.clone(),
                 cache_type: cache_type(&head),
+                host: None,
+                pack: None,
             });
             parts.push((e.path.clone(), e.size, e.sector, head));
         }
@@ -513,7 +522,51 @@ impl Disc {
             entries,
             maps,
             key: cache_key(&parts),
+            parts,
         })
+    }
+
+    /// Adds map pack maps (`crate::live_mappack`): each from its own host
+    /// file, opened with this disc's shared maps. A map whose stem the disc
+    /// (or an earlier added map) already has is left out. The cache key
+    /// then covers them too. Returns how many were added.
+    pub(crate) fn add_maps(&mut self, found: Vec<crate::live_mappack::FoundMap>) -> usize {
+        let mut n = 0;
+        for f in found {
+            let file = MapFile {
+                entry: xiso::Entry {
+                    path: format!("/{}.map", f.stem),
+                    sector: 0,
+                    size: f.size,
+                    is_dir: false,
+                },
+                cache_type: cache_type(&f.head),
+                host: Some((f.host.clone(), f.base)),
+                pack: Some(f.pack.clone()),
+            };
+            if self
+                .maps
+                .iter()
+                .any(|m| m.name().eq_ignore_ascii_case(file.name()))
+            {
+                continue;
+            }
+            self.parts.push((
+                format!("{}#{}", f.host.display(), f.stem),
+                f.size,
+                0,
+                f.head,
+            ));
+            self.maps.push(file);
+            n += 1;
+        }
+        self.key = cache_key(&self.parts);
+        n
+    }
+
+    /// The map pack maps added ([`Disc::add_maps`]).
+    pub(crate) fn pack_maps(&self) -> impl Iterator<Item = &MapFile> {
+        self.maps.iter().filter(|m| m.pack.is_some())
     }
 
     fn base(&self, e: &xiso::Entry) -> u64 {
@@ -532,7 +585,16 @@ impl Disc {
             length: e.size.into(),
         };
         let mut files = ResourceFiles::new();
-        files.set(ResourceFile::Local, region(&m.entry))?;
+        let (host, base) = match &m.host {
+            Some((path, base)) => (path.clone(), *base),
+            None => (self.path.clone(), self.base(&m.entry)),
+        };
+        let local = Region {
+            path: host.clone(),
+            base,
+            length: m.entry.size.into(),
+        };
+        files.set(ResourceFile::Local, local)?;
         for (sel, ty) in [
             (ResourceFile::MainMenu, CacheType::MainMenu),
             (ResourceFile::Shared, CacheType::Shared),
@@ -546,8 +608,8 @@ impl Disc {
             }
         }
         let map = Map::from_region(
-            BufReader::new(File::open(&self.path)?),
-            self.base(&m.entry),
+            BufReader::new(File::open(&host)?),
+            base,
             m.entry.size.into(),
         )
         .with_context(|| format!("parsing {}", m.entry.path))?;
@@ -983,8 +1045,30 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     let (models, bipeds) = crate::live_models::extract(disc, &staging);
     manifest.skipped.extend(models.skipped);
     manifest.models = models.entry;
-    // The playlist builder's catalog rides along (docs/live/live-admin.md).
-    let catalog = crate::live_catalog::extract(disc);
+    // The playlist builder's catalog rides along (docs/live/live-admin.md), with
+    // the map pack's maps as their map list records name them.
+    let mut catalog = crate::live_catalog::extract(disc);
+    for m in disc.pack_maps() {
+        let pack = m.pack.clone().unwrap_or_default();
+        if catalog
+            .maps
+            .iter()
+            .any(|e| e.key.as_deref() == Some(m.name()))
+        {
+            continue;
+        }
+        catalog.maps.push(crate::live_catalog::MapEntry {
+            id: pack.id,
+            name: if pack.name.is_empty() {
+                m.name().to_string()
+            } else {
+                pack.name
+            },
+            description: pack.description,
+            key: Some(m.name().to_string()),
+            kind: None,
+        });
+    }
     fs::write(
         staging.join(crate::live_catalog::CATALOG),
         format!("{}\n", serde_json::to_string_pretty(&catalog)?),
@@ -1016,10 +1100,31 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     })
 }
 
-/// `h2 live assets extract [--disc PATH] [--out DIR]`.
-pub fn run(disc: PathBuf, out: PathBuf) -> Result<()> {
-    let report = extract(&Disc::scan(&disc)?, &out)?;
+/// `h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO]
+/// [--installed DIR]`: the retail disc's art, and the map pack's maps from
+/// its disc and from where `h2 import-mappack` installed them under the
+/// runtime data root `installed`.
+pub fn run(
+    disc: PathBuf,
+    out: PathBuf,
+    mappack: Option<PathBuf>,
+    installed: Option<PathBuf>,
+) -> Result<()> {
+    let mut disc = Disc::scan(&disc)?;
+    if let Some(iso) = mappack {
+        let found = crate::live_mappack::from_iso(&iso)
+            .with_context(|| format!("reading the map pack disc {}", iso.display()))?;
+        disc.add_maps(found);
+    }
+    if let Some(root) = installed {
+        disc.add_maps(crate::live_mappack::installed(&root));
+    }
+    let report = extract(&disc, &out)?;
     println!("game art in {}", out.display());
+    let pack: Vec<&str> = disc.pack_maps().map(|m| m.name()).collect();
+    if !pack.is_empty() {
+        println!("  {:<10} {}", "map pack", pack.join(", "));
+    }
     for (prefix, n) in &report.counts {
         println!("  {prefix:<10} {n}");
     }

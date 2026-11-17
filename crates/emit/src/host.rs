@@ -309,6 +309,8 @@ pub struct Ctx {
     pub charged: u64,
     /// Calls of the uncharged `h2abi_v1_read/write_counted`.
     pub counted: u64,
+    /// Calls of `h2abi_v1_exit`, one per handler exit with H2_FASTMEM.
+    pub exits: u64,
     /// The runtime's armed slice, in accesses: `None` is not armed. When a
     /// charge spends the last one, the preempt word is set, as the
     /// runtime's slice expiry sets its bit.
@@ -332,6 +334,7 @@ impl Ctx {
             cpu: std::ptr::null(),
             charged: 0,
             counted: 0,
+            exits: 0,
             slice: None,
         }
     }
@@ -381,11 +384,12 @@ struct Bridge {
     write_counted: unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32, *const u8) -> u32,
     charge: unsafe extern "C" fn(*mut c_void, u64),
     budget: unsafe extern "C" fn(*mut c_void) -> u64,
+    exit: unsafe extern "C" fn(*mut c_void, u64),
 }
 
 impl Bridge {
-    /// What `h2bridge_layout_v2` must report: each slot's offset, then the size.
-    const LAYOUT: [usize; 16] = [
+    /// What `h2bridge_layout_v3` must report: each slot's offset, then the size.
+    const LAYOUT: [usize; 17] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -401,6 +405,7 @@ impl Bridge {
         std::mem::offset_of!(Bridge, write_counted),
         std::mem::offset_of!(Bridge, charge),
         std::mem::offset_of!(Bridge, budget),
+        std::mem::offset_of!(Bridge, exit),
         size_of::<Bridge>(),
     ];
 }
@@ -430,6 +435,15 @@ unsafe extern "C" fn cb_write_counted(c: *mut c_void, pc: u32, addr: u32, width:
 
 unsafe extern "C" fn cb_charge(c: *mut c_void, n: u64) {
     unsafe { &mut *c.cast::<Ctx>() }.spend(n);
+}
+
+/// `h2abi_v1_exit`: this host has no inline view to settle, so the charge.
+unsafe extern "C" fn cb_exit(c: *mut c_void, n: u64) {
+    let ctx = unsafe { &mut *c.cast::<Ctx>() };
+    ctx.exits += 1;
+    if n != 0 {
+        ctx.spend(n);
+    }
 }
 
 unsafe extern "C" fn cb_budget(c: *mut c_void) -> u64 {
@@ -695,12 +709,12 @@ impl Generated {
                 return Err(format!("module ABI {} != host {ABI_VERSION}", version()));
             }
             let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
-                lib.get(b"h2bridge_layout_v2").map_err(|e| e.to_string())?;
+                lib.get(b"h2bridge_layout_v3").map_err(|e| e.to_string())?;
             if let Some(slot) = (0..Bridge::LAYOUT.len()).find(|&i| layout(i as u32) != Bridge::LAYOUT[i]) {
                 return Err(format!("bridge.c and host Bridge disagree at layout slot {slot}"));
             }
             let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge, usize) -> u32> =
-                lib.get(b"h2bridge_install_v2").map_err(|e| e.to_string())?;
+                lib.get(b"h2bridge_install_v3").map_err(|e| e.to_string())?;
             let bridge = Bridge {
                 read: cb_read,
                 write: cb_write,
@@ -717,6 +731,7 @@ impl Generated {
                 write_counted: cb_write_counted,
                 charge: cb_charge,
                 budget: cb_budget,
+                exit: cb_exit,
             };
             if install(&bridge, size_of::<Bridge>()) != 1 {
                 return Err("bridge table size rejected".into());

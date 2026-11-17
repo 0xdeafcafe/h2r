@@ -32,12 +32,14 @@ import { openAccountRequest } from "./account";
 import { mockGameArt } from "./gameart";
 import { Social } from "./social";
 import { Sessions } from "./sessions";
+import { streamAuthStep } from "./streamauth";
 import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
 import { campaignHook } from "./campaign";
 import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
+import { MockRecovery } from "./recovery";
 import { Content, customFor } from "./content";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
@@ -55,6 +57,28 @@ console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of hist
 // Friends and teams (mock/social.ts): seeded before the world goes live.
 const social = new Social(world);
 social.seed();
+// H2_MOCK_HOPPER=1: a stand-in playlist file (GET/PUT /v1/titles/4D530064/hopper)
+// so the Halo admin's playlist builder has something to edit. Invented
+// playlists and plain numbers: no game data. Without it the endpoint is a
+// 404, like a server where nobody has imported the game's file yet.
+const MOCK_PLAYLISTS: Array<[string, string, Array<[number, string, number, boolean]>]> = [
+  ["Rumble Pit", "Every player for themselves.", [[1, "Slayer", 2, false], [2, "Oddball", 3, false]]],
+  ["Team Rumble", "Small teams, quick games.", [[3, "Team Slayer", 2, true], [1, "Team CTF", 1, true], [4, "Team King", 4, true]]],
+  ["Big Team Picnic", "Large teams on large maps.", [[5, "Team Assault", 9, true], [6, "Territories", 8, true]]],
+  ["Doubles", "Two on two.", [[2, "Doubles Slayer", 2, true]]],
+];
+let hoppers = Array.from({ length: 16 }, (_, index) => {
+  const p = MOCK_PLAYLISTS[index];
+  const recs = (p?.[2] ?? [[1, "Slayer", 2, false]]).map(([id, name, engine, team]) => ({
+    id, string: "", flags: 0, dwords: [100, 0] as [number, number], variant: { name, engine, team },
+  }));
+  return {
+    index, type: p ? 2 : 1, status: 1, record_count: recs.length, name: p ? `playlist_${index}` : "",
+    title: p?.[0] ?? `Hidden ${index + 1}`, description: p?.[1] ?? "", ranges: [0, 0, 0] as [number, number, number],
+    dwords: Array.from({ length: 18 }, () => 0), records: recs,
+  };
+});
+
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
 // Open sessions for the dashboard's "find a game" (mock/sessions.ts).
 // The stats summary (mock/stats.ts): a made-up month before the simulated
@@ -92,6 +116,8 @@ if (furniture) {
 world.run();
 
 const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
+// Account recovery (mock/recovery.ts): TOTP codes and taking an account over.
+const recovery = new MockRecovery(world);
 const content = new Content(world, admin);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
@@ -106,6 +132,8 @@ interface StreamData {
   from: number | null;
   exclude: Set<string> | null;
   types: Set<string> | null;
+  /** `?auth=1`: waiting for the auth message before the replay. */
+  waiting: boolean;
 }
 
 function wants(d: StreamData, type: string) {
@@ -181,6 +209,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     return err(400, "invalid", "expected a WebSocket upgrade");
   }
 
+  const rec = await recovery.handle(req, u);
+  if (rec) return json(rec.body, rec.status);
   const soc = await social.handle(req, u);
   if (soc) return json(soc.body, soc.status);
   const ses = sessions.handle(req, u);
@@ -203,7 +233,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     if (!/^[A-Za-z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/.test(tag) || tag.length > 15) return err(400, "invalid", "that gamertag isn't valid");
     if (world.accountByTag(tag)) return err(409, "conflict", "gamertag taken");
     const a = world.createExternalAccount(tag, opened.jwk);
-    return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}` }, 201);
+    return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}`, recovery: await recovery.setup(a.xuid, a.gamertag) }, 201);
   }
   if ((m = path.match(/^\/v1\/accounts\/by-xuid\/([0-9a-fA-F]{16})\/keys$/))) {
     const a = world.accounts.get(m[1]!.toLowerCase());
@@ -305,6 +335,22 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     }
     return m[1]!.toUpperCase() === "4D530064" ? json(motd) : err(404, "not_found", "no message of the day");
   }
+  if ((m = path.match(/^\/v1\/titles\/([^/]+)\/hopper$/)) && process.env.H2_MOCK_HOPPER === "1") {
+    // Mock only: no token check; a PUT replaces the hoppers it names (variants kept by position).
+    if (req.method === "PUT") {
+      type Put = Omit<(typeof hoppers)[number], "records"> & { records: Array<{ id: number; string: string; flags: number; dwords: [number, number]; from?: number }> };
+      const b = (await req.json().catch(() => null)) as { hoppers?: Put[] } | null;
+      if (!b || !Array.isArray(b.hoppers)) return err(400, "invalid", "{hoppers} expected");
+      for (const h of b.hoppers) {
+        const old = hoppers[h.index];
+        if (!old) continue;
+        hoppers[h.index] = { ...h, record_count: h.records.length, records: h.records.map(({ from: _from, ...r }, i) => ({ ...r, variant: old.records[_from ?? i]?.variant ?? old.records[0]!.variant })) };
+      }
+      const bytes = JSON.stringify(hoppers);
+      return json({ hoppers, published: { name: "multiplayer_hopper.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } });
+    }
+    return json({ hoppers });
+  }
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/files\/([^/]+)$/))) {
     const key = `${m[1]!.toLowerCase()}/${m[2]}`;
     if (req.method === "PUT") {
@@ -351,6 +397,7 @@ const server = Bun.serve<WsData>({
       const data: StreamData = {
         kind: "stream", games: csv(games), from: from === null ? null : Number(from),
         exclude: csv(u.searchParams.get("exclude")), types: csv(u.searchParams.get("types")),
+        waiting: ["1", "true"].includes(u.searchParams.get("auth") ?? ""),
       };
       if (srv.upgrade(req, { data })) return undefined;
       return err(400, "invalid", "expected a WebSocket upgrade");
@@ -359,39 +406,55 @@ const server = Bun.serve<WsData>({
   },
   websocket: {
     open(ws) {
-      if (ws.data.kind !== "stream") return;
-      const from = ws.data.from;
-      // Replay events after `from` (exclusive), then caught_up, then live.
-      const d = ws.data as StreamData;
-      const start = from === null ? world.log.length : Math.max(0, from);
-      for (let i = start; i < world.log.length; i++) {
-        const ev = world.log[i]!;
-        if (wants(d, ev.type)) ws.send(JSON.stringify({ kind: "event", event: ev }));
-      }
-      ws.send(JSON.stringify({ kind: "caught_up", position: world.log.length }));
-      readers.add(ws);
+      if (ws.data.kind !== "stream" || ws.data.waiting) return;
+      replay(ws);
     },
     message(ws, raw) {
-      if (ws.data.kind !== "ingest") return;
-      let msg: { kind?: string; token?: string; frame?: Frame; game_id?: string; events?: Array<{ type: string; data: unknown }> };
-      try { msg = JSON.parse(String(raw)); } catch { return; }
-      const d = ws.data as IngestData;
-      if (!d.authed) {
-        if (msg.kind === "auth" && msg.token) { d.authed = true; return; }
-        ws.close(4401, "first message must be auth");
+      if (ws.data.kind === "stream") {
+        const d = ws.data as StreamData;
+        const step = streamAuthStep(d.waiting, raw);
+        if (step === "close") ws.close(4401, "first message must be auth");
+        else if (step === "replay") { d.waiting = false; replay(ws); }
         return;
       }
-      if (msg.kind === "frame" && msg.frame) {
-        const s = JSON.stringify({ kind: "frame", frame: msg.frame });
-        for (const r of readers) r.send(s);
-      } else if (msg.kind === "events" && msg.game_id && msg.events) {
-        world.append(`game-${msg.game_id}`, msg.events, null);
-      }
+      ingestMessage(ws, raw);
     },
     close(ws) {
       readers.delete(ws);
     },
   },
 });
+
+/** Replays events after `from` (exclusive), then caught_up, then live. */
+function replay(ws: import("bun").ServerWebSocket<WsData>) {
+  const d = ws.data as StreamData;
+  const from = d.from;
+  const start = from === null ? world.log.length : Math.max(0, from);
+  for (let i = start; i < world.log.length; i++) {
+    const ev = world.log[i]!;
+    if (wants(d, ev.type)) ws.send(JSON.stringify({ kind: "event", event: ev }));
+  }
+  ws.send(JSON.stringify({ kind: "caught_up", position: world.log.length }));
+  readers.add(ws);
+}
+
+/** An ingest socket's message: auth first, then frames and events. */
+function ingestMessage(ws: import("bun").ServerWebSocket<WsData>, raw: string | Buffer) {
+  if (ws.data.kind !== "ingest") return;
+  let msg: { kind?: string; token?: string; frame?: Frame; game_id?: string; events?: Array<{ type: string; data: unknown }> };
+  try { msg = JSON.parse(String(raw)); } catch { return; }
+  const d = ws.data as IngestData;
+  if (!d.authed) {
+    if (msg.kind === "auth" && msg.token) { d.authed = true; return; }
+    ws.close(4401, "first message must be auth");
+    return;
+  }
+  if (msg.kind === "frame" && msg.frame) {
+    const s = JSON.stringify({ kind: "frame", frame: msg.frame });
+    for (const r of readers) r.send(s);
+  } else if (msg.kind === "events" && msg.game_id && msg.events) {
+    world.append(`game-${msg.game_id}`, msg.events, null);
+  }
+}
 
 console.log(`[mock] h2 live mock on http://${server.hostname}:${server.port} (${world.liveGames().length} live games)`);

@@ -22,15 +22,33 @@
 //! - `depth`/`cap`: C nesting, which uses host stack.
 //! - `frames`: direct CALL/JUMPs whose handler handed a transfer up without
 //!   returning inline; the runner replays them into the shadow stack.
+//! - `view`: the inline RAM view a direct caller lends the handler it is
+//!   invoking, so that handler skips `h2abi_v1_fast_acquire` and the
+//!   release (module feature
+//!   [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)). The
+//!   callee's entry clears it; [`crate::ffi`] clears it before every native
+//!   invocation from Rust.
 //!
 //! [`edit_dispatch`]: crate::Runtime::edit_dispatch
 use crate::{ExecCtx, GuestFn, abi, dispatch::Handler};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-/// Slots of the per-context table; `h2_direct_slot` in h2gen.h hashes the
-/// same way.
-pub(crate) const SLOTS: usize = 256;
+/// Room in the per-context table; `h2_direct_slot` in h2gen.h hashes the
+/// same way, into the first `slot_mask + 1`.
+pub(crate) const SLOTS: usize = 8192;
+/// Slots in use: a power of two up to [`SLOTS`] from `H2_DIRECT_SLOTS`
+/// (runtime environment), else 256.
+fn slots_in_use() -> u32 {
+    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("H2_DIRECT_SLOTS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|n| n.is_power_of_two() && *n as usize <= SLOTS)
+            .unwrap_or(256)
+    })
+}
 /// The deepest nesting the block has room to record.
 pub const MAX_DEPTH: u32 = 64;
 /// The default nesting cap: each level is one generated handler's host
@@ -64,20 +82,31 @@ pub(crate) struct DirectState {
     depth: u32,
     cap: u32,
     frames_len: u32,
-    _pad: u32,
+    /// A hold on the C RAM gate lent with `view`, or handed back to a
+    /// direct caller (h2gen.h `H2_DIRECT_GATE`); 0 outside generated code.
+    gate: u32,
     frames: [Frame; MAX_DEPTH as usize],
+    slot_mask: u32,
+    _pad2: u32,
     slots: [Slot; SLOTS],
+    /// The inline RAM view a direct caller lends its callee (module feature
+    /// [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)):
+    /// set just before the call, taken and cleared by the callee's entry.
+    view: *mut crate::ffi::FastAccess,
+    /// The uncharged access count lent with `view`, or handed back to a
+    /// direct caller (h2gen.h `H2_DIRECT_COUNT`); 0 outside generated code.
+    acc: u64,
 }
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<Slot>() == 24 && size_of::<Frame>() == 16);
-    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 24 * 256);
+    assert!(size_of::<DirectState>() == 40 + 16 * 64 + 8 + 24 * 8192 + 16);
 };
 
 /// `h2_direct_slot` in h2gen.h.
-fn slot_of(pc: u32) -> usize {
-    (pc ^ (pc >> 8)) as usize % SLOTS
+fn slot_of(pc: u32, mask: u32) -> usize {
+    ((pc ^ (pc >> 8)) & mask) as usize
 }
 
 /// The context's own block and the pointer generated code reads (the
@@ -112,17 +141,14 @@ impl Drop for Direct {
 
 impl Direct {
     pub(crate) fn new(runtime: &crate::Runtime) -> (Direct, DirectPtr) {
-        let state = Box::new(DirectState {
-            generation: runtime.dispatch_generation_ptr(),
-            interrupts: runtime.interrupts.pending_ptr(),
-            budget: 0,
-            depth: 0,
-            cap: DEFAULT_DEPTH,
-            frames_len: 0,
-            _pad: 0,
-            frames: [Frame::default(); MAX_DEPTH as usize],
-            slots: [Slot::default(); SLOTS],
-        });
+        // About 200 KiB: built in place, all zeros (every field's empty
+        // value: null pointers, None handlers), not on the stack.
+        // SAFETY: all-zero bytes are a valid DirectState.
+        let mut state: Box<DirectState> = unsafe { Box::new_zeroed().assume_init() };
+        state.generation = runtime.dispatch_generation_ptr();
+        state.interrupts = runtime.interrupts.pending_ptr();
+        state.cap = DEFAULT_DEPTH;
+        state.slot_mask = slots_in_use() - 1;
         let owned = NonNull::from(Box::leak(state));
         (Direct { owned }, DirectPtr(owned.as_ptr()))
     }
@@ -167,6 +193,15 @@ impl ExecCtx {
     /// [`DEFAULT_DEPTH`]). A call past it goes through the runner.
     pub fn set_direct_call_depth(&mut self, depth: u32) {
         self.direct.state().cap = depth.min(MAX_DEPTH);
+    }
+    /// About to invoke a native handler from Rust: nothing lends it a view,
+    /// whatever a direct call into a handler that does not take one left.
+    #[inline]
+    pub(crate) fn direct_clear_view(&mut self) {
+        let s = self.direct.state();
+        s.view = std::ptr::null_mut();
+        s.gate = 0;
+        s.acc = 0;
     }
     /// The runner is about to invoke a handler with `remaining` transfers
     /// left.
@@ -213,12 +248,34 @@ impl ExecCtx {
     pub(crate) fn set_direct_budget(&mut self, budget: u64) {
         self.direct.state().budget = budget;
     }
+    /// What entry `pc`'s slot holds for `handler` at dispatch `generation`
+    /// (`H2_ENTRY_STATS`).
+    pub(crate) fn direct_slot_state(&self, pc: u32, handler: &Handler, generation: u64) -> crate::entry_stats::Slot {
+        use crate::entry_stats::Slot as S;
+        // SAFETY: as `state`; read only, between invocations.
+        let d = unsafe { self.direct.owned.as_ref() };
+        let s = d.slots[slot_of(pc, d.slot_mask)];
+        let f = match handler {
+            Handler::Native(f) => Some(*f),
+            _ => None,
+        };
+        if s.handler.is_none() && s.pc == 0 {
+            S::Empty
+        } else if s.pc != pc {
+            S::Collision
+        } else if s.generation == generation && s.handler.map(|h| h as usize) == f.map(|h| h as usize) {
+            S::Hit
+        } else {
+            S::Stale
+        }
+    }
     /// The runner resolved entry `pc` to `handler` with selector `pc` at
     /// dispatch `generation`.
     #[inline]
     pub(crate) fn note_direct(&mut self, pc: u32, handler: &Handler, generation: u64) {
         if let Handler::Native(f) = handler {
-            self.direct.state().slots[slot_of(pc)] = Slot {
+            let s = self.direct.state();
+            s.slots[slot_of(pc, s.slot_mask)] = Slot {
                 generation,
                 handler: Some(*f),
                 pc,
@@ -233,9 +290,11 @@ mod tests {
     use super::*;
     #[test]
     fn slots_hash_as_the_header_does() {
-        // h2gen.h: (pc ^ (pc >> 8)) & (H2_DIRECT_SLOTS - 1u)
+        // h2gen.h: (pc ^ (pc >> 8)) & d->slot_mask
         for pc in [0u32, 0x1234_5678, 0xffff_ffff, 0x0040_0100] {
-            assert_eq!(slot_of(pc), ((pc ^ (pc >> 8)) & 255) as usize);
+            assert_eq!(slot_of(pc, 255), ((pc ^ (pc >> 8)) & 255) as usize);
+            assert_eq!(slot_of(pc, 4095), ((pc ^ (pc >> 8)) & 4095) as usize);
         }
+        assert!(slots_in_use().is_power_of_two() && slots_in_use() as usize <= SLOTS);
     }
 }

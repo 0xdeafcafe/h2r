@@ -4,6 +4,8 @@
 import { createRoot, createSignal, createMemo } from "solid-js";
 import { deleteAccount, loadAccounts, saveAccount, type LocalAccount } from "./account";
 import { live } from "./live";
+import { issueToken } from "../admin/token";
+import { onSignInChange } from "./signin-watch";
 
 const ACTIVE = "h2live.active";
 
@@ -26,6 +28,11 @@ export const identity = createRoot(() => {
     const x = activeMap()[live.server().base];
     return here().find((a) => a.xuid === x) ?? null;
   });
+  // Signing in or out reads everything again as the new reader.
+  const reader = createMemo(() => ({ base: live.server().base, who: me()?.xuid ?? null }), undefined, {
+    equals: (a, b) => a.base === b.base && a.who === b.who,
+  });
+  onSignInChange(reader, () => live.reload());
 
   return {
     accounts: here,
@@ -49,6 +56,14 @@ export const identity = createRoot(() => {
       if (me()?.xuid === a.xuid) this.signOut();
     },
   };
+});
+
+// Reads that depend on who reads (a game that may be a private co-op one)
+// go as the signed-in account; signed out, or before the server said who it
+// is, they are anonymous.
+live.setReader(async () => {
+  const me = identity.me(), wk = live.wellKnown();
+  return me && wk ? issueToken(me, wk.id, "read") : null;
 });
 
 export function download(name: string, text: string) {

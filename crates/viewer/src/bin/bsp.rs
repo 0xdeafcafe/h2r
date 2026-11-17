@@ -11,40 +11,21 @@
 #[path = "../disc.rs"]
 #[allow(dead_code)]
 mod disc;
+#[path = "../level.rs"]
+mod level;
 #[path = "../out.rs"]
 #[allow(dead_code)]
 mod out;
 
 use anyhow::{Context, Result, bail};
 use disc::{Disc, DiscResources};
-use map::{CacheType, Map, ResourceFile, TagId};
+use level::scenario_bsps;
+use map::{CacheType, ResourceFile};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use tags::geometry::{Section, TagView, VertexKind};
+use tags::geometry::{Section, VertexKind};
 use tags::structure::{GeometryHeader, Lightmap, StructureRender, load_bucket};
 use tags::{DecodedTag, TagData};
-
-type MapReader = Map<BufReader<File>>;
-
-/// (bsp, lightmap) pairs from the scenario's BSP block (+0x210, stride 0x44).
-fn scenario_bsps(map: &mut MapReader) -> Result<Vec<(TagId, Option<TagId>)>> {
-    let scenario = map.scenario().context("no scenario")?.clone();
-    let location = scenario.location.context("scenario has no payload")?;
-    let bytes = map.read_tag_bytes(scenario.id)?;
-    let view = TagView::new(&bytes, location.address);
-    let mut out = Vec::new();
-    for b in view.block(view.at(0, 0x218)?, 0x210, 0x44)? {
-        let word = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
-        let lightmap = word(0x1c);
-        out.push((
-            TagId(word(0x14)),
-            (lightmap != u32::MAX).then_some(TagId(lightmap)),
-        ));
-    }
-    Ok(out)
-}
 
 #[derive(Default)]
 struct Stats {

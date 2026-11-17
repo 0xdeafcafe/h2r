@@ -184,11 +184,11 @@ describe("game type labels", () => {
     resetPos();
     const s = initialState();
     applyEvents(s, [
-      ev("GameStarted", "game-x", { game_id: "x", map: "01a_dock", mode: "campaign", kind: "campaign", difficulty: "Heroic", online: true, team_play: false, players: [] }),
+      ev("GameStarted", "game-x", { game_id: "x", map: "01a_dock", mode: "campaign", kind: "campaign", difficulty: "Heroic", online: false, team_play: false, players: [] }),
       ev("GameStarted", "game-y", { game_id: "y", map: "teacup", mode: "multiplayer", kind: "matchmaking", playlist: "Quad Squad", playlist_id: "quad", online: "yes", team_play: false, players: [] }),
       ev("GameStarted", "game-z", { game_id: "z", map: "teacup", mode: "multiplayer", team_play: false, players: [] }),
     ]);
-    expect(s.games.x).toMatchObject({ kind: "campaign", difficulty: "heroic", online: true, playlist: null });
+    expect(s.games.x).toMatchObject({ kind: "campaign", difficulty: "heroic", online: false, playlist: null });
     expect(s.games.y).toMatchObject({ kind: "matchmaking", playlist: "Quad Squad", playlist_id: "quad", online: null });
     expect(s.games.z).toMatchObject({ kind: null, playlist: null, difficulty: null, online: null });
   });

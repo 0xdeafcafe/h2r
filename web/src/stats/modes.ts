@@ -12,8 +12,8 @@ export function spotlightTab(asked: string | null | undefined, anyLive: boolean)
   return SPOTLIGHT.includes(asked as SpotlightTab) ? (asked as SpotlightTab) : anyLive ? "live" : "recent";
 }
 
-export type HistoryTab = "all" | "team" | "ffa" | "campaign";
-const HISTORY: HistoryTab[] = ["all", "team", "ffa", "campaign"];
+export type HistoryTab = "all" | "team" | "ffa" | "campaign" | "coop";
+const HISTORY: HistoryTab[] = ["all", "team", "ffa", "campaign", "coop"];
 
 /** A player's game history tab; multiplayer ("all") by default. */
 export function historyTab(asked: string | null | undefined): HistoryTab {
@@ -50,7 +50,7 @@ export function statsNav(me: { gamertag: string } | null, admin: boolean): NavIt
     { label: "Players", href: "/stats/players", end: true },
     { label: "Clans", href: "/stats/clans" },
     { label: "Event Log", href: "/stats/events" },
-    ...(admin ? [{ label: "Admin", href: "/stats/admin", end: true }] : []),
+    ...(admin ? [{ label: "Halo Admin", href: "/stats/admin", end: true }] : []),
     { label: "Server", href: "/dash/server" },
   ];
 }

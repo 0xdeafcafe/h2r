@@ -11,6 +11,8 @@ export interface SocketLike {
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
   close(): void;
+  /** Sends a text message (the auth message). */
+  send?(data: string): void;
 }
 
 export type StreamStatus = "idle" | "connecting" | "catching-up" | "live" | "reconnecting" | "stopped";
@@ -23,8 +25,13 @@ export interface StreamHandlers {
 }
 
 export interface StreamOptions {
-  /** Builds the socket URL. `from` is null for a fresh start from the beginning. */
-  url(from: number | null): string;
+  /** Builds the socket URL. `from` is null for a fresh start from the
+   *  beginning; `auth` asks the server to wait for an auth message. */
+  url(from: number | null, auth?: boolean): string;
+  /** A `read` token for each (re)connect, sent as the first message so the
+   *  server shows this reader what its account may see (a friends-only
+   *  co-op game); null reads anonymously. */
+  auth?(): Promise<string | null>;
   connect(url: string): SocketLike;
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
@@ -47,7 +54,7 @@ export class StreamClient {
   private sock: SocketLike | null = null;
   private timer: unknown = null;
   private stopped = false;
-  private readonly o: Required<StreamOptions>;
+  private readonly o: Required<Omit<StreamOptions, "auth">> & Pick<StreamOptions, "auth">;
   /** Packed frame streams (`?frames=packed`); a new socket starts afresh. */
   private frames = new FrameDecoder();
 
@@ -92,16 +99,33 @@ export class StreamClient {
 
   private open() {
     this.setStatus(this.attempt === 0 ? "connecting" : "reconnecting");
+    const opened = ++this.opens;
+    const auth = this.o.auth;
+    // Without a reader, connect at once (anonymously).
+    if (!auth) { this.connect(null); return; }
+    void auth().catch(() => null).then((token) => {
+      if (this.stopped || opened !== this.opens) return;
+      this.connect(token);
+    });
+  }
+
+  private opens = 0;
+
+  private connect(token: string | null) {
     let sock: SocketLike;
     try {
-      sock = this.o.connect(this.resumeUrl());
+      sock = this.o.connect(this.o.url(this.position, token !== null));
     } catch {
       this.scheduleReconnect();
       return;
     }
     this.sock = sock;
     this.frames = new FrameDecoder();
-    sock.onopen = () => { if (this.sock === sock) this.setStatus("catching-up"); };
+    sock.onopen = () => {
+      if (this.sock !== sock) return;
+      if (token !== null) sock.send?.(JSON.stringify({ kind: "auth", token }));
+      this.setStatus("catching-up");
+    };
     sock.onmessage = (m) => { if (this.sock === sock) this.handle(m.data); };
     sock.onerror = () => { /* onclose follows */ };
     sock.onclose = () => {

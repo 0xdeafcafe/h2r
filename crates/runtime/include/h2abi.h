@@ -70,6 +70,10 @@ uint32_t h2abi_v1_write_counted(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
                                 uint32_t width, uint32_t alignment, const uint8_t *value);
 void h2abi_v1_charge(ExecCtxOpaque *, uint64_t accesses);
 uint64_t h2abi_v1_budget(ExecCtxOpaque *);
+/* A handler's way out, once: settles an H2_FASTMEM view's count as
+ * h2abi_v1_fast_release does, then spends `accesses` (none when 0) as
+ * h2abi_v1_charge does. Replaces the pair at generated exits; both stay. */
+void h2abi_v1_exit(ExecCtxOpaque *, uint64_t accesses);
 
 /* Optional H2_PERF=1 generated counters, batched once at each handler exit.
  * Extension symbol only: ordinary ABI v2 modules do not require it. */

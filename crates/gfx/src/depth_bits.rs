@@ -212,6 +212,7 @@ impl DepthBits {
             ],
         });
         {
+            crate::churn::side_pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("gfx depth bits"),
                 timestamp_writes: None,

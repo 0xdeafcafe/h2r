@@ -114,9 +114,18 @@
 @keyframes dx-ribbon { from { transform: rotate(-3deg); } to { transform: rotate(4deg); } }
 @keyframes dx-pulse { 50% { transform: scale(1.08); opacity: .78; } }
 
-.dx-orb-count { position: absolute; left: calc(var(--u) * 196); top: calc(var(--u) * 536); width: calc(var(--u) * 300); display: flex; justify-content: center; align-items: center; gap: calc(var(--u) * 8); font-size: calc(var(--u) * 10.5); letter-spacing: .18em; color: var(--g-ink-soft); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
+.dx-orb-count { position: absolute; left: calc(var(--u) * 96); top: calc(var(--u) * 536); width: calc(var(--u) * 500); display: flex; justify-content: center; align-items: center; gap: calc(var(--u) * 8); white-space: nowrap; overflow: hidden; font-size: calc(var(--u) * 10.5); letter-spacing: .18em; color: var(--g-ink-soft); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
 .dx-orb-count b { color: var(--g-pale); font-weight: 700; }
 .dx-orb-count i { width: calc(var(--u) * 4); height: calc(var(--u) * 4); border-radius: 50%; background: var(--g-lime); }
+/* The server's name shrinks first (ellipsis) so the counts always show whole. */
+.dx-orb-count > * { flex: none; }
+.dx-orb-count .dx-orb-server { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--g-pale); }
+.dx-orb-me { position: absolute; left: calc(var(--u) * 96); top: calc(var(--u) * 512); width: calc(var(--u) * 500); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--f-cond); font-weight: 600; font-size: calc(var(--u) * 18); letter-spacing: .12em; text-transform: none; color: var(--g-pale); text-shadow: 0 0 calc(var(--u) * 8) rgba(120, 255, 40, .35), 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
+.dx-menu .dx-orb-me { animation: dx-fade .4s .22s both; }
+/* A menu item that needs an account: greyed, with why. */
+.dx-item--locked .dx-bar { filter: saturate(.25) brightness(.75); }
+.dx-item--locked .dx-bar-text { opacity: .7; }
+.dx-bar-hint { position: relative; z-index: 2; margin-left: auto; padding-left: calc(var(--u) * 12); font: 600 calc(var(--u) * 12.5) var(--f-cond); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #a9c98a); }
 /* The message-of-the-day header, under the count: two lines at most. */
 .dx-motd { position: absolute; left: calc(var(--u) * 96); top: calc(var(--u) * 560); width: calc(var(--u) * 500); margin: 0; text-align: center; font-family: var(--f-cond); font-weight: 500; font-size: calc(var(--u) * 15); line-height: 1.25; letter-spacing: .08em; color: var(--g-pale); text-shadow: 0 0 calc(var(--u) * 6) rgba(120, 255, 40, .3), 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 
@@ -183,6 +192,8 @@
 .dx-prompt { position: absolute; z-index: 4; display: flex; align-items: center; gap: calc(var(--u) * 11); outline: none; }
 .dx-prompt--a { left: calc(var(--u) * 1018); top: calc(var(--u) * 632); }
 .dx-prompt--b { left: calc(var(--u) * 118); top: calc(var(--u) * 632); flex-direction: row-reverse; }
+.dx-prompt--x { left: calc(var(--u) * 1018); top: calc(var(--u) * 572); }
+.dx-btn--x b { color: #c8e6ff; }
 .dx-menu .dx-prompt--a { left: calc(var(--u) * 824); top: calc(var(--u) * 590); }
 /* A flat disc of jelly: a soft pale rim round plain green, the letter blocky and pale. */
 .dx-btn {
@@ -233,7 +244,10 @@
   /* The ring doesn't turn here: the items stack under the orb and the focus moves down them. */
   .dx-screen.dx-menu { transform-origin: calc(var(--u) * 200) calc(var(--u) * 176); }
   .dx-orb { left: calc(var(--u) * 200); top: calc(var(--u) * 176); width: calc(var(--u) * 196); height: calc(var(--u) * 196); margin: calc(var(--u) * -98) 0 0 calc(var(--u) * -98); }
-  .dx-orb-count { left: calc(var(--u) * 50); top: calc(var(--u) * 306); }
+  .dx-orb-count { left: calc(var(--u) * 16); top: calc(var(--u) * 306); width: calc(var(--u) * 368); }
+  .dx-orb-me { left: calc(var(--u) * 16); top: calc(var(--u) * 284); width: calc(var(--u) * 368); font-size: calc(var(--u) * 15); }
+  .dx-prompt--x { left: calc(var(--u) * 150); top: calc(var(--u) * 700); z-index: 6; }
+  .dx-bar-hint { font-size: calc(var(--u) * 10.5); }
   .dx-motd { left: calc(var(--u) * 24); top: calc(var(--u) * 326); width: calc(var(--u) * 352); font-size: calc(var(--u) * 13); -webkit-line-clamp: 1; line-clamp: 1; }
   .dx-arc { --bx: calc(var(--u) * 48); --bw: calc(var(--u) * 272); --bh: calc(var(--u) * 36); --pitch: calc(var(--u) * min(68, 320 / var(--n))); }
   .dx-item { --dr: 12 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 44 + var(--u) * 22 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 22), calc(var(--u) * 392 + var(--i) * var(--pitch))); }

@@ -19,9 +19,11 @@ import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
 import SkullIcon, { SkullBadges } from "../components/SkullIcon";
 import { filterBySkulls, formatSkullsParam, parseSkullsParam, skullTitle, skullsOfTier, toggleSkull } from "../lib/skulls";
+import { skullSummary } from "./skullSummary";
 import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, fireteam, gameTitle, hostName, playlist } from "./Side";
 import { motdMessages } from "../lib/motd";
 import { useMotd } from "../state/motd";
+import CoopGames from "./CoopGames";
 import { agoWords, dotDate, num, usDate } from "./fmt";
 
 type Tab = SpotlightTab;
@@ -156,26 +158,50 @@ function Featured(props: { game: GameState | undefined; online: number }) {
   );
 }
 
-/** Toggle chips for the skulls: a game must have had all the chosen ones on. */
+/** "Skulls" dropdown: icon toggles for the skulls (a game must have had all the chosen ones on),
+ *  with a one-line summary and a clear button beside it. Closed by default; Escape or an outside click closes it. */
 function SkullFilter(props: { wanted: number[]; onChange: (next: number[]) => void }) {
+  const [open, setOpen] = createSignal(false);
+  let root: HTMLDivElement | undefined;
+  let button: HTMLButtonElement | undefined;
+  createEffect(() => {
+    if (!open()) return;
+    const away = (e: Event) => { if (root && !root.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); button?.focus(); } };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", esc);
+    onCleanup(() => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); });
+  });
   return (
-    <div class="s-skull-filter" role="group" aria-label="Filter by skulls">
-      <For each={(["gold", "silver"] as const)}>
-        {(tier) => (
-          <div class="s-skull-tier" role="group" aria-label={`${tier === "gold" ? "Gold" : "Silver"} skulls`}>
-            <span>{tier === "gold" ? "Gold" : "Silver"}</span>
-            <For each={skullsOfTier(tier)}>
-              {(s) => (
-                <button type="button" class="s-skull-chip" aria-pressed={props.wanted.includes(s.index)} title={skullTitle(s.index)}
-                  onClick={() => props.onChange(toggleSkull(props.wanted, s.index))}>
-                  <SkullIcon index={s.index} size={18} title={false} />{s.name}
-                </button>
-              )}
-            </For>
-          </div>
-        )}
-      </For>
-      <Show when={props.wanted.length}><button type="button" class="s-linkbtn" onClick={() => props.onChange([])}>clear</button></Show>
+    <div class="s-skull-filter" ref={root}>
+      <button type="button" ref={button} class="s-skull-btn" aria-expanded={open()} aria-haspopup="true" aria-controls="s-skull-pop" onClick={() => setOpen(!open())}>
+        Skulls <span aria-hidden="true">{open() ? "\u25B4" : "\u25BE"}</span>
+      </button>
+      <Show when={props.wanted.length}>
+        <span class="s-skull-sum">{skullSummary(props.wanted)}</span>
+        <button type="button" class="s-skull-x" aria-label="Clear skull filter" title="Clear skull filter" onClick={() => props.onChange([])}>{"\u00D7"}</button>
+      </Show>
+      <Show when={open()}>
+        <div class="s-skull-pop" id="s-skull-pop" role="group" aria-label="Filter by skulls">
+          <For each={(["gold", "silver"] as const)}>
+            {(tier) => (
+              <div class="s-skull-tier" role="group" aria-label={`${tier === "gold" ? "Gold" : "Silver"} skulls`}>
+                <h4>{tier === "gold" ? "Gold" : "Silver"}</h4>
+                <div class="s-skull-grid">
+                  <For each={skullsOfTier(tier)}>
+                    {(s) => (
+                      <button type="button" class="s-skull-tog" aria-pressed={props.wanted.includes(s.index)} aria-label={s.name} title={skullTitle(s.index)}
+                        onClick={() => props.onChange(toggleSkull(props.wanted, s.index))}>
+                        <SkullIcon index={s.index} size={22} title={false} />
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
     </div>
   );
 }
@@ -297,6 +323,10 @@ export default function Games() {
                 {(g) => <GameItem game={g} />}
               </For>
               <Show when={pages() > 1}><div class="s-items-pager"><Pager page={pg()} pages={pages()} total={list().length} per={PER} onPage={setPage} /></div></Show>
+              <Show when={active() === "campaign"}>
+                <div class="s-items-more"><span>Co-op campaign games, played together</span></div>
+                <CoopGames />
+              </Show>
             </div>
           </div>
         </div>

@@ -106,7 +106,7 @@ nothing measurable. A ran while other builds were running, which made
 everything 2.4x slower, and slower unevenly: fsync-heavy file I/O and
 Metal suffer most. So the ms below come from B, and A's sampler is used
 only for fractions *inside* B's `slice` self time, where the two runs
-agree (A: 36.9% of the frame once file I/O is taken out; B: 38.1%). BOOT.md's
+agree (A: 36.9% of the frame once file I/O is taken out; B: 38.1%). docs/runtime/BOOT.md's
 quiet-machine number is 484 ms median. Expect every ms here to scale
 down by roughly 0.8 on an idle machine. The percentages are the
 portable part.
@@ -167,7 +167,7 @@ split B's `slice` self time (238 ms) by run A's sampler fractions.
 | 5 | Guest code\*: flat, the top function `0x0013b390` is 0.5% own time; inclusive leaders are `0x00016b90`, `0x0013b390`, `0x00224550`, `0x00246cd0`, `0x00372d6c` | ~43 | ~7.0% | codegen-opt |
 | 6 | `render encode`: wgpu render pass per draw | 41 | 6.6% | gfx-perf |
 | 7 | x87 soft-float\*: `Wf<8>` div/mul/add and the `atanh`/`log2`/`expm1`/`sin`/`cos` series | ~31 | ~5.0% | x87, codegen-opt |
-| 8 | GPU round trips: `surface readback` 14.9 (7 a frame, ~2 ms each), `GPU wait` 3.3, `surface write` 3.2 | 21 | 3.4% | d3d (BOOT.md blocker 3), gfx-perf |
+| 8 | GPU round trips: `surface readback` 14.9 (7 a frame, ~2 ms each), `GPU wait` 3.3, `surface write` 3.2 | 21 | 3.4% | d3d (docs/runtime/BOOT.md blocker 3), gfx-perf |
 | 9 | Other HLE overrides: the d3d write-barrier shadows `0xa0ff4xxx`, D3D entries such as `0x003f5cf0` (1960 calls a frame) | 15 | 2.5% | d3d, boot |
 | 10 | Runner and dispatch\*: `run_from`, `resolve`, `resolve_resume`, `handler::execute` | ~13 | ~2.1% | runtime |
 | 11 | `pushbuf drain` self: decode and state, without the draws | 12 | 1.9% | pushbuf-perf |
@@ -202,7 +202,7 @@ Ranked by expected win per unit of effort. The wins come from B's
 | 3 | **Fast accessors:** an inline host-pointer path in generated code for mapped RAM (one bounds check, then a load or store), with the write watch as a bit test on the store side only | runtime | 134 -> ~20 ms (-110) | medium: it depends on how much of `checked_start` the inline path can skip |
 | 4 | **VFS write metadata** deferred to flush/close (landed, 6eb79b6) | vfs | -84 during cache fill, about 0 afterwards | high |
 | 5 | **x87:** native f64 for ops whose precision control or operands do not need 64-bit mantissas, and native transcendentals where the guest result is rounded to double anyway | x87 / codegen-opt | 31 -> ~8 ms (-23) | low to medium: a fidelity trade-off |
-| 6 | **RTT write-back** reported as the device's own write (BOOT.md blocker 3) so render textures are not read back and re-uploaded; drop `D3DSWAP_FINISH`'s full poll | d3d, gfx-perf | 21 -> ~3 ms (-18) | medium |
+| 6 | **RTT write-back** reported as the device's own write (docs/runtime/BOOT.md blocker 3) so render textures are not read back and re-uploaded; drop `D3DSWAP_FINISH`'s full poll | d3d, gfx-perf | 21 -> ~3 ms (-18) | medium |
 | 7 | **Guest code** IR passes (flags, dead stores, register promotion across blocks) | codegen-opt | 43 -> ~25 ms (-18) | low: the profile is flat, with no hot spot |
 | 8 | Push-buffer decode | pushbuf-perf | 12 -> ~6 ms (-6) | medium, but small |
 | 9 | Hot overrides: no single guest function is worth it on this screen (top inclusive 2.3% of A, own 0.5%) | hot-overrides | <10 ms | high that it is small here; levels may differ |
@@ -269,7 +269,8 @@ Landed with this budget, with tests (docs/perf/perf.md lists every event):
   (`Runtime::memory_contention()`) and records a `memory lock wait` span.
 - `d3d` and `gfx` spans:
   - per-draw work: `draw`, `shader prepare`, `render encode`;
-  - pipeline-cache misses: `pipeline create`;
+  - waits on a pipeline still compiling: `pipeline wait` (these were
+    `pipeline create` spans when written, since renamed);
   - texture and surface transfers: `texture upload`, `surface write`,
     `surface snapshot`;
   - GPU round trips: `surface readback`, `pixel count readback`,

@@ -355,10 +355,10 @@ impl Gpu {
                 (
                     VertexProcessing::Program {
                         start: 0,
-                        microcode: passthrough(),
+                        microcode: passthrough().into(),
                     },
-                    Some(Box::new(w)),
-                    Box::new(words.render[..57].try_into().unwrap()),
+                    Some(std::sync::Arc::new(w)),
+                    std::sync::Arc::new(words.render[..57].try_into().unwrap()),
                 )
             }
             None => (
@@ -366,7 +366,7 @@ impl Gpu {
                     fvf: 0x004 | 0x040 | 0x080 | 0x100,
                 },
                 None,
-                Box::new(words.render[..57].try_into().unwrap()),
+                std::sync::Arc::new(words.render[..57].try_into().unwrap()),
             ),
         };
         let provided = attrs.iter().fold(0u16, |m, (r, _)| m | 1 << r);
@@ -393,7 +393,7 @@ impl Gpu {
                 vertex,
                 provided_inputs: provided,
                 vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],
-                constants: Box::new([[0.0; 4]; CONSTANTS]),
+                constants: std::sync::Arc::new([[0.0; 4]; CONSTANTS]),
                 // SetPixelShader's latch, from the definition it bound.
                 final_combiner_latch: pixel_shader.as_ref().is_some_and(|w| w[8] | w[9] != 0),
                 affine_projection: false,

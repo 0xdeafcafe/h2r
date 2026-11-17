@@ -344,6 +344,7 @@ mod tests {
             Some(&over),
             Some(&maps),
             hashes.clone(),
+            &[],
         )
         .unwrap();
         assert!(crate::map_override::map_id(&mut v, "level").is_some());

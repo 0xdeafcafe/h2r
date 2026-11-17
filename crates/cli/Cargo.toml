@@ -20,6 +20,15 @@ map.workspace = true
 xiso.workspace = true
 # Halo 1 maps and disc (`h2 h1`, `h2 import halo1`).
 h1map = { path = "../h1map" }
+# Halo 1 multiplayer maps converted (`h2 h1 convert`).
+h1convert = { path = "../h1convert" }
+# Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
+h1campaign = { path = "../h1campaign" }
+h1bitmaps = { path = "../h1bitmaps" }
+h1sounds = { path = "../h1sounds" }
+h1models = { path = "../h1models" }
+# Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
+h1objects = { path = "../h1objects" }
 movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true
@@ -30,6 +39,8 @@ ir.workspace = true
 anyhow.workspace = true
 sha2 = "0.10"
 boot.workspace = true
+# `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
+agent-proto = { path = "../agent-proto" }
 # Our settings (play --set, h2 settings).
 settings = { path = "../settings" }
 timeline = { path = "../timeline" }
@@ -47,11 +58,17 @@ asf = { path = "../asf" }
 wma = { path = "../wma" }
 live-proto.workspace = true
 live-server.workspace = true
+# `h2 live menubar` (docs/live/live-hosting.md "Menu bar app").
+live-menubar = { path = "../live-menubar" }
+# Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
+cloud-saves.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 # map.glb's surface pictures are JPEG where opaque (live_looks.rs).
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# map.glb.gz beside map.glb, for the art server to send compressed.
+flate2 = "1"
 # `h2 live account/motd` talk to the service over HTTP or HTTPS.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # `h2 live q events --follow` reads the event stream.

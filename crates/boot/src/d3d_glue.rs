@@ -40,8 +40,14 @@ impl Installed {
 /// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
 /// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
 /// `frame-NNNNN-1x.png` the 1x reference's, and the run report gives the
-/// view's counts. Halo's frame wait goes through
-/// `d3d::register_frame_wait` either way.
+/// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
+/// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
+/// too when the scale is 1. `H2_BOOT_GFX_LIGHTING_AB=1` draws a retail and
+/// an E3 view of the same run (`d3d::LightingAb`, at least 2x), compares
+/// them on every shadow-map frame and writes differing pairs as
+/// `frame-NNNNN-retail.png` and `frame-NNNNN-e3.png`. `H2_BOOT_GFX_SHADOWS=N` also writes the first
+/// N frames that sample a shadow map (`d3d_diag::samples_shadow_map`).
+/// Halo's frame wait goes through `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_with(rt, Headless::default()),
@@ -54,27 +60,107 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                 v => v.and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30),
             };
             let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
+            let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
-            let shots = |suffix: &'static str| {
+            // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
+            // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
+            // in every run of the same input) and show something, whatever
+            // `every` says. A cinematic draws its lights' shadow passes
+            // under a fade to black too; those frames are not written.
+            let shadow_shots: u64 = std::env::var("H2_BOOT_GFX_SHADOWS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            // `shadow_limit`: how many shadow-map frames it may add.
+            let shots = |suffix: &'static str, shadow_limit: u64| {
                 let dir = dir.clone();
                 let mut swaps = 0u64;
+                let mut shadows = 0u64;
                 move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, _flags, _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
-                    if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
+                    let regular = (swaps == 1 && every != u64::MAX) || swaps.is_multiple_of(every);
+                    let shadow = !regular
+                        && shadows < shadow_limit
+                        && crate::d3d_diag::samples_shadow_map(swaps);
+                    if !regular && !shadow {
                         return;
                     }
-                    if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}{suffix}.png"))) {
-                        eprintln!("boot: gfx screenshot {swaps}: {e}");
+                    let path = dir.join(format!("frame-{swaps:05}{suffix}.png"));
+                    match save_png(ctx, store, id, &path, shadow) {
+                        Ok(written) => shadows += u64::from(shadow && written),
+                        Err(e) => eprintln!("boot: gfx screenshot {swaps}: {e}"),
                     }
                 }
             };
-            if scale > 1 {
+            if std::env::var_os("H2_BOOT_GFX_LIGHTING_AB").is_some_and(|v| v != "0") {
+                // One run, both lighting modes: the 1x reference answers the
+                // guest; a retail view and an E3 view draw the same calls at
+                // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
+                // `frame-N-e3.png` are a pair from the same frame.
+                let scale = scale.max(2);
+                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0)));
+                // Every shadow-map frame is compared between the views; the
+                // first `H2_BOOT_GFX_SHADOWS` (default 40) that differ are
+                // written as pairs. `H2_BOOT_GFX_EVERY` writes both views'
+                // frames as usual.
+                let ab = Arc::new(Mutex::new(AbCompare::default()));
+                let pairs = if shadow_shots == 0 { 40 } else { shadow_shots };
+                let mut retail_shots = shots("-retail", 0);
+                let held = Arc::clone(&ab);
+                let mut retail_swaps = 0u64;
+                let retail_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
+                    retail_swaps += 1;
+                    if crate::d3d_diag::samples_shadow_map(retail_swaps) {
+                        match read_rgba(ctx, store, id) {
+                            Ok((px, _, _)) => held.lock().unwrap().pending = Some((retail_swaps, px)),
+                            Err(e) => eprintln!("boot: lighting A/B {retail_swaps}: {e}"),
+                        }
+                    }
+                    retail_shots(ctx, store, id, flags, gamma);
+                };
+                let mut e3_shots = shots("-e3", 0);
+                let held = Arc::clone(&ab);
+                let (dir_ab, mut e3_swaps, mut written) = (dir.clone(), 0u64, 0u64);
+                let e3_hook = move |ctx: &gfx::GfxContext, store: &gfx::surface::SurfaceStore, id, flags, gamma: Option<&[u8; 768]>| {
+                    e3_swaps += 1;
+                    if crate::d3d_diag::samples_shadow_map(e3_swaps) {
+                        let result = read_rgba(ctx, store, id).and_then(|(px, w, h)| {
+                            let retail = held.lock().unwrap().compare(e3_swaps, &px);
+                            if let Some(retail) = retail.filter(|_| written < pairs) {
+                                written += 1;
+                                write_png(&dir_ab.join(format!("frame-{e3_swaps:05}-retail.png")), &retail, w, h)?;
+                                write_png(&dir_ab.join(format!("frame-{e3_swaps:05}-e3.png")), &px, w, h)?;
+                            }
+                            Ok(())
+                        });
+                        if let Err(e) = result {
+                            eprintln!("boot: lighting A/B {e3_swaps}: {e}");
+                        }
+                    }
+                    e3_shots(ctx, store, id, flags, gamma);
+                };
+                let retail = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook));
+                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let mut b = d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference");
+                let (retail_report, e3_report) = (scale_report(b.reference_mut()), scale_report(&mut b));
+                let report: ExtraReport = Box::new(move || {
+                    format!("retail view: {}\ne3 view: {}\n{}", retail_report(), e3_report(), ab.lock().unwrap().report())
+                });
+                return if render_thread_requested() {
+                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                } else {
+                    install_with_report(rt, b, Some(report))
+                };
+            }
+            if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The reference answers the guest at 1x; the view, on the
                 // same device, renders at `scale` and presents.
-                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x")));
-                let view = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
+                let reference = configure_gfx(d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", shadow_shots)));
+                let view = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("", shadow_shots)));
                 let mut b = d3d::ScaledBackend::new(reference, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                b.set_lighting(lighting);
+                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); the guest sees a 1x reference");
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
                     install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
@@ -82,7 +168,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     install_with_report(rt, b, Some(report))
                 };
             }
-            let backend = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("")));
+            let backend = configure_gfx(d3d::GfxBackend::new(ctx).on_present(shots("", shadow_shots)));
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0.
@@ -161,7 +247,22 @@ fn save_png(
     store: &gfx::surface::SurfaceStore,
     id: gfx::surface::SurfaceId,
     path: &std::path::Path,
-) -> anyhow::Result<()> {
+    skip_black: bool,
+) -> anyhow::Result<bool> {
+    let (px, w, h) = read_rgba(ctx, store, id)?;
+    if skip_black && all_black(&px) {
+        return Ok(false);
+    }
+    write_png(path, &px, w, h)?;
+    Ok(true)
+}
+
+/// Surface `id`'s pixels as RGBA with opaque alpha, and its size.
+fn read_rgba(
+    ctx: &gfx::GfxContext,
+    store: &gfx::surface::SurfaceStore,
+    id: gfx::surface::SurfaceId,
+) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
     if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
@@ -172,12 +273,88 @@ fn save_png(
     for p in px.as_chunks_mut::<4>().0 {
         p[3] = 0xff; // X8R8G8B8 back buffer: alpha is undefined
     }
+    Ok((px, d.width, d.height))
+}
+
+fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(f, d.width, d.height);
+    let mut enc = png::Encoder::new(f, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()?.write_image_data(&px)?;
+    enc.write_header()?.write_image_data(px)?;
     Ok(())
+}
+
+/// The lighting A/B's comparison (`H2_BOOT_GFX_LIGHTING_AB`): the retail
+/// view presents a frame before the E3 view does (it is the E3 view's
+/// reference), so its image of each shadow-map frame is held here until
+/// the E3 view's arrives, and the two are compared.
+#[derive(Default)]
+struct AbCompare {
+    /// The retail view's image of a frame, waiting for the E3 view's.
+    pending: Option<(u64, Vec<u8>)>,
+    /// Shadow-map frames compared, those whose images differ, and those
+    /// that differ only by rounding (no channel by more than `AB_NOISE`).
+    compared: u64,
+    differ: u64,
+    noise: u64,
+    /// The first differing frames, for the report.
+    first: Vec<u64>,
+}
+
+impl AbCompare {
+    /// The E3 view's image `e3` of `frame`: compared with the retail
+    /// view's, if it was held. `Some(retail image)` when they differ.
+    fn compare(&mut self, frame: u64, e3: &[u8]) -> Option<Vec<u8>> {
+        let (f, retail) = self.pending.take()?;
+        if f != frame || retail.len() != e3.len() {
+            return None;
+        }
+        self.compared += 1;
+        if retail == e3 {
+            return None;
+        }
+        if !differs_beyond_noise(&retail, e3) {
+            self.noise += 1;
+            return None;
+        }
+        self.differ += 1;
+        if self.first.len() < 20 {
+            self.first.push(frame);
+        }
+        Some(retail)
+    }
+
+    fn report(&self) -> String {
+        let first: Vec<String> = self.first.iter().map(u64::to_string).collect();
+        format!(
+            "lighting A/B: {} of {} shadow-map frames differ between the views \
+             ({} more by rounding only){}",
+            self.differ,
+            self.compared,
+            self.noise,
+            if first.is_empty() { String::new() } else { format!(" (first: {})", first.join(", ")) }
+        )
+    }
+}
+
+/// The largest per-channel change the A/B treats as rounding: the two
+/// views take different shader variants, which can round a channel by one.
+const AB_NOISE: u8 = 2;
+
+/// Whether RGBA images `a` and `b` differ in some colour channel by more
+/// than `AB_NOISE` (alpha aside).
+fn differs_beyond_noise(a: &[u8], b: &[u8]) -> bool {
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .any(|(p, q)| (0..3).any(|i| p[i].abs_diff(q[i]) > AB_NOISE))
+}
+
+/// Whether RGBA pixels `px` are all black (alpha aside).
+fn all_black(px: &[u8]) -> bool {
+    px.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0])
 }
 
 /// The headless default: a `RecordingBackend` that forgets every call once
@@ -311,6 +488,9 @@ impl d3d::backend::Backend for Headless {
     }
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.0.drop_pixel_count(ticket)
+    }
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.0.pixel_count_unsubmitted(ticket)
     }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.0.can_sample_depth_surfaces()
@@ -626,6 +806,44 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    /// The A/B compares the E3 view's image with the retail view's of the
+    /// same frame only, counts what it compared, and hands back the
+    /// retail image when they differ by more than rounding.
+    #[test]
+    fn the_lighting_ab_compares_each_frames_two_views() {
+        let mut ab = AbCompare::default();
+        let px = |r: u8, a: u8| vec![r, 10, 10, a];
+        assert_eq!(ab.compare(5, &px(1, 9)), None, "nothing held");
+        ab.pending = Some((5, px(1, 9)));
+        assert_eq!(ab.compare(5, &px(1, 9)), None, "the same");
+        ab.pending = Some((6, px(1, 9)));
+        assert_eq!(ab.compare(7, &px(9, 9)), None, "another frame's");
+        ab.pending = Some((8, px(1, 9)));
+        assert_eq!(ab.compare(8, &px(9, 9)), Some(px(1, 9)));
+        ab.pending = Some((9, px(1, 9)));
+        assert_eq!(ab.compare(9, &px(3, 9)), None, "rounding only");
+        ab.pending = Some((10, px(1, 9)));
+        assert_eq!(ab.compare(10, &px(1, 200)), None, "alpha only");
+        assert_eq!(ab.pending, None);
+        assert_eq!(
+            ab.report(),
+            "lighting A/B: 1 of 4 shadow-map frames differ between the views \
+             (2 more by rounding only) (first: 8)"
+        );
+    }
+
+    /// A frame under a fade to black is all black whatever its alpha; one
+    /// lit pixel is not.
+    #[test]
+    fn a_faded_frame_is_all_black() {
+        let mut px = [0u8, 0, 0, 0xff].repeat(16);
+        assert!(all_black(&px));
+        px[3] = 0x40;
+        assert!(all_black(&px));
+        px[4 * 9 + 1] = 1;
+        assert!(!all_black(&px));
+    }
 
     #[test]
     fn the_render_thread_is_on_unless_zero() {

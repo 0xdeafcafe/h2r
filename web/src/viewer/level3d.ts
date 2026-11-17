@@ -1,15 +1,17 @@
 // What of a loaded level the 3D view shows, and the air around it: the
 // zones (`bsp_<n>`: the one in play, one picked, or all; cutscene zones on
 // request), the far scenery, the layers (decals, effects), the sky and the
-// fog. The scene hands it the glb once loaded and asks it to dress each
+// fog, the water's ripples and the weather (water3d.ts, weather3d.ts). The scene hands it the glb once loaded and asks it to dress each
 // frame before drawing; the toolbar reads `info()` and flips its switches.
 // Kept apart from the players, vehicles and machines.
 //
 // This file pulls in three.js, so it is only ever loaded lazily.
 
 import * as THREE from "three";
-import { SkyDome, fogRange, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
-import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneEntry, type ZonePick } from "./zones";
+import { FOG_CLEAR, SkyDome, gameFog, glowHaze, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
+import { waterUniforms } from "./water3d";
+import { WeatherLook, weatherOf } from "./weather3d";
+import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneBox, type ZoneEntry, type ZonePick } from "./zones";
 
 /** What the toolbar offers for a level. */
 export interface LevelInfo {
@@ -18,13 +20,14 @@ export interface LevelInfo {
   zones: ZoneEntry[];
   zoneCount: number;
   cinematicCount: number;
-  /** The zone the frames say is loaded, if any. */
+  /** The zone in play (the frames' and the players' word, viewer/zones.ts), if any. */
   active: number | null;
   backdrop: boolean;
   decals: boolean;
   effects: boolean;
   sky: boolean;
   fog: boolean;
+  weather: boolean;
 }
 
 export class LevelLook {
@@ -38,6 +41,14 @@ export class LevelLook {
   private effects = true;
   private skyOn = true;
   private fogOn = true;
+  private weatherOn = true;
+  private weather = new WeatherLook();
+  private hazeColour = new THREE.Color();
+  private hazeDensity = 0.002;
+  /** The uniforms the level's water shares (water3d.ts); `wet` once a
+   *  level has some. */
+  readonly water = waterUniforms();
+  wet = false;
   private sky: SkyDome | null = null;
   private skyInfo: SkyInfo | null = null;
   private haze: THREE.FogExp2;
@@ -46,10 +57,15 @@ export class LevelLook {
   private generation = 0;
   private centre = new THREE.Vector3();
   private radius = 1;
+  /** Each zone's extent in game coordinates, measured once a level is in. */
+  private boxes: ZoneBox[] = [];
 
   /** `gradient` is the view's own sky, used when a level has none. */
   constructor(private scene: THREE.Scene, private gradient: THREE.Texture, private changed: () => void) {
+    useGameFog();
     this.haze = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x7f9fb6, 0.002);
+    this.hazeColour.copy(this.haze.color);
+    scene.add(this.weather.group);
   }
 
   /** Takes a loaded level: finds its zones and layers wherever they are in
@@ -64,9 +80,24 @@ export class LevelLook {
       const label = typeof o.userData?.name === "string" && o.userData.name !== o.name ? o.userData.name : undefined;
       this.zones.push({ obj: o, name: o.name, cinematic: isCinematic(o.userData, o.name, assetExtras), label });
     });
+    root.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+    for (const z of this.zones) {
+      const bsp = bspNumber(z.name);
+      if (bsp === null || this.boxes.some((b) => b.bsp === bsp)) continue;
+      box.setFromObject(z.obj);
+      if (box.isEmpty()) continue;
+      // gl (x, y, z) is game (x, -z, y).
+      this.boxes.push({ bsp, cinematic: z.cinematic, min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] });
+    }
     this.skyInfo = skyOf(assetExtras);
     const c = skyColour(this.skyInfo);
     this.background = c ? new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace) : null;
+    // The water reflects the sky's colour (or its fog's, or the glow's).
+    const r = this.skyInfo?.clear ?? this.skyInfo?.fog?.colour ?? this.skyInfo?.glow?.colour;
+    if (r) this.water.uWaterSky.value.setRGB(r[0], r[1], r[2], THREE.SRGBColorSpace);
+    else this.water.uWaterSky.value.setRGB(0.55, 0.68, 0.8, THREE.SRGBColorSpace);
+    this.weather.adopt(weatherOf(assetExtras));
     if (this.skyInfo?.glb) {
       const dome = new SkyDome();
       void dome.load(skyUrl(mapUrl, this.skyInfo.glb)).then((ok) => {
@@ -82,20 +113,33 @@ export class LevelLook {
   clear() {
     this.generation++;
     this.zones = [];
+    this.boxes = [];
     this.layers = [];
     this.sky?.dispose();
     this.sky = null;
     this.skyInfo = null;
     this.background = null;
+    this.weather.clear();
+    this.wet = false;
     this.apply();
   }
 
-  /** The zone the frames say is loaded. */
-  setActive(bsp: number | null) {
-    if (bsp === this.active) return;
+  /** The zone in play; whether that changed it. */
+  setActive(bsp: number | null): boolean {
+    if (bsp === this.active) return false;
     this.active = bsp;
     this.apply();
+    return true;
   }
+
+  /** The zones' extents (game coordinates), cutscene ones marked. */
+  zoneBoxes(): readonly ZoneBox[] { return this.boxes; }
+  /** One zone's extent, if the level has it. */
+  zoneBox(bsp: number): ZoneBox | undefined { return this.boxes.find((b) => b.bsp === bsp); }
+  /** Whether the view follows the zone in play (no zone picked by hand). */
+  following(): boolean { return this.pick === "auto"; }
+  /** Whether cutscene zones are offered. */
+  cinematicOn(): boolean { return this.cinematic; }
 
   setPick(p: ZonePick) { this.pick = p; this.apply(); }
   setCinematic(on: boolean) { this.cinematic = on; this.apply(); }
@@ -104,6 +148,17 @@ export class LevelLook {
   setEffects(on: boolean) { this.effects = on; this.apply(); }
   setSky(on: boolean) { this.skyOn = on; this.apply(); }
   setFog(on: boolean) { this.fogOn = on; this.apply(); }
+  setWeather(on: boolean) { this.weatherOn = on; this.weather.setOn(on); this.apply(); }
+
+  /** Moves what moves by itself (the water's ripples, the weather) to
+   *  `time` (seconds), the weather around `focus`, `distance` from the
+   *  camera. Whether anything did: the view must be drawn again. */
+  animate(time: number, focus: THREE.Vector3, distance: number): boolean {
+    const weather = this.weather.active();
+    if (weather) this.weather.place(time, focus, distance);
+    if (this.wet) this.water.uWaterTime.value = time;
+    return weather || this.wet;
+  }
 
   info(): LevelInfo {
     const nodes = this.zones.map((z) => ({ name: z.name, cinematic: z.cinematic, label: z.label }));
@@ -117,7 +172,8 @@ export class LevelLook {
       decals: this.layers.some((l) => l.kind === "decals"),
       effects: this.layers.some((l) => l.kind === "effects"),
       sky: !!this.skyInfo,
-      fog: !!this.skyInfo?.fog,
+      fog: !!this.skyInfo?.fog || !!this.skyInfo?.glow,
+      weather: this.weather.has(),
     };
   }
 
@@ -128,6 +184,7 @@ export class LevelLook {
     for (const l of this.layers) l.obj.visible = l.kind === "decals" ? this.decals : this.effects;
     if (this.sky) this.sky.group.visible = this.skyOn;
     this.scene.background = this.skyOn && this.background ? this.background : this.gradient;
+    this.weather.group.visible = this.weatherOn;
     this.changed();
   }
 
@@ -135,12 +192,12 @@ export class LevelLook {
   skyShown(): boolean { return !!this.sky && this.skyOn; }
 
   /** Where the level is (its middle and radius in the scene): the far
-   *  haze is set by its size when the sky has no fog of its own, and the
-   *  sky's fog stretched to it. */
+   *  haze is set by its size when the sky has no fog of its own. */
   setExtent(centre: THREE.Vector3, radius: number) {
     this.centre.copy(centre);
     this.radius = radius;
     this.haze.density = 0.11 / radius;
+    this.hazeDensity = this.haze.density;
   }
 
   /** Before each draw: the sky around the camera, and the fog measured
@@ -149,13 +206,27 @@ export class LevelLook {
     if (this.sky?.group.visible) this.sky.follow(camera);
     const f = this.skyInfo?.fog;
     if (!this.fogOn) { this.scene.fog = null; return; }
-    if (!f) { this.scene.fog = this.haze; return; }
-    const r = fogRange(f, focus, camera.position.distanceTo(this.centre) + this.radius);
+    if (!f) {
+      // No fog of its own: the haze, in the colour of the sun-lit air
+      // when the sky gives one (Zanzibar), as thick as it says.
+      const g = this.skyInfo?.glow;
+      if (g) {
+        this.haze.color.setRGB(g.colour[0], g.colour[1], g.colour[2], THREE.SRGBColorSpace);
+        this.haze.density = glowHaze(g, this.radius);
+      } else {
+        this.haze.color.copy(this.hazeColour);
+        this.haze.density = this.hazeDensity;
+      }
+      this.scene.fog = this.haze;
+      return;
+    }
+    const r = gameFog(f, focus);
+    FOG_CLEAR.value = 1 - r.cap;
     this.fog.color.setRGB(f.colour[0], f.colour[1], f.colour[2], THREE.SRGBColorSpace);
     this.fog.near = r.near;
     this.fog.far = r.far;
     this.scene.fog = this.fog;
   }
 
-  dispose() { this.clear(); }
+  dispose() { this.clear(); this.weather.dispose(); }
 }

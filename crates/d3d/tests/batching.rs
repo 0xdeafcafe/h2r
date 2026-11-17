@@ -251,6 +251,7 @@ fn a_draw_that_can_discard_starts_its_own_render_pass() {
             d.backend.set_merge_passes(merge);
         }
         d.backend.set_merge_discards(false);
+        d.backend.set_merge_masks(false);
         set_states(&mut d, &mut m);
         tfactor_stage(&mut m);
         d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
@@ -314,6 +315,9 @@ fn a_draw_after_a_partly_masked_draw_starts_a_new_render_pass() {
         if let Some(merge) = merge {
             d.backend.set_merge_passes(merge);
         }
+        // The fast and exact rules split here; the loose default does not
+        // (the_loose_merge_rule_does_not_split_after_a_masked_draw).
+        d.backend.set_merge_masks(false);
         set_states(&mut d, &mut m);
         tfactor_stage(&mut m);
         d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
@@ -359,6 +363,39 @@ fn a_draw_after_a_partly_masked_draw_starts_a_new_render_pass() {
     assert!(pixels[0] == pixels[1], "merged and per-draw pixels differ");
 }
 
+/// The loose rule (`set_merge_masks`; the default, `H2_GFX_MERGE_PASSES=fast`
+/// or `exact` turn it off) keeps the draw after a partly masked one in the
+/// same render pass.
+#[test]
+fn the_loose_merge_rule_does_not_split_after_a_masked_draw() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    if std::env::var_os("H2_GFX_MERGE_PASSES").is_some() {
+        d.backend.set_merge_masks(true);
+    }
+    set_states(&mut d, &mut m);
+    tfactor_stage(&mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    quads(&mut m, &[(0.0, 0.0, 8.0, 8.0), (8.0, 0.0, 16.0, 8.0)]);
+    bind_quad(&mut d, &mut m);
+    let l = d3d::GuestLayout::HALO2;
+    let before = d.backend.batch_stats();
+    m.write_u32(l.render_state_slot(67), 0x0001_0101).unwrap(); // COLORWRITEENABLE = RGB
+    d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0x00FF_0000)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    m.write_u32(l.render_state_slot(67), 0x0101_0101).unwrap(); // ALL
+    d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_FF00)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+    let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+    let after = d.backend.batch_stats();
+    assert_eq!(after.render_passes - before.render_passes, 1);
+    assert_eq!(pixel(&px, 4, 4), [0, 0, 0xFF, 0xFF]);
+    assert_eq!(pixel(&px, 12, 4), [0, 0xFF, 0, 0xFF]);
+}
+
 /// Three provider draws, the middle one alpha-tested (its program can
 /// `discard`), the first writing `first_mask` (`COLORWRITEENABLE`) and the
 /// others all channels, or `first_mask` too with `same_mask`, with merged
@@ -374,6 +411,7 @@ fn discard_after(
 ) -> Option<(Vec<u8>, u64)> {
     let (mut d, mut m) = gpu()?;
     d.backend.set_merge_passes(merge);
+    d.backend.set_merge_masks(false);
     if let Some(fast) = fast {
         d.backend.set_merge_discards(fast);
     }
@@ -436,7 +474,7 @@ fn the_fast_merge_rule_splits_a_discarding_draw_only_after_a_masked_one() {
         assert_eq!(
             discard_after(true, None, all, false).unwrap().1,
             1,
-            "the fast rule is the default"
+            "the fast rule is the default discard rule"
         );
     }
     // B, G, R, A.

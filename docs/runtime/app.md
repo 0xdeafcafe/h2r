@@ -7,9 +7,9 @@ lifecycle. Everything the recompiled game touches (D3D, XAPI, DirectSound,
 the kernel) stays in its own crate; the shell only hands those crates a
 device, an input manager and a mixer, and takes frames back.
 
-A tvOS or Xbox port replaces `src/shell.rs` and `src/audio_out.rs` (the
-winit and cpal code). The handoff, pacing, scaling and input pump are
-platform-free.
+A host that owns its own window replaces `src/shell.rs` and
+`src/audio_out.rs` (the winit and cpal code) with [`app::embedded`](#embedded-hosts).
+The handoff, pacing, scaling and input pump are platform-free.
 
 ## Threads
 
@@ -45,11 +45,15 @@ not stopped within `shutdown_timeout`). `ExitReport` holds the `GuestExit`
 (`Returned`, `Failed(msg)`, `Panicked(msg)`, `StillRunning`, `NotStarted`),
 frame counters and pacing counters.
 
+`h2 play` has no `.app` bundle, so on macOS the shell sets the Dock icon
+itself once the window is open (`app_icon::set_dock_icon`, the plated Mac
+icon from [art/app-icon](../../art/app-icon/README.md)).
+
 `GuestHost` (moved into the guest thread; `Send`):
 
 | method | what it is for |
 |---|---|
-| `GuestHost::headless(&AppConfig)` | Same interface with no window: own headless device, frames accepted and counted, a 48 kHz mixer consumed in real time by a `DiscardRenderer`. Use for `--headless` and tests so the guest-side code has one path. |
+| `GuestHost::headless(&AppConfig)` | Same interface with no window: own headless device, frames accepted and counted, a 48 kHz mixer consumed in real time by a `DiscardRenderer`. Use for headless runs and tests so the guest-side code has one path. |
 | `gfx_context() -> GfxContext` | The shared device. `d3d::GfxBackend::new(host.gfx_context())`. |
 | `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`, exactly what `GfxBackend::on_present` takes. The last argument borrows the current RGB gamma ramp for this present. The handoff applies it once when copying the swapped surface (resolving MSAA and forcing alpha opaque for X8/R5G6B5 formats). Errors are printed, never returned to the guest. Custom hooks must apply the ramp themselves; `gfx::surface::present_surface` is a raw helper and does not apply it. |
 | `frame_sink() -> FrameSink` | For frames that are not gfx surfaces: `submit_rgba(size, &pixels)`, `submit_view(&view, size, opaque)`, `submit_surface(&store, id)`. |
@@ -88,8 +92,10 @@ or one whose `.stamp` names another image, generator or module ABI
 (`boot::dylib_current`), like `h2 run`. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
 default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
-`--no-gamepads`, `--no-vsync`, `--unpaced`, `--bindings FILE` (docs/input/input.md
-TOML), `--icons auto|xbox|xbox360|playstation|keyboard` (button pictures in
+`--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
+`--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
+disc is otherwise installed into `--data` once, docs/game/map-pack.md), `--bindings FILE` (docs/input/input.md
+TOML), `--icons auto|xbox|xbox360|playstation|keyboard|remote|steam` (button pictures in
 prompts; `auto`, the default, follows the device last used, see
 [button-icons.md](../input/button-icons.md)), `--input-timeline FILE` (an input timeline, docs/input/input.md, played on
 guest time in place of live input), `--status` (frame rates once a second,
@@ -101,7 +107,16 @@ name lists the disc's levels before anything is built; `H2_LEVEL` and
 `H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)), `--set
 KEY=VALUE` (any of our settings for this run, ahead of its variable and
 `<data>/settings.toml`, and its row locked; `h2 settings list` shows them,
-[settings-menu.md](../game/settings-menu.md) "Settings as a schema"). The boot's environment variables still
+[settings-menu.md](../game/settings-menu.md) "Settings as a schema"), and Live: off
+with no flag (nothing is contacted); `--live` signs in to
+`https://live.forbes.red` (`$H2_LIVE_SERVER` names another, `off` keeps it
+offline), `--live-server URL` to that service, and `--live-local` runs one
+in the process (`--offline` or `--no-live` say "no Live" outright;
+`--gamertag`, `--invite`, `--signin-terminal`, `--live-listen` and
+`--live-tunnel` and its name and URL flags are in [live.md](../live/live.md)
+"Playing on Live"). Signed in, the account's saves are merged into U:
+before the game starts and pushed as it writes them
+([live-cloud-saves.md](../live/live-cloud-saves.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
 scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
 as a person's keys. Hold keys for one present at the menu's frame rate
@@ -618,6 +633,32 @@ logical time through `tick`, input through `InputManager`, frames through a
 Checked on an M1 Max: window, Metal surface, 59-60 fps guest and display,
 pattern geometry and audio device all as above. Physical controllers and
 mouse capture were not exercised in that check.
+
+## Embedded hosts
+
+`app::embedded` (`embedded.rs`, built on Apple and Windows targets only) is
+the shell for a native host that owns the window and the run loop: the tvOS
+and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md); the host crate is
+`crates/apple-host`), and later the UWP app for Xbox
+([windows.md](windows.md)). The host passes its surface (`host_surface`: a
+`CAMetalLayer` on Apple, a XAML `SwapChainPanel` on Windows) and calls
+`Embedded::redraw` from its display link on the main thread. The guest
+thread, frame handoff, compositor and pacing are the windowed shell's.
+Input is GameController (pads, the Apple TV remote, iOS's on-screen controls)
+behind player one's pad; no key or mouse events arrive, except text from the
+system keyboard through `Embedded::keyboard`
+([host-keyboard.md](../input/host-keyboard.md)). `device_config()` is the
+`AppConfig` the apps start from: fullscreen, mouse capture off, pads on,
+and `audio: false` (boot's output owns the device).
+
+## Health meter
+
+`AppConfig::health_meter` (`health_meter.rs`) draws a Halo 1 style row of
+eight segments over the game image while its value is `Some`, with the
+banner's sprite pass. `h2 play` sets it; `H2_HEALTH_METER_AT` places it.
+It shows only for a level whose own HUD has no health meter (a retail level
+under `H2_HEALTH_MODEL=halo1`); a converted Halo 1 map's HUD draws its own.
+See [health.md](../game/health.md) "HUD".
 
 ## Known gaps
 

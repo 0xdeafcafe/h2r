@@ -477,3 +477,285 @@ fn new_datums_carry_slot_and_salt() {
     assert_eq!(b.salt(), a.salt() + 1);
     assert!(set.tag(TagId(b.0 ^ 0x1_0000)).is_none());
 }
+
+#[test]
+fn a_pinned_map_can_drop_its_index_tail_and_header_extras() {
+    let t = tiny();
+    let first = t.set.build().unwrap().0;
+    // Give the source map an index tail and uninterpreted header bytes.
+    let mut source = first.clone();
+    let h = read(first).header().clone();
+    let index_end = h.index_offset as usize + 0x20 + 6 * 12 + 6 * 16;
+    source[index_end..index_end + 4].copy_from_slice(b"tail");
+    source[0x144..0x148].copy_from_slice(&[1, 2, 3, 4]);
+    source[0x180..0x188].copy_from_slice(&[5; 8]);
+    source[0x154..0x160].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    source[0x158..0x15c].copy_from_slice(&0x800u32.to_le_bytes());
+    let mut checksum = crate::checksum::XorChecksum::default();
+    checksum.update(&source[0x800..]);
+    let value = checksum.finish();
+    source[0x2d0..0x2d4].copy_from_slice(&value.to_le_bytes());
+    let mut map = read(source.clone());
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    assert_eq!(set.build().unwrap().0, source);
+
+    let pinned = set.pinned.as_mut().unwrap();
+    assert_eq!(pinned.clear_index_tail(), 4);
+    pinned.clear_header();
+    let (bytes, _) = set.build().unwrap();
+    let mut rebuilt = read(bytes.clone());
+    rebuilt.validate_checksum().unwrap();
+    assert_eq!(&bytes[index_end..index_end + 4], &[0; 4]);
+    assert_eq!(&bytes[0x144..0x148], &[0; 4]);
+    assert_eq!(&bytes[0x180..0x188], &[0; 8]);
+    assert_eq!(rebuilt.header().low_detail_offset, 0x800);
+    assert_eq!(rebuilt.header().name, "tiny");
+    // Tags are untouched.
+    let ids: Vec<_> = map.tags().iter().map(|t| t.id).collect();
+    for id in ids {
+        assert_eq!(
+            map.read_tag_bytes(id).unwrap(),
+            rebuilt.read_tag_bytes(id).unwrap()
+        );
+    }
+}
+
+#[test]
+fn shared_blocks_are_placed_once() {
+    let mut t = tiny();
+    let child = || Block::new((0u8..32).collect()).shared(7);
+    let mut a = Block::zeroed(0x10);
+    a.block(0, 2, child()).block(8, 2, child());
+    let mut b = Block::zeroed(0x10);
+    b.block(4, 2, child());
+    let a = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\a", TagPayload::Built(a))
+        .unwrap();
+    let b = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\b", TagPayload::Built(b))
+        .unwrap();
+    let mut map = read(t.set.build().unwrap().0);
+    let ba = map.read_tag_bytes(a).unwrap();
+    let bb = map.read_tag_bytes(b).unwrap();
+    let target = word(&ba, 4);
+    assert_eq!(word(&ba, 12), target);
+    assert_eq!(word(&bb, 8), target);
+    // Only the first tag holds the shared bytes.
+    assert_eq!(ba.len(), 0x10 + 32);
+    assert_eq!(bb.len(), 0x10);
+    let loc = map.tag(a).unwrap().location.unwrap();
+    assert_eq!(target, loc.address + 0x10);
+    // Without keys every reference gets its own copy.
+    let mut t = tiny();
+    let mut c = Block::zeroed(0x10);
+    c.block(0, 2, Block::new((0u8..32).collect()))
+        .block(8, 2, Block::new((0u8..32).collect()));
+    let c = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\c", TagPayload::Built(c))
+        .unwrap();
+    let mut map = read(t.set.build().unwrap().0);
+    let bc = map.read_tag_bytes(c).unwrap();
+    assert_eq!(bc.len(), 0x10 + 64);
+    assert_ne!(word(&bc, 4), word(&bc, 12));
+}
+
+/// Add `n` small built tags to a decomposed copy of the tiny map.
+fn grown(n: usize, dirty_tail: bool, clear_tail: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
+    let mut source = read(tiny().set.build().unwrap().0);
+    let mut set = TagSet::from_map(&mut source).unwrap();
+    let p = set.pinned.as_mut().unwrap();
+    let end = p.index_entries_end as usize;
+    if dirty_tail {
+        p.index[end] = 0x5a;
+    }
+    if clear_tail {
+        p.clear_index_tail();
+    }
+    let ids = (0..n)
+        .map(|i| {
+            let mut b = Block::zeroed(12);
+            b.put_u32(8, i as u32);
+            set.add_tag(
+                cc(b"thng"),
+                &format!("invented\\grown\\{i}"),
+                TagPayload::Built(b),
+            )
+            .unwrap()
+        })
+        .collect();
+    (read(set.build().unwrap().0), ids)
+}
+
+fn check_grown(map: &mut Map<Cursor<Vec<u8>>>, ids: &[TagId]) -> u32 {
+    let original = read(tiny().set.build().unwrap().0);
+    for t in original.tags() {
+        let u = map.tag(t.id).unwrap();
+        assert_eq!((u.group, &u.name), (t.group, &t.name));
+    }
+    for (i, &id) in ids.iter().enumerate() {
+        let t = map.tag(id).unwrap().clone();
+        assert_eq!(
+            t.name.as_deref(),
+            Some(format!("invented\\grown\\{i}").as_str())
+        );
+        assert_eq!(word(&map.read_tag_bytes(id).unwrap(), 8), i as u32);
+    }
+    map.validate_checksum().unwrap();
+    let h = map.header().clone();
+    let index = map
+        .read_file_range(h.index_offset.into(), h.index_size.into())
+        .unwrap();
+    word(&index, 8)
+}
+
+#[test]
+fn a_pinned_index_grows_into_a_zero_tail() {
+    let (mut map, ids) = grown(20, false, false);
+    let t = check_grown(&mut map, &ids);
+    assert!(t < INDEX_VIRTUAL_BASE + map.header().index_size);
+}
+
+#[test]
+fn a_pinned_index_with_a_live_tail_moves_its_entries_to_the_metadata() {
+    let (mut map, ids) = grown(20, true, false);
+    let t = check_grown(&mut map, &ids);
+    assert!(t >= INDEX_VIRTUAL_BASE + map.header().index_size);
+    // The tail byte survives, and the map decomposes and rebuilds the same.
+    let h = map.header().clone();
+    let index = map
+        .read_file_range(h.index_offset.into(), h.index_size.into())
+        .unwrap();
+    assert!(index.contains(&0x5a));
+    let set = TagSet::from_map(&mut map).unwrap();
+    let mut again = read(set.build().unwrap().0);
+    check_grown(&mut again, &ids);
+    // Clearing the tail puts the entries back in the index.
+    let (mut map, ids) = grown(20, true, true);
+    let t = check_grown(&mut map, &ids);
+    assert!(t < INDEX_VIRTUAL_BASE + map.header().index_size);
+}
+
+#[test]
+fn an_index_past_its_region_moves_its_entries_to_the_metadata() {
+    let (mut map, ids) = grown(400, false, false);
+    let t = check_grown(&mut map, &ids);
+    assert!(t >= INDEX_VIRTUAL_BASE + map.header().index_size);
+}
+
+#[test]
+fn tag_offsets_point_into_placed_tags_and_phase_holds() {
+    let mut t = tiny();
+    // b: 0x40 bytes, a: points at b + 0x10 and at its own + 0x20.
+    let mut b = Block::new((0u8..0x40).collect());
+    b.phase = 4;
+    b.align = 16;
+    let b = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\b", TagPayload::Built(b))
+        .unwrap();
+    let a = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\a", TagPayload::Empty)
+        .unwrap();
+    let mut block = Block::zeroed(0x30);
+    block
+        .fixup(
+            0,
+            FixupKind::TagOffset {
+                count: 3,
+                tag: b,
+                offset: 0x10,
+            },
+        )
+        .fixup(
+            8,
+            FixupKind::TagOffset {
+                count: 1,
+                tag: a,
+                offset: 0x20,
+            },
+        );
+    t.set.tag_mut(a).unwrap().payload = TagPayload::Built(block);
+    let mut map = read(t.set.build().unwrap().0);
+    let lb = map.tag(b).unwrap().location.unwrap();
+    let la = map.tag(a).unwrap().location.unwrap();
+    assert_eq!(lb.address % 16, 4);
+    let ba = map.read_tag_bytes(a).unwrap();
+    assert_eq!((word(&ba, 0), word(&ba, 4)), (3, lb.address + 0x10));
+    assert_eq!((word(&ba, 8), word(&ba, 12)), (1, la.address + 0x20));
+    // A target outside its tag is refused.
+    let mut t = tiny();
+    let mut bad = Block::zeroed(8);
+    bad.fixup(
+        0,
+        FixupKind::TagOffset {
+            count: 1,
+            tag: t.thing,
+            offset: 0x10_0000,
+        },
+    );
+    t.set
+        .add_tag(cc(b"thng"), "invented\\bad", TagPayload::Built(bad))
+        .unwrap();
+    assert!(t.set.build().is_err());
+}
+
+#[test]
+fn an_alias_follows_its_target() {
+    let mut t = tiny();
+    let b = t
+        .set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\target",
+            TagPayload::Built(Block::zeroed(0x20)),
+        )
+        .unwrap();
+    let a = t
+        .set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\alias",
+            TagPayload::Alias { tag: b, offset: 4 },
+        )
+        .unwrap();
+    let map = read(t.set.build().unwrap().0);
+    let lb = map.tag(b).unwrap().location.unwrap();
+    let la = map.tag(a).unwrap();
+    assert_eq!((la.index_address, la.index_size), (lb.address + 4, 0));
+    let mut t = tiny();
+    t.set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\alias",
+            TagPayload::Alias {
+                tag: t.bsp,
+                offset: 0,
+            },
+        )
+        .unwrap();
+    assert!(t.set.build().is_err());
+}
+
+#[test]
+fn a_header_template_and_low_detail_raw_reach_the_header() {
+    let mut t = tiny();
+    let mut template = vec![0u8; 0x800];
+    template[0x180..0x188].copy_from_slice(&[7; 8]);
+    t.set.header_template = Some(template);
+    let low = t.set.add_raw(b"low detail bitmaps".to_vec(), 0x200);
+    t.set.low_detail = Some(low);
+    let bytes = t.set.build().unwrap().0;
+    assert_eq!(bytes[0x180..0x188], [7; 8], "uninterpreted bytes kept");
+    let (at, len) = (word(&bytes, 0x158) as usize, word(&bytes, 0x15c) as usize);
+    assert_eq!(&bytes[at..at + len], b"low detail bitmaps");
+    // The builder's own fields are written over the template.
+    let map = read(bytes);
+    assert_eq!(map.header().scenario_path, "invented\\scenarios\\tiny");
+
+    t.set.header_template = Some(vec![0; 0x10]);
+    assert!(t.set.build().is_err(), "a template is a whole header");
+}

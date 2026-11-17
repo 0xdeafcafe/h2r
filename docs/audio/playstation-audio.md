@@ -1,8 +1,8 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
 Status: the speaker routing and the mute button are built and unit tested
-end to end, up to the device; they are not yet checked with a real pad
-(see "Checking with a real pad" below). The microphone is a design only.
+end to end, up to the device, and the owner has them working on a DualSense
+(2026-11-17; "Checking with a real pad" below has the list). The microphone is a design only.
 Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 1. the controller's microphone as the Xbox Communicator's;
@@ -190,7 +190,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 | Variable | Meaning | Default |
 |---|---|---|
 | `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`). Set, it locks the in-game row (below) | unset: the in-game row decides, on until turned off |
-| `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4 | `auto` |
+| `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4, then a Steam Controller's trackpad haptics when one is connected; `haptics` (or `steam`) asks for those alone ([steam-controller.md](../input/steam-controller.md)) | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
 | `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone. Set, it locks the Video screen's Mute Button row (`[pad] mute_button`; a row press reaches the HID thread at once through `PadHid::mute_switch`: on sets the LED for the current state, off unmutes and puts the LED out) | `1` (acts once a DualSense is found) |
 
@@ -281,7 +281,7 @@ labels follow Halo's packets (below).
 ### In-game setting (built)
 
 Settings, a profile, Controls has a seventh row, **Controller Speaker**,
-under the vibration row, with the game's own on and off text (the strings
+under the vibration row (the Steam Controller rows, when shown, come after it), with the game's own on and off text (the strings
 the vibration row uses) as its value. Pressing A on it flips the setting in
 place; there is no dialog.
 

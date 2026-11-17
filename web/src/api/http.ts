@@ -11,8 +11,10 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const r = await fetch(url, { signal, headers: { accept: "application/json" } });
+async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const r = await fetch(url, { signal, headers });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
     try {
@@ -76,7 +78,15 @@ export function page<T>(body: unknown): Page<T> {
   };
 }
 
-export function api(t: ServerTarget) {
+/** A one-use `read` token for whoever reads (the signed-in account), or
+ *  null for an anonymous read. */
+export type Reader = () => Promise<string | null>;
+
+/** The REST calls against one server. Reads whose answer depends on the
+ *  reader (games, accounts, the log, stats: a friends-only co-op game shows
+ *  only to who may see it) send `reader`'s token when it gives one. */
+export function api(t: ServerTarget, reader: Reader = async () => null) {
+  const who = (): Promise<string | null> => reader().catch(() => null);
   const u = (path: string, q?: Record<string, string | number | undefined | null>) => {
     const url = new URL(t.api + path);
     for (const [k, v] of Object.entries(q ?? {})) if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
@@ -88,32 +98,40 @@ export function api(t: ServerTarget) {
     let cursor: string | null = null;
     let position: number | null = null;
     for (let i = 0; i < maxPages; i++) {
-      const p: Page<T> = page<T>(await getJson(u(path, { ...q, cursor }), s));
+      const p: Page<T> = page<T>(await getJson(u(path, { ...q, cursor }), s, await who()));
       out.push(...p.items);
       position ??= p.position;
+      // A page can be empty and still have a `next`: the log leaves out
+      // events the reader may not see, but its cursor moves past them.
+      if (p.next === null || p.next === cursor) { cursor = null; break; }
       cursor = p.next;
-      if (cursor === null || p.items.length === 0) break;
     }
     return { items: out, next: cursor, position };
   }
   return {
     health: (s?: AbortSignal) => getJson<{ ok: boolean; position: number }>(t.base + "/healthz", s),
     accounts: (s?: AbortSignal) => all<AccountSummary>("/accounts", { limit: 1000 }, s),
-    account: (tag: string, s?: AbortSignal) =>
-      getJson<AccountSummary & { recent_games?: GameSummary[]; position?: number }>(u("/accounts/" + encodeURIComponent(tag)), s),
+    account: async (tag: string, s?: AbortSignal) =>
+      getJson<AccountSummary & { recent_games?: GameSummary[]; position?: number }>(u("/accounts/" + encodeURIComponent(tag)), s, await who()),
     /** Keys by XUID (events name their author by XUID). */
     accountKeys: async (xuid: string, s?: AbortSignal) =>
       (await getJson<{ keys?: AccountKeyEntry[] }>(u("/accounts/by-xuid/" + encodeURIComponent(xuid) + "/keys"), s)).keys ?? [],
     presence: (s?: AbortSignal) => all<PresenceEntry>("/presence", {}, s),
     /** `skulls` keeps only games that had all of those skulls on (`?skulls=10,14`). */
-    games: (state: "live" | "ended", limit = 100, s?: AbortSignal, skulls?: readonly number[]) =>
-      getJson(u("/games", { state, limit, skulls: skulls ? formatSkullsParam(skulls) : undefined }), s).then((b) => page<GameSummary>(b)),
-    game: (id: string, s?: AbortSignal) => getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s),
+    games: async (state: "live" | "ended", limit = 100, s?: AbortSignal, skulls?: readonly number[]) =>
+      getJson(u("/games", { state, limit, skulls: skulls ? formatSkullsParam(skulls) : undefined }), s, await who()).then((b) => page<GameSummary>(b)),
+    /** One game, as the reader (a private co-op game answers 404 to anyone
+     *  who may not see it); `bearer` overrides the reader's token. */
+    game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
+      getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
     /** All recorded frames in a tick range, following cursors (600 per page). */
     frames: (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>
       packedFrames(
         (cursor) => u("/games/" + encodeURIComponent(id) + "/frames", { from_tick, to_tick, cursor, format: "packed" }),
-        (url, init) => fetch(url, init),
+        async (url, init) => {
+          const token = await who();
+          return fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } } : init);
+        },
         s,
       ),
     outline: async (map: string, s?: AbortSignal): Promise<MapOutline | null> => {
@@ -141,17 +159,26 @@ export function api(t: ServerTarget) {
     mapImageUrl: (id: string) => u("/maps/" + encodeURIComponent(id) + "/image"),
     /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors. */
     sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
+    /** Finished co-op campaign games, newest first (docs/live/live-api.md "Co-op games"); one page.
+     *  `player` is a gamertag or XUID. A server without the endpoint answers 404. `bearer`, a
+     *  `read` token, says who reads: friends-only games show to their players and the host's
+     *  friends, invite-only ones to their players; without it only public ones. */
+    coopGames: async (q: { player?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal, bearer?: string | null) =>
+      page<unknown>(await getJson(u("/coop/games", q), s, bearer === undefined ? await who() : bearer)),
     /** One session by id, open or not. */
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */
-    statsSummary: (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s),
+    statsSummary: async (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s, await who()),
     /** One page of the log; `from` is exclusive. */
     events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string }, s?: AbortSignal) =>
-      page<WireEvent>(await getJson(u("/events", q), s)),
+      page<WireEvent>(await getJson(u("/events", q), s, await who())),
     /** Every event of one stream, following cursors. */
     streamEvents: async (stream: string, s?: AbortSignal) => (await all<WireEvent>("/events", { stream, limit: 1000 }, s)).items,
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
-    streamUrl: (from: number | null) => u("/stream", { from: from ?? 0, exclude: "GameFrame", frames: "packed" }),
+    /** `auth`: the first message will be a `read` token (`?auth=1`). */
+    streamUrl: (from: number | null, auth = false) => u("/stream", { from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined }),
+    /** The reader's token now, for a stream's auth message. */
+    readToken: who,
   };
 }
 

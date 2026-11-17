@@ -34,6 +34,7 @@ pub mod scale;
 mod shell;
 mod surface;
 pub mod watermark;
+pub mod health_meter;
 pub mod worker;
 
 use std::sync::{Arc, Mutex};
@@ -53,6 +54,7 @@ pub use overlay::{Banner, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, Scaling, Viewport};
 pub use watermark::{BuildInfo, LiveStats, Watermark};
+pub use health_meter::HealthMeter;
 
 /// Shell settings.
 #[derive(Clone, Debug)]
@@ -83,6 +85,10 @@ pub struct AppConfig {
     pub mouse_capture: bool,
     /// Add physical controllers (GameController on macOS, gilrs elsewhere).
     pub gamepads: bool,
+    /// Steam Controllers over raw HID (docs/input/steam-controller.md), added
+    /// beside the platform's pads when `gamepads` is on. The caller starts
+    /// the thread, so it can share it with the controller speaker.
+    pub steam_pads: Option<input::steam_pad::SteamPads>,
     /// Keyboard/mouse shares player one with the first physical pad.
     pub keyboard: bool,
     /// Keyboard and mouse bindings (and stick/trigger deadzones).
@@ -112,6 +118,9 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
+    /// A Halo 1 style health meter over the game image, while its value is
+    /// `Some` (docs/game/health.md "HUD").
+    pub health_meter: Option<HealthMeter>,
 }
 
 impl Default for AppConfig {
@@ -129,6 +138,7 @@ impl Default for AppConfig {
             pause_on_focus_loss: false,
             mouse_capture: true,
             gamepads: true,
+            steam_pads: None,
             keyboard: true,
             bindings: Bindings::default(),
             scripted_input: None,
@@ -140,6 +150,7 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
+            health_meter: None,
         }
     }
 }
@@ -406,7 +417,10 @@ fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
         manager.add_backend(Box::new(scripted.clone()));
         return (manager, None);
     }
-    let physical = config.gamepads.then(gamepad_backend).flatten();
+    let physical = config
+        .gamepads
+        .then(|| physical_pads(gamepad_backend(), config.steam_pads.as_ref()))
+        .flatten();
     let keyboard = if config.keyboard {
         let kb = KeyboardMouse::new(config.bindings.clone());
         manager.add_backend(Box::new(input::backend::fallback::KeyboardFallback::new(
@@ -422,6 +436,21 @@ fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
         None
     };
     (manager, keyboard)
+}
+
+/// The platform's pads and the Steam Controllers, as one backend.
+fn physical_pads(
+    platform: Option<Box<dyn input::HostBackend>>,
+    steam: Option<&input::steam_pad::SteamPads>,
+) -> Option<Box<dyn input::HostBackend>> {
+    let Some(steam) = steam else {
+        return platform;
+    };
+    let steam: Box<dyn input::HostBackend> = Box::new(steam.backend());
+    Some(match platform {
+        Some(p) => Box::new(input::backend::multi::Multi::new(vec![p, steam])),
+        None => steam,
+    })
 }
 
 #[cfg(all(feature = "game-controller", target_vendor = "apple"))]
@@ -472,9 +501,10 @@ mod input_tests {
 
     #[test]
     fn timeline_replaces_live_input_and_advances_only_on_runner_clock() {
-        let script = Timeline::from_toml(include_str!("../../../docs/input/input-menu-example.toml"))
-            .unwrap()
-            .playback();
+        let script =
+            Timeline::from_toml(include_str!("../../../docs/input/input-menu-example.toml"))
+                .unwrap()
+                .playback();
         let config = AppConfig {
             scripted_input: Some(script.clone()),
             ..Default::default()

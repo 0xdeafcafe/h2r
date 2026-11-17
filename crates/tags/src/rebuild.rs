@@ -145,6 +145,69 @@ pub fn relocate_bitmap<R: Read + Seek>(
     Ok(Some(moved))
 }
 
+/// What [`moved_variant`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovedSummary {
+    /// Bitmaps with local metadata.
+    pub bitmaps: u32,
+    /// Bitmaps rebuilt as block trees (the rest stay pinned).
+    pub relocated: u32,
+    /// Pixel data copied to new raw resources.
+    pub moved: Relocated,
+}
+
+/// Load-test variant "moved": `map` decomposed, every bitmap rebuilt as a
+/// block tree and appended after the original metadata (so every one gets
+/// a new address), and every local LOD's pixels copied to new raw data.
+pub fn moved_variant<R: Read + Seek>(map: &mut Map<R>) -> Result<(TagSet, MovedSummary)> {
+    let mut set = TagSet::from_map(map)?;
+    set.reuse_free_space = false;
+    let ids: Vec<TagId> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"bitm") && t.location.is_some())
+        .map(|t| t.id)
+        .collect();
+    let mut summary = MovedSummary::default();
+    for id in ids {
+        summary.bitmaps += 1;
+        if let Some(r) = relocate_bitmap(&mut set, map, id, true)? {
+            summary.relocated += 1;
+            summary.moved.moved_lods += r.moved_lods;
+            summary.moved.moved_bytes += r.moved_bytes;
+        }
+    }
+    Ok((set, summary))
+}
+
+/// Load-test variant "fresh": every tag pinned where it was, but with the
+/// index tail cleared (unless `keep_tail`) and a header holding only what
+/// the builder writes plus the low-detail fields (unless `keep_header`).
+/// Returns the set and how many nonzero tail bytes were cleared.
+///
+/// Salts stay retail: pinned tags hold datums in bytes no layout
+/// describes, so they cannot be renumbered without full relocation.
+pub fn fresh_variant<R: Read + Seek>(
+    map: &mut Map<R>,
+    keep_tail: bool,
+    keep_header: bool,
+) -> Result<(TagSet, usize)> {
+    let mut set = TagSet::from_map(map)?;
+    let pinned = set
+        .pinned
+        .as_mut()
+        .ok_or(Error::Invalid("decomposed map has no pinned image"))?;
+    let cleared = if keep_tail {
+        0
+    } else {
+        pinned.clear_index_tail()
+    };
+    if !keep_header {
+        pinned.clear_header();
+    }
+    Ok((set, cleared))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +330,37 @@ mod tests {
             TagPayload::Pinned { .. }
         ));
         assert!(set.raw.is_empty());
+    }
+
+    #[test]
+    fn load_test_variants_build_and_read_back() {
+        let (mut map, id) = fixture(false);
+        let (moved, summary) = moved_variant(&mut map).unwrap();
+        assert_eq!(summary.bitmaps, 1);
+        assert_eq!(summary.relocated, 1);
+        assert_eq!(summary.moved.moved_lods, 1);
+        let mut rebuilt = Map::from_reader(Cursor::new(moved.build().unwrap().0)).unwrap();
+        assert_ne!(
+            rebuilt.tag(id).unwrap().location.unwrap().address,
+            map.tag(id).unwrap().location.unwrap().address
+        );
+        assert_eq!(bitmap(&mut rebuilt, id).images.len(), 1);
+
+        let (fresh, _) = fresh_variant(&mut map, false, false).unwrap();
+        let bytes = fresh.build().unwrap().0;
+        let mut rebuilt = Map::from_reader(Cursor::new(bytes)).unwrap();
+        rebuilt.validate_checksum().unwrap();
+        assert_eq!(
+            rebuilt.read_tag_bytes(id).unwrap(),
+            map.read_tag_bytes(id).unwrap()
+        );
+        // Keeping both gives the source back.
+        let (same, cleared) = fresh_variant(&mut map, true, true).unwrap();
+        assert_eq!(cleared, 0);
+        let mut original = Vec::new();
+        map.write_to(&mut original).unwrap();
+        let built = same.build().unwrap().0;
+        let diff = built.iter().zip(&original).position(|(a, b)| a != b);
+        assert_eq!((diff, built.len()), (None, original.len()));
     }
 }

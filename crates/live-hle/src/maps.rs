@@ -508,6 +508,8 @@ mod tests {
             visibility: Default::default(),
             map_id,
             skulls: None,
+            campaign: None,
+            ping_ms: None,
         }
     }
 

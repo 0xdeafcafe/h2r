@@ -661,8 +661,10 @@ All the tests below pass.
     stack underflow); FSCALE by zero of a pseudo-denormal; `save_image`
     through a const pointer to an immutable static; FPREM/FPREM1 shortcuts
     stopping on a tiny exact remainder and normalising a pseudo-denormal.
-- **Library unit tests**: 6, plus 2 ignored: the constant-table generator and
-  the 180,000-case precision run.
+- **Library unit tests** in `crates/x87/src`: the constant-table generator and
+  the 180,000-case precision run are ignored, as are the table printers and
+  timing experiments of `fast-trans`, whose tests
+  ([x87-transcendentals.md](x87-transcendentals.md)) now make up most of them.
 
 ## 7. Where the measurement tool fits now
 

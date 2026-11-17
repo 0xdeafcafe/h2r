@@ -6,6 +6,7 @@ import { createEffect, createSignal, type Accessor } from "solid-js";
 import { gameArt } from "../state/gameart";
 import { mapStem, parseViews, viewImageFile, type MapViews } from "./views";
 import { fetchFeatures, type MapFeatures } from "./features";
+import { modelUrl } from "../viewer/models";
 
 export interface MapGeometry {
   /** URL of the map's glb, or null when the server has none. */
@@ -16,7 +17,9 @@ export interface MapGeometry {
   image(id: string): string;
 }
 
-const url = (root: string, file: string) => root + file.split("/").map(encodeURIComponent).join("/");
+// Every file carries the art's version stamp, so the server can let the
+// browser keep it (docs/live/live-art.md, "Caching").
+const url = (root: string, file: string, stamp?: string) => modelUrl(root, file, stamp);
 
 const viewsCache = new Map<string, Promise<MapViews | null>>();
 function loadViews(u: string): Promise<MapViews | null> {
@@ -36,13 +39,14 @@ export function geometryFor(map: Accessor<string | undefined>): Accessor<MapGeom
     set(null);
     const files = art && m ? art.manifest.maps?.[mapStem(m)] : undefined;
     if (!art || !files) return;
-    const glb = files.geometry ? url(art.root, files.geometry) : null;
+    const stamp = art.manifest.source;
+    const glb = files.geometry ? url(art.root, files.geometry, stamp) : null;
     const still = () => gameArt() === art && map() === m;
     if (!files.views) { set({ glb, views: null, image: () => "" }); return; }
     const viewsFile = files.views;
-    void loadViews(url(art.root, viewsFile)).then((views) => {
+    void loadViews(url(art.root, viewsFile, stamp)).then((views) => {
       if (!still()) return;
-      const image = (id: string) => url(art.root, viewImageFile(viewsFile, views?.views.find((v) => v.id === id) ?? { id }));
+      const image = (id: string) => url(art.root, viewImageFile(viewsFile, views?.views.find((v) => v.id === id) ?? { id }), stamp);
       set(views || glb ? { glb, views, image } : null);
     });
   });

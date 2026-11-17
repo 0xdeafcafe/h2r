@@ -1,7 +1,8 @@
 # live-server
 
 The Xbox Live replacement service ([docs/live/live.md](../../docs/live/live.md) §4.3):
-signed events in an append-only Postgres log, projected into memory and
+signed events in an append-only log (SQLite by default, Postgres if asked
+for), projected into memory and
 served as HTTP + JSON and a WebSocket, so the game-side HLE never speaks
 Kerberos or XSP. The contract is [docs/live/live-api.md](../../docs/live/live-api.md);
 identity, signing and tokens are
@@ -12,14 +13,18 @@ share with the server (wire types, signing, the MOTD builder) is in
 ## Run it
 
 ```
-h2 live serve                                   # 127.0.0.1:8074, postgres://localhost/h2live
+h2 live serve                                   # 127.0.0.1:8074, sqlite://<data>/live.db
+h2 live serve --blobs s3://h2live               # content and saves in R2 (docs/live/live-hosting.md)
+h2 live store copy --from postgres://localhost/h2live --to sqlite://<data>/live.db
+h2 live store check --blobs s3://h2live         # try the bucket's S3 API with your credentials
 h2 live serve --db postgres://localhost/other --id live.example.net \
     --listen 0.0.0.0:443 --tls-cert cert.pem --tls-key key.pem
 h2 live account create "Sneaky Pete"            # key made and kept locally
 h2 live motd set "Welcome back" "Double XP this weekend" --header "Halo 2"
 h2 live serve --invite-only & h2 live invite create
 h2 live q games --live                          # JSON off a terminal
-h2 play disc.iso --live                         # an embedded server, signed in
+h2 play disc.iso --live-local                   # an embedded server, signed in
+h2 play disc.iso --live                         # signed in to live.forbes.red
 h2 live serve --tunnel                          # public via cloudflared (docs/live/live-hosting.md)
 ```
 
@@ -33,7 +38,7 @@ cloudflared beside it delivers the requests.
 `h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
 overrides) at `/`, falling back to `index.html` for client routes.
 `start_embedded` is the same server on a background runtime for `h2 play
---live`: Postgres if reachable (database created if missing), else the
+--live-local`: Postgres if reachable (database created if missing), else the
 file store (`filestore.rs`: an append-only `events.jsonl`, a `blobs/`
 directory and `checkpoints.json` under `<data>/log`, replayed into memory
 on open), else in-memory with a warning if that directory is held by
@@ -44,7 +49,7 @@ The database URL comes from `--db`, then `H2_LIVE_DB`, then the default; it
 is only ever printed without credentials. The schema is created at startup
 if missing. The server's key and id live in `--data` (default
 `~/Library/Application Support/h2recomp/live/server`, mode 0700, key 0600),
-never in Postgres; the id is fixed on first start. A non-loopback `--listen`
+never in the database; the id is fixed on first start. A non-loopback `--listen`
 needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. `--private`
 makes reads need a token; `--invite-only` makes account creation need an
 invite from `h2 live invite create`.
@@ -64,7 +69,9 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../docs/live/live-api.md#friends)) |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
 | `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
-| `POST /v1/invites?days=` | operator only, `invites.write`; 201 `{invite}` |
+| `POST /v1/invites?days=&code=` | operator (`invites.write`), or an admin's signed `InviteCreated` (optionally `{event, code}`); 201 `{invite, custom, jti, exp, position}` |
+| `POST /v1/accounts/{gamertag}/recover` | `{request, code}`: add a new device key with a recovery code (src/recovery.rs) |
+| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own token: its recovery secret and current code; `POST` resets it |
 | `GET /v1/events?from=&cursor=&type=&exclude=&stream=&limit=` | the log, oldest first, `from` exclusive |
 | `POST /v1/events` | body: one signed event (compact JWS), bearer token `events.write` |
 | `GET /v1/stream?from=&types=&exclude=&stream=&games=` | WebSocket: replay, `caught_up`, live events and `frame`s |
@@ -79,11 +86,20 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `PUT /v1/maps/{map}/outline` | `games.write`, ≤ 2 MiB; first upload wins, operator may replace |
 | `GET /v1/maps/{map}/outline` | the outline JSON |
 
+Also built, in [live-api.md](../../docs/live/live-api.md): teams
+(`/v1/teams`), sessions and game invitations (`/v1/sessions`, mailboxes),
+co-op games and the relay (`/v1/coop/games`, `/v1/sessions/{id}/relay`),
+custom maps and content (`/v1/maps/{map}`, `/v1/hoppers/pins`), cloud saves
+(`/v1/accounts/{gamertag}/storage`), the stats summary, the admin routes
+(`/v1/admins`, `/v1/admin/status`, `/v1/admin/content`, `/v1/server`), the
+local sign-in link (`/v1/local/signin`) and the game art at `/art/game/`.
+The table above is the core.
+
 Lists are `{items, next, position}`; pass `next` back as `?cursor=`. Every
 read reply carries `position`, the last position the read model applied.
 Errors are `{"error": "<code>", "message"}` with codes `invalid`,
 `unauthorized`, `forbidden`, `not_found`, `conflict`, `too_large`,
-`rate_limited`, `unimplemented`, `unavailable`.
+`gone`, `rate_limited`, `unimplemented`, `unavailable`.
 
 Accounts may append, on their own streams only: `KeyAdded` / `KeyRevoked`
 and the friend events (`FriendRequested` from oneself, `FriendAccepted` /
@@ -94,7 +110,18 @@ side) on `account-<xuid>`, and `SignedIn` / `PresenceChanged` /
 
 ## Design
 
-- **`store`**: `EventStore` (Postgres in `pg`, `MemoryStore` for tests).
+- **`store`**: `EventStore` (SQLite in `sqlite`, Postgres in `pg`, the
+  embedded server's `filestore`, `MemoryStore` for tests; one conformance
+  suite runs over all of them). SQLite runs in WAL mode; appends take an
+  in-process lock and `BEGIN IMMEDIATE`, so positions are handed out in
+  commit order as Postgres's advisory lock does.
+- **`blobs`**: content, cloud saves and published art through the
+  `object_store` crate: the data directory (the old layout), an
+  S3-compatible bucket (R2), or memory for tests. A private store for
+  everything, and an optional public bucket that shared game art is
+  published to and redirected to (`art.rs`).
+- **`copy`**: `store copy`, moving the log (positions, versions and hashes
+  kept, checked on the way in) and the blobs between backends, resumable.
   Appends are a list of events plus expected versions, atomic across
   streams, and compute the per-stream hash chain
   `hex(sha256(prev || jws))`. In Postgres every append holds
@@ -132,8 +159,11 @@ cargo test -p live-proto -p live-server
 runs the unit tests, the router tests (`tests/http.rs`, `tests/games.rs`,
 `tests/friends.rs`, tower `oneshot` over the in-memory store, sharing
 `tests/common`) and the
-WebSocket tests (`tests/stream.rs`, a real socket, ingest included). The Postgres tests skip with a note unless `H2_LIVE_TEST_DB`
-is set:
+WebSocket tests (`tests/stream.rs`, a real socket, ingest included). SQLite
+runs the event-store conformance and race tests on a temporary file, and
+the blob store runs its conformance over a directory, memory and an S3
+fake (`blobs.rs`, path-style requests signed for region `auto`). The
+Postgres tests skip with a note unless `H2_LIVE_TEST_DB` is set:
 
 ```
 createdb h2live_test_0

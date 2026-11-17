@@ -156,6 +156,19 @@ fn compile_module_with(
     passes: emit::opt::Passes,
     codegen: emit::Codegen,
 ) -> (libloading::Library, Dispatch) {
+    compile_module_defines(kind, funcs, instrumented, fast, passes, codegen, "")
+}
+
+/// [`compile_module_with`] with `defines` (C lines) ahead of h2gen.h.
+fn compile_module_defines(
+    kind: &str,
+    funcs: Vec<IrFunction>,
+    instrumented: bool,
+    fast: bool,
+    passes: emit::opt::Passes,
+    codegen: emit::Codegen,
+    defines: &str,
+) -> (libloading::Library, Dispatch) {
     let owners = emit::plan_with(funcs, passes);
     let accounting = codegen.accounting;
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -171,6 +184,11 @@ fn compile_module_with(
         let header = src.join("h2gen.h");
         let content = std::fs::read_to_string(&header).unwrap();
         std::fs::write(header, format!("#define H2_PERF 1\n{content}")).unwrap();
+    }
+    if !defines.is_empty() {
+        let header = src.join("h2gen.h");
+        let content = std::fs::read_to_string(&header).unwrap();
+        std::fs::write(header, format!("{defines}{content}")).unwrap();
     }
     emit::compile::install_header(&src, &common::abi_header().unwrap()).unwrap();
     let b = emit::compile::build(&src, &dir, emit::compile::Arch::host(), 2).unwrap();
@@ -840,14 +858,22 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         mem
     };
-    for accounting in [false, true] {
-        let (_lib, dispatch) = compile_module_with(
-            "held-gate",
+    // The switches that change how a direct call settles the gate and the
+    // count: none, the lent gate, the view's budget with the lent count,
+    // and all three.
+    const GATE: &str = "#define H2_DIRECT_GATE 1\n";
+    const COUNT: &str = "#define H2_VIEW_BUDGET 1\n#define H2_DIRECT_COUNT 1\n";
+    let switches = [("", String::new()), ("-lent", GATE.into()), ("-count", COUNT.into()), ("-both", format!("{GATE}{COUNT}"))];
+    for (accounting, (tag, defines)) in [false, true].into_iter().flat_map(|a| switches.clone().map(|s| (a, s))) {
+        let gate = tag;
+        let (_lib, dispatch) = compile_module_defines(
+            &format!("held-gate{tag}"),
             held_gate_functions(),
             false,
             true,
             emit::opt::Passes::ALL,
             emit::Codegen { accounting, ..emit::Codegen::default() },
+            &defines,
         );
         let rt = Runtime::new(memory(), dispatch);
         for fault in [false, true] {
@@ -878,7 +904,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                         ctx.arm_preemption(slice);
                         t = next;
                     };
-                    let key = format!("accounting {accounting} fault {fault} fast {fast} slice {slice}");
+                    let key = format!("accounting {accounting} gate {gate} fault {fault} fast {fast} slice {slice}");
                     assert_eq!(end.kind, if fault { abi::FAULT } else { abi::STOP }, "{key}: {:?}", ctx.events());
                     let spent = stops.iter().map(|s| s.1).sum::<u64>() + ctx.take_slice_spent();
                     let p = ctx.take_profile().unwrap();
@@ -919,8 +945,72 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                 }
                 stops
             };
-            assert!(run(false) == run(true), "accounting {accounting} slice {slice}: stops differ");
+            assert!(run(false) == run(true), "accounting {accounting} gate {gate} slice {slice}: stops differ");
         }
+    }
+}
+
+/// The causes `H2_COLD_STATS` gives, in `h2gen_cold_counts` order.
+const COLD_CAUSES: [&str; 8] = ["entry", "lent-entry", "after-dcall", "flush", "drop", "tick", "miss", "no-gate"];
+
+/// Runs [`held_gate_functions`] once, start to end, with `H2_COLD_STATS`
+/// (and `defines`) and returns each cause's count of cold accesses.
+fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
+    let (lib, dispatch) = compile_module_defines(
+        kind,
+        held_gate_functions(),
+        false,
+        true,
+        emit::opt::Passes::ALL,
+        emit::Codegen { accounting, ..emit::Codegen::default() },
+        &format!("#define H2_COLD_STATS 1\n{defines}"),
+    );
+    let mut mem = Guest::new();
+    mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+    mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+    let rt = Runtime::new(mem, dispatch);
+    let mut ctx = ExecCtx::new(rt.clone(), 1);
+    ctx.enable_fast_memory(true);
+    let mut cpu = CpuAbi { esp: STACK, esi: DATA + 0x100, edi: DATA + 0x300, ecx: 40, ebp: DATA + 0xd10, ..CpuAbi::default() };
+    let t = Runner::default().run(&mut cpu, &mut ctx, A);
+    assert_eq!(t.kind, runtime::abi::STOP, "{:?}", ctx.events());
+    let counts: libloading::Symbol<*const [u64; 8]> = unsafe { lib.get(b"h2gen_cold_counts").unwrap() };
+    let counts = unsafe { **counts };
+    drop(rt);
+    counts
+}
+
+/// Why accesses take the cold path, by cause, over a run of
+/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly,
+/// a 100-trip loop with no call, a page-crossing loop, a REP and stores. A
+/// handler's first access is cold (it starts without the gate), and so is
+/// the first after a direct call returns (the caller drops the gate to
+/// charge its accesses and call); `miss` counts the cold ones taken with
+/// the gate held (a cross-page read), `no-gate` those that leave without
+/// it. `--nocapture` prints the table.
+#[test]
+fn cold_accesses_by_cause() {
+    for accounting in [false, true] {
+        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), "");
+        let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
+        println!("accounting {accounting}: {}", table.join(", "));
+        // main, then the first call (through the dispatcher: the leaf and
+        // main's return point); the other 39 calls are direct, each leaf
+        // from cold, then main's first access after it.
+        assert_eq!(c[0], 3, "{table:?}");
+        assert_eq!(c[1], 39, "{table:?}");
+        assert_eq!(c[2], 39, "{table:?}");
+        assert!(c[6] >= 1, "the cross-page read: {table:?}");
+        // H2_DIRECT_GATE lends the hold across the calls: the leaves and
+        // main after them start inline, but for the calls a tick ended the
+        // hold before (one in 32 trips, calls and loop headers alike).
+        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), "#define H2_DIRECT_GATE 1\n");
+        let gt: Vec<_> = COLD_CAUSES.iter().zip(g).map(|(k, n)| format!("{k} {n}")).collect();
+        println!("accounting {accounting} H2_DIRECT_GATE: {}", gt.join(", "));
+        assert_eq!(g[0], c[0], "{gt:?}");
+        assert!(g[1] + g[2] <= 2, "{gt:?}");
+        assert!(g.iter().sum::<u64>() + 60 <= c.iter().sum::<u64>(), "{gt:?} against {table:?}");
     }
 }
 
@@ -1096,6 +1186,64 @@ fn image_gate_holds() {
     );
     println!("blocks by accesses (1, 2, 3, 4, 5, 6+): {histogram:?}");
     assert!(n[1] <= n[0]);
+}
+
+/// The image's transfer sites by what the emitter makes of them: a call or
+/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), or one it leaves
+/// to the runner, and why: through a kernel import, through a pointer
+/// (indirect), to an address that is not a function entry, or (a call)
+/// with a continuation another handler owns. Every return leaves for the
+/// runner unless its handler was invoked directly. Static counts: which
+/// runner entries could become direct or stay in C.
+/// `cargo test -p emit --release --test perf image_transfer_sites -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_transfer_sites() {
+    use ir::{CallKind, Control, Target};
+    use std::collections::{BTreeMap, BTreeSet};
+    let Some(path) = common::xbe_path() else {
+        common::skip("image_transfer_sites", "no XBE (set H2_XBE)");
+        return;
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = xbe::Xbe::parse(&data).unwrap();
+    let analysis = analyze::analyze(&x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
+    let mut n: BTreeMap<&str, u64> = BTreeMap::new();
+    // Indirect calls by how many distinct sites share a continuation owner.
+    for o in &owners {
+        for b in o.func.blocks.values() {
+            let Some(last) = b.insns.last() else { continue };
+            let what = match &last.control {
+                Control::Call { target: Target::Direct(t), continuation, .. } => {
+                    if !functions.contains(t) {
+                        "call: static, not a function entry"
+                    } else if !o.selectors.contains(continuation) {
+                        "call: static, continuation owned elsewhere"
+                    } else {
+                        "call: direct (H2_DCALL)"
+                    }
+                }
+                Control::Call { kind: CallKind::Kernel { .. }, .. } => "call: kernel import",
+                Control::Call { .. } => "call: indirect",
+                Control::Jump { target: Target::Direct(t), tail: true, .. } => {
+                    if functions.contains(t) { "jump: direct tail (H2_DJUMP)" } else { "jump: static tail, not an entry" }
+                }
+                Control::Jump { tail: false, .. } => continue,
+                Control::Jump { kind: CallKind::Kernel { .. }, .. } => "jump: kernel import",
+                Control::Jump { .. } => "jump: indirect",
+                Control::Return { .. } => "return",
+                _ => continue,
+            };
+            *n.entry(what).or_default() += 1;
+        }
+    }
+    println!("owners {}, function entries {}", owners.len(), functions.len());
+    for (k, v) in &n {
+        println!("{v:>8} {k}");
+    }
+    assert!(!n.is_empty());
 }
 
 /// Every width the emitter loads and stores (1, 2, 4, 8, 10 and 16 bytes),
@@ -1329,4 +1477,106 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
         let dirty = host.join().unwrap();
         assert!(!dirty.is_empty(), "accounting {accounting}: the stores after the drain were not marked");
     }
+}
+
+/// What `H2_DIRTY_INLINE=1` costs in code: every 16th owner of the lifted
+/// image, emitted and compiled at -O2 with the inline RAM path, with and
+/// without the switch, and the `__text` bytes of both (only objects under
+/// Cargo's scratch directory; nothing is linked).
+/// `cargo test -p emit --release --test perf image_dirty_inline_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_dirty_inline_code_size() {
+    image_switch_code_size("H2_DIRTY_INLINE", emit::Codegen::default());
+}
+
+/// As [`image_dirty_inline_code_size`], for `H2_DIRECT_GATE=1` in a module
+/// that counts its accesses (as the game's build does).
+/// `cargo test -p emit --release --test perf image_direct_gate_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_direct_gate_code_size() {
+    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+}
+
+/// As [`image_direct_gate_code_size`], for `H2_VIEW_BUDGET=1` and
+/// `H2_DIRECT_COUNT=1` together.
+/// `cargo test -p emit --release --test perf image_direct_count_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_direct_count_code_size() {
+    image_switch_code_size("H2_VIEW_BUDGET+H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+}
+
+/// As [`image_direct_gate_code_size`], for `H2_INDIRECT_CALLS=1`.
+/// `cargo test -p emit --release --test perf image_indirect_calls_code_size -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_indirect_calls_code_size() {
+    image_switch_code_size("H2_INDIRECT_CALLS", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+}
+
+/// `switch`: the names to set, joined by `+`.
+fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
+    let name = format!("{switch} code size");
+    let Some(path) = common::xbe_path() else {
+        common::skip(&name, "no XBE (set H2_XBE)");
+        return;
+    };
+    let Some(header) = common::abi_header() else {
+        common::skip(&name, "no h2abi.h");
+        return;
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = xbe::Xbe::parse(&data).unwrap();
+    let analysis = analyze::analyze(&x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let sample: Vec<_> = owners.into_iter().step_by(16).collect();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{switch}-size"));
+    let src = dir.join("src");
+    let _ = std::fs::remove_dir_all(&dir);
+    emit::write_module_with(&sample, &src, codegen).unwrap();
+    emit::compile::install_header(&src, &header).unwrap();
+    let cc = emit::compile::compiler().unwrap();
+    let mut sources: Vec<_> = std::fs::read_dir(&src)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "c"))
+        .collect();
+    sources.sort();
+    // The __text section's size of a Mach-O object, from `size -m`.
+    let text = |obj: &std::path::Path| -> u64 {
+        let out = std::process::Command::new("size").arg("-m").arg(obj).output().unwrap();
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines()
+            .find_map(|l| l.trim().strip_prefix("Section (__TEXT, __text): "))
+            .map_or(0, |n| n.trim().parse().unwrap())
+    };
+    let mut sizes = [0u64; 2];
+    for (i, inline) in [false, true].into_iter().enumerate() {
+        let objs = dir.join(format!("obj-{inline}"));
+        std::fs::create_dir_all(&objs).unwrap();
+        for s in &sources {
+            let obj = objs.join(s.file_stem().unwrap()).with_extension("o");
+            let mut c = std::process::Command::new(&cc);
+            c.args(emit::compile::CFLAGS);
+            c.args(["-O2", "-DH2_FASTMEM=1", "-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1", "-DH2_DIRECT_CALLS=1"]);
+            if inline {
+                c.args(switch.split('+').map(|s| format!("-D{s}=1")));
+            }
+            let status = c.arg("-c").arg("-I").arg(&src).arg(s).arg("-o").arg(&obj).status().unwrap();
+            assert!(status.success(), "{}", s.display());
+            sizes[i] += text(&obj);
+        }
+    }
+    println!(
+        "{} of the image's owners in {} files: __text {} bytes, {} with {switch} ({:+.2}%)",
+        sample.len(),
+        sources.len(),
+        sizes[0],
+        sizes[1],
+        100.0 * (sizes[1] as f64 - sizes[0] as f64) / sizes[0] as f64
+    );
+    assert!(sizes[0] > 0);
 }

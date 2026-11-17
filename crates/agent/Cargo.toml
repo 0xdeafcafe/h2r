@@ -1,0 +1,19 @@
+[package]
+name = "agent"
+description = "The agent API server: a Unix socket in the game process, answered at tick boundaries (docs/runtime/agent-api.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-proto = { path = "../agent-proto" }
+serde.workspace = true
+serde_json.workspace = true
+runtime.workspace = true
+feature = { path = "../feature" }
+engine = { path = "../engine" }
+live-telemetry = { path = "../live-telemetry" }
+timeline = { path = "../timeline" }
+
+[dev-dependencies]
+live-proto.workspace = true

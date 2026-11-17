@@ -6,7 +6,11 @@
 //! whose role is argued in `docs/formats/objects.md`.
 //!
 //! No community tag definition was used: offsets, strides and classes come
-//! from the disc and the XBE, see `docs/formats/objects.md`.
+//! from the disc and the XBE, see `docs/formats/objects.md`. The one
+//! exception is the names of the weapon aim-assist fields (`weap +0x208` to
+//! `+0x218`): their offsets and units come from the engine reader, their
+//! names from Assembly's `Plugins/Halo2/weap.xml` at
+//! eecb829971d3b58d7bd8285d9b4dfe86425dda6f (docs/game/aim-assist.md).
 use super::{Evidence::*, Field, Kind::*, Layout};
 
 const fn f(
@@ -449,6 +453,44 @@ pub static WEAP: Layout = Layout {
         f(0x1e4, "unknown_jpt_ref_1e4", TagRef(&["jpt!"]), Disc, ""),
         f(0x1ec, "unknown_jpt_ref_1ec", TagRef(&["jpt!"]), Disc, ""),
         f(0x1f4, "unknown_jpt_ref_1f4", TagRef(&["jpt!"]), Disc, ""),
+        // Weapon aim assist (docs/game/aim-assist.md). The engine's
+        // aim-assist parameters (0x001a50a0) read these through the tag
+        // entry table; names from Assembly's Halo2/weap.xml.
+        f(
+            0x208,
+            "autoaim_angle",
+            F32,
+            Engine,
+            "radians; 0x001a5137 divides it by the zoom magnification",
+        ),
+        f(
+            0x20c,
+            "autoaim_range",
+            F32,
+            Engine,
+            "world units; 0x001a5153 multiplies it by the zoom magnification",
+        ),
+        f(
+            0x210,
+            "magnetism_angle",
+            F32,
+            Engine,
+            "radians; 0x001a5164 divides it by the zoom magnification",
+        ),
+        f(
+            0x214,
+            "magnetism_range",
+            F32,
+            Engine,
+            "world units; 0x001a5175 multiplies it by the zoom magnification",
+        ),
+        f(
+            0x218,
+            "deviation_angle",
+            F32,
+            Engine,
+            "radians; 0x001a5186 uses max(this, autoaim_angle)",
+        ),
         f(0x244, "unknown_effe_ref_244", TagRef(&["effe"]), Disc, ""),
         f(0x24c, "unknown_effe_ref_24c", TagRef(&["effe"]), Disc, ""),
         f(0x264, "unknown_snd_ref_264", TagRef(&["snd!"]), Disc, ""),

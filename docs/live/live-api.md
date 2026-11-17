@@ -1,8 +1,10 @@
 # Live service API
 
-Status: contract, being implemented. The service is `crates/live-server`
+Status: contract, implemented apart from what the sections mark as not
+built (federation among them). The service is `crates/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
-(default `127.0.0.1:8074`), plus two WebSockets. Identity, signing, tokens
+(default `127.0.0.1:8074`), plus three WebSockets (stream, ingest and the
+co-op relay). Identity, signing, tokens
 and discovery are in [live-security.md](live-security.md); this page refers
 to it as §n. Every client is given a base URL and finds the rest from
 `GET /.well-known/h2live.json`.
@@ -48,7 +50,7 @@ Event types so far (payload fields):
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
-| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?` |
+| `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
@@ -114,7 +116,12 @@ A frame may also carry `vehicles` and `actors`, each left out when empty:
 true, since older senders listed only occupied vehicles); `id` is the
 object datum in hex, the value `FramePlayer.vehicle` and `FrameActor.vehicle`
 hold. `kind` is the `vehi` tag file stem (`warthog`, `ghost`, `banshee`,
-...), `forward` and `up` unit vectors in game coordinates. `actors` are the
+...), `forward` and `up` unit vectors in game coordinates. A turret (the
+Warthog's chaingun, the Scorpion's cannon) is a vehicle of its own with
+`parent`, the id of the vehicle it is mounted on (its `pos`, `forward`
+and `up` are then relative to that one); any vehicle may carry `aim`,
+where it points, a unit vector (normalised, refused when not finite or
+zero, as a player's). `actors` are the
 live AI-controlled bipeds, nearest to a player first, at most 128.
 `species` is the directory of the biped tag (`grunt`, `jackal`, `elite`,
 `marine`, `bugger`, `floodcombat_human`, `tartarus`, ...), lower case; `team` in campaign is `player`,
@@ -224,14 +231,15 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)) |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
-| `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
+| `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
-| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on |
-| `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
+| `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
+| `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
+| `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next` |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -287,15 +295,17 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 
 | method and path | body | does |
 |---|---|---|
-| `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
+| `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id, recovery}` (`recovery`: the TOTP secret, `otpauth` URI and current code, live-security.md §1 Recovery), 409 if taken |
+| `POST /v1/accounts/{gamertag}/recover` | `{"request": <JWS h2live-recover by the new key over {gamertag, jwk, aud, iat, nonce}>, "code": "123456"}` | add the new key with a current recovery code; 201 `{xuid, gamertag, id}`; 403 wrong code, 429 locked out (live-security.md §1) |
+| `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own `recovery.read` / `recovery.write` token | the recovery secret and current code; `POST` makes a new one (set up or reset) |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
-| `POST /v1/invites` | none with an operator token (`?days=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token | create a single-use invite; 201 `{invite}` (admin: also `jti`, `exp`, `position`) (live-admin.md §5) |
+| `POST /v1/invites` | none with an operator token (`?days=&code=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token, bare or as `{"event": <jws>, "code": "..."}` | create a single-use invite; 201 `{invite, custom, jti, exp, position}`: `invite` is the 25-character code or the custom one (live-admin.md §5, "Invite codes people type") |
 | `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
-| `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live` offered; otherwise 404 (live-admin.md §4) |
+| `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
 
 ## Friends
 
@@ -327,7 +337,7 @@ with one call:
 { "friends": [
     { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete",
       "friends_since": "2026-11-15T20:14:03.120Z",
-      "presence": { "state": "playing", "game_id": "7f3c...", "since": "..." } } ],
+      "presence": { "state": "playing", "game_id": "7f3c...", "activity": "Co-op: Outskirts", "since": "..." } } ],
   "requests_in":  [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
   "requests_out": [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
   "position": 1042 }
@@ -338,6 +348,13 @@ presence and is absent when the friend is offline; a pending request
 carries no presence (the two are not friends yet), just the other account
 and when the request was made. `friends_since` is the `FriendAccepted`
 event's `at`.
+
+`activity` is an optional short line the game sets on a presence event
+("Co-op: Outskirts"): 1 to 64 characters, not blank, no control
+characters (`live_proto::valid_activity`); a bad one refuses the event with
+400. It rides `SignedIn` and `PresenceChanged`, is served in `GET
+/v1/presence` and in a friend's `presence`, and is absent when unset. A
+presence event without it clears the previous one.
 
 The game side's friends enumeration makes exactly this call with the
 signed-in account's gamertag and reads `friends` (gamertag, xuid,
@@ -493,11 +510,98 @@ from a non-loopback IPv4, the observed address replaces any declared one
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
 
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
-(author or canonical gamertag), `visibility`, and `attributes` (URL-encoded
+(author or canonical gamertag), `flags` (`custom`, `hopper`, `ranked` or
+`coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
+
+A `coop` session may carry a `campaign` (`{level, name?, difficulty}`: the
+map file stem, the level's name as the game shows it, and 0 easy to 3
+legendary); no other kind may. A `SessionUpdated` with `campaign` makes the
+session co-op, and one with `flags: "custom"` drops it. Co-op sessions are
+listed, filtered and hidden by `visibility` like any other (the game creates
+them `friends` by default).
+
+### Co-op games
+
+Campaign co-op posts no game result, so finished co-op games are derived
+from session events. A `coop` session that closed (`SessionDeleted` or
+`SessionExpired`) after at least one guest joined is one finished game; a
+session nobody joined is not. Nothing new is written.
+
+`GET /v1/coop/games` (public, or `read` on a private server; an optional
+`read` bearer says who reads, see below) returns
+`{items, next, position}`, newest closed first. `limit` is 1..1000
+(default 100); `cursor` is the previous `next`, the log position of the
+closing event. `player` (an XUID or a gamertag) keeps the games that
+account hosted or joined; an unknown gamertag gives an empty page. An item:
+
+```json
+{ "session_id": "8f3a09c2d1e47b65",
+  "host": { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete" },
+  "players": [ { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete" },
+               { "xuid": "0009a1b2c3d4e5f7", "gamertag": "Moss" } ],
+  "campaign": { "level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2 },
+  "started": "2026-11-16T10:05:41.220Z",
+  "ended": "2026-11-16T10:47:09.004Z",
+  "end_reason": "closed",
+  "visibility": "friends" }
+```
+
+`players` is the host first, then every guest that ever joined in join
+order, including ones who left before the end. `started` is the first
+guest's join time, `ended` the closing event's. `end_reason` is `closed`,
+`host_left` or `expired`. `gamertag` is null for an account the server no
+longer knows. The campaign is the one on the session when it closed.
+
+**Who sees a finished co-op game.** `visibility` is the session's when it
+closed. A `public` one shows to everyone. A `friends` one shows only to
+the readers who were in it (the host or a guest) and the host's friends;
+an `invite` one only to those who were in it. Admins (the operator's
+token, or an admin account's) see every game. The reader is the account
+of an optional `read` bearer, checked when present even on a public
+server; without one, only public games show. The same rule holds for a
+Live co-op campaign game's telemetry (`kind: "campaign"`, `online: true`):
+when it starts, the server links it to the open `coop` session its host
+(or, failing that, a player) is in and records that session's host and
+visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames` and
+an account's `recent_games` leave it out for readers who may not see it
+(those who were in it are its players). A campaign game with no such
+session stays public. While the game runs it follows its session: when the
+host changes the session's visibility, the game's changes with it. Once
+the game ends it keeps the visibility it had then.
+
+**The log.** `GET /v1/events` and `/v1/stream` apply the same rule per
+reader: a hidden game's events (its `GameStarted`, players, kills,
+recorded `GameFrame`s and `GameEnded`) and its live frames go only to
+readers who may see the game, and a friends-only or invite-only session's
+events only to its host, whoever is or was in it, the host's friends
+(friends-only) and admins. Positions are the log's own, so a filtered
+reader sees gaps. `GET /v1/events` reads `limit` events of the log and
+leaves out the hidden ones, so a page can be short or empty with a
+`next`: read on until `next` is null. `/v1/stream` skips hidden events
+but its place still moves past them, and `caught_up` names the log's
+head. A stream reader says who it is with `?auth=1` and a first message
+`{"kind": "auth", "token": "<read token>"}` (see Streams); without it, a
+public server's stream is anonymous.
+
+**Presence.** A player's game id and activity follow the same rule. In
+`GET /v1/presence`, a friends list (`GET /v1/accounts/{gamertag}/friends`)
+and the log's `SignedIn`/`PresenceChanged` events (`/v1/events`,
+`/v1/stream`), a reader who may not see the player's game, or every
+friends-only or invite-only session the player was in when it set that
+presence (and, for the current presence, is in now), gets the player's
+state with no `game_id` and `activity: "In a game"` (none when the
+player said neither). The player itself and admins always get the real
+values. Such a log event carries `redacted: true` in its data and an
+empty `jws`: its signature covers the real data, so it is withheld.
+
+**Stats.** `GET /v1/stats/summary` counts every game for admins. Everyone
+else gets the public summary: a Live co-op game linked to a session is
+left out while it runs and counted when it ends if it ended public. A
+friend who may see a friends-only game still gets the public summary.
 
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
@@ -530,10 +634,14 @@ stored: players use their own disc for the base.
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
 
-Uploads (`PUT /v1/content`) stream to `<data>/content/tmp`, hashed as they
+Uploads (`PUT /v1/content`) stream to `<data>/tmp`, hashed as they
 arrive, and the SHA-256 of the body must be the path's (400 otherwise).
-The blob is then kept once, under `<data>/content/<first two hex
-digits>/<sha256>`, and never changed; a server-signed `ContentStored`
+The blob is then kept once, as `content/<first two hex digits>/<sha256>`
+in the server's private blob store (`<data>/content/...` by default, or
+an R2 bucket with `--blobs s3://BUCKET`, [live-hosting.md](live-hosting.md#free-hosting-sqlite-and-cloudflare-r2)),
+and never changed. It is always served through the server, never by a
+redirect (the game's client follows none, and a takedown must be
+immediate); a server-signed `ContentStored`
 event (`content-<sha256>` stream; `{sha256, size, uploader}`) records it.
 A body starting with a map's `daeh` header is a whole map, capped at
 100 MiB; anything else at 32 MiB (413 over either; `h2 live serve
@@ -569,6 +677,46 @@ admin). Lists leave out taken-down packages.
 
 The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
 join-time download) is in [maps.md](../game/maps.md) §5, "As built".
+
+## Cloud saves
+
+Each account's own save storage ([live-cloud-saves.md](live-cloud-saves.md)):
+private on every server, versioned, and kept by content hash. `{xuid}` is
+the owner's; any other caller is refused.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/{xuid}/storage` | the owner's token, `lxm: storage.read` | `{items: [item], used_bytes, quota_bytes, item_bytes}` (tombstones included) |
+| `GET /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.read` | the bytes; `ETag: "<version>"`, `X-H2-Version`, `X-H2-Modified`, `X-H2-SHA256`; 404 if absent or deleted |
+| `PUT /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.write`; `If-Match: <version>`, `X-H2-SHA256: <hex>`, `X-H2-Modified: <unix ms>` (optional); the raw bytes | 201 (new) or 200 `item`; 409 `{error: "conflict", message, current: item or null}` |
+| `DELETE /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.write`; `If-Match: <version>` | 200 the tombstone; 409 as for `PUT`; 404 if absent or already deleted |
+
+An item is `{kind, name, version, sha256?, size, modified, stored_at,
+deleted?}`: `version` starts at 1 and rises by one with each write or
+delete, `modified` is the writer's own time of the change (Unix
+milliseconds; the server's time when the writer gives none), `stored_at`
+the server's (RFC 3339). A tombstone has `deleted: true`, no `sha256` and
+size 0.
+
+- `kind` is `save` (U:'s files) or `settings` (one profile's settings); any
+  other is 404. `name` is 1 to 4 `/`-separated segments of printable ASCII
+  without `" * + , : ; < = > ? \ | %`, never `.` or `..`, each at most 64
+  bytes, 250 in all (400 otherwise); percent-encode it in the URL.
+- `If-Match` is required on writes: the item's current version (a
+  tombstone's too), `0` for an item that never existed, bare or quoted as an
+  ETag. Anything else is a 409 carrying the current item, checked both
+  before and after the body is read.
+- The body's SHA-256 must be `X-H2-SHA256` (400 otherwise). Bytes are kept
+  once per account by hash under `storage/<xuid>/blobs/` in the private
+  blob store (`<data>/storage/...`, or the private bucket), and removed
+  when no item names them.
+- Caps (`Policy::storage`, `StorageLimits`): 8 MiB per item, 64 MiB per
+  account counting live items only (a replacement counts its new size), and
+  2048 items per account, tombstones included; 413 over any. Writes share the
+  per-author write rate (429). A server with no data directory keeps none
+  (503); a server older than this answers 404 for the list.
+- Responses are `Cache-Control: private, no-store`. Nothing about cloud
+  saves goes into the event log or the stream.
 
 ## Co-op relay
 
@@ -651,6 +799,14 @@ as they are appended, then interleaves live frames:
 
 `?games=<id>,<id>` limits frames to those games (events are always sent; they
 are small). Without it, frames for every live game are sent.
+
+`?auth=1` makes the first client message `{ "kind": "auth", "token":
+"<read token>" }` on a public server too (a `--private` server always asks
+for it), and the stream then sends what that account may see: the events
+and frames of a friends-only or invite-only co-op game or session go only to
+readers allowed to see it ([Co-op games](#co-op-games)). On a public server
+the token's expiry does not close the socket. Without `auth`, a public
+stream is anonymous and leaves those events out.
 
 `?frames=packed` sends frames as binary messages instead: each a container
 of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
@@ -771,7 +927,7 @@ Settled after the first client was built against this page.
    everywhere. `next` is opaque; pass it back as `?cursor=`. For
    `/v1/events` it happens to be the next `from`.
 4. **Errors** are exactly `{ "error": "<code>", "message": "..." }` with the
-   codes in Conventions (plus `unauthorized`, `forbidden`, `rate_limited`,
+   codes in Conventions (plus `unauthorized`, `forbidden`, `gone` (410), `rate_limited`,
    `too_large`, `unimplemented`).
 5. **Presence states** are `online`, `away` and `playing` (`game_id` set);
    `SignedOut` and `PresenceExpired` mean offline.

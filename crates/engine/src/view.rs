@@ -320,15 +320,21 @@ pub mod players {
     impl Player {
         /// The name, up to its NUL (a full buffer is taken whole).
         pub fn name(&self, m: &dyn GuestMemory) -> R<String> {
-            let mut units = Vec::with_capacity(NAME_UNITS);
-            for i in 0..NAME_UNITS as u32 {
+            let mut units = [0; NAME_UNITS];
+            let len = self.name_units(m, &mut units)?;
+            Ok(String::from_utf16_lossy(&units[..len]))
+        }
+        /// The name's UTF-16 code units into `units`, up to its NUL; how
+        /// many there are. Reads what [`Player::name`] reads.
+        pub fn name_units(&self, m: &dyn GuestMemory, units: &mut [u16; NAME_UNITS]) -> R<usize> {
+            for (i, unit) in (0u32..).zip(units.iter_mut()) {
                 let u = m.u16(self.addr.wrapping_add(NAME + 2 * i))?;
                 if u == 0 {
-                    break;
+                    return Ok(i as usize);
                 }
-                units.push(u);
+                *unit = u;
             }
-            Ok(String::from_utf16_lossy(&units))
+            Ok(NAME_UNITS)
         }
         /// Listed in a roster: live and not leaving.
         pub fn listed(&self, m: &dyn GuestMemory) -> R<bool> {

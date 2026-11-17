@@ -505,6 +505,16 @@ pub fn call_of(step: Step, buf: u32) -> Option<GuestCall> {
     Some(GuestCall { target, args, eax, esi })
 }
 
+/// The active game's options mode (1 campaign, 2 multiplayer), once
+/// activation has set the globals' active byte. Cheap: for per-tick hooks.
+pub fn active_mode<M: Gm>(m: &M) -> Option<u32> {
+    let g = m.u32(GAME_GLOBALS).filter(|g| *g != 0)?;
+    if m.u8(g + GLOBALS_ACTIVE)? == 0 {
+        return None;
+    }
+    m.u32(g + GLOBALS_OPTIONS + OPT_MODE)
+}
+
 /// The active game's mode and scenario path, once activation has set the
 /// globals' active byte.
 pub fn active_game<M: Gm>(m: &M) -> Option<(u32, String)> {

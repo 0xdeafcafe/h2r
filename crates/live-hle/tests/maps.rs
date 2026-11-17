@@ -101,6 +101,8 @@ fn a_published_package_is_fetched_over_http_and_installed() {
         language: None,
         visibility: Default::default(),
         skulls: None,
+        campaign: None,
+        ping_ms: None,
         map_id: Some(id),
     };
     let maps = data.join("maps");

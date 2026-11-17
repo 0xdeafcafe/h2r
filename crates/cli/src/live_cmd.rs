@@ -31,14 +31,21 @@ use crate::live_query::path_part;
 
 const USAGE: &str = "usage: h2 live <command> [options]
 
-  serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
+  serve [--db URL] [--blobs LOC] [--public-blobs LOC --public-blobs-url URL]
+        [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
         [--content-layer-mib N] [--content-map-mib N] [--content-quota-mib N]
         [--tunnel | --tunnel-name NAME [--hostname HOST] [--no-tunnel-setup]
          | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
-                          postgres://localhost/h2live, --listen to
+                          sqlite://DIR/live.db in --data (a server with a log
+                          in postgres://localhost/h2live and no live.db keeps
+                          using it, with a notice); --blobs (content, cloud
+                          saves) to --data, or s3://BUCKET for R2, and
+                          --public-blobs publishes shared game art to a
+                          public bucket (docs/live/live-hosting.md, Free
+                          hosting). --listen defaults to
                           127.0.0.1:8074; a non-loopback address needs TLS or
                           --insecure-http. --id (fixed on first start) names
                           the server in tokens and author ids. Game art
@@ -57,7 +64,16 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           you run (CF-Connecting-IP trusted from loopback,
                           the URL's host the id on first start)
   account create <gamertag> [--server URL] [--invite CODE]
-                          make a key, register it, keep both in accounts.json
+                          make a key, register it, keep both in accounts.json;
+                          prints the recovery code and authenticator key
+  account code [--as GAMERTAG] [--server URL]
+                          the current recovery code, to type on a new device
+  account recovery [--reset] [--as GAMERTAG] [--server URL]
+                          the authenticator key and otpauth URI (sets recovery
+                          up on an older account; --reset replaces it)
+  account recover <gamertag> [--code CODE] [--server URL]
+                          a new key here for an account made elsewhere, added
+                          with a current code (asked for if not given)
   account import <file> [--server URL]
                           add an account the web app made (its downloaded
                           {xuid, gamertag, server, key}) to accounts.json,
@@ -92,10 +108,27 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           publish Halo 2's message_of_the_day.dat, built from
                           up to 32 lines (or a prebuilt file), signed with the
                           server key in --data
-  invite create [--days N] [--server URL] [--data DIR]
-                          print an invite code for an --invite-only server
-                          (POST /v1/invites, signed with the server key)
-  assets extract [--disc PATH] [--out DIR]
+  invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
+                          print an invite code for an --invite-only server:
+                          25 characters, or TEXT (4 to 32, any case); signed
+                          with the server key in --data, or with --as by an
+                          admin account
+  invite list [--as GAMERTAG] [--server URL] [--data DIR]
+  invite revoke <jti> --as GAMERTAG [--server URL]
+  menubar [--install | --uninstall | --adopt-existing SERVER TUNNEL | --status ...]
+                          the optional menu bar app: server and tunnel
+                          state, start/stop, invites, logs, login items;
+                          `h2 live menubar --help` lists the rest
+  store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC] [--data DIR]
+                          move the event log (sqlite://, postgres://, file:)
+                          and the blobs (a directory, s3://BUCKET) between
+                          backends; idempotent and resumable
+  store check --blobs s3://BUCKET[/PREFIX] [--public] [--public-url URL] [--quick]
+                          try a bucket with real credentials: write, read,
+                          list, range read, conditional write, multipart
+                          upload and delete in a scratch prefix, pass or fail
+                          for each (docs/live/live-hosting.md)
+  assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
@@ -125,6 +158,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("account", Some("create")) => account_create(rest.shift()),
         ("account", Some("import")) => account_import(rest.shift()),
         ("account", Some("list")) => account_list(rest.shift()),
+        ("account", Some("code")) => crate::live_recovery::account_code(rest.shift()),
+        ("account", Some("recovery")) => crate::live_recovery::account_recovery(rest.shift()),
+        ("account", Some("recover")) => crate::live_recovery::account_recover(rest.shift()),
         ("account", Some("export")) => crate::live_admin::account_export(rest.shift()),
         ("admin", Some("grant")) => crate::live_admin::admin_grant(rest.shift()),
         ("admin", Some("revoke")) => crate::live_admin::admin_revoke(rest.shift()),
@@ -141,7 +177,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("assets", Some("check")) => assets_check(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
-        ("invite", Some("create")) => invite_create(rest.shift()),
+        ("invite", Some("create")) => crate::live_recovery::invite_create(rest.shift()),
+        ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
+        ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
+        ("menubar", _) => menubar(rest),
+        ("store", Some("copy")) => store_copy(rest.shift()),
+        ("store", Some("check")) => store_check(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
         _ => bail!("unknown h2 live command {:?}\n\n{USAGE}", args.join(" ")),
     }
@@ -205,11 +246,32 @@ pub(crate) fn data_dir(flag: Option<String>) -> Result<PathBuf> {
         .map_or_else(|| Ok(live_dir()?.join("server")), Ok)
 }
 
+/// `h2 live store copy`: [`live_server::copy::run`].
+fn store_copy(args: Args) -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio")?
+        .block_on(live_server::copy::run(args.0, &env))
+}
+
+/// `h2 live store check`: [`live_server::check::run`].
+fn store_check(args: Args) -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio")?
+        .block_on(live_server::check::run(args.0, &env))
+}
+
 fn serve(mut args: Args) -> Result<()> {
-    let db = args
-        .take("--db")?
-        .or_else(|| env("H2_LIVE_DB"))
-        .unwrap_or_else(|| live_server::DEFAULT_DB.into());
+    let db = args.take("--db")?.or_else(|| env("H2_LIVE_DB"));
+    let blobs = live_server::BlobFlags {
+        private: args.take("--blobs")?,
+        public: args.take("--public-blobs")?,
+        public_url: args.take("--public-blobs-url")?,
+    }
+    .or_env(&env);
     let listen = args
         .take("--listen")?
         .unwrap_or_else(|| live_server::DEFAULT_LISTEN.into());
@@ -323,6 +385,7 @@ fn serve(mut args: Args) -> Result<()> {
     };
     let config = live_server::Config {
         db,
+        blobs,
         listen,
         data_dir,
         id,
@@ -370,13 +433,19 @@ pub(crate) fn game_art_dir(data_dir: &Path) -> PathBuf {
 fn assets_extract(mut args: Args) -> Result<()> {
     let disc = args.take("--disc")?.map(PathBuf::from);
     let out = args.take("--out")?.map(PathBuf::from);
+    let mappack = args.take("--mappack")?.map(PathBuf::from);
+    // Map pack maps `h2 import-mappack` installed: under the runtime's
+    // data root (`h2 play --data`), its default unless named.
+    let installed = args
+        .take("--installed")?
+        .map_or_else(content::store::default_data_root, PathBuf::from);
     args.positional()?;
     let disc = disc.map_or_else(crate::default_disc, Ok)?;
     let out = out.map_or_else(
         || Ok(game_art_dir(&data_dir(None)?)),
         Ok::<_, anyhow::Error>,
     )?;
-    crate::live_art::run(disc, out)
+    crate::live_art::run(disc, out, mappack, Some(installed))
 }
 
 fn assets_check(mut args: Args) -> Result<()> {
@@ -474,7 +543,17 @@ impl Client {
         gamertag: &str,
         invite: Option<String>,
     ) -> Result<(CreatedAccount, KeyPair)> {
-        let key = KeyPair::generate();
+        self.create_account_with(KeyPair::generate(), gamertag, invite)
+    }
+
+    /// Registers a new account with `key` (one this machine already uses
+    /// on another server, so the identity stays the same).
+    pub(crate) fn create_account_with(
+        &self,
+        key: KeyPair,
+        gamertag: &str,
+        invite: Option<String>,
+    ) -> Result<(CreatedAccount, KeyPair)> {
         let req = self
             .agent
             .post(&self.url("/accounts"))
@@ -595,6 +674,9 @@ fn account_create(mut args: Args) -> Result<()> {
         created.gamertag, created.xuid, created.id
     );
     println!("key stored in {}", path.display());
+    if let Some(info) = &created.recovery {
+        crate::live_recovery::print_recovery(info);
+    }
     Ok(())
 }
 
@@ -1034,7 +1116,11 @@ pub(crate) fn team_run(
 
 /// The local account to act as on `client`'s server: the one named by
 /// `as_tag`, or the only one there.
-pub(crate) fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
+pub(crate) fn pick_account(
+    client: &Client,
+    accounts: &Path,
+    as_tag: Option<&str>,
+) -> Result<LocalAccount> {
     let mine: Vec<LocalAccount> = live_accounts::load(accounts)?
         .into_iter()
         .filter(|a| a.is_on(&client.base, &client.discovery.id))
@@ -1193,14 +1279,13 @@ fn motd_set(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-fn invite_create(mut args: Args) -> Result<()> {
-    let days: i64 = args
-        .take("--days")?
-        .map_or(Ok(7), |d| d.parse())
-        .context("--days must be a whole number")?;
-    let server = args.take("--server")?;
-    let data = args.take("--data")?;
-    args.positional()?;
+/// A new invite code, signed as the operator (`h2 live invite create`, and
+/// the menu bar's Copy New Invite).
+pub(crate) fn create_invite(
+    server: Option<String>,
+    data: Option<String>,
+    days: i64,
+) -> Result<String> {
     let client = Client::connect(server)?;
     let me = operator(data, &client)?;
     let token = issue_token(&me.key, &me.author(), &me.id, lxm::INVITES_WRITE, now());
@@ -1213,8 +1298,48 @@ fn invite_create(mut args: Args) -> Result<()> {
     let invite = reply["invite"]
         .as_str()
         .context("the server's reply has no invite")?;
-    println!("{invite}");
-    Ok(())
+    Ok(invite.to_string())
+}
+
+/// `GET /v1/admin/status` signed as the operator: the JSON the dashboard's
+/// Server screen reads (the menu bar's status lines).
+pub(crate) fn admin_status(server: Option<String>, data: Option<String>) -> Result<String> {
+    let client = Client::connect(server)?;
+    let me = operator(data, &client)?;
+    let token = issue_token(
+        &me.key,
+        &me.author(),
+        &me.id,
+        live_server::invites::LXM_ADMIN_READ,
+        now(),
+    );
+    let req = client.authorized(client.agent.get(&client.url("/admin/status")), token)?;
+    call(req, None)
+}
+
+/// The menu bar's operator calls, the same as the commands above.
+struct MenubarBackend;
+
+impl live_menubar::status::Backend for MenubarBackend {
+    fn admin_status(&self, local_url: &str, data_dir: &Path) -> Result<String> {
+        admin_status(
+            Some(local_url.into()),
+            Some(data_dir.to_string_lossy().into()),
+        )
+    }
+
+    fn create_invite(&self, local_url: &str, data_dir: &Path) -> Result<String> {
+        create_invite(
+            Some(local_url.into()),
+            Some(data_dir.to_string_lossy().into()),
+            7,
+        )
+    }
+}
+
+fn menubar(args: Args) -> Result<()> {
+    let env = live_menubar::Env::system(std::sync::Arc::new(MenubarBackend))?;
+    live_menubar::main(args.0, &env)
 }
 
 #[cfg(test)]
@@ -1274,6 +1399,68 @@ mod tests {
             serve_id(None, None, Some("https://live.forbes.red"), &dir),
             None
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The menu bar's backend against a real server: the admin status
+    /// parses into what the menu shows, and invites come back.
+    #[test]
+    fn menubar_backend_reads_status_and_makes_invites() {
+        use live_menubar::status::{Backend, Health, collect, parse_status};
+        let dir = std::env::temp_dir().join(format!("h2-live-menubar-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let data = dir.join("server");
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &data,
+            Default::default(),
+        )
+        .unwrap();
+        let backend = MenubarBackend;
+        backend.healthz(&server.url).unwrap();
+        let status = parse_status(&backend.admin_status(&server.url, &data).unwrap()).unwrap();
+        assert_eq!(status.accounts, 0);
+        assert!(
+            status.uptime_s.is_some(),
+            "the admin status, not /v1/server"
+        );
+        assert_eq!(status.open_invites, Some(0));
+
+        let code = backend.create_invite(&server.url, &data).unwrap();
+        assert!(!code.is_empty());
+
+        // Through the snapshot, with launchd faked out of the way.
+        let paths = live_menubar::config::Paths {
+            live_dir: dir.clone(),
+            launch_agents: dir.join("LaunchAgents"),
+        };
+        let mut cfg = live_menubar::config::Config::defaults(&paths);
+        cfg.local_url = server.url.clone();
+        cfg.data_dir = data.clone();
+        cfg.tunnel = None;
+        struct NoLaunchd;
+        impl live_menubar::launchd::Runner for NoLaunchd {
+            fn run(&self, _: &str, _: &[&str]) -> Result<live_menubar::launchd::Output> {
+                Ok(live_menubar::launchd::Output {
+                    code: 113,
+                    ..Default::default()
+                })
+            }
+        }
+        let ld =
+            live_menubar::launchd::Launchd::new(std::sync::Arc::new(NoLaunchd), "gui/0".into());
+        let snap = collect(&cfg, &ld, &backend);
+        assert!(
+            matches!(snap.health, Health::Up(ref s) if s.uptime_s.is_some()),
+            "{snap:?}"
+        );
+
+        // Another server's key is refused, as for `h2 live invite create`.
+        let other = dir.join("other");
+        ServerIdentity::open(&other, Some("elsewhere.example")).unwrap();
+        assert!(backend.admin_status(&server.url, &other).is_err());
+        drop(server);
         fs::remove_dir_all(&dir).unwrap();
     }
 

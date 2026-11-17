@@ -334,6 +334,13 @@ impl H1Map {
             })
     }
 
+    /// The tag data as the engine loads it: the index header at
+    /// [`H1Map::metadata_base`].
+    pub fn metadata(&self) -> crate::Space<'_> {
+        let start = self.header.index_offset as usize;
+        crate::Space::new(&self.data[start..self.metadata_end()], self.base)
+    }
+
     fn metadata_end(&self) -> usize {
         (self.header.index_offset + self.header.metadata_size) as usize
     }

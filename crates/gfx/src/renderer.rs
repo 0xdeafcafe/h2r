@@ -503,6 +503,13 @@ impl RecordedDraw {
         )
     }
 
+    /// Whether the draw is counted and changes no attachment: no colour
+    /// channel written, no depth or stencil write (the count pass's own
+    /// judgement, [`Draw::count_samples`]).
+    pub fn writes_nothing(&self) -> bool {
+        matches!(self.count, Some((_, false))) && self.color_writes().is_empty()
+    }
+
     /// The colour channels the draw writes.
     pub fn color_writes(&self) -> wgpu::ColorWrites {
         self.state.3.write_mask
@@ -931,8 +938,7 @@ impl Renderer {
             .enumerate()
             .map(|(i, (sp, vs))| {
                 if let Some(&Some(id)) = d.stream_ids.get(i) {
-                    let (buf, len) = persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
-                    return (buf, 0, len);
+                    return persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
                 }
                 let len = sp.host_bytes(d.vertex_count);
                 let (buf, off) = self
@@ -944,14 +950,11 @@ impl Renderer {
             })
             .collect();
         let (vertices, indices) = match kept {
-            Some((buf, len, count)) => (count, Some((buf, 0, len))),
+            Some((buf, off, len, count)) => (count, Some((buf, off, len))),
             None => {
                 let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
                 let indices = list.map(|idx| match kept_id {
-                    Some(id) => {
-                        let (buf, len) = self.persistent.put_indices(ctx, id, d.primitive, &idx);
-                        (buf, 0, len)
-                    }
+                    Some(id) => self.persistent.put_indices(ctx, id, d.primitive, &idx),
                     None => {
                         let bytes: &[u8] = bytemuck::cast_slice(&idx);
                         let len = (bytes.len() as u64).max(4);
@@ -1013,11 +1016,42 @@ impl Renderer {
     pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
         self.vertices.flush(queue);
         self.uniforms.flush(queue);
+        self.persistent.flush(queue);
+    }
+
+    /// Persistent buffers written through the staging ring
+    /// ([`set_staged_uploads`](Self::set_staged_uploads)): the copies made
+    /// since the last call, to submit ahead of the passes that draw from
+    /// them, after [`flush_uploads`](Self::flush_uploads).
+    pub fn upload_commands(&mut self, device: &wgpu::Device) -> Option<wgpu::CommandBuffer> {
+        self.persistent.copy_commands(device)
+    }
+
+    /// Persistent vertex and index buffers are written through one staging
+    /// ring and copies ([`gfx::persistent::PersistentVertices::set_staged`](crate::persistent::PersistentVertices::set_staged))
+    /// instead of a queue write each. The owner must then submit
+    /// [`upload_commands`](Self::upload_commands) first in every submission
+    /// that holds recorded draws.
+    pub fn set_staged_uploads(&mut self, on: bool) {
+        self.persistent.set_staged(on);
+    }
+
+    /// Persistent vertex and index regions are carved out of a few large
+    /// slabs (on, the default) or get a buffer each
+    /// ([`PersistentVertices::set_slabs`]). Switch before the first draw.
+    pub fn set_vertex_slabs(&mut self, on: bool) {
+        self.persistent.set_slabs(on);
     }
 
     /// Counters of the persistent vertex buffers ([`Draw::stream_ids`]).
     pub fn persistent_stats(&self) -> PersistentStats {
         self.persistent.stats()
+    }
+
+    /// Buffers the persistent vertex and index regions take
+    /// ([`PersistentVertices::buffers`]).
+    pub fn persistent_buffers(&self) -> usize {
+        self.persistent.buffers()
     }
 
     /// Lets the upload rings reuse their space: call after submitting every
@@ -1084,11 +1118,13 @@ impl Renderer {
         if runs.is_empty() {
             runs.push(0..0);
         }
-        let passes = runs.len();
-        for run in runs {
+        let mut passes = runs.len();
+        for (index, run) in runs.into_iter().enumerate() {
             if let Some(p) = draws.get(run.start)
                 && let Some((count, writes)) = &p.count
             {
+                // The count pass and the sum.
+                crate::churn::counted_passes(1 + u64::from(!p.scissor.is_empty()));
                 let counter = counter.as_deref_mut().expect("checked above");
                 let samples = target.samples;
                 let count_view = counter.target(ctx, attachment, samples).clone();
@@ -1113,6 +1149,7 @@ impl Renderer {
                     wgpu::StoreOp::Discard
                 };
                 {
+                    crate::churn::pass();
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("gfx count pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1159,6 +1196,26 @@ impl Renderer {
                     );
                 }
             }
+            // A counted draw alone in its run that writes nothing (Halo's
+            // flare tests: colour writes off, no depth or stencil writes)
+            // leaves the attachments as they were: with no clear to apply,
+            // its render pass would only load and store them again.
+            if run.len() == 1
+                && color_clear.is_none()
+                && depth_clear.is_none()
+                && stencil_clear.is_none()
+                && draws[run.start].writes_nothing()
+                && skip_idle_counted()
+            {
+                passes -= 1;
+                crate::churn::idle_counted_skipped();
+                continue;
+            }
+            // The pass the draws after a counted one resume in (the first
+            // is the pending pass's own).
+            if index > 0 && draws[run.start].counts_samples() {
+                crate::churn::counted_passes(1);
+            }
             let color_load = match color_clear.take() {
                 Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color {
                     r: r as f64,
@@ -1168,6 +1225,7 @@ impl Renderer {
                 }),
                 None => wgpu::LoadOp::Load,
             };
+            crate::churn::pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("gfx pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1193,6 +1251,28 @@ impl Renderer {
         }
         Ok(passes)
     }
+}
+
+thread_local! {
+    static SKIP_IDLE_COUNTED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether [`Renderer::encode_pass`] leaves out the render pass of a
+/// counted draw that writes nothing ([`RecordedDraw::writes_nothing`]):
+/// on unless `H2_GFX_IDLE_COUNTED_PASS=1`, or as
+/// [`set_skip_idle_counted`] set it on this thread.
+fn skip_idle_counted() -> bool {
+    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    SKIP_IDLE_COUNTED.get().unwrap_or_else(|| {
+        *SKIP.get_or_init(|| std::env::var_os("H2_GFX_IDLE_COUNTED_PASS").is_none_or(|v| v != "1"))
+    })
+}
+
+/// Overrides, on this thread, whether counted draws that write nothing get
+/// a render pass of their own (`None`: `H2_GFX_IDLE_COUNTED_PASS`). For
+/// tests comparing the two.
+pub fn set_skip_idle_counted(skip: Option<bool>) {
+    SKIP_IDLE_COUNTED.set(skip);
 }
 
 /// The state an open render pass has had set, so a draw only sets what

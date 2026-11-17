@@ -2,8 +2,8 @@
 
 Status: phase 1 server sessions and HLE invitations are implemented. Tests use
 router memory stores and two synthetic guests against `start_embedded`, through
-HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. No game was
-built or run; the retail UI handoff and a complete custom match remain untested.
+HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. The owner
+has Live working in the game (2026-11-17).
 Search also returns real sessions, with the anonymous procedure-1 filters still
 unmapped. The server matcher, ranked arbitration and NAT traversal remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
@@ -395,6 +395,16 @@ crypto.
   the stream the way the games list does.
 - **Hopper populations** — players searching per hopper, matches proposed
   over time, from the `matchmaking-*`/`match-*` projections.
+- **Co-op campaign** — a `coop` session shows as "Co-op campaign" with
+  its level name, difficulty and players (host and who joined), in the
+  dashboard's find-a-game list and the stats home. Finished co-op games
+  come from `GET /v1/coop/games` and show on the games page's campaign tab
+  and a player's history (Co-op tab); one from a friends-only or
+  invite-only session shows only to who may see it (live-api.md, "Co-op
+  games"), so the web asks with a `read` token when signed in. A session's
+  `ping_ms` (the host's round trip to its guest) shows as "42 ms" in the
+  row and the detail. Friends' presence shows its
+  `activity` line ("Co-op: Outskirts") when the game set one.
 - **Session detail** — players as they join, linking to profiles and (once
   the game starts) the existing game pages; presence's `game_id` already
   ties a playing account to a game, and `PresenceChanged` can grow an

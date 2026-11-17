@@ -23,6 +23,9 @@ use crate::fnv64;
 use crate::output::{self, Temporary};
 
 mod dependencies;
+mod tiers;
+
+pub use tiers::{Tiers, hot_addresses};
 
 /// Flags for every generated object that do not depend on the build
 /// profile (LIFTER.md §1): no fast-math or FP contraction, no
@@ -72,7 +75,15 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// from the environment, plus the optional paths. `H2_PERF` is off unless
 /// set to `1`; the inline RAM path (`H2_FASTMEM`), native x87
 /// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), and direct calls between
-/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`.
+/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`; store
+/// sites testing the dirty bit before marking a page (`H2_DIRTY_INLINE`,
+/// `h2fastmem.h`) is off unless set to `1`; so is counting cold guest
+/// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
+/// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), reading
+/// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
+/// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
+/// pointers invoking the handler in the target's direct slot
+/// (`H2_INDIRECT_CALLS`).
 pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -83,6 +94,12 @@ pub fn cflags() -> Result<Vec<String>, Error> {
         ("H2_X87_NATIVE", true),
         ("H2_SSE_NATIVE", true),
         ("H2_DIRECT_CALLS", true),
+        ("H2_DIRTY_INLINE", false),
+        ("H2_COLD_STATS", false),
+        ("H2_DIRECT_GATE", false),
+        ("H2_VIEW_BUDGET", false),
+        ("H2_DIRECT_COUNT", false),
+        ("H2_INDIRECT_CALLS", false),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -392,6 +409,8 @@ pub struct Build {
     pub cache_objects: Vec<PathBuf>,
     pub compiled: usize,
     pub reused: usize,
+    /// Sources in the cold tier ([`Tiers`]); 0 without tiers.
+    pub cold: usize,
     /// Wall time for compiling (not archiving).
     pub compile_secs: f64,
     /// Toolchain probes, source hashing and pin management.
@@ -781,6 +800,22 @@ fn source_prefix_map(src_dir: &Path) -> Result<(PathBuf, OsString), Error> {
 /// recompile, never lose an input. The archive is written by [`archive`];
 /// an existing one is reused only if it holds exactly the build's objects.
 pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs: usize, cc: &Path) -> Result<Build, Error> {
+    build_tiered(src_dir, out_dir, obj_dir, arch, jobs, cc, Tiers::from_env()?.as_ref())
+}
+
+/// [`build_in`] with the optimisation tiers given instead of read from
+/// `H2_OPT_COLD` and `H2_HOT`: with `tiers`, a source holding none of its
+/// hot addresses compiles at its cold level ([`Tiers`]). Each tier has its
+/// own flags in its objects' keys and its own dependency and driver probes.
+pub fn build_tiered(
+    src_dir: &Path,
+    out_dir: &Path,
+    obj_dir: &Path,
+    arch: Arch,
+    jobs: usize,
+    cc: &Path,
+    tiers: Option<&Tiers>,
+) -> Result<Build, Error> {
     let cache_start = Instant::now();
     let pin_dir = out_dir.join("pin").join(arch.name());
     for d in [obj_dir, out_dir, &pin_dir] {
@@ -791,7 +826,12 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     // headers' identity.
     let support = [read("h2gen.h")?, read("h2simd.h")?, read("h2x87.h")?, read("h2fastmem.h")?].concat();
     let flags = cflags()?;
-    let common = common_key(&support, &read("h2abi.h")?, arch, &flags, &toolchain_identity(cc));
+    let toolchain = toolchain_identity(cc);
+    let abi = read("h2abi.h")?;
+    let common = common_key(&support, &abi, arch, &flags, &toolchain);
+    // The cold tier: its flags, key and probes. Unused without tiers.
+    let cold_flags = tiers.map_or_else(|| flags.clone(), |t| t.cold_flags(&flags));
+    let cold_common = common_key(&support, &abi, arch, &cold_flags, &toolchain);
     let (src_abs, prefix_map) = source_prefix_map(src_dir)?;
 
     let mut sources: Vec<PathBuf> = std::fs::read_dir(src_dir)
@@ -803,10 +843,11 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     sources.sort();
     let source_root = std::fs::canonicalize(src_dir).map_err(err)?;
     let headers = dependencies::Headers::default();
+    let cold_headers = dependencies::Headers::default();
 
     // (source, object, pin, needs compiling). Hashing ~400 MB of sources is
     // serial work worth spreading over the cores on a no-op rebuild.
-    let keyed: Mutex<Vec<(usize, Keyed)>> = Mutex::new(Vec::new());
+    let keyed: Mutex<Vec<(usize, bool, Keyed)>> = Mutex::new(Vec::new());
     let cursor = AtomicUsize::new(0);
     std::thread::scope(|s| {
         for _ in 0..jobs.clamp(1, 16) {
@@ -814,8 +855,12 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                 loop {
                     let i = cursor.fetch_add(1, Ordering::Relaxed);
                     let Some(src) = sources.get(i) else { break };
+                    let mut cold = false;
                     let r = std::fs::read(src).map_err(err).and_then(|text| {
-                        let dependencies = headers.fingerprint(cc, &flags, arch, src, &text, &source_root)?;
+                        cold = tiers.is_some_and(|t| !t.is_hot(&text));
+                        let (flags, headers, common) =
+                            if cold { (&cold_flags, &cold_headers, cold_common) } else { (&flags, &headers, common) };
+                        let dependencies = headers.fingerprint(cc, flags, arch, src, &text, &source_root)?;
                         let key = fnv64(&[&common.to_le_bytes()[..], &dependencies.to_le_bytes()[..], &text].concat());
                         let stem = src.file_stem().unwrap().to_string_lossy();
                         let name = format!("{stem}.{}.{key:016x}.o", arch.name());
@@ -843,7 +888,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                         }
                         Ok((obj, pin, fresh))
                     });
-                    keyed.lock().unwrap().push((i, r));
+                    keyed.lock().unwrap().push((i, cold, r));
                 }
             });
         }
@@ -851,9 +896,9 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     let mut keyed = keyed.into_inner().unwrap();
     keyed.sort_by_key(|k| k.0);
     let mut jobs_list = Vec::new();
-    for (i, r) in keyed {
+    for (i, cold, r) in keyed {
         let (obj, pin, fresh) = r?;
-        jobs_list.push((sources[i].clone(), obj, pin, fresh));
+        jobs_list.push((sources[i].clone(), obj, pin, fresh, cold));
     }
     // Pins of earlier builds' objects are not inputs any more.
     let current: HashSet<&PathBuf> = jobs_list.iter().map(|j| &j.2).collect();
@@ -877,7 +922,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&j) = order.get(i) else { break };
-                    let (src, obj, pin, _) = todo[j];
+                    let (src, obj, pin, _, cold) = todo[j];
+                    let flags = if *cold { &cold_flags } else { &flags };
                     let tmp = match Temporary::new(obj) {
                         Ok(tmp) => tmp,
                         Err(e) => {
@@ -887,7 +933,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                     };
                     // Not in the key: every tree maps to the same `.`.
                     let out = Command::new(cc)
-                        .args(&flags)
+                        .args(flags)
                         .arg(&prefix_map)
                         .args(&target)
                         .arg("-c")
@@ -943,6 +989,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
         arch,
         compiled: todo.len(),
         reused: jobs_list.len() - todo.len(),
+        cold: jobs_list.iter().filter(|j| j.4).count(),
         objects,
         cache_objects,
         compile_secs,
@@ -1221,6 +1268,16 @@ mod tests {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }
+        let inline = std::env::var("H2_DIRTY_INLINE").as_deref() == Ok("1");
+        assert_eq!(flags.contains(&"-DH2_DIRTY_INLINE=1".to_string()), inline);
+        let stats = std::env::var("H2_COLD_STATS").as_deref() == Ok("1");
+        assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
+        let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
+        assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
+        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_INDIRECT_CALLS"] {
+            let on = std::env::var(name).as_deref() == Ok("1");
+            assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
+        }
     }
 
     #[test]
@@ -1390,6 +1447,64 @@ mod tests {
         std::fs::write(src.join("only.h"), "#define ONLY 3\n").unwrap();
         let again = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
         assert_eq!((again.compiled, again.reused), (1, 6));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With tiers, a source holding no hot instruction compiles at the cold
+    /// level and one holding one at the usual level; each tier keys its
+    /// own objects, so moving a source between tiers recompiles exactly
+    /// that source, and objects are reused across tier changes when their
+    /// tier and text are the same.
+    #[test]
+    fn tiers_compile_cold_sources_at_their_level_and_key_them_apart() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED tiers_compile_cold_sources_at_their_level_and_key_them_apart: no clang");
+            return;
+        };
+        if cflags().unwrap().iter().any(|f| f == "-O0") {
+            eprintln!("SKIPPED tiers_compile_cold_sources_at_their_level_and_key_them_apart: H2_OPT=0");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("h2-tiers-{}", std::process::id()));
+        let src = tiny_tree(&dir);
+        for (name, pc) in [("a", "0x00001000"), ("b", "0x00002000")] {
+            let text = format!(
+                "int h2_{name}(int x) {{\n    /* {pc} */ {{ x += 1; }}\n    return x;\n}}\n\
+                 #ifdef __OPTIMIZE__\nint h2_{name}_optimised;\n#else\nint h2_{name}_unoptimised;\n#endif\n"
+            );
+            std::fs::write(src.join(format!("{name}.c")), text).unwrap();
+        }
+        let out = dir.join("out");
+        let cache = dir.join("cache");
+        let build = |t: Option<&Tiers>| build_tiered(&src, &out, &cache, Arch::host(), 2, &cc, t).unwrap();
+        let symbols = |b: &Build, stem: &str| -> String {
+            let o = b.objects.iter().find(|o| o.file_name().unwrap().to_string_lossy().starts_with(&format!("{stem}."))).unwrap();
+            String::from_utf8_lossy(&Command::new("nm").arg(o).output().unwrap().stdout).into_owned()
+        };
+        let first_a = Tiers::new("0", "guest 0x00001000 12").unwrap();
+        let first = build(Some(&first_a));
+        assert_eq!((first.compiled, first.reused, first.cold), (3, 0, 2));
+        assert!(symbols(&first, "a").contains("_h2_a_optimised"), "{}", symbols(&first, "a"));
+        assert!(symbols(&first, "b").contains("_h2_b_unoptimised"), "{}", symbols(&first, "b"));
+        let warm = build(Some(&first_a));
+        assert_eq!((warm.compiled, warm.reused), (0, 3));
+        // b becomes hot and a cold: exactly those two recompile.
+        let then_b = Tiers::new("0", "0x2000").unwrap();
+        let moved = build(Some(&then_b));
+        assert_eq!((moved.compiled, moved.reused, moved.cold), (2, 1, 2));
+        assert!(symbols(&moved, "a").contains("_h2_a_unoptimised"));
+        assert!(symbols(&moved, "b").contains("_h2_b_optimised"));
+        // Without tiers everything is hot: a and b were built hot before,
+        // one.c never was.
+        let off = build(None);
+        assert_eq!((off.compiled, off.reused, off.cold), (1, 2, 0));
+        // Another cold level is another key (`-Og` is never the usual
+        // level); a cold level equal to the usual one is the same object.
+        let og = build(Some(&Tiers::new("g", "0x2000").unwrap()));
+        assert_eq!((og.compiled, og.reused), (2, 1));
+        let usual = cflags().unwrap().into_iter().find_map(|f| f.strip_prefix("-O").map(str::to_owned)).unwrap();
+        let same = build(Some(&Tiers::new(&usual, "0x2000").unwrap()));
+        assert_eq!((same.compiled, same.reused), (0, 3));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

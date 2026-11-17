@@ -23,6 +23,8 @@ pub struct Churn {
     /// Buffers reused from a pool instead of created (persistent vertex and
     /// index buffers).
     pub buffers_reused: u64,
+    /// Render passes of counted draws that wrote nothing, left out.
+    pub idle_counted_skipped: u64,
 }
 
 impl std::ops::Sub for Churn {
@@ -33,6 +35,7 @@ impl std::ops::Sub for Churn {
             queue_writes: self.queue_writes - o.queue_writes,
             staging_reused: self.staging_reused - o.staging_reused,
             buffers_reused: self.buffers_reused - o.buffers_reused,
+            idle_counted_skipped: self.idle_counted_skipped - o.idle_counted_skipped,
         }
     }
 }
@@ -43,6 +46,7 @@ thread_local! {
         queue_writes: 0,
         staging_reused: 0,
         buffers_reused: 0,
+        idle_counted_skipped: 0,
     }) };
 }
 
@@ -64,9 +68,32 @@ pub fn buffer_created() {
     bump(|c| c.buffers_created += 1);
 }
 
-/// Counts a queue write (a wgpu staging buffer).
+/// Counts a queue write (a wgpu staging buffer), here and in the frame
+/// stats (`queue_writes`).
 pub fn queue_write() {
     bump(|c| c.queue_writes += 1);
+    timeline::phase::count(timeline::phase::Counter::QueueWrites, 1);
+}
+
+/// Counts a render or compute pass begun, in the frame stats (`passes`).
+pub fn pass() {
+    timeline::phase::count(timeline::phase::Counter::Passes, 1);
+}
+
+/// [`pass`], one that is side work (`pass_side`).
+pub fn side_pass() {
+    pass();
+    timeline::phase::count(timeline::phase::Counter::PassSide, 1);
+}
+
+/// `n` of the passes counted are a visibility test's (`pass_counted`).
+pub fn counted_passes(n: u64) {
+    timeline::phase::count(timeline::phase::Counter::PassCounted, n);
+}
+
+/// Counts a counted draw's render pass left out (it wrote nothing).
+pub fn idle_counted_skipped() {
+    bump(|c| c.idle_counted_skipped += 1);
 }
 
 /// Counts a staging chunk taken from the pool.

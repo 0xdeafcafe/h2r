@@ -4,8 +4,8 @@ import { skipsOcclusion } from "../src/viewer/aopass";
 import { SEE_MAX, nextSee, seeTargets, seeThroughHidesAny, type SeeThrough } from "../src/viewer/cutaway";
 import { dressLayer, layerLook, layerOf } from "../src/viewer/layers3d";
 import { LevelLook } from "../src/viewer/level3d";
-import { fogRange, skyColour, skyOf, skyUrl } from "../src/viewer/sky3d";
-import { isBackdrop, layerNode, zoneInPlay, zoneLabel, zoneList, zoneVisibility } from "../src/viewer/zones";
+import { FOG_CLEAR, fogAmount, gameFog, skyColour, skyOf, skyUrl, useGameFog } from "../src/viewer/sky3d";
+import { ZONE_DWELL_MS, ZoneFollower, isBackdrop, layerNode, zoneInPlay, zoneLabel, zoneList, zoneVisibility, zoneWanted, type ZoneBox } from "../src/viewer/zones";
 
 describe("picking a level's zone", () => {
   test("zones are named for their BSP, or numbered from 1 when the name says nothing", () => {
@@ -138,23 +138,45 @@ describe("a level's sky and fog", () => {
   });
 
   test("the sky model sits beside the map glb", () => {
-    expect(skyUrl("/art/map/lockout/map.glb?v=10", "sky.glb")).toBe("/art/map/lockout/sky.glb");
+    expect(skyUrl("/art/map/lockout/map.glb?v=10", "sky.glb")).toBe("/art/map/lockout/sky.glb?v=10");
     expect(skyUrl("map.glb", "sky.glb")).toBe("sky.glb");
   });
 
-  test("the fog is measured from the point in focus, and never hides the far side of the level", () => {
+  test("the fog is measured from the point in focus, linear to the sky's density and no thicker", () => {
     const fog = { colour: [1, 1, 1] as [number, number, number], density: 0.5, start: 20, end: 60 };
-    // Clear up to start past the focus; as thick as the game's (a half) at end past it.
-    const r = fogRange(fog, 10);
-    expect(r.near).toBe(30);
-    const at = (d: number, x: { near: number; far: number }) => (d - x.near) / (x.far - x.near);
-    expect(at(70, r)).toBeCloseTo(0.5);
-    // Seen from afar, the level's far side (800 away) is no thicker than the game's most.
-    const wide = fogRange(fog, 300, 800);
-    expect(at(800, wide)).toBeCloseTo(0.5);
-    expect(at(300 + 60, wide)).toBeLessThan(0.5);
-    // A level that ends before the fog is thick changes nothing.
-    expect(fogRange(fog, 10, 40)).toEqual(r);
+    const f = gameFog(fog, 10);
+    expect(f).toEqual({ near: 30, far: 70, cap: 0.5 });
+    // Clear up to start past the focus.
+    expect(fogAmount(0, f)).toBe(0);
+    expect(fogAmount(30, f)).toBe(0);
+    // Linear on the way (the game's, not three's smoothstep).
+    expect(fogAmount(50, f)).toBeCloseTo(0.25, 9);
+    // The sky's most at end past it, and never more: the far side of a
+    // level seen from afar fades, it is not hidden.
+    expect(fogAmount(70, f)).toBeCloseTo(0.5, 9);
+    expect(fogAmount(10_000, f)).toBeCloseTo(0.5, 9);
+  });
+
+  test("odd fog numbers stay sane", () => {
+    const f = gameFog({ colour: [1, 1, 1], density: 3, start: 5, end: 5 }, -4);
+    expect(f.cap).toBe(1);
+    expect(f.near).toBe(5);
+    expect(f.far).toBeGreaterThan(f.near);
+    expect(Number.isFinite(fogAmount(6, f))).toBe(true);
+  });
+
+  test("three's fog is patched to the game's, once, with a shared cap every material gets", () => {
+    expect(useGameFog()).toBe(true);
+    expect(useGameFog()).toBe(true);
+    const chunks = THREE.ShaderChunk as unknown as Record<string, string>;
+    expect(chunks.fog_fragment).toContain("fogClear");
+    expect(chunks.fog_fragment).not.toContain("smoothstep( fogNear");
+    expect(chunks.fog_pars_fragment?.match(/uniform float fogClear;/g)?.length).toBe(1);
+    // The exponential haze is untouched.
+    expect(chunks.fog_fragment).toContain("exp( - fogDensity * fogDensity");
+    const shader = { uniforms: {} as Record<string, unknown>, vertexShader: "", fragmentShader: "" };
+    new THREE.MeshStandardMaterial().onBeforeCompile(shader as never, null as never);
+    expect(shader.uniforms.fogClear).toBe(FOG_CLEAR);
   });
 });
 
@@ -175,6 +197,24 @@ describe("the level's look", () => {
     root.children[2]!.add(effects);
     return { root, decals, effects };
   };
+
+  test("measures each zone's extent in game coordinates", () => {
+    const look = new LevelLook(new THREE.Scene(), new THREE.Texture(), () => {});
+    const root = new THREE.Group();
+    const z = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 6));
+    z.name = "bsp_1";
+    // gl (10, 20, 30) is game (10, -30, 20).
+    z.position.set(10, 20, 30);
+    root.add(z);
+    look.adopt(root, {}, "/m/map.glb");
+    expect(look.zoneBoxes()).toEqual([{ bsp: 1, cinematic: false, min: [9, -33, 18], max: [11, -27, 22] }]);
+    expect(look.zoneBox(1)?.bsp).toBe(1);
+    expect(look.setActive(1)).toBe(true);
+    expect(look.setActive(1)).toBe(false);
+    expect(look.following()).toBe(true);
+    look.setPick(1);
+    expect(look.following()).toBe(false);
+  });
 
   test("finds the zones and layers, follows the zone in play, and flips each switch", () => {
     const scene = new THREE.Scene();
@@ -253,5 +293,48 @@ describe("cutting through to the players", () => {
     expect(nextSee("off")).toBe("auto");
     expect(nextSee("auto")).toBe("always");
     expect(nextSee("always")).toBe("off");
+  });
+});
+
+describe("the zone in play", () => {
+  const box = (bsp: number, x0: number, x1: number, cinematic = false): ZoneBox => ({ bsp, min: [x0, -10, -5], max: [x1, 10, 5], cinematic });
+  // Zones 0 and 1 share the corridor from 90 to 100; zone 2 is a cutscene's.
+  const boxes = [box(0, 0, 100), box(1, 90, 200), box(2, 1000, 1100, true)];
+  const at = (x: number) => ({ x, y: 0, z: 0 });
+
+  test("the game's loaded zone, where the players are in it", () => {
+    expect(zoneWanted(boxes, { reported: 1, focus: null, players: [at(95)] }, 0)).toBe(1);
+    expect(zoneWanted(boxes, { reported: 0, focus: null, players: [at(150)] }, 0)).toBe(1);
+  });
+
+  test("a cutscene's zone, a missing report or nobody inside: where the players stand", () => {
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [at(50)] }, 1)).toBe(0);
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [at(50)] }, 1, true)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(150), at(160), at(20)] }, null)).toBe(1);
+    // In the shared corridor the zone shown stays.
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(95)] }, 0)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(95)] }, 1)).toBe(1);
+    // The followed player decides over the rest.
+    expect(zoneWanted(boxes, { reported: null, focus: at(20), players: [at(150), at(160), at(20)] }, 1)).toBe(0);
+    // No players: the game's word, else what is shown.
+    expect(zoneWanted(boxes, { reported: 1, focus: null, players: [] }, 0)).toBe(1);
+    expect(zoneWanted(boxes, { reported: 2, focus: null, players: [] }, 0)).toBe(0);
+    expect(zoneWanted(boxes, { reported: null, focus: null, players: [at(5000)] }, 1)).toBe(1);
+    expect(zoneWanted([], { reported: 1, focus: null, players: [] }, null)).toBeNull();
+  });
+
+  test("a new zone has to stay wanted a moment, except the first and on a seek", () => {
+    const z = new ZoneFollower();
+    const m = (x: number) => ({ reported: null, focus: null, players: [at(x)] });
+    expect(z.update(0, boxes, m(50))).toBe(0);
+    expect(z.update(100, boxes, m(150))).toBe(0);
+    // Back over the line before the dwell is up: no flick.
+    expect(z.update(200, boxes, m(50))).toBe(0);
+    expect(z.update(300, boxes, m(150))).toBe(0);
+    expect(z.update(300 + ZONE_DWELL_MS - 1, boxes, m(150))).toBe(0);
+    expect(z.update(300 + ZONE_DWELL_MS, boxes, m(150))).toBe(1);
+    expect(z.update(2000, boxes, m(20), { snap: true })).toBe(0);
+    z.reset();
+    expect(z.current).toBeNull();
   });
 });

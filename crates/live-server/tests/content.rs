@@ -11,10 +11,10 @@ use axum::http::{Method, StatusCode};
 use common::*;
 use content::manifest::{Layer, ResultInfo};
 use content::{Manifest, MapId, Sha256};
+use live_proto::lxm;
 use live_proto::maps::{MAP_PUBLISHED, MapDocument, package_stream};
 use live_proto::session::{NewSession, Slots};
 use live_proto::sign::EventBody;
-use live_proto::lxm;
 use live_server::content::{ContentLimits, RETAIL_FILE};
 use live_server::store::{EventStore, MemoryStore};
 use live_server::{Policy, filestore::FileStore};
@@ -147,6 +147,8 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         visibility: Default::default(),
         map_id,
         skulls: None,
+        campaign: None,
+        ping_ms: None,
     }
 }
 
@@ -188,7 +190,11 @@ async fn blobs_are_checked_stored_once_and_served() {
             Body::from(bytes),
         )
         .await;
-    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "token for another method");
+    assert_eq!(
+        wrong.status,
+        StatusCode::UNAUTHORIZED,
+        "token for another method"
+    );
 
     // The body must hash to the path.
     let r = put(&h, &u, &sha(b"something else"), bytes).await;
@@ -207,26 +213,38 @@ async fn blobs_are_checked_stored_once_and_served() {
         .join("content")
         .join(&hash.to_string()[..2])
         .join(hash.to_string());
-    assert_eq!(std::fs::read(&path).unwrap(), bytes, "<data>/content/<aa>/<hash>");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "<data>/content/<aa>/<hash>"
+    );
     assert!(
-        std::fs::read_dir(h.dir.join("content/tmp")).unwrap().next().is_none(),
+        std::fs::read_dir(h.dir.join("tmp"))
+            .unwrap()
+            .next()
+            .is_none(),
         "no temporary files left"
     );
 
     let got = h.get(&format!("/v1/content/{hash}")).await;
     assert_eq!(got.status, StatusCode::OK);
     assert_eq!(got.body, bytes);
+    assert_eq!(got.headers["etag"].to_str().unwrap(), format!("\"{hash}\""));
     assert_eq!(
-        got.headers["etag"].to_str().unwrap(),
-        format!("\"{hash}\"")
-    );
-    assert_eq!(
-        h.get(&format!("/v1/content/{}", sha(b"never"))).await.status,
+        h.get(&format!("/v1/content/{}", sha(b"never")))
+            .await
+            .status,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(h.get("/v1/content/nothex").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.get("/v1/content/nothex").await.status,
+        StatusCode::NOT_FOUND
+    );
     // The metadata is a server-signed event on the blob's stream.
-    let ev = h.get(&format!("/v1/events?stream=content-{hash}")).await.json();
+    let ev = h
+        .get(&format!("/v1/events?stream=content-{hash}"))
+        .await
+        .json();
     assert_eq!(ev["items"][0]["type"], "ContentStored");
     assert_eq!(ev["items"][0]["data"]["uploader"], u.xuid.to_string());
     assert_eq!(ev["items"][0]["author"], "server:live.test");
@@ -258,7 +276,12 @@ async fn caps_quota_and_upload_switch() {
     upload(&h, &other, &map2).await;
     // Deleting frees the quota.
     let first = sha(&map);
-    assert_eq!(moderate(&h, "content", &first.to_string(), "delete").await.status, StatusCode::OK);
+    assert_eq!(
+        moderate(&h, "content", &first.to_string(), "delete")
+            .await
+            .status,
+        StatusCode::OK
+    );
     let mut map3 = b"daeh".to_vec();
     map3.resize(150, 3);
     upload(&h, &u, &map3).await;
@@ -325,7 +348,12 @@ async fn retail_bytes_are_never_kept() {
     .unwrap();
     let r = put(&h, &u, &retail_hash, &retail).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
-    assert!(!h.dir.join("content").join(&retail_hash.to_string()[..2]).exists());
+    assert!(
+        !h.dir
+            .join("content")
+            .join(&retail_hash.to_string()[..2])
+            .exists()
+    );
 
     // A manifest that is only a retail base shares nothing.
     let bare = Manifest::retail("lockout", retail_hash);
@@ -362,7 +390,12 @@ async fn packages_are_signed_checked_and_listed() {
     // Layers first.
     let r = publish(&h, &u, &d).await;
     assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.error());
-    assert!(r.json()["message"].as_str().unwrap().contains("snipers.ips"));
+    assert!(
+        r.json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("snipers.ips")
+    );
     upload(&h, &u, patch).await;
     let r = publish(&h, &u, &d).await;
     assert_eq!(r.status, StatusCode::CONFLICT, "the image too");
@@ -413,7 +446,10 @@ async fn packages_are_signed_checked_and_listed() {
     // An invalid manifest.
     let mut broken = d.clone();
     broken.manifest.base.map = "../lockout".into();
-    assert_eq!(publish(&h, &u, &broken).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        publish(&h, &u, &broken).await.status,
+        StatusCode::BAD_REQUEST
+    );
 
     let r = publish(&h, &u, &d).await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
@@ -482,7 +518,11 @@ async fn packages_are_signed_checked_and_listed() {
     assert_eq!(names(&page), ["Midship Night"]);
     let next = page["next"].as_str().unwrap();
     assert_eq!(
-        names(&h.get(&format!("/v1/maps?limit=1&cursor={next}")).await.json()),
+        names(
+            &h.get(&format!("/v1/maps?limit=1&cursor={next}"))
+                .await
+                .json()
+        ),
         ["Lockout Snipers"]
     );
 
@@ -501,9 +541,14 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
     upload(&h, &u, patch).await;
     let m = manifest(patch);
     let id = MapId::of(&m);
-    assert_eq!(publish(&h, &u, &doc(m.clone())).await.status, StatusCode::CREATED);
     assert_eq!(
-        advertise(&h, &u, &session("custom", None, Some(id))).await.status,
+        publish(&h, &u, &doc(m.clone())).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        advertise(&h, &u, &session("custom", None, Some(id)))
+            .await
+            .status,
         StatusCode::CREATED
     );
 
@@ -523,45 +568,89 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
     );
 
     // Hide: 410, out of the list, sessions refused; unhide undoes it.
-    assert_eq!(moderate(&h, "maps", &id.to_string(), "hide").await.status, StatusCode::OK);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::GONE);
+    assert_eq!(
+        moderate(&h, "maps", &id.to_string(), "hide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::GONE
+    );
     assert_eq!(h.get("/v1/maps").await.json()["items"], json!([]));
     let r = advertise(&h, &u, &session("custom", None, Some(id))).await;
     assert_eq!(r.status, StatusCode::GONE, "{}", r.error());
-    assert_eq!(publish(&h, &u, &doc(m.clone())).await.status, StatusCode::GONE);
-    assert_eq!(moderate(&h, "maps", &id.to_string(), "unhide").await.status, StatusCode::OK);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::OK);
+    assert_eq!(
+        publish(&h, &u, &doc(m.clone())).await.status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        moderate(&h, "maps", &id.to_string(), "unhide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::OK
+    );
 
     // Block a layer by hash: the bytes go, the hash is refused, and every
     // package on it is gone too.
     let ph = sha(patch);
-    assert_eq!(moderate(&h, "content", &ph.to_string(), "block").await.status, StatusCode::OK);
+    assert_eq!(
+        moderate(&h, "content", &ph.to_string(), "block")
+            .await
+            .status,
+        StatusCode::OK
+    );
     let path = h
         .dir
         .join("content")
         .join(&ph.to_string()[..2])
         .join(ph.to_string());
     assert!(!path.exists());
-    assert_eq!(h.get(&format!("/v1/content/{ph}")).await.status, StatusCode::GONE);
-    assert_eq!(put(&h, &u, &ph, patch).await.status, StatusCode::GONE);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::GONE);
     assert_eq!(
-        advertise(&h, &u, &session("custom", None, Some(id))).await.status,
+        h.get(&format!("/v1/content/{ph}")).await.status,
+        StatusCode::GONE
+    );
+    assert_eq!(put(&h, &u, &ph, patch).await.status, StatusCode::GONE);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        advertise(&h, &u, &session("custom", None, Some(id)))
+            .await
+            .status,
         StatusCode::GONE
     );
     // Unblocking leaves it deleted: a fresh upload brings it back.
     moderate(&h, "content", &ph.to_string(), "unblock").await;
-    assert_eq!(h.get(&format!("/v1/content/{ph}")).await.status, StatusCode::GONE);
+    assert_eq!(
+        h.get(&format!("/v1/content/{ph}")).await.status,
+        StatusCode::GONE
+    );
     upload(&h, &u, patch).await;
-    assert_eq!(h.get(&format!("/v1/content/{ph}")).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/v1/content/{ph}")).await.status,
+        StatusCode::OK
+    );
 
     // A hash can be blocked before anyone uploads it.
     let ahead = sha(b"PATCH known bad");
-    assert_eq!(moderate(&h, "content", &ahead.to_string(), "block").await.status, StatusCode::OK);
-    assert_eq!(put(&h, &u, &ahead, b"PATCH known bad").await.status, StatusCode::GONE);
+    assert_eq!(
+        moderate(&h, "content", &ahead.to_string(), "block")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(&h, &u, &ahead, b"PATCH known bad").await.status,
+        StatusCode::GONE
+    );
     // Other actions need something to act on.
     assert_eq!(
-        moderate(&h, "content", &sha(b"nothing").to_string(), "hide").await.status,
+        moderate(&h, "content", &sha(b"nothing").to_string(), "hide")
+            .await
+            .status,
         StatusCode::NOT_FOUND
     );
     assert_eq!(
@@ -581,7 +670,12 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
     let view = h
-        .call(Method::GET, "/v1/admin/content", &[moderator(&h)], Body::empty())
+        .call(
+            Method::GET,
+            "/v1/admin/content",
+            &[moderator(&h)],
+            Body::empty(),
+        )
         .await;
     assert_eq!(view.status, StatusCode::OK, "{}", view.error());
     let view = view.json();
@@ -606,10 +700,19 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
     assert_eq!(states.len(), 1, "a block ahead is not a stored blob");
 
     // Deleting the package: gone, and republishable.
-    assert_eq!(moderate(&h, "maps", &id.to_string(), "delete").await.status, StatusCode::OK);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::GONE);
+    assert_eq!(
+        moderate(&h, "maps", &id.to_string(), "delete").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::GONE
+    );
     assert_eq!(publish(&h, &u, &doc(m)).await.status, StatusCode::CREATED);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -627,16 +730,22 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
 
     // Custom games take any map that is not taken down.
     assert_eq!(
-        advertise(&h, &u, &session("custom", None, Some(modded))).await.status,
+        advertise(&h, &u, &session("custom", None, Some(modded)))
+            .await
+            .status,
         StatusCode::CREATED
     );
     // A session that says nothing is as before.
     assert_eq!(
-        advertise(&h, &u, &session("ranked", Some(3), None)).await.status,
+        advertise(&h, &u, &session("ranked", Some(3), None))
+            .await
+            .status,
         StatusCode::CREATED
     );
     assert_eq!(
-        advertise(&h, &u, &session("ranked", Some(3), Some(retail))).await.status,
+        advertise(&h, &u, &session("ranked", Some(3), Some(retail)))
+            .await
+            .status,
         StatusCode::CREATED
     );
     let r = advertise(&h, &u, &session("hopper", Some(3), Some(modded))).await;
@@ -652,7 +761,10 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
         )
         .await
     }
-    assert_eq!(pin(&h, vec![modded.to_string()]).await.status, StatusCode::OK);
+    assert_eq!(
+        pin(&h, vec![modded.to_string()]).await.status,
+        StatusCode::OK
+    );
     assert_eq!(
         h.get("/v1/hoppers/pins").await.json()["pins"],
         json!([{"hopper_id": 3, "map_ids": [modded.to_string()]}])
@@ -664,7 +776,9 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
         modded.to_string()
     );
     assert_eq!(
-        advertise(&h, &u, &session("hopper", Some(4), Some(modded))).await.status,
+        advertise(&h, &u, &session("hopper", Some(4), Some(modded)))
+            .await
+            .status,
         StatusCode::FORBIDDEN,
         "pinned on another hopper"
     );
@@ -692,7 +806,9 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
     assert_eq!(pin(&h, vec![]).await.status, StatusCode::OK);
     assert_eq!(h.get("/v1/hoppers/pins").await.json()["pins"], json!([]));
     assert_eq!(
-        advertise(&h, &u, &session("hopper", Some(3), Some(modded))).await.status,
+        advertise(&h, &u, &session("hopper", Some(3), Some(modded)))
+            .await
+            .status,
         StatusCode::FORBIDDEN
     );
 }
@@ -711,13 +827,19 @@ async fn the_catalog_is_replayed_from_the_log() {
         h.live.set_data_dir(&data_dir);
         let u = h.create("Modder").await;
         upload(&h, &u, patch).await;
-        assert_eq!(publish(&h, &u, &doc(m.clone())).await.status, StatusCode::CREATED);
+        assert_eq!(
+            publish(&h, &u, &doc(m.clone())).await.status,
+            StatusCode::CREATED
+        );
         moderate(&h, "maps", &id.to_string(), "hide").await;
     }
     let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
     let h = start(store, small()).await;
     h.live.set_data_dir(&data_dir);
-    assert_eq!(h.get(&format!("/v1/maps/{id}")).await.status, StatusCode::GONE);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}")).await.status,
+        StatusCode::GONE
+    );
     moderate(&h, "maps", &id.to_string(), "unhide").await;
     let got = h.get(&format!("/v1/maps/{id}")).await.json();
     assert_eq!(got["map"]["author"]["gamertag"], "Modder");

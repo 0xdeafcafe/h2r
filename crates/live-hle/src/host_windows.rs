@@ -1,8 +1,8 @@
 //! Windows stand-in for the socket adapter (host.rs). The Live HLE is opt-in
-//! (`--live`) and has no Winsock port yet, so every socket fails to open
-//! with WSASYSNOTREADY and the game sees the network as down. The API
-//! matches host.rs so network.rs compiles unchanged; a Winsock port (the
-//! same calls, `SOCKET` handles, `ioctlsocket`, `WSAPoll`, DWORD timeouts)
+//! (`h2 play --live`, `--live-server` or `--live-local`) and has no Winsock
+//! port yet, so every socket fails to open with WSASYSNOTREADY and the
+//! game sees the network as down. The API matches host.rs so network.rs
+//! compiles unchanged; a Winsock port (the same calls, `SOCKET` handles, `ioctlsocket`, `WSAPoll`, DWORD timeouts)
 //! replaces this file.
 use std::{io, net::SocketAddrV4};
 

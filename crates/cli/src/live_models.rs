@@ -27,6 +27,7 @@ use assets::ResourceFiles;
 use map::{CacheType, FourCC, Map, RawPointer, TagId};
 use tags::anim::{Action, AnimationGraph};
 use tags::geometry::{RawSource, TagView};
+use tags::material::ShaderLibrary;
 use tags::model::RenderModelGeometry;
 use tags::sound::ResourceReader;
 use tags::wire::StringId;
@@ -409,6 +410,65 @@ pub struct Material {
     pub blend: Blend,
     /// The shader template's file stem (`tex_bump_env_four_change_color`).
     pub template: String,
+    /// An environment-mapped shader's reflection tint ([`env_tint`]):
+    /// facing the eye, then at a grazing angle.
+    pub env: Option<EnvTint>,
+}
+
+/// The colours an environment-mapped shader tints its reflection with:
+/// `perpendicular` where the surface faces the eye, `parallel` at a
+/// grazing angle (RGB, 0..1). The Covenant's sheen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvTint {
+    pub perpendicular: [f32; 3],
+    pub parallel: [f32; 3],
+}
+
+/// The reflection tint of an opaque environment-mapped shader (`tex_bump_env*`
+/// and `tex_bump_shiny` templates) from its colour parameters (shad
+/// postprocess `+0x0c`, packed ARGB): the last two with any colour are its
+/// perpendicular and parallel colours (the ones after them only carry
+/// alpha, scalars). On the disc: the Ghost's orange to purple, the
+/// Spectre's pale yellow to blue, the Wraith's light to deep blue, the
+/// Banshee's blue to dark violet; the Warthog's tan to dark blue; human
+/// guns near white. `None` for other templates or fewer than two colours.
+pub fn env_tint(template_stem: &str, colours: &[u32]) -> Option<EnvTint> {
+    if !(template_stem.starts_with("tex_bump_env") || template_stem == "tex_bump_shiny") {
+        return None;
+    }
+    let rgb = |c: u32| [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff].map(|v| v as f32 / 255.0);
+    let mut lit = colours.iter().filter(|&&c| c & 0x00ff_ffff != 0);
+    let parallel = lit.next_back()?;
+    let perpendicular = lit.next_back()?;
+    Some(EnvTint {
+        perpendicular: rgb(*perpendicular),
+        parallel: rgb(*parallel),
+    })
+}
+
+/// Paints the parts a change-colour map marks with the object's own colours
+/// (`colours[0]` primary, `[1]` secondary), as the game draws a vehicle
+/// nobody repaints: the base map times one where the map is empty, the
+/// colour where it is full (per channel, red primary, green secondary).
+pub fn paint_change_colours(base: &mut Image, cc: &Image, colours: &[[f32; 3]]) {
+    let (w, h) = (base.width.max(1) as f32, base.height.max(1) as f32);
+    let colour = |i: usize| colours.get(i).copied().unwrap_or([1.0; 3]);
+    let (primary, secondary) = (colour(0), colour(1));
+    let width = base.width as usize;
+    for (i, px) in base.rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = ((i % width.max(1)) as f32, (i / width.max(1)) as f32);
+        let wgt = cc.sample([(x + 0.5) / w, (y + 0.5) / h]);
+        let (mut p, mut s) = (wgt[0].clamp(0.0, 1.0), wgt[1].clamp(0.0, 1.0));
+        if p + s > 1.0 {
+            let n = p + s;
+            p /= n;
+            s /= n;
+        }
+        for c in 0..3 {
+            let k = 1.0 - p - s + primary[c] * p + secondary[c] * s;
+            px[c] = (f32::from(px[c]) * k).round().clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 /// How a surface is composited.
@@ -422,6 +482,63 @@ pub enum Blend {
     Alpha,
     /// Added to what is behind it (lights, vents, glows).
     Additive,
+    /// Twice the picture times what is behind it: mid-grey leaves the
+    /// surface as it is (a decal whose pass blends `DESTCOLOR`, `SRCCOLOR`).
+    Double,
+    /// The picture times what is behind it (`DESTCOLOR`, `ZERO` or `ZERO`,
+    /// `SRCCOLOR`).
+    Multiply,
+}
+
+/// How a resolved material's last blended pass of its first level of
+/// detail writes to the frame ([`blend_of_pass`]): every opaque overlay
+/// decal on the disc's vehicles is `DESTCOLOR`, `SRCCOLOR` (double). `None`
+/// when no pass blends in one of the ways [`blend_of_pass`] knows.
+pub fn frame_blend(material: &tags::material::Material) -> Option<Blend> {
+    let mut out = None;
+    for layer in material.layers.iter().filter(|l| l.lod == 0) {
+        for pass in &layer.passes {
+            let Some(imp) = pass.implementations.first() else {
+                continue;
+            };
+            let state = |name: &str| {
+                imp.render_states
+                    .iter()
+                    .find(|r| tags::shader::render_state_name(r.state) == Some(name))
+                    .map(|r| r.value)
+            };
+            if let Some(b) = blend_of_pass(
+                state("ALPHABLENDENABLE"),
+                state("SRCBLEND"),
+                state("DESTBLEND"),
+            ) {
+                out = Some(b);
+            }
+        }
+    }
+    out
+}
+
+/// A pass's blend from its `ALPHABLENDENABLE`, `SRCBLEND` and `DESTBLEND`
+/// render states (Xbox `D3DBLEND` values: `ZERO` 0, `ONE` 1, `SRCCOLOR`
+/// 0x300, `SRCALPHA` 0x302, `INVSRCALPHA` 0x303, `DESTCOLOR` 0x306).
+pub fn blend_of_pass(enable: Option<u32>, src: Option<u32>, dst: Option<u32>) -> Option<Blend> {
+    const ZERO: u32 = 0;
+    const ONE: u32 = 1;
+    const SRCCOLOR: u32 = 0x300;
+    const SRCALPHA: u32 = 0x302;
+    const INVSRCALPHA: u32 = 0x303;
+    const DESTCOLOR: u32 = 0x306;
+    if enable != Some(1) {
+        return None;
+    }
+    match (src?, dst?) {
+        (DESTCOLOR, SRCCOLOR) => Some(Blend::Double),
+        (DESTCOLOR, ZERO) | (ZERO, SRCCOLOR) => Some(Blend::Multiply),
+        (ONE | SRCALPHA, ONE) => Some(Blend::Additive),
+        (SRCALPHA, INVSRCALPHA) => Some(Blend::Alpha),
+        _ => None,
+    }
 }
 
 /// Largest side of the change-colour, self-illumination and specular maps.
@@ -439,10 +556,24 @@ pub const MAX_AUX_TEXTURE: u32 = 256;
 /// bump-env and shiny templates; it becomes metalness and smoothness here.
 /// Bump maps (8-bit palettized normals whose palette is the engine's, not
 /// the tag's) and detail maps are not used.
+#[cfg(test)]
 pub fn material_look(
     name: &str,
     template: &str,
     bitmaps: Vec<(String, Option<Image>)>,
+) -> (Material, Option<Image>) {
+    let roles = bitmaps
+        .into_iter()
+        .map(|(n, i)| (bitmap_role(&n), i))
+        .collect();
+    material_look_roles(name, template, roles)
+}
+
+/// [`material_look`] with each bitmap's role already decided.
+pub fn material_look_roles(
+    name: &str,
+    template: &str,
+    bitmaps: Vec<(BitmapRole, Option<Image>)>,
 ) -> (Material, Option<Image>) {
     let lower = template.to_ascii_lowercase();
     let stem = last_component(&lower).to_owned();
@@ -457,9 +588,9 @@ pub fn material_look(
         Blend::Opaque
     };
     let (mut diffuse, mut cc, mut illum) = (None, None, None);
-    for (bname, image) in bitmaps {
+    for (role, image) in bitmaps {
         let Some(image) = image else { continue };
-        match bitmap_role(&bname) {
+        match role {
             BitmapRole::Diffuse if diffuse.is_none() => diffuse = Some(image),
             BitmapRole::ChangeColour if cc.is_none() => cc = Some(image),
             BitmapRole::SelfIllum if illum.is_none() => illum = Some(image),
@@ -476,6 +607,15 @@ pub fn material_look(
     // looks like; a tinted, smooth see-through surface reads better.
     if blend == Blend::Alpha && transparent {
         base = None;
+    }
+    // An overlay decal (painted letters, stencils) whose picture has no
+    // alpha darkens or doubles what is under it in the game; blended by its
+    // missing alpha it would be a grey slab.
+    if blend == Blend::Alpha
+        && !transparent
+        && let Some(b) = base.as_mut()
+    {
+        overlay_as_alpha(b);
     }
     if blend == Blend::Opaque
         && let Some(b) = base.as_mut()
@@ -501,8 +641,33 @@ pub fn material_look(
         specular,
         blend,
         template: stem,
+        env: None,
     };
     (material, cc)
+}
+
+/// An opaque overlay decal's picture as one blended by alpha that looks
+/// about the same over a surface. Centred on mid-grey (it doubles what is
+/// under it, `live_layers::Blend::Double`): darker than half is black at
+/// up to full strength, lighter is white at up to half. Otherwise it
+/// multiplies: black by how dark it is. A picture with alpha is left as
+/// it is.
+pub fn overlay_as_alpha(image: &mut Image) {
+    use crate::live_layers::{Blend as LayerBlend, Layer};
+    let blend = Layer::decal(LayerBlend::Alpha).with_picture(image).blend;
+    if !matches!(blend, LayerBlend::Double | LayerBlend::Multiply) {
+        return;
+    }
+    for px in image.rgba.as_chunks_mut::<4>().0 {
+        let l = (0.299 * f32::from(px[0]) + 0.587 * f32::from(px[1]) + 0.114 * f32::from(px[2]))
+            / 255.0;
+        let (c, a) = match blend {
+            LayerBlend::Double if l >= 0.5 => (255, (l - 0.5)),
+            LayerBlend::Double => (0, 1.0 - 2.0 * l),
+            _ => (0, 1.0 - l),
+        };
+        *px = [c, c, c, (a.clamp(0.0, 1.0) * 255.0).round() as u8];
+    }
 }
 
 /// The metallic-roughness texture for a base map whose alpha is the
@@ -514,7 +679,8 @@ pub fn specular_map(base: &Image, metal: f32) -> Image {
     for px in rgba.as_chunks_mut::<4>().0 {
         let a = f32::from(px[3]) / 255.0;
         let rough = 0.85 - 0.55 * a;
-        px[0] = 255;
+        // Red (unused by glTF's metallic-roughness) keeps the mask itself.
+        px[0] = (a * 255.0).round() as u8;
         px[1] = (rough * 255.0).round() as u8;
         px[2] = (a * metal * 255.0).round() as u8;
         px[3] = 255;
@@ -596,11 +762,36 @@ pub struct Model {
     pub class: Option<String>,
     /// Weapons: their shots (crate::live_weapons).
     pub ballistics: Option<crate::live_weapons::Ballistics>,
+    /// Vehicles: moving parts drawn as meshes of their own (a turret and its
+    /// gun, see [`turret_parts`]), each a node under the root or under an
+    /// earlier part.
+    pub parts: Vec<Part>,
+}
+
+/// A separately posed piece of a model: its own node and mesh.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Part {
+    /// Node name: `turret_<n>`, `turret_<n>_pitch_<k>`.
+    pub name: String,
+    /// The part (index into [`Model::parts`]) it hangs from; `None`: the
+    /// model's root.
+    pub parent: Option<usize>,
+    /// Its frame in its parent's (the model's, for a root part), game
+    /// coordinates; rigid.
+    pub local: Mat4,
+    /// Its triangles in its own frame; materials index the model's.
+    pub primitives: Vec<Primitive>,
+    /// The node's `extras` (a turret's `{"turret": "<tag stem>"}`).
+    pub extras: serde_json::Map<String, Value>,
 }
 
 impl Model {
     pub fn triangles(&self) -> usize {
-        self.primitives.iter().map(|p| p.indices.len() / 3).sum()
+        self.primitives
+            .iter()
+            .chain(self.parts.iter().flat_map(|p| &p.primitives))
+            .map(|p| p.indices.len() / 3)
+            .sum()
     }
 
     /// Lowest and highest point of the mesh, game coordinates.
@@ -763,6 +954,7 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         stored.push((t.clone(), k));
         k
     };
+    let mut unlit = false;
     for m in &model.materials {
         let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.8});
         let mut mat = json!({"name": m.name});
@@ -789,6 +981,12 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         }
         match m.blend {
             Blend::Opaque => {}
+            // Drawn as they are: the reader blends them with what is
+            // behind by extras.h2.blend.
+            Blend::Double | Blend::Multiply => {
+                mat["extensions"] = json!({"KHR_materials_unlit": {}});
+                unlit = true;
+            }
             Blend::Mask => {
                 mat["alphaMode"] = json!("MASK");
                 mat["alphaCutoff"] = json!(0.5);
@@ -806,8 +1004,23 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         if let Some(t) = &m.change_colour {
             h2.insert("change_colour".into(), json!(texture(&mut bin, t)));
         }
-        if m.blend == Blend::Additive {
-            h2.insert("blend".into(), json!("add"));
+        match m.blend {
+            Blend::Additive => {
+                h2.insert("blend".into(), json!("add"));
+            }
+            Blend::Double => {
+                h2.insert("blend".into(), json!("double"));
+            }
+            Blend::Multiply => {
+                h2.insert("blend".into(), json!("multiply"));
+            }
+            _ => {}
+        }
+        if let Some(e) = &m.env {
+            h2.insert(
+                "env".into(),
+                json!({"perpendicular": e.perpendicular, "parallel": e.parallel}),
+            );
         }
         if !h2.is_empty() {
             mat["extras"] = json!({ "h2": h2 });
@@ -818,98 +1031,106 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
 
     let skeleton = model.skeleton.as_ref().filter(|s| !s.joints.is_empty());
     let joint_count = skeleton.map_or(0, |s| s.joints.len());
-    let mut prims = Vec::new();
-    for p in model.primitives.iter().filter(|p| !p.indices.is_empty()) {
-        let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
-        let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for v in &pos {
-            for k in 0..3 {
-                lo[k] = lo[k].min(v[k]);
-                hi[k] = hi[k].max(v[k]);
+    // One mesh for the model's own primitives, then one per part.
+    let mut meshes: Vec<Vec<Value>> = Vec::new();
+    for group in std::iter::once(&model.primitives).chain(model.parts.iter().map(|p| &p.primitives))
+    {
+        let mut prims = Vec::new();
+        for p in group.iter().filter(|p| !p.indices.is_empty()) {
+            let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
+            let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
             }
-        }
-        let mut attributes = serde_json::Map::new();
-        let mut add = |name: &str, bytes: Vec<u8>, ty: &str, count: usize, minmax: bool| {
-            let bv = view(&mut bin, &bytes, Some(34962));
-            let mut a =
-                json!({"bufferView": bv, "componentType": 5126, "count": count, "type": ty});
-            if minmax {
-                a["min"] = json!(lo);
-                a["max"] = json!(hi);
-            }
-            accessors.push(a);
-            attributes.insert(name.into(), json!(accessors.len() - 1));
-        };
-        add(
-            "POSITION",
-            floats(&mut pos.iter().flatten().copied()),
-            "VEC3",
-            pos.len(),
-            true,
-        );
-        if nrm.len() == pos.len() {
+            let mut attributes = serde_json::Map::new();
+            let mut add = |name: &str, bytes: Vec<u8>, ty: &str, count: usize, minmax: bool| {
+                let bv = view(&mut bin, &bytes, Some(34962));
+                let mut a =
+                    json!({"bufferView": bv, "componentType": 5126, "count": count, "type": ty});
+                if minmax {
+                    a["min"] = json!(lo);
+                    a["max"] = json!(hi);
+                }
+                accessors.push(a);
+                attributes.insert(name.into(), json!(accessors.len() - 1));
+            };
             add(
-                "NORMAL",
-                floats(&mut nrm.iter().flatten().copied()),
+                "POSITION",
+                floats(&mut pos.iter().flatten().copied()),
                 "VEC3",
                 pos.len(),
-                false,
+                true,
             );
-        }
-        if p.uvs.len() == pos.len() {
-            add(
-                "TEXCOORD_0",
-                floats(&mut p.uvs.iter().flatten().copied()),
-                "VEC2",
-                pos.len(),
-                false,
+            if nrm.len() == pos.len() {
+                add(
+                    "NORMAL",
+                    floats(&mut nrm.iter().flatten().copied()),
+                    "VEC3",
+                    pos.len(),
+                    false,
+                );
+            }
+            if p.uvs.len() == pos.len() {
+                add(
+                    "TEXCOORD_0",
+                    floats(&mut p.uvs.iter().flatten().copied()),
+                    "VEC2",
+                    pos.len(),
+                    false,
+                );
+            }
+            if p.colours.len() == pos.len() {
+                add(
+                    "COLOR_0",
+                    floats(&mut p.colours.iter().flatten().copied()),
+                    "VEC4",
+                    pos.len(),
+                    false,
+                );
+            }
+            if joint_count > 0 && p.joints.len() == pos.len() && p.weights.len() == pos.len() {
+                add(
+                    "WEIGHTS_0",
+                    floats(&mut p.weights.iter().flatten().copied()),
+                    "VEC4",
+                    pos.len(),
+                    false,
+                );
+                let bytes: Vec<u8> = p
+                    .joints
+                    .iter()
+                    .flatten()
+                    .map(|&j| if usize::from(j) < joint_count { j } else { 0 })
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                let bv = view(&mut bin, &bytes, Some(34962));
+                accessors.push(json!({"bufferView": bv, "componentType": 5123, "count": pos.len(), "type": "VEC4"}));
+                attributes.insert("JOINTS_0".into(), json!(accessors.len() - 1));
+            }
+            let iv = view(
+                &mut bin,
+                &p.indices
+                    .iter()
+                    .flat_map(|i| i.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                Some(34963),
             );
+            accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"}));
+            let mut prim =
+                json!({"attributes": attributes, "indices": accessors.len() - 1, "mode": 4});
+            if p.material < materials.len() {
+                prim["material"] = json!(p.material);
+            }
+            prims.push(prim);
         }
-        if p.colours.len() == pos.len() {
-            add(
-                "COLOR_0",
-                floats(&mut p.colours.iter().flatten().copied()),
-                "VEC4",
-                pos.len(),
-                false,
-            );
-        }
-        if joint_count > 0 && p.joints.len() == pos.len() && p.weights.len() == pos.len() {
-            add(
-                "WEIGHTS_0",
-                floats(&mut p.weights.iter().flatten().copied()),
-                "VEC4",
-                pos.len(),
-                false,
-            );
-            let bytes: Vec<u8> = p
-                .joints
-                .iter()
-                .flatten()
-                .map(|&j| if usize::from(j) < joint_count { j } else { 0 })
-                .flat_map(u16::to_le_bytes)
-                .collect();
-            let bv = view(&mut bin, &bytes, Some(34962));
-            accessors.push(json!({"bufferView": bv, "componentType": 5123, "count": pos.len(), "type": "VEC4"}));
-            attributes.insert("JOINTS_0".into(), json!(accessors.len() - 1));
-        }
-        let iv = view(
-            &mut bin,
-            &p.indices
-                .iter()
-                .flat_map(|i| i.to_le_bytes())
-                .collect::<Vec<_>>(),
-            Some(34963),
-        );
-        accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"}));
-        let mut prim = json!({"attributes": attributes, "indices": accessors.len() - 1, "mode": 4});
-        if p.material < materials.len() {
-            prim["material"] = json!(p.material);
-        }
-        prims.push(prim);
+        meshes.push(prims);
     }
+    let prims = meshes[0].clone();
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
@@ -1022,6 +1243,38 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
             None => root_children.push(nodes.len() - 1),
         }
     }
+    // Parts: a node each, with its mesh when it has triangles.
+    let mut mesh_list: Vec<Value> = Vec::new();
+    if !prims.is_empty() {
+        mesh_list.push(json!({"name": model.mesh_name, "primitives": prims}));
+    }
+    let mut part_nodes: Vec<usize> = Vec::new();
+    for (i, part) in model.parts.iter().enumerate() {
+        let (t, r) = gltf_trs(&part.local);
+        let mut node = json!({"name": part.name, "translation": t, "rotation": r});
+        if !meshes[i + 1].is_empty() {
+            node["mesh"] = json!(mesh_list.len());
+            mesh_list.push(json!({"name": part.name, "primitives": meshes[i + 1]}));
+        }
+        if !part.extras.is_empty() {
+            node["extras"] = Value::Object(part.extras.clone());
+        }
+        nodes.push(node);
+        let at = nodes.len() - 1;
+        part_nodes.push(at);
+        match part.parent.filter(|&p| p < i) {
+            Some(p) => {
+                let parent = part_nodes[p];
+                let kids = nodes[parent]
+                    .as_object_mut()
+                    .expect("a node")
+                    .entry("children")
+                    .or_insert_with(|| json!([]));
+                kids.as_array_mut().expect("children").push(json!(at));
+            }
+            None => root_children.push(at),
+        }
+    }
     nodes[0]["children"] = json!(root_children);
     for (j, c) in children.into_iter().enumerate() {
         if !c.is_empty() {
@@ -1034,12 +1287,15 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         "scenes": [{"nodes": [0]}],
         "nodes": nodes,
     });
-    if !prims.is_empty() {
-        doc["meshes"] = json!([{"name": model.mesh_name, "primitives": prims}]);
+    if !mesh_list.is_empty() {
+        doc["meshes"] = json!(mesh_list);
         doc["accessors"] = json!(accessors);
     }
     if !materials.is_empty() {
         doc["materials"] = json!(materials);
+    }
+    if unlit {
+        doc["extensionsUsed"] = json!(["KHR_materials_unlit"]);
     }
     if !skins.is_empty() {
         doc["skins"] = json!(skins);
@@ -1479,6 +1735,402 @@ pub fn seat_node(marker: &str) -> Option<String> {
     (id.len() <= 40).then_some(id)
 }
 
+/// A vehicle in the colours it is drawn with: Halo 2 paints a vehicle with
+/// its object's own change colours ([`object_change_colours`]; the
+/// Banshee's violet plates), not its driver's team, so they are painted
+/// into the base maps and the vehicle keeps no change-colour map or
+/// weights. A vehicle without colours of its own is left as it is.
+pub fn paint_vehicle(src: &mut Source, colours: &[[f32; 3]]) {
+    if colours.is_empty() {
+        return;
+    }
+    for (m, cc) in src.materials.iter_mut().zip(src.change_colour.iter_mut()) {
+        if let (Some(base), Some(map)) = (m.texture.as_mut(), cc.as_ref()) {
+            paint_change_colours(base, map, colours);
+        }
+        m.change_colour = None;
+        *cc = None;
+    }
+}
+
+/// One object a model variant attaches (hlmt variant `+0x1c`, 0x10 bytes:
+/// parent marker and child marker string IDs, then the child object
+/// reference): the Warthog's chaingun at its `turret` marker, the
+/// Scorpion's cannon, the Wraith's mortar and side guns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantObject {
+    pub parent_marker: String,
+    /// Empty: the child's origin.
+    pub child_marker: String,
+    pub child: TagId,
+}
+
+/// Which model variant a vehicle is drawn in: `multiplayer` when the model
+/// has one (the Scorpion's and Wraith's: their multiplayer cannon and
+/// mortar, the Wraith without its side guns), else the object's default
+/// variant (`obje +0x30`), else the first.
+pub fn pick_variant(names: &[String], default: &str) -> Option<usize> {
+    names
+        .iter()
+        .position(|n| n == "multiplayer")
+        .or_else(|| {
+            (!default.is_empty())
+                .then(|| names.iter().position(|n| n == default))
+                .flatten()
+        })
+        .or((!names.is_empty()).then_some(0))
+}
+
+/// The objects an object's model variant ([`pick_variant`]) attaches.
+pub(crate) fn variant_objects(map: &mut MapReader, object: TagId) -> Result<Vec<VariantObject>> {
+    let o = map.read_tag_bytes(object)?;
+    let default = u32_at(&o, 0x30).unwrap_or(0);
+    let hlmt = TagId(u32_at(&o, 0x38).context("object too short")?);
+    let h = map.read_tag_bytes(hlmt)?;
+    let variants = meta_block(map, &h, 0x50, 0x38)?;
+    let mut objects = Vec::new();
+    for v in &variants {
+        objects.push(meta_block(map, v, 0x1c, 0x10)?);
+    }
+    let strings = map.strings();
+    let name = |id: u32| {
+        StringId(id)
+            .resolve(strings)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let names: Vec<String> = variants
+        .iter()
+        .map(|v| name(u32_at(v, 0).unwrap_or(0)))
+        .collect();
+    let Some(i) = pick_variant(&names, &name(default)) else {
+        return Ok(Vec::new());
+    };
+    Ok(objects[i]
+        .iter()
+        .map(|b| VariantObject {
+            parent_marker: name(u32_at(b, 0).unwrap_or(0)),
+            child_marker: name(u32_at(b, 4).unwrap_or(0)),
+            child: TagId(u32_at(b, 0xc).unwrap_or(u32::MAX)),
+        })
+        .filter(|a| a.child != TagId::NULL)
+        .collect())
+}
+
+/// The nodes that raise and lower a turret's gun, by name: the Warthog's
+/// chaingun and gauss `gun`, the Scorpion's `cannon` (and its coaxial
+/// `gun`), the Wraith's mortar `gun_arm`, the Spectre's `turret_gun`.
+pub const TURRET_PITCH_NODES: &[&str] = &["gun", "cannon", "gun_arm", "turret_gun"];
+
+/// The pitch nodes of a turret's skeleton: named in [`TURRET_PITCH_NODES`],
+/// with no such node above them.
+pub fn pitch_nodes(bones: &[Bone]) -> Vec<usize> {
+    let named = |i: usize| TURRET_PITCH_NODES.contains(&bones[i].name.as_str());
+    (0..bones.len())
+        .filter(|&i| {
+            named(i) && {
+                let mut up = bones[i].parent;
+                let mut hops = 0;
+                while let Some(p) = up.filter(|&p| p < bones.len() && hops < bones.len()) {
+                    if named(p) {
+                        return false;
+                    }
+                    up = bones[p].parent;
+                    hops += 1;
+                }
+                true
+            }
+        })
+        .collect()
+}
+
+/// For each bone, which of `roots` (by position) it is or hangs under.
+pub fn owners(bones: &[Bone], roots: &[usize]) -> Vec<Option<usize>> {
+    (0..bones.len())
+        .map(|i| {
+            let mut at = Some(i);
+            let mut hops = 0;
+            while let Some(n) = at.filter(|&n| n < bones.len() && hops <= bones.len()) {
+                if let Some(k) = roots.iter().position(|&r| r == n) {
+                    return Some(k);
+                }
+                at = bones[n].parent;
+                hops += 1;
+            }
+            None
+        })
+        .collect()
+}
+
+/// `src` with only the triangles whose first vertex's heaviest node passes
+/// `keep`, each piece's vertices cut down to those used.
+pub fn source_where(src: &Source, keep: impl Fn(usize) -> bool) -> Source {
+    let heaviest = |piece: &Piece, v: usize| -> usize {
+        let nodes = piece.nodes.get(v).copied().unwrap_or([0; 4]);
+        let weights = piece
+            .weights
+            .get(v)
+            .copied()
+            .unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        (0..4)
+            .max_by(|&a, &b| weights[a].total_cmp(&weights[b]))
+            .map_or(0, |k| nodes[k])
+    };
+    let pieces = src
+        .pieces
+        .iter()
+        .filter_map(|piece| {
+            let tris: Vec<[u32; 3]> = piece
+                .triangles
+                .iter()
+                .copied()
+                .filter(|t| {
+                    t.iter().all(|&i| (i as usize) < piece.positions.len())
+                        && keep(heaviest(piece, t[0] as usize))
+                })
+                .collect();
+            if tris.is_empty() {
+                return None;
+            }
+            let mut map: BTreeMap<u32, u32> = BTreeMap::new();
+            let mut out = Piece {
+                material: piece.material,
+                ..Piece::default()
+            };
+            let mut index = |i: u32, out: &mut Piece| -> u32 {
+                *map.entry(i).or_insert_with(|| {
+                    let v = i as usize;
+                    out.positions.push(piece.positions[v]);
+                    if let Some(n) = piece.normals.get(v) {
+                        out.normals.push(*n);
+                    }
+                    if let Some(uv) = piece.uvs.get(v) {
+                        out.uvs.push(*uv);
+                    }
+                    if let Some(n) = piece.nodes.get(v) {
+                        out.nodes.push(*n);
+                    }
+                    if let Some(w) = piece.weights.get(v) {
+                        out.weights.push(*w);
+                    }
+                    out.positions.len() as u32 - 1
+                })
+            };
+            for t in tris {
+                let t = t.map(|i| index(i, &mut out));
+                out.triangles.push(t);
+            }
+            Some(out)
+        })
+        .collect();
+    Source {
+        bones: src.bones.clone(),
+        markers: src.markers.clone(),
+        pieces,
+        materials: src.materials.clone(),
+        change_colour: src.change_colour.clone(),
+    }
+}
+
+/// A turret (`src`, at rest, attached to its vehicle at `at`) as parts: a
+/// `turret_<n>` part at `at` holding what turns with its yaw (all of it but
+/// the guns, plus `extra`, primitives already in its space), and under it
+/// a `turret_<n>_pitch_<k>` part per pitch node ([`pitch_nodes`]), its
+/// frame that node's rest origin with the turret's axes, holding what
+/// hangs from that node. Yaw turns a turret about its own up (z); pitch
+/// about its own y. Materials index `src`'s, offset by `material_base`.
+pub fn turret_parts(
+    src: &Source,
+    n: usize,
+    stem: &str,
+    at: &Mat4,
+    extra: Vec<Primitive>,
+    material_base: usize,
+) -> Vec<Part> {
+    let rest = rest_world(&src.bones);
+    let pitch = pitch_nodes(&src.bones);
+    let owner = owners(&src.bones, &pitch);
+    let owned = |node: usize| owner.get(node).copied().flatten();
+    let shift = |prims: Vec<Primitive>, by: [f32; 3]| -> Vec<Primitive> {
+        prims
+            .into_iter()
+            .map(|mut p| {
+                p.material += material_base;
+                for v in &mut p.positions {
+                    *v = [v[0] - by[0], v[1] - by[1], v[2] - by[2]];
+                }
+                // Parts are not skinned.
+                p.joints.clear();
+                p.weights.clear();
+                p
+            })
+            .collect()
+    };
+    let mut yaw = shift(
+        pose_mesh(&source_where(src, |node| owned(node).is_none()), &rest),
+        [0.0; 3],
+    );
+    yaw.extend(extra.into_iter().map(|mut p| {
+        p.joints.clear();
+        p.weights.clear();
+        p
+    }));
+    let mut extras = serde_json::Map::new();
+    extras.insert("turret".into(), json!(stem));
+    let mut parts = vec![Part {
+        name: format!("turret_{n}"),
+        parent: None,
+        local: *at,
+        primitives: yaw,
+        extras,
+    }];
+    for (k, &node) in pitch.iter().enumerate() {
+        let pivot = rest
+            .get(node)
+            .map_or([0.0; 3], |m| [m[3][0], m[3][1], m[3][2]]);
+        let prims = pose_mesh(&source_where(src, |b| owned(b) == Some(k)), &rest);
+        let mut local = IDENTITY;
+        local[3] = [pivot[0], pivot[1], pivot[2], 1.0];
+        parts.push(Part {
+            name: format!("turret_{n}_pitch_{k}"),
+            parent: Some(0),
+            local,
+            primitives: shift(prims, pivot),
+            extras: serde_json::Map::new(),
+        });
+    }
+    parts
+}
+
+/// Adds `child` (in its own model space) to `model` at `at` (the child's
+/// space in the model's): its materials after the model's, its triangles
+/// moved, and its seat nodes where the model has none of that name.
+pub fn attach_model(model: &mut Model, child: Model, at: &Mat4) {
+    let base = model.materials.len();
+    model.materials.extend(child.materials);
+    for mut p in child.primitives {
+        p.material += base;
+        for v in &mut p.positions {
+            *v = transform_point(at, *v);
+        }
+        for n in &mut p.normals {
+            *n = normalize(transform_vector(at, *n));
+        }
+        model.primitives.push(p);
+    }
+    for (name, m) in child.nodes {
+        if !model.nodes.iter().any(|(n, _)| *n == name) {
+            model.nodes.push((name, mat_mul(at, &m)));
+        }
+    }
+}
+
+/// Builds and attaches the objects `object`'s model variant attaches
+/// ([`variant_objects`]), each at rest, its marker (or origin) on the
+/// parent's marker in `world` (the parent's posed node frames), and theirs
+/// in turn (two levels deep). Returns the attached objects' tag names; one
+/// that cannot be built is left off.
+fn attach_objects(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    object: TagId,
+    src: &Source,
+    world: &[Mat4],
+    model: &mut Model,
+    depth: usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if depth >= 2 {
+        return out;
+    }
+    for a in variant_objects(map, object).unwrap_or_default() {
+        let Some(parent) = src.marker(&[&a.parent_marker]) else {
+            continue;
+        };
+        let Some(node) = world.get(parent.node) else {
+            continue;
+        };
+        let at_parent = marker_world(node, parent);
+        let built = (|| -> Result<Vec<String>> {
+            let (mode, _) = object_model(map, a.child)?;
+            let mut child_src = read_source(map, files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let colours = object_change_colours(map, a.child).unwrap_or_default();
+            paint_vehicle(&mut child_src, &colours);
+            let rest = rest_world(&child_src.bones);
+            let mut child = vehicle(&child_src, &[], &Pose { nodes: Vec::new() })?;
+            // A turret on the vehicle itself becomes parts that aim; what
+            // it carries in turn joins its yaw part.
+            let turret = depth == 0;
+            let own = child.primitives.len();
+            let inner = attach_objects(
+                map,
+                files,
+                a.child,
+                &child_src,
+                &rest,
+                &mut child,
+                depth + 1,
+            );
+            let at_child = if a.child_marker.is_empty() {
+                None
+            } else {
+                child_src
+                    .marker(&[&a.child_marker])
+                    .and_then(|m| rest.get(m.node).map(|n| marker_world(n, m)))
+            };
+            let at = match at_child {
+                Some(c) => mat_mul(&at_parent, &invert_rigid(&c)),
+                None => at_parent,
+            };
+            if turret {
+                let stem = map
+                    .tag(a.child)
+                    .ok()
+                    .and_then(|t| {
+                        t.name
+                            .as_deref()
+                            .map(|n| last_component(n).to_ascii_lowercase())
+                    })
+                    .unwrap_or_default();
+                let n = model.parts.iter().filter(|p| p.parent.is_none()).count();
+                let base = model.materials.len();
+                // Materials of attached objects inside the child already
+                // follow the child's own, so one offset serves both.
+                let extra: Vec<Primitive> = child
+                    .primitives
+                    .split_off(own)
+                    .into_iter()
+                    .map(|mut p| {
+                        p.material += base;
+                        p
+                    })
+                    .collect();
+                let parts = turret_parts(&child_src, n, &stem, &at, extra, base);
+                let first = model.parts.len();
+                model.parts.extend(parts.into_iter().map(|mut p| {
+                    p.parent = p.parent.map(|q| q + first);
+                    p
+                }));
+                child.primitives.clear();
+            }
+            attach_model(model, child, &at);
+            Ok(inner)
+        })();
+        if let Ok(inner) = built {
+            out.push(
+                map.tag(a.child)
+                    .ok()
+                    .and_then(|t| t.name.clone())
+                    .unwrap_or_default(),
+            );
+            out.extend(inner);
+        }
+    }
+    out
+}
+
 /// A vehicle in its own model space (its object origin), posed by `pose`
 /// (empty: the rest pose; see [`pick_vehicle_pose`]), with a `seat_<name>`
 /// node per seat marker (first marker of a name).
@@ -1720,24 +2372,84 @@ fn markers(map: &mut MapReader, mode: TagId, nodes: usize) -> Result<Vec<Marker>
 /// element), whose `+4` block lists the bitmap parameters (0xc bytes, datum
 /// first; docs/formats/shader-instances.md).
 pub(crate) fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
-    let tag = map.tag(shader)?.clone();
-    let address = tag.location.context("no payload")?.address;
     let bytes = map.read_tag_bytes(shader)?;
-    let view = TagView::new(&bytes, address);
     let template = TagId(u32_at(&bytes, 4).context("shader too short")?);
     let template = map
         .tag(template)
         .ok()
         .and_then(|t| t.name.clone())
         .unwrap_or_default();
-    let post = view.block(&bytes[..0x54.min(bytes.len())], 0x20, 0x7c)?;
+    // The compiler shares identical compiled data between shaders: a shader
+    // whose postprocess is the same as another's (the Scorpion's right and
+    // spare treads, its left's) points into that one's payload, so the
+    // blocks are read wherever in the metadata they are.
+    let post = meta_block(map, &bytes, 0x20, 0x7c)?;
     let post = post.first().context("no compiled postprocess")?;
-    let ids = view
-        .block(post, 4, 0xc)?
+    let ids = meta_block(map, post, 4, 0xc)?
         .iter()
         .filter_map(|b| u32_at(b, 0).map(TagId))
         .collect();
     Ok((template, ids))
+}
+
+/// A shader's colour parameters (compiled postprocess `+0x0c`, packed ARGB).
+pub(crate) fn shader_colours(map: &mut MapReader, shader: TagId) -> Result<Vec<u32>> {
+    let bytes = map.read_tag_bytes(shader)?;
+    let post = meta_block(map, &bytes, 0x20, 0x7c)?;
+    let post = post.first().context("no compiled postprocess")?;
+    Ok(meta_block(map, post, 0xc, 4)?
+        .iter()
+        .filter_map(|b| u32_at(b, 0))
+        .collect())
+}
+
+/// An object's own change colours (`obje +0xac`, 0x10 bytes each: a block
+/// of initial permutations, then one of functions), for its default
+/// variant (`obje +0x30`): per colour the permutation of that variant
+/// (else the first; 0x20 bytes: weight, lower and upper bound RGB, variant
+/// string ID), the middle of its bounds. Empty when it has none.
+pub(crate) fn object_change_colours(map: &mut MapReader, object: TagId) -> Result<Vec<[f32; 3]>> {
+    let bytes = map.read_tag_bytes(object)?;
+    let variant = u32_at(&bytes, 0x30).unwrap_or(0);
+    let mut out = Vec::new();
+    for cc in meta_block(map, &bytes, 0xac, 0x10)? {
+        let perms = meta_block(map, &cc, 0, 0x20)?;
+        let Some(p) = perms
+            .iter()
+            .find(|p| u32_at(p, 0x1c) == Some(variant))
+            .or(perms.first())
+        else {
+            out.push([1.0; 3]);
+            continue;
+        };
+        let lo: [f32; 3] = f32s(p, 4).context("change colour")?;
+        let hi: [f32; 3] = f32s(p, 0x10).context("change colour")?;
+        out.push(std::array::from_fn(|c| {
+            ((lo[c] + hi[c]) / 2.0).clamp(0.0, 1.0)
+        }));
+    }
+    Ok(out)
+}
+
+/// The elements of the tag block whose (count, pointer) pair is at `field`
+/// of `record`, read from the map's metadata wherever they are.
+pub(crate) fn meta_block(
+    map: &mut MapReader,
+    record: &[u8],
+    field: usize,
+    stride: usize,
+) -> Result<Vec<Vec<u8>>> {
+    let count = u32_at(record, field).context("tag block outside its record")?;
+    let address = u32_at(record, field + 4).context("tag block outside its record")?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    anyhow::ensure!(count <= 4096, "tag block of {count} elements");
+    let len = count as usize * stride;
+    let space = map.metadata_space().context("no metadata region")?;
+    let offset = space.translate(address, u32::try_from(len)?)?;
+    let bytes = map.read_file_range(offset, len as u64)?;
+    Ok(bytes.chunks_exact(stride).map(<[u8]>::to_vec).collect())
 }
 
 fn last_component(name: &str) -> &str {
@@ -1798,8 +2510,12 @@ pub fn bitmap_role(name: &str) -> BitmapRole {
         "specular",
         "mask",
     ];
+    // `_bmp` ends bump maps' names too: a sand bump map named so was taken
+    // for the base map of every beach and riverbed shader on the campaign's
+    // Outskirts (noise instead of sand).
     if folders.iter().any(|f| lower.split('\\').any(|c| c == *f))
         || words.iter().any(|w| last.contains(w))
+        || last.split('_').any(|t| t == "bmp")
     {
         return BitmapRole::Other;
     }
@@ -1955,6 +2671,7 @@ pub(crate) fn read_source(
         })
         .collect();
     let markers = markers(map, mode, bones.len())?;
+    let mut library: Option<Option<ShaderLibrary>> = None;
     let mut materials = Vec::new();
     let mut change_colour = Vec::new();
     let mut skip = Vec::new();
@@ -1968,25 +2685,68 @@ pub(crate) fn read_source(
         let (template, bitmaps) = shader_bitmaps(map, shader).unwrap_or_default();
         // Emblem decals sit on the armour and take the player's emblem.
         skip.push(last_component(&template).contains("emblem"));
-        let mut found = Vec::new();
+        // A solid surface's base map is what its passes draw on stage 0
+        // (crate::live_basemap); glass and glows go by names.
+        let opaque = !template
+            .to_ascii_lowercase()
+            .split('\\')
+            .any(|c| c == "transparent");
+        let base = if opaque {
+            let library = library.get_or_insert_with(|| ShaderLibrary::read(map).ok());
+            library
+                .as_mut()
+                .and_then(|l| crate::live_basemap::base_map(l, map, shader))
+        } else {
+            None
+        };
+        let mut found: Vec<(BitmapRole, Option<Image>)> = Vec::new();
+        let overlay = opaque && last_component(&template).contains("overlay");
         for id in bitmaps {
             let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
                 continue;
             };
+            let role = match (base, bitmap_role(&bname)) {
+                (Some(b), _) if b.bitmap == id => BitmapRole::Diffuse,
+                (Some(_), BitmapRole::Diffuse) => BitmapRole::Other,
+                (_, role) => role,
+            };
             // Only the roles a look uses are decoded, each once.
-            let role = bitmap_role(&bname);
-            let wanted = role != BitmapRole::Other
-                && !found
-                    .iter()
-                    .any(|(n, i): &(String, Option<Image>)| i.is_some() && bitmap_role(n) == role);
+            let wanted =
+                role != BitmapRole::Other && !found.iter().any(|(r, i)| i.is_some() && *r == role);
             let image = if wanted {
                 decode_bitmap(map, files, id).ok()
             } else {
                 None
             };
-            found.push((bname, image));
+            found.push((role, image));
         }
-        let (material, cc) = material_look(&name, &template, found);
+        let picture = found
+            .iter()
+            .find(|(r, i)| *r == BitmapRole::Diffuse && i.is_some())
+            .and_then(|(_, i)| i.clone())
+            .filter(|_| overlay);
+        let (mut material, cc) = material_look_roles(&name, &template, found);
+        // An overlay decal blends as its pass says: the vehicles' all double
+        // what is under them, mid-grey leaving it as it is.
+        if let Some(picture) = picture {
+            let library = library.get_or_insert_with(|| ShaderLibrary::read(map).ok());
+            let frame = library
+                .as_mut()
+                .and_then(|l| l.material(shader, None).ok())
+                .and_then(|m| frame_blend(&m));
+            if let Some(blend @ (Blend::Double | Blend::Multiply)) = frame {
+                let mut picture = picture.fit(MAX_TEXTURE);
+                for px in picture.rgba.as_chunks_mut::<4>().0 {
+                    px[3] = 255;
+                }
+                material.texture = Some(picture);
+                material.blend = blend;
+            }
+        }
+        if material.blend == Blend::Opaque {
+            let colours = shader_colours(map, shader).unwrap_or_default();
+            material.env = env_tint(&material.template, &colours);
+        }
         materials.push(material);
         change_colour.push(cc);
     }
@@ -2156,12 +2916,41 @@ const STATES: &[(&str, Want)] = &[
     ("crouch", Want::Action("crouch", None, "idle")),
     ("airborne", Want::Action("combat", None, "airborne")),
     ("land", Want::Action("combat", None, "land_soft")),
+    ("land_hard", Want::Action("combat", None, "land_hard")),
     ("grenade", Want::Named(&["throw_grenade"])),
     ("melee", Want::Named(&["melee_strike_1", "melee"])),
     ("reload", Want::Named(&["reload_1"])),
     ("fire", Want::Named(&["fire_1"])),
     ("switch", Want::Named(&["ready"])),
-    ("die", Want::Action("combat", Some("any"), "landing_dead")),
+];
+
+/// The class every class shares: its clips are written once, as
+/// `any:<state>`, and a reader falls back to them for any weapon class.
+pub const SHARED_CLASS: &str = "any";
+
+/// Where a shared state's animation is found.
+#[derive(Clone, Copy, Debug)]
+enum Shared {
+    /// An animation by its whole name, any of these, maybe with `:varN`
+    /// (the first variant by name).
+    Named(&'static [&'static str]),
+    /// An action of mode `combat`, class and type `any`.
+    Action(&'static str),
+}
+
+/// The states every weapon class shares: dying (a death animation of the
+/// graph's damage table, `s_kill` a soft kill from the front, else a hard
+/// one, else the dead pose) and lying dead (`landing_dead`: the body on the
+/// ground, held). Each state takes the first source the graph has.
+const SHARED_STATES: &[(&str, &[Shared])] = &[
+    (
+        "die",
+        &[
+            Shared::Named(&["s_kill:front:gut", "h_kill:front:gut"]),
+            Shared::Action("landing_dead"),
+        ],
+    ),
+    ("dead", &[Shared::Action("landing_dead")]),
 ];
 
 /// Where a clip's animation is.
@@ -2179,6 +2968,21 @@ pub enum ClipFrom {
 /// the graph are left out.
 pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, ClipFrom)> {
     let mut out = Vec::new();
+    // The shared clips first, so dropping classes for size never takes them.
+    for (state, sources) in SHARED_STATES {
+        let from = sources.iter().find_map(|source| match *source {
+            Shared::Named(names) => whole_name(animations, names).map(ClipFrom::Animation),
+            Shared::Action(action) => stances
+                .iter()
+                .position(|s| {
+                    s[0] == POSE_MODE && s[1] == SHARED_CLASS && s[2] == POSE_TYPE && s[3] == action
+                })
+                .map(ClipFrom::Action),
+        });
+        if let Some(from) = from {
+            out.push((format!("{SHARED_CLASS}:{state}"), from));
+        }
+    }
     for class in CLIP_CLASSES {
         for (state, want) in STATES {
             let from = match *want {
@@ -2201,6 +3005,23 @@ pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, Cli
         }
     }
     out
+}
+
+/// The animation named one of `names` (in that order of preference),
+/// itself or a `:varN` of it, the first by name.
+fn whole_name(animations: &[String], names: &[&str]) -> Option<usize> {
+    names.iter().find_map(|base| {
+        animations
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.as_str() == *base
+                    || n.strip_prefix(base)
+                        .is_some_and(|rest| rest.starts_with(":var"))
+            })
+            .min_by(|a, b| a.1.cmp(b.1))
+            .map(|(i, _)| i)
+    })
 }
 
 /// The combat animation of `class` doing one of `actions`: the class's own
@@ -2563,13 +3384,20 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
             let (mut map, mut files) = disc.open(maps[*i])?;
             let id = map.tag(map::TagQuery::NameInGroup(tag, VEHI))?.id;
             let (mode, jmad) = object_model(&mut map, id)?;
-            let src = read_source(&mut map, &mut files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let mut src = read_source(&mut map, &mut files, mode, MAX_VEHICLE_TRIANGLES)?;
+            let colours = object_change_colours(&mut map, id).unwrap_or_default();
+            paint_vehicle(&mut src, &colours);
             let (names, pose, animation) = match jmad {
                 Some(jmad) => graph_pose(&mut map, &mut files, jmad, pick_vehicle_pose)?,
                 None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),
             };
             let mut model = vehicle(&src, &names, &pose)?;
+            let world = posed_world(&src.bones, &names, &pose);
+            let attached = attach_objects(&mut map, &mut files, id, &src, &world, &mut model, 0);
             model.extras.insert("pose".into(), json!(animation));
+            if !attached.is_empty() {
+                model.extras.insert("attached".into(), json!(attached));
+            }
             Ok(model)
         })();
         (stem.clone(), result)

@@ -1,0 +1,10 @@
+[package]
+name = "agent-proto"
+description = "The agent API's wire types: JSON-RPC 2.0 over a Unix socket, one JSON object per line (docs/runtime/agent-api.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

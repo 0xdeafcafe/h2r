@@ -35,6 +35,7 @@ fn config() -> LiveConfig {
         enabled: true,
         accounts_path: Some(path),
         server_url: None,
+        offer_new_account: false,
     }
 }
 fn hle(config: LiveConfig) -> Arc<Hle> {
@@ -224,6 +225,7 @@ fn disabled_registers_nothing_and_never_reads_an_accounts_file() {
         enabled: false,
         accounts_path: Some("/does/not/exist".into()),
         server_url: None,
+        offer_new_account: false,
     });
     let mut d = Dispatch::default();
     assert!(register(&mut d, &h).unwrap().installed.is_empty());

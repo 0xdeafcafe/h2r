@@ -10,6 +10,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "bun test",
+    "bench:telemetry": "bun run bench/telemetry.bench.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

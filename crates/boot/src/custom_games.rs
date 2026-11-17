@@ -69,11 +69,18 @@ use crate::setting_defs::{
 /// The Xbox Live menu's list name and retail row count.
 pub const LIST_NAME: u32 = 0x0045_8c80;
 pub const VANILLA_ROWS: u32 = 4;
-/// Our row, directly above Content Download, and where Content Download
-/// moves to (it is retail row 3).
+/// Our rows, Custom Game Browser then Co-op Campaign
+/// (docs/live/live-coop.md), directly above Content Download, and where
+/// Content Download moves to (it is retail row 3). With the co-op row off
+/// (`H2_NO_COOP_ROW=1`) Content Download is row 4.
 pub const ROW: i16 = 3;
-pub const DOWNLOAD_ROW: i16 = 4;
+pub const COOP_ROW: i16 = 4;
+pub const DOWNLOAD_ROW: i16 = 5;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
+/// Retail row 2, Custom Game (`0x231001`: `0x199e2e(1)`, a Live squad
+/// session `0x59890(2, 0, 0)`, then the lobby mode `0x199a03(2)`). The
+/// Co-op Campaign row runs it with the mode turned to co-op.
+pub const RETAIL_CUSTOM_GAME_ROW: i16 = 2;
 /// The text `0x230f36` gives retail row 3, Content Download, so the moved
 /// row keeps the player's language.
 pub const DOWNLOAD_TEXT_ID: u32 = 0x1000_0445;
@@ -109,6 +116,13 @@ pub const TEXT: &str = "Custom Game Browser";
 /// The help text on our row's pane.
 pub const HELP_ID: u32 = ID_BASE + 0x33;
 pub const HELP: &str = "Find custom games hosted on your Live server and join one.";
+/// The co-op row's label and help (docs/live/live-coop.md, "Co-op over
+/// Live"). "Co-op Campaign" renders narrower than "Custom Game Browser".
+pub const COOP_TEXT_ID: u32 = ID_BASE + 0x36;
+pub const COOP_TEXT: &str = "Co-op Campaign";
+pub const COOP_HELP_ID: u32 = ID_BASE + 0x37;
+pub const COOP_HELP: &str =
+    "Play the campaign with a friend over Xbox Live, one player per console.";
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -153,11 +167,34 @@ pub fn row_enabled() -> bool {
     std::env::var_os("H2_NO_CUSTOM_GAMES_ROW").is_none()
 }
 
+/// Whether the Co-op Campaign row is on (`H2_NO_COOP_ROW=1` takes it out;
+/// it needs our Live service, see `crate::coop_live`).
+pub fn coop_row_enabled() -> bool {
+    COOP_ROW_ON.load(std::sync::atomic::Ordering::SeqCst)
+        && std::env::var_os("H2_NO_COOP_ROW").is_none()
+}
+
+/// Set when the co-op screens are installed (Live on).
+static COOP_ROW_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_coop_row(on: bool) {
+    COOP_ROW_ON.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Our rows on the Live menu: the browser's, and co-op's when on.
+fn ours(coop: bool) -> u32 {
+    1 + u32::from(coop)
+}
+
 /// The Live menu's count when it is built with `count` rows: one more for
-/// our row, only for that list at its retail size.
+/// each row of ours, only for that list at its retail size.
 pub fn list_count(name: u32, count: u32) -> u32 {
+    list_count_with(name, count, coop_row_enabled())
+}
+
+pub fn list_count_with(name: u32, count: u32, coop: bool) -> u32 {
     if name == LIST_NAME && count == VANILLA_ROWS {
-        count + 1
+        count + ours(coop)
     } else {
         count
     }
@@ -170,14 +207,21 @@ pub enum Row {
     Retail,
     /// Ours: opens the Live browser.
     Browser,
+    /// Ours: opens the co-op screen (`crate::coop_live`).
+    Coop,
     /// Content Download, moved down one: opens the Map Pack dialog.
     Download,
 }
 
 pub fn row_kind(row: i16) -> Row {
-    match row {
-        ROW => Row::Browser,
-        DOWNLOAD_ROW => Row::Download,
+    row_kind_with(row, coop_row_enabled())
+}
+
+pub fn row_kind_with(row: i16, coop: bool) -> Row {
+    match (row, coop) {
+        (ROW, _) => Row::Browser,
+        (COOP_ROW, true) => Row::Coop,
+        (COOP_ROW, false) | (DOWNLOAD_ROW, true) => Row::Download,
         _ => Row::Retail,
     }
 }
@@ -187,6 +231,7 @@ pub fn row_kind(row: i16) -> Row {
 pub fn row_text_id(row: i16) -> Option<u32> {
     match row_kind(row) {
         Row::Browser => Some(TEXT_ID),
+        Row::Coop => Some(COOP_TEXT_ID),
         Row::Download => Some(DOWNLOAD_TEXT_ID),
         Row::Retail => None,
     }
@@ -207,15 +252,25 @@ pub enum Pane {
 /// tag has one pane per row (the help text and picture of that row); once
 /// [`extend_tag`] has run, pane 4 is ours.
 pub fn pane_of(row: i16, panes: u32) -> Pane {
-    match (row_kind(row), panes == EXTENDED_PANES) {
+    pane_of_with(row, panes, coop_row_enabled())
+}
+
+pub fn pane_of_with(row: i16, panes: u32, coop: bool) -> Pane {
+    let extended = panes > VANILLA_PANES;
+    match (row_kind_with(row, coop), extended) {
         (Row::Retail, _) => Pane::Retail,
-        (Row::Browser, true) => Pane::Show(EXTENDED_PANES as i16 - 1),
+        (Row::Browser, true) => Pane::Show(BROWSER_PANE),
+        (Row::Coop, true) if panes > COOP_PANE as u32 => Pane::Show(COOP_PANE),
         // No pane of ours: keep the one shown rather than show Content
         // Download's help for our row.
-        (Row::Browser, false) => Pane::Keep,
+        (Row::Browser | Row::Coop, _) => Pane::Keep,
         (Row::Download, _) => Pane::Show(RETAIL_DOWNLOAD_ROW),
     }
 }
+
+/// Our panes, after the retail four.
+pub const BROWSER_PANE: i16 = 4;
+pub const COOP_PANE: i16 = 5;
 
 // ---- back from the Live browser ----
 //
@@ -257,6 +312,8 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     vec![
         (TEXT_ID, TEXT),
         (HELP_ID, HELP),
+        (COOP_TEXT_ID, COOP_TEXT),
+        (COOP_HELP_ID, COOP_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),
     ]
@@ -291,6 +348,11 @@ pub fn answer_error<M: Gm>(m: &mut M, entry: u32, error: u32) -> bool {
 // live in our memory; the retail arrays are left as they are.
 
 const VANILLA_PANES: u32 = 4;
+/// Panes once extended: one per row of ours after the retail four.
+pub fn extended_panes(coop: bool) -> u32 {
+    VANILLA_PANES + ours(coop)
+}
+/// The panes with only the browser's row (the co-op row off).
 pub const EXTENDED_PANES: u32 = 5;
 /// The pane ours copies: Custom Game's, for its picture.
 const TEMPLATE_PANE: u32 = 2;
@@ -376,11 +438,14 @@ fn text_ids<M: Gm>(m: &M, pane: u32) -> Option<Vec<u32>> {
 /// exactly the retail four panes (so once done, or another layout), or no
 /// list in pane 0; `None` if memory cannot be read or written.
 pub fn extend_tag<M: Gm>(m: &mut M, wgit: u32, base: u32) -> Option<bool> {
-    extend_tag_in(m, wgit, base, TAG_SPACE)
+    extend_tag_in(m, wgit, base, TAG_SPACE, coop_row_enabled())
 }
 
-/// [`extend_tag`] within `space` bytes.
-fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32) -> Option<bool> {
+/// [`extend_tag`] within `space` bytes, with or without the co-op row's
+/// pane. The list keeps room for five items either way: with the co-op
+/// row the sixth row (Content Download) scrolls into view.
+fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32, coop: bool) -> Option<bool> {
+    let panes = extended_panes(coop);
     if m.u16(wgit.wrapping_add(4))? as i16 != SCREEN_ID || m.u32(wgit + 0x20)? != VANILLA_PANES {
         return Some(false);
     }
@@ -405,9 +470,14 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32) -> Option<b
     let help = (template.len() == next_pane.len() && differing.len() == 1).then(|| differing[0]);
 
     let end = base.checked_add(space)?;
-    let mut next = base + EXTENDED_PANES * PANE_SIZE;
-    for p in 0..EXTENDED_PANES {
-        let ours = p == EXTENDED_PANES - 1;
+    let mut next = base + panes * PANE_SIZE;
+    for p in 0..panes {
+        let ours = p >= VANILLA_PANES;
+        let help_id = if p == COOP_PANE as u32 {
+            COOP_HELP_ID
+        } else {
+            HELP_ID
+        };
         let src = old + if ours { TEMPLATE_PANE } else { p } * PANE_SIZE;
         let mut pane = vec![0; PANE_SIZE as usize];
         if !m.rd(src, &mut pane) {
@@ -442,7 +512,7 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32) -> Option<b
                     put_i16(e, 0x20, get_i16(e, 0x20).saturating_sub(DROP));
                 }
                 if ours && help == Some(i) {
-                    e[0x24..0x28].copy_from_slice(&HELP_ID.to_le_bytes());
+                    e[0x24..0x28].copy_from_slice(&help_id.to_le_bytes());
                 }
             },
         )?;
@@ -465,7 +535,7 @@ fn extend_tag_in<M: Gm>(m: &mut M, wgit: u32, base: u32, space: u32) -> Option<b
         }
     }
     // Publish last: a reader sees the old array or the complete new one.
-    (m.set_u32(wgit + 0x24, base) && m.set_u32(wgit + 0x20, EXTENDED_PANES)).then_some(true)
+    (m.set_u32(wgit + 0x24, base) && m.set_u32(wgit + 0x20, panes)).then_some(true)
 }
 
 /// The `live.visibility` value of a privacy item id, as `0x19a148` maps
@@ -575,17 +645,19 @@ mod tests {
 
     #[test]
     fn our_row_sits_directly_above_content_download() {
+        // The co-op row off (no Live): Content Download is row 4, as before
+        // it (crate::coop_live tests the six-row menu).
         assert_eq!(list_count(LIST_NAME, VANILLA_ROWS), 5);
         for r in 0..3 {
             assert_eq!(row_kind(r), Row::Retail, "row {r}");
             assert_eq!(row_text_id(r), None, "row {r} keeps the retail text");
         }
         assert_eq!(row_kind(ROW), Row::Browser);
-        assert_eq!(row_kind(DOWNLOAD_ROW), Row::Download);
-        assert_eq!(DOWNLOAD_ROW, ROW + 1);
+        assert_eq!(row_kind(COOP_ROW), Row::Download);
+        assert_eq!(COOP_ROW, ROW + 1);
         assert_eq!(row_text_id(ROW), Some(TEXT_ID));
         // Content Download keeps the game's own (localized) label.
-        assert_eq!(row_text_id(DOWNLOAD_ROW), Some(DOWNLOAD_TEXT_ID));
+        assert_eq!(row_text_id(COOP_ROW), Some(DOWNLOAD_TEXT_ID));
         assert_eq!(row_kind(5), Row::Retail);
         assert_eq!(TEXT, "Custom Game Browser");
     }
@@ -594,14 +666,14 @@ mod tests {
     fn panes_follow_the_rows() {
         // Extended tag: our row shows pane 4, Content Download its own pane 3.
         assert_eq!(pane_of(ROW, EXTENDED_PANES), Pane::Show(4));
-        assert_eq!(pane_of(DOWNLOAD_ROW, EXTENDED_PANES), Pane::Show(3));
+        assert_eq!(pane_of(COOP_ROW, EXTENDED_PANES), Pane::Show(3));
         for r in 0..3 {
             assert_eq!(pane_of(r, EXTENDED_PANES), Pane::Retail);
             assert_eq!(pane_of(r, VANILLA_PANES), Pane::Retail);
         }
         // A tag we did not extend has no pane 4: keep the shown one.
         assert_eq!(pane_of(ROW, VANILLA_PANES), Pane::Keep);
-        assert_eq!(pane_of(DOWNLOAD_ROW, VANILLA_PANES), Pane::Show(3));
+        assert_eq!(pane_of(COOP_ROW, VANILLA_PANES), Pane::Show(3));
     }
 
     #[test]
@@ -820,6 +892,31 @@ mod tests {
     }
 
     #[test]
+    fn with_the_co_op_row_the_tag_gets_a_sixth_pane_with_its_help() {
+        let mut m = Fake::default();
+        let wgit = live_tag(&mut m, 7);
+        assert_eq!(
+            extend_tag_in(&mut m, wgit, BASE, TAG_SPACE, true),
+            Some(true)
+        );
+        assert_eq!(m.u32(wgit + 0x20), Some(6));
+        assert!(m.0.keys().all(|a| *a < BASE + TAG_SPACE));
+        let pane = |p: u32| BASE + p * PANE_SIZE;
+        let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
+        assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(HELP_ID));
+        assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(COOP_HELP_ID));
+        for p in 4..6 {
+            // Both of ours are the Custom Game pane, moved like the rest.
+            assert_eq!(m.u32(text(&m, p, 0) + 0x24), Some(0x0800_0001));
+            assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60 - DROP);
+            assert_eq!(m.u32(pane(p) + 0xc), Some(0), "no list on our pane");
+        }
+        // The list keeps room for five items: the sixth row scrolls.
+        let list = m.u32(pane(0) + 0x10).unwrap();
+        assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1 + LIFT);
+    }
+
+    #[test]
     fn a_list_showing_fewer_than_five_is_raised_to_five() {
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 4);
@@ -846,7 +943,10 @@ mod tests {
         // Too little space: nothing published.
         m.set_u32(panes + 0xc, 1);
         let mut tight = Fake(m.0.clone());
-        assert_eq!(extend_tag_in(&mut tight, wgit, BASE, PANE_SIZE * 6), None);
+        assert_eq!(
+            extend_tag_in(&mut tight, wgit, BASE, PANE_SIZE * 6, false),
+            None
+        );
         assert_eq!(tight.u32(wgit + 0x20), Some(VANILLA_PANES));
     }
 

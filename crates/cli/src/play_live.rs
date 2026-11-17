@@ -1,29 +1,49 @@
-//! `h2 play --live`: the game signed in to a Live service. Either an
-//! embedded server on a background runtime (Postgres from `$H2_LIVE_DB`,
-//! else the file store in `server/log`) or `--live-server URL`; an account for that
-//! server is found in, or added to, the local accounts file, and the game
-//! is booted with `boot::LiveConfig` pointing at it (docs/live/live.md).
+//! `h2 play`'s Live flags (docs/live/live.md "Playing on Live"). With none
+//! the game plays offline and nothing is contacted. `--live` signs in to
+//! [`DEFAULT_LIVE_SERVER`] (or `$H2_LIVE_SERVER`), `--live-server URL` to
+//! that service, and `--live-local` to an embedded server on a background
+//! runtime (Postgres from `$H2_LIVE_DB`, else the file store in
+//! `server/log`), which `--live-listen` and `--live-tunnel` configure. An
+//! account for the server is found in, or added to, the local accounts
+//! file, and the game is booted with `boot::LiveConfig` pointing at it.
+//! The tvOS and iOS apps are on by default instead (`live_hle::platform`).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use live_proto::Gamertag;
+use live_proto::{Gamertag, ServerOverride, Xuid};
 
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
+use live_proto::sign::KeyPair;
+
+/// The Live service `h2 play --live` signs in to: [`live_proto::DEFAULT_SERVER`],
+/// shared with the app builds.
+pub const DEFAULT_LIVE_SERVER: &str = live_proto::DEFAULT_SERVER;
 
 /// The `--live*` flags of `h2 play`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct LiveOpts {
+    /// Any Live flag: `--live`, `--live-server`, `--live-local` (or one
+    /// that implies it).
     pub enabled: bool,
-    /// `--live-server`: use this service instead of an embedded one.
+    /// `--live-local`: run the server in this process. `--live-listen` and
+    /// `--live-tunnel` imply it.
+    pub local: bool,
+    /// `--offline` (or `--no-live`): no Live, as with no flag. Kept for
+    /// scripts and for symmetry with the app builds.
+    pub offline: bool,
+    /// `--live-server`: this service. With `--live` alone it is filled in
+    /// from `$H2_LIVE_SERVER` or [`DEFAULT_LIVE_SERVER`] ([`choose`]).
     pub server: Option<String>,
     /// `--live-listen`: where the embedded server binds (default
     /// 127.0.0.1 on a free port).
     pub listen: Option<SocketAddr>,
     /// `--gamertag`: the account to play as (made if missing).
     pub gamertag: Option<String>,
+    /// `--invite CODE`: for making the account on an invite-only server.
+    pub invite: Option<String>,
     /// `--live-tunnel` (alias `--tunnel`), with `--live-tunnel-name NAME`
     /// (`--tunnel-name`) and `--live-tunnel-url https://HOST` (or
     /// `--hostname HOST`): publish the embedded server through cloudflared
@@ -40,6 +60,11 @@ pub struct LiveOpts {
     /// The cloudflared to run; `None`: `$H2_CLOUDFLARED`, else PATH (tests
     /// set a fake).
     pub cloudflared: Option<PathBuf>,
+    /// `--signin-terminal`: a code (or invite) the account needs is asked
+    /// for on the terminal before the game starts, as before; without it
+    /// the game asks for the code when the player signs in
+    /// (docs/live/live.md, "In-game sign-in").
+    pub signin_terminal: bool,
 }
 
 impl LiveOpts {
@@ -47,29 +72,35 @@ impl LiveOpts {
     pub fn take(&mut self, flag: &str, value: &mut dyn FnMut() -> Result<String>) -> Result<bool> {
         match flag {
             "--live" => self.enabled = true,
+            "--live-local" => self.embedded(),
+            "--offline" | "--no-live" => self.offline = true,
             "--live-server" => {
                 self.enabled = true;
                 self.server = Some(value()?);
             }
             "--live-listen" => {
-                self.enabled = true;
+                self.embedded();
                 let v = value()?;
                 self.listen = Some(
                     v.parse()
                         .with_context(|| format!("bad --live-listen {v:?} (want ip:port)"))?,
                 );
             }
-            "--live-tunnel" => {
-                self.enabled = true;
+            "--live-tunnel" | "--tunnel" => {
+                self.embedded();
                 self.tunnel = true;
             }
-            "--tunnel" => self.tunnel = true,
-            "--live-tunnel-name" | "--tunnel-name" => self.tunnel_name = Some(value()?),
+            "--live-tunnel-name" | "--tunnel-name" => {
+                self.embedded();
+                self.tunnel_name = Some(value()?);
+            }
             "--live-tunnel-url" => {
                 self.hostname = Some(crate::tunnel::hostname_from_url(&value()?)?);
             }
             "--hostname" => self.hostname = Some(value()?),
             "--no-tunnel-setup" => self.no_tunnel_setup = true,
+            "--invite" => self.invite = Some(value()?),
+            "--signin-terminal" => self.signin_terminal = true,
             "--gamertag" => {
                 let v = value()?;
                 Gamertag::new(&v).map_err(|e| anyhow::anyhow!("--gamertag {v:?}: {e}"))?;
@@ -80,12 +111,33 @@ impl LiveOpts {
         Ok(true)
     }
 
+    fn embedded(&mut self) {
+        self.enabled = true;
+        self.local = true;
+    }
+
     pub fn check(&self) -> Result<()> {
+        if self.offline && self.enabled {
+            bail!(
+                "--offline plays without Live; drop --live, --live-local, --live-server or \
+                 --live-tunnel"
+            );
+        }
         if self.gamertag.is_some() && !self.enabled {
-            bail!("--gamertag goes with --live or --live-server");
+            bail!(
+                "--gamertag is the Live account to play as; it goes with --live, --live-server \
+                 or --live-local"
+            );
+        }
+        if self.invite.is_some() && !self.enabled {
+            bail!(
+                "--invite makes the Live account to play as; it goes with --live or --live-server"
+            );
         }
         if self.server.is_some() && self.listen.is_some() {
-            bail!("--live-listen is for the embedded server; --live-server uses another");
+            bail!(
+                "--live-listen is for the embedded server (--live-local); --live-server uses another"
+            );
         }
         if self.hostname.is_some() && self.tunnel_name.is_none() {
             bail!(
@@ -98,16 +150,23 @@ impl LiveOpts {
             bail!("--no-tunnel-setup goes with --live-tunnel-name");
         }
         if mode.is_some() {
-            if !self.enabled || self.server.is_some() {
+            if self.server.is_some() {
                 bail!(
-                    "--tunnel publishes the embedded server: it goes with --live, not --live-server"
+                    "--live-tunnel publishes the embedded server: it goes with --live-local, \
+                     not --live-server"
                 );
             }
             if let Some(listen) = self.listen.filter(|l| !l.ip().is_loopback()) {
                 bail!(
-                    "--tunnel keeps the embedded server on loopback; drop --live-listen {listen}"
+                    "--live-tunnel keeps the embedded server on loopback; drop --live-listen {listen}"
                 );
             }
+        }
+        if self.local && self.server.is_some() {
+            bail!(
+                "--live-local runs a server on this machine and --live-server signs in to \
+                 another; pick one"
+            );
         }
         Ok(())
     }
@@ -123,12 +182,64 @@ impl LiveOpts {
     }
 }
 
+/// How `h2 play` plays: what the flags and `$H2_LIVE_SERVER` decided.
+/// Nothing is contacted to decide it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    /// Offline; `why` is the line to print, if any.
+    Offline { why: Option<String> },
+    /// `--live-local`: the embedded server.
+    Local,
+    /// Sign in to `url`; `from` names what chose it (`--live-server`,
+    /// `H2_LIVE_SERVER` or `--live`, the default service).
+    Server { url: String, from: &'static str },
+}
+
+/// What `h2 play` does about Live. `env` is `$H2_LIVE_SERVER`: with
+/// `--live` alone it replaces `default` ([`DEFAULT_LIVE_SERVER`] outside
+/// tests), and `off`, `none` or `0` there mean offline. `--live-server` and
+/// `--live-local` win over it.
+pub fn choose(opts: &LiveOpts, env: Option<&str>, default: &str) -> Choice {
+    if opts.offline || !opts.enabled {
+        return Choice::Offline { why: None };
+    }
+    if opts.local {
+        return Choice::Local;
+    }
+    if let Some(url) = &opts.server {
+        return Choice::Server {
+            url: url.trim().trim_end_matches('/').to_string(),
+            from: "--live-server",
+        };
+    }
+    match ServerOverride::parse(env) {
+        ServerOverride::Off(v) => Choice::Offline {
+            why: Some(format!("live: off (H2_LIVE_SERVER={v}); playing offline")),
+        },
+        ServerOverride::Url(url) => Choice::Server {
+            url,
+            from: "H2_LIVE_SERVER",
+        },
+        ServerOverride::Unset => Choice::Server {
+            url: default.trim_end_matches('/').to_string(),
+            from: "--live",
+        },
+    }
+}
+
 /// A running live session: what to boot the game with, and the embedded
 /// server (stopped on drop) if there is one.
 pub struct Session {
     pub config: boot::LiveConfig,
-    pub account: LocalAccount,
+    /// The account the game signs in as; `None` while it waits for the
+    /// code the game asks for (`waiting`).
+    pub account: Option<LocalAccount>,
+    /// The gamertag handed to the game as needing a code.
+    pub waiting: Option<String>,
     pub server: String,
+    /// The service's API base and id, from its discovery document.
+    pub api: String,
+    pub server_id: String,
     /// The embedded server's one-use, this-machine-only link signing a
     /// browser in as `account` (docs/live/live-admin.md §4).
     pub signin: Option<String>,
@@ -179,9 +290,9 @@ pub fn start(
     site: live_server::http::Site,
     default_name: &str,
 ) -> Result<Session> {
-    let embedded = match &opts.server {
-        Some(_) => None,
-        None => {
+    let embedded = match opts.local {
+        false => None,
+        true => {
             let listen = opts
                 .listen
                 .unwrap_or_else(|| "127.0.0.1:0".parse().expect("an address"));
@@ -193,17 +304,57 @@ pub fn start(
             )?)
         }
     };
-    let url = embedded.as_ref().map_or_else(
-        || opts.server.clone().unwrap_or_default(),
-        |e| e.url.clone(),
-    );
+    let url = match (&embedded, &opts.server) {
+        (Some(e), _) => e.url.clone(),
+        (None, Some(url)) => url.clone(),
+        (None, None) => bail!("no Live server: --live-local or a --live-server URL"),
+    };
     let client = Client::at(&url)?;
-    let (account, created) = bootstrap(
+    let mut terminal = terminal_ask;
+    // The terminal asks only when told to; otherwise a code is the game's
+    // to ask for (docs/live/live.md, "In-game sign-in").
+    let ask: Ask = if opts.signin_terminal && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        Some(&mut terminal)
+    } else {
+        None
+    };
+    let (account, created) = match bootstrap(
         &client,
         &places.accounts,
         opts.gamertag.as_deref(),
         default_name,
-    )?;
+        opts.invite.as_deref(),
+        embedded.is_some(),
+        ask,
+    ) {
+        Ok(found) => found,
+        Err(e) if !opts.signin_terminal && e.downcast_ref::<NeedsCode>().is_some() => {
+            let need = e.downcast::<NeedsCode>().expect("checked");
+            eprintln!(
+                "live: {} is on {} already and this machine has no key for it; the game asks for its code",
+                need.gamertag, client.discovery.id
+            );
+            write_waiting(&places.session_accounts, &need, &client.base)?;
+            return Ok(Session {
+                config: boot::LiveConfig {
+                    enabled: true,
+                    accounts_path: Some(places.session_accounts.clone()),
+                    server_url: Some(client.base.clone()),
+                    offer_new_account: false,
+                },
+                account: None,
+                waiting: Some(need.gamertag),
+                api: client.api,
+                server_id: client.discovery.id,
+                server: client.base,
+                signin: None,
+                tunnel: None,
+                tunnel_notices: Vec::new(),
+                embedded,
+            });
+        }
+        Err(e) => return Err(e),
+    };
     if created {
         eprintln!(
             "live: created {} ({}) on {}",
@@ -267,8 +418,12 @@ pub fn start(
             enabled: true,
             accounts_path: Some(places.session_accounts.clone()),
             server_url: Some(client.base.clone()),
+            offer_new_account: false,
         },
-        account,
+        account: Some(account),
+        waiting: None,
+        api: client.api,
+        server_id: client.discovery.id,
         server: client.base,
         signin,
         tunnel,
@@ -277,20 +432,117 @@ pub fn start(
     })
 }
 
-/// The account to play as on `client`'s server: the first local one (named
-/// `want`, if given) whose key the server still lists as current, else a
-/// new one, named `want` or after `default_name` (numbered if taken).
-/// Returns it and whether it was made now.
+/// The account is on the server already and this machine has no key for
+/// it, with no terminal to ask for the code: the game asks instead
+/// ([`write_waiting`]). Its text is the command that recovers it by hand.
+#[derive(Debug, Clone)]
+pub struct NeedsCode {
+    pub gamertag: String,
+    /// The account's xuid on the server, when it said.
+    pub xuid: Option<Xuid>,
+    message: String,
+}
+
+impl std::fmt::Display for NeedsCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NeedsCode {}
+
+/// Hands the game `need` as its one account, marked `needs_code`: picking
+/// it at the game's Xbox Live sign-in asks for the code. No key is in it.
+pub fn write_waiting(path: &Path, need: &NeedsCode, server: &str) -> Result<()> {
+    let xuid = need.xuid.unwrap_or_else(|| stand_in_xuid(&need.gamertag));
+    let entry = serde_json::json!([{
+        "xuid": xuid,
+        "gamertag": need.gamertag,
+        "server": server,
+        "needs_code": true,
+    }]);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{entry:#}\n"))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// A stable nonzero xuid for a gamertag the server gave none for: the game
+/// lists the identity by it until the real one replaces it.
+fn stand_in_xuid(gamertag: &str) -> Xuid {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in gamertag.to_ascii_lowercase().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    Xuid(0x0009_0000_0000_0000 | (h & 0xffff_ffff) | 1)
+}
+
+/// Asks the player a question on the terminal; `None` when stdin is not one.
+pub type Ask<'a> = Option<&'a mut dyn FnMut(&str) -> Result<String>>;
+
+/// The terminal's [`Ask`]: the question on stderr, the answer from stdin.
+pub fn terminal_ask(question: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+    eprint!("{question} ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// Seconds since the epoch an account was last picked to play
+/// (`last_played` in accounts.json); 0 if never.
+fn last_played(a: &LocalAccount) -> i64 {
+    a.extra
+        .get("last_played")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0)
+}
+
+/// A gamertag as a shell word.
+fn shell_word(s: &str) -> String {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The account to play as on `client`'s server (docs/live/live.md
+/// "Playing on Live"):
+///
+/// 1. a local one there (named `want`, if given) whose key the server
+///    still lists as current;
+/// 2. else the player's identity from another server: `want`, else the
+///    gamertag of the most recently played local account elsewhere, else
+///    one from `default_name` (the OS user name), keeping that account's
+///    key when there is one:
+///    - not on this server yet: created with that key (with `invite`, or
+///      one asked for, when the server is invite-only);
+///    - already there (made from another device or the web): recovered
+///      with a code the player types, adding this machine's key;
+///    - on the embedded server (`local`) a taken default name is numbered
+///      instead, as before.
+///
+/// `ask` is how to ask the player (None: not a terminal, so fail with the
+/// command to run). Returns the account and whether it was added now.
 pub fn bootstrap(
     client: &Client,
     accounts_path: &Path,
     want: Option<&str>,
     default_name: &str,
+    invite: Option<&str>,
+    local: bool,
+    mut ask: Ask,
 ) -> Result<(LocalAccount, bool)> {
     let mut accounts = live_accounts::load(accounts_path)?;
-    let on_server = |a: &&LocalAccount| a.is_on(&client.base, &client.discovery.id);
-    let named = |a: &&LocalAccount| want.is_none_or(|w| a.gamertag.eq_ignore_ascii_case(w));
-    for a in accounts.iter().filter(on_server).filter(named) {
+    let here = |a: &LocalAccount| a.is_on(&client.base, &client.discovery.id);
+    let named = |a: &LocalAccount| want.is_none_or(|w| a.gamertag.eq_ignore_ascii_case(w));
+    let mut found = None;
+    for a in accounts.iter().filter(|a| here(a) && named(a)) {
         let Ok(key) = a.key_pair() else { continue };
         let keys = match client.keys(a.xuid) {
             Ok(k) => k,
@@ -302,20 +554,180 @@ pub fn bootstrap(
             .iter()
             .any(|k| k.kid == key.kid() && k.valid_to.is_none())
         {
-            return Ok((a.clone(), false));
+            found = Some(a.clone());
+            break;
         }
     }
-    let base = want.map_or_else(
-        || live_accounts::gamertag_from(default_name),
-        str::to_string,
-    );
+    if let Some(account) = found {
+        return Ok((keep(accounts_path, &mut accounts, account)?, false));
+    }
+
+    // The player's identity on other servers, most recently played last.
+    let mut elsewhere: Vec<(usize, &LocalAccount)> = accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !here(a) && named(a) && a.key_pair().is_ok())
+        .collect();
+    elsewhere.sort_by_key(|(i, a)| (last_played(a), *i));
+    let prior = elsewhere.last().map(|(_, a)| (*a).clone());
+    let base = want
+        .map(str::to_string)
+        .or_else(|| prior.as_ref().map(|a| a.gamertag.clone()))
+        .unwrap_or_else(|| live_accounts::gamertag_from(default_name));
+    let reuse = prior
+        .filter(|a| a.gamertag.eq_ignore_ascii_case(&base))
+        .and_then(|a| a.key_pair().ok());
+    let tag = Gamertag::new(&base).with_context(|| format!("{base:?} is not a valid gamertag"))?;
+
+    if local {
+        return numbered(
+            client,
+            accounts_path,
+            &mut accounts,
+            &base,
+            want.is_none(),
+            reuse,
+        );
+    }
+
+    let (exists, there) = match client.get::<serde_json::Value>(
+        &format!("/accounts/{}", crate::live_query::path_part(tag.as_str())),
+        &[],
+    ) {
+        Ok(v) => (
+            true,
+            v.get("xuid")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|x| Xuid::parse(x).ok()),
+        ),
+        Err(e) if status_of(&e) == Some(404) => (false, None),
+        Err(e) => return Err(e),
+    };
+    let host = &client.discovery.id;
+    let account = if exists {
+        let Some(ask) = ask.as_mut() else {
+            return Err(NeedsCode {
+                gamertag: tag.as_str().to_string(),
+                xuid: there,
+                message: format!(
+                    "{tag} is already an account on {host} and this machine has no key for it. \
+                     Recover it here with a code from Account on {}/dash or your authenticator app:\n  \
+                     h2 live account recover {} --server {}",
+                    client.base,
+                    shell_word(tag.as_str()),
+                    client.base
+                ),
+            }
+            .into());
+        };
+        let mut key = reuse.unwrap_or_else(KeyPair::generate);
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let code = ask(&format!(
+                "{tag} is on {host} already; enter the code from Account on {}/dash or your authenticator:",
+                client.base
+            ))?;
+            let key_now = KeyPair::from_secret_b64(&key.secret_b64()).expect("our own key");
+            match crate::live_recovery::recover_with_key(
+                client,
+                accounts_path,
+                &tag,
+                &code,
+                key_now,
+            ) {
+                Ok(a) => break a,
+                // The key is taken (by another account): a fresh one.
+                Err(e) if status_of(&e) == Some(409) => key = KeyPair::generate(),
+                Err(e) if status_of(&e) == Some(429) || tries >= 3 => return Err(e),
+                // A wrong or mistyped code: ask again, same key.
+                Err(e) => eprintln!("live: {e:#}"),
+            }
+            accounts = live_accounts::load(accounts_path)?;
+        }
+    } else {
+        let invite_only = client
+            .get::<serde_json::Value>("/server", &[])
+            .ok()
+            .and_then(|v| v["invite_only"].as_bool())
+            .unwrap_or(false);
+        let mut code = invite.map(str::to_string);
+        if invite_only && code.is_none() {
+            let Some(ask) = ask.as_mut() else {
+                bail!(
+                    "{host} needs an invite code to make {tag} there: pass --invite CODE (an \
+                     admin makes one on the Server screen at {}/dash). If {tag} is yours \
+                     on {host} already, recover it: h2 live account recover {} --server {}",
+                    client.base,
+                    shell_word(tag.as_str()),
+                    client.base
+                );
+            };
+            code = Some(ask(&format!(
+                "{host} needs an invite to make {tag} there; enter an invite code:"
+            ))?);
+        }
+        let key = reuse.unwrap_or_else(KeyPair::generate);
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let key_now = KeyPair::from_secret_b64(&key.secret_b64()).expect("our own key");
+            match client.create_account_with(key_now, tag.as_str(), code.clone()) {
+                Ok((created, key)) => {
+                    accounts.retain(|a| !(here(a) && a.gamertag.eq_ignore_ascii_case(&base)));
+                    break LocalAccount::new(
+                        created.xuid,
+                        created.gamertag.as_str(),
+                        &client.base,
+                        &client.discovery,
+                        &key,
+                    );
+                }
+                Err(e) if status_of(&e) == Some(403) && tries < 3 && ask.is_some() => {
+                    eprintln!("live: {e:#}");
+                    let ask = ask.as_mut().expect("checked");
+                    code = Some(ask("enter an invite code:")?);
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("creating {tag} on {host}"));
+                }
+            }
+        }
+    };
+    Ok((keep(accounts_path, &mut accounts, account)?, true))
+}
+
+/// Stores `account` (replacing the same xuid) stamped as just played.
+fn keep(
+    path: &Path,
+    accounts: &mut Vec<LocalAccount>,
+    mut account: LocalAccount,
+) -> Result<LocalAccount> {
+    account
+        .extra
+        .insert("last_played".into(), crate::live_cmd::now().into());
+    live_accounts::upsert(accounts, account.clone());
+    live_accounts::save(path, accounts)?;
+    Ok(account)
+}
+
+/// A server on this machine: `base`, numbered while taken if `number`.
+fn numbered(
+    client: &Client,
+    accounts_path: &Path,
+    accounts: &mut Vec<LocalAccount>,
+    base: &str,
+    number: bool,
+    mut reuse: Option<KeyPair>,
+) -> Result<(LocalAccount, bool)> {
     for n in 1..=20 {
         let tag = if n == 1 {
-            base.clone()
+            base.to_string()
         } else {
-            live_accounts::numbered(&base, n)
+            live_accounts::numbered(base, n)
         };
-        match client.create_account(&tag, None) {
+        let key = reuse.take().unwrap_or_else(KeyPair::generate);
+        match client.create_account_with(key, &tag, None) {
             Ok((created, key)) => {
                 let account = LocalAccount::new(
                     created.xuid,
@@ -330,11 +742,9 @@ pub fn bootstrap(
                     !(a.is_on(&client.base, &client.discovery.id)
                         && a.gamertag.eq_ignore_ascii_case(&tag))
                 });
-                live_accounts::upsert(&mut accounts, account.clone());
-                live_accounts::save(accounts_path, &accounts)?;
-                return Ok((account, true));
+                return Ok((keep(accounts_path, accounts, account)?, true));
             }
-            Err(e) if status_of(&e) == Some(409) && want.is_none() => continue,
+            Err(e) if status_of(&e) == Some(409) && number => continue,
             Err(e) => {
                 return Err(e).with_context(|| format!("creating {tag:?} on {}", client.base));
             }
@@ -342,7 +752,7 @@ pub fn bootstrap(
     }
     bail!(
         "every gamertag from {base:?} to {:?} is taken; pass --gamertag",
-        live_accounts::numbered(&base, 20)
+        live_accounts::numbered(base, 20)
     )
 }
 
@@ -351,7 +761,13 @@ pub fn bootstrap(
 /// own art.
 pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
     let disc = match crate::live_art::Disc::scan(disc) {
-        Ok(d) => d,
+        Ok(mut d) => {
+            // Map pack maps `h2 import-mappack` installed get art too.
+            d.add_maps(crate::live_mappack::installed(
+                &content::store::default_data_root(),
+            ));
+            d
+        }
         Err(e) => {
             eprintln!("live: no game art ({e:#})");
             return None;
@@ -382,6 +798,231 @@ pub fn os_user() -> String {
 mod tests {
     use super::*;
 
+    /// An embedded server in `dir` with `policy`, and a client for it.
+    fn server_at(
+        dir: &Path,
+        name: &str,
+        policy: live_server::Policy,
+    ) -> (live_server::Embedded, Client) {
+        // Each its own server id, as two real servers would have.
+        live_server::ServerIdentity::open(&dir.join(name), Some(&format!("{name}.test"))).unwrap();
+        let server = live_server::start_embedded_with(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir.join(name),
+            Default::default(),
+            policy,
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        (server, client)
+    }
+
+    fn kid_of(a: &LocalAccount) -> String {
+        a.key_pair().unwrap().kid().to_string()
+    }
+
+    #[test]
+    fn moving_servers_keeps_the_gamertag_and_key() {
+        let dir = temp("move");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (afr, _) = bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        // Not on b yet: made there with the same key, not the OS name.
+        let (moved, created) =
+            bootstrap(&new, &accounts, None, "os.user", None, false, None).unwrap();
+        assert!(created);
+        assert_eq!(moved.gamertag, "afr");
+        assert_eq!(kid_of(&moved), kid_of(&afr));
+        assert_eq!(live_accounts::load(&accounts).unwrap().len(), 2);
+        // Next time it is simply found.
+        let (again, created) =
+            bootstrap(&new, &accounts, None, "os.user", None, false, None).unwrap();
+        assert!(!created);
+        assert_eq!(again.xuid, moved.xuid);
+    }
+
+    #[test]
+    fn the_most_recently_played_identity_is_the_one_moved() {
+        let dir = temp("recent");
+        let accounts = dir.join("accounts.json");
+        let (_a, a) = server_at(&dir, "a", Default::default());
+        let (_b, b) = server_at(&dir, "b", Default::default());
+        let (_c, c) = server_at(&dir, "c", Default::default());
+        bootstrap(&a, &accounts, Some("Older"), "x", None, true, None).unwrap();
+        bootstrap(&b, &accounts, Some("Newer"), "x", None, true, None).unwrap();
+        // Play as Older again: it is now the latest.
+        let mut all = live_accounts::load(&accounts).unwrap();
+        for e in all.iter_mut() {
+            let t = if e.gamertag == "Older" { 200 } else { 100 };
+            e.extra.insert("last_played".into(), t.into());
+        }
+        live_accounts::save(&accounts, &all).unwrap();
+        let (moved, _) = bootstrap(&c, &accounts, None, "x", None, false, None).unwrap();
+        assert_eq!(moved.gamertag, "Older");
+    }
+
+    #[test]
+    fn a_gamertag_already_there_is_recovered_with_a_code() {
+        let dir = temp("recover");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (afr, _) = bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        // afr signed up on b from the web: a key this machine lacks.
+        let (web, _) = new.create_account("afr", None).unwrap();
+        let secret =
+            live_proto::recovery::TotpSecret::from_base32(&web.recovery.expect("recovery").secret)
+                .unwrap();
+
+        // Not a terminal: the command to run, as a NeedsCode the game can
+        // take over.
+        let err = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap_err();
+        let need = err.downcast_ref::<NeedsCode>().expect("a code is needed");
+        assert_eq!((need.gamertag.as_str(), need.xuid), ("afr", Some(web.xuid)));
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&format!(
+                "h2 live account recover afr --server {}",
+                new.base
+            )),
+            "{msg}"
+        );
+
+        // A terminal: a wrong code, then the right one.
+        let mut asked = Vec::new();
+        let mut answers = vec![
+            format!(
+                "{:06}",
+                (secret.code_at(crate::live_cmd::now()) + 1) % 1_000_000
+            ),
+            live_proto::recovery::format_code(secret.code_at(crate::live_cmd::now())),
+        ]
+        .into_iter();
+        let mut ask = |q: &str| {
+            asked.push(q.to_string());
+            Ok(answers.next().unwrap())
+        };
+        let (got, added) =
+            bootstrap(&new, &accounts, None, "x", None, false, Some(&mut ask)).unwrap();
+        assert!(added);
+        assert_eq!((got.xuid, got.gamertag.as_str()), (web.xuid, "afr"));
+        assert_eq!(kid_of(&got), kid_of(&afr), "one key for the player");
+        assert!(
+            asked[0].contains("afr is on") && asked[0].contains("/dash"),
+            "{asked:?}"
+        );
+        let keys = new.keys(web.xuid).unwrap();
+        assert!(keys.keys.iter().any(|k| k.kid == kid_of(&afr)));
+        // Found from now on.
+        let (again, added) = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap();
+        assert!(!added);
+        assert_eq!(again.xuid, web.xuid);
+    }
+
+    /// `h2 play --live` with an account the server has and this machine
+    /// has no key for: no terminal prompt, the game is handed the identity
+    /// marked needs_code (and asks for the code itself). With
+    /// `--signin-terminal` and no terminal it stops with the command.
+    #[test]
+    fn a_code_the_account_needs_is_left_to_the_game() {
+        let dir = temp("handoff");
+        let (_b, new) = server_at(&dir, "b", Default::default());
+        let (web, _) = new.create_account("afr", None).unwrap();
+        let opts = parse(&["--live-server", &new.base, "--gamertag", "afr"]).unwrap();
+        let places = Places::under(&dir);
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "x",
+        )
+        .unwrap();
+        assert!(session.account.is_none());
+        assert_eq!(session.waiting.as_deref(), Some("afr"));
+        assert_eq!(
+            session.config.accounts_path.as_ref(),
+            Some(&places.session_accounts)
+        );
+        assert_eq!(
+            session.config.server_url.as_deref(),
+            Some(new.base.as_str())
+        );
+        let handed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&places.session_accounts).unwrap()).unwrap();
+        let handed = handed.as_array().unwrap();
+        assert_eq!(handed.len(), 1);
+        assert_eq!(handed[0]["gamertag"], "afr");
+        assert_eq!(handed[0]["needs_code"], true);
+        assert_eq!(handed[0]["xuid"], serde_json::to_value(web.xuid).unwrap());
+        assert!(handed[0].get("key").is_none(), "no key handed");
+        drop(session);
+
+        let terminal = parse(&[
+            "--live-server",
+            &new.base,
+            "--gamertag",
+            "afr",
+            "--signin-terminal",
+        ])
+        .unwrap();
+        let err = match start(
+            &terminal,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "x",
+        ) {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("no terminal to ask on"),
+        };
+        assert!(err.contains("h2 live account recover afr"), "{err}");
+        assert!(
+            parse(&["--live", "--signin-terminal"])
+                .unwrap()
+                .signin_terminal
+        );
+    }
+
+    #[test]
+    fn a_stand_in_xuid_is_stable_and_nonzero() {
+        assert_eq!(stand_in_xuid("Pete"), stand_in_xuid("pete"));
+        assert_ne!(stand_in_xuid("Pete"), stand_in_xuid("Bob"));
+        assert_ne!(stand_in_xuid("Pete").0, 0);
+    }
+
+    #[test]
+    fn an_invite_only_server_takes_an_invite_from_the_flag_or_the_terminal() {
+        let dir = temp("invite");
+        let accounts = dir.join("accounts.json");
+        let (_a, old) = server_at(&dir, "a", Default::default());
+        let policy = || live_server::Policy {
+            invite_only: true,
+            ..Default::default()
+        };
+        let (_b, new) = server_at(&dir, "b", policy());
+        bootstrap(&old, &accounts, Some("afr"), "x", None, true, None).unwrap();
+        let op = live_server::ServerIdentity::load(&dir.join("b")).unwrap();
+        let invite =
+            || live_proto::sign::Invite::issue(&op.key, &op.id, crate::live_cmd::now() + 3600);
+
+        let err = bootstrap(&new, &accounts, None, "x", None, false, None).unwrap_err();
+        assert!(format!("{err:#}").contains("--invite CODE"), "{err:#}");
+        let (got, _) = bootstrap(&new, &accounts, None, "x", Some(&invite()), false, None).unwrap();
+        assert_eq!(got.gamertag, "afr");
+
+        // Another server, the invite typed at the terminal.
+        let (_c, third) = server_at(&dir, "c", policy());
+        let op = live_server::ServerIdentity::load(&dir.join("c")).unwrap();
+        let code = live_proto::sign::Invite::issue(&op.key, &op.id, crate::live_cmd::now() + 3600);
+        let mut ask = |_: &str| Ok(code.clone());
+        let (got, _) =
+            bootstrap(&third, &accounts, None, "x", None, false, Some(&mut ask)).unwrap();
+        assert_eq!(got.gamertag, "afr");
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("h2-play-live-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -409,6 +1050,14 @@ mod tests {
                 ..LiveOpts::default()
             }
         );
+        assert_eq!(
+            parse(&["--live-local"]).unwrap(),
+            LiveOpts {
+                enabled: true,
+                local: true,
+                ..LiveOpts::default()
+            }
+        );
         let o = parse(&[
             "--live-server",
             "https://h.example",
@@ -418,14 +1067,25 @@ mod tests {
         .unwrap();
         assert!(
             o.enabled
+                && !o.local
                 && o.server.as_deref() == Some("https://h.example")
                 && o.gamertag.as_deref() == Some("Sneaky Pete")
         );
-        assert_eq!(
-            parse(&["--live-listen", "127.0.0.1:9000"]).unwrap().listen,
-            Some("127.0.0.1:9000".parse().unwrap())
+        let o = parse(&["--live-listen", "127.0.0.1:9000"]).unwrap();
+        assert!(o.local, "--live-listen is the embedded server's");
+        assert_eq!(o.listen, Some("127.0.0.1:9000".parse().unwrap()));
+        assert!(parse(&["--live-local", "--live-listen", "0.0.0.0:8074"]).is_ok());
+        assert!(parse(&["--live", "--gamertag", "Pete"]).is_ok());
+        assert!(
+            parse(&["--gamertag", "Pete"]).is_err(),
+            "no Live flag is offline: a gamertag has nothing to sign in to"
         );
-        assert!(parse(&["--gamertag", "Pete"]).is_err(), "needs --live");
+        assert!(parse(&["--offline", "--gamertag", "Pete"]).is_err());
+        assert!(parse(&["--offline"]).unwrap().offline);
+        assert!(parse(&["--no-live"]).unwrap().offline);
+        assert!(parse(&["--offline", "--live"]).is_err());
+        assert!(parse(&["--offline", "--live-local"]).is_err());
+        assert!(parse(&["--no-live", "--live-server", "https://h.example"]).is_err());
         assert!(
             parse(&["--live", "--gamertag", "9lives"]).is_err(),
             "bad gamertag"
@@ -441,11 +1101,82 @@ mod tests {
     }
 
     #[test]
+    fn the_embedded_server_and_another_do_not_mix() {
+        let e = parse(&["--live-local", "--live-server", "https://h.example"]).unwrap_err();
+        assert!(format!("{e}").contains("pick one"), "{e}");
+        let e = parse(&["--live-server", "https://h.example", "--live-local"]).unwrap_err();
+        assert!(format!("{e}").contains("pick one"), "{e}");
+        // --live with --live-local is just the embedded server.
+        let o = parse(&["--live", "--live-local"]).unwrap();
+        assert_eq!(choose(&o, None, DEFAULT_LIVE_SERVER), Choice::Local);
+    }
+
+    /// Every flag combination, and what it plays on: nothing is contacted
+    /// to decide (a URL nothing listens on would do as the default).
+    #[test]
+    fn the_flag_matrix() {
+        let server = |url: &str, from| Choice::Server {
+            url: url.into(),
+            from,
+        };
+        let offline = Choice::Offline { why: None };
+        let default = "https://default.example";
+        let pick = |args: &[&str], env: Option<&str>| choose(&parse(args).unwrap(), env, default);
+        // The CLI is offline unless asked, whatever $H2_LIVE_SERVER says.
+        assert_eq!(pick(&[], None), offline);
+        assert_eq!(pick(&[], Some("https://env.example")), offline);
+        assert_eq!(pick(&["--offline"], None), offline);
+        assert_eq!(pick(&["--offline"], Some("https://env.example")), offline);
+        // --live: the default service, or the variable's.
+        assert_eq!(pick(&["--live"], None), server(default, "--live"));
+        assert_eq!(
+            pick(&["--live"], Some("https://env.example/")),
+            server("https://env.example", "H2_LIVE_SERVER")
+        );
+        assert_eq!(pick(&["--live"], Some(" ")), server(default, "--live"));
+        for off in ["off", "none", "0", "OFF"] {
+            let Choice::Offline { why: Some(why) } = pick(&["--live"], Some(off)) else {
+                panic!("{off}")
+            };
+            assert!(why.contains("H2_LIVE_SERVER"), "{why}");
+        }
+        // --live-server: that one; the flag wins over the variable.
+        for env in [None, Some("https://env.example"), Some("off")] {
+            assert_eq!(
+                pick(&["--live-server", "https://h.example/"], env),
+                server("https://h.example", "--live-server")
+            );
+            assert_eq!(
+                pick(&["--live", "--live-server", "https://h.example"], env),
+                server("https://h.example", "--live-server")
+            );
+        }
+        // --live-local and what implies it: the embedded server.
+        for args in [
+            &["--live-local"][..],
+            &["--live-listen", "127.0.0.1:9000"],
+            &["--live-tunnel"],
+            &["--tunnel"],
+            &["--live-tunnel-name", "h2"],
+            &["--live-local", "--live-tunnel"],
+        ] {
+            assert_eq!(pick(args, Some("off")), Choice::Local, "{args:?}");
+        }
+        // The real default is the shared constant.
+        assert_eq!(DEFAULT_LIVE_SERVER, "https://live.forbes.red");
+        assert_eq!(
+            choose(&parse(&["--live"]).unwrap(), None, DEFAULT_LIVE_SERVER),
+            server("https://live.forbes.red", "--live")
+        );
+    }
+
+    #[test]
     fn an_embedded_session_makes_then_reuses_an_account() {
         let dir = temp("session");
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             ..LiveOpts::default()
         };
         let session = start(
@@ -457,7 +1188,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(session.store(), Some("memory"));
-        assert_eq!(session.account.gamertag, "test user");
+        assert_eq!(session.account.as_ref().unwrap().gamertag, "test user");
         assert_eq!(
             session.config.server_url.as_deref(),
             Some(session.server.as_str())
@@ -468,21 +1199,40 @@ mod tests {
         );
         let handed = live_accounts::load(&places.session_accounts).unwrap();
         assert_eq!(handed.len(), 1);
-        assert_eq!(handed[0].xuid, session.account.xuid);
+        assert_eq!(handed[0].xuid, session.account.as_ref().unwrap().xuid);
 
         // The same server again: the account is found, not made.
         let client = Client::at(&session.server).unwrap();
-        let (again, created) = bootstrap(&client, &places.accounts, None, "test.user").unwrap();
+        let (again, created) = bootstrap(
+            &client,
+            &places.accounts,
+            None,
+            "test.user",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         assert!(!created);
-        assert_eq!(again.xuid, session.account.xuid);
+        assert_eq!(again.xuid, session.account.as_ref().unwrap().xuid);
         // Another name is made beside it; a taken default is numbered.
-        let (other, created) = bootstrap(&client, &places.accounts, Some("Other"), "x").unwrap();
+        let (other, created) = bootstrap(
+            &client,
+            &places.accounts,
+            Some("Other"),
+            "x",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         assert!(created && other.gamertag == "Other");
         let elsewhere = dir.join("elsewhere.json");
-        let (numbered, _) = bootstrap(&client, &elsewhere, None, "test.user").unwrap();
+        let (numbered, _) =
+            bootstrap(&client, &elsewhere, None, "test.user", None, true, None).unwrap();
         assert_eq!(numbered.gamertag, "test user2");
         // A chosen name someone else has is an error.
-        assert!(bootstrap(&client, &elsewhere, Some("Other"), "x").is_err());
+        assert!(bootstrap(&client, &elsewhere, Some("Other"), "x", None, true, None).is_err());
         assert_eq!(live_accounts::load(&places.accounts).unwrap().len(), 2);
 
         // Stopping the session stops the server.
@@ -501,7 +1251,7 @@ mod tests {
             "test.user",
         )
         .unwrap();
-        assert_eq!(session.account.gamertag, "test user");
+        assert_eq!(session.account.as_ref().unwrap().gamertag, "test user");
         let accounts = live_accounts::load(&places.accounts).unwrap();
         assert_eq!(
             accounts
@@ -520,6 +1270,7 @@ mod tests {
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             ..LiveOpts::default()
         };
         let session = start(
@@ -546,11 +1297,11 @@ mod tests {
         };
         let entry: serde_json::Value = redeem().unwrap().into_json().unwrap();
         let client = Client::at(&session.server).unwrap();
-        let key = session.account.key_pair().unwrap();
+        let key = session.account.as_ref().unwrap().key_pair().unwrap();
         assert_eq!(
             entry,
             crate::live_admin::export_entry(
-                &session.account,
+                session.account.as_ref().unwrap(),
                 &client.base,
                 &client.discovery.id,
                 &key
@@ -569,10 +1320,10 @@ mod tests {
 
     #[test]
     fn tunnel_flags() {
-        let o = parse(&["--live", "--tunnel"]).unwrap();
+        let o = parse(&["--live-local", "--tunnel"]).unwrap();
         assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
         let o = parse(&[
-            "--live",
+            "--live-local",
             "--tunnel-name",
             "h2",
             "--hostname",
@@ -583,15 +1334,15 @@ mod tests {
             o.tunnel_mode().unwrap().unwrap().fixed_url().as_deref(),
             Some("https://live.example.net")
         );
-        assert!(parse(&["--tunnel"]).is_err(), "needs --live");
+        assert!(parse(&["--tunnel"]).unwrap().local, "implies --live-local");
         assert!(
             parse(&["--live-server", "https://h.example", "--tunnel"]).is_err(),
             "only the embedded server is tunnelled"
         );
-        assert!(parse(&["--live", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
+        assert!(parse(&["--live-local", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
         // --tunnel is --live-tunnel's alias, so a name makes it a named one.
         assert_eq!(
-            parse(&["--live", "--tunnel", "--tunnel-name", "h2"])
+            parse(&["--live-local", "--tunnel", "--tunnel-name", "h2"])
                 .unwrap()
                 .tunnel_mode()
                 .unwrap(),
@@ -600,14 +1351,14 @@ mod tests {
                 hostname: None
             })
         );
-        assert!(parse(&["--live", "--hostname", "a.example"]).is_err());
+        assert!(parse(&["--live-local", "--hostname", "a.example"]).is_err());
     }
 
     #[test]
     fn live_tunnel_flags() {
-        // --live-tunnel is --live too.
+        // --live-tunnel is --live-local too.
         let o = parse(&["--live-tunnel"]).unwrap();
-        assert!(o.enabled && o.tunnel && !o.no_tunnel_setup);
+        assert!(o.enabled && o.local && o.tunnel && !o.no_tunnel_setup);
         assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
 
         let named = crate::tunnel::Mode::Named {
@@ -629,7 +1380,7 @@ mod tests {
         );
         // The old names say the same.
         let old = parse(&[
-            "--live",
+            "--live-local",
             "--tunnel",
             "--tunnel-name",
             "h2play",
@@ -693,11 +1444,11 @@ mod tests {
             "only the embedded server is tunnelled"
         );
         assert!(
-            parse(&["--live-tunnel-name", "h2play"]).is_err(),
-            "needs --live"
+            parse(&["--live-tunnel-name", "h2play"]).unwrap().local,
+            "a tunnel name implies --live-local"
         );
         assert!(
-            parse(&["--live", "--no-tunnel-setup"]).is_err(),
+            parse(&["--live-local", "--no-tunnel-setup"]).is_err(),
             "no tunnel to set up"
         );
         assert!(parse(&["--live-tunnel-url"]).is_err(), "needs a value");
@@ -730,6 +1481,7 @@ mod tests {
         let places = Places::under(&dir);
         let opts = LiveOpts {
             enabled: true,
+            local: true,
             tunnel: true,
             cloudflared: Some(fake_cloudflared(&dir)),
             ..LiveOpts::default()
@@ -894,6 +1646,7 @@ mod tests {
         let embedded = start(
             &LiveOpts {
                 enabled: true,
+                local: true,
                 ..LiveOpts::default()
             },
             live_server::MEMORY_DB,

@@ -95,9 +95,14 @@ enum Cmd<B: Backend> {
     Job(Job<B>),
     /// The hot path, without a boxed closure. The draw is freed on the
     /// render thread; its stream buffers go back to the guest's side
-    /// ([`Shared::spent`]).
-    Draw(Box<DrawCmd>),
+    /// ([`Shared::spent`]), and so does its emptied box
+    /// ([`Shared::spent_boxes`]), for the next draw to fill instead of an
+    /// allocation per draw.
+    Draw(DrawBox),
 }
+
+/// A queued draw's box: `Some` while queued, emptied by the render thread.
+type DrawBox = Box<Option<DrawCmd>>;
 
 struct DrawCmd {
     color: u32,
@@ -157,10 +162,19 @@ pub struct Worker<B: Backend> {
     /// Stream buffers of the draws run in this batch, returned to
     /// [`Shared::spent`] at its end.
     spent: Vec<Vec<StreamBytes>>,
+    /// Constant blocks of the draws run in this batch, kept for the
+    /// device's next draws at its end ([`crate::shader::recycle_constants`]).
+    spent_constants: Vec<crate::shader::Constants>,
+    /// Emptied draw boxes of this batch, returned to
+    /// [`Shared::spent_boxes`] at its end.
+    spent_boxes: Vec<DrawBox>,
 }
 
 #[derive(Default)]
 struct Shared {
+    /// Emptied draw boxes for the guest's side to fill (at most
+    /// [`SPARE_DRAWS`]).
+    spent_boxes: Mutex<Vec<DrawBox>>,
     /// The first error or wrong speculation, returned by the next call.
     error: Mutex<Option<String>>,
     /// Whether `error` is set (checked without the lock on every call).
@@ -256,8 +270,18 @@ impl<B: Backend> Worker<B> {
     /// [`Shared::landed`]. Same values as a read: only the wait goes.
     /// Reports finish in order, so it stops at the first not back.
     fn land_pixel_counts(&mut self) -> Result<(), String> {
+        self.land_counts(true)
+    }
+    /// [`land_pixel_counts`](Self::land_pixel_counts); without `submit`, a
+    /// report still in the backend's open encoder stops it instead of
+    /// being submitted early (after each batch: it lands after the
+    /// submission that takes it, at the latest the present).
+    fn land_counts(&mut self, submit: bool) -> Result<(), String> {
         let mut landed = Vec::new();
         for (&proxy, &t) in &self.tickets {
+            if !submit && self.inner.pixel_count_unsubmitted(t) {
+                break;
+            }
             match self.inner.try_pixel_count(t)? {
                 Some(c) => landed.push((proxy, c)),
                 None => break,
@@ -283,16 +307,19 @@ impl<B: Backend> Worker<B> {
     fn exec(&mut self, cmd: Cmd<B>) {
         match cmd {
             Cmd::Job(job) => job(self),
-            Cmd::Draw(d) => {
+            Cmd::Draw(mut slot) => {
+                let d = slot.take().expect("a queued draw");
+                self.spent_boxes.push(slot);
                 if let Err(e) = self.draw(&d) {
                     self.shared.latch(e);
                 }
-                let DrawCmd { draw, .. } = *d;
+                let DrawCmd { draw, .. } = d;
                 let mut streams = draw.streams;
                 // Vertex cache snapshots are released here; only copies
                 // go back to be refilled.
                 streams.retain(|s| s.data.cache_id().is_none());
                 self.spent.push(streams);
+                self.spent_constants.push(draw.shader.constants);
             }
         }
     }
@@ -322,6 +349,15 @@ impl<B: Backend> Worker<B> {
     /// Returns this batch's stream buffers to the guest's side (one lock
     /// per batch), within the pool's limits; the rest are freed here.
     fn return_spent(&mut self) {
+        if !self.spent_constants.is_empty() {
+            crate::shader::recycle_constants(&mut self.spent_constants);
+        }
+        if !self.spent_boxes.is_empty() {
+            let mut g = self.shared.spent_boxes.lock().unwrap();
+            let room = SPARE_DRAWS.saturating_sub(g.len());
+            g.extend(self.spent_boxes.drain(..).take(room));
+            self.spent_boxes.clear();
+        }
         if self.spent.is_empty() {
             return;
         }
@@ -373,6 +409,8 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     /// Stream buffers taken from [`Shared::spent`], handed back one draw's
     /// worth per draw.
     spare: Vec<Vec<StreamBytes>>,
+    /// Draw boxes taken from [`Shared::spent_boxes`].
+    spare_boxes: Vec<DrawBox>,
     join: Option<JoinHandle<()>>,
     shared: Arc<Shared>,
     bc: bool,
@@ -421,6 +459,8 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     exit: false,
                     jitter: None,
                     spent: Vec::new(),
+                    spent_constants: Vec::new(),
+                    spent_boxes: Vec::new(),
                 };
                 'batches: while let Ok(batch) = rx.recv() {
                     let t = std::time::Instant::now();
@@ -443,7 +483,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     // Counts back since the last present are there for
                     // the guest's next poll, not one present later.
                     if !w.tickets.is_empty() {
-                        w.run(|w| w.land_pixel_counts());
+                        w.run(|w| w.land_counts(false));
                     }
                     let ns = t.elapsed().saturating_sub(slept).as_nanos() as u64;
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
@@ -460,6 +500,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                 tx,
             }),
             spare: Vec::new(),
+            spare_boxes: Vec::new(),
             join: Some(join),
             shared,
             bc,
@@ -565,6 +606,23 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             g.1 = 0;
         }
         self.spare.pop().unwrap_or_default()
+    }
+
+    /// `cmd` in a draw box the render thread has emptied, or a new one.
+    fn draw_box(&mut self, cmd: DrawCmd) -> DrawBox {
+        if self.spare_boxes.is_empty() {
+            std::mem::swap(
+                &mut self.spare_boxes,
+                &mut self.shared.spent_boxes.lock().unwrap(),
+            );
+        }
+        match self.spare_boxes.pop() {
+            Some(mut slot) => {
+                *slot = Some(cmd);
+                slot
+            }
+            None => Box::new(Some(cmd)),
+        }
     }
 
     /// The outcome the inner backend will give `draw`, decided now from the
@@ -758,13 +816,14 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         // backend submits a pass for another target before it skips.
         let judged = self.judge_draw(&draw, textures);
         let ids = textures.map(|t| t.map(|t| t.id));
-        self.push(Cmd::Draw(Box::new(DrawCmd {
+        let slot = self.draw_box(DrawCmd {
             color,
             depth,
             textures: ids,
             expect: judged.clone(),
             draw,
-        })));
+        });
+        self.push(Cmd::Draw(slot));
         (Ok(judged), self.spare_streams())
     }
 
@@ -977,9 +1036,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         PENDING_COUNTS.fetch_add(1, Ordering::Relaxed);
         self.waits.pending_counts += 1;
         if !self.shared.land_kick.swap(true, Ordering::AcqRel) {
+            // The guest is waiting on it: submit a report still open.
             self.post(|w| {
                 w.shared.land_kick.store(false, Ordering::Release);
-                Ok(())
+                w.land_pixel_counts()
             });
         }
         self.flush();

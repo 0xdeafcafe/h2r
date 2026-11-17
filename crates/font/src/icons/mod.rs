@@ -81,6 +81,10 @@ pub enum IconSet {
     /// The Apple TV remote (tvOS): a clickpad ring, a back chevron and
     /// play/pause. Buttons it lacks keep the retail Xbox glyphs.
     Remote,
+    /// The Steam Controller: bumpers, a chevron each for Start and Back, and
+    /// the two trackpads (the d-pad and the right stick). The face buttons
+    /// and triggers match the Xbox pad's, so they keep the retail glyphs.
+    Steam,
 }
 
 /// The `icons` setting: a fixed set, or one picked from the input devices.
@@ -101,9 +105,10 @@ impl FromStr for IconChoice {
             "playstation" => IconChoice::Set(IconSet::PlayStation),
             "keyboard" => IconChoice::Set(IconSet::Keyboard),
             "remote" => IconChoice::Set(IconSet::Remote),
+            "steam" => IconChoice::Set(IconSet::Steam),
             _ => {
                 return Err(format!(
-                    "unknown icon set {s:?} (want auto, xbox, xbox360, playstation, keyboard or remote)"
+                    "unknown icon set {s:?} (want auto, xbox, xbox360, playstation, keyboard, remote or steam)"
                 ));
             }
         })
@@ -122,6 +127,9 @@ impl IconChoice {
                 let n = name.to_ascii_lowercase();
                 if n == "apple tv remote" || n.contains("siri remote") {
                     return IconSet::Remote;
+                }
+                if n.contains("steam controller") {
+                    return IconSet::Steam;
                 }
                 let sony = [
                     "dualshock",
@@ -229,11 +237,12 @@ pub const MAX_HEIGHT: u16 = 64;
 /// set's base plus the button's offset from U+E100. These ranges are inside
 /// the engine's icon range (U+E000 to U+E3FF) and hold no glyph in any font
 /// on the retail disc.
-pub const ALIAS_BASES: [(IconSet, u16); 4] = [
+pub const ALIAS_BASES: [(IconSet, u16); 5] = [
     (IconSet::Xbox360, 0xe200),
     (IconSet::PlayStation, 0xe220),
     (IconSet::Keyboard, 0xe240),
     (IconSet::Remote, 0xe260),
+    (IconSet::Steam, 0xe280),
 ];
 
 /// The retail code unit of the first button glyph.
@@ -264,7 +273,26 @@ pub fn replaces(set: IconSet, button: Button, keys: &KeyLabels) -> bool {
         IconSet::Keyboard => keys.contains_key(&button),
         // What a remote has: the clickpad (A and the d-pad), Back (B) and
         // Play/Pause (Start). The rest stay Xbox.
-        IconSet::Remote => matches!(button, A | B | Start | DpadUp | DpadDown | DpadLeft | DpadRight),
+        IconSet::Remote => matches!(
+            button,
+            A | B | Start | DpadUp | DpadDown | DpadLeft | DpadRight
+        ),
+        // The bumpers, Start and Back (small chevron buttons), and the two
+        // trackpads: the left one is the d-pad, the right one look and its
+        // click. A, B, X, Y, the triggers and the left stick are as on Xbox.
+        IconSet::Steam => matches!(
+            button,
+            Black
+                | White
+                | Start
+                | Back
+                | DpadUp
+                | DpadDown
+                | DpadLeft
+                | DpadRight
+                | RightStick
+                | RightStickClick
+        ),
     }
 }
 
@@ -308,8 +336,17 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
         (IconSet::Remote, DpadDown) => (clickpad(h, Pad::Down), true),
         (IconSet::Remote, DpadLeft) => (clickpad(h, Pad::Left), true),
         (IconSet::Remote, DpadRight) => (clickpad(h, Pad::Right), true),
-        (IconSet::Remote, B) => (back_chevron(h), true),
+        (IconSet::Remote, B) => (chevron(h, false), true),
         (IconSet::Remote, Start) => (play_pause(h), true),
+        (IconSet::Steam, Black) => (shoulder_pair(h, Side::Right, ["LB", "RB"], false), true),
+        (IconSet::Steam, White) => (shoulder_pair(h, Side::Left, ["LB", "RB"], false), true),
+        (IconSet::Steam, Start) => (chevron(h, true), true),
+        (IconSet::Steam, Back) => (chevron(h, false), true),
+        (IconSet::Steam, DpadUp) => (clickpad(h, Pad::Up), true),
+        (IconSet::Steam, DpadDown) => (clickpad(h, Pad::Down), true),
+        (IconSet::Steam, DpadLeft) => (clickpad(h, Pad::Left), true),
+        (IconSet::Steam, DpadRight) => (clickpad(h, Pad::Right), true),
+        (IconSet::Steam, RightStick | RightStickClick) => (clickpad(h, Pad::Centre), true),
         (IconSet::Keyboard, b) => match keys.get(&b)? {
             KeyIcon::Key(label) => {
                 let label: String = label.chars().take(MAX_LABEL_CHARS).collect();
@@ -578,7 +615,11 @@ fn clickpad(h: usize, lit: Pad) -> Canvas {
         (vx * dx + vy * dy) / len >= std::f32::consts::FRAC_1_SQRT_2
     };
     c.fill(inner_outline(&ring, 1.0), |x, y| {
-        if lit != Pad::Centre && side(x, y) { white(SOLID) } else { white(IDLE_EDGE) }
+        if lit != Pad::Centre && side(x, y) {
+            white(SOLID)
+        } else {
+            white(IDLE_EDGE)
+        }
     });
     match lit {
         Pad::Centre => c.fill_flat(circle(cx, cy, r * 0.45), white(SOLID)),
@@ -589,15 +630,22 @@ fn clickpad(h: usize, lit: Pad) -> Canvas {
                 // Inside (negative) where `along` is past 55% of the radius.
                 r * 0.55 - along
             });
-            c.fill(&band, |x, y| if side(x, y) { white(LIT_BODY) } else { white(0.0) });
+            c.fill(&band, |x, y| {
+                if side(x, y) {
+                    white(LIT_BODY)
+                } else {
+                    white(0.0)
+                }
+            });
             c.fill_flat(circle(cx, cy, r * 0.18), white(IDLE_EDGE));
         }
     }
     c
 }
 
-/// Back: a "<" chevron in a faint button ring.
-fn back_chevron(h: usize) -> Canvas {
+/// A chevron in a faint button ring: "<" (Back), or ">" when `forward`
+/// (Start on a Steam pad).
+fn chevron(h: usize, forward: bool) -> Canvas {
     const W: usize = 16;
     let (cx, cy) = (W as f32 / 2.0, h as f32 / 2.0);
     let r = (W.min(h) as f32 / 2.0 - 0.5).max(3.0);
@@ -607,8 +655,16 @@ fn back_chevron(h: usize) -> Canvas {
     c.fill_flat(inner_outline(&ring, 1.0), white(IDLE_EDGE));
     let s = r * 0.45;
     let t = (r / 4.0).clamp(1.2, 2.0);
-    c.fill_flat(segment((cx + s * 0.5, cy - s), (cx - s * 0.6, cy), t), white(SOLID));
-    c.fill_flat(segment((cx - s * 0.6, cy), (cx + s * 0.5, cy + s), t), white(SOLID));
+    // The "<" points left; mirrored about the ring's centre it points right.
+    let x = |dx: f32| if forward { cx - dx } else { cx + dx };
+    c.fill_flat(
+        segment((x(s * 0.5), cy - s), (x(-s * 0.6), cy), t),
+        white(SOLID),
+    );
+    c.fill_flat(
+        segment((x(-s * 0.6), cy), (x(s * 0.5), cy + s), t),
+        white(SOLID),
+    );
     c
 }
 
@@ -623,10 +679,16 @@ fn play_pause(h: usize) -> Canvas {
     let w = (1.0 + tri_w + gap * 2.0 + bar * 3.0 + 1.0).ceil() as usize;
     let mut c = Canvas::new(w, h);
     let x0 = 1.0;
-    c.fill_flat(polygon([(x0, y0), (x0 + tri_w, hf / 2.0), (x0, y1)]), white(SOLID));
+    c.fill_flat(
+        polygon([(x0, y0), (x0 + tri_w, hf / 2.0), (x0, y1)]),
+        white(SOLID),
+    );
     let bx = x0 + tri_w + gap * 2.0;
     c.fill_flat(round_rect(bx, y0, bx + bar, y1, 0.0), white(SOLID));
-    c.fill_flat(round_rect(bx + bar * 2.0, y0, bx + bar * 3.0, y1, 0.0), white(SOLID));
+    c.fill_flat(
+        round_rect(bx + bar * 2.0, y0, bx + bar * 3.0, y1, 0.0),
+        white(SOLID),
+    );
     c
 }
 

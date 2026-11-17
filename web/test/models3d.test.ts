@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MAX_TWIST, aimAngles, legTwist, wrapAngle } from "../src/viewer/anim";
 import { secondaryOf } from "../src/viewer/models";
-import { CC_FRAGMENT, MODEL_ENV_INTENSITY, ModelLibrary, applyLook, changeColourMaterial, resolveLooks } from "../src/viewer/players3d";
+import { CC_FRAGMENT, ENV_FRAGMENT, MODEL_ENV_INTENSITY, ModelLibrary, applyLook, changeColourMaterial, cloneMaterial, resolveLooks } from "../src/viewer/players3d";
 import { MOCK_BIPEDS, encodeModelGlb } from "../mock/models";
 
 const parse = (bytes: Uint8Array) => new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, "");
@@ -27,6 +27,49 @@ describe("change colour per pixel", () => {
     expect(shader.fragmentShader).toContain("uniform sampler2D ccMap;");
     // After the base map is read, so it tints the texture.
     expect(shader.fragmentShader.indexOf(CC_FRAGMENT)).toBeGreaterThan(shader.fragmentShader.indexOf("#include <map_fragment>"));
+  });
+
+  test("an environment-mapped look tints its reflection, and copies keep it", () => {
+    const compile = (m: THREE.Material) => {
+      const shader = { uniforms: {} as Record<string, THREE.IUniform>, fragmentShader: "#include <common>\n#include <map_fragment>\n#include <lights_fragment_end>", vertexShader: "" };
+      m.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, null as unknown as THREE.WebGLRenderer);
+      return shader;
+    };
+    const covenant = new THREE.MeshStandardMaterial();
+    covenant.userData = { h2: { env: { perpendicular: [0.9, 0.6, 0.3], parallel: [0.6, 0, 0.6] } } };
+    applyLook(covenant, new THREE.Texture());
+    applyLook(covenant, new THREE.Texture());
+    const shader = compile(covenant);
+    expect((shader.uniforms.envParallel!.value as THREE.Color).toArray()).toEqual([0.6, 0, 0.6]);
+    // Once, before the lights are summed.
+    expect(shader.fragmentShader.split(ENV_FRAGMENT).length).toBe(2);
+    expect(shader.fragmentShader.indexOf(ENV_FRAGMENT)).toBeLessThan(shader.fragmentShader.indexOf("#include <lights_fragment_end>"));
+    // A copy (empty vehicle, a player's colours) keeps the tint, and adds its own.
+    expect(compile(cloneMaterial(covenant)).fragmentShader).toContain(ENV_FRAGMENT);
+    const tinted = changeColourMaterial(covenant, new THREE.Texture(), [1, 0, 0]);
+    const both = compile(tinted);
+    expect(both.fragmentShader).toContain(ENV_FRAGMENT);
+    expect(both.fragmentShader).toContain(CC_FRAGMENT);
+    expect(tinted.customProgramCacheKey()).toBe("h2-env|h2-change-colour");
+    // A plain look has no tint.
+    const plain = new THREE.MeshStandardMaterial();
+    applyLook(plain, null);
+    expect(compile(plain).fragmentShader).not.toContain(ENV_FRAGMENT);
+  });
+
+  test("a hull decal doubles or multiplies what is under it, drawn over the hull", () => {
+    const decal = new THREE.MeshBasicMaterial();
+    decal.userData = { h2: { blend: "double" } };
+    applyLook(decal, null);
+    expect(decal.blending).toBe(THREE.CustomBlending);
+    expect([decal.blendSrc, decal.blendDst, decal.blendEquation]).toEqual([THREE.DstColorFactor, THREE.SrcColorFactor, THREE.AddEquation]);
+    expect(decal.depthWrite).toBe(false);
+    expect(decal.toneMapped).toBe(false);
+    expect(decal.polygonOffset && decal.polygonOffsetFactor < 0).toBe(true);
+    const dark = new THREE.MeshBasicMaterial();
+    dark.userData = { h2: { blend: "multiply" } };
+    applyLook(dark, null);
+    expect([dark.blendSrc, dark.blendDst]).toEqual([THREE.ZeroFactor, THREE.SrcColorFactor]);
   });
 
   test("glows add, glass doesn't hide what's behind, everything reflects the environment", () => {

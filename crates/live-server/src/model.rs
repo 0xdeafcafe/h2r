@@ -46,10 +46,15 @@ pub struct File {
 pub struct Presence {
     pub state: String,
     pub game_id: Option<String>,
+    pub activity: Option<String>,
     pub since: String,
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
     pub last_seen: i64,
+    /// The friends-only and invite-only sessions the player was in when it
+    /// set this presence: its game id and activity show only to readers who
+    /// may see them ([`crate::sessions::presence_detail_shows`]).
+    pub private_sessions: Vec<String>,
 }
 
 /// One account's friendship relations, projected from the friend events on
@@ -80,6 +85,9 @@ pub struct Game {
     pub ended: Option<(GameEnded, String)>,
     /// Unix seconds of the last event or frame; idle games are ended.
     pub last_activity: i64,
+    /// A Live co-op campaign game's session, recorded when it starts: a
+    /// friends-only or invite-only one hides the game from strangers.
+    pub coop: Option<crate::sessions::CoopLink>,
 }
 
 impl Game {
@@ -111,6 +119,24 @@ impl Game {
         }
     }
 
+    /// Whether `viewer` may see this game: every game but a Live co-op
+    /// one from a friends-only or invite-only session, which shows only to
+    /// those who were in it and (friends-only) the host's friends.
+    pub fn shows_to(
+        &self,
+        viewer: crate::sessions::Viewer,
+        friends: impl Fn(Xuid, Xuid) -> bool,
+    ) -> bool {
+        let Some(c) = &self.coop else { return true };
+        crate::sessions::finished_shows_to(
+            c.visibility,
+            c.host_xuid,
+            |x| self.xuids.contains(&x),
+            viewer,
+            friends,
+        )
+    }
+
     /// May `author` write to this game: its host, or a player's account.
     pub fn admits(&self, author: &live_proto::Author) -> bool {
         if author.to_string() == self.started.host {
@@ -140,11 +166,23 @@ pub struct State {
     pub friends: HashMap<Xuid, Relations>,
     pub teams: live_proto::team::Store,
     pub sessions: BTreeMap<String, live_proto::session::Session>,
+    /// Co-op sessions' guests so far, in join order with the join time:
+    /// the live roster forgets a player who left. Dropped when the session
+    /// closes.
+    pub coop_joined: HashMap<String, Vec<(Xuid, String)>>,
+    /// Finished co-op games by the log position of the event that closed
+    /// the session (`GET /v1/coop/games`, newest first by that position).
+    pub coop_games: BTreeMap<u64, crate::sessions::CoopGame>,
     pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
     pub outlines: HashMap<String, Outline>,
+    /// For each `SignedIn`/`PresenceChanged` event (by log position) set
+    /// while its player was in a friends-only or invite-only session: those
+    /// sessions, so the log can hide the event's game id and activity from
+    /// readers who may not see them.
+    pub presence_context: HashMap<u64, Vec<String>>,
 }
 
 impl State {
@@ -254,6 +292,8 @@ struct PresenceData {
     state: Option<String>,
     #[serde(default)]
     game_id: Option<String>,
+    #[serde(default)]
+    activity: Option<String>,
 }
 
 fn data<T: DeserializeOwned>(e: &RecordedEvent) -> Option<T> {
@@ -316,8 +356,21 @@ impl Model {
             };
             let id = started.game_id.clone();
             let players = started.game.players.clone();
+            let xuids: Vec<Xuid> = players.iter().filter_map(|p| p.xuid).collect();
+            let coop = (started.game.kind() == "campaign" && started.game.online == Some(true))
+                .then(|| {
+                    let mut who = xuids.clone();
+                    if let Some(live_proto::Author::Account { xuid, .. }) =
+                        live_proto::Author::parse(&started.host)
+                    {
+                        who.push(xuid);
+                    }
+                    crate::sessions::CoopLink::find(s, &who)
+                })
+                .flatten();
             let game = Game {
-                xuids: players.iter().filter_map(|p| p.xuid).collect(),
+                xuids,
+                coop,
                 players,
                 started,
                 started_at: b.at.clone(),
@@ -485,13 +538,20 @@ impl Model {
                     None => b.at.clone(),
                 };
                 let state = d.state.unwrap_or_else(|| "online".into());
+                let private_sessions = crate::sessions::private_sessions_of(&s, d.xuid);
+                if !private_sessions.is_empty() {
+                    s.presence_context
+                        .insert(e.position, private_sessions.clone());
+                }
                 s.presence.insert(
                     d.xuid,
                     Presence {
                         state,
                         game_id: d.game_id,
+                        activity: d.activity,
                         since,
                         last_seen: at,
+                        private_sessions,
                     },
                 );
             }

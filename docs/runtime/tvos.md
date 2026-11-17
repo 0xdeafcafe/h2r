@@ -14,6 +14,7 @@ is no simulator build.
 | `disc/` | the disc files the app needs, as a directory (`vfs::DirDiscBackend` serves it as D:) | `pack` (`h2host::layout::DISC_FILES`) |
 | `bootcache/` | the XBE's analysis, copied to Caches on first launch so the fallback interpreter need not redo it | `pack` |
 | `platform/tvos/H2TV` | a UIKit host: a `GCEventViewController` whose view is a `CAMetalLayer`; a 30 Hz `CADisplayLink` calls `h2host_redraw` | Xcode |
+| `H2TV/Assets.xcassets` | the app icon and Top Shelf images: `App Icon & Top Shelf Image.brandassets`, with the layered App Icon (400x240 @1x/@2x) and App Store (1280x768) stacks, Front, Middle and Back, and Top Shelf Image and Top Shelf Image Wide at @1x/@2x ([art/app-icon](../../art/app-icon/README.md)) | Xcode (actool), named by `ASSETCATALOG_COMPILER_APPICON_NAME` in `project.yml` |
 
 winit has no tvOS backend, so the Swift host owns the window and hands the
 layer to Rust (`platform/apple/h2host.h`, shared with iOS); wgpu renders into it through Metal. On tvOS
@@ -56,6 +57,8 @@ computes the stamp with their defaults, and `pack` refuses to run with any set.
 
 `H2TV.xcodeproj` is generated from `project.yml` by `xcodegen generate` (in
 `platform/tvos`); both are committed, so only Xcode is needed to build.
+Regenerate it after adding or removing files under `H2TV` (xcodegen needs
+`build/disc` and `build/bootcache` to exist, even empty).
 
 ## Signing and installing
 
@@ -147,13 +150,21 @@ keyboard still cancels. Not yet tried on the Apple TV.
   `shared`, `single_player_shared`, `00a_introduction` and `zanzibar`, the
   fonts, `media/` and the intro movie. Choosing another level or map makes the
   game fail to open it (it may stop or hang on the loading screen). The map
-  pack is not bundled.
+  pack is not bundled. `just tvos maps=all` bundles the whole disc and the
+  map pack instead (7 GB or more; [building.md](building.md)).
 - Speed: expect 3 to 4 fps in a level. Nothing is tuned for the A15 yet.
 - No BC textures on the Apple TV's GPU: DXT textures are decoded on the CPU
   (`gfx::dxt`), which costs load time and memory.
 - Saves and settings live in Caches and can be purged by tvOS.
 - Audio uses the default output through cpal; if it fails to open, the game
   runs silent (the log says so).
-- No Xbox Live (`--live`), no controller speaker, no `--level`.
+- Xbox Live is on by default, against `https://live.forbes.red`;
+  `live.toml` in the data root (`enabled = false`, or `server = "URL"`)
+  or `H2_LIVE_SERVER` in the scheme changes that ([live.md](../live/live.md)
+  "Playing on Live"). Signing in needs an account in the data root's
+  `live/accounts.json` until the in-game account setup has a screen; with
+  one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
+  The data root is in Caches here, so tvOS may purge the account key too.
+- No controller speaker, no `--level`.
 - The app must be rebuilt (with `build.sh`) for every generator change; the
   module is about 345 MB and the bundle 1.2 GB, so installs are slow.

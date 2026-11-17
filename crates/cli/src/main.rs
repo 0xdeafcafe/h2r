@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
+#[cfg(unix)]
+mod agent_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -17,8 +19,10 @@ mod extract_shaders;
 mod fonts;
 mod h1_cmd;
 mod lighting;
+mod lights;
 mod live_accounts;
 mod live_art;
+mod live_basemap;
 mod live_catalog;
 mod live_features;
 mod live_geometry;
@@ -29,18 +33,23 @@ mod live_models;
 mod live_weapons;
 mod live_render;
 mod live_sky;
+mod live_weather;
 mod live_admin;
 mod live_cmd;
 mod live_maps;
+mod live_mappack;
 mod live_query;
+mod live_recovery;
 mod lockstep_cmd;
 mod mappack_cmd;
+mod map_testbuild;
 mod maps;
 mod movies_cmd;
 mod object;
 #[cfg(unix)]
 mod follow;
 mod play_cmd;
+mod play_cloud;
 mod play_live;
 mod safe_out;
 mod scripts;
@@ -57,6 +66,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
+  serve <disc>            run headless with the agent API on a socket; never builds
+                          (docs/runtime/agent-api.md)
+  agent <call>            call a running game's agent API: status, count, query,
+                          object, counters, wait, pause/step in a `-` script
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
@@ -65,12 +78,14 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (docs/game/high-framerate.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
-  play <disc> --live      play signed in to Xbox Live, on a service started in
-                          the process (or --live-server URL; docs/live/live.md)
+  play <disc> --live      play signed in to Xbox Live at live.forbes.red (or
+                          --live-server URL, or --live-local for a service in
+                          the process; offline without one; docs/live/live.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
+  map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
@@ -93,6 +108,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
                           Halo 1 map's tags (docs/formats/h1-map-format.md)
+  h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]
+                          Halo 1 bitmap's images as PNGs (docs/formats/h1-bitmaps.md)
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
@@ -100,6 +117,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
+                          (option --disc <iso>)
+  lights <map>            the ligh tags a map defines (shape, colour, shadow flag)
+                          and where each comes from; --all <map|all> checks the layout
                           (option --disc <iso>)
   shader <map> <tag>      print the material a shad resolves to (passes, textures,
                           constants, render state); --all <map|all> validates
@@ -155,6 +175,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   live account list [--server URL]
   live motd set <line>... [--header TEXT] | --file PATH
   live invite create [--days N]
+  live menubar [--install | --uninstall | --adopt-existing SERVER TUNNEL]
+                          the optional menu bar app for a server run here
   live assets extract [--disc PATH] [--out DIR]
                           decode the stats site's art from your disc
   live q <what> [--json|--jsonl]
@@ -200,6 +222,9 @@ fn main() -> Result<()> {
     if cmd == "strings" {
         return strings::run(args.collect());
     }
+    if cmd == "map" {
+        return map_testbuild::run(args.collect());
+    }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
     }
@@ -239,11 +264,20 @@ fn main() -> Result<()> {
     if cmd == "coop-probe" {
         std::process::exit(coop_probe_cmd::run(args.collect())?);
     }
-    if matches!(cmd.as_str(), "build" | "run") {
+    if cmd == "agent" {
+        #[cfg(unix)]
+        return agent_cmd::run(args.collect());
+        #[cfg(not(unix))]
+        bail!("h2 agent needs Unix sockets");
+    }
+    if matches!(cmd.as_str(), "build" | "run" | "serve") {
         return boot_cmd::run(&cmd, args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
+    }
+    if cmd == "lights" {
+        return lights::run(args.collect());
     }
     if cmd == "effect" {
         return effects::run(args.collect());
@@ -356,17 +390,34 @@ fn default_disc() -> Result<PathBuf> {
         return Ok(p.into());
     }
     let dir = repo_root().join("disc");
-    let mut isos: Vec<PathBuf> = fs::read_dir(&dir)
+    let isos: Vec<PathBuf> = fs::read_dir(&dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| is_disc(p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
         .collect();
-    isos.sort();
-    isos.into_iter().next().with_context(|| {
+    pick_default_disc(isos).with_context(|| {
         format!("no disc given and none found in {} (put your .iso there or set H2_DISC)", dir.display())
     })
+}
+
+/// The Halo 2 disc among `isos`: `halo2.iso` when present, else the first
+/// by name that isn't another game's disc this repo also reads (`halo1.iso`,
+/// the Map Pack's `mappack.iso`).
+fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
+    const OTHER_DISCS: [&str; 2] = ["halo1.iso", "mappack.iso"];
+    let name = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+    };
+    if let Some(p) = isos.iter().find(|p| name(p) == "halo2.iso") {
+        return Some(p.clone());
+    }
+    isos.sort();
+    isos.into_iter().find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
 }
 
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
@@ -857,6 +908,16 @@ fn emit_run_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_disc_prefers_halo2_and_skips_other_games() {
+        let p = |n: &str| PathBuf::from("disc").join(n);
+        let all = vec![p("halo1.iso"), p("halo2.iso"), p("mappack.iso")];
+        assert_eq!(pick_default_disc(all), Some(p("halo2.iso")));
+        let renamed = vec![p("halo1.iso"), p("my halo 2.iso"), p("mappack.iso")];
+        assert_eq!(pick_default_disc(renamed), Some(p("my halo 2.iso")));
+        assert_eq!(pick_default_disc(vec![p("halo1.iso")]), None);
+    }
 
     /// Opening a disc registers it, so any exporter's `OutDir` refuses it even
     /// under `--force` and even when the file has an innocent name.

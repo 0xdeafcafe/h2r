@@ -226,7 +226,7 @@ fn install_parts(
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
     // Stream callbacks at DPC level, on the output's grid: the completion
     // DPC's deadlines also stop the idle advance at every quantum, so a
-    // callback runs within two quanta of its packet (docs/dsound.md, "The
+    // callback runs within two quanta of its packet (docs/audio/dsound.md, "The
     // completion DPC").
     anyhow::ensure!(k.clock().counter() == origin, "logical time moved while the audio output started");
     let completion_dpc = k

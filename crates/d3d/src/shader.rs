@@ -17,6 +17,46 @@ pub const PROGRAM_SLOTS: usize = 136;
 /// Vertex shader constant registers (`c[-96..95]`, stored 0..191).
 pub const CONSTANTS: usize = 192;
 
+/// A draw's constant registers ([`ShaderInputs::constants`]), shared by
+/// the draws that see the same registers.
+pub type Constants = std::sync::Arc<[[f32; 4]; CONSTANTS]>;
+
+/// Constant blocks of draws already run, for the next draws to fill: with
+/// the render thread, a draw's 3 KiB block was allocated on the game
+/// thread and freed on the render thread, and the allocator returned the
+/// freed pages to the system (`madvise`) as fast.
+static SPARE_CONSTANTS: std::sync::Mutex<Vec<Constants>> = std::sync::Mutex::new(Vec::new());
+
+/// Most blocks kept spare (6 MiB).
+const SPARE_CONSTANT_BLOCKS: usize = 2048;
+
+/// A constant block no one else holds, to overwrite: a spare one, or a
+/// new one. Spares still shared are let go (their holders free them).
+pub fn spare_constants() -> Constants {
+    if let Ok(mut s) = SPARE_CONSTANTS.lock() {
+        while let Some(mut c) = s.pop() {
+            if std::sync::Arc::get_mut(&mut c).is_some() {
+                return c;
+            }
+        }
+    }
+    std::sync::Arc::new([[0.0; 4]; CONSTANTS])
+}
+
+/// Keeps the blocks of draws already run for [`spare_constants`], up to a
+/// limit, taking the lock once. Blocks other draws or the device still
+/// hold are only let go.
+pub fn recycle_constants(blocks: &mut Vec<Constants>) {
+    blocks.retain(|c| std::sync::Arc::strong_count(c) == 1);
+    if !blocks.is_empty()
+        && let Ok(mut s) = SPARE_CONSTANTS.lock()
+    {
+        let room = SPARE_CONSTANT_BLOCKS.saturating_sub(s.len());
+        s.extend(blocks.drain(..).take(room));
+    }
+    blocks.clear();
+}
+
 /// How vertices are processed for a draw.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VertexProcessing {
@@ -32,8 +72,82 @@ pub enum VertexProcessing {
         start: u32,
         /// Microcode from `start` up to and including the final instruction
         /// (4 dwords per slot).
-        microcode: Vec<u32>,
+        microcode: Microcode,
     },
+}
+
+/// Vertex microcode, shared: the device hands every draw of an unchanged
+/// program the same words, and the shader keys built from a draw hold them
+/// too. A clone is a reference count; equality is pointer equality first
+/// (then the words); the hash is the words' hash, made once. It
+/// dereferences to the words, and prints and serializes as them (as the
+/// `Vec<u32>` it replaces did), so persisted program ids are unchanged.
+#[derive(Clone)]
+pub struct Microcode {
+    words: std::sync::Arc<[u32]>,
+    hash: u64,
+}
+
+impl Microcode {
+    /// Shares `words`, hashing them once.
+    pub fn new(words: std::sync::Arc<[u32]>) -> Self {
+        // FNV-1a over the dwords: only in-process maps use it.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for w in words.iter() {
+            hash = (hash ^ *w as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self { words, hash }
+    }
+
+    /// Whether `self` and `other` share their words (not only equal ones).
+    pub fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.words, &other.words)
+    }
+}
+
+impl From<Vec<u32>> for Microcode {
+    fn from(words: Vec<u32>) -> Self {
+        Self::new(words.into())
+    }
+}
+
+impl std::ops::Deref for Microcode {
+    type Target = [u32];
+    fn deref(&self) -> &[u32] {
+        &self.words
+    }
+}
+
+impl PartialEq for Microcode {
+    fn eq(&self, other: &Self) -> bool {
+        self.same(other) || (self.hash == other.hash && self.words == other.words)
+    }
+}
+
+impl Eq for Microcode {}
+
+impl std::hash::Hash for Microcode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl std::fmt::Debug for Microcode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.words.iter()).finish()
+    }
+}
+
+impl serde::Serialize for Microcode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.words.iter())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Microcode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Vec::<u32>::deserialize(d).map(Self::from)
+    }
 }
 
 /// Everything a translated shader pair consumes for one draw.
@@ -45,14 +159,17 @@ pub struct ShaderInputs {
     pub provided_inputs: u16,
     /// `SetVertexData*` defaults for registers the layout does not supply.
     pub vertex_defaults: [[f32; 4]; 16],
-    /// Constant registers, hardware order (index = register + 96).
-    pub constants: Box<[[f32; 4]; CONSTANTS]>,
+    /// Constant registers, hardware order (index = register + 96). Shared
+    /// with the draws before while no register changes.
+    pub constants: Constants,
     /// The 60-dword `D3DPIXELSHADERDEF`, or `None` for the fixed-function
-    /// combiner D3D derives from the texture-stage states.
-    pub pixel_shader: Option<Box<[u32; 60]>>,
+    /// combiner D3D derives from the texture-stage states. Shared with the
+    /// draw before when its words are the same.
+    pub pixel_shader: Option<std::sync::Arc<[u32; 60]>>,
     /// Render-state slots 0..57 (`PS*`: combiner inputs/outputs/constants as
     /// the guest last wrote them; constants can change without a new PSDEF).
-    pub combiner_state: Box<[u32; 57]>,
+    /// Shared with the draw before when the words are the same.
+    pub combiner_state: std::sync::Arc<[u32; 57]>,
     /// Device `+0x788` at the draw: whether the definition bound by
     /// `SetPixelShader` had a final combiner (`PSDEF[8] | PSDEF[9]`, latched
     /// at bind). The lazy commit reads this, not the definition, so it
@@ -108,6 +225,12 @@ pub trait ShaderProvider: Send {
     /// at 1x.
     fn set_render_scale(&mut self, _scale: u32) {}
 
+    /// E3 lighting's hard shadows (docs/graphics/e3-lighting.md, phase 1):
+    /// from now on every shadow-map comparison is one tap
+    /// (`shaders::psh::PixelOptions::hard_shadow`). Only a render-scale
+    /// view is told this; off (the default) is retail's lookup.
+    fn set_hard_shadows(&mut self, _on: bool) {}
+
     /// Writes per-draw data staged by [`prepare`](Self::prepare) to the
     /// queue. The backend calls it before every submit.
     fn flush_uploads(&mut self, _ctx: &gfx::GfxContext) {}
@@ -147,4 +270,72 @@ pub trait ShaderJudge: Send {
     /// `Err(reason)` exactly where `prepare` fails. `present[n]`: stage
     /// `n` has a sampleable texture view.
     fn check(&mut self, draw: &crate::backend::ResolvedDraw, present: [bool; 4]) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Microcode;
+    use std::hash::{BuildHasher, Hash};
+
+    /// A recycled constant block comes back for the next draw instead of
+    /// a new allocation.
+    #[test]
+    fn constant_blocks_are_reused() {
+        let mut block = super::spare_constants();
+        std::sync::Arc::get_mut(&mut block).expect("unshared")[7] = [1.0, 2.0, 3.0, 4.0];
+        let at = &*block as *const _;
+        // A block still held elsewhere is not kept.
+        let held = super::spare_constants();
+        let mut shared = vec![held.clone()];
+        super::recycle_constants(&mut shared);
+        assert!(shared.is_empty());
+        assert_eq!(std::sync::Arc::strong_count(&held), 1);
+        let mut spent = vec![block];
+        super::recycle_constants(&mut spent);
+        assert!(spent.is_empty());
+        // Other tests may take or give blocks meanwhile: look for ours.
+        let mut taken = Vec::new();
+        let found = (0..super::SPARE_CONSTANT_BLOCKS).any(|_| {
+            let b = super::spare_constants();
+            let hit = std::ptr::eq(&*b, at);
+            taken.push(b);
+            hit
+        });
+        super::recycle_constants(&mut taken);
+        assert!(found);
+    }
+
+    /// Shared microcode prints, serializes (so persisted program ids) and
+    /// compares as the words it holds, shared or not.
+    #[test]
+    fn microcode_is_its_words() {
+        let words = vec![0x1234_5678u32, 0, 7, 0xFFFF_FFFF];
+        let a = Microcode::from(words.clone());
+        let b = Microcode::from(words.clone());
+        let c = Microcode::from(vec![1u32, 2, 3, 5]);
+        assert!(!a.same(&b));
+        assert!(a.same(&a.clone()));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(*a, words[..]);
+        assert_eq!(format!("{a:?}"), format!("{words:?}"));
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&words).unwrap()
+        );
+        assert_eq!(
+            crate::pipeline_store::program_id(&a),
+            crate::pipeline_store::program_id(&words)
+        );
+        let back: Microcode = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+        assert_eq!(back, a);
+        let s = std::hash::RandomState::new();
+        let h = |m: &Microcode| {
+            let mut st = s.build_hasher();
+            m.hash(&mut st);
+            std::hash::Hasher::finish(&st)
+        };
+        assert_eq!(h(&a), h(&b));
+        assert_eq!(h(&back), h(&a));
+    }
 }

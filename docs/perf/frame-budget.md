@@ -26,7 +26,7 @@ an in-engine cinematic: the full 3D level renderer runs (BSP, characters,
 shadow maps, cinematic lighting), but there is no player control. The
 first level with control is the Armory (`01a_tutorial`), and nothing
 reaches it yet: the intro has to finish and queue the next map
-(level-preflight.md, risk 1). Simulation, AI and physics load will be
+(docs/runtime/level-preflight.md, risk 1). Simulation, AI and physics load will be
 higher in real gameplay. Rendering load may differ either way.
 
 The window is presents 4220-4520: 300 frames, 36 s of wall time on
@@ -54,13 +54,13 @@ Three views of the same run:
   `slice` span into guest code, accessors, x87 and dispatch.
 
 `H2_GFX_MERGE_PASSES=1` is on in every run. Without it the backend
-encodes and submits a pass per draw, which BOOT.md measures at about 3x
+encodes and submits a pass per draw, which docs/runtime/BOOT.md measures at about 3x
 slower on the menu. On master, `h2 play` never merged: the variable was
 only read for `H2_BOOT_GFX`'s headless backend. So the user's `h2 play`
 numbers include a submit per draw. This branch makes `h2 play` honour
 `H2_GFX_MERGE_PASSES=1` too (opt-in, because a few edge pixels differ).
 Merged passes have since become the default for both, matching one pass
-per draw on the menu (graphics.md, "Merged passes"), so
+per draw on the menu (docs/graphics/graphics.md, "Merged passes"), so
 `H2_GFX_MERGE_PASSES=1` no longer changes anything.
 
 ## What a level frame is
@@ -227,7 +227,7 @@ Steady frame p50 71.6 ms, p99 81.5, max 721.
 | 0 | **Merged passes in `h2 play`** (`H2_GFX_MERGE_PASSES=1`, this branch): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
 | 1 | **Compile pipelines off the game thread, and prewarm them** (done: docs/graphics/graphics.md "Pipeline compiles"; draws wait at encode rather than being skipped). Create nv2a programs and render pipelines on a worker. Until one is ready, skip the draw for a frame or two, or block only on a deadline. Persist the keys seen (program hash plus pipeline key) and compile them at map load. Metal's own cache already makes a repeat compile ~5 ms (frame 4256), so the hitch is the first time a material or angle appears. | gfx, d3d nv2a | **721 -> ~80 ms** (-640): the only hitch over 110 ms in either run | ~2 | high: 665 of 721 ms is `pipeline create` |
 | 2 | **FASTMEM on by default** once its P1 is fixed (with `H2_ACCESS_COUNT`) | runtime, emit | follows p50 | **-35 to -40** (119 -> 75 measured, with a load difference) | high: measured |
-| 3 | **Fast exact FYL2X/F2XM1.** A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
+| 3 | **Fast exact FYL2X/F2XM1** (done: [x87-transcendentals.md](../lifter/x87-transcendentals.md); both first passes are table-driven now). A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
 | 4 | **Render thread:** hand recorded draws to a thread that encodes and submits (the `render-thread` lane). The game thread keeps the D3D resolve. | gfx-perf | follows p50 | **-10 to -12** of game-thread time (encode 12.5 + submit 2.1, minus the handoff) | medium: the GPU must keep up in parallel, and readbacks still sync |
 | 5 | **Render-to-texture write-back without round trips:** 3.6 readbacks a frame (depth decoded on the CPU), 3.3 ms of surface writes, `D3DSWAP_FINISH`'s full wait | d3d, gfx-perf | removes gpu-wait spikes (up to 31 ms in the loaded run) | -5 to -7 | medium: the RTT-direct work on master is the start |
 | 6 | **Guest code and dispatch:** IR passes (flags, dead stores, register promotion), cheaper `handler::execute`/resolve, close the remaining fallback-interpreter targets | codegen-opt, runtime, analyze | follows p50 | -8 to -12 of ~33 (guest 24.5, dispatch 6.1, fallback 2.5) | low: the profile is flat, top guest function 2.2% |
@@ -414,7 +414,7 @@ the 116 us measured. The three targets that move it most, in order:
 |---|---|---|---|---|---|
 | 1 | **Take the read-backs off the frame's critical path, then turn the render thread on.** 3-4 `read_surface`/`read_depth` and the pixel counters drain the queue and wait for the GPU every frame. Keep render-to-texture and depth-alias results on the GPU when only the GPU samples them, and write a level back to guest memory only when the guest's CPU really touches it (a write-watch or fault on those pages, the way FASTMEM tracks writes). Decode depth on the GPU. Answer pixel counts from a report that has already landed, where the guest polls rather than blocks. With nothing to wait for, the render thread overlaps all of the wgpu work. | d3d, gfx-perf | **-17 to -20** sync and render thread together (12.3 of round trips and ~8 of per-draw wgpu off the game thread): ~65 -> ~45-48 ms p50 | game-thread slope from ~110 to ~45 us per draw (guest plus HLE only) | medium: the waits are measured; the hard part is proving which write-backs the guest never reads on the CPU |
 | 2 | **Cut wgpu's per-draw CPU cost** (38 us per draw in `queue submit`, 13 in `record`, 3 in prepare). Persistent mapped rings instead of a `queue.write_buffer` per flush, which shows as `madvise` and memmove churn. Bind groups and uniforms cached across frames. Fewer pipeline and state switches per merged pass. Find what came in after 9a39ed7 that took `submit` from 2.1 to 7.1 ms. | gfx-perf | -5 to -8 on the sync path. With the render thread, this bounds its throughput rather than the game thread | -15 to -25 (54 -> ~25 us per draw) | medium: the time is in wgpu-core's `command_encoder_finish` and Metal's encoder setup |
-| 3 | **Guest per-draw and fixed work:** native SSE scalar and packed ops instead of the `h2s_*` soft-float helpers (3.3 ms; the x87-native pattern), `h2_fast_copy` as a host memcpy on FASTMEM RAM (3.9 ms), and in the D3D per-draw entry, FxHash or a generation counter instead of SipHash in `dirty_since`, and stream copies without the `read_vec` allocation (6.0 ms). | codegen-opt, runtime, d3d | -7 to -10 | -10 to -14 (the guest and HLE slope is ~40 us per draw) | medium for SSE and copies (the same pattern as x87 and FASTMEM), low for HLE |
+| 3 | **Guest per-draw and fixed work** (native SSE, the REP copy and `dirty_since` parts are done: [performance.md](performance.md#guest-cpu-sse-rep-copies-and-d3d-entry-2026-11-15)): native SSE scalar and packed ops instead of the `h2s_*` soft-float helpers (3.3 ms; the x87-native pattern), `h2_fast_copy` as a host memcpy on FASTMEM RAM (3.9 ms), and in the D3D per-draw entry, FxHash or a generation counter instead of SipHash in `dirty_since`, and stream copies without the `read_vec` allocation (6.0 ms). | codegen-opt, runtime, d3d | -7 to -10 | -10 to -14 (the guest and HLE slope is ~40 us per draw) | medium for SSE and copies (the same pattern as x87 and FASTMEM), low for HLE |
 
 From 64.8 ms p50: -18, -6, -8 is **~33 ms**. That is at the 30 fps
 line for this scene, with no margin for host noise or a wider view. The
@@ -512,7 +512,7 @@ the signal that does not depend on load: 1 a frame at 9a39ed7 and
 b9c05ec with merged passes, 200 from 38cd3f7 on. 38cd3f7 made merged
 passes the default and gave each draw that can `discard` (every
 alpha-tested draw) a render pass of its own, for exactness on Apple GPUs
-(graphics.md, "Merged passes"). Each render pass is two Metal command
+(docs/graphics/graphics.md, "Merged passes"). Each render pass is two Metal command
 buffers and a render encoder in wgpu 30: about 40-75 us of CPU a pass,
 in Metal's encoder setup and command-buffer commit and teardown. The
 compile workers (6f95526), the render thread and the W-buffer change
@@ -532,7 +532,7 @@ draw, all in):
 The fast rule (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
 after a partly masked draw. It was off by default at first because the
 merge self-check finds a few edge pixels off in a level frame
-(graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
+(docs/graphics/graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
 restores the rule measured as "merged" above.
 One run of The Heretic with it on (presents 4220-4520, cold pipeline
 cache, `H2_GFX_MERGE_CHECK=4216`, otherwise the command above) met a load
@@ -786,6 +786,229 @@ measures nothing and says so once.
 light, each a mutex and a clock read, a few microseconds a frame; plus
 the hooked functions leaving the direct-call path. The split is valid to
 that precision; compare `fps` with the feature off to see the cost.
+
+### What scales with draws on the render thread (2026-11-17)
+
+Old Mombasa, presents 4000-7000, 1x, headless with the render thread,
+500 Hz sampler on both threads. Frames bucketed by draws (ms per frame):
+
+| draws | frames | total | cpu | d3d | render-wait | encode | submit | submits |
+|---|---|---|---|---|---|---|---|---|
+| 250 | 684 | 19.3 | 15.9 | 2.7 | 0.4 | 3.2 | 5.0 | 37 |
+| 1000 | 3035 | 57.6 | 42.4 | 10.7 | 2.5 | 15.0 | 22.9 | 46 |
+| 2000 | 105 | 52.6 | 33.8 | 10.9 | 5.2 | 18.5 | 22.2 | 65 |
+
+At ~1000 draws the game thread is the critical path (cpu + d3d + decode
++ render-wait = total); the render thread (encode + submit, ~38 ms) runs
+beside it with a third of its samples idle. Past ~2000 draws the render
+thread's work outgrows the frame, `render-wait` climbs (35-107 ms in the
+worst seconds) and the frame rate falls off: the cliff is render-thread
+throughput. Its busy samples (38.2k):
+
+- **per render pass, ~26%**: wgpu's `begin_render_pass` into Metal (AGX
+  render-context init) 5.6k, tracker setup and teardown (`UsageScope`
+  drop, `set_size`, `new_pooled`) 2.4k, `open_pass` and
+  `begin_encoding` (a Metal command buffer per pass) 1.8k;
+- **per submission and command buffer, ~17%**: `commit` 2.4k,
+  `Queue::maintain` 3.1k (dropping staging buffers and trackers);
+- **staging buffers, ~11%**: `AGXBuffer initWithDevice` 2.8k and
+  `dealloc` 1.5k. 64% of them were the upload rings' 2 MiB
+  `write_buffer_with` views, one per ring per submission whatever they
+  held; 28% persistent vertex uploads (one per new stream, exact size);
+- **per draw, ~25%**: recording (`Renderer::record` 4.1k), shader
+  preparation (4.7k, uniform staging included) and wgpu's per-draw
+  encode (pipeline, bind groups, vertex buffers, `drawIndexed`: 2.7k).
+
+The `GfxBackend::submit` callers' shares are misleading on their own: a
+submit encodes the pending scene pass too, so `depth_level_texture` (6.0k
+inclusive) and `mirror_store` (5.0k) mostly carry scene draws. What they
+added themselves is submissions: `mirror_store`, `mirror_load` and the
+GPU depth alias each submitted twice (the pending pass, then their own
+encoder), and with `depth_level_texture` and `clear_pixel_count` they were
+half the render thread's `Queue::submit` samples (3.4k of 7.0k).
+
+The 16.5% `semaphore_wait_trap` is the render thread idle in its command
+channel's `recv`, not the game thread; the game thread's own waits for
+replies are 579 samples (1%).
+
+Changes:
+
+- the upload rings stage on the CPU and flush one exactly sized queue
+  write (`gfx/src/ring.rs`). `tests/staging_cost.rs`: a 2 MiB view costs
+  about 130 us against about 20 us for an exact one, submit share
+  included;
+- side work rides the open encoder (`GfxBackend::set_defer_side_passes`,
+  `H2_GFX_SIDE_SUBMIT=1` turns it off; off under a render scale);
+- frames.csv gains `passes` (render and compute passes gfx begins) and
+  `queue_writes` (staging buffers from gfx's queued writes).
+
+Not changed, and next: the render-pass count itself. Each costs ~40-75
+us of wgpu and Metal CPU; `passes` in the next capture says how many a
+1000-draw frame has and, against `draws` and `submits`, where they come
+from (count passes and sums for visibility tests, splits after partly
+masked draws, side passes, clears).
+
+### Render passes by cause (2026-11-17, second round)
+
+The branch measured on the same scene: `passes` 195 a frame at ~1000
+draws (3035 frames), 440-466 at 1250-1500, 312 at 2000 with 537
+`queue_writes`; encode + submit 23.8 ms at 1000 draws against 37.9 on
+master. `passes` grows with draws at about 0.2 a draw, while `submits`
+stays near 28-48 a frame. Visibility tests submit at every
+`EndVisibilityTest` (the report flushed), so they are bounded by the
+submits; side passes (mirror, depth aliases) were a few a frame in the
+profile (`GuestWords` and `DepthBits` sample counts). What grows with
+draws is the merged pass's splits: a draw after a partly masked draw
+(Halo's multipass shaders alternate RGB-only, alpha-only and full
+writes) starts a render pass of its own, the Apple-GPU workaround in
+graphics.md "Merged passes".
+
+The frame stats now split `passes` by cause:
+
+| column | passes |
+|---|---|
+| `pass_mask` | a draw after one that wrote some colour channels but not all, writing others |
+| `pass_nocolor` | the same after a draw that wrote no colour channel |
+| `pass_discard` | a draw that can `discard`, after a partly masked draw with the same mask (fast rule), or every one (exact rule) |
+| `pass_counted` | each visibility test's count pass and sum, and the pass the draws after it resume in |
+| `pass_side` | alias mirror stores and loads, depth aliases and levels, masked clears |
+
+The rest of `passes` is one render pass per pending pass (target
+switches, clears that start a pass) and the present.
+
+Changes in this round:
+
+- A counted draw alone in its run that writes nothing (the flare
+  tests: colour writes off, no depth or stencil writes) no longer gets
+  a render pass after its count pass: it would load and store the
+  attachments unchanged. One pass fewer per flare test.
+  `H2_GFX_IDLE_COUNTED_PASS=1` restores it.
+- The report of a visibility test goes into the open encoder like the
+  other side work, so a test no longer submits on its own (it reaches the
+  GPU with the next submission, at the latest the present; Halo reads it
+  two frames later). A read, or the render thread's poll for a count the
+  guest is spinning on, submits it first. Under `H2_GFX_SIDE_SUBMIT=1` it
+  submits as before.
+- New persistent vertex and index buffers (vertex-cache snapshots) are
+  written through one staging ring per submission and buffer copies,
+  instead of a queue write (a staging buffer) each: most of the 537
+  `queue_writes` at 2000 draws. `H2_GFX_STAGED_UPLOADS=0` restores the
+  queue writes.
+- `H2_GFX_MERGE_PASSES=loose` (opt-in, not exact) drops the merge-rule
+  splits, to measure what `pass_mask` + `pass_nocolor` + `pass_discard`
+  cost and, with `H2_GFX_MERGE_CHECK`, which pixels they protect.
+
+The mask splits are left as they are: each one exists because merged
+and per-draw rendering differ on Apple GPUs without it, and no test can
+show a replacement gives the same pixels.
+
+### Buffer count and per-pass bookkeeping (2026-11-17, third round)
+
+Master on the same scene: 30.8 ms a frame at ~1000 draws (encode 6.3,
+submit 11.2, 193 passes), 44 ms at 2000 (encode 10.4, submit 17.4, 297
+passes). The render thread's self time had `madvise` 10%, `memset`
+5.5%, `BufferUsageScope::clear` 4%, `Vec<Option<Arc<Buffer>>>::resize`
+2.7%.
+
+wgpu-core 30 sizes every pass's usage scope to the buffer tracker
+index allocator's high-water mark: `Device::new_usage_scope` ->
+`UsageScope::new_pooled` -> `BufferUsageScope::set_size(
+tracker_indices.buffers.size())`, where `size()` is `next_index`, the
+most buffers ever alive at once (freed indices are reused, the mark
+never drops). `set_size` resizes the state and `Option<Arc<Buffer>>`
+vectors and the ownership bit vector to that length, and `clear` at the
+pass's end empties them again, so every pass memsets and walks one
+entry per buffer the device has held, used or not. Command-buffer
+trackers (`BufferTracker::set_size`) and submission triage do the same
+per command buffer and submission.
+
+The persistent vertex cache made that mark large: a buffer per
+vertex-cache snapshot and index list (256-byte classes up), up to the
+128 MiB budget, plus free buffers up to half of it. A test scene of 600
+new streams a frame for ten frames (`persistent_pool.rs`,
+`slabs_keep_the_buffer_count_small`) holds 10,800 buffers.
+
+`tests/pass_cost.rs` (ignored timing, `--release`), draw-less passes
+with a load and a store, a submit per 8:
+
+| buffers alive | us per pass |
+|---|---|
+| 0 | 52 |
+| 1,000 | 47 |
+| 10,000 | 46 |
+| 30,000 | 49 |
+| 100,000 | 76 |
+
+About 0.3 us per pass per 1,000 buffers once past the noise, before any
+draw binds one: at 100,000 buffers and ~300 passes that is ~7 ms of
+render thread a frame, at 30,000 about 1 ms. The game's own count was
+not measured here (no game runs); `Renderer::persistent_buffers` gives
+the cache's share.
+
+Changes:
+
+- Persistent vertex and index regions are carved out of 8 MiB slabs
+  (a buddy allocator, 256-byte to 8 MiB blocks; larger lists still get
+  a buffer of their own). The test scene holds 5 slabs instead of
+  10,800 buffers. Same bytes at the offsets the draws bind (the pool
+  tests compare every region with a buffer per id, staged and not,
+  through evictions and reuse). `H2_GFX_VERTEX_SLABS=0` restores a
+  buffer per region.
+- A draw's 3 KiB constant block (`ShaderInputs::constants`) was
+  allocated on the game thread and freed on the render thread, every
+  draw; the allocator handed the freed pages back with `madvise`. The
+  render thread now returns the blocks once per batch and the device
+  overwrites a spare one (`shader::spare_constants`, up to 2,048 kept).
+
+Not done: the `memmove` in `flush_uploads` is `queue.write_buffer`
+copying the rings' staged bytes into wgpu's staging buffer. Writing in
+place needs mapped ring buffers (`MAP_WRITE` on a vertex or uniform
+buffer is `MAPPABLE_PRIMARY_BUFFERS`, and each needs its own map/unmap
+cycle across submissions); left for a later round.
+
+### Game-thread D3D work (2026-11-17, fourth round)
+
+After round 3 the game thread is the limit: 23.8 ms CPU a frame at 1000
+draws, 29.9 at 2000. In a 29.9k-sample profile of the main thread at
+2000 draws (about one sample per microsecond of a frame) `Device` is
+about 5.4k. Cut, with the backend call streams unchanged:
+
+| what | samples | change |
+|---|---|---|
+| `flush_for_texture` per sampled texture | ~250 of 329 | the answer per texture is kept with its header words and an epoch the render-to-texture targets bump when one is added, removed or becomes dirty; while both match, only the mirror flush runs |
+| `ThreadedBackend::draw_owned` malloc | 127 | the render thread hands emptied draw boxes back once per batch; the next draws fill them |
+| `mirror_supersede` `_bzero` | 85 | every draw into a level zeroed the mirror's per-byte state over the whole level; the span zeroed last stays zero until a take marks bytes newer, so a repeat is skipped |
+| `GuestAdapter::read_u32` `memmove` | 79 | a fixed-size read, a load on the guest's fast path |
+| `DrawStats::add` | ~60 of 99 | `boot`'s draw diagnostics (on in `h2 play` as well as headless) count into Fx maps instead of SipHash ones |
+
+About 600 samples, ~0.6 ms a frame at 2000 draws (2% of the game
+thread). Left: `GfxJudge` (308: the program key the render thread
+builds again, then a hash lookup comparing whole keys), `submit_inner`
+itself (388), `drain`'s push-buffer decode and `Immediate::apply`
+(~210), `read_stream` and `vertex_setup` (~360 self).
+
+Fifth round, same profile:
+
+- `submit_inner`'s own time is mostly `shader_inputs`, inlined: per
+  draw it converted all 192 constant registers into a fresh 3 KiB block
+  and boxed the 60-word PSDEF and the 57 combiner words (two more small
+  allocations, freed on the render thread). `ShaderInputs` now holds
+  them in `Arc`s: the constant block is shared until a register is
+  written (a generation every constant write bumps, push-buffer methods
+  included), and the PSDEF and combiner words are shared while they
+  read the same as the draw before. Recorded draws compare equal as
+  before; the blocks are only shared.
+- `GfxJudge` is about 150 ns a draw (key build ~70, lookup with a whole
+  key compare ~55, hash ~15). A memo by state would need the same
+  comparisons: an API draw's state words are a fresh `Arc` per draw, so
+  there is no cheap generation covering every input `program_key` reads.
+  Left as it is.
+- `decode_one_into` and `Immediate::apply` are already a header decode
+  and one `match`; the 4-byte reads they make went through `memmove`
+  until round 4's `read_u32`. Left as they are.
+- `DrawStats` is read by the run report printed at exit (`h2 play`
+  included) and by `H2_BOOT_GFX_SHADOWS`'s shadow-frame screenshots, so
+  it is not diagnostics-only; round 4 made it Fx maps. Left on.
 
 ## Reading these numbers on another machine
 

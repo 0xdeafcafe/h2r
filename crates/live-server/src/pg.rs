@@ -15,7 +15,9 @@ use live_proto::sign::chain_hash;
 use sqlx::Row;
 use sqlx::postgres::{PgListener, PgPool, PgPoolOptions, PgRow};
 
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{
+    BatchDecoder, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError, Wake,
+};
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// Any constant works; it only has to be ours.
@@ -77,17 +79,37 @@ impl PostgresStore {
     }
 }
 
+/// The head of the log in the Postgres database at `url`, if it exists,
+/// is reachable within a couple of seconds, and has an `events` table;
+/// nothing is created. For telling an upgraded server where its log is.
+pub async fn existing_log(url: &str) -> Option<u64> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect(url)
+        .await
+        .ok()?;
+    let head: Option<i64> = sqlx::query_scalar("select coalesce(max(position), 0) from events")
+        .fetch_one(&pool)
+        .await
+        .ok();
+    pool.close().await;
+    head.map(|h| h as u64)
+}
+
 fn to_i64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-fn decode(row: &PgRow) -> Result<RecordedEvent, StoreError> {
+fn decode(row: &PgRow, batches: &mut BatchDecoder) -> Result<RecordedEvent, StoreError> {
     let position = row.get::<i64, _>("position") as u64;
     let index = row.get::<Option<i32>, _>("jws_index").map(|i| i as usize);
-    let e = NewEvent::decode(row.get("jws"), index).map_err(|e| StoreError::Corrupt {
-        position,
-        reason: e.to_string(),
-    })?;
+    let e = batches
+        .decode(row.get("jws"), index)
+        .map_err(|e| StoreError::Corrupt {
+            position,
+            reason: e.to_string(),
+        })?;
     Ok(RecordedEvent {
         position,
         version: row.get::<i64, _>("version") as u64,
@@ -206,7 +228,8 @@ impl EventStore for PostgresStore {
         .bind(&q.exclude)
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(decode).collect()
+        let mut batches = BatchDecoder::default();
+        rows.iter().map(|row| decode(row, &mut batches)).collect()
     }
 
     async fn head(&self) -> Result<u64, StoreError> {
@@ -255,6 +278,83 @@ impl EventStore for PostgresStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn import(&self, events: &[RecordedEvent]) -> Result<(), StoreError> {
+        let Some(last) = events.last() else {
+            return Ok(());
+        };
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("select pg_advisory_xact_lock($1)")
+            .bind(APPEND_LOCK)
+            .execute(&mut *tx)
+            .await?;
+        let head: i64 = sqlx::query_scalar("select coalesce(max(position), 0) from events")
+            .fetch_one(&mut *tx)
+            .await?;
+        let mut check = ImportCheck::new(head as u64);
+        for e in events {
+            if !check.knows(&e.body.stream) {
+                let row = sqlx::query(
+                    "select version, hash from events where stream_id = $1 order by version desc limit 1",
+                )
+                .bind(&e.body.stream)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let (next, hash) = row.map_or((0, None), |r| {
+                    (r.get::<i64, _>("version") as u64 + 1, Some(r.get("hash")))
+                });
+                check.seed(&e.body.stream, next, hash);
+            }
+            check.check(e)?;
+            let b = &e.body;
+            sqlx::query(
+                "insert into events (position, stream_id, version, type, data, at, author, kid, jws, jws_index, hash)
+                 values ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8, $9, $10, $11)",
+            )
+            .bind(to_i64(e.position))
+            .bind(&b.stream)
+            .bind(to_i64(e.version))
+            .bind(&b.kind)
+            .bind(&b.data)
+            .bind(&b.at)
+            .bind(&b.author)
+            .bind(&b.kid)
+            .bind(&e.jws)
+            .bind(e.jws_index.map(|i| i as i32))
+            .bind(&e.hash)
+            .execute(&mut *tx)
+            .await?;
+        }
+        // Positions given here bypass the sequence; the next append must
+        // still come after them.
+        sqlx::query("select setval(pg_get_serial_sequence('events', 'position'), $1)")
+            .bind(to_i64(last.position))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("select pg_notify($1, $2)")
+            .bind(EVENTS_CHANNEL)
+            .bind(last.position.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        Ok(
+            sqlx::query_scalar("select sha256 from blobs order by sha256")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("select name, position from subscriptions order by name")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
     }
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
@@ -308,15 +408,91 @@ pub(crate) mod tests {
         crate::store::conformance::run(&store, &prefix).await;
     }
 
+    /// A log moved SQLite -> Postgres -> SQLite comes back the same, and
+    /// Postgres's sequence carries on after the imported positions. Uses a
+    /// fresh database beside `H2_LIVE_TEST_DB`'s, dropped afterwards.
+    #[tokio::test]
+    async fn the_log_copies_through_postgres_and_back() {
+        let Some(base) = std::env::var("H2_LIVE_TEST_DB")
+            .ok()
+            .filter(|s| !s.is_empty())
+        else {
+            eprintln!("skipping: H2_LIVE_TEST_DB is not set");
+            return;
+        };
+        let opts: sqlx::postgres::PgConnectOptions = base.parse().unwrap();
+        let name = format!("h2live_copy_{}", std::process::id());
+        let url = {
+            let (head, _) = base.rsplit_once('/').unwrap();
+            format!("{head}/{name}")
+        };
+        let pg = PostgresStore::connect_creating(&url).await.unwrap();
+        let key = live_proto::sign::KeyPair::generate();
+        let a = crate::sqlite::tests::temp_db("pg-a");
+        let src = crate::sqlite::SqliteStore::open(&a).await.unwrap();
+        for i in 0..6 {
+            src.append(
+                vec![crate::store::conformance::event(
+                    &key,
+                    &format!("s{}", i % 2),
+                    i,
+                )],
+                &[],
+            )
+            .await
+            .unwrap();
+        }
+        src.put_blob("t", b"title").await.unwrap();
+        src.save_checkpoint("c", 3).await.unwrap();
+        let r = crate::copy::copy_log(&src, &pg, |_, _| {}).await.unwrap();
+        assert_eq!((r.events, r.blobs, r.checkpoints), (6, 1, 1));
+        let q = Query::after(0, 1000);
+        assert_eq!(pg.read(&q).await.unwrap(), src.read(&q).await.unwrap());
+        let next = pg
+            .append(vec![crate::store::conformance::event(&key, "s0", 9)], &[])
+            .await
+            .unwrap();
+        assert_eq!(next[0].position, 7, "the sequence follows the import");
+        assert_eq!(next[0].version, 3);
+
+        let b = crate::sqlite::tests::temp_db("pg-b");
+        let back = crate::sqlite::SqliteStore::open(&b).await.unwrap();
+        crate::copy::copy_log(&pg, &back, |_, _| {}).await.unwrap();
+        assert_eq!(back.read(&q).await.unwrap(), pg.read(&q).await.unwrap());
+        assert_eq!(
+            back.blob("t").await.unwrap().as_deref(),
+            Some(&b"title"[..])
+        );
+        assert_eq!(pg.checkpoints().await.unwrap(), [("c".to_string(), 3)]);
+
+        pg.pool.close().await;
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts.database("postgres"))
+            .await
+            .unwrap();
+        sqlx::raw_sql(&format!("drop database \"{name}\""))
+            .execute(&admin)
+            .await
+            .unwrap();
+        for p in [a, b] {
+            std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn postgres_appends_race_safely() {
         let Some(store) = test_store().await else {
             return;
         };
-        let store = std::sync::Arc::new(store);
+        race(std::sync::Arc::new(store)).await;
+    }
+
+    /// Twenty writers want version 0 of one new stream: exactly one wins.
+    /// Then twenty unconstrained appends get unique, chained versions.
+    pub(crate) async fn race(store: std::sync::Arc<dyn EventStore>) {
         let key = std::sync::Arc::new(live_proto::sign::KeyPair::generate());
         let stream = format!("race-{}", live_proto::sign::random_id());
-        // Twenty writers want version 0 of one stream: exactly one wins.
         let tasks: Vec<_> = (0..20)
             .map(|n| {
                 let (store, key, stream) = (store.clone(), key.clone(), stream.clone());
@@ -335,7 +511,6 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(won, 1);
-        // Concurrent unconstrained appends get unique, chained versions.
         let tasks: Vec<_> = (0..20)
             .map(|n| {
                 let (store, key, stream) = (store.clone(), key.clone(), stream.clone());

@@ -31,8 +31,10 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 - **Linker**: `lld-link` from lld@22 (`CARGO_TARGET_..._LINKER`, plus
   `-Lnative` paths into the splat). It is only needed for a real
   `cargo build`, not for `check`.
-- `CARGO_TARGET_DIR` is `target/windows-cross`, so the bootstrap flags never
-  invalidate the host build.
+- `CARGO_TARGET_DIR` is `target/windows-cross` (or `H2_WINDOWS_TARGET_DIR`),
+  so the bootstrap flags never invalidate the host build.
+- `just check-windows` and `just windows-dll` wrap these steps
+  ([building.md](building.md)).
 
 ## The generated module
 
@@ -57,7 +59,7 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 The retail image has about 18,700 handlers, and they are reached through the
 `h2gen_module` table anyway. `h2abi.h` defines
 `H2_EXPORT` as `__declspec(dllexport)` on `_WIN32` and as nothing elsewhere.
-It marks `h2gen_module`, `h2gen_module_abi_version`, `h2boot_install_v2`,
+It marks `h2gen_module`, `h2gen_module_abi_version`, `h2boot_install_v3`,
 `h2x87bridge_install` and the test bridge's `h2bridge_*`. Mac objects come
 out the same as before.
 
@@ -104,7 +106,7 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | data root | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` (`vfs::default_data_root`) |
 | pipeline cache | `~/Library/Caches/h2recomp` | `%LOCALAPPDATA%\h2recomp\cache` |
 | utility-drive format | handle-anchored walk (openat, unlinkat) | by path, never following links or junctions (`vfs` `empty_by_path`) |
-| Live sockets (`--live`) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
+| Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
 | perf sampler, fastmem-proto, HID | Mach and IOKit | compiled out (they were already gated) |

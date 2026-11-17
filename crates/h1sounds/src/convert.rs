@@ -1,0 +1,387 @@
+//! Halo 1 `snd!` -> Halo 2 `snd!` plus `ugh!` gestalt entries.
+//!
+//! A Halo 2 `snd!` is 20 bytes of indices into the map's gestalt
+//! ([`crate::gestalt`]). Converting a sound therefore has two halves:
+//!
+//! 1. [`convert_sound`] reads everything a Halo 2 sound needs from the Halo
+//!    1 tag into a [`ConvertedSound`], independent of any map: the header
+//!    fields, one playback and one scale element, and per pitch range its
+//!    parameters and permutations, each permutation's samples already cut
+//!    into chunks.
+//! 2. [`ConvertedSound::add_to`] appends those entries to a
+//!    [`SoundGestalt`], adds the chunks to the [`TagSet`] as raw resources,
+//!    and returns the `snd!` as a [`Converted`] whose indices point at them.
+//!    [`install_sounds`] does this for a list of sounds and writes the
+//!    gestalt back.
+//!
+//! Samples are copied as stored. A Halo 1 permutation chain (a permutation
+//! and the ones its `next` index continues with) becomes one Halo 2
+//! permutation whose chunks are those samples, in order, cut at
+//! [`CHUNK_LEN`] (a whole number of blocks for mono and stereo).
+
+use h1models::Converted;
+use map::build::{Block, TagSet};
+use map::{FourCC, TagId};
+
+use crate::gestalt::{Chunk, ChunkPointer, SoundGestalt, blocks};
+use crate::h1::{Compression, Sound};
+use crate::{Error, Result, class};
+
+/// Largest chunk: retail Halo 2's streaming chunk size, 910 mono or 455
+/// stereo ADPCM blocks.
+pub const CHUNK_LEN: usize = 0x7ff8;
+/// File alignment of a chunk's raw resource.
+pub const CHUNK_ALIGN: u32 = 0x200;
+
+/// Halo 2 `snd!` fields (20 bytes).
+pub mod snd {
+    /// `u16` flags.
+    pub const FLAGS: usize = 0;
+    /// `u8` class.
+    pub const CLASS: usize = 2;
+    /// `u8` sample rate: 0 22,050 Hz, 1 44,100 Hz, 2 32,000 Hz.
+    pub const SAMPLE_RATE: usize = 3;
+    /// `u8` encoding: 0 mono, 1 stereo, 2 codec.
+    pub const ENCODING: usize = 4;
+    /// `u8` compression: 0 big-endian PCM, 1 Xbox ADPCM, 2 IMA, 3
+    /// little-endian PCM, 4 WMA.
+    pub const COMPRESSION: usize = 5;
+    /// `u16` playback index.
+    pub const PLAYBACK: usize = 6;
+    /// `u16` first pitch range.
+    pub const FIRST_PITCH_RANGE: usize = 8;
+    /// `u8` pitch range count.
+    pub const PITCH_RANGE_COUNT: usize = 0xa;
+    /// `u8` scale index.
+    pub const SCALE: usize = 0xb;
+    /// `u8` promotion index, `ff` none.
+    pub const PROMOTION: usize = 0xc;
+    /// `u8` custom playback index, `ff` none.
+    pub const CUSTOM_PLAYBACK: usize = 0xd;
+    /// `u16` extra info index, `ffff` none.
+    pub const EXTRA_INFO: usize = 0xe;
+    /// `u32` maximum play time, milliseconds.
+    pub const MAX_PLAY_TIME: usize = 0x10;
+    /// Bytes.
+    pub const LEN: usize = 0x14;
+}
+
+/// One converted permutation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermutationOut {
+    /// Name, for the import names.
+    pub name: String,
+    /// `+2`: skip fraction, encoded as a fraction of 32767 (Design).
+    pub skip_fraction: i16,
+    /// `+4`: gain in decibels.
+    pub gain: i8,
+    /// The samples, cut into chunks of at most [`CHUNK_LEN`].
+    pub chunks: Vec<Vec<u8>>,
+}
+
+impl PermutationOut {
+    /// Bytes over all chunks.
+    pub fn size(&self) -> usize {
+        self.chunks.iter().map(Vec::len).sum()
+    }
+}
+
+/// One converted pitch range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeOut {
+    /// Name, for the import names.
+    pub name: String,
+    /// The pitch range parameters element (10 bytes).
+    pub parameters: [u8; 10],
+    /// Permutations, one per Halo 1 chain.
+    pub permutations: Vec<PermutationOut>,
+}
+
+/// A Halo 1 sound ready to join a Halo 2 map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConvertedSound {
+    /// The `snd!` bytes, gestalt indices still unset.
+    pub header: [u8; snd::LEN],
+    /// The playback parameters element (`0x38`).
+    pub playback: [u8; 0x38],
+    /// The scale element (`0x14`).
+    pub scale: [u8; 0x14],
+    /// Pitch ranges.
+    pub ranges: Vec<RangeOut>,
+    /// What had no Halo 2 place and was dropped (promotions, lip-sync).
+    pub dropped: Vec<String>,
+}
+
+/// Decibels from a linear gain; 0 and 1 are 0 dB.
+pub fn decibels(linear: f32) -> f32 {
+    if linear <= 0.0 || linear == 1.0 {
+        0.0
+    } else {
+        20.0 * linear.log10()
+    }
+}
+
+/// Cents from a pitch multiplier; 0 and 1 are 0 cents.
+pub fn cents(multiplier: f32) -> i16 {
+    if multiplier <= 0.0 || multiplier == 1.0 {
+        0
+    } else {
+        (1200.0 * multiplier.log2())
+            .round()
+            .clamp(-32768.0, 32767.0) as i16
+    }
+}
+
+fn put_f32(b: &mut [u8], at: usize, v: f32) {
+    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+fn put_u16(b: &mut [u8], at: usize, v: u16) {
+    b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
+
+/// Reads what a Halo 2 sound needs out of `sound`, whose samples are in
+/// `file` (the decompressed Halo 1 map).
+pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
+    let channels = sound.channels()?;
+    let compression = match sound.compression {
+        Compression::XboxAdpcm => 1u8,
+        Compression::None => 3,
+        c => return Err(Error::Unsupported(format!("compression {c:?}"))),
+    };
+    let block = match sound.compression {
+        Compression::XboxAdpcm => 36 * channels,
+        _ => 2 * channels,
+    };
+    let rate = sound.hz()?;
+    if sound.pitch_ranges.len() > 255 {
+        return Err(Error::Unsupported(format!(
+            "{} pitch ranges; Halo 2 counts them in a byte",
+            sound.pitch_ranges.len()
+        )));
+    }
+
+    let mut header = [0u8; snd::LEN];
+    put_u16(&mut header, snd::FLAGS, (sound.flags & 3) as u16);
+    header[snd::CLASS] = class::to_h2(sound.class)?;
+    header[snd::SAMPLE_RATE] = sound.sample_rate as u8;
+    header[snd::ENCODING] = sound.encoding as u8;
+    header[snd::COMPRESSION] = compression;
+    header[snd::PITCH_RANGE_COUNT] = sound.pitch_ranges.len() as u8;
+    header[snd::PROMOTION] = 0xff;
+    header[snd::CUSTOM_PLAYBACK] = 0xff;
+    put_u16(&mut header, snd::EXTRA_INFO, 0xffff);
+
+    let mut playback = [0u8; 0x38];
+    put_f32(&mut playback, 0x00, sound.distance[0]);
+    put_f32(&mut playback, 0x04, sound.distance[1]);
+    put_f32(&mut playback, 0x08, sound.skip_fraction);
+    put_f32(&mut playback, 0x0c, sound.max_bend_per_second);
+    put_f32(&mut playback, 0x10, decibels(sound.gain_modifier));
+    put_u16(
+        &mut playback,
+        0x18,
+        cents(sound.random_pitch_bounds[0]) as u16,
+    );
+    put_u16(
+        &mut playback,
+        0x1a,
+        cents(sound.random_pitch_bounds[1]) as u16,
+    );
+    // Halo 1 stores whole cone angles (2π: no cone), Halo 2 half angles.
+    put_f32(&mut playback, 0x1c, sound.cone_angles[0] / 2.0);
+    put_f32(&mut playback, 0x20, sound.cone_angles[1] / 2.0);
+    put_f32(&mut playback, 0x24, decibels(sound.outer_cone_gain));
+
+    let [zs, zg, zp] = sound.zero_modifiers;
+    let [os, og, op] = sound.one_modifiers;
+    let mut scale = [0u8; 0x14];
+    put_f32(&mut scale, 0x00, decibels(zg));
+    put_f32(&mut scale, 0x04, decibels(og));
+    put_u16(&mut scale, 0x08, cents(zp) as u16);
+    put_u16(&mut scale, 0x0a, cents(op) as u16);
+    put_f32(&mut scale, 0x0c, if zs == 0.0 { 1.0 } else { zs });
+    put_f32(&mut scale, 0x10, if os == 0.0 { 1.0 } else { os });
+
+    let mut dropped = Vec::new();
+    if sound.promotion_id().is_some() {
+        dropped.push(format!("promotion after {}", sound.promotion_count));
+    }
+    let single = sound.pitch_ranges.len() == 1;
+    let mut ranges = Vec::with_capacity(sound.pitch_ranges.len());
+    for (r, range) in sound.pitch_ranges.iter().enumerate() {
+        let mut parameters = [0u8; 10];
+        if !single {
+            let lo = cents(range.bend_bounds[0]);
+            let hi = cents(range.bend_bounds[1]);
+            put_u16(&mut parameters, 0, cents(range.natural_pitch) as u16);
+            for (i, v) in [lo, hi, lo, hi].into_iter().enumerate() {
+                put_u16(&mut parameters, 2 + 2 * i, v as u16);
+            }
+        }
+        let mut permutations = Vec::new();
+        for chain in sound.chains(r)? {
+            let first = &range.permutations[chain[0]];
+            if chain.iter().any(|&i| range.permutations[i].mouth.size > 0) {
+                dropped.push(format!("lip-sync of {}", first.name));
+            }
+            let bytes = crate::decode::chain_bytes(sound, file, r, &chain)?;
+            if bytes.len() % block != 0 {
+                return Err(Error::Invalid(format!(
+                    "{}: {} bytes is not whole {block}-byte blocks",
+                    first.name,
+                    bytes.len()
+                )));
+            }
+            permutations.push(PermutationOut {
+                name: first.name.clone(),
+                skip_fraction: (first.skip_fraction.clamp(0.0, 1.0) * 32767.0).round() as i16,
+                gain: decibels(first.gain).round().clamp(-128.0, 127.0) as i8,
+                chunks: bytes.chunks(CHUNK_LEN).map(<[u8]>::to_vec).collect(),
+            });
+        }
+        ranges.push(RangeOut {
+            name: range.name.clone(),
+            parameters,
+            permutations,
+        });
+    }
+    let longest = ranges
+        .iter()
+        .flat_map(|r| &r.permutations)
+        .map(|p| p.size() / block * if compression == 1 { 64 } else { 1 })
+        .max()
+        .unwrap_or(0);
+    header[snd::MAX_PLAY_TIME..]
+        .copy_from_slice(&((longest as u64 * 1000 / u64::from(rate)) as u32).to_le_bytes());
+    Ok(ConvertedSound {
+        header,
+        playback,
+        scale,
+        ranges,
+        dropped,
+    })
+}
+
+fn index16(what: &str, n: usize) -> Result<u16> {
+    u16::try_from(n)
+        .ok()
+        .filter(|&v| v != u16::MAX)
+        .ok_or_else(|| Error::Unsupported(format!("{what} index {n} doesn't fit 16 bits")))
+}
+
+impl ConvertedSound {
+    /// Appends this sound's entries to `gestalt`, its chunks to `set` as raw
+    /// resources, and returns its `snd!`.
+    pub fn add_to(self, gestalt: &mut SoundGestalt, set: &mut TagSet) -> Result<Converted> {
+        let mut header = self.header;
+        let playback = gestalt.push(blocks::PLAYBACKS, &self.playback, true);
+        put_u16(&mut header, snd::PLAYBACK, index16("playback", playback)?);
+        let scale = gestalt.push(blocks::SCALES, &self.scale, true);
+        header[snd::SCALE] = u8::try_from(scale)
+            .ok()
+            .filter(|&s| s != 0xff)
+            .ok_or_else(|| Error::Unsupported(format!("scale index {scale}")))?;
+        let first_range = gestalt.count(blocks::PITCH_RANGES);
+        put_u16(
+            &mut header,
+            snd::FIRST_PITCH_RANGE,
+            index16("pitch range", first_range)?,
+        );
+
+        let name = |gestalt: &mut SoundGestalt, set: &mut TagSet, s: &str| -> Result<u16> {
+            let id = set.intern(if s.is_empty() { "default" } else { s })?;
+            let n = gestalt.push(blocks::IMPORT_NAMES, &id.to_le_bytes(), true);
+            index16("import name", n)
+        };
+        for range in self.ranges {
+            let range_name = name(gestalt, set, &range.name)?;
+            let params = gestalt.push(blocks::PITCH_RANGE_PARAMETERS, &range.parameters, true);
+            let first_perm = gestalt.count(blocks::PERMUTATIONS);
+            let n = range.permutations.len();
+            // One permutation: +4 is 0 and +6 none; more: +4 none and +6 the
+            // bit offset of the range's runtime flags, a byte per eight.
+            let (encoded, flags) = if n == 1 {
+                (0u16, 0xffffu16)
+            } else {
+                let at = gestalt.flat[blocks::RUNTIME_PERMUTATION_FLAGS].len();
+                gestalt.flat[blocks::RUNTIME_PERMUTATION_FLAGS]
+                    .extend(std::iter::repeat_n(0, n.div_ceil(8)));
+                (0xffff, index16("runtime permutation flag", at * 8)?)
+            };
+            for (i, p) in range.permutations.into_iter().enumerate() {
+                let perm_name = name(gestalt, set, &p.name)?;
+                let first_chunk = index16("chunk", gestalt.chunks.len())?;
+                let size = p.size() as u32;
+                let count = index16("chunk count", p.chunks.len())?;
+                for c in p.chunks {
+                    let len = c.len() as u32;
+                    let raw = set.add_raw(c, CHUNK_ALIGN);
+                    gestalt.chunks.push(Chunk {
+                        pointer: ChunkPointer::Local(raw),
+                        size: len,
+                        runtime: u32::MAX,
+                    });
+                }
+                let mut e = [0u8; 16];
+                put_u16(&mut e, 0, perm_name);
+                put_u16(&mut e, 2, p.skip_fraction as u16);
+                e[4] = p.gain as u8;
+                e[5] = u8::try_from(i).unwrap_or(u8::MAX);
+                e[8..12].copy_from_slice(&size.to_le_bytes());
+                put_u16(&mut e, 12, first_chunk);
+                put_u16(&mut e, 14, count);
+                gestalt.push(blocks::PERMUTATIONS, &e, false);
+            }
+            let mut e = [0u8; 12];
+            put_u16(&mut e, 0, range_name);
+            put_u16(&mut e, 2, index16("pitch range parameters", params)?);
+            put_u16(&mut e, 4, encoded);
+            put_u16(&mut e, 6, flags);
+            put_u16(&mut e, 8, index16("permutation", first_perm)?);
+            put_u16(&mut e, 10, index16("permutation count", n)?);
+            gestalt.push(blocks::PITCH_RANGES, &e, false);
+        }
+        Ok(Converted {
+            group: FourCC(*b"snd!"),
+            root: Block::new(header.to_vec()),
+            raw: Vec::new(),
+        })
+    }
+}
+
+/// Adds `sounds` (name, sound) to `set`: decodes its `ugh!` (or starts an
+/// empty one), appends every sound's entries, installs each `snd!`, and
+/// writes the gestalt back in place. Returns the new sounds' datums.
+pub fn install_sounds(
+    set: &mut TagSet,
+    sounds: Vec<(String, ConvertedSound)>,
+) -> Result<Vec<TagId>> {
+    let mut gestalt = SoundGestalt::from_set(set)?;
+    let mut ids = Vec::with_capacity(sounds.len());
+    for (name, s) in sounds {
+        let c = s.add_to(&mut gestalt, set)?;
+        ids.push(
+            c.install(set, &name)
+                .map_err(|e| Error::Invalid(e.to_string()))?,
+        );
+    }
+    gestalt.install(set, crate::gestalt::DEFAULT_NAME)?;
+    Ok(ids)
+}
+
+/// Lets a set decomposed from a retail map ([`TagSet::from_map`]) gain
+/// tags. The builder never writes over the uninterpreted bytes after a
+/// pinned map's tag entries, so a pinned index can't grow; this zeroes
+/// them (as [`map::build::PinnedImage::clear_index_tail`] does for a map
+/// "built from scratch") and lets the entries use the whole index region.
+/// What the game does with those bytes is not known: see
+/// `docs/formats/h1-sounds.md`, "Open questions". Returns the nonzero
+/// bytes cleared.
+pub fn make_index_room(set: &mut TagSet) -> usize {
+    let Some(p) = set.pinned.as_mut() else {
+        return 0;
+    };
+    let cleared = p.clear_index_tail();
+    p.index_entries_end = p.index.len() as u32;
+    cleared
+}

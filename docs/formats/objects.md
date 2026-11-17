@@ -135,7 +135,7 @@ because their stride is either unproven or only an upper bound.
 | `bipd` | `0x1f0` flags | effe `0x25c`; string IDs `0x278`, `0x27c`; blocks `0x284` (`0x80`), `0x28c` (`0x50`), `0x294` (`0x80`), `0x2f8` (4); char `0x300`, `0x308` |
 | `vehi` | `0x1ec` flags, `0x1f0` vehicle type | blocks `0x268` (`0x44`), `0x2e8`/`0x2f0` (`0x4c`), `0x2f8` (one per vehicle); snd! `0x284`/`0x28c`; foot `0x294`; effe `0x29c`/`0x2a4` |
 | `item` | none | ten string IDs `0xcc..0xf0`; foot `0xf4`; snd! `0xfc`; block `0x104` (8); jpt! `0x10c`; effe `0x11c`/`0x124` |
-| `weap` | none | 28 references (effe, jpt!, snd!, nhdt, vehi, weap); blocks `0x2a8` (`0x10`), `0x2b8` (8), `0x2c0`, `0x2c8` (`0x40`), `0x2d0` (`0xec`) |
+| `weap` | `0x208` autoaim angle, `0x20c` autoaim range, `0x210` magnetism angle, `0x214` magnetism range, `0x218` deviation angle (all f32; read by `0x001a50a0`, names from Assembly; [aim-assist.md](../game/aim-assist.md)) | 28 references (effe, jpt!, snd!, nhdt, vehi, weap); blocks `0x2a8` (`0x10`), `0x2b8` (8), `0x2c0`, `0x2c8` (`0x40`), `0x2d0` (`0xec`) |
 | `eqip` | none | u16 `0x12c`/`0x12e`; snd! `0x134` |
 | `devi` | none | snd! `0xdc`/`0xe4`; effe or snd! `0xec`/`0xf4`/`0x110`; effe `0xfc`/`0x104` |
 | `mach` | u16 `0x11c` (`0x001153ee`), `0x11e` (`0x001151c5`), f32 `0x120` (`0x0011596e`) | none |
@@ -282,7 +282,7 @@ name, and 28 use a name the region lacks.
 ## Open items
 
 - **Gameplay fields.** Most unit, biped, vehicle, weapon, projectile and device
-  scalars are opaque. Several blocks are kept opaque because their stride is only
+  scalars are opaque (the weapon's aim-assist floats are the exception). Several blocks are kept opaque because their stride is only
   an upper bound (one element per tag) or their contents are unreviewed:
   - unit seats-like block `0x1c8`
   - weapon `0x2c0`

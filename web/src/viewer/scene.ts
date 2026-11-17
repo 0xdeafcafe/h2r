@@ -31,20 +31,25 @@ import type { SampledVehicle } from "../state/frames";
 import { Projectiles, lookFor, shotEnd, type Look } from "./projectiles";
 import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstance } from "./players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
-import { BipedAnim, SpeedMeter, actionShot, aimAngles, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { BipedAnim, HELD, SpeedMeter, actionShot, aimAngles, actorAim, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
+import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
-import { bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
-import { TextureSwap, loadFlats, type TexturePair } from "./textures3d";
+import { TextureSwap, deferTextures, loadFlats, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
 import { ScenarioObjects } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
+import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
+import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
+import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
 import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
@@ -92,8 +97,19 @@ interface PlayerObj {
   legs: number;
   /** The last one-shot started on the model. */
   shotId: number;
-  /** When they were first seen dead; null while alive. */
-  diedAt: number | null;
+  /** Whether they were alive at the last update (null: not seen yet). */
+  wasAlive: boolean | null;
+  /** Where they last stood alive, for a body a sender doesn't place. */
+  lastAlive: Place | null;
+}
+
+/** A dead player's model left lying (viewer/bodies.ts). */
+interface BodyObj {
+  group: THREE.Group;
+  biped: BipedInstance;
+  anim: BipedAnim;
+  /** The weapon class they died holding: which dying clip. */
+  cls: string;
 }
 
 /** A vehicle: its model, or a box of about its size; darker when nobody is in it. */
@@ -106,6 +122,8 @@ interface VehicleObj {
   key: string;
   height: number;
   kind: string;
+  /** Its model's turrets (viewer/turrets.ts), in the glb's order. */
+  turrets: TurretObj[];
 }
 
 /** One shot on screen: a tracer and its muzzle flash. */
@@ -162,6 +180,12 @@ export class ViewerScene {
   private looseMachines = new Map<string, VehicleObj>();
   // The level and its objects textured or in flat class colours (textures3d.ts).
   private textures = new TextureSwap();
+  // Which map load is current (a newer one stops the older one's pictures),
+  // and the current map's pictures, to free with it.
+  private mapGen = 0;
+  private mapTextures: THREE.Texture[] = [];
+  /** Settles when the current map's pictures have all arrived (or stopped). */
+  texturesReady: Promise<void> = Promise.resolve();
   /** The scenario's placed objects (scenario3d.ts): what frames move by
    *  `find(kind, index)` or `apply(objects)`. */
   readonly scenarioObjects = new ScenarioObjects(() => { this.dirty = true; });
@@ -187,6 +211,7 @@ export class ViewerScene {
   };
   private patched = new WeakSet<THREE.Material>();
   private v0 = new THREE.Vector3();
+  private e0 = new THREE.Euler();
   private v1 = new THREE.Vector3();
   private v2 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
@@ -198,7 +223,18 @@ export class ViewerScene {
   private tween: { t0: number; ms: number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
   private lastNow = 0;
   private lowZ = Infinity;
+  /** Dead players' bodies, left where they fell. */
+  private bodies = new Bodies<BodyObj>();
+  /** Which zone is in play (viewer/zones.ts). */
+  private zone = new ZoneFollower();
   private dirty = true;
+  /** The flycam while it is on (see flycam.ts); what to go back to is `saved`. */
+  private fly: { yaw: number; pitch: number; vel: THREE.Vector3; keys: Set<string>; drag: boolean; moved: number; dist: number; saved: { pos: THREE.Vector3; target: THREE.Vector3 } } | null = null;
+  private flySpeed = 1;
+  private flyOff: (() => void) | null = null;
+  /** Told when the flycam goes on or off (it also ends by itself), and its speed when that changes. */
+  onFlyChange?: (on: boolean) => void;
+  onFlySpeed?: (label: string) => void;
   private slow = 0;
   private w = 1; private h = 1;
   private disposed = false;
@@ -266,6 +302,7 @@ export class ViewerScene {
     this.controls.maxPolarAngle = Math.PI * 0.495;
     this.controls.addEventListener("change", () => { this.fitNear(); this.dirty = true; });
     this.controls.addEventListener("start", () => { this.tween = null; });
+    this.flyOff = this.listenFly(renderer.domElement);
 
     this.geoBody = new THREE.CapsuleGeometry(0.22, 0.42, 6, 16).translate(0, 0.43, 0);
     this.geoArrow = arrowGeometry();
@@ -291,9 +328,14 @@ export class ViewerScene {
   /** Loads a map's glb. Resolves false (and leaves the grid floor) when it
    *  can't be loaded. */
   async loadMap(url: string): Promise<boolean> {
+    const gen = ++this.mapGen;
     try {
-      const gltf = await new GLTFLoader().loadAsync(url);
-      if (this.disposed) return false;
+      // The level comes first, drawn in its class colours; its pictures
+      // follow (textures3d.ts).
+      const loader = new GLTFLoader();
+      const pending = deferTextures(loader, url);
+      const gltf = await loader.loadAsync(url);
+      if (this.disposed || gen !== this.mapGen) return false;
       // Textured primitives' class materials, for the flat look.
       const flats = await loadFlats(gltf);
       if (this.disposed) return false;
@@ -328,6 +370,7 @@ export class ViewerScene {
         if (mesh.isMesh) {
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
           let flat = Array.isArray(mesh.material) ? undefined : flats.get(mesh);
           if (flat && role === "machine") flat = own(flat);
           if (flat) pairs.push({ mesh, textured: mesh.material as THREE.Material, flat });
@@ -350,6 +393,8 @@ export class ViewerScene {
         }
         for (const c of o.children) walk(c, path, aside);
       };
+      const used = new Set<THREE.Material>();
+      let wet = false;
       root.updateWorldMatrix(true, true);
       walk(root, []);
       if (box.isEmpty()) box.setFromObject(root);
@@ -358,6 +403,7 @@ export class ViewerScene {
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
       this.look.adopt(root, assetExtras, url);
+      this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
       this.frameObjects.reset();
@@ -375,10 +421,22 @@ export class ViewerScene {
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
       this.frameCamera(true);
+      this.streamPictures(pending, used, gen);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** Fetches the map's pictures and puts each on its surfaces as it comes. */
+  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number) {
+    this.mapTextures = [];
+    for (const p of pending) this.mapTextures.push(...texturesSharing(p.texture, used));
+    this.texturesReady = streamTextures(pending, (p, picture) => {
+      for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
+      this.textures.refresh();
+      this.dirty = true;
+    }, { stopped: () => this.disposed || gen !== this.mapGen }).then(() => undefined);
   }
 
   /** Builds (or drops) the level's teleporters, links and lifts. */
@@ -420,7 +478,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind };
+      o = { group, box, boxMat, model: null, key: "", height: 1.2, kind: m.kind, turrets: [] };
       this.looseMachines.set(m.id, o);
     }
     const mod = this.models, file = mod?.table.objects[m.kind];
@@ -478,6 +536,8 @@ export class ViewerScene {
   setEffects(on: boolean) { this.look.setEffects(on); }
   setSky(on: boolean) { this.look.setSky(on); }
   setFog(on: boolean) { this.look.setFog(on); }
+  /** The level's rain, snow or motes, where they fall. */
+  setWeather(on: boolean) { this.look.setWeather(on); }
 
   /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
@@ -581,6 +641,12 @@ export class ViewerScene {
 
   private clearMap() {
     if (!this.map) return;
+    for (const t of this.mapTextures) {
+      t.dispose();
+      const img = t.image as { close?: () => void } | null;
+      img?.close?.();
+    }
+    this.mapTextures = [];
     this.textures.clear();
     this.scenarioObjects.clear();
     this.scene.remove(this.map);
@@ -591,6 +657,8 @@ export class ViewerScene {
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
     this.map = null;
+    for (const b of this.bodies.clear()) this.dropBody(b.obj);
+    this.zone.reset();
     this.look.clear();
     this.machineNodes.clear();
     this.features = null;
@@ -691,6 +759,7 @@ export class ViewerScene {
   }
 
   setMode(mode: ViewMode, follow: number | null = null) {
+    this.endFly(false);
     const was = this.mode;
     this.mode = mode;
     this.followIndex = mode === "follow" ? follow : null;
@@ -725,7 +794,171 @@ export class ViewerScene {
   }
 
   /** Back to the whole map, in the current mode. */
-  reset() { this.frameCamera(false); }
+  reset() { this.endFly(false); this.frameCamera(false); }
+
+  // ---- flycam ----
+
+  get flying() { return this.fly !== null; }
+
+  /** Flies free from where the camera is; off again goes back to the mode
+   *  and view it had (the mode itself is never touched, so a followed
+   *  player stays followed). */
+  setFly(on: boolean) {
+    if (on === (this.fly !== null) || this.disposed) return;
+    if (!on) { this.endFly(true); return; }
+    const saved = this.tween
+      ? { pos: this.tween.p1.clone(), target: this.tween.q1.clone() }
+      : { pos: this.camera.position.clone(), target: this.controls.target.clone() };
+    this.tween = null;
+    const dir = this.camera.getWorldDirection(this.v1);
+    const a = anglesOf(dir.x, dir.y, dir.z);
+    this.fly = { ...a, vel: new THREE.Vector3(), keys: new Set(), drag: false, moved: 0, dist: Math.max(1, this.camera.position.distanceTo(this.controls.target)), saved };
+    this.controls.enabled = false;
+    this.onFlyChange?.(true);
+    this.dirty = true;
+  }
+
+  /** Leaves the flycam; `back` returns the camera to where it was before. */
+  private endFly(back: boolean) {
+    const f = this.fly;
+    if (!f) return;
+    this.fly = null;
+    if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock();
+    this.controls.enabled = true;
+    if (back) this.moveCamera(f.saved.pos, f.saved.target, false);
+    this.onFlyChange?.(false);
+    this.dirty = true;
+  }
+
+  /** Keys for the flycam: true when one is its own (the page should not scroll for it). */
+  flyKey(e: KeyboardEvent, down: boolean): boolean {
+    const f = this.fly;
+    if (!f || !FLY_KEYS.has(e.code) || e.metaKey || e.altKey) return false;
+    if (down) f.keys.add(e.code); else f.keys.delete(e.code);
+    return true;
+  }
+
+  /** Lets go of every key (the view lost focus, so no key-up will come). */
+  flyRelease() { this.fly?.keys.clear(); }
+
+  private flyLook(dx: number, dy: number) {
+    const f = this.fly!;
+    Object.assign(f, lookStep(f.yaw, f.pitch, dx, dy));
+    this.dirty = true;
+  }
+
+  /** Mouse drag (left or right button) or pointer lock to look, the wheel
+   *  for speed; on a touch screen one finger looks and two fly (spread to
+   *  go forward, drag to slide). */
+  private listenFly(el: HTMLElement): () => void {
+    // Pointers down on the view, by id: where each was last.
+    const pointers = new Map<number, { x: number; y: number; touch: boolean }>();
+    const down = (e: PointerEvent) => {
+      const f = this.fly;
+      const touch = e.pointerType === "touch";
+      if (!f || (!touch && !looksWith(e.button))) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, touch });
+      f.drag = true; f.moved = 0;
+      el.setPointerCapture(e.pointerId);
+    };
+    const move = (e: PointerEvent) => {
+      const f = this.fly;
+      if (!f) return;
+      if (document.pointerLockElement === el) {
+        const l = pointerLook(e.movementX, e.movementY);
+        this.flyLook(l.dx, l.dy);
+        return;
+      }
+      const p = pointers.get(e.pointerId);
+      if (!p || !f.drag) return;
+      const dx = e.clientX - p.x, dy = e.clientY - p.y;
+      f.moved += Math.abs(dx) + Math.abs(dy);
+      const touches = [...pointers.entries()].filter(([, q]) => q.touch);
+      if (p.touch && touches.length >= 2) {
+        // Two fingers: this one moved, the other stayed where it was.
+        const other = touches.find(([id]) => id !== e.pointerId)![1];
+        const m = twoFingerMove([p.x, p.y], [other.x, other.y], [e.clientX, e.clientY], [other.x, other.y]);
+        this.flyNudge(m, this.flyUnitsPerSecond(false) / 300);
+      } else {
+        const l = pointerLook(dx, dy, p.touch ? TOUCH_LOOK : MOUSE_LOOK);
+        this.flyLook(l.dx, l.dy);
+      }
+      p.x = e.clientX; p.y = e.clientY;
+    };
+    const up = (e: PointerEvent) => {
+      const f = this.fly;
+      const p = pointers.get(e.pointerId);
+      pointers.delete(e.pointerId);
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      if (!f || !p) return;
+      f.drag = pointers.size > 0;
+      // A left click rather than a drag takes the mouse (Esc gives it back).
+      if (!p.touch && e.button === 0 && f.moved < 4 && document.pointerLockElement !== el) void (el.requestPointerLock() as Promise<void> | undefined)?.catch(() => {});
+    };
+    // The right button looks, so it must not open the page's menu.
+    const menu = (e: MouseEvent) => { if (this.fly) e.preventDefault(); };
+    const wheel = (e: WheelEvent) => {
+      if (!this.fly) return;
+      e.preventDefault();
+      const next = speedStep(this.flySpeed, e.deltaY, e.deltaMode);
+      if (next === this.flySpeed) return;
+      this.flySpeed = next;
+      this.onFlySpeed?.(speedLabel(this.flySpeed));
+    };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    el.addEventListener("contextmenu", menu);
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      el.removeEventListener("contextmenu", menu);
+      el.removeEventListener("wheel", wheel);
+    };
+  }
+
+  /** How fast the flycam flies, world units a second. */
+  private flyUnitsPerSecond(boost: boolean) {
+    return this.scale * 6 * this.flySpeed * (boost ? BOOST : 1);
+  }
+
+  /** Moves the flycam at once by `m` (camera frame) times `k` world units. */
+  private flyNudge(m: FlyMove, k: number) {
+    const f = this.fly;
+    if (!f || moveIsIdle(m)) return;
+    this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
+    const fwd = this.camera.getWorldDirection(this.v1);
+    const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
+    this.camera.position.addScaledVector(fwd, m.forward * k).addScaledVector(right, m.right * k);
+    this.camera.position.y += m.up * k;
+    this.dirty = true;
+  }
+
+  /** One frame of flying: keys and the gamepad to a velocity (eased unless
+   *  motion is reduced), the velocity to a position. `dt` in ms. */
+  private flyStep(dt: number) {
+    const f = this.fly!;
+    const sec = dt / 1000;
+    const pad = padInput(Array.from(navigator.getGamepads?.() ?? []).find((g) => g?.connected));
+    if (pad.lookX || pad.lookY) this.flyLook(pad.lookX * PAD_LOOK * sec, pad.lookY * PAD_LOOK * sec);
+    const m = addMoves(keyMove(f.keys), pad.move);
+    const speed = this.flyUnitsPerSecond(keyBoost(f.keys) || pad.boost);
+    this.camera.quaternion.setFromEuler(this.e0.set(f.pitch, f.yaw, 0, "YXZ"));
+    const fwd = this.camera.getWorldDirection(this.v1);
+    const right = this.v2.set(Math.cos(f.yaw), 0, -Math.sin(f.yaw));
+    const want = this.v0.set(0, m.up, 0).addScaledVector(fwd, m.forward).addScaledVector(right, m.right).multiplyScalar(speed);
+    const tau = this.opts.reducedMotion ? 0 : 0.12;
+    f.vel.set(approach(f.vel.x, want.x, sec, tau), approach(f.vel.y, want.y, sec, tau), approach(f.vel.z, want.z, sec, tau));
+    if (f.vel.lengthSq() > 1e-8) { this.camera.position.addScaledVector(f.vel, sec); this.dirty = true; }
+    else f.vel.set(0, 0, 0);
+    // The orbit target rides ahead of the camera, for the near plane and the fog.
+    this.controls.target.copy(this.camera.position).addScaledVector(fwd, f.dist);
+    this.fitNear();
+  }
 
   // ---- players ----
 
@@ -761,7 +994,7 @@ export class ViewerScene {
       const group = new THREE.Group();
       group.add(box);
       this.scene.add(group);
-      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "" };
+      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "", turrets: [] };
       this.vehicles.set(v.id, o);
     }
     const m = this.models;
@@ -774,6 +1007,7 @@ export class ViewerScene {
       if (o.model) o.group.remove(o.model);
       o.model = template ? this.library.instantiateVehicle(template, empty ? null : colour, empty) : null;
       if (o.model) o.group.add(o.model);
+      o.turrets = o.model ? findTurrets(o.model) : [];
       o.box.visible = !o.model;
       const [len, wid, tall] = vehicleBox(v.kind);
       o.box.scale.set(len, tall, wid);
@@ -820,7 +1054,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, diedAt: -Infinity };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }
@@ -883,18 +1117,19 @@ export class ViewerScene {
   private animate(p: PlayerObj, s: SmoothPlayer, now: number, dt: number) {
     const measured = p.meter.update(s.x, s.y, dt);
     const speed = s.speed ?? measured;
-    const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed });
+    const st = p.anim.update(now, { alive: s.alive, stance: s.stance, speed, z: s.z });
     const squat = st.loop === "crouch" ? 0.7 : 1;
     if (p.body.scale.y !== squat) { p.body.scale.y = squat; this.dirty = true; }
     const an = p.biped?.animator;
     if (!an || this.opts.reducedMotion) return;
     this.aimBody(p, s, an, st.loop === "walk" || st.loop === "run" ? p.meter.heading : null, dt);
     const cls = this.clipClass(s);
-    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), st.loop === "die");
+    an.setLoop(clipFor(an.names, cls, st.loop), paceScale(st.loop, speed), HELD.has(st.loop));
     if (st.shotId !== p.shotId) {
       p.shotId = st.shotId;
       // Anything but landing is done with the arms: unless they stand still, the legs carry on with the loop.
-      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), st.shot !== "land" && st.loop !== "idle");
+      const landing = st.shot === "land" || st.shot === "land_hard";
+      if (st.shot) an.playOnce(clipFor(an.names, cls, st.shot), !landing && st.loop !== "idle");
     }
     an.update(dt);
     this.dirty = true;
@@ -906,19 +1141,94 @@ export class ViewerScene {
    *  along it. The body's turn is `turn.rotation.y`, the facing plus `legs`. */
   private aimBody(p: PlayerObj, s: SmoothPlayer, an: BipedAnimator, heading: number | null, dt: number) {
     const { yaw, pitch } = aimAngles(s.aim);
-    const want = s.alive ? legTwist(yaw, heading) : 0;
+    const up = s.alive && s.stance !== "dead";
+    const want = up ? legTwist(yaw, heading) : 0;
     p.legs += (want - p.legs) * Math.min(1, dt / 220);
-    const body = s.yaw + p.legs;
+    // An AI's body is drawn facing where it aims, as the game turns it
+    // (its own facing lags behind); a player's faces as they do, which is
+    // their aim.
+    const body = (p.actor && up ? yaw : s.yaw) + p.legs;
     p.turn.rotation.y = yawToGl(body);
-    an.aim(s.alive ? pitch : 0, s.alive ? wrapAngle(yaw - body) : 0);
+    if (!up) { an.aim(0, 0); return; }
+    const twist = wrapAngle(yaw - body);
+    const aim = p.actor ? actorAim(pitch, twist) : { pitch, twist };
+    an.aim(aim.pitch, aim.twist);
   }
 
-  /** How long a dead player's model stays to play its dying clip (ms); 0 when it has none. */
-  private dyingFor(p: PlayerObj, s: SmoothPlayer): number {
-    const an = p.biped?.animator;
-    if (!an || this.opts.reducedMotion) return 0;
-    const d = an.duration(clipFor(an.names, this.clipClass(s), "die"));
-    return d === null ? 0 : d + 700;
+  /** Shows the zone in play: the game's loaded zone where the players are
+   *  in it, else the one the followed player (or most players) stands in,
+   *  held a moment against flicker (viewer/zones.ts). When it changes and
+   *  the camera isn't following anyone, the camera moves to frame it. */
+  private followZone(now: number, reported: number | null, highlight: number | null, seeking: boolean) {
+    const players: Array<{ x: number; y: number; z: number }> = [];
+    for (const s of this.shown.values()) if (!s.actor && s.alive) players.push(s);
+    const fi = this.followIndex ?? highlight;
+    const f = fi !== null ? this.shown.get(fi) : undefined;
+    const focus = f && f.alive && !f.actor ? f : null;
+    const bsp = this.zone.update(now, this.look.zoneBoxes(), { reported, focus, players }, { cinematic: this.look.cinematicOn(), snap: seeking });
+    if (!this.look.setActive(bsp) || bsp === null || !this.look.following() || this.mode === "follow") return;
+    const box = this.look.zoneBox(bsp);
+    // A level with one zone was framed whole at load.
+    if (!box || this.look.zoneBoxes().length < 2) return;
+    const fit = cameraFit(box, this.camera.fov, this.camera.aspect);
+    const target = new THREE.Vector3(...gameToGl(...fit.centre));
+    const pos = this.mode === "top"
+      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
+      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
+    this.moveCamera(pos, target, seeking);
+  }
+
+  /** Leaves a player's body where they fell: a copy of their model, made
+   *  when they die, lying where the frames put them until they respawn,
+   *  then staying behind (viewer/bodies.ts). */
+  private playerBody(index: number, p: PlayerObj, s: SmoothPlayer, now: number, seeking: boolean) {
+    const place: Place = { x: s.x, y: s.y, z: s.z, yaw: s.yaw };
+    if (s.alive) {
+      if (p.wasAlive === false) this.bodies.release(index);
+      p.lastAlive = place;
+    } else if (p.wasAlive && !seeking && p.biped && this.models && p.bipedUrl) {
+      const template = this.library.biped(p.bipedUrl);
+      if (template?.clips.size) {
+        const biped = this.library.instantiateBiped(template, p.colour);
+        const group = new THREE.Group();
+        group.add(biped.object);
+        this.scene.add(group);
+        const at = bodyPlace(place, p.lastAlive);
+        const cls = weaponClass(this.models.table.classes, p.weaponName);
+        for (const old of this.bodies.add(index, at, now, { group, biped, anim: new BipedAnim(true), cls })) this.dropBody(old.obj);
+        this.dirty = true;
+      }
+    } else if (!s.alive) {
+      const b = this.bodies.following(index);
+      if (b) Object.assign(b, bodyPlace(place, p.lastAlive));
+    }
+    p.wasAlive = s.alive;
+  }
+
+  private dropBody(b: BodyObj) {
+    this.scene.remove(b.group);
+    b.biped.animator?.dispose();
+    this.dirty = true;
+  }
+
+  /** Places and animates the bodies; old ones go, and a seek clears them all. */
+  private updateBodies(now: number, dt: number, seeking: boolean) {
+    for (const b of seeking ? this.bodies.clear() : this.bodies.expire(now)) this.dropBody(b.obj);
+    for (const b of this.bodies.list) {
+      const o = b.obj, an = o.biped.animator;
+      const [x, y, z] = gameToGl(b.x, b.y, b.z);
+      o.group.position.set(x, y, z);
+      o.group.rotation.y = yawToGl(b.yaw);
+      o.group.scale.setScalar(MODEL_SCALE);
+      if (!an) continue;
+      const dieMs = an.duration(clipFor(an.names, o.cls, "die")) ?? 0;
+      const st = o.anim.update(now, { alive: false });
+      if (this.opts.reducedMotion) { an.setLoop(clipFor(an.names, o.cls, "dead"), 1, true); an.update(0); continue; }
+      an.setLoop(clipFor(an.names, o.cls, st.loop), 1, true);
+      an.update(dt);
+      // Still once the death clip has run (or while it is being followed).
+      if (now - b.bornAt < dieMs + 1000 || b.following) this.dirty = true;
+    }
   }
 
   /** Where a player's shots leave from, in the scene: the weapon's muzzle,
@@ -1015,6 +1325,23 @@ export class ViewerScene {
     }
   }
 
+  /** Points a vehicle model's turrets along their aims (each eased, unless
+   *  `snap`); one without an aim this frame holds where it was. */
+  private aimTurrets(o: VehicleObj, aims: readonly TurretAim[], dt: number, snap: boolean) {
+    const kinds = o.turrets.map((t) => t.kind);
+    for (const a of aims) {
+      const t = o.turrets[pickTurret(kinds, a.kind)];
+      if (!t) continue;
+      const want = turretWant(t, a.aim);
+      const tau = snap || this.opts.reducedMotion ? 0 : 0.08;
+      const yaw = easeAngle(t.now.yaw, want.yaw, dt / 1000, tau), pitch = easeAngle(t.now.pitch, want.pitch, dt / 1000, tau);
+      if (Math.abs(yaw - t.now.yaw) + Math.abs(pitch - t.now.pitch) > 1e-5) this.dirty = true;
+      t.now.yaw = yaw;
+      t.now.pitch = pitch;
+    }
+    for (const t of o.turrets) poseTurret(t);
+  }
+
   private mark(i: number): MarkObj {
     let m = this.marks[i];
     if (!m) {
@@ -1050,18 +1377,22 @@ export class ViewerScene {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
     }
-    this.look.setActive(frame.bsp ?? null);
+    this.followZone(now, frame.bsp ?? null, highlight, seeking);
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
     this.updateMachines(frame.machines ?? [], dt, snap);
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
-    // Vehicles first: whoever is in one is drawn as the vehicle.
+    // Vehicles first: whoever is in one is drawn as the vehicle. A turret
+    // is drawn as part of the vehicle it is mounted on, aimed.
     smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });
+    const mounts = mountedTurrets(this.shownVehicles.values(), this.shown.values());
+    const hullOf = (id: string | null) => (id ? mounts.hullOf.get(id) ?? id : null);
     for (const [id, v] of this.shownVehicles) {
+      if (v.parent) continue;
       let colour: string | null = null;
-      for (const [index, s] of this.shown) if (s.vehicle === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
+      for (const [index, s] of this.shown) if (hullOf(s.vehicle) === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
       const o = this.vehicle(v, colour);
       const [x, y, z] = gameToGl(v.x, v.y, v.z);
       const k = o.model ? MODEL_SCALE : S;
@@ -1072,9 +1403,10 @@ export class ViewerScene {
       if (g.position.x !== x || g.position.y !== y || g.position.z !== z || g.scale.x !== k || q.x !== qx || q.y !== qy || q.z !== qz) this.dirty = true;
       g.position.set(x, y, z);
       g.scale.setScalar(k);
+      if (o.turrets.length) this.aimTurrets(o, mounts.aims.get(id) ?? [], dt, snap);
     }
     for (const [id, o] of this.vehicles) {
-      if (this.shownVehicles.has(id)) continue;
+      if (this.shownVehicles.has(id) && !this.shownVehicles.get(id)!.parent) continue;
       this.scene.remove(o.group);
       o.boxMat.dispose();
       this.vehicles.delete(id);
@@ -1084,7 +1416,7 @@ export class ViewerScene {
     for (const [index, s] of this.shown) {
       const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
       const p = this.player(index, info, !!s.actor);
-      const ride = s.vehicle ? this.vehicles.get(s.vehicle) : undefined;
+      const ride = s.vehicle ? this.vehicles.get(hullOf(s.vehicle)!) : undefined;
       if (ride && s.alive) {
         // In a vehicle: the vehicle stands for them, and carries their label.
         const g = p.group;
@@ -1100,14 +1432,16 @@ export class ViewerScene {
         if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
         continue;
       }
+      // An AI's body comes in the frames (the `dead` stance) and is drawn
+      // as it lies; a player's is left behind as a body of its own, made
+      // from the model they had alive (the dead have no species or weapon).
+      const dead = !s.alive || s.stance === "dead";
+      if (!p.actor) this.playerBody(index, p, s, now, seeking);
       this.dress(p, s);
-      if (s.alive) p.diedAt = null;
-      else if (p.diedAt === null) p.diedAt = seeking ? -Infinity : now;
-      // A model with a dying clip stays to play it; anything else is gone at once.
-      const show = s.alive || now - p.diedAt! < this.dyingFor(p, s);
+      const show = s.alive || (p.actor && dead);
       p.turn.visible = true;
-      p.ring.visible = s.alive;
-      p.ray.visible = s.alive && !p.actor;
+      p.ring.visible = !dead;
+      p.ray.visible = !dead && !p.actor;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
       const big = highlight === index || this.followIndex === index;
@@ -1119,7 +1453,7 @@ export class ViewerScene {
       const yaw = yawToGl(s.yaw);
       if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.visible = show;
-      p.label.visible = s.alive && (!p.actor || this.actorNames);
+      p.label.visible = !dead && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
       turn.scale.setScalar(k);
@@ -1128,7 +1462,7 @@ export class ViewerScene {
       p.label.position.y = p.biped ? p.biped.height * k * 1.08 + 0.12 * S : 1.15 * k;
       p.el.classList.toggle("on", big);
       if (show) this.animate(p, s, now, dt);
-      if (!s.alive || p.actor) continue;
+      if (dead || p.actor) continue;
       // The aim ray: from the eye point, along the eased aim. Reduced motion
       // has no flashes; the ray itself says "firing" for a moment instead.
       g.updateWorldMatrix(false, true);
@@ -1155,6 +1489,7 @@ export class ViewerScene {
       this.players.delete(index);
       this.dirty = true;
     }
+    this.updateBodies(now, dt, seeking);
     this.drawShots(now);
     if (this.projectiles.update(now)) this.dirty = true;
     if (this.effects.update(this.feed.liveHits(now), still ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
@@ -1175,8 +1510,10 @@ export class ViewerScene {
       this.marks[i]!.group.visible = false;
     }
 
-    // Camera: a running tween, then following.
-    if (this.tween) {
+    // Camera: flying, or a running tween, then following.
+    if (this.fly) {
+      this.flyStep(dt);
+    } else if (this.tween) {
       const tw = this.tween;
       const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = u * u * (3 - 2 * u);
       this.camera.position.lerpVectors(tw.p0, tw.p1, e);
@@ -1196,7 +1533,11 @@ export class ViewerScene {
         }
       }
     }
-    this.controls.update();
+    if (!this.fly) this.controls.update();
+    // The water's ripples and the weather move by themselves.
+    // (Held still when motion is reduced, but the weather still follows the view.)
+    const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
+    if (moving && !this.opts.reducedMotion) this.dirty = true;
     if (!this.dirty) return;
     this.dirty = false;
     this.draw(dt);
@@ -1270,10 +1611,13 @@ export class ViewerScene {
 
   dispose() {
     this.disposed = true;
+    this.endFly(false);
+    this.flyOff?.();
     this.clearMap();
     this.controls.dispose();
     for (const p of this.players.values()) this.removePlayer(p);
     this.players.clear();
+    for (const b of this.bodies.clear()) this.dropBody(b.obj);
     for (const o of this.vehicles.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
     this.vehicles.clear();
     for (const o of this.looseMachines.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }

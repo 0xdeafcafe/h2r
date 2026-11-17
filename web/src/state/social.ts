@@ -19,7 +19,7 @@ import type { WireEvent, Xuid } from "../api/types";
 export type WriteResult = { ok: true } | { ok: false; error: string };
 
 function createSocial() {
-  const api = () => socialApi(live.server());
+  const api = () => socialApi(live.server(), () => live.api().readToken());
   const tagOf = (x: Xuid) => live.state.accounts[x]?.gamertag ?? x;
 
   // ----- friends: the signed-in account's document, and others' on demand -----
@@ -47,6 +47,11 @@ function createSocial() {
   }
 
   const mine = () => { const me = identity.me(); return me ? friendsOf(me.xuid, me.gamertag) : null; };
+  // A sign-in or sign-out: friends documents were read as the old reader
+  // (a friend's presence details depend on who reads), so read them again.
+  createEffect(on(() => identity.me()?.xuid ?? null, () => {
+    for (const x of Object.keys(loaded())) later("f-" + x, () => loadFriends(x, tagOf(x)), 0);
+  }, { defer: true }));
 
   // ----- teams: every active team, kept current from the stream -----
   const [teams, setTeams] = createStore<Record<string, Team>>({});

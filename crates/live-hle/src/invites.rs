@@ -513,6 +513,66 @@ impl Invites {
         }
         Ok(0)
     }
+    /// The friends of controller `index`'s player as last read (the menu's
+    /// refresh keeps it current): accepted friends only, online ones first,
+    /// each with what presence says.
+    pub fn friend_list(&self, index: usize) -> Vec<crate::Friend> {
+        let Some(view) = &self.cache[index].view else {
+            return Vec::new();
+        };
+        let mut out: Vec<crate::Friend> = view
+            .friends
+            .friends
+            .iter()
+            .map(|f| crate::Friend {
+                xuid: f.xuid,
+                gamertag: f.gamertag.to_string(),
+                online: f.presence.is_some(),
+                playing: f.presence.as_ref().is_some_and(|p| p.state == "playing"),
+                activity: f.presence.as_ref().and_then(|p| p.activity.clone()),
+            })
+            .collect();
+        out.sort_by_key(|f| (!f.online, f.gamertag.to_ascii_lowercase()));
+        out
+    }
+    /// Sends a game invitation for `session_id` from controller
+    /// `controller`'s player (`actor`) to `to`, outside a guest task (the
+    /// co-op screen's Invite). The answer is pumped like the title's own.
+    pub fn send(
+        &mut self,
+        controller: usize,
+        actor: u64,
+        to: Xuid,
+        session_id: String,
+        service: Option<&Service>,
+        session: Option<&Session>,
+    ) -> Result<(), u32> {
+        let (Some(service), Some(session)) = (service, session) else {
+            return Err(NO_SESSION);
+        };
+        if controller >= 4 || actor == 0 {
+            return Err(INVALID_USER);
+        }
+        if self.internal.len() + self.tasks.len() >= 64 {
+            return Err(TASK_BUSY);
+        }
+        let pending = service.social(
+            session,
+            actor,
+            SocialRequest::Send {
+                to: vec![to],
+                session_id,
+            },
+        )?;
+        self.internal.push(Task {
+            pending: Some(pending),
+            controller,
+            status: 0,
+            invite: None,
+            actor,
+        });
+        Ok(())
+    }
     pub fn delete(
         &mut self,
         index: usize,

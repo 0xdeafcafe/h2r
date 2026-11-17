@@ -108,6 +108,52 @@ pub static RENDER_SCALE: Def = Def {
     }),
 };
 
+/// [`LIGHTING`]'s values.
+pub const LIGHTING_RETAIL: i64 = 0;
+pub const LIGHTING_E3: i64 = 1;
+
+pub static LIGHTING: Def = Def {
+    key: "graphics.lighting",
+    label: "Lighting",
+    help: "Retail, or E3: harder, sharper shadows (docs/graphics/e3-lighting.md, phase 1). \
+           E3 draws the game's shadow maps at the render scale (at least twice the game's \
+           size) and compares them with one tap, in the shown image only; the game itself \
+           sees retail. A change applies at the next frame.",
+    kind: Kind::Choice(&[
+        Choice {
+            value: LIGHTING_RETAIL,
+            name: "retail",
+            label: "Retail",
+        },
+        Choice {
+            value: LIGHTING_E3,
+            name: "e3",
+            label: "E3",
+        },
+    ]),
+    default: Value::Int(LIGHTING_RETAIL),
+    env: Some("H2_LIGHTING"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 35,
+    }),
+};
+
+/// [`LIGHTING`]'s value as the view backend takes it.
+pub fn lighting_of(value: u32) -> d3d::Lighting {
+    if value as i64 == LIGHTING_E3 {
+        d3d::Lighting::E3
+    } else {
+        d3d::Lighting::Retail
+    }
+}
+
 pub static PAD_SPEAKER: Def = Def {
     key: "pad_speaker.enabled",
     label: "Controller Speaker",
@@ -146,6 +192,114 @@ pub static PAD_MUTE: Def = Def {
         order: 40,
     }),
 };
+
+pub static STEAM_SPEAKER: Def = Def {
+    key: "steam_pad.speaker",
+    label: "Steam Pad Speaker",
+    help: "With no DualSense speaker, a Steam Controller's trackpads buzz the pitch \
+           and loudness of the sounds the controller-speaker routes pick, as haptics \
+           (docs/input/steam-controller.md). Controller Speaker must be on too.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_STEAM_SPEAKER"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
+};
+
+pub static STEAM_SENSITIVITY: Def = Def {
+    key: "steam_pad.sensitivity",
+    label: "Trackpad Aim",
+    help: "How far the Steam Controller's right trackpad turns you for a swipe, \
+           1 to 10; 5 is the default.",
+    kind: Kind::Int {
+        valid: 1..=10,
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_STEAM_SENSITIVITY"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
+};
+
+/// The values of [`STEAM_LEFT_PAD`].
+pub const LEFT_PAD_DPAD: i64 = 0;
+pub const LEFT_PAD_STICK: i64 = 1;
+
+pub static STEAM_LEFT_PAD: Def = Def {
+    key: "steam_pad.left_pad",
+    label: "Left Trackpad",
+    help: "The Steam Controller's left trackpad: the d-pad when clicked, or a \
+           second left stick (the controller's own stick still works).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: LEFT_PAD_DPAD,
+            name: "dpad",
+            label: "D-Pad",
+        },
+        Choice {
+            value: LEFT_PAD_STICK,
+            name: "stick",
+            label: "Stick",
+        },
+    ]),
+    default: Value::Int(LEFT_PAD_DPAD),
+    env: Some("H2_STEAM_LEFT_PAD"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
+};
+
+/// The Steam Controller tuning the settings in `store` give, kept current
+/// as they change.
+pub fn steam_tuning(store: &Store) -> input::steam_pad::SteamTuning {
+    let tuning = input::steam_pad::SteamTuning::new(
+        left_pad_mode(store.handle::<i64>(STEAM_LEFT_PAD.key).get()),
+        store
+            .handle::<i64>(STEAM_SENSITIVITY.key)
+            .get()
+            .clamp(1, 10) as u8,
+        store.handle::<bool>(STEAM_SPEAKER.key).get(),
+    );
+    let t = tuning.clone();
+    store.on_change(STEAM_LEFT_PAD.key, move |v| {
+        t.set_left_pad(left_pad_mode(v.as_int().unwrap_or(LEFT_PAD_DPAD)))
+    });
+    let t = tuning.clone();
+    store.on_change(STEAM_SENSITIVITY.key, move |v| {
+        t.set_sensitivity(v.as_int().unwrap_or(5).clamp(1, 10) as u8)
+    });
+    let t = tuning.clone();
+    store.on_change(STEAM_SPEAKER.key, move |v| {
+        t.set_speaker(v.as_bool().unwrap_or(true))
+    });
+    tuning
+}
+
+fn left_pad_mode(v: i64) -> input::trackpad::LeftPadMode {
+    if v == LEFT_PAD_STICK {
+        input::trackpad::LeftPadMode::Stick
+    } else {
+        input::trackpad::LeftPadMode::Dpad
+    }
+}
 
 /// The values of [`LIVE_VISIBILITY`], as `live_glue` hands them to the HLE.
 pub const VISIBILITY_PUBLIC: i64 = 0;
@@ -191,14 +345,250 @@ pub static LIVE_VISIBILITY: Def = Def {
     menu: None,
 };
 
+/// How strong the weapons' aim assist is (crate::aim_assist,
+/// docs/game/aim-assist.md). Read at each map load.
+pub static AIM_ASSIST: Def = Def {
+    key: "controls.aim_assist",
+    label: "Aim Assist",
+    help: "How strongly the crosshair is pulled to and held on targets. Auto is Strong \
+           while the on-screen touch controls show and the game's own otherwise; Strong and \
+           Very strong widen the weapons' autoaim and magnetism. Applies at the next map \
+           load; multiplayer games always use the game's own (docs/game/aim-assist.md).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: crate::aim_assist::SETTING_AUTO,
+            name: "auto",
+            label: "Auto",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_DEFAULT,
+            name: "default",
+            label: "Default",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_STRONG,
+            name: "strong",
+            label: "Strong",
+        },
+        Choice {
+            value: crate::aim_assist::SETTING_VERY_STRONG,
+            name: "very_strong",
+            label: "Very Strong",
+        },
+    ]),
+    default: Value::Int(crate::aim_assist::SETTING_AUTO),
+    env: Some("H2_AIM_ASSIST"),
+    flag: None,
+    aliases: &[
+        ("retail", Value::Int(crate::aim_assist::SETTING_DEFAULT)),
+        (
+            "very-strong",
+            Value::Int(crate::aim_assist::SETTING_VERY_STRONG),
+        ),
+    ],
+    parse_env: None,
+    // The handle changes at once; the hook reads it at each map load.
+    apply: Apply::Live,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 50,
+    }),
+};
+
+/// The iOS touch controls' rows (`input::touch`, docs/runtime/ios.md). On
+/// the Controls screen on iOS, in place of the Steam Controller's
+/// (`video_screen::Switches`); read live by `apple-host`.
+pub static TOUCH_LOOK: Def = Def {
+    key: "touch.look",
+    label: "Touch Look Speed",
+    help: "How fast a drag on the right side of the screen turns you, 1 to 10; 5 \
+           is the default.",
+    kind: Kind::Int {
+        valid: 1..=10,
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_TOUCH_LOOK"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// The values of [`TOUCH_CROUCH`].
+pub const TOUCH_CROUCH_TOGGLE: i64 = 0;
+pub const TOUCH_CROUCH_HOLD: i64 = 1;
+
+pub static TOUCH_CROUCH: Def = Def {
+    key: "touch.crouch",
+    label: "Touch Crouch",
+    help: "The on-screen Crouch button: a tap crouches and the next stands \
+           (Toggle), or crouched only while held (Hold).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: TOUCH_CROUCH_TOGGLE,
+            name: "toggle",
+            label: "Toggle",
+        },
+        Choice {
+            value: TOUCH_CROUCH_HOLD,
+            name: "hold",
+            label: "Hold",
+        },
+    ]),
+    default: Value::Int(TOUCH_CROUCH_TOGGLE),
+    env: Some("H2_TOUCH_CROUCH"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+pub static TOUCH_GYRO: Def = Def {
+    key: "touch.gyro",
+    label: "Gyro Aim",
+    help: "Aim by turning the device as well as by dragging: 0 is off, 1 to 10 \
+           the speed (5 is the default speed).",
+    kind: Kind::Int {
+        valid: 0..=10,
+        steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(0),
+    env: Some("H2_TOUCH_GYRO"),
+    flag: None,
+    aliases: &[("off", Value::Int(0))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// Look Acceleration for direct touch look (`input::touch_look::accel_gain`):
+/// 0 to 10, 5 the default (1.0).
+pub static TOUCH_ACCEL: Def = Def {
+    key: "touch.look_accel",
+    label: "Look Acceleration",
+    help: "How much farther a fast drag turns than a slow one: 0 is none (every \
+           drag turns the same per point), 5 the default, 10 the most.",
+    kind: Kind::Int {
+        valid: 0..=10,
+        steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_TOUCH_LOOK_ACCEL"),
+    flag: None,
+    aliases: &[("off", Value::Int(0))],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// Touch Auto Fire: the touch controls pull the trigger while the reticle is
+/// red over an enemy (`input::touch_layout::fire_mode`).
+pub static TOUCH_AUTO_FIRE: Def = Def {
+    key: "touch.auto_fire",
+    label: "Touch Auto Fire",
+    help: "Fire by itself while the reticle is red over an enemy, so both thumbs \
+           can move and aim. Semi-automatic weapons fire at their own rate; the \
+           sword never lunges by itself.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: Some("H2_TOUCH_AUTO_FIRE"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen on iOS (`video_screen::model`).
+    menu: None,
+};
+
+/// [`HALO1_SANDBOX`]'s values.
+pub const SANDBOX_HALO1: i64 = 1;
+pub const SANDBOX_HALO2: i64 = 2;
+
+pub static HALO1_SANDBOX: Def = Def {
+    key: "multiplayer.halo1_sandbox",
+    label: "Halo 1 Maps",
+    help: "Which sandbox converted Halo 1 maps play with: Halo 1's weapons, \
+           vehicles and health packs, or Halo 2's. Applies at the next launch, \
+           when new maps are installed (docs/game/h1-multiplayer.md).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: SANDBOX_HALO1,
+            name: "h1",
+            label: "Halo 1 Sandbox",
+        },
+        Choice {
+            value: SANDBOX_HALO2,
+            name: "h2",
+            label: "Halo 2 Sandbox",
+        },
+    ]),
+    default: Value::Int(SANDBOX_HALO1),
+    env: Some("H2_HALO1_SANDBOX"),
+    flag: None,
+    aliases: &[
+        ("halo1", Value::Int(SANDBOX_HALO1)),
+        ("halo2", Value::Int(SANDBOX_HALO2)),
+    ],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    // Last on our Video screen, after Aim Assist (docs/game/settings-menu.md).
+    menu: Some(Menu {
+        screen: "video",
+        order: 60,
+    }),
+};
+
+/// The content variant [`HALO1_SANDBOX`] names in `store`: `h1` or `h2`.
+pub fn halo1_sandbox(store: &Store) -> &'static str {
+    match store.get(HALO1_SANDBOX.key) {
+        Some(Value::Int(SANDBOX_HALO2)) => "h2",
+        _ => "h1",
+    }
+}
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
     &RENDER_SCALE,
+    &LIGHTING,
     &PAD_SPEAKER,
     &PAD_MUTE,
+    &STEAM_SPEAKER,
+    &STEAM_SENSITIVITY,
+    &STEAM_LEFT_PAD,
     &LIVE_VISIBILITY,
+    &AIM_ASSIST,
+    &TOUCH_LOOK,
+    &TOUCH_CROUCH,
+    &TOUCH_GYRO,
+    &TOUCH_ACCEL,
+    &TOUCH_AUTO_FIRE,
+    &HALO1_SANDBOX,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -322,9 +712,30 @@ mod tests {
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
                 ("H2_LIVE_VISIBILITY", "friends"),
+                ("H2_STEAM_SPEAKER", "0"),
+                ("H2_STEAM_SENSITIVITY", "8"),
+                ("H2_STEAM_LEFT_PAD", "stick"),
+                ("H2_LIGHTING", "e3"),
+                ("H2_AIM_ASSIST", "strong"),
+                ("H2_TOUCH_LOOK", "7"),
+                ("H2_TOUCH_CROUCH", "hold"),
+                ("H2_TOUCH_GYRO", "off"),
+                ("H2_TOUCH_LOOK_ACCEL", "off"),
+                ("H2_TOUCH_AUTO_FIRE", "1"),
+                ("H2_HALO1_SANDBOX", "h2"),
             ],
         );
+        assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
+        assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
+        assert_eq!(halo1_sandbox(&s), "h2");
+        assert_eq!(s.get(TOUCH_LOOK.key), Some(Value::Int(7)));
+        assert_eq!(s.get(TOUCH_CROUCH.key), Some(Value::Int(TOUCH_CROUCH_HOLD)));
+        assert_eq!(s.get(TOUCH_GYRO.key), Some(Value::Int(0)));
         assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(STEAM_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(s.get(STEAM_SENSITIVITY.key), Some(Value::Int(8)));
+        assert_eq!(s.get(STEAM_LEFT_PAD.key), Some(Value::Int(LEFT_PAD_STICK)));
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
         assert_eq!(
             s.get(LIVE_VISIBILITY.key),
             Some(Value::Int(VISIBILITY_FRIENDS))
@@ -359,5 +770,141 @@ mod tests {
         assert_eq!(pad_speaker_env(&text), Ok(Value::Bool(false)));
         assert_eq!(pad_speaker_env("1"), Ok(Value::Bool(true)));
         assert!(pad_speaker_env(&data.join("missing.toml").display().to_string()).is_err());
+    }
+
+    #[test]
+    fn the_steam_tuning_follows_its_settings() {
+        use input::trackpad::LeftPadMode;
+        let data = tmp("steam");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        let t = steam_tuning(&s);
+        assert_eq!(t.left_pad(), LeftPadMode::Dpad);
+        assert_eq!(t.sensitivity(), 5);
+        assert!(t.speaker());
+        s.set(STEAM_LEFT_PAD.key, Value::Int(LEFT_PAD_STICK))
+            .unwrap();
+        s.set(STEAM_SENSITIVITY.key, Value::Int(9)).unwrap();
+        s.set(STEAM_SPEAKER.key, Value::Bool(false)).unwrap();
+        assert_eq!(t.left_pad(), LeftPadMode::Stick);
+        assert_eq!(t.sensitivity(), 9);
+        assert!(!t.speaker());
+        assert!(s.set(STEAM_SENSITIVITY.key, Value::Int(11)).is_err());
+        assert_eq!(t.sensitivity(), 9);
+    }
+
+    #[test]
+    fn aim_assist_is_auto_unless_asked() {
+        use crate::aim_assist::{
+            SETTING_AUTO, SETTING_DEFAULT, SETTING_STRONG, SETTING_VERY_STRONG,
+        };
+        let data = tmp("aim");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(AIM_ASSIST.default, Value::Int(SETTING_AUTO));
+        assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(SETTING_AUTO)));
+        assert_eq!(s.handle::<i64>(AIM_ASSIST.key).get(), SETTING_AUTO);
+        assert_eq!(AIM_ASSIST.scope, Scope::Sim);
+        assert_eq!(
+            AIM_ASSIST.apply,
+            Apply::Live,
+            "the hook reads it at each map load"
+        );
+        assert_eq!(AIM_ASSIST.menu.expect("a row").screen, "video");
+        // The file takes the names.
+        std::fs::write(
+            settings::path_in(&data),
+            "[controls]\naim_assist = \"very_strong\"\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(SETTING_VERY_STRONG)));
+        assert!(!s.state(AIM_ASSIST.key).unwrap().locked);
+        // The variable takes names, labels and aliases, and locks it.
+        for (text, want) in [
+            ("default", SETTING_DEFAULT),
+            ("retail", SETTING_DEFAULT),
+            ("Strong", SETTING_STRONG),
+            ("very-strong", SETTING_VERY_STRONG),
+            ("auto", SETTING_AUTO),
+        ] {
+            let env = move |k: &str| (k == "H2_AIM_ASSIST").then(|| text.to_string());
+            let (s, p) = Store::load(ALL, Some(&settings::path_in(&data)), &env, &[]);
+            assert!(p.is_empty(), "{text}: {p:?}");
+            assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)), "{text}");
+            assert!(s.state(AIM_ASSIST.key).unwrap().locked, "{text}");
+        }
+        let (s, p) = with_env(&data, &[("H2_AIM_ASSIST", "maximum")]);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert_eq!(
+            s.get(AIM_ASSIST.key),
+            Some(Value::Int(SETTING_VERY_STRONG)),
+            "the file's"
+        );
+        // A press steps Auto, Default, Strong, Very Strong and round.
+        let s = Store::defaults(ALL);
+        for want in [
+            SETTING_DEFAULT,
+            SETTING_STRONG,
+            SETTING_VERY_STRONG,
+            SETTING_AUTO,
+        ] {
+            s.step(AIM_ASSIST.key).unwrap();
+            assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)));
+        }
+    }
+
+    #[test]
+    fn halo1_maps_play_halo1s_sandbox_unless_asked() {
+        let data = tmp("sandbox");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(halo1_sandbox(&s), "h1");
+        assert_eq!(HALO1_SANDBOX.apply, Apply::Restart);
+        std::fs::write(
+            settings::path_in(&data),
+            "[multiplayer]\nhalo1_sandbox = \"h2\"\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(halo1_sandbox(&s), "h2");
+        let (s, _) = with_env(&data, &[("H2_HALO1_SANDBOX", "halo1")]);
+        assert_eq!(halo1_sandbox(&s), "h1");
+        assert!(s.state(HALO1_SANDBOX.key).unwrap().locked);
+    }
+
+    #[test]
+    fn lighting_is_retail_unless_asked_and_has_a_video_row() {
+        let data = tmp("lighting");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(LIGHTING.default, Value::Int(LIGHTING_RETAIL));
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
+        assert_eq!(lighting_of(LIGHTING_RETAIL as u32), d3d::Lighting::Retail);
+        assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
+        let menu = LIGHTING.menu.expect("a row");
+        assert_eq!(menu.screen, "video");
+        // Between Resolution and Mute Button.
+        assert!(RENDER_SCALE.menu.unwrap().order < menu.order);
+        assert!(menu.order < PAD_MUTE.menu.unwrap().order);
+        assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
+        // The file takes the names; the variable locks it.
+        std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
+        assert!(!s.state(LIGHTING.key).unwrap().locked);
+        let (s, _) = with_env(&data, &[("H2_LIGHTING", "retail")]);
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
+        assert!(s.state(LIGHTING.key).unwrap().locked);
+        let (s, p) = with_env(&data, &[("H2_LIGHTING", "stencil")]);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert_eq!(
+            s.get(LIGHTING.key),
+            Some(Value::Int(LIGHTING_E3)),
+            "the file's"
+        );
     }
 }

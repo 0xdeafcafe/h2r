@@ -322,6 +322,8 @@ fn main() {
                 forward: [-(t * 0.3).sin(), (t * 0.3).cos(), 0.0],
                 up: [0.0, 0.0, 1.0],
                 occupied: true,
+                parent: None,
+                aim: None,
             }],
             // Player 0 hits the first grunt during each burst.
             hits: (tick % 60 < 9)

@@ -244,6 +244,7 @@ pub(crate) fn override_id(map: &str, file: &Path) -> std::io::Result<content::Ma
         packs: Vec::new(),
         result: None,
         list: None,
+        variants: Vec::new(),
     };
     Ok(content::MapId::of(&manifest))
 }

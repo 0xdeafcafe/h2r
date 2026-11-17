@@ -1,17 +1,21 @@
 # Xbox Live replacement
 
-Status: implemented in large part, with the sections below marking what is
-still design. The server (`crates/live-proto`, `crates/live-server`,
-`h2 live ...` in [4.2](#42-cli) and [4.3](#43-service)) has accounts,
-title files, friends, teams, sessions, invites and stats, and the opt-in
-client HLE (`crates/live-hle`) starts at
-[Client HLE: sign-in](#client-hle-sign-in). Sections 1 to 3 and 5 to 6 are
-the original design and investigation.
+Status: built, with the sections below marking what is not. The server
+(`crates/live-proto`, `crates/live-server`, `h2 live ...` in
+[4.2](#42-cli) and [4.3](#43-service)) has accounts with recovery codes,
+title files, friends, teams, sessions, invites, stats, cloud saves, custom
+maps, co-op sessions and a relay, and the client HLE (`crates/live-hle`)
+starts at [Client HLE: sign-in](#client-hle-sign-in). It is on in the app
+builds and opt-in for `h2 play` (`--live`). Sections 1 to 3 and 6 are the
+original design and investigation; the HLE sections say what the game does
+now. Not built: the in-game Create/Recover account menu
+([In-game account setup](#in-game-account-setup)) and federation.
 
 The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
 gamertag, show the message of the day and playlists, keep a friends list
 with presence, and later matchmake and play. Accounts are made from the CLI
-or the web app. The service behind it is ours, event sourced on Postgres.
+or the web app. The service behind it is ours, event sourced on SQLite
+(Postgres if you prefer).
 
 ## 1. What the title links
 
@@ -37,9 +41,11 @@ thousand in the library. `0x003cd718` (17 sites) is the busiest; the
 `0x003cd0e1..0x003cd17d` cluster looks like the XNet socket calls (send,
 receive, select).
 
-**Today.** The kernel reports no cable (`crates/kernel/src/net.rs`,
+**With Live off.** The kernel reports no cable (`crates/kernel/src/net.rs`,
 `PhyGetLinkState` returns 0), so the title skips `XNetStartup` and every
 Live path reports "network cable unplugged". Nothing in `XONLINE` runs.
+With Live on, the HLE ([4.1](#41-client-recomp-side)) sets the link up and
+answers the entry points instead.
 
 ## 2. What the real service looked like
 
@@ -110,8 +116,9 @@ all and proves the socket layer.
 
 ### 4.1 Client (recomp side)
 
-- **Link up.** `ConsoleConfig::phy_link` already exists; `--live` (or
-  `H2_LIVE=<url>`) sets it so XNet starts.
+- **Link up.** `ConsoleConfig::phy_link` already exists; Live on (`h2 play
+  --live`, `--live-server` or `--live-local`, or an app build) sets it so
+  XNet starts.
 - **XNet HLE.** Socket calls on host UDP and TCP; addresses packed as above.
 - **XOnline HLE.** A `live` module in the runtime holding the task table,
   the signed-in users, and a client for the service. Tasks run on a host
@@ -127,10 +134,15 @@ Implemented (crates/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
 play_live.rs; `h2 live --help` has every flag):
 
 ```
-h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
+h2 live serve [--db URL] [--blobs LOC] [--listen ADDR] [--data DIR] [--id HOST]
               [--private] [--invite-only] [--admin GAMERTAG]...
+              [--game-art DIR] [--share-game-art]
               [--tls-cert PEM --tls-key PEM | --insecure-http]
+              [--tunnel | --tunnel-name NAME | --public-url URL]
 h2 live account create <gamertag> [--server URL] [--invite CODE]
+h2 live account code [--as GAMERTAG] [--server URL]
+h2 live account recovery [--reset] [--as GAMERTAG] [--server URL]
+h2 live account recover <gamertag> [--code CODE] [--server URL]
 h2 live account import <file> [--server URL]
 h2 live account list [--server URL]
 h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
@@ -138,20 +150,28 @@ h2 live motd set --file PATH [--server URL] [--data DIR]
 h2 live account export <gamertag> [--file PATH] [--server URL]
 h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
 h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
+h2 live hopper defaults --out FILE [--raw] [--force]
 h2 live friend add|accept|decline|remove|list ...
 h2 live team ...
 h2 live maps publish|list ...
-h2 live assets extract|check
-h2 live invite create [--days N] [--server URL] [--data DIR]
+h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
+h2 live assets check [--out DIR]
+h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
+h2 live menubar [--install | --uninstall | --status ...]
+h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
+h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
+h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> --live | --live-server URL [--live-listen ADDR] [--gamertag NAME]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
 `/`, with `index.html` for any path that is not a file or under `/v1/`; it
 prints a hint to run `cd web && bun run build` when there is none.
 
-Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
+Defaults: `--db` is `$H2_LIVE_DB` or `sqlite://<--data>/live.db` (a
+server with no `live.db` but a log in `postgres://localhost/h2live` keeps
+that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#free-hosting-sqlite-and-cloudflare-r2)),
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
 `http://127.0.0.1:8074`, `--data` the server directory below.
 
@@ -164,6 +184,15 @@ the movies directory and the VFS data root ([storage.md](../runtime/storage.md))
   base64url `d`, which still reads). `account create` generates the key
   locally, signs the creation request (with `aud` = the server id and
   `iat`) and stores it; the server only ever sees the public half.
+  `account create` also prints the account's recovery code and
+  authenticator key ([live-security.md](live-security.md) §1, Recovery).
+  To use the account somewhere else, `h2 live account code` on a machine
+  that has it (or the web dashboard's recovery screen, or an authenticator
+  app) shows the current six-digit code, and `h2 live account recover
+  <gamertag>` on the new machine (or Recover in the web app) makes a new
+  key there and adds it with that code; no invite needed. `h2 live
+  account recovery` shows the authenticator key again, sets recovery up
+  on an account made before it existed, and with `--reset` replaces it.
   `account import` takes the entry the web app downloads after a browser
   sign-up (`{xuid, gamertag, server, key}`, or a list of them), checks that
   the key parses and is a current key of that XUID on the server
@@ -171,7 +200,7 @@ the movies directory and the VFS data root ([storage.md](../runtime/storage.md))
   is already there or a gamertag already held for that server. The
   game-side HLE answers `XOnlineGetUsers` from `xuid` and `gamertag`, so no
   HDD config-sector work is needed.
-- `play-accounts.json` (0600): the one account `h2 play --live` hands the
+- `play-accounts.json` (0600): the one account `h2 play` hands the
   game, since the HLE takes every entry of the file it is given.
 - `server/` (mode 0700): `h2 live serve`'s identity, `server.key` (0600)
   and `server.json` (`{"id"}`). The server id is set on first start
@@ -188,7 +217,31 @@ token). Clients find everything else from the base URL's
 `/.well-known/h2live.json`, and refuse to send a token over plain HTTP to
 anything but loopback.
 
-**`h2 play --live`** starts a service inside the process on a background
+#### Playing on Live
+
+`h2 play` is offline unless a flag asks for Live, and contacts nothing to
+decide (`choose` in `crates/cli/src/play_live.rs`). The app builds are the
+other way round: on by default (below).
+
+| `h2 play` flags | Plays | `$H2_LIVE_SERVER` |
+|---|---|---|
+| none, `--offline`, `--no-live` | offline | ignored |
+| `--live` | signed in to `https://live.forbes.red` | a URL replaces it; `off` (`none`, `0`) plays offline with a line |
+| `--live-server URL` | signed in to `URL` | ignored (the flag wins) |
+| `--live-local` | an embedded server in the process | ignored |
+| `--live-listen ADDR`, `--live-tunnel`, `--live-tunnel-name NAME` | as `--live-local` (they imply it) | ignored |
+| `--live-local` with `--live-server` | an error: pick one | |
+
+The default service is `live_proto::DEFAULT_SERVER`, the one place it is
+written; the CLI (`DEFAULT_LIVE_SERVER`) and the app builds share it. It
+prints `live: signing in to https://live.forbes.red (the default service;
+--live-server URL names another)`. A Live flag that cannot sign in stops
+`h2 play` with the reason; there is no fallback to offline. `--offline`
+says the default out loud and does not go with any Live flag. `--gamertag
+NAME` picks the account on whichever service is played on, so it needs a
+Live flag.
+
+**`h2 play --live-local`** starts a service inside the process on a background
 runtime: Postgres from `$H2_LIVE_DB` or `postgres://localhost/h2live`
 (creating the database if it is missing), else a file-backed log in the
 data directory (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`),
@@ -197,21 +250,59 @@ in-memory store only if another server holds that directory, with a
 warning. When no MOTD was ever published, the embedded server publishes a
 default (`default_motd.rs`). It binds 127.0.0.1 on a free port (`--live-listen ADDR`
 for a fixed one) with the identity in `live/server`, so its accounts are
-`h2 live serve`'s. `--live-server URL` uses a running service instead. The
+`h2 live serve`'s. With `--live` or `--live-server URL` it uses a running
+service instead. The
 account is the first local one for that server whose key the server still
-lists, else a new one named `--gamertag NAME` or after the OS user
-(letters and digits, a single space for anything else, numbered when
-taken). It prints the gamertag and, for the embedded server, the web app's
+lists. Otherwise the player's identity moves with them: the gamertag is
+`--gamertag NAME`, else the one last played on another server
+(`last_played` in accounts.json), else one made from the OS user name
+(letters and digits, a single space for anything else), and an account
+of that gamertag on another server lends its key, so the player keeps one
+key everywhere. If the gamertag is new to the server it is made there
+(on an invite-only server with `--invite CODE`, or an invite asked for on
+the terminal; long and 25-character codes both work). If the server has
+it already (made from the web or another device), `h2 play` does not ask
+on the terminal: it hands the game that gamertag marked `needs_code`, and
+the game asks for the current recovery code (Account on the server's
+`/dash`, or an authenticator app) when the player signs in to Xbox Live
+([In-game sign-in](#in-game-sign-in)), then adds this machine's key
+([live-security.md](live-security.md) §1, Recovery). `--signin-terminal`
+asks on the terminal before the game starts instead, as before (and
+without a terminal stops with the `h2 live account recover <tag> --server
+URL` command); `h2 live account recover` still works on its own. On the embedded server (`--live-local`) a taken default name is
+numbered instead. It prints the gamertag and, for the embedded server, the web app's
 URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
+
+**The app builds** (tvOS and iOS, `crates/apple-host`; the Xbox app when
+there is one, docs/runtime/windows.md) are on by default against the same
+service (`live_hle::platform`). `live.toml` in the app's data root is the
+switch:
+
+```toml
+enabled = false                    # play offline
+server = "https://live.example"    # or sign in to another service
+```
+
+A file that does not parse is ignored with a line, so the default holds.
+`$H2_LIVE_SERVER` (from the Xcode scheme, say) wins over the file for a
+run: a URL replaces the server, `off` turns Live off. The accounts file is
+`live/accounts.json` under the data root, which the in-game account setup
+(below) writes; until it holds an account for the server, Live is on but
+nothing is signed in and the game's Live notice says how to make one.
+With one, the app's saves are synced as `h2 play`'s are
+(`cloud_saves::session`, shared by both).
+
+Signed in anywhere, the account's saves follow it
+([live-cloud-saves.md](live-cloud-saves.md)).
 
 With the embedded server it also prints a one-use link
 (`/signin#once=…`, loopback only, ten minutes) that signs this machine's
 browser in as the playing account, an admin there for the session; see
 [live-admin.md](live-admin.md) §4.
 
-Before starting, it builds the web app (`bun install --frozen-lockfile`,
+For the embedded server only, before starting, it builds the web app (`bun install --frozen-lockfile`,
 `bun run build`) when `web/dist` is missing or was built from a different
 `web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
 under `web/` an existing build is kept). `h2 play --follow` does the same
@@ -255,7 +346,7 @@ under a second. Keys and emblem colouring are in
   default it goes only to clients on the same machine, since it is your copy
   of the game's files. `--share-game-art` serves it to everyone and says at
   startup that this redistributes them.
-- **`h2 play --live`** extracts the art once per disc (on first run, or when
+- **`h2 play --live-local`** extracts the art once per disc (on first run, or when
   the cache key changes) and serves it from the embedded server. Without
   art, `/art/game/manifest.json` is a 404 and the web app uses its own art.
 - **Map geometry.** The same run writes every multiplayer map's level
@@ -263,6 +354,13 @@ under a second. Keys and emblem colouring are in
   world-to-pixel matrices (`map/<stem>/views.json`, `views/*.png`), listed
   under the manifest's `maps`. This adds 2 to 3 seconds. Format and
   pipeline: [live-art.md](live-art.md).
+- **Map pack maps.** `--mappack ISO` reads the map pack disc's maps too, and
+  the extractor reads maps `h2 import-mappack` installed under the default
+  data root (`--installed DATA` names another); they get the same pictures
+  and geometry ([live-art.md](live-art.md)).
+- **`h2 live assets check [--out DIR]`** exits 0 when the directory holds art
+  from this `h2`'s extractor and 1 when it is missing or older, so a script
+  knows when to extract again (`deploy/live/setup.sh` does).
 
 #### For agents: `h2 live q`
 
@@ -280,6 +378,9 @@ compact table on a terminal. Lists follow every cursor, so they are whole.
 | `q games [--live\|--ended]` | `[GameSummary]`, newest first: `{game_id, map, mode, variant, team_play, state, started_at, ended_at, players: [{index, name, xuid?, team, local?}], teams}` |
 | `q game <id>` | `GameSummary` plus `{console, host, score_limit, time_limit_s, tick, last_tick, scoreboard: [{index, score, kills, deaths, assists}], kills: [{tick, victim, killer?, weapon?, kind, pos?, position, at}], winner, end_reason, position}` |
 | `q game <id> --frames` | `[{game_id, tick, players: [{index, alive, pos, yaw, vehicle?}], source}]` (the 1 Hz recorded frames) |
+| `q sessions`, `q session <id>` | the open session advertisements, or one |
+| `q teams [gamertag]`, `q team <id>` | open teams (or one account's teams and pending recruits), or one team with members, properties and permissions |
+| `q friends <gamertag>` | `{friends: [{xuid, gamertag, friends_since, presence?}], requests_in, requests_out}` |
 | `q events [--from N] [--type T] [--stream S]` | `[{position, stream, version, type, at, data, author, kid, jws, jws_index?, hash}]` after position N |
 | `q events ... --follow` | the same, then one event per line as they are appended (JSONL, from `/v1/stream`) |
 | `q keys <gamertag>` | `{keys: [{kid, jwk, valid_from, valid_to}], position}` |
@@ -391,7 +492,10 @@ origin on GET and HEAD and nothing else. Binding to a non-loopback address
 needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. The database
 URL is never printed with its credentials.
 
-**The log.** One append-only `events` table: `position bigserial`,
+**The log.** SQLite by default, Postgres if asked (the description below is
+Postgres's; SQLite's `sqlite_schema.sql` is the same table, and its appends
+take an in-process lock and `BEGIN IMMEDIATE` for the same commit-order
+positions). One append-only `events` table: `position bigserial`,
 `stream_id`, `version`, `type`, `data jsonb`, `at`, `author`, `kid`, `jws`,
 `jws_index` (batches), `hash`, unique on `(stream_id, version)`. The `jws`
 is the author's, untouched, and the source of truth: events are decoded
@@ -425,9 +529,11 @@ replaying from the store, so nothing falls between the two; a reader that
 lags re-reads from the store. Every read reply carries that applied
 position.
 
-Postgres rather than Mongo: an event store needs ordered append with a
-uniqueness check per stream, which is one table and one constraint in
-Postgres.
+SQL rather than Mongo: an event store needs ordered append with a
+uniqueness check per stream, which is one table and one constraint. SQLite
+is the default since 2026-11-16 (one file beside the key, no database
+server, backed up to R2 by Litestream); Postgres stays supported, and
+`h2 live store copy` moves a log between the two with positions kept.
 
 Everything else is an event too, presence and matchmaking sessions
 included (decided 2026-11-15), so the log is the full history of who was
@@ -462,9 +568,15 @@ online, where and with whom. To keep that from flooding the log:
    serving files by name, the `message_of_the_day.dat` and
    `multiplayer_hopper.dat` formats ([live-motd.md](live-motd.md),
    [live-admin.md](live-admin.md)) and the client HLE that fetches them.
-4. **Friends and presence.**
-5. **System Link over XNet HLE** (two local instances).
-6. **Matchmaking and custom games over Live**, then stats and clans.
+4. **Friends and presence.** Done (server and HLE; [live-api.md](live-api.md#friends)).
+5. **System Link over XNet HLE** (two local instances). Done
+   ([Client HLE: sockets and System Link](#client-hle-sockets-and-system-link)).
+6. **Matchmaking and custom games over Live**, then stats and clans. Done
+   on tests ([live-matchmaking.md](live-matchmaking.md),
+   [live-custom-games.md](live-custom-games.md), [live-telemetry.md](live-telemetry.md),
+   [Teams](#client-hle-teams)); co-op over Live too
+   ([live-coop.md](live-coop.md)). The HLE has been run in the game only
+   where those pages say so.
 
 ## 6. Open questions
 
@@ -521,7 +633,7 @@ list; the client does not invent an account.
 
 With `server_url = None`, sign-in keeps its local-only behavior. With a URL,
 logon authenticates against that service and publishes signed presence, as
-specified in [Client HLE: service logon and messages](#client-hle-service-logon-and-messages).
+specified in [Client HLE: service logon and title resources](#client-hle-service-logon-and-title-resources).
 
 Transport startup succeeds through XNetStartup, WSAStartup and XOnlineStartup,
 with paired reference-counted cleanup. GetUsers writes the fixed 16-record
@@ -637,9 +749,10 @@ The four transport channels are:
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
 
-Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is the co-op channel
-([live-coop.md](live-coop.md), section 8): the co-op transport binds it on
-the host itself, and no guest socket maps to it.
+Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is reserved for the co-op
+pad-exchange transport (`coop::link::UdpLink`, [live-coop.md](live-coop.md),
+section 8), which would bind it on the host itself; nothing binds it today,
+since Co-op over Live uses the game's own path, and no guest socket maps to it.
 
 The option wrapper maps the game's options to SO_REUSEADDR (`4`), SO_LINGER
 (`0x80`), SO_BROADCAST (`0x20`), SO_SNDBUF (`0x1001`), SO_RCVBUF (`0x1002`) and
@@ -1000,7 +1113,7 @@ boundary and telemetry. `H2_NO_LIVE_NOTICE=1` leaves it out.
 
 How the dialog is reached (static reading of the retail image, not a run):
 
-- **Without `--live`.** Nothing is registered, so the real XNet library runs.
+- **With Live off** (`h2 play` without a Live flag). Nothing is registered, so the real XNet library runs.
   The default console reports no cable (`ConsoleConfig::phy_link = 0`), so
   `0x0008d690` never starts transport and `0x004d8b19` stays clear. Picking
   Xbox Live on the main menu runs the row handler `0x002308e0`: not signed
@@ -1008,7 +1121,7 @@ How the dialog is reached (static reading of the retail image, not a run):
   it calls `0x0019b5af` with error `0x23` and the network-settings action
   `0x00236917` at `0x002309e1`. The dialog appears at once; there is no
   sign-in attempt to hang on, so no extra "not configured" mode is needed.
-- **With `--live` and a server.** If logon ends with CANNOT_ACCESS_SERVICE
+- **With Live on and a server.** If logon ends with CANNOT_ACCESS_SERVICE
   (`0x80151001`, the HLE's result for transport or protocol failures), the
   classifier gives game result 4 and `0x001486b8` shows the same error
   `0x23` (`0x001486fa`).
@@ -1032,15 +1145,16 @@ The text depends on the boot's `LiveConfig`:
 
 | Live | Server | Message |
 |---|---|---|
-| off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` |
+| off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` or `--live-local` |
+| on | URL, no account | "No Live account on this machine yet.", `h2 live account create <tag>`, or recover at `<URL>/dash/signup/recover` |
 | on | URL | "Can't reach the h2 live server at" and the URL, then the same advice |
 | on | none | stock text (local sign-in cannot fail to connect) |
 
 ```text
 Xbox Live isn't set up in h2recomp.
 Quit and start again with one of:
-h2 play --live  (built-in server)
-h2 play --live --live-server <URL>
+h2 play --live  (live.forbes.red)
+h2 play --live-local  (this machine)
 Accounts: h2 live account create <tag>
 ```
 
@@ -1048,8 +1162,8 @@ The message box on the OK/cancel error dialog is about 244 by 91 pixels,
 five lines of the body font, so each line is kept under about 240 pixels.
 Lines break on `\r\n`, as the game's own strings do. The URL is shortened
 to 40 characters, and `|` (which starts a markup escape in the text scanner)
-is replaced. `h2 play` does not read `H2_LIVE_SERVER` (only the `h2 live`
-account commands do), so the message does not suggest it.
+is replaced. The message does not mention `H2_LIVE_SERVER`, which `h2 play --live` and
+the `h2 live` commands read.
 
 The first button still offers the troubleshooter. It launches the
 dashboard's network settings through `XLaunchNewImageA`, which ends the run
@@ -1062,6 +1176,305 @@ runs the hook through the real Runner with the fixture module's leaf
 standing in for the fill, and checks that only error `0x23` changes, that
 install refuses to wrap an existing override and skips a missing original,
 and that local-only Live installs nothing. They need no XBE or game build.
+
+"No account" means the boot's accounts file (or its absence) holds no entry
+with a private-JWK key (`live_hle::account_setup::load`); an unreadable file
+keeps the "can't reach" text and is left to sign-in to report. Whether the
+retail game reaches error `0x23` at all with zero accounts listed is not yet
+checked in a run.
+
+### In-game account setup
+
+Making or recovering a Live account from inside the game. Built: the host
+calls, and the sign-in
+prompt below, which recovers an account made elsewhere and can create one
+for an open server. Not built: the Create / Recover menu
+(`boot::account_screen::AccountScreen`) as a screen; only its layout helpers
+are used, by the prompt.
+
+**Host side, `live_hle::account_setup`** (no guest memory; blocking HTTP, so
+run each call on a `Job` thread and poll it from the frame loop):
+
+- `create(server_url, gamertag, invite)` makes a key, signs an
+  `AccountRequest` for the server id from discovery, and `POST`s
+  `/v1/accounts`. It returns the `LocalEntry` and the `RecoveryInfo` to show
+  once. The invite goes as typed (trimmed; empty means none).
+- `recover(server_url, gamertag, code)` makes a key and `POST`s a signed
+  `RecoverRequest` with the code to `/v1/accounts/{gamertag}/recover`.
+- `recovery_code(server_url, entry)` and `reset_recovery` read or replace
+  the secret with a self-issued `recovery.read` / `recovery.write` token.
+- `needs_invite(server_url)` reads `invite_only` from `GET /v1/server`.
+  It returns `None` when a private server won't say; a "needs an invite"
+  refusal then turns the invite field on.
+- `save(path, entry)` adds the entry to an accounts file in the CLI's shape
+  (`{xuid, gamertag, id, server, server_id, kid, key}`). It replaces an entry
+  with the same xuid, or one with the same gamertag on the same server. It
+  writes other entries back with every field they had, and writes mode 0600
+  through a temporary file and a rename. `shared_accounts_path` maps the
+  per-session `play-accounts.json` to the `accounts.json` beside it.
+- Each call refuses plain HTTP to anything but loopback (`Insecure`) before
+  it makes a request. Its `SetupError` is one short line for the player:
+  gamertag taken, needs an invite, invite not valid, no such gamertag, no
+  recovery set up, wrong code, locked out for N minutes (from the server's
+  429), busy, can't reach the server, or couldn't save. None of these
+  messages includes a key, a reply body or the code that was typed.
+- `Hle::reload_accounts()` reads the accounts file again, so a saved entry
+  is listed by `XOnlineGetUsers` and signs in without a restart. Accounts
+  that are signed in stay signed in, and if the file is broken nothing
+  changes.
+
+**Screen logic, `boot::account_screen::AccountScreen`** (pure Rust): a menu
+with Create, Recover and Cancel. Create asks for a gamertag, then an invite
+if the server needs one, then works, then shows "Write this down" (the
+current code with its seconds left, the authenticator key in groups of
+four, and how to recover). Recover asks for a gamertag, then the code, then
+works. A picks, B goes back, and B never skips the secret. The glue opens
+the keyboard for each `Effect::Keyboard` and answers with `typed`. It runs
+each `Effect::Start` as a `Job`, saves the entry, and answers with
+`finished`. On `Effect::Close { signed_up: true }` it calls
+`reload_accounts`. Page text is at most five lines of 40 characters, broken
+with `\r\n` and never holding `|`, as for the notice.
+
+**Pending (needs facts from a run):** an entry point for the Create /
+Recover menu, and the drawing. The sign-in prompt (below) is the entry for
+an account that exists on the server. Either of these would do for the menu:
+
+1. A list screen like Video and Skulls (`list_class`), opened from a row or
+   from the error `0x23` dialog's button. This needs the retail handler for
+   that button, or a menu to put the row on.
+2. The keyboard as text entry: open the retail keyboard screen (factory
+   `0x0023784f`, screen id `0xa7`) on demand with our buffer, and read the
+   text back when it is accepted. `keyboard_glue` only types into a keyboard
+   the game has already opened.
+
+The game also has to choose which file to save into. It only knows
+`LiveConfig.accounts_path`, which under `h2 play` with Live on is the session's
+`play-accounts.json`, rewritten on every start. The in-game sign-in (below)
+saves to that file and to `shared_accounts_path(..)`.
+
+
+Tests: `crates/live-hle/tests/account_setup.rs` covers create, recover with
+the code from the returned secret, a wrong code, a used code, an unknown
+gamertag, lockout, reset, an unreachable server, saving with other entries
+kept at 0600, and a saved account signing in after `reload_accounts`. All of
+them run against the in-process memory server.
+`crates/live-hle/src/account_setup.rs` maps refusals to errors.
+`crates/boot/src/account_screen.rs` covers every transition and checks that
+every page fits.
+
+### In-game sign-in
+
+When the player signs in to Live in the game with an identity this machine
+has no key for on the server (made on the web, another device or another
+server), the game asks for the 6-digit recovery code itself.
+
+**The account list.** An accounts-file entry with `"needs_code": true` is
+listed by `XOnlineGetUsers` like any other (the same 112-byte record), so
+the player picks it in Halo 2's own sign-in. Its key, if any, is never
+used, and it is dropped when a ready account of the same gamertag is in
+the file (`live_hle::config`). `h2 play --live` writes such an entry into
+`play-accounts.json` when the gamertag is on the server already
+(`play_live::write_waiting`), with the server's xuid for it.
+
+**The logon** (`live_hle::signin`). `XOnlineLogon` with a `needs_code` user
+(one per logon, and only with a server; otherwise `INVALID_USER`) returns a
+task and makes no request: `XOnlineTaskContinue` returns `0` (pending), so
+the game stays on its signing-in step. The prompt answers through
+`Hle::signin_submit(code)`, `signin_create()`, `signin_cancel()` and
+`signin_dismiss()`, and reads `Hle::signin()`:
+
+| Phase | Shows | A | B |
+|---|---|---|---|
+| Code | the code being typed, the last error | check it | cancel |
+| Working | "Checking with HOST..." | | cancel |
+| Create | the gamertag isn't on the server | make it there (open servers) | cancel |
+| Created | the new account's recovery secret, once | close | close |
+| Done | signed in | close | close |
+
+A code that is not six digits is refused without a request. Each check runs
+`account_setup::recover` on its own thread; a wrong code says how many
+tries are left (the server's count), a lockout how long to wait, an
+unreachable server says so, and the code is asked again. No such gamertag
+offers Create, which runs `account_setup::create`; an invite-only server
+says to make it on `/dash` or pass `h2 play --invite CODE` (there is no
+in-game invite entry). On success the entry is saved to the session's file
+and the shared `accounts.json`, the accounts are read again, the user's
+record is replaced by the saved account's (the controller slot word kept),
+and the service logon starts as for any account, ending in `CONNECTED`.
+Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
+
+**The prompt** (`crates/boot/src/signin_screen.rs`) is our own list class
+(`list_class`) with one row and a description, on the Controls layout. The
+d-pad types the code (up and down change the digit, left and right move;
+direction events, kinds 1 to 4, from the d-pad or the left stick, as
+`skulls-arrows` read the controller update), A on the row or Start checks
+it, B backs out and closes. The text is served from guest buffers under our
+string ids; each change goes into the other buffer of a pair, and the row
+text (`Rows::live_text`) writes it and sets the description again. The
+logon opens it: a wrapper around the HLE's `XOnlineTaskContinue`
+(`0x003a0620`) asks `Hle::take_signin_open()` after each call, and the
+first time a sign-in waits it writes the title and first page and calls
+`0x149f1e(1 << controller, loader)`, as the Skulls page opens. A finished
+page closes with `0x14800c` (the screen's `+0x78` slot and `+0x74` window).
+
+Static reading (retail 5849): the main menu's Xbox Live row (`0x002308e0`),
+not signed in and with transport, animates the menu out (`0x0022eeee`),
+reads the accounts (`0x0018fc44`) and opens the account picker with loader
+`0x0024b4a9`; the logon is the picker's. Not established without a run:
+that the picker polls `XOnlineTaskContinue` each frame while signing in,
+that a screen opened from inside that call draws on top and takes input,
+that our screen's event hook sees the direction kinds before the list does, that a
+list's row text runs every frame (so a finished check shows without a
+press), and what the game shows for `INVALID_USER` after a cancel.
+
+Switches: `H2_SIGNIN_PROMPT=0` leaves the screen out (a waiting sign-in is
+cancelled at once, with a line pointing at `--signin-terminal`);
+`H2_SIGNIN_TEXT_RECT=top,left,bottom,right` moves the description;
+`features.signin-code=off` turns the class off (the sign-in is cancelled).
+Every step logs a `live:` or `signin prompt:` line on stderr.
+
+The app builds (iOS, tvOS) run the same HLE and boot glue, so an entry
+marked `needs_code` in `live/accounts.json` asks in game the same way, and
+they offer a new account in game (next).
+
+#### A new account in game
+
+On the app builds there is no terminal, so the account list itself offers
+the way in. `live_hle::platform::config` sets
+`LiveConfig::offer_new_account`, which does two things
+(`live_hle::config`):
+
+- A missing `live/accounts.json` is no accounts rather than an error (the
+  first start), and
+- the list gets one more identity, "New Account" (`NEW_ACCOUNT_TAG`, xuid
+  `NEW_ACCOUNT_XUID`, `0x0009000100000000`, outside the stand-ins' range),
+  marked as waiting.
+
+Signing in with it starts a `Signin` that asks for a gamertag first
+(`Signin::adding`). The prompt's phases before the code page:
+
+| Phase | Shows | A | B |
+|---|---|---|---|
+| Gamertag | "A gamertag on HOST", the last error | open the keyboard | cancel |
+| Invite | "HOST needs an invite to make TAG", the last error | open the keyboard | cancel |
+
+The typed text goes to `Hle::signin_typed(Some(text))`, a backed-out
+keyboard to `signin_typed(None)` (from the invite: back to the gamertag).
+A gamertag that isn't one is refused without a request. Otherwise
+`account_setup::create` runs on its own thread, with the invite when one
+was typed:
+
+- **Free:** the account is made and saved to the accounts files, the
+  recovery secret is shown once (Created), and the logon goes on as the new
+  account, as above.
+- **Taken:** the gamertag is saved as waiting for its code
+  (`account_setup::save_waiting`: `{xuid: stand_in_xuid(tag), gamertag,
+  server, needs_code: true}`, added once, other entries kept), and the page
+  becomes the code page for that gamertag. The right code signs in as the
+  account itself. Backing out leaves the waiting entry, which the list
+  shows from then on.
+- **The server wants an invite:** the first refusal asks for one (Invite,
+  no error), and a bad one says so and asks again.
+- **Anything else** (unreachable, busy, server error) is said on the
+  gamertag page.
+
+**The keyboard** (`crates/boot/src/signin_keyboard.rs`). A on either page
+opens the game's own on-screen keyboard. On the app builds the host's
+system keyboard types into it (`keyboard_glue`). It is opened with the
+retail opener `0x00238c21`: stdcall `(context, buffer, capacity)`, `ret
+0xc`, the player in CL. The opener creates the screen through its loader
+`0x0023784f` and edits our UTF-16 buffer (a page of ours) in place.
+Static reading of the keyboard (retail 5849):
+
+- `0x002381de` backs the text up at `+0x618` and points `+0x818` at the
+  buffer.
+- B copies the backup back (`0x00237fcc`).
+- Done checks the text against the context's flags in the table at
+  `0x0044a9f8` and then runs the context's case of the jump table at
+  `0x00238468`.
+
+Contexts 8 to 11 and 17 to 20 only close the screen on Done. Contexts 16 to
+19 swap in the keyboard's own buffers when it is laid out (`0x00237a74`).
+So:
+
+- The gamertag uses context **8**: Done needs a letter or digit, and the
+  capacity is cut to 17 units.
+- The invite uses context **20**: no check, up to 150 units, and no title
+  of its own (string id 0).
+
+While one of ours is open, the prompt's string source answers that
+context's title ids (`0x0d00044f` and `0x12000450`, or 0) with our words.
+The buffer starts empty, so empty text when the keyboard closes means B.
+The prompt's row text polls for that close: once the shared channel's
+screen (`0x0054dba8 + 8`) is no longer the keyboard on our buffer, the text
+is read and passed on. A keyboard that never shows within 120 polls counts
+as backed out.
+
+Not established without a run:
+
+- what contexts 8 and 20 show around our title text;
+- that opening the keyboard from our screen's row press draws it on top
+  and takes input;
+- that row text keeps being asked while the keyboard covers the prompt
+  (the close is still seen when the prompt is back on top);
+- that the host keyboard bridge finds it (it accepts contexts up to 20);
+- how the game takes the signed-in user's xuid and gamertag changing from
+  "New Account" to the new account's under it.
+
+**Checklist for a run on tvOS or iOS** (fresh install, or
+`live/accounts.json` deleted):
+
+1. Xbox Live on the main menu lists "New Account". Pick it. Stderr:
+   `live: New Account: asking in game for a gamertag on <url>` and
+   `signin prompt: opening for controller 0`.
+2. The prompt reads "New Xbox Live account". Press A: `signin prompt:
+   opening the keyboard for the Gamertag (context 8, controller 0)`; the
+   game's keyboard opens, titled "Your gamertag", and the system keyboard
+   comes up with it.
+3. Type a free gamertag, Done: `the Gamertag keyboard closed with text`,
+   then `live: making <tag>`; the recovery secret page; A finishes signing
+   in.
+4. Again with a gamertag made elsewhere: the code page for it; enter the
+   6-digit code from its Account page.
+5. Against an invite-only server: the invite page; A opens the keyboard,
+   titled "Invite code".
+6. B on the keyboard: the page is asked again; B on the prompt cancels.
+
+**Checklist for a game run** (`h2 play --live-server URL` with an account
+made on that server's web dashboard and none on this machine):
+
+1. `h2 play` prints `... needs a code from Account on URL/dash; the game
+   asks for it when you sign in to Xbox Live` and starts without a terminal
+   prompt.
+2. Xbox Live on the main menu lists the gamertag; pick it. Stderr:
+   `live: <tag> needs a code to sign in on <url>; asking in game`, then
+   `signin prompt: opening for controller 0`.
+3. The prompt is drawn over the signing-in step, titled "Xbox Live
+   sign-in", the row reading "Sign in as <tag>", the description the code
+   page. If the description is off-screen, move it with
+   `H2_SIGNIN_TEXT_RECT`.
+4. D-pad: each press logs `signin prompt: event K, button N (Some(Up))`
+   and so on (K 1 to 4), and the digits change.
+
+5. A wrong code: "Wrong code. 4 tries left." appears without another press.
+6. The right code: "Signed in. A: done"; A closes the prompt and the game
+   finishes signing in; `play-accounts.json` and `accounts.json` hold the
+   key. The next `h2 play --live` signs straight in.
+7. Again, with B on the prompt: note the game's sign-in error and that it
+   returns to the menu.
+
+Tests: `crates/live-hle/tests/signin_code.rs` (the logon pending through a
+wrong code, the right code against the embedded server's real TOTP, both
+files saved, the countdown to a lockout, cancel, create, unreachable, no
+server; New Account making a free gamertag, a taken one kept waiting and
+signed in with its code, backing out of one, an invite-only server);
+`crates/live-hle/src/config.rs` (the list, the New Account row);
+`crates/boot/tests/new_account_prompt.rs` (New Account opening the prompt
+through the runner; A opening the retail keyboard on our buffer, with our
+title); `crates/boot/src/signin_keyboard.rs` (reading the text back);
+`crates/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
+five lines of 40); `crates/boot/src/list_class.rs` (a class's own buttons,
+live text); `crates/cli/src/play_live.rs` (the hand-off).
 
 ## Client HLE: outgoing messages
 

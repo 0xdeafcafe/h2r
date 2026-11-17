@@ -13,11 +13,13 @@ pub mod mailbox;
 pub mod maps;
 pub mod motd;
 pub mod pack;
+pub mod recovery;
 #[doc(hidden)]
 pub mod samples;
 pub mod session;
 pub mod sign;
 pub mod skulls;
+pub mod storage;
 pub mod team;
 pub mod title_file;
 
@@ -27,6 +29,36 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Halo 2's title ID, `4D530064`.
 pub const HALO_2_TITLE_ID: TitleId = TitleId(0x4D530064);
+
+/// The public Live service: what `h2 play --live` signs in to, and what the
+/// tvOS, iOS and Xbox apps use unless told otherwise (docs/live/live.md
+/// "Playing on Live"). The one place it is written; `$H2_LIVE_SERVER`
+/// replaces it for a run.
+pub const DEFAULT_SERVER: &str = "https://live.forbes.red";
+
+/// What `$H2_LIVE_SERVER` says about the server Live would use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerOverride {
+    /// Unset or blank: no change.
+    Unset,
+    /// `off`, `none` or `0`: Live off for this run.
+    Off(String),
+    /// This server instead (any trailing `/` dropped).
+    Url(String),
+}
+
+impl ServerOverride {
+    /// Reads the variable's value.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => ServerOverride::Unset,
+            Some(v) if matches!(v.to_ascii_lowercase().as_str(), "off" | "none" | "0") => {
+                ServerOverride::Off(v.to_string())
+            }
+            Some(v) => ServerOverride::Url(v.trim_end_matches('/').to_string()),
+        }
+    }
+}
 
 /// The downloadable file the game reads after sign-in (docs/live/live.md
 /// section 2). Published with [`HALO_2_TITLE_ID`] by `h2 live motd set`.
@@ -281,10 +313,18 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
+    /// Reading the account's own recovery secret and current code.
+    pub const RECOVERY_READ: &str = "recovery.read";
+    /// Setting up or resetting the account's recovery secret.
+    pub const RECOVERY_WRITE: &str = "recovery.write";
     /// Content uploads, package publishing and reports (docs/game/maps.md §5).
     pub const CONTENT_WRITE: &str = "content.write";
     /// Admin moderation of uploaded content and hopper pins.
     pub const CONTENT_MODERATE: &str = "content.moderate";
+    /// Reading one's own cloud saves (docs/live/live-cloud-saves.md).
+    pub const STORAGE_READ: &str = "storage.read";
+    /// Writing and deleting one's own cloud saves.
+    pub const STORAGE_WRITE: &str = "storage.write";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
 }
@@ -373,6 +413,10 @@ pub struct CreatedAccount {
     pub gamertag: Gamertag,
     /// The author id: `acct:<xuid>@<server id>`.
     pub id: String,
+    /// On creation: the account's new recovery secret and current code
+    /// ([`recovery`]), shown to the user once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<recovery::RecoveryInfo>,
 }
 
 /// An entry of `GET /v1/accounts`.
@@ -427,7 +471,22 @@ pub struct Presence {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_id: Option<String>,
+    /// What the player is doing, in words ("Co-op: Outskirts"); only some
+    /// activities say. Left out when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     pub since: String,
+}
+
+/// The longest presence `activity`, in characters.
+pub const PRESENCE_ACTIVITY_MAX: usize = 64;
+
+/// Whether `activity` may be a presence's activity: some text, at most
+/// [`PRESENCE_ACTIVITY_MAX`] characters, no control characters.
+pub fn valid_activity(activity: &str) -> bool {
+    !activity.trim().is_empty()
+        && activity.chars().count() <= PRESENCE_ACTIVITY_MAX
+        && !activity.chars().any(char::is_control)
 }
 
 /// The data a `FriendRequested`, `FriendAccepted` or `FriendDeclined` event
@@ -455,6 +514,9 @@ pub struct FriendPresence {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_id: Option<String>,
+    /// As [`Presence::activity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     pub since: String,
 }
 
@@ -608,6 +670,23 @@ pub fn valid_file_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_server_variable_overrides_or_turns_live_off() {
+        assert_eq!(DEFAULT_SERVER, "https://live.forbes.red");
+        assert_eq!(ServerOverride::parse(None), ServerOverride::Unset);
+        assert_eq!(ServerOverride::parse(Some("  ")), ServerOverride::Unset);
+        for off in ["off", "OFF", "none", " 0 "] {
+            assert!(
+                matches!(ServerOverride::parse(Some(off)), ServerOverride::Off(_)),
+                "{off}"
+            );
+        }
+        assert_eq!(
+            ServerOverride::parse(Some(" https://live.example/ ")),
+            ServerOverride::Url("https://live.example".into())
+        );
+    }
 
     #[test]
     fn gamertag_accepts_live_spellings() {
@@ -832,6 +911,7 @@ mod wire_tests {
                 presence: Some(FriendPresence {
                     state: "playing".into(),
                     game_id: Some("7f3c".into()),
+                    activity: None,
                     since: "2026-11-15T20:15:00.000Z".into(),
                 }),
             }],

@@ -510,65 +510,31 @@ held.
 
 ### Boot integration
 
-These are the steps for `.claude/worktrees/boot` (`crates/boot/src/xapi_glue.rs`
-and `lib.rs`). The kernel must be attached with its VFS set first
-(`k.set_vfs(v)`, which also mounts the raw disk).
+`crates/boot/src/xapi_glue.rs` is this integration, in place. The kernel is
+attached with its VFS first (`k.set_vfs(v)`, which also mounts the raw
+disk), then:
 
-1. **Remove the boot override at `0x2d5d0a`.** `xapi_glue::install`
-   registers `boot:XFormatUtilityDrive` there (it emptied Z:'s partition and
-   never created N:). Delete that `register_override` call and
-   `X_FORMAT_UTILITY_DRIVE`. If it stays, `xapi::register` refuses
-   everything with `Occupied` at `0x002d5d0a`. Keep the `0x2d5b77` override
-   for `--no-xapi`, as today. It still writes the Z: row, so keep that store,
-   with `xapi::register::addr::CACHE_ROW` (`0x461d80`) in place of the local
-   `CACHE_SLOT`. `empty_dir` can go once `BootStorage` is replaced (step 2).
-2. **Replace `BootStorage` with `xapi::VfsStorage`.** It formats through
-   `Vfs::format_device`, not by deleting host directories under a live
-   `HostBackend`. Capture the VFS once, with no guard held:
-   `xapi::VfsStorage::new(k.vfs().context("VFS not attached")?)`. Never call
-   `Kernel::vfs()` from inside an override.
-3. **Give the InputManager a host source.**
-   - Headless boot: `let (input, keyboard) =
-     input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())?;`
-     Keep `keyboard` for scripted input (`key_down("Escape")` is START,
-     `key_down("Space")` is A).
-   - Under crates/app: `let input = host.take_input().unwrap();` and, before
-     the first pump, `host.keyboard().map(|k| k.set_rumble_supported(true));`.
-     app's pad is already on port 0. Without the call, rumble returns 50,
-     which Halo tolerates.
-4. **Register** (replaces the body of `xapi_glue::register`):
-
-```rust
-pub type Shared = Arc<Mutex<xapi::Xapi<xapi::VfsStorage>>>;
-
-pub fn register(
-    rt: &runtime::Runtime,
-    k: &Arc<kernel::Kernel>,
-    input: input::InputManager,
-) -> anyhow::Result<Shared> {
-    let storage = xapi::VfsStorage::new(k.vfs().context("VFS not attached")?);
-    // utility_partition 5 = the kernel's; cache_drive = Select (N: on
-    // Partition4 with the kernel's seed) and the retail globals.
-    let config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
-    let x = xapi::Xapi::new(config, input, storage).map_err(|e| anyhow::anyhow!("xapi: {e}"))?;
-    let x = Arc::new(Mutex::new(x));
-    let mut r = None;
-    rt.edit_dispatch(|d| r = Some(xapi::register(d, &x, xapi::GuestLayout::default())));
-    r.unwrap().map_err(|e| anyhow::anyhow!("xapi::register: {e}"))?;
-    Ok(x)
-}
-```
-
-5. **Pump between slices.** Keep the existing loop, with no guard held and
-   no runner active:
-   `xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k)))`.
-   It runs the same sequence as `app::pump_input`. Use `service_input` with
-   `runtime::Runtime`: `app::pump_input` needs a `GuestMemory` that owns its
-   guard, and `register::RuntimeMemory` only borrows one, so the guard would
-   still be held during delivery.
-6. **Launch stop.** On `Event::Unsupported` with mnemonic
-   `xapi::XLaunchNewImageA`, call `x.lock().unwrap().take_launch_request()`
-   outside every guard.
+1. `register_with` builds `xapi::VfsStorage::new(k.vfs()...)`, which formats
+   through `Vfs::format_device` and not by deleting host directories under a
+   live `HostBackend`, and `xapi::Config::for_gamepad`, then `xapi::register`
+   with `GuestLayout::default()`. The VFS is captured once, with no guard
+   held; never call `Kernel::vfs()` from inside an override.
+2. The `InputManager` comes from the host: `register` makes a headless one
+   with the keyboard pad (`H2_BOOT_INPUT` presses go through it), and
+   `h2 play` passes the window's (`GuestHost::take_input`, player one's pad
+   already on port 0).
+3. Between slices the run loop calls
+   `xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(..))`
+   with no guard held and no runner active. It runs the same sequence as
+   `app::pump_input`, but works on a `runtime::Runtime`:
+   `app::pump_input` needs a `GuestMemory` that owns its guard, and
+   `register::RuntimeMemory` only borrows one, so the guard would still be
+   held during delivery.
+4. `--no-xapi` leaves XAPI unregistered and brings back the boot's own
+   `0x2d5b77` XMountUtilityDrive override, which writes the Z: row at
+   `xapi::register::addr::CACHE_ROW` (`0x461d80`). Without `--no-xapi` the
+   boot registers no override at `0x2d5d0a`: `xapi::register` refuses
+   everything with `Occupied` there.
 
 What to expect: `0x2d5b77` returns 1 with `[0x461d80] = 0`. `0x2d5d0a`
 returns 1 with `[0x461d84] = 2`, `\??\N:` linked to Partition4 (emptied),
@@ -589,8 +555,9 @@ Keep the two equal.
   fails the signal. The failure is requeued, not lost.
 - Outgoing `LaunchRequest` and reload are host work. Incoming launch info is
   only the kernel page.
-- No real boot, controller replug or title relaunch was run against these
-  registrations. The synthetic Runner tests are described below.
+- A controller replug or title relaunch has not been run against these
+  registrations. The boot itself runs them on every launch; the synthetic
+  Runner tests are described below.
 - N: is formatted on every boot (as retail). Its 64 KiB retail cluster size
   is not reproduced. If a generated `002d5f65` query on `n:\` must report
   64 KiB, the VFS volume needs a per-partition cluster size.

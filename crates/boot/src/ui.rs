@@ -166,8 +166,26 @@ pub enum Chosen {
     Stepped(String),
     /// Open this screen.
     Open(&'static str),
+    /// Run the screen's own action (`list_class::ListClass::action`), as X
+    /// and Start do on a class with one.
+    Act,
+    /// Make these guest calls, in order, then open a retail screen by its
+    /// loader; log the line first.
+    Retail {
+        line: String,
+        calls: Vec<(u32, Vec<GuestArg>)>,
+        loader: u32,
+    },
     /// Not a row of ours.
     Nothing,
+}
+
+/// A guest call's argument for [`Chosen::Retail`]: a value, or the word at
+/// a guest address when the call is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestArg {
+    Value(u32),
+    Load(u32),
 }
 
 /// The screens and extensions of a run, over its store.
@@ -409,7 +427,7 @@ fn restart(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting_defs::{ALL, FOV, FPS, PAD_MUTE, PAD_SPEAKER, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FOV, FPS, LIGHTING, PAD_MUTE, PAD_SPEAKER, RENDER_SCALE};
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
@@ -451,10 +469,13 @@ mod tests {
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key),
+                RowKind::Setting(crate::setting_defs::HALO1_SANDBOX.key)
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 6), 4);
+        assert_eq!(m.count(List::Screen("video"), 6), 7, "ours, whatever retail says");
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);

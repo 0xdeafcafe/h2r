@@ -8,8 +8,13 @@
 //! - [`save`]: write a new `.map` through `map::writer::MapEditor`: every
 //!   byte identical except the patched fields and the header checksum.
 //! - [`package`]: save as a map package (docs/game/maps.md) and open one.
-//! - [`geometry`], [`render`], [`panel`]: the structure BSP and markers, an
-//!   offscreen wgpu viewport, and the egui panel [`ScenarioEditor`].
+//! - [`Session`]: the editor state and commands with no UI (open, select,
+//!   add, remove, drag, gizmo gestures, undo, save, packages), drawn by
+//!   `h2-editor` (`crates/studio`).
+//! - [`geometry`], [`render`]: the structure BSP and markers, the camera
+//!   and picking, and an offscreen wgpu viewport (no UI toolkit).
+//! - [`scene`]: the map's art for the viewport: the BSP textured with each
+//!   shader's base map, and the placed objects' render models.
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
@@ -24,19 +29,20 @@ pub mod fixture;
 pub mod geometry;
 pub mod layout;
 pub mod package;
-pub mod panel;
 pub mod render;
 pub mod save;
 pub mod scenario;
+pub mod scene;
+pub mod session;
 #[cfg(test)]
 mod tests;
 
 pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
-pub use panel::ScenarioEditor;
 pub use save::MapSource;
 pub use scenario::{Changes, Grown, Removed, Scenario, TagRef, Value};
+pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]

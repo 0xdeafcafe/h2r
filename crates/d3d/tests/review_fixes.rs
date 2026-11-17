@@ -729,3 +729,31 @@ fn constant_shadow_fault_keeps_the_words_before_it() {
     // The host copy was updated first, as before.
     assert_eq!(d.constant(reg as usize)[0].to_bits(), 0x1111_1111);
 }
+
+/// Draws with no constant written between them share one constant block
+/// (and the same combiner words one block); a write gives the next draw
+/// a block of its own holding the new registers, the earlier draws'
+/// blocks unchanged.
+#[test]
+fn draws_share_constant_blocks_until_a_register_changes() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    for (i, w) in [1.5f32, 2.5, 3.5, 4.5].iter().enumerate() {
+        m.write_u32(SRC + 4 * i as u32, w.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(&mut m, 10, SRC, 1, false)
+        .unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    let draws = d.backend.draws();
+    assert_eq!(draws.len(), 3);
+    let (a, b, c) = (&draws[0].shader, &draws[1].shader, &draws[2].shader);
+    assert!(std::sync::Arc::ptr_eq(&a.constants, &b.constants));
+    assert!(std::sync::Arc::ptr_eq(&a.combiner_state, &b.combiner_state));
+    assert!(!std::sync::Arc::ptr_eq(&b.constants, &c.constants));
+    assert_eq!(c.constants[10], [1.5, 2.5, 3.5, 4.5]);
+    assert_eq!(b.constants[10], [0.0; 4]);
+    assert_eq!(c.constants[..10], b.constants[..10]);
+    assert_eq!(c.constants[11..], b.constants[11..]);
+}

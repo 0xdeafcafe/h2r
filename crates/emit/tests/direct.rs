@@ -48,6 +48,11 @@ const HOME: u32 = CODE + 0xe00;
 const HOME_B: u32 = CODE + 0xe80;
 const LOOP: u32 = CODE + 0xf00;
 const LOOP_B: u32 = CODE + 0xf80;
+// The second page.
+const IND: u32 = CODE + 0x1000;
+const CL: u32 = CODE + 0x1100;
+/// Shares NEST_B's slot in a table of 256, not in one of 4096.
+const COLL: u32 = CODE + 0x1213;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -125,6 +130,37 @@ fn log(a: &mut CodeAssembler, marker: u32) -> Result<(), IcedError> {
 
 fn funcs() -> Vec<IrFunction> {
     vec![
+        // Calls of two entries that share a slot in the smallest table.
+        function(CL, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            a.call(NEST_B as u64)?;
+            a.call(COLL as u64)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
+        function(COLL, |a| {
+            log(a, 32)?;
+            a.ret()
+        }),
+        // Calls through a register, to a caller of its own and to a leaf
+        // (O, which the override scenario overrides), in a loop.
+        function(IND, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            log(a, 30)?;
+            a.mov(eax, NEST_B)?;
+            a.call(eax)?;
+            log(a, 31)?;
+            a.mov(eax, O)?;
+            a.call(eax)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
         // Nested calls, a stdcall callee among them, in a loop.
         function(NEST, |a| {
             let mut l = a.create_label();
@@ -312,8 +348,24 @@ enum Mode {
     Disabled,
     /// Built with direct calls and using them.
     On,
+    /// [`Mode::Off`] and [`Mode::On`] built with the handler entries and
+    /// exits from before `h2abi_v1_exit` and lent views (`H2_EXIT_CALL=0`:
+    /// a charge, then a release; `H2_DIRECT_VIEW=0`: every handler acquires
+    /// and releases its own) and installed as such a module is, through the
+    /// v2 bridge table.
+    OldOff,
+    OldOn,
 }
-const MODES: [Mode; 3] = [Mode::Off, Mode::Disabled, Mode::On];
+const MODES: [Mode; 5] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn];
+
+impl Mode {
+    fn direct(self) -> bool {
+        !matches!(self, Mode::Off | Mode::OldOff)
+    }
+    fn old(self) -> bool {
+        matches!(self, Mode::OldOff | Mode::OldOn)
+    }
+}
 
 struct Module {
     _lib: libloading::Library,
@@ -321,18 +373,21 @@ struct Module {
     version: runtime::ffi::GeneratedAbiVersion,
 }
 
-fn build(direct: bool) -> Module {
+fn build(direct: bool, old: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}"));
     let src = dir.join("src");
     emit::write_module_with(&owners, &src, emit::Codegen { accounting: true, ..emit::Codegen::default() }).unwrap();
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();
-    let flag = format!(
+    let mut flag = format!(
         "#undef H2_DIRECT_CALLS\n#define H2_DIRECT_CALLS {}\n",
         u8::from(direct)
     );
+    if old {
+        flag += "#define H2_EXIT_CALL 0\n#define H2_DIRECT_VIEW 0\n";
+    }
     std::fs::write(&header, format!("{flag}{content}")).unwrap();
     emit::compile::install_header(&src, &common::abi_header().unwrap()).unwrap();
     let b = emit::compile::build(&src, &dir, emit::compile::Arch::host(), 2).unwrap();
@@ -342,7 +397,7 @@ fn build(direct: bool) -> Module {
     let lib = unsafe { libloading::Library::new(&dylib) }.unwrap();
     unsafe {
         let install: libloading::Symbol<unsafe extern "C" fn(*const *const (), usize) -> u32> =
-            lib.get(b"h2bridge_install_v2").unwrap();
+            lib.get(if old { b"h2bridge_install_v2".as_slice() } else { b"h2bridge_install_v3" }).unwrap();
         let callbacks = [
             runtime::ffi::h2abi_v1_read as *const (),
             runtime::ffi::h2abi_v1_write as *const (),
@@ -353,14 +408,17 @@ fn build(direct: bool) -> Module {
             runtime::ffi::h2abi_v1_xchg as *const (),
             runtime::ffi::h2abi_v1_cmpxchg as *const (),
             runtime::ffi::h2abi_v1_profile as *const (),
-            runtime::ffi::h2abi_v1_fast_acquire as *const (),
-            runtime::ffi::h2abi_v1_fast_release as *const (),
+            acquire as *const (),
+            release as *const (),
             runtime::ffi::h2abi_v1_read_counted as *const (),
             runtime::ffi::h2abi_v1_write_counted as *const (),
-            runtime::ffi::h2abi_v1_charge as *const (),
+            charge as *const (),
             runtime::ffi::h2abi_v1_budget as *const (),
+            exit as *const (),
         ];
-        assert_eq!(install(callbacks.as_ptr(), size_of_val(&callbacks)), 1);
+        // An old module's table ends before `exit`.
+        let callbacks = &callbacks[..callbacks.len() - usize::from(old)];
+        assert_eq!(install(callbacks.as_ptr(), size_of_val(callbacks)), 1);
         let table: libloading::Symbol<*const runtime::generated::H2GenModule> =
             lib.get(b"h2gen_module").unwrap();
         let version = *lib
@@ -380,18 +438,51 @@ fn build(direct: bool) -> Module {
     }
 }
 
-/// Both builds, once per test binary.
-fn modules() -> &'static [Module; 2] {
-    struct Shared([Module; 2]);
+thread_local! {
+    /// This thread's calls of the runtime's view and settling exports:
+    /// `fast_acquire`, `fast_release`, `charge`, `exit`.
+    static ABI_CALLS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+fn abi_call(i: usize) {
+    ABI_CALLS.with(|c| {
+        let mut v = c.get();
+        v[i] += 1;
+        c.set(v);
+    });
+}
+
+/// The bridge's callbacks: the runtime's own, counted.
+unsafe extern "C" fn acquire(c: *mut runtime::ExecCtxOpaque) -> *mut runtime::ffi::FastAccess {
+    abi_call(0);
+    unsafe { runtime::ffi::h2abi_v1_fast_acquire(c) }
+}
+unsafe extern "C" fn release(c: *mut runtime::ExecCtxOpaque) {
+    abi_call(1);
+    unsafe { runtime::ffi::h2abi_v1_fast_release(c) }
+}
+unsafe extern "C" fn charge(c: *mut runtime::ExecCtxOpaque, n: u64) {
+    abi_call(2);
+    unsafe { runtime::ffi::h2abi_v1_charge(c, n) }
+}
+unsafe extern "C" fn exit(c: *mut runtime::ExecCtxOpaque, n: u64) {
+    abi_call(3);
+    unsafe { runtime::ffi::h2abi_v1_exit(c, n) }
+}
+
+/// Every build, once per test binary: direct calls off and on, then the
+/// same two with the old exits.
+fn modules() -> &'static [Module; 4] {
+    struct Shared([Module; 4]);
     // SAFETY: the tables are immutable statics of libraries kept loaded.
     unsafe impl Sync for Shared {}
     unsafe impl Send for Shared {}
     static M: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
-    &M.get_or_init(|| Shared([build(false), build(true)])).0
+    &M.get_or_init(|| Shared([build(false, false), build(true, false), build(false, true), build(true, true)])).0
 }
 
 fn dispatch(mode: Mode) -> Dispatch {
-    let m = &modules()[usize::from(mode != Mode::Off)];
+    let m = &modules()[usize::from(mode.direct()) + 2 * usize::from(mode.old())];
     let mut d = Dispatch::default();
     unsafe { d.register_generated_module(&*m.table, m.version) }.unwrap();
     d
@@ -407,6 +498,10 @@ struct Outcome {
     backtrace: Vec<runtime::GuestFrame>,
     preempted: Option<TransferAbi>,
     transfers: u64,
+    /// The context's access accounting after the run: accesses charged
+    /// (`Profile::memory_accessors`), those the inline RAM view made, the
+    /// slice spent, the budget left (`h2abi_v1_budget`), the preempt word.
+    accounting: [u64; 5],
 }
 
 struct Machine {
@@ -417,12 +512,12 @@ struct Machine {
 impl Machine {
     fn new(mode: Mode) -> Machine {
         let mut mem = Guest::new();
-        mem.map_zeroed(CODE, 4096, Permissions::RX).unwrap();
+        mem.map_zeroed(CODE, 8192, Permissions::RX).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch(mode)), 1);
-        ctx.enable_direct_calls(mode == Mode::On);
+        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn));
         ctx.enable_profiling(true);
         Machine {
             ctx,
@@ -447,7 +542,19 @@ impl Machine {
     fn outcome(&mut self, transfer: TransferAbi) -> Outcome {
         let mut memory = vec![0; 8192];
         self.ctx.memory().read_bytes(DATA, &mut memory, 1).unwrap();
+        let pending = u64::from(self.ctx.preempt_pending());
+        // SAFETY: the context is live and nothing else is using it.
+        let budget = unsafe { runtime::ffi::h2abi_v1_budget((&mut self.ctx as *mut ExecCtx).cast()) };
+        let p = self.ctx.profile().unwrap();
+        let accounting = [
+            p.memory_accessors,
+            p.fast_memory_accesses,
+            self.ctx.slice_spent(),
+            budget,
+            pending,
+        ];
         Outcome {
+            accounting,
             transfer,
             cpu: self.cpu,
             memory,
@@ -513,9 +620,61 @@ impl Machine {
 
 #[test]
 fn nested_calls_and_a_stdcall_callee() {
-    agree("nested", run_twice(NEST));
+    agree("nested", |m| {
+        let out = run_twice(NEST)(m);
+        // The accounting compared is real: accesses were charged.
+        assert!(out.iter().all(|o| o.accounting[0] > 0), "{:?}", out[1].accounting);
+        out
+    });
     // 3 trips: A->B, B->C and both returns, all direct on the second run.
     assert_eq!(direct_count(NEST, None), 12);
+}
+
+/// Calls through a register (`H2_ICALL`): with `H2_INDIRECT_CALLS=1` the
+/// warm run finds both targets in their slots and calls them directly, and
+/// every mode still ends the same; an override on one target between runs
+/// stops its calls going direct, and disabling it lets them again.
+#[test]
+fn indirect_calls() {
+    let calls = Arc::new(AtomicU32::new(0));
+    agree("indirect", |m| {
+        let mut out = run_twice(IND)(m);
+        let seen = calls.clone();
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.register_override(O, "test override", move |cpu, ctx, _| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                cpu.ebx = cpu.ebx.wrapping_add(0x100);
+                ctx.memory().ret(cpu, 0)
+            })
+        });
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND)));
+        m.ctx.runtime().edit_dispatch(|d| d.set_enabled(O, false));
+        m.reset();
+        out.push(m.run(&Runner::default(), TransferAbi::jump(IND)));
+        out
+    });
+    assert_eq!(calls.load(Ordering::Relaxed), 3 * MODES.len() as u32);
+    // 3 trips: NEST_B's call of NEST_C and its return are direct either
+    // way; with the switch, IND's two calls and their returns too.
+    let on = std::env::var("H2_INDIRECT_CALLS").as_deref() == Ok("1");
+    assert_eq!(direct_count(IND, None), if on { 18 } else { 6 });
+}
+
+/// Two callees in one slot (`H2_DIRECT_SLOTS`, runtime environment): with
+/// 256 slots each call finds the other's entry there and goes through the
+/// runner, which takes the slot back; with 4096 or more both stay. Every
+/// mode ends the same either way.
+#[test]
+fn callees_sharing_a_slot() {
+    let n = (CL ^ (CL >> 8), NEST_B ^ (NEST_B >> 8), COLL ^ (COLL >> 8));
+    assert_eq!(n.1 & 255, n.2 & 255);
+    assert_ne!(n.1 & 4095, n.2 & 4095);
+    agree("shared slot", run_twice(CL));
+    let slots: u32 = std::env::var("H2_DIRECT_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    // 3 trips: NEST_B's call of NEST_C and its return always; with room,
+    // CL's two calls and their returns too.
+    assert_eq!(direct_count(CL, None), if slots >= 4096 { 18 } else { 6 });
 }
 
 #[test]
@@ -689,7 +848,7 @@ fn every_transfer_limit() {
 /// same end.
 #[test]
 fn a_preempt_request_at_every_access() {
-    for entry in [NEST, TAIL, REC] {
+    for entry in [NEST, TAIL, REC, IND] {
         for slice in 1..60u64 {
             agree(&format!("{entry:#x} slice {slice}"), |m| {
                 let warm = {
@@ -832,4 +991,57 @@ fn a_register_changed_round_a_loop_reaches_the_next_direct_call() {
         out
     });
     assert_eq!(direct_count(LOOP, None), 6);
+}
+
+/// The calls a warm run of `entry` makes into the runtime: `fast_acquire`,
+/// `fast_release`, `charge`, `exit`.
+fn abi_calls(mode: Mode, entry: u32, cap: Option<u32>) -> [u64; 4] {
+    let mut m = Machine::new(mode);
+    if let Some(c) = cap {
+        m.ctx.set_direct_call_depth(c);
+    }
+    m.run(&Runner::default(), TransferAbi::jump(entry));
+    m.reset();
+    ABI_CALLS.with(|c| c.set([0; 4]));
+    m.run(&Runner::default(), TransferAbi::jump(entry));
+    ABI_CALLS.with(|c| c.get())
+}
+
+/// A directly invoked handler runs on its caller's view: no acquire on
+/// entry and, with nothing of its own to charge, no call on the way out.
+/// Everything a run ends with is the same as with the old entries and exits
+/// in every scenario above (`agree` runs `OldOff` and `OldOn` too); here,
+/// the calls saved.
+#[test]
+fn a_direct_callee_borrows_its_callers_view() {
+    if std::env::var("H2_FASTMEM").as_deref() == Ok("0") {
+        common::skip("borrowed view", "H2_FASTMEM=0 builds no view");
+        return;
+    }
+    let [off, on, old_off, old_on] = [Mode::Off, Mode::On, Mode::OldOff, Mode::OldOn].map(|m| abi_calls(m, NEST, None));
+    // Through the runner every handler acquires a view and leaves with one
+    // exit call where it used to release and charge.
+    assert_eq!(off[0], old_off[0], "{off:?} {old_off:?}");
+    assert_eq!((off[1], old_off[3]), (0, 0));
+    assert_eq!(off[3], old_off[1], "one exit per release: {off:?} {old_off:?}");
+    // Direct: A calls B three times, B calls C each time, every return
+    // inline. Each of the seven handlers used to acquire and release; now
+    // only A acquires, and B and C borrow, each still with its own
+    // accesses to charge on the way out (the exit call that is left).
+    assert_eq!((old_on[0], old_on[1], old_on[3]), (7, 7, 0), "{old_on:?}");
+    if std::env::var("H2_DIRECT_COUNT").as_deref() == Ok("1") {
+        // The count goes with the view and comes back: A charges the lot
+        // in its one exit, and no handler charges before a call.
+        assert_eq!(on, [1, 0, 0, 1], "{on:?}");
+    } else {
+        assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
+        // The charges before each direct call are the same.
+        assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    }
+    // A call that falls back to the runner lends nothing: its callee
+    // acquires, as through the runner. Past a cap of 0 that is every call,
+    // as with direct calls disabled; past a cap of 1, B's calls of C.
+    assert_eq!(abi_calls(Mode::On, NEST, Some(0)), abi_calls(Mode::Disabled, NEST, None));
+    let [on, old_on] = [Mode::On, Mode::OldOn].map(|m| abi_calls(m, NEST, Some(1)));
+    assert!(1 < on[0] && on[0] < old_on[0], "{on:?} {old_on:?}");
 }

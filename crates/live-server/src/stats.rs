@@ -664,22 +664,42 @@ pub struct Summary {
 /// A cached answer: the log position and hour it was made at, and it.
 type Cached = (u64, i64, Arc<Value>);
 
-/// The stats projection and its answer cache.
+/// The stats projection and its answer cache. It folds every game twice:
+/// all of them (what admins read), and only the public ones for everyone
+/// else. A Live co-op game linked to a session (its visibility can change
+/// while it runs) is held out of the public fold until it ends, then folded
+/// in whole if it ended public ([`crate::model::Game::shows_to`] for an
+/// anonymous reader) and dropped if not.
 #[derive(Default)]
 pub struct Stats {
     inner: RwLock<Inner>,
-    /// Window -> (position, hour, answer).
-    cache: Mutex<HashMap<&'static str, Cached>>,
+    public: RwLock<Inner>,
+    /// The read model, which the dispatcher updates before this projection:
+    /// which games are hidden. None (tests): every game is public.
+    model: Option<Arc<crate::model::Model>>,
+    /// The public fold's held events of running co-op games, by game id.
+    held: Mutex<HashMap<String, Vec<RecordedEvent>>>,
+    /// (Window, all games) -> (position, hour, answer).
+    cache: Mutex<HashMap<(&'static str, bool), Cached>>,
 }
 
 impl Stats {
-    /// The summary for a window named in [`WINDOWS`], as JSON, at `now`.
-    pub fn summary(&self, window: &str, now: i64) -> Option<Arc<Value>> {
+    /// Stats that leave hidden games out of the public summary.
+    pub fn with_model(model: Arc<crate::model::Model>) -> Self {
+        Stats {
+            model: Some(model),
+            ..Default::default()
+        }
+    }
+
+    /// The summary for a window named in [`WINDOWS`], as JSON, at `now`:
+    /// of every game when `all` (admins), else of the public ones.
+    pub fn summary(&self, window: &str, now: i64, all: bool) -> Option<Arc<Value>> {
         let (name, days) = WINDOWS.into_iter().find(|(w, _)| *w == window)?;
         let hour = now.div_euclid(HOUR);
-        let inner = self.inner.read().unwrap();
+        let inner = if all { &self.inner } else { &self.public }.read().unwrap();
         let position = inner.position;
-        if let Some((p, h, v)) = self.cache.lock().unwrap().get(name)
+        if let Some((p, h, v)) = self.cache.lock().unwrap().get(&(name, all))
             && *p == position
             && *h == hour
         {
@@ -692,13 +712,45 @@ impl Stats {
         self.cache
             .lock()
             .unwrap()
-            .insert(name, (position, hour, v.clone()));
+            .insert((name, all), (position, hour, v.clone()));
         Some(v)
     }
 
     /// The typed summary, for tests.
     pub fn summary_at(&self, days: Option<i64>, now: i64) -> Summary {
         self.inner.read().unwrap().summary(days, now)
+    }
+
+    /// The public fold's share of an event: none yet (held), or the
+    /// events to fold now.
+    fn public_share(&self, event: &RecordedEvent) -> Vec<RecordedEvent> {
+        let b = &event.body;
+        let (Some(m), Some(id)) = (&self.model, b.stream.strip_prefix("game-")) else {
+            return vec![event.clone()];
+        };
+        if !matches!(
+            b.kind.as_str(),
+            game::GAME_STARTED | game::PLAYER_JOINED | game::PLAYER_KILLED | game::GAME_ENDED
+        ) {
+            return Vec::new();
+        }
+        let (linked, public) = {
+            let s = m.read();
+            let linked = s.games.get(id).is_some_and(|g| g.coop.is_some());
+            let public = crate::sessions::game_shows_to(&s, id, crate::sessions::Viewer::Anonymous);
+            (linked, public)
+        };
+        let mut held = self.held.lock().unwrap();
+        if !linked && !held.contains_key(id) {
+            return vec![event.clone()];
+        }
+        let list = held.entry(id.to_string()).or_default();
+        list.push(event.clone());
+        if b.kind != game::GAME_ENDED {
+            return Vec::new();
+        }
+        let list = held.remove(id).unwrap_or_default();
+        if public { list } else { Vec::new() }
     }
 }
 
@@ -709,6 +761,12 @@ impl Subscriber for Stats {
 
     fn apply(&self, event: &RecordedEvent) {
         self.inner.write().unwrap().apply(event);
+        let share = self.public_share(event);
+        let mut public = self.public.write().unwrap();
+        for e in &share {
+            public.apply(e);
+        }
+        public.position = public.position.max(event.position);
     }
 }
 
@@ -718,11 +776,12 @@ pub async fn get_summary(
     headers: HeaderMap,
     Query(p): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    live.authorize_read(crate::http::bearer(&headers))?;
+    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
     let window = p.get("window").map_or("7d", String::as_str);
+    let all = viewer == crate::sessions::Viewer::Admin;
     let v = live
         .stats
-        .summary(window, crate::app::now())
+        .summary(window, crate::app::now(), all)
         .ok_or_else(|| invalid("window is today, 7d, 30d or all"))?;
     Ok(crate::http::json(StatusCode::OK, &*v))
 }
@@ -980,18 +1039,21 @@ mod tests {
     fn the_cache_follows_the_log_and_the_hour() {
         let mut log = Log::new();
         log.start("g", json!({}), T0);
-        let a = log.stats.summary("7d", T0 + 10).unwrap();
+        let a = log.stats.summary("7d", T0 + 10, true).unwrap();
         assert_eq!(a["window"], "7d");
-        assert!(Arc::ptr_eq(&a, &log.stats.summary("7d", T0 + 20).unwrap()));
+        assert!(Arc::ptr_eq(
+            &a,
+            &log.stats.summary("7d", T0 + 20, true).unwrap()
+        ));
         assert!(!Arc::ptr_eq(
             &a,
-            &log.stats.summary("7d", T0 + HOUR).unwrap()
+            &log.stats.summary("7d", T0 + HOUR, true).unwrap()
         ));
-        let b = log.stats.summary("7d", T0 + HOUR).unwrap();
+        let b = log.stats.summary("7d", T0 + HOUR, true).unwrap();
         log.kill("g", 1, Some(0), "kill", "smg", T0 + 30);
-        let c = log.stats.summary("7d", T0 + HOUR).unwrap();
+        let c = log.stats.summary("7d", T0 + HOUR, true).unwrap();
         assert!(!Arc::ptr_eq(&b, &c));
         assert_eq!(c["totals"]["kills"], 1);
-        assert!(log.stats.summary("1y", T0).is_none());
+        assert!(log.stats.summary("1y", T0, true).is_none());
     }
 }

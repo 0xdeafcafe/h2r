@@ -34,3 +34,5 @@ all 3 maps: zero decode failures, 100% of images satisfy
 For lightmap colours, `h2 lighting <map> --bsp N --page N --out DIR`
 resolves the `ltmp` palette instead of displaying index luminance. See
 [lighting.md](lighting.md) for palette selection and shading limits.
+
+Halo 1 bitmaps decode through the same code: [h1-bitmaps.md](h1-bitmaps.md).

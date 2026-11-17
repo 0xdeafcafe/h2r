@@ -181,3 +181,92 @@ as rough.
 - The C is byte-identical. The parallel emit's `src/manifest.tsv` matches
   the one master wrote for all 1006 files. The run into the cloned
   directory produced the same manifest again.
+
+## Where clang's time goes (2026-11-16)
+
+Measured on the same M1 Max under heavy shared load (load average about
+220 on 10 cores), so only CPU (user) time and clang's own `-ftime-trace`
+are quoted, never wall time. The C is a full image's `src/` from master
+(1007 files, 552 MB). The sample is ten shards picked evenly by size rank
+(5.5 MB, every hundredth file by size), compiled one at a time with the
+build's own flags and `-target arm64-apple-macos11`.
+
+| Profile, ten-shard sample | clang user time | vs `-O2` |
+|---|---:|---:|
+| `-O2 -gline-tables-only` (`H2_OPT=2`, what the author's builds set; the built-in default is `-O1`) | 56.8 s | 1.00 |
+| `-O2`, no debug info | 53.5 s | 0.94 |
+| `-O1 -gline-tables-only` (the default) | 47.5 s | 0.84 |
+| `-O0`, no debug info | 7.4 s | 0.13 |
+| `-fsyntax-only` (parse and type-check only) | 2.6 s | 0.05 |
+
+`-ftime-trace` over the same ten at `-O2` (125 s of traced time): the
+front end (parse, semantic analysis, IR generation) is 11%; the rest is
+the optimiser and the backend. In the median shard, the greedy register
+allocator alone is 26% and the register coalescer 12%;
+`CorrelatedValuePropagation` is the costliest optimiser pass (9%).
+
+**The cost is in the biggest functions, and it grows faster than their
+size.** Fitting per-function optimiser plus backend time against source
+lines over the sample's 62 functions above 200 lines gives time ∝
+lines^1.4, and the two largest are steeper still (a 5615-line handler takes
+29 s alone, a 2121-line one 4 s). In two of the ten, one handler is 70%
+and 86% of its shard's time. Across the image, 663 of 18647 handlers are 2000 lines
+or more, and by that fit they are about half of all clang time; the
+largest 1000 handlers are 55-75% of it. Splitting files differently does
+not touch this: the time is inside single functions.
+
+**What the C is.** Classifying every line of the 552 MB:
+
+| What | Share of bytes |
+|---|---:|
+| Temporaries (`uint32_t tN = …;`) | 28% |
+| Lazy flags computed in place where a branch reads one flag (one line each) | 23% |
+| Lazy flags settled in place (`{ uint32_t m_ = lzm & …`) | 11% |
+| `h2lz_` per-handler flag switches | 6% |
+| Instruction markers (`/* 0x… */ {`) and closing braces | 7% |
+| `H2_LD` / `H2_ST` | 6% |
+| Lazy-flag bookkeeping (`lz0 = …; lzk = …; lzm = …;`) | 3% |
+| Register write-backs, flag writes, branches, labels, transfers | 8% |
+| Everything else (x87 and SSE calls, prototypes, dispatch tables) | 8% |
+
+Most of the in-place lazy flag code was dead: reading ZF computed every
+flag of the formula (carry, overflow, parity, auxiliary) and kept one.
+Clang deleted the rest, after parsing and lowering it.
+
+**Header changes.** Keying objects on clang's IR instead of on source plus
+headers was tried and rejected. The IR records the line of every function
+the shard calls from a header (even external declarations, for call-site
+debug info) and the source offsets of inline assembly, so any change that
+moves a line in `h2abi.h` or `h2gen.h` changes every shard's IR. Over the
+ten-shard sample: adding one prototype to `h2abi.h`, or a comment at the
+top of `h2gen.h`, left 0 of 10 IRs unchanged; reverting the real
+`h2gen.h` change d3c4e011 left 0 of 10; reverting the `h2x87_native.h`
+changes 8eec6008 and cc557007 left 4 of 10. Header changes in practice
+change real code in every shard, so an IR key would save the compile of
+under half the shards for the rarest kind of change, at the price of a
+front-end run per shard on every miss. (Compiling in two steps, front end
+to bitcode and bitcode to object, gives a byte-identical object, so it
+would have been safe; it just does not pay.)
+
+## Changes from this measurement
+
+- **Lazy flags read and settled in place declare only what the flags
+  they need depend on** (`emit::lazy::live_temps`). Generated behaviour is
+  unchanged: the dropped temps are pure and unused, and the emit tests
+  (differential against the IR interpreter, accounting, exits, native
+  x87 and SSE) pass. Applying the same pruning to the ten sample shards
+  makes their C 20% smaller (5.49 to 4.39 MB), so a full image should
+  come to about 440 MB: less to write, hash, keep and clone per output.
+  It does not make clang faster: 46.1 s before and 46.2 s after over the
+  ten. Clang removed the dead code cheaply. The machine code is not
+  byte-identical, though: `__text` of one shard went from 211152 to
+  209008 bytes, because the optimiser's heuristics saw different input.
+  So this changes the generated code's speed by an unmeasured amount.
+  Measure fps before keeping it, or drop the commit.
+- **Optimisation tiers, opt-in** (`H2_OPT_COLD` and `H2_HOT`,
+  BUILD-CACHE.md). With a profile's hot list, sources holding no hot
+  instruction compile at a cheaper level. By the table above a cold source
+  costs 13% of its `-O2` time at `-O0` and 84% at `-O1`. If, say, nine
+  tenths of clang's time is in cold sources, a cold `-O0` build takes
+  about a fifth of today's clang time; at `-O1`, about 86%. It changes
+  only the speed of cold code, so it is off until fps is measured with it.

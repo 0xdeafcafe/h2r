@@ -114,6 +114,12 @@ pub struct Policy {
     pub public: crate::public::PublicUrl,
     /// Custom content: caps, quota and upload rate (docs/live/live-admin.md).
     pub content: crate::content::ContentLimits,
+    /// Cloud saves: item cap, quota and item count per account
+    /// (docs/live/live-cloud-saves.md).
+    pub storage: crate::cloud_saves::StorageLimits,
+    /// Account recovery lockout per gamertag: wrong codes allowed, the
+    /// first lockout, its cap (live-security.md §1, Recovery).
+    pub recover_lockout: (u32, Duration, Duration),
 }
 
 impl Default for Policy {
@@ -131,6 +137,12 @@ impl Default for Policy {
             admins: Vec::new(),
             public: Default::default(),
             content: Default::default(),
+            storage: Default::default(),
+            recover_lockout: (
+                crate::recovery::FREE_FAILURES,
+                crate::recovery::LOCK_BASE,
+                crate::recovery::LOCK_MAX,
+            ),
         }
     }
 }
@@ -153,15 +165,25 @@ pub struct Live {
     pub(crate) local_signin: crate::local_signin::Offers,
     pub(crate) relays: crate::relay::Relays,
     pub(crate) invites: Arc<crate::invites::Invites>,
+    /// Recovery secrets and the wrong-code lockout.
+    pub(crate) recovery: Arc<crate::recovery::Recovery>,
     /// Custom maps and their content (docs/game/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
     pub(crate) stats: Arc<crate::stats::Stats>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
+    /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
+    pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the service started.
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
+    /// Where content, cloud saves and published art are kept
+    /// ([`crate::blobs`]); the data directory unless [`Live::set_blobs`].
+    blobs: std::sync::OnceLock<crate::blobs::Blobs>,
+    /// Shared game art in the public blob store, redirected to once it is
+    /// uploaded ([`crate::art::PublishedArt`]).
+    published_art: std::sync::OnceLock<crate::art::PublishedArt>,
     dispatcher: tokio::task::AbortHandle,
 }
 
@@ -256,6 +278,7 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         xuid: Xuid,
         state: Option<String>,
         game_id: Option<String>,
+        activity: Option<String>,
     }
     if live_proto::mailbox::is_kind(&body.kind) {
         return crate::mailbox::validate(state, body);
@@ -306,6 +329,14 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 }
                 if (s == "playing") != d.game_id.is_some() {
                     return Err(invalid("game_id is set exactly when playing"));
+                }
+                if d.activity
+                    .as_deref()
+                    .is_some_and(|a| !live_proto::valid_activity(a))
+                {
+                    return Err(invalid(
+                        "presence activity is empty, too long or has control characters",
+                    ));
                 }
             }
         }
@@ -380,11 +411,19 @@ impl Live {
         let mut dispatcher = Dispatcher::new(store.clone());
         dispatcher.subscribe(model.clone());
         dispatcher.subscribe(admins.clone());
-        let invites = Arc::new(crate::invites::Invites::default());
+        let invites = Arc::new(crate::invites::Invites::new(
+            identity.derive(crate::invites::CODE_LABEL),
+        ));
         dispatcher.subscribe(invites.clone());
+        let (free, base, max) = policy.recover_lockout;
+        let recovery = Arc::new(crate::recovery::Recovery::new(
+            &identity,
+            crate::guard::Backoff::new(free, base, max),
+        ));
+        dispatcher.subscribe(recovery.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
-        let stats = Arc::new(crate::stats::Stats::default());
+        let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
@@ -408,12 +447,16 @@ impl Live {
             local_signin: Default::default(),
             relays: Default::default(),
             invites,
+            recovery,
             catalog,
             stats,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
+            cloud: Default::default(),
             started_at: now(),
             data_dir: Default::default(),
+            blobs: Default::default(),
+            published_art: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
         };
@@ -449,6 +492,43 @@ impl Live {
     /// status (shown only to callers on this machine). Set once.
     pub fn set_data_dir(&self, dir: &std::path::Path) {
         let _ = self.data_dir.set(dir.to_path_buf());
+        if self.blobs.get().is_none() {
+            match crate::blobs::Blobs::dir(dir) {
+                Ok(b) => {
+                    let _ = self.blobs.set(b);
+                }
+                Err(e) => eprintln!("live: blobs in {}: {e}", dir.display()),
+            }
+        }
+    }
+
+    /// Keeps blobs in `blobs` rather than the data directory. Before
+    /// [`Live::set_data_dir`]; set once.
+    pub fn set_blobs(&self, blobs: crate::blobs::Blobs) {
+        let _ = self.blobs.set(blobs);
+    }
+
+    pub fn blobs(&self) -> Option<&crate::blobs::Blobs> {
+        self.blobs.get()
+    }
+
+    /// Redirects `/art/game/*` to `art`'s public copies once it has
+    /// published them. Before the router is built; set once.
+    pub fn set_published_art(&self, art: crate::art::PublishedArt) {
+        let _ = self.published_art.set(art);
+    }
+
+    pub fn published_art(&self) -> Option<&crate::art::PublishedArt> {
+        self.published_art.get()
+    }
+
+    /// A new temporary file's path for an upload on its way into the blob
+    /// store: `<data>/tmp/<random>` (beside a directory store, so the
+    /// upload is renamed into place, not copied). The directory is not
+    /// made here.
+    pub(crate) fn upload_file(&self) -> Option<std::path::PathBuf> {
+        self.data_dir()
+            .map(|d| d.join("tmp").join(live_proto::sign::random_id()))
     }
 
     pub fn data_dir(&self) -> Option<&std::path::Path> {
@@ -602,12 +682,19 @@ impl Live {
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
-            (Some(code), true) => {
-                let invite = Invite::open(code, self.identity.key.public(), &self.identity.id, now)
-                    .map_err(|e| forbidden(format!("invite: {e}")))?;
+            // A signed code (the older, long form) or a short one.
+            (Some(code), true) if live_proto::sign::Jws::parse(code.trim()).is_ok() => {
+                let invite = Invite::open(
+                    code.trim(),
+                    self.identity.key.public(),
+                    &self.identity.id,
+                    now,
+                )
+                .map_err(|e| forbidden(format!("invite: {e}")))?;
                 crate::invites::check_redeemable(self, &invite.jti)?;
                 Some(invite.jti)
             }
+            (Some(code), true) => Some(crate::invites::redeem_short(self, code, now)?),
             (None, true) => return Err(forbidden("this server needs an invite code")),
             (_, false) => None,
         };
@@ -642,12 +729,14 @@ impl Live {
         invite: Option<&str>,
     ) -> Result<CreatedAccount, ApiError> {
         let tag_stream = streams::gamertag(tag);
+        let secret = live_proto::recovery::TotpSecret::generate();
         // A random XUID can collide; the account stream's version check
         // catches it.
         for _ in 0..3 {
             let xuid = generate_xuid();
             let account = streams::account(xuid);
             let mut created = json!({"xuid": xuid, "gamertag": tag});
+            created["recovery"] = self.recovery.set_data(&secret)["sealed"].clone();
             if let Some(jti) = invite {
                 created["invite"] = json!(jti);
             }
@@ -681,6 +770,7 @@ impl Live {
                         xuid,
                         gamertag: tag.clone(),
                         id,
+                        recovery: Some(self.recovery.info(&secret, tag.as_str(), now())),
                     });
                 }
                 Err(StoreError::Conflict { stream, .. }) if stream == tag_stream => {
@@ -694,6 +784,11 @@ impl Live {
             ErrorCode::Unavailable,
             "could not allocate a XUID",
         ))
+    }
+
+    /// The server-wide limit on account creation, shared by recovery.
+    pub(crate) fn allow_create(&self, what: &str) -> bool {
+        self.creates.allow(what)
     }
 
     /// `POST /v1/events`: one signed event (security §2), by the token's
@@ -810,17 +905,13 @@ impl Live {
         Ok(meta)
     }
 
-    /// `POST /v1/invites`: the operator mints a single-use invite.
-    pub fn create_invite(&self, bearer: Option<&str>, days: i64) -> Result<String, ApiError> {
-        let author = self.authenticate(bearer, lxm::INVITES_WRITE)?;
+    /// The operator (a token signed by the server key) for `method`.
+    pub fn authorize_operator(&self, bearer: Option<&str>, method: &str) -> Result<(), ApiError> {
+        let author = self.authenticate(bearer, method)?;
         if !matches!(author, Author::Server(_)) {
             return Err(forbidden("only the server operator creates invites"));
         }
-        Ok(Invite::issue(
-            &self.identity.key,
-            &self.identity.id,
-            now() + days.clamp(1, 365) * 86_400,
-        ))
+        Ok(())
     }
 
     /// `POST /v1/presence/ping`: keeps the caller's presence alive without
@@ -853,17 +944,32 @@ impl Live {
     }
 
     pub async fn events(&self, query: &Query) -> Result<Page<WireEvent>, ApiError> {
+        self.events_for(query, crate::sessions::Viewer::Admin).await
+    }
+
+    /// `GET /v1/events` as `viewer` reads it: the events it may not see
+    /// ([`crate::sessions::event_shows_to`]) are left out, but the cursor
+    /// still moves past them, so a page can be short, or empty with a
+    /// `next`: read on until `next` is null.
+    pub async fn events_for(
+        &self,
+        query: &Query,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<Page<WireEvent>, ApiError> {
         let position = self.position();
-        let items: Vec<WireEvent> = self
-            .store
-            .read(query)
-            .await?
-            .iter()
-            .map(RecordedEvent::to_wire)
-            .collect();
-        let next = (items.len() == query.limit)
-            .then(|| items.last().map(|e| e.position.to_string()))
+        let read = self.store.read(query).await?;
+        let next = (read.len() == query.limit)
+            .then(|| read.last().map(|e| e.position.to_string()))
             .flatten();
+        let items: Vec<WireEvent> = {
+            let s = self.model.read();
+            read.iter()
+                .filter_map(|e| match viewer {
+                    crate::sessions::Viewer::Admin => Some(e.to_wire()),
+                    _ => crate::sessions::wire_for(&s, e, viewer),
+                })
+                .collect()
+        };
         Ok(Page {
             items,
             next,
@@ -896,7 +1002,13 @@ impl Live {
         }
     }
 
-    pub fn account(&self, tag: &Gamertag) -> Result<AccountDetail, ApiError> {
+    /// One account and its recent games, those `viewer` may see
+    /// ([`crate::model::Game::shows_to`]).
+    pub fn account(
+        &self,
+        tag: &Gamertag,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<AccountDetail, ApiError> {
         let position = self.position();
         let s = self.model.read();
         let a = s
@@ -912,6 +1024,7 @@ impl Live {
             recent_games: s
                 .games_newest()
                 .filter(|g| g.xuids.contains(&a.xuid))
+                .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
                 .map(|g| g.summary())
                 .collect(),
@@ -936,7 +1049,9 @@ impl Live {
         })
     }
 
-    pub fn presence(&self) -> Page<Presence> {
+    /// Who is online, with each player's game id and activity as `viewer`
+    /// may see them ([`crate::sessions::presence_for`]).
+    pub fn presence(&self, viewer: crate::sessions::Viewer) -> Page<Presence> {
         let position = self.position();
         let s = self.model.read();
         let mut items: Vec<Presence> = s
@@ -944,11 +1059,13 @@ impl Live {
             .iter()
             .filter_map(|(xuid, p)| {
                 let a = s.accounts.get(xuid)?;
+                let (game_id, activity) = presence_of(&s, *xuid, p, viewer);
                 Some(Presence {
                     xuid: *xuid,
                     gamertag: a.gamertag.clone(),
                     state: p.state.clone(),
-                    game_id: p.game_id.clone(),
+                    game_id,
+                    activity,
                     since: p.since.clone(),
                 })
             })
@@ -965,7 +1082,11 @@ impl Live {
     /// with its current presence, absent when offline) and its pending
     /// requests in and out, sorted by gamertag — one document, so the
     /// game's friends enumeration needs just this call.
-    pub fn friends(&self, tag: &Gamertag) -> Result<Friends, ApiError> {
+    pub fn friends(
+        &self,
+        tag: &Gamertag,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<Friends, ApiError> {
         let position = self.position();
         let s = self.model.read();
         let a = s
@@ -989,10 +1110,14 @@ impl Live {
                     xuid: *xuid,
                     gamertag: a.gamertag.clone(),
                     friends_since: since.clone(),
-                    presence: s.presence.get(xuid).map(|p| FriendPresence {
-                        state: p.state.clone(),
-                        game_id: p.game_id.clone(),
-                        since: p.since.clone(),
+                    presence: s.presence.get(xuid).map(|p| {
+                        let (game_id, activity) = presence_of(&s, *xuid, p, viewer);
+                        FriendPresence {
+                            state: p.state.clone(),
+                            game_id,
+                            activity,
+                            since: p.since.clone(),
+                        }
                     }),
                 })
             })
@@ -1035,6 +1160,30 @@ impl Live {
             .ok_or_else(|| not_found("title file bytes are missing"))?;
         Ok((meta, bytes))
     }
+}
+
+/// A presence's game id and activity as `viewer` may see them: the private
+/// sessions it was set in and the ones its player is in now both count.
+fn presence_of(
+    s: &State,
+    xuid: Xuid,
+    p: &crate::model::Presence,
+    viewer: crate::sessions::Viewer,
+) -> (Option<String>, Option<String>) {
+    let mut sessions = p.private_sessions.clone();
+    for id in crate::sessions::private_sessions_of(s, xuid) {
+        if !sessions.contains(&id) {
+            sessions.push(id);
+        }
+    }
+    crate::sessions::presence_for(
+        s,
+        xuid,
+        p.game_id.as_ref(),
+        p.activity.as_ref(),
+        &sessions,
+        viewer,
+    )
 }
 
 #[cfg(test)]

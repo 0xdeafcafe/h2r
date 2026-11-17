@@ -17,6 +17,12 @@
 //!
 //! `--platform` defaults to tvos.
 //!
+//! `--maps demo|all` (default demo) picks the disc files: `demo` is
+//! `DISC_FILES`, `all` the whole disc (`h2host::maps`). Files an earlier
+//! pack copied that this one does not want are removed from `<out>/disc/`,
+//! so going back to `demo` shrinks the bundle again. The map pack's
+//! hard-disk seed is `build.sh`'s (`h2 import-mappack`), not this.
+//!
 //! The module build is the full-image emit and clang build (about 400 MB
 //! of C): run it under the emit gate on a shared machine. `--no-module`
 //! skips it.
@@ -28,6 +34,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use h2host::layout::Platform;
+use h2host::maps::Maps;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -35,6 +42,7 @@ fn main() -> Result<()> {
     let mut gen_dir = None;
     let mut module = true;
     let mut platform = Platform::Tvos;
+    let mut maps = Maps::Demo;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--gen" => gen_dir = Some(PathBuf::from(args.next().context("--gen needs a directory")?)),
@@ -43,6 +51,10 @@ fn main() -> Result<()> {
                 platform = Platform::parse(&p).with_context(|| format!("--platform {p}: expected tvos, ios or xbox"))?;
             }
             "--no-module" => module = false,
+            "--maps" => {
+                let m = args.next().context("--maps needs demo or all")?;
+                maps = Maps::parse(&m).with_context(|| format!("--maps {m}: expected demo or all"))?;
+            }
             _ => pos.push(PathBuf::from(a)),
         }
     }
@@ -52,24 +64,23 @@ fn main() -> Result<()> {
     let gen_dir = gen_dir
         .unwrap_or_else(|| std::env::temp_dir().join(format!("h2{}-gen", platform.emit_target())));
     std::fs::create_dir_all(out)?;
-    disc(iso, &out.join("disc"))?;
+    disc(iso, &out.join("disc"), maps)?;
     if module {
         build_module(iso, out, &gen_dir, platform)?;
     }
     Ok(())
 }
 
-fn disc(iso: &Path, dest: &Path) -> Result<()> {
+fn disc(iso: &Path, dest: &Path, maps: Maps) -> Result<()> {
     let mut x = xiso::Xiso::open(BufReader::new(
         File::open(iso).with_context(|| format!("opening {}", iso.display()))?,
     ))?;
     let (mut files, mut bytes) = (0, 0u64);
-    for e in x
-        .entries()?
-        .iter()
-        .filter(|e| xiso::subset_matches(&e.path, e.is_dir, h2host::layout::DISC_FILES))
-    {
-        let to = dest.join(e.path.trim_start_matches('/'));
+    let mut keep = std::collections::BTreeSet::new();
+    for e in x.entries()?.iter().filter(|e| maps.wants(&e.path, e.is_dir)) {
+        let rel = PathBuf::from(e.path.trim_start_matches('/'));
+        let to = dest.join(&rel);
+        keep.insert(rel);
         if e.is_dir {
             std::fs::create_dir_all(&to)?;
             continue;
@@ -84,8 +95,12 @@ fn disc(iso: &Path, dest: &Path) -> Result<()> {
         x.copy_to(e, &mut File::create(&tmp)?)?;
         std::fs::rename(&tmp, &to)?;
     }
+    let (gone, gone_bytes) = h2host::maps::prune(dest, &keep)?;
+    if gone > 0 {
+        eprintln!("pack: disc: removed {gone} files ({:.0} MB) an earlier pack left", gone_bytes as f64 / 1e6);
+    }
     eprintln!(
-        "pack: disc: {files} files, {:.0} MB in {}",
+        "pack: disc ({maps:?}): {files} files, {:.0} MB in {}",
         bytes as f64 / 1e6,
         dest.display()
     );

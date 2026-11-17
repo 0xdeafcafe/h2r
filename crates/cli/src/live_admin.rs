@@ -237,7 +237,7 @@ fn publish_title_file(
 }
 
 /// The web app's account entry (`src/state/account.ts`, `LocalAccount`):
-/// what its Admin-area import and `/signin` link (`h2 play --live`) accept,
+/// what its Admin-area import and `/signin` link (`h2 play --live-local`) accept,
 /// and what sign-up's download produces.
 pub(crate) fn export_entry(
     entry: &LocalAccount,

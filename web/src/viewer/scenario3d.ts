@@ -75,7 +75,10 @@ interface Placed {
   gone: boolean;
 }
 
-interface Batch { kind: string; bsp: number | null; meshes: THREE.InstancedMesh[]; slots: Placed[] }
+interface Batch { kind: string; bsp: number | null; vehicle: boolean; meshes: THREE.InstancedMesh[]; slots: Placed[] }
+
+/** A placement of a vehicle: a `vehi` one, or a multiplayer vehicle spawn. */
+export const isVehicle = (info: ObjectInfo) => info.kind === "vehi" || (info.kind === "netgame" && info.item === "vehi");
 
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 const tmp = new THREE.Matrix4();
@@ -91,6 +94,8 @@ export class ScenarioObjects {
   private zones = new Map<number, THREE.Object3D>();
   private on = true;
   private hiddenKinds = new Set<string>();
+  /** The frames draw the vehicles: the level's own are hidden. */
+  private vehiclesHidden = false;
 
   constructor(private changed: () => void = () => {}) {}
 
@@ -116,14 +121,14 @@ export class ScenarioObjects {
       if (!meshes.length) continue;
       const p: Placed = { info, node, batch: null, slot: -1, rest: node.matrix.clone(), loose: false, gone: false };
       this.placed.set(key(info.kind, info.index), p);
-      const g = `${info.kind}|${info.bsp ?? ""}|${meshes[0]!.geometry.uuid}`;
+      const g = `${info.kind}|${info.item ?? ""}|${info.bsp ?? ""}|${meshes[0]!.geometry.uuid}`;
       let list = groups.get(g);
       if (!list) groups.set(g, (list = []));
       list.push(p);
     }
     for (const list of groups.values()) {
       const first = list[0]!;
-      const batch: Batch = { kind: first.info.kind, bsp: first.info.bsp, meshes: [], slots: list };
+      const batch: Batch = { kind: first.info.kind, bsp: first.info.bsp, vehicle: isVehicle(first.info), meshes: [], slots: list };
       for (const src of meshesOf(first.node)) {
         const im = new THREE.InstancedMesh(src.geometry, src.material, list.length);
         im.name = `${first.node.name}_batch`;
@@ -167,6 +172,13 @@ export class ScenarioObjects {
   /** One kind on or off. */
   setKind(kind: string, on: boolean) {
     if (on) this.hiddenKinds.delete(kind); else this.hiddenKinds.add(kind);
+    this.refresh();
+  }
+
+  /** The level's vehicles hidden (the frames draw every vehicle) or shown. */
+  setVehiclesHidden(hidden: boolean) {
+    if (hidden === this.vehiclesHidden) return;
+    this.vehiclesHidden = hidden;
     this.refresh();
   }
 
@@ -242,13 +254,13 @@ export class ScenarioObjects {
   }
 
   private shown(p: Placed): boolean {
-    return this.on && !this.hiddenKinds.has(p.info.kind) && !p.gone && this.zoneShown(p.info.bsp);
+    return this.on && !this.hiddenKinds.has(p.info.kind) && !p.gone && !(this.vehiclesHidden && isVehicle(p.info)) && this.zoneShown(p.info.bsp);
   }
 
   private refresh(notify = true) {
     let changed = false;
     for (const b of this.batches) {
-      const v = this.on && !this.hiddenKinds.has(b.kind) && this.zoneShown(b.bsp);
+      const v = this.on && !this.hiddenKinds.has(b.kind) && !(this.vehiclesHidden && b.vehicle) && this.zoneShown(b.bsp);
       for (const im of b.meshes) if (im.visible !== v) { im.visible = v; changed = true; }
     }
     for (const p of this.placed.values()) {

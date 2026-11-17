@@ -85,6 +85,10 @@ pub struct ObjectState {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub vehicle: Option<u32>,
+    /// The vehicle `vehicle` is mounted on, when it is a turret riding
+    /// another (a Warthog gunner's chaingun): `pos`, `forward` and `up` are
+    /// then that one's.
+    pub mount: Option<u32>,
     /// The unit's own definition tag datum (the biped's, also in a vehicle).
     pub definition: Option<u32>,
     /// The unit's aiming vector, unit length; `None` when the read value is
@@ -133,6 +137,12 @@ pub struct VehicleState {
     pub up: [f64; 3],
     /// A biped (player or AI) is parented to it.
     pub occupied: bool,
+    /// The vehicle it is mounted on (a turret: the Warthog's chaingun, the
+    /// Scorpion's cannon); its transform is then parent-relative.
+    pub parent: Option<u32>,
+    /// Its own aiming vector (a vehicle is a unit), normalised: where a
+    /// turret points.
+    pub aim: Option<[f64; 3]>,
 }
 
 /// A machine (door, elevator, scarab, ...).
@@ -170,6 +180,9 @@ pub struct World {
     pub machines: Vec<MachineState>,
     /// Objects from scenario placements and netgame equipment.
     pub placed: Vec<PlacedObject>,
+    /// Dead bipeds (body depleted) the game has not cleared away yet:
+    /// AI and players' bodies alike.
+    pub bodies: Vec<ActorState>,
 }
 
 /// An object the scenario placed (or a netgame equipment entry spawned):
@@ -256,6 +269,8 @@ pub struct Snapshot {
     pub machines: Vec<MachineState>,
     /// Objects from placements; frame ticks only.
     pub placed: Vec<PlacedObject>,
+    /// Dead bipeds still in the world; frame ticks only.
+    pub bodies: Vec<ActorState>,
     /// The active structure BSP index.
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.

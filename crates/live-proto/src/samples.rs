@@ -141,6 +141,24 @@ fn vehicle(id: u32, kind: &str, m: &Mover, t: f64, occupied: bool) -> FrameVehic
         forward: r3([yaw.cos(), yaw.sin(), 0.0]),
         up: [0.0, 0.0, 1.0],
         occupied,
+        parent: None,
+        aim: None,
+    }
+}
+
+/// The Warthog's chaingun: a turret riding vehicle `parent`, its position
+/// parent-relative as the game has it, sweeping its aim.
+fn turret(id: u32, parent: u32, t: f64) -> FrameVehicle {
+    let yaw = 0.8 * (t * 1.7).sin();
+    FrameVehicle {
+        id: format!("{id:08x}"),
+        kind: "chaingun".into(),
+        pos: [-0.6, 0.0, 0.75],
+        forward: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        occupied: true,
+        parent: Some(format!("{parent:08x}")),
+        aim: Some(r3(aim(yaw, 0.1))),
     }
 }
 
@@ -166,6 +184,7 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                     let kind = ["warthog", "ghost", "banshee", "mongoose"][i];
                     vehicle(0x9004_0004 + i as u32 * 0x10001, kind, m, t, i < 2)
                 })
+                .chain([turret(0x9008_0008, 0x9004_0004, t)])
                 .collect();
             let hits = (0..(rng.next() % 4))
                 .map(|_| FrameHit {

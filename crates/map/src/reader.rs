@@ -142,7 +142,20 @@ impl<R: Read + Seek> Map<R> {
             return Err(Error::Invalid("tag count exceeds datum slot space"));
         }
         let tag_bytes = table_size(index_slots, 16)?;
-        let tag_offset = index_space.translate(word(&ih, 8), tag_bytes)?;
+        // The entry table normally follows the groups; a map whose entries
+        // outgrew its index region keeps them at the end of the ordinary
+        // metadata (base: index base + header `+0x1c` - `+0x18`).
+        let tag_offset = match index_space.translate(word(&ih, 8), tag_bytes) {
+            Ok(o) => o,
+            Err(e) => {
+                let base = index_base
+                    .checked_add(header.meta_size)
+                    .and_then(|b| b.checked_sub(header.tag_data_size))
+                    .ok_or(e)?;
+                address_space(base, meta_offset, header.tag_data_size)?
+                    .translate(word(&ih, 8), tag_bytes)?
+            }
+        };
         if tag_offset < group_offset + u64::from(group_bytes) {
             return Err(Error::Invalid("tag table overlaps groups"));
         }

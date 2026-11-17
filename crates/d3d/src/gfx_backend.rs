@@ -48,7 +48,11 @@
 //! in one submission instead of one per target switch. That batching is
 //! opt-in ([`GfxBackend::set_submit_after`], `H2_GFX_SUBMIT=batch`): by
 //! default every pass is submitted on its own at a target switch
-//! ([`GfxBackend::set_submit_per_pass`]), which was faster in game. The pending pass is encoded as one render pass, except
+//! ([`GfxBackend::set_submit_per_pass`]), which was faster in game. GPU-only
+//! side work (the alias mirror's stores and loads, depth-alias and
+//! depth-level textures, pixel-counter clears) goes into the open encoder
+//! after the pending pass and waits for the next submission
+//! ([`GfxBackend::set_defer_side_passes`]). The pending pass is encoded as one render pass, except
 //! that a draw that follows a draw writing only some colour channels starts
 //! a render pass of its own, and under the exact rule so does every draw
 //! whose program can `discard` (see [`GfxBackend::set_merge_passes`] and
@@ -152,6 +156,8 @@ pub struct GfxBackend {
     merge_passes: bool,
     /// [`set_merge_discards`](Self::set_merge_discards).
     merge_discards: bool,
+    /// [`set_merge_masks`](Self::set_merge_masks).
+    merge_masks: bool,
     /// Made at the first counted draw.
     counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
@@ -168,6 +174,9 @@ pub struct GfxBackend {
     /// The alias mirror ([`Backend::mirror_reserve`]).
     mirror: Option<wgpu::Buffer>,
     reports: HashMap<u64, PixelReport>,
+    /// Reports recorded into the open encoder, told their submission when
+    /// it is made ([`set_defer_side_passes`](Self::set_defer_side_passes)).
+    unsubmitted_reports: Vec<PixelReport>,
     next_ticket: u64,
     /// Presents so far plus one.
     frame: u64,
@@ -200,6 +209,8 @@ pub struct GfxBackend {
     submit_after: Option<std::time::Duration>,
     /// When the last submission was made.
     submitted_at: std::time::Instant,
+    /// [`set_defer_side_passes`](Self::set_defer_side_passes).
+    defer_side_passes: bool,
 }
 
 /// What `Swap` with `D3DSWAP_FINISH` waits for.
@@ -250,6 +261,15 @@ impl GfxBackend {
         self.renderer.persistent_stats()
     }
 
+    /// E3 lighting's one-tap shadow lookup for the draws prepared from now
+    /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
+    /// sets it (`crate::scaled`); the backend the guest reads stays retail.
+    pub fn set_hard_shadows(&mut self, on: bool) {
+        if let Some(s) = self.shaders.as_mut() {
+            s.set_hard_shadows(on);
+        }
+    }
+
     /// Where vertex formats are converted for program draws (default
     /// [`gfx::repack::FetchMode::from_env`]: the vertex shader, unless
     /// `H2_VERTEX_FETCH=cpu`). For tests and benches comparing the paths.
@@ -260,7 +280,11 @@ impl GfxBackend {
     /// A backend on `ctx`, translating shaders with [`Nv2aShaders`].
     pub fn new(ctx: GfxContext) -> Self {
         let store = SurfaceStore::new(ctx.caps);
-        let renderer = Renderer::new(&ctx);
+        let mut renderer = Renderer::new(&ctx);
+        // `H2_GFX_STAGED_UPLOADS=0`: a queue write per persistent buffer.
+        renderer.set_staged_uploads(std::env::var_os("H2_GFX_STAGED_UPLOADS").is_none_or(|v| v != "0"));
+        // `H2_GFX_VERTEX_SLABS=0`: a buffer per persistent stream.
+        renderer.set_vertex_slabs(std::env::var_os("H2_GFX_VERTEX_SLABS").is_none_or(|v| v != "0"));
         Self {
             ctx,
             store,
@@ -274,8 +298,10 @@ impl GfxBackend {
             merge_discards: merge_discards_from_env(
                 std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref(),
             ),
+            merge_masks: merge_masks_from_env(std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref()),
             counter: None,
             reports: HashMap::new(),
+            unsubmitted_reports: Vec::new(),
             depth_bits: None,
             guest_words: None,
             gpu_depth_aliases: std::env::var_os("H2_D3D_GPU_DEPTH_ALIAS").is_none_or(|v| v != "0"),
@@ -296,6 +322,7 @@ impl GfxBackend {
             submit_per_pass: true,
             submit_after: None,
             submitted_at: std::time::Instant::now(),
+            defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
         }
         .with_submit_policy(std::env::var("H2_GFX_SUBMIT").ok().as_deref())
     }
@@ -339,6 +366,22 @@ impl GfxBackend {
     pub fn set_submit_per_pass(&mut self, on: bool) {
         self.submit_per_pass = on;
         self.submit_after = None;
+    }
+
+    /// Record the GPU-only side work (the alias mirror's stores and loads,
+    /// depth-alias and depth-level textures, pixel-counter clears) into the
+    /// encoder kept open across target switches, after the pending pass,
+    /// instead of submitting the pending pass and then the work in a
+    /// submission of its own (on by default; `H2_GFX_SIDE_SUBMIT=1` turns
+    /// it off). The GPU sees the same commands in the same order; they reach
+    /// it at the next submission, which anything that reads their results
+    /// on the CPU (a read-back, a queued write over the mirror) or replaces
+    /// what they write makes first ([`flush`](Self::flush)). Each one saved
+    /// two submissions per call (about 0.1 ms each in a level). Off when
+    /// another backend on the device samples this one's results
+    /// (`crate::scaled`): that backend's submissions would not carry them.
+    pub fn set_defer_side_passes(&mut self, on: bool) {
+        self.defer_side_passes = on;
     }
 
     /// What `Swap` with `D3DSWAP_FINISH` waits for (default
@@ -399,6 +442,18 @@ impl GfxBackend {
     /// `H2_GFX_MERGE_PASSES=exact` turns it off when the backend is made.
     pub fn set_merge_discards(&mut self, on: bool) {
         self.merge_discards = on;
+    }
+
+    /// The loose merge rule (the default; `H2_GFX_MERGE_PASSES=fast` or
+    /// `exact` turns it off): no draw starts a render pass of its own for
+    /// the merge rules, not after a partly masked draw either. Counted
+    /// draws and target switches still split. Not exact: on Old Mombasa
+    /// it took a 1000-draw frame from about 193 render passes to 41, and
+    /// the merge self-check ([`set_merge_check`](Self::set_merge_check))
+    /// found 12 of a 970-draw frame's pixels off, by up to 3 levels
+    /// (docs/graphics/graphics.md, "Merged passes").
+    pub fn set_merge_masks(&mut self, on: bool) {
+        self.merge_masks = on;
     }
 
     /// Compare merged and per-draw render passes for every pending pass of
@@ -523,6 +578,34 @@ impl GfxBackend {
         }
     }
 
+    /// The encoder for GPU-only side work that must follow everything
+    /// recorded so far: the open one (after the pending pass) when side
+    /// passes are deferred ([`set_defer_side_passes`](Self::set_defer_side_passes)),
+    /// else a new one after submitting everything. Hand it back with
+    /// [`side_done`](Self::side_done), also when recording failed.
+    fn side_encoder(&mut self) -> Result<(wgpu::CommandEncoder, usize), String> {
+        if self.defer_side_passes {
+            self.take_open()
+        } else {
+            self.flush()?;
+            Ok((self.ctx.device.create_command_encoder(&Default::default()), 0))
+        }
+    }
+
+    /// Puts the [`side_encoder`](Self::side_encoder) back to be submitted
+    /// with the next submission, or submits it now.
+    fn side_done(&mut self, enc: wgpu::CommandEncoder, passes: usize) {
+        if self.defer_side_passes {
+            // One pass or two; counted so a long run of them is bounded too.
+            self.open = Some((enc, passes + 2));
+            if passes + 2 >= MAX_ENCODED_PASSES {
+                self.submit_open();
+            }
+        } else {
+            self.submit(enc);
+        }
+    }
+
     /// Encodes the pending pass, if any, after the passes encoded before it
     /// (without submitting them).
     fn encode_pending(&mut self) -> Result<(), String> {
@@ -585,6 +668,9 @@ impl GfxBackend {
         self.renderer.flush_uploads(&ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(ctx);
+        }
+        if let Some(copies) = self.renderer.upload_commands(&ctx.device) {
+            ctx.queue.submit([copies]);
         }
         let surface = |id| {
             self.store
@@ -778,12 +864,19 @@ impl GfxBackend {
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
         }
+        // Persistent buffers' copies go ahead of everything that draws.
+        let copies = self.renderer.upload_commands(&self.ctx.device);
         let index = {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit(open.into_iter().chain([enc.finish()]))
+            self.ctx
+                .queue
+                .submit(copies.into_iter().chain(open).chain([enc.finish()]))
         };
+        for r in self.unsubmitted_reports.drain(..) {
+            r.submitted(index.clone());
+        }
         self.last_submit = Some(index.clone());
         self.submitted_at = std::time::Instant::now();
         self.renderer.submitted();
@@ -901,7 +994,7 @@ impl GfxBackend {
         // Reports from this frame and before are read later (Halo reads a
         // visibility test two frames after it ends): start their reads now,
         // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values() {
+        for r in self.reports.values().filter(|r| r.is_submitted()) {
             r.try_read(&self.ctx)?;
         }
         Ok(())
@@ -960,12 +1053,25 @@ impl GfxBackend {
             .and_then(|p| p.draws.last())
             .map(RecordedDraw::color_writes);
         let mask = recorded.color_writes();
-        let split = if self.merge_discards {
+        let split = if self.merge_masks {
+            false
+        } else if self.merge_discards {
             merge_split(prev_mask, mask, discards)
         } else {
             discards || merge_split(prev_mask, mask, false)
         };
         let own_pass = first && (!self.merge_passes || split);
+        // Why a merged pending pass splits (frame stats `pass_*`).
+        if own_pass && self.merge_passes && !recorded.counts_samples() {
+            use timeline::phase::{Counter, count};
+            match prev_mask {
+                Some(prev) if prev != wgpu::ColorWrites::ALL && prev != mask => {
+                    count(if prev.is_empty() { Counter::PassNoColor } else { Counter::PassMask }, 1)
+                }
+                Some(_) => count(Counter::PassDiscard, 1),
+                None => {}
+            }
+        }
         // A counted draw adds its count pass and the sum, and the draws
         // after it resume in a new render pass.
         let encoded = if recorded.counts_samples() {
@@ -1432,7 +1538,7 @@ impl Backend for GfxBackend {
         let bits = self.depth_bits.get_or_insert_with(|| gfx::depth_bits::DepthBits::new(ctx));
         let out = bits.convert(ctx, &mut enc, &texture, (d.width, d.height));
         self.open = Some((enc, passes));
-        if self.submit_per_pass {
+        if self.submit_per_pass && !self.defer_side_passes {
             self.submit_open();
         }
         Ok(Some(self.host_texture(out, TextureKind::D2)))
@@ -1457,8 +1563,6 @@ impl Backend for GfxBackend {
         options: gfx::texture::DecodeOptions,
     ) -> Result<Option<HostTexture>, String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        // The words as the draws so far left them.
-        self.flush()?;
         let s = self.store.get(depth).map_err(|e| e.to_string())?;
         let texture = s.texture().clone();
         let d = *s.desc();
@@ -1478,18 +1582,18 @@ impl Backend for GfxBackend {
             && desc.levels == 1
             && gfx::guest_words::WordFormat::of(desc.format).is_some();
         if let (true, Some(pitch_words)) = (gpu, word_layout) {
+            // After the draws so far: the words as they left them.
+            let (mut enc, passes) = self.side_encoder()?;
             let ctx = &self.ctx;
             let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
-            let mut enc = ctx.device.create_command_encoder(&Default::default());
             let layout = gfx::guest_words::WordLayout { base: (offset / 4) as u32, pitch_words };
             let flip = gfx::guest_words::sign_flip(options.signed);
-            match words.depth_alias(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip) {
-                Ok(out) => {
-                    self.submit(enc);
-                    return Ok(Some(self.host_texture(out, TextureKind::D2)));
-                }
-                // Out of bounds or an odd swizzle: the CPU path says why.
-                Err(_) => drop(enc),
+            let made = words.depth_alias(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip);
+            // A failed pass records nothing; the passes before it stay.
+            self.side_done(enc, passes);
+            // Out of bounds or an odd swizzle: the CPU path says why.
+            if let Ok(out) = made {
+                return Ok(Some(self.host_texture(out, TextureKind::D2)));
             }
         }
         // The CPU path, as the device runs it: one read-back per depth
@@ -1554,21 +1658,19 @@ impl Backend for GfxBackend {
         offset: u32,
     ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        self.flush()?;
         let m = self.mirror.clone().ok_or("mirror_store before mirror_reserve")?;
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let (texture, kind) = (s.texture().clone(), s.kind());
+        let layout = word_layout(layout, offset)?;
+        let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
-        let layout = word_layout(layout, offset)?;
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
-        match kind {
+        let stored = match kind {
             SurfaceKind::Color => words.store_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
             SurfaceKind::DepthStencil => words.store_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
-        }
-        .map_err(|e| format!("mirror_store: {e}"))?;
-        self.submit(enc);
-        Ok(())
+        };
+        self.side_done(enc, passes);
+        stored.map_err(|e| format!("mirror_store: {e}"))
     }
 
     fn mirror_load(
@@ -1581,21 +1683,19 @@ impl Backend for GfxBackend {
         offset: u32,
     ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        self.flush()?;
         let m = self.mirror.clone().ok_or("mirror_load before mirror_reserve")?;
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let (texture, kind) = (s.texture().clone(), s.kind());
+        let layout = word_layout(layout, offset)?;
+        let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
-        let layout = word_layout(layout, offset)?;
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
-        match kind {
+        let loaded = match kind {
             SurfaceKind::Color => words.load_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
             SurfaceKind::DepthStencil => words.load_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
-        }
-        .map_err(|e| format!("mirror_load: {e}"))?;
-        self.submit(enc);
-        Ok(())
+        };
+        self.side_done(enc, passes);
+        loaded.map_err(|e| format!("mirror_load: {e}"))
     }
 
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
@@ -1740,21 +1840,36 @@ impl Backend for GfxBackend {
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
         counter.clear(&mut enc);
         self.open = Some((enc, passes));
-        if self.submit_per_pass {
+        if self.submit_per_pass && !self.defer_side_passes {
             self.submit_open();
         }
         Ok(())
     }
 
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
-        // The counted draws before it are in the total.
-        self.flush()?;
-        let ctx = &self.ctx;
-        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
-        let report = counter.report(ctx, &mut enc);
-        // The read waits for this submission only.
-        report.submitted(self.submit(enc));
+        let report = if self.defer_side_passes {
+            // After the counted draws, in the open encoder: it reaches the
+            // GPU with the next submission (a target switch, a read or the
+            // present), which tells it its index. Until then it reads as not
+            // back, and a waiting read submits it first.
+            let (mut enc, passes) = self.take_open()?;
+            let ctx = &self.ctx;
+            let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+            let report = counter.report(ctx, &mut enc);
+            self.open = Some((enc, passes));
+            self.unsubmitted_reports.push(report.clone());
+            report
+        } else {
+            // The counted draws before it are in the total.
+            self.flush()?;
+            let ctx = &self.ctx;
+            let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            let report = counter.report(ctx, &mut enc);
+            // The read waits for this submission only.
+            report.submitted(self.submit(enc));
+            report
+        };
         self.next_ticket += 1;
         self.reports.insert(self.next_ticket, report);
         Ok(Some(self.next_ticket))
@@ -1773,10 +1888,20 @@ impl Backend for GfxBackend {
             .reports
             .remove(&ticket)
             .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))?;
+        if !report.is_submitted() {
+            self.flush()?;
+        }
         report.read(&self.ctx)
     }
 
     fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        let Some(report) = self.reports.get(&ticket) else {
+            return Err(format!("pixel-count ticket {ticket} is not live"));
+        };
+        if !report.is_submitted() {
+            // Still in the open encoder: on its way once submitted.
+            self.flush()?;
+        }
         let Some(report) = self.reports.get(&ticket) else {
             return Err(format!("pixel-count ticket {ticket} is not live"));
         };
@@ -1790,6 +1915,10 @@ impl Backend for GfxBackend {
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.reports.remove(&ticket);
     }
+
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.reports.get(&ticket).is_some_and(|r| !r.is_submitted())
+    }
 }
 
 /// The fast merge rule ([`GfxBackend::set_merge_discards`]) for a value
@@ -1798,6 +1927,12 @@ impl Backend for GfxBackend {
 /// [`GfxBackend::set_merge_passes`] and needs no rule.)
 fn merge_discards_from_env(value: Option<&str>) -> bool {
     value != Some("exact")
+}
+
+/// The loose merge rule ([`GfxBackend::set_merge_masks`]) for a value of
+/// `H2_GFX_MERGE_PASSES`: on unless it is `fast` or `exact`.
+fn merge_masks_from_env(value: Option<&str>) -> bool {
+    !matches!(value, Some("fast" | "exact"))
 }
 
 /// Whether a merged draw writing `mask` starts a render pass of its own
@@ -1893,7 +2028,7 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_discards_from_env, merge_split};
+    use super::{merge_discards_from_env, merge_masks_from_env, merge_split};
     use wgpu::ColorWrites as W;
 
     #[test]
@@ -1903,6 +2038,16 @@ mod tests {
             assert!(merge_discards_from_env(Some(v)), "{v:?}");
         }
         assert!(!merge_discards_from_env(Some("exact")));
+    }
+
+    #[test]
+    fn the_loose_merge_rule_is_the_default_and_fast_or_exact_turn_it_off() {
+        assert!(merge_masks_from_env(None));
+        for v in ["loose", "1", ""] {
+            assert!(merge_masks_from_env(Some(v)), "{v:?}");
+        }
+        assert!(!merge_masks_from_env(Some("fast")));
+        assert!(!merge_masks_from_env(Some("exact")));
     }
 
     #[test]

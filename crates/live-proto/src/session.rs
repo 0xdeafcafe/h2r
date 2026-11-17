@@ -146,9 +146,63 @@ pub struct NewSession {
     /// this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skulls: Option<Vec<u8>>,
+    /// A co-op campaign session's level and difficulty; only with
+    /// `flags: "coop"`. Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<Campaign>,
+    /// The round trip in milliseconds between the host and its farthest
+    /// guest, as the host last measured it (docs/live/live-coop.md, "Ping").
+    /// Left out until there is a guest and a measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u16>,
 }
+/// The highest round trip a session reports; anything slower is this.
+pub const PING_MAX_MS: u16 = 9_999;
 fn custom() -> String {
     "custom".into()
+}
+/// The session flag of a co-op campaign session (docs/live/live-coop.md,
+/// "Co-op over Live").
+pub const COOP: &str = "coop";
+/// The campaign difficulties, by index.
+pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
+/// What a co-op campaign session plays: the level and the difficulty the
+/// host chose. Only a `coop` session carries one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Campaign {
+    /// The level's map file stem, e.g. `03a_oldmombasa`.
+    pub level: String,
+    /// The level's name as the game shows it, when the host knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 0 easy, 1 normal, 2 heroic, 3 legendary ([`DIFFICULTIES`]).
+    pub difficulty: u8,
+}
+impl Campaign {
+    pub fn validate(&self) -> Result<(), String> {
+        let stem_ok = !self.level.is_empty()
+            && self.level.len() <= 64
+            && self
+                .level
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        let name_ok = self
+            .name
+            .as_ref()
+            .is_none_or(|n| !n.is_empty() && n.chars().count() <= 64 && !n.contains('\0'));
+        if !stem_ok || !name_ok || usize::from(self.difficulty) >= DIFFICULTIES.len() {
+            return Err("invalid campaign level, name or difficulty".into());
+        }
+        Ok(())
+    }
+    pub fn difficulty_name(&self) -> &'static str {
+        DIFFICULTIES[usize::from(self.difficulty).min(DIFFICULTIES.len() - 1)]
+    }
+    /// What presence and lists show: the name, else the map stem.
+    pub fn label(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.level)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
@@ -182,6 +236,16 @@ pub struct Update {
     /// them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skulls: Option<Vec<u8>>,
+    /// The session became (or stopped being) a co-op one: `coop` with a
+    /// `campaign`, or `custom`, which drops the campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
+    /// A co-op session's new level or difficulty (makes it `coop`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<Campaign>,
+    /// A new round trip ([`NewSession::ping_ms`]); 0 clears it (no guest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u16>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -210,6 +274,9 @@ pub fn validate_attributes(attrs: &BTreeMap<u32, AttributeValue>) -> Result<(), 
     Ok(())
 }
 impl NewSession {
+    pub fn is_coop(&self) -> bool {
+        self.flags == COOP
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.port == 0
             || self.host_address.len() != 36
@@ -228,9 +295,19 @@ impl NewSession {
         }
         if let Some(skulls) = &self.skulls {
             crate::skulls::validate(skulls)?;
-            if !crate::skulls::multiplayer_ok(skulls) {
+            // A co-op campaign plays every skull; the rest are multiplayer.
+            if !self.is_coop() && !crate::skulls::multiplayer_ok(skulls) {
                 return Err("a session names only skulls that work in multiplayer".into());
             }
+        }
+        if self.ping_ms.is_some_and(|p| p == 0 || p > PING_MAX_MS) {
+            return Err(format!("ping_ms is 1 to {PING_MAX_MS}"));
+        }
+        if let Some(c) = &self.campaign {
+            if !self.is_coop() {
+                return Err("only a coop session names a campaign".into());
+            }
+            c.validate()?;
         }
         validate_attributes(&self.attributes)
     }
@@ -272,8 +349,21 @@ impl Session {
         if let Some(v) = u.map_id {
             next.map_id = Some(v);
         }
+        if let Some(v) = &u.flags {
+            next.flags = v.clone();
+            if !next.is_coop() {
+                next.campaign = None;
+            }
+        }
+        if let Some(c) = &u.campaign {
+            next.flags = COOP.into();
+            next.campaign = Some(c.clone());
+        }
         if let Some(v) = &u.skulls {
             next.skulls = (!v.is_empty()).then(|| v.clone());
+        }
+        if let Some(v) = u.ping_ms {
+            next.ping_ms = (v != 0).then_some(v);
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -364,6 +454,8 @@ mod tests {
             visibility: Visibility::Public,
             map_id: None,
             skulls: None,
+            campaign: None,
+            ping_ms: None,
         }
     }
     #[test]
@@ -546,6 +638,107 @@ mod tests {
         assert!(
             s.apply(UPDATED, &json!({"skulls": [8]}), "", 105).is_err(),
             "Black Eye does nothing in multiplayer"
+        );
+    }
+    #[test]
+    fn a_coop_session_names_its_campaign_and_may_carry_any_skull() {
+        let campaign = Campaign {
+            level: "03a_oldmombasa".into(),
+            name: Some("Outskirts".into()),
+            difficulty: 2,
+        };
+        let mut n = NewSession {
+            flags: COOP.into(),
+            campaign: Some(campaign.clone()),
+            skulls: Some(vec![0, 4]),
+            ..new()
+        };
+        n.validate().unwrap();
+        assert_eq!(campaign.difficulty_name(), "heroic");
+        assert_eq!(campaign.label(), "Outskirts");
+        let wire = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            wire["campaign"],
+            json!({"level": "03a_oldmombasa", "name": "Outskirts", "difficulty": 2})
+        );
+        // Only a coop session names a campaign; a custom one keeps the
+        // multiplayer skull rule and leaves the field off the wire.
+        n.flags = "custom".into();
+        assert!(n.validate().is_err());
+        n.campaign = None;
+        assert!(n.validate().is_err(), "skull 0 is campaign-only");
+        n.skulls = None;
+        n.validate().unwrap();
+        assert!(serde_json::to_value(&n).unwrap().get("campaign").is_none());
+        for bad in [
+            Campaign {
+                level: "../x".into(),
+                ..campaign.clone()
+            },
+            Campaign {
+                level: String::new(),
+                ..campaign.clone()
+            },
+            Campaign {
+                difficulty: 4,
+                ..campaign.clone()
+            },
+            Campaign {
+                name: Some("x".repeat(65)),
+                ..campaign.clone()
+            },
+        ] {
+            let n = NewSession {
+                flags: COOP.into(),
+                campaign: Some(bad.clone()),
+                ..new()
+            };
+            assert!(n.validate().is_err(), "{bad:?}");
+        }
+    }
+    #[test]
+    fn an_update_turns_a_lobby_into_coop_and_back() {
+        let mut s = session("observed", "203.0.113.9", Visibility::Friends);
+        let c = Campaign {
+            level: "01a_tutorial".into(),
+            name: None,
+            difficulty: 1,
+        };
+        let u = Update {
+            campaign: Some(c.clone()),
+            ..Default::default()
+        };
+        assert!(s.update(&u).unwrap());
+        assert!(s.advertisement.is_coop());
+        assert_eq!(s.advertisement.campaign, Some(c));
+        assert!(!s.update(&u).unwrap(), "same again: no change");
+        assert!(
+            s.apply(UPDATED, &json!({"flags": "custom"}), "", 200)
+                .unwrap()
+        );
+        assert_eq!(s.advertisement.flags, "custom");
+        assert_eq!(s.advertisement.campaign, None);
+        // A custom session cannot be handed a campaign without becoming coop,
+        // and an unknown flag is refused.
+        assert!(
+            s.apply(UPDATED, &json!({"flags": "nonsense"}), "", 201)
+                .is_err()
+        );
+    }
+    #[test]
+    fn the_host_reports_its_round_trip_and_clears_it_with_zero() {
+        let mut s = session("observed", "203.0.113.9", Visibility::Friends);
+        assert!(s.apply(UPDATED, &json!({"ping_ms": 42}), "", 1).unwrap());
+        assert_eq!(s.advertisement.ping_ms, Some(42));
+        let wire = serde_json::to_value(&s.advertisement).unwrap();
+        assert_eq!(wire["ping_ms"], 42);
+        assert!(s.apply(UPDATED, &json!({"ping_ms": 0}), "", 2).unwrap());
+        assert_eq!(s.advertisement.ping_ms, None);
+        let wire = serde_json::to_value(&s.advertisement).unwrap();
+        assert!(wire.get("ping_ms").is_none(), "left out when none");
+        assert!(
+            s.apply(UPDATED, &json!({"ping_ms": PING_MAX_MS + 1}), "", 3)
+                .is_err()
         );
     }
     #[test]

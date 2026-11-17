@@ -160,6 +160,25 @@ with strict floating-point behavior. `H2_OPT` also accepts `0`, `g`, `s`,
 `H2_OPT=0 H2_DEBUG=none` is available for compile-speed experiments, but
 can make guest execution slower; it is not the default.
 
+### Optimisation tiers (opt-in)
+
+`H2_OPT_COLD=<level>` with `H2_HOT=<file>` compiles every source that
+holds none of the file's guest addresses at `<level>` (`0`, `1`, `g`, `s`
+or `2`) and the rest at `H2_OPT`. Off unless both are set; setting only
+one is an error. A source is hot when it holds the instruction marker
+(`/* 0x0001234 */`) of any listed address. The file can be a profiler's
+`profile.folded` or `profile.txt` as written (`guest 0x…` and `@0x…`
+frames), or any list of `0x…` addresses or `h2fn_…` names.
+
+Each tier has its own flags in its objects' keys and its own dependency
+and driver probes, so moving a source between tiers recompiles exactly
+that source, and turning tiers off reuses every object built hot. The boot
+stamp records the cold level and a hash of the hot list, so `h2 run` and
+`h2 play` rebuild when either changes; with tiers off the stamp is the
+same as before. `h2 build` prints how many sources were cold. It only
+changes how fast cold code runs, never what it does; measure fps before
+relying on it (build-perf.md has the compile-time side).
+
 The CLI prints emission receipt validation, analysis, lift/plan, C emission,
 object dependency/driver discovery, hash/pin work, clang wall time, archive validation/creation,
 host bridge compilation plus linking, and total wall time. A warm run still
@@ -180,8 +199,11 @@ object cache identity. Measured results are in [build-perf.md](build-perf.md).
 
 `h2 build`, and `h2 run`/`play` when they rebuild, don't use the emission
 receipt above. They write `<out>/src`, compile it with the same object
-cache, link `libh2game.dylib` and stamp it (docs/runtime/BOOT.md). What each kind
-of change costs:
+cache, link `libh2game.dylib` and stamp it (docs/runtime/BOOT.md).
+`H2_EMIT_TARGET` (`host` or unset, `macos`, `tvos`, `ios`, `windows`) picks
+what they compile for; the target is in the objects' flags and the stamp
+([windows.md](../runtime/windows.md), [tvos.md](../runtime/tvos.md),
+[ios.md](../runtime/ios.md)). What each kind of change costs:
 
 - **Nothing changed.** `play` and `build --check` read the image and
   compare the stamp, and do nothing else.

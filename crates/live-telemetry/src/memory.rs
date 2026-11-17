@@ -9,7 +9,7 @@ use crate::event::{
 };
 use crate::layout;
 use engine::DatumHandle;
-use engine::view::{Datums, objects, players};
+use engine::view::{Datums, players};
 use live_proto::game::ObjectKind;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -169,6 +169,13 @@ fn fault(f: engine::MemFault) -> GuestFault {
 }
 
 pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
+    players_after(guest, &mut [])
+}
+
+/// [`players`], taking each name from `previous` (the last read's roster)
+/// when the player's datum and name are unchanged, so a steady roster
+/// decodes no names.
+pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Vec<PlayerState>> {
     let array = ptr(guest, layout::PLAYERS_PTR)?;
     // A null data pointer is an error, as a null array is.
     ptr(guest, array + layout::DATUM_DATA)?;
@@ -176,7 +183,8 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(previous.len());
+    let mut units = [0; players::NAME_UNITS];
     for (handle, player) in players.live(guest, 16).map_err(fault)? {
         if !player.listed(guest).map_err(fault)? {
             continue;
@@ -195,11 +203,20 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
             PlayerStats::ZERO
         };
         let local_user = player.local_user(guest).map_err(fault)?;
+        let len = player.name_units(guest, &mut units).map_err(fault)?;
+        let units = &units[..len];
+        let name = previous
+            .iter_mut()
+            .find(|p| {
+                p.datum == handle.raw() && p.player.name.encode_utf16().eq(units.iter().copied())
+            })
+            .map(|p| std::mem::take(&mut p.player.name))
+            .unwrap_or_else(|| String::from_utf16_lossy(units));
         out.push(PlayerState {
             datum: handle.raw(),
             player: Player {
                 index: slot,
-                name: player.name(guest).map_err(fault)?,
+                name,
                 xuid: None,
                 team: i32::from(player.team(guest).map_err(fault)?),
                 local: Some(local_user != -1),
@@ -239,27 +256,79 @@ pub fn team_scores(guest: &Guest, players: &[PlayerState]) -> ReadResult<Vec<Tea
         .collect()
 }
 
-/// An object's concrete type and body address, if `datum` names a live
-/// object (high-water, salt and non-null body checks of `0x000badc0`, as
-/// the objects view makes them).
-fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
-    let Some(handle) = DatumHandle::from_raw(datum) else {
-        return Ok(None);
-    };
-    // A null array or data pointer is an error, not "no object".
-    let array = ptr(guest, layout::OBJECTS_PTR)?;
-    ptr(guest, array + layout::DATUM_DATA)?;
-    Ok(objects::get(guest, handle)
-        .map_err(fault)?
-        .map(|(kind, body)| (kind, body.addr)))
+/// Object lookups for one observation: the objects array's data pointer,
+/// high-water mark and element size are read on the first lookup and kept
+/// (the guest does not run while telemetry observes it), so each further
+/// datum costs its own header's salt, type and body reads only.
+pub(crate) struct Objects<'g> {
+    guest: &'g Guest,
+    table: std::cell::Cell<Option<Table>>,
 }
 
-fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
-    let mut out = [0.0; 3];
-    for (i, value) in out.iter_mut().enumerate() {
-        *value = f64::from(guest.f32(address + 4 * i as u32)?);
+#[derive(Clone, Copy)]
+struct Table {
+    data: u32,
+    high_water: i32,
+    element_size: i32,
+}
+
+impl<'g> Objects<'g> {
+    pub(crate) fn new(guest: &'g Guest) -> Self {
+        Self {
+            guest,
+            table: std::cell::Cell::new(None),
+        }
     }
-    Ok(out)
+
+    fn table(&self) -> ReadResult<Table> {
+        if let Some(table) = self.table.get() {
+            return Ok(table);
+        }
+        // A null array or data pointer is an error, not "no object".
+        let array = ptr(self.guest, layout::OBJECTS_PTR)?;
+        let data = ptr(self.guest, array + layout::DATUM_DATA)?;
+        let table = Table {
+            data,
+            high_water: self.guest.u32(array + layout::DATUM_HIGH_WATER)? as i32,
+            element_size: self
+                .guest
+                .u32(array + engine::datum::layout::ELEMENT_SIZE)? as i32,
+        };
+        self.table.set(Some(table));
+        Ok(table)
+    }
+
+    /// An object's concrete type and body address, if `datum` names a live
+    /// object: the high-water, salt and non-null body checks of
+    /// `0x000badc0`, as `engine::view::objects::get` makes them.
+    fn body(&self, datum: u32) -> ReadResult<Option<(u8, u32)>> {
+        let Some(handle) = DatumHandle::from_raw(datum) else {
+            return Ok(None);
+        };
+        let table = self.table()?;
+        let index = i32::from(handle.index());
+        if index >= table.high_water {
+            return Ok(None);
+        }
+        let header = (table.element_size.wrapping_mul(index) as u32).wrapping_add(table.data);
+        let salt = self.guest.u16(header)?;
+        if salt == 0 || salt != handle.salt() {
+            return Ok(None);
+        }
+        let body = self.guest.u32(header + layout::OBJECT_BODY)?;
+        if body == 0 {
+            return Ok(None);
+        }
+        Ok(Some((self.guest.u8(header + layout::OBJECT_TYPE)?, body)))
+    }
+}
+
+/// Three `f32`s in one guest read: the same bytes as three reads, and a
+/// fault where any of them would fault.
+fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
+    let b = guest.read::<12>(address)?;
+    let f = |i: usize| f64::from(f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]));
+    Ok([f(0), f(4), f(8)])
 }
 
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
@@ -267,31 +336,42 @@ fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
     let v = vector(guest, body + layout::UNIT_AIM)?;
     let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    Ok((v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len)).then(|| v.map(|c| c / len)))
+    Ok(
+        (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
+            .then(|| [v[0] / len, v[1] / len, v[2] / len]),
+    )
 }
 
 /// The weapon the unit holds: current weapon index `+0x212` into the four
 /// weapon datums at `+0x218`. The weapon must be a live weapon object
 /// parented to this unit (`0x00101fb0` finds a weapon's owner through its
 /// parent).
-fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>> {
+/// With the weapon, its body (for the magazine).
+fn held_weapon(objects: &Objects, unit: u32, body: u32) -> ReadResult<Option<(Weapon, u32)>> {
+    let guest = objects.guest;
     let index = guest.u8(body + layout::UNIT_WEAPON_INDEX)? as i8;
     if !(0..layout::UNIT_WEAPON_SLOTS).contains(&index) {
         return Ok(None);
     }
     let datum = guest.u32(body + layout::UNIT_WEAPONS + 4 * index as u32)?;
-    let Some((kind, weapon)) = object_body(guest, datum)? else {
+    let Some((kind, weapon)) = objects.body(datum)? else {
         return Ok(None);
     };
     if kind != layout::OBJECT_TYPE_WEAPON || guest.u32(weapon + layout::BODY_PARENT)? != unit {
         return Ok(None);
     }
     let definition = guest.u32(weapon + layout::BODY_DEFINITION)?;
-    Ok((definition != u32::MAX).then_some(Weapon { datum, definition }))
+    Ok((definition != u32::MAX).then_some((Weapon { datum, definition }, weapon)))
 }
 
 pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
-    let Some((kind, body)) = object_body(guest, datum)? else {
+    object_in(&Objects::new(guest), datum)
+}
+
+/// [`object`], its lookups through `objects`.
+pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<ObjectState>> {
+    let guest = objects.guest;
+    let Some((kind, body)) = objects.body(datum)? else {
         return Ok(None);
     };
     if kind > 1 {
@@ -302,8 +382,9 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // (a stale weapon datum, a "likely" offset) drops the field, not the
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
-    let weapon = held_weapon(guest, datum, body).ok().flatten();
-    let motion = motion(guest, kind, body, weapon);
+    let held = held_weapon(objects, datum, body).ok().flatten();
+    let weapon = held.map(|(w, _)| w);
+    let motion = motion(guest, kind, body, held.map(|(_, b)| b));
     let team = guest
         .u16(body + layout::UNIT_TEAM)
         .ok()
@@ -313,14 +394,21 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
     let mut up = vector(guest, body + layout::BODY_UP)?;
     let mut vehicle_definition = None;
+    let mut mount = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
-    let vehicle = match object_body(guest, parent)? {
+    let vehicle = match objects.body(parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
-            pos = vector(guest, parent_body + layout::BODY_POSITION)?;
-            forward = vector(guest, parent_body + layout::BODY_FORWARD)?;
-            up = vector(guest, parent_body + layout::BODY_UP)?;
             vehicle_definition =
                 Some(guest.u32(parent_body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
+            // A gunner rides a turret, itself parented to the vehicle it is
+            // mounted on, its transform relative to that one: the mount's is
+            // where the gunner is in the world.
+            let mounted = vehicle_mount(objects, parent_body)?;
+            let at = mounted.map_or(parent_body, |(_, b)| b);
+            mount = mounted.map(|(m, _)| m);
+            pos = vector(guest, at + layout::BODY_POSITION)?;
+            forward = vector(guest, at + layout::BODY_FORWARD)?;
+            up = vector(guest, at + layout::BODY_UP)?;
             Some(parent)
         }
         _ => None,
@@ -332,6 +420,7 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         pos,
         forward,
         vehicle,
+        mount,
         definition,
         aim,
         weapon,
@@ -342,9 +431,20 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     }))
 }
 
+/// The vehicle a vehicle (body at `body`) is mounted on, and that one's
+/// body: a turret's parent, when the parent is a vehicle.
+fn vehicle_mount(objects: &Objects, body: u32) -> ReadResult<Option<(u32, u32)>> {
+    let parent = objects.guest.u32(body + layout::BODY_PARENT)?;
+    Ok(match objects.body(parent)? {
+        Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => Some((parent, parent_body)),
+        _ => None,
+    })
+}
+
 /// A unit's movement and inventory state; each field independently `None`
 /// when its read faults or reads as nonsense.
-fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion {
+/// `weapon` is the held weapon's body.
+fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
     let velocity = vector(guest, body + layout::BODY_VELOCITY)
         .ok()
         .filter(|v| v.iter().all(|c| c.is_finite()))
@@ -378,8 +478,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<Weapon>) -> Motion 
         Ok(slots)
     })()
     .ok();
-    let magazine = weapon.and_then(|w| {
-        let (_, weapon_body) = object_body(guest, w.datum).ok().flatten()?;
+    let magazine = weapon.and_then(|weapon_body| {
         let reserve = guest
             .u16(weapon_body + layout::WEAPON_MAGAZINE_RESERVE)
             .ok()? as i16;
@@ -410,15 +509,51 @@ pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
 /// vehicle (occupied when any biped's parent is it) and every machine. Only
 /// those objects' bodies are read; a fault on one object skips it.
 pub fn world(guest: &Guest) -> ReadResult<World> {
+    let mut out = World::default();
+    world_into(guest, &mut ScanBuffers::default(), &mut out)?;
+    Ok(out)
+}
+
+/// The world scan's working lists, kept between ticks for their allocations.
+#[derive(Default)]
+pub struct ScanBuffers {
+    headers: Vec<u8>,
+    /// Vehicles a biped is parented to.
+    ridden: Vec<u32>,
+}
+
+/// [`world`] into `out`, reusing its lists' (and `buffers`') allocations
+/// from the last tick: once they have grown, the scan allocates nothing.
+/// After an error `out` is empty.
+pub fn world_into(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
+    clear(out);
+    let scanned = scan(guest, buffers, out);
+    if scanned.is_err() {
+        clear(out);
+    }
+    scanned
+}
+
+fn clear(world: &mut World) {
+    world.actors.clear();
+    world.vehicles.clear();
+    world.machines.clear();
+    world.placed.clear();
+    world.bodies.clear();
+}
+
+fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let high_water = guest
         .u32(array + layout::DATUM_HIGH_WATER)?
         .min(layout::OBJECT_CAPACITY);
     let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let mut headers = vec![0; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
-    guest.read_bytes(data, &mut headers, 1)?;
-    let mut out = World::default();
-    let mut ridden = BTreeSet::new();
+    let ScanBuffers { headers, ridden } = buffers;
+    let objects = Objects::new(guest);
+    headers.clear();
+    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
+    guest.read_bytes(data, headers, 1)?;
+    ridden.clear();
     const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
     for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
         let salt = u16::from_le_bytes([header[0], header[1]]);
@@ -438,23 +573,37 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                 if let Ok(parent) = guest.u32(body + layout::BODY_PARENT)
                     && parent != u32::MAX
                 {
-                    ridden.insert(parent);
+                    ridden.push(parent);
+                }
+                let Ok(depleted) = guest
+                    .u16(body + layout::BODY_DAMAGE_FLAGS)
+                    .map(|f| f & layout::BODY_DEPLETED != 0)
+                else {
+                    continue;
+                };
+                // A dead biped stays in the world as a body until the game
+                // clears it away; whose it was is the session's business.
+                if depleted {
+                    if let Ok(Some(object)) = object_in(&objects, datum) {
+                        out.bodies.push(ActorState { datum, object });
+                    }
+                    continue;
                 }
                 let ai = || -> ReadResult<bool> {
                     Ok(guest.u32(body + layout::UNIT_ACTOR)? != u32::MAX
-                        && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX
-                        && guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED
-                            == 0)
+                        && guest.u32(body + layout::UNIT_PLAYER)? == u32::MAX)
                 };
                 if !ai().unwrap_or(false) {
                     continue;
                 }
-                if let Ok(Some(object)) = object(guest, datum) {
+                if let Ok(Some(object)) = object_in(&objects, datum) {
                     out.actors.push(ActorState { datum, object });
                 }
             }
             layout::OBJECT_TYPE_VEHICLE => {
                 if let Ok((definition, [pos, forward, up])) = transform(guest, body) {
+                    // Turret detail only adds: a fault drops it, not the vehicle.
+                    let parent = vehicle_mount(&objects, body).ok().flatten().map(|(p, _)| p);
                     out.vehicles.push(VehicleState {
                         datum,
                         definition,
@@ -462,6 +611,8 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
                         forward,
                         up,
                         occupied: false,
+                        parent,
+                        aim: aim(guest, body).ok().flatten(),
                     });
                 }
             }
@@ -491,10 +642,11 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
             _ => {}
         }
     }
+    ridden.sort_unstable();
     for v in &mut out.vehicles {
-        v.occupied = ridden.contains(&v.datum);
+        v.occupied = ridden.binary_search(&v.datum).is_ok();
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The placement kind of an object type whose placements frames track.
@@ -661,7 +813,7 @@ pub fn active_bsp(guest: &Guest) -> ReadResult<Option<u32>> {
 /// What the damage hook records: the report at `report` for `victim`, with
 /// the victim's position (its own `+0x64`) when it is a live object.
 pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
-    let pos = match object_body(guest, victim)? {
+    let pos = match Objects::new(guest).body(victim)? {
         Some((_, body)) => Some(vector(guest, body + layout::BODY_POSITION)?)
             .filter(|p| p.iter().all(|c| c.is_finite())),
         None => None,
@@ -679,11 +831,18 @@ pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
 }
 
 pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
-    let players = players(guest)?;
+    snapshot_after(guest, &mut [])
+}
+
+/// [`snapshot`], its roster read by [`players_after`] (names from
+/// `previous` while they are unchanged).
+pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Snapshot> {
+    let players = players_after(guest, previous)?;
     let teams = team_scores(guest, &players)?;
+    let lookups = Objects::new(guest);
     let objects = players
         .iter()
-        .map(|p| object(guest, p.unit))
+        .map(|p| object_in(&lookups, p.unit))
         .collect::<ReadResult<Vec<_>>>()?;
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     Ok(Snapshot {
@@ -697,6 +856,7 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         vehicles: Vec::new(),
         machines: Vec::new(),
         placed: Vec::new(),
+        bodies: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
     })
@@ -725,6 +885,31 @@ pub(crate) mod fixture {
     pub const OBJECTS: u32 = 0x140000;
     pub const OBJECT_DATA: u32 = 0x141000;
     pub const BODY: u32 = 0x150000;
+    /// Bodies of slots past [`LOW_BODIES`] (only in [`large_memory`]).
+    pub const HIGH_BODY: u32 = 0x0100_0000;
+    /// Object slots whose bodies fit below the 0x200000 end of [`memory`].
+    pub const LOW_BODIES: u32 = (0x200000 - BODY) / 0x1000;
+    /// Room for scenario placement blocks (only in [`large_memory`]).
+    pub const SCENARIO: u32 = 0x0180_0000;
+
+    /// An object slot's body address: 4 KiB a slot.
+    pub fn body(slot: u32) -> u32 {
+        if slot < LOW_BODIES {
+            BODY + slot * 0x1000
+        } else {
+            HIGH_BODY + slot * 0x1000
+        }
+    }
+
+    /// [`memory`] with room for a full object table's bodies (every slot up
+    /// to [`super::layout::OBJECT_CAPACITY`]) and a scenario at [`SCENARIO`].
+    pub fn large_memory() -> Guest {
+        let mut guest = memory();
+        guest
+            .map_zeroed(HIGH_BODY, 0x0100_0000, Permissions::RW)
+            .unwrap();
+        guest
+    }
 
     pub fn memory() -> Guest {
         let mut guest = Guest::new();
@@ -852,9 +1037,9 @@ pub(crate) mod fixture {
             .set_u8(header + super::layout::OBJECT_TYPE, 0)
             .unwrap();
         guest
-            .set_u32(header + super::layout::OBJECT_BODY, BODY + slot * 0x1000)
+            .set_u32(header + super::layout::OBJECT_BODY, body(slot))
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_PARENT, parent)
             .unwrap();
@@ -897,7 +1082,7 @@ pub(crate) mod fixture {
     /// An AI biped at `slot`: an actor datum, team, and position `pos`.
     pub fn put_actor(guest: &mut Guest, slot: u32, team: i16, pos: [f32; 3]) {
         put_object(guest, slot, u32::MAX);
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::UNIT_ACTOR, 0xa000_0000 | slot)
             .unwrap();
@@ -917,7 +1102,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, 1)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         for (i, value) in [10.0f32, 20.0, 30.0].into_iter().enumerate() {
             guest
                 .set_f32(body + super::layout::BODY_POSITION + 4 * i as u32, value)
@@ -942,7 +1127,7 @@ pub(crate) mod fixture {
                 super::layout::OBJECT_TYPE_MACHINE,
             )
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -968,7 +1153,7 @@ pub(crate) mod fixture {
         guest
             .set_u8(header + super::layout::OBJECT_TYPE, object_type)
             .unwrap();
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
@@ -989,7 +1174,7 @@ pub(crate) mod fixture {
     /// Gives the unit object at `slot` a definition, an aiming vector and
     /// a current weapon index.
     pub fn put_unit(guest: &mut Guest, slot: u32, definition: u32, aim: [f32; 3], index: i8) {
-        let body = BODY + slot * 0x1000;
+        let body = body(slot);
         guest
             .set_u32(body + super::layout::BODY_DEFINITION, definition)
             .unwrap();
@@ -1020,14 +1205,11 @@ pub(crate) mod fixture {
             )
             .unwrap();
         guest
-            .set_u32(
-                BODY + slot * 0x1000 + super::layout::BODY_DEFINITION,
-                definition,
-            )
+            .set_u32(body(slot) + super::layout::BODY_DEFINITION, definition)
             .unwrap();
         guest
             .set_u32(
-                BODY + unit_slot * 0x1000 + super::layout::UNIT_WEAPONS + 4 * index,
+                body(unit_slot) + super::layout::UNIT_WEAPONS + 4 * index,
                 object_datum(slot),
             )
             .unwrap();
@@ -1125,6 +1307,29 @@ mod tests {
         assert_eq!(object.vehicle, Some(vehicle));
         assert_eq!(yaw(object.forward), std::f64::consts::PI);
         assert!(snapshot.objects[1].is_none());
+    }
+
+    #[test]
+    fn a_roster_read_after_another_keeps_unchanged_names_and_reads_new_ones() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Sneaky Pete", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "B", 0, false, u32::MAX);
+        let mut previous = players(&guest).unwrap();
+        let kept = previous[0].player.name.as_ptr();
+        // Slot 1 is renamed (one unit longer), slot 0 is not.
+        fixture::put_player(&mut guest, 1, "Bo", 0, false, u32::MAX);
+        let after = players_after(&guest, &mut previous).unwrap();
+        assert_eq!(after, players(&guest).unwrap());
+        assert_eq!(after[0].player.name, "Sneaky Pete");
+        assert_eq!(after[0].player.name.as_ptr(), kept, "reused, not decoded");
+        assert_eq!(after[1].player.name, "Bo");
+        // A name another datum held is not taken for a new one.
+        let mut stranger = after.clone();
+        stranger[0].datum ^= 0x0001_0000;
+        let renamed = players_after(&guest, &mut stranger).unwrap();
+        assert_eq!(renamed[0].player.name, "Sneaky Pete");
+        assert_eq!(stranger[0].player.name, "Sneaky Pete", "left where it was");
+        assert_eq!(renamed, after);
     }
 
     #[test]
@@ -1386,6 +1591,13 @@ mod tests {
             found.iter().map(|a| a.datum).collect::<Vec<_>>(),
             [fixture::object_datum(2), fixture::object_datum(6)]
         );
+        // The dead marine is a body, not an actor.
+        let bodies = world(&guest).unwrap().bodies;
+        assert_eq!(
+            bodies.iter().map(|a| a.datum).collect::<Vec<_>>(),
+            [fixture::object_datum(3)]
+        );
+        assert_eq!(bodies[0].object.team, Some(2));
         let grunt = &found[0].object;
         assert_eq!(grunt.pos, [5.0, 6.0, 7.0]);
         assert_eq!(grunt.team, Some(3));
@@ -1513,6 +1725,61 @@ mod tests {
         assert_eq!(world.machines[1].placement, None, "not placed");
         assert_eq!(world.machines[1].position, None, "not a 0..1 position");
         assert_eq!(world.machines[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_turret_knows_its_vehicle_and_aim_and_its_gunner_is_where_the_vehicle_is() {
+        let mut guest = fixture::memory();
+        // Vehicle 1 (the Warthog) carries turret 2 (its chaingun), whose
+        // transform is relative to the Warthog; actor 3 mans the turret.
+        fixture::put_vehicle(&mut guest, 1);
+        fixture::put_vehicle(&mut guest, 2);
+        let turret = fixture::BODY + 2 * 0x1000;
+        guest
+            .set_u32(turret + layout::BODY_PARENT, fixture::object_datum(1))
+            .unwrap();
+        for (i, v) in [-0.6f32, 0.0, 0.75].into_iter().enumerate() {
+            guest
+                .set_f32(turret + layout::BODY_POSITION + 4 * i as u32, v)
+                .unwrap();
+        }
+        for (i, v) in [0.0f32, 0.6, 0.8].into_iter().enumerate() {
+            guest
+                .set_f32(turret + layout::UNIT_AIM + 4 * i as u32, v)
+                .unwrap();
+        }
+        fixture::put_actor(&mut guest, 3, 3, [0.0; 3]);
+        guest
+            .set_u32(
+                fixture::BODY + 3 * 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(2),
+            )
+            .unwrap();
+        let world = world(&guest).unwrap();
+        let by = |slot| {
+            world
+                .vehicles
+                .iter()
+                .find(|v| v.datum == fixture::object_datum(slot))
+                .unwrap()
+        };
+        assert_eq!(by(1).parent, None);
+        assert_eq!(by(2).parent, Some(fixture::object_datum(1)));
+        let aim = by(2).aim.unwrap();
+        for (got, want) in aim.into_iter().zip([0.0, 0.6, 0.8]) {
+            assert!((got - want).abs() < 1e-6, "{aim:?}");
+        }
+        // A vehicle with no aim written has none (zero is not a direction).
+        assert_eq!(by(1).aim, None);
+        let gunner = &world.actors[0].object;
+        assert_eq!(gunner.vehicle, Some(fixture::object_datum(2)));
+        assert_eq!(gunner.mount, Some(fixture::object_datum(1)));
+        assert_eq!(
+            gunner.pos,
+            [10.0, 20.0, 30.0],
+            "the Warthog's, not the turret's own"
+        );
+        assert_eq!(gunner.forward, [-1.0, 0.0, 0.0]);
     }
 
     #[test]

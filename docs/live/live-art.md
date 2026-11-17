@@ -1,16 +1,23 @@
 # Map geometry and pre-drawn views
 
-`h2 live assets extract` (and `h2 play --live`, once per disc) writes each
+`h2 live assets extract` (and `h2 play --live-local`, once per disc) writes each
 multiplayer and campaign level's geometry and five pre-drawn pictures of it next to
 the rest of the game art ([live.md](live.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
 model. Everything comes from the owner's disc at run time and is served
-loopback-only under `/art/game/` like the other art. Nothing derived from the
+under `/art/game/` like the other art, to this machine only unless the
+server runs with `--share-game-art`. Nothing derived from the
 disc is in the repository: the tests build invented tag data.
 
 Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
 `crates/cli/src/live_looks.rs` (surface pictures),
-`crates/cli/src/live_scenario.rs` (placed objects) and
+`crates/cli/src/live_basemap.rs` (which bitmap a shader draws as its base),
+`crates/cli/src/live_mappack.rs` (map pack maps),
+`crates/cli/src/live_scenario.rs` (placed objects),
+`crates/cli/src/live_layers.rs` (decals and effects), `live_sky.rs` (the sky),
+`live_weather.rs` (weather volumes), `live_models.rs` (player, weapon and
+vehicle models), `live_weapons.rs` (weapon ballistics), `live_features.rs`
+(teleporters and lifts), `live_catalog.rs` (the playlist builder's catalog) and
 `crates/cli/src/live_render.rs` (the software renderer). Tests:
 `crates/cli/src/live_geometry_tests.rs` and the modules' own.
 
@@ -21,6 +28,8 @@ Per map, keyed by the map stem the art manifest already uses
 
 ```
 map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry
+map/<stem>/map.glb.gz       the same, gzipped (the server sends it when it can)
+map/<stem>/tex/<id>.jpg     the surface pictures map.glb names (or .png)
 map/<stem>/views.json       the pre-drawn views and how to plot on them
 map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
 map/<stem>/sky.glb          the level's sky model (when it has one)
@@ -42,9 +51,14 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 12, so a disc extracted by an older build is extracted again
+key) is 17, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
-pictures, texture coordinates and the `scenario` node).
+pictures, texture coordinates and the `scenario` node; 13 the base map
+from the shader's passes, pictures as files beside `map.glb`, the gzip
+copy and the map pack maps; 15 vehicles in their own colours, the
+reflection tints and shaders whose compiled data another shader shares;
+16 vehicles' turrets and hull decals that double what is under them;
+17 the weather volumes and the sky light's glow; 18 turrets as parts that aim).
 
 ### `map.glb`
 
@@ -86,8 +100,16 @@ pictures, texture coordinates and the `scenario` node).
   draw it untextured with the class material instead (the viewer's
   Textures switch). A class material is written even when only `flat`
   names it. Glass and water keep their class material and are not
-  textured. Each picture is stored once per bitmap however many shaders
-  use it: JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
+  textured. When the shader tiles its base map (pipeline step 10), the
+  `baseColorTexture` has `KHR_texture_transform` with that `scale`
+  (listed in `extensionsUsed`, not required: a reader without it draws
+  the picture once per stored repeat). Each picture is stored once per
+  bitmap however many shaders use it, as its own file beside `map.glb`:
+  the image has a `uri` (`tex/<bitmap tag id, 8 hex digits>.jpg`, `m`
+  after the id for a cut-out's alpha-kept copy), a `mimeType` and
+  `extras` `width` and `height`, and no buffer view, so the geometry loads
+  without them and each picture caches on its own (`tex/` is rewritten
+  with `map.glb`). JPEG (quality 80) when opaque, else PNG; at most 512 pixels a
   side, every picture of a level halved until they total at most 6 MiB
   (no retail level needs it). Machines and placed objects get looks the
   same way. Detail maps, bump maps, lightmaps and the shaders' colour
@@ -136,12 +158,22 @@ pictures, texture coordinates and the `scenario` node).
   sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
   model could be built), `clear` (the clear colour, RGB 0..1, when not
   black), `fog` (`colour`, `density` 0..1 reached at `end`, `start` and
-  `end` in game units from the eye) and `scale` (the model's scale in the
+  `end` in game units from the eye), `glow` (the first sky light's
+  sun-lit air: `colour`, `density` 0..1, and the light's `heading` and
+  `pitch` in radians, game frame) and `scale` (the model's scale in the
   game). `sky.glb` is the sky's render model at rest in model space (same
   axes), textured, every region's first permutation at the highest detail
   under 30,000 triangles; its `asset.extras.blend` says per material, in
   order, `opaque`, `alpha` or `additive` (from the template's words:
   `add`; `alpha`, `cloud(s)`).
+- **Weather.** `asset.extras.weather`, when a BSP has any: per weather
+  system (per BSP palette entry with a `weat` tag and clusters), `name`
+  (the palette entry's), `kind` (`rain`, `snow`, else `motes`, from words
+  in the entry's and the tag's names), `amount` (0.5 `light`/`misty`, 2
+  `heavy`/`monsoon`, else 1), `boxes` (the bounds of the clusters it is
+  set on, glTF frame: min x, y, z, max x, y, z) and `exclude` (its BSP's
+  weather polyhedra, the places it is kept out of: each a list of planes
+  `[nx, ny, nz, d]`, glTF frame, inside when `n·p <= d` for all).
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below). `bounds` covers the
@@ -184,11 +216,55 @@ pictures, texture coordinates and the `scenario` node).
   to 24 MB (1.2 to 16.6 MB before): 0.4 to 3.4 MB pictures, texture
   coordinates a fifth of the rest, 17 to 854 objects of 2 to 95 models. The
   largest, 04b_floodlab (356k triangles and 566k vertices of level, 108
-  machines), is about the most a browser should be asked to fetch; the
-  server is loopback-only and does not compress. The level is not
-  simplified. Before `EXTRACTOR_VERSION` 6 indices were u32.
+  machines), is about the most a browser should be asked to fetch. Since
+  `EXTRACTOR_VERSION` 13 the pictures are not in that count: Outskirts'
+  `map.glb` is 17.5 MB and its `tex/` 2.9 MB; gzipped, `map.glb` is 6.3 MB
+  (Zanzibar 2.1 MB, 0.99 gzipped). The level is not simplified. Before
+  `EXTRACTOR_VERSION` 6 indices were u32.
 
 ### In the 3D viewer
+
+**Water, weather and haze.** The `water` class material ripples
+(`water3d.ts`: a few procedural travelling waves bend its normal, no
+pictures), is glassy, and at grazing angles reflects the sky's colour
+(its clear colour, else its fog's or glow's) and turns opaque (Schlick
+Fresnel). The weather (`weather3d.ts`) is GPU points in a box around what
+the camera looks at, fixed in the world and wrapping as it moves: rain
+falls as streaks, snow and motes drift; each point is drawn only inside
+one of its system's boxes and outside its kept-out volumes (tested in the
+vertex shader against float textures). The toolbar's Weather switch
+shows when a level has some. Both keep the view redrawing while shown,
+and hold still when motion is reduced. A level with no fog but a sky
+glow (Zanzibar, Colossus, Foundation) gets the viewer's exponential haze
+in the glow's colour, as thick as it says (`sky3d.ts` `glowHaze`).
+
+**Loading.** The viewer draws the level as soon as `map.glb` has loaded,
+untextured (each look shows its class material), then fetches the
+pictures six at a time (`textures3d.ts` `deferTextures`,
+`streamTextures`) and swaps each in when it arrives: the images are
+decoded off the main thread (`createImageBitmap`, no flip, no colour
+conversion). Placed objects of one model are instanced (below). Every
+art URL the site builds carries the manifest's `source` stamp (`?v=<first
+16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
+keep it. The art server (`crates/live-server/src/art.rs`) answers a
+stamped request with `Cache-Control: private, max-age=31536000,
+immutable` and anything else with `no-cache`, and sends a file's `.gz`
+copy, when there is one, to a browser that takes gzip. A new extraction
+has a new stamp, so nothing stale is kept. Measured on a 10-core Mac,
+Chrome, cache off, median of five (time to the first drawn frame /
+fully textured, ms):
+
+| | before 13 | 13, uncompressed |
+|---|---|---|
+| Outskirts, local | 489 / 504 | 307 / 663 |
+| Zanzibar, local | 373 / 379 | 211 / 380 |
+| Outskirts, 100 Mbit/s | 2443 / 2461 | 1823 / 2702 |
+| Zanzibar, 100 Mbit/s | 690 / 695 | 498 / 862 |
+| Outskirts, 25 Mbit/s | 6953 / 6968 | 6052 / 7162 |
+| Zanzibar, 25 Mbit/s | 1421 / 1426 | 919 / 1468 |
+
+The geometry is most of the wait; gzip takes Outskirts' to about a third
+on the wire.
 
 `web/src/viewer/textures3d.ts` keeps both materials of every textured
 mesh (the look and the class material its primitive's `flat` names), so
@@ -216,6 +292,31 @@ scenarioObjects.apply(list: readonly ObjectPose[]): boolean
 // (after a seek, or when the frames stop sending objects).
 scenarioObjects.restAll(): void
 ```
+
+### Map pack
+
+The nine Multiplayer Map Pack maps ([map-pack.md](../game/map-pack.md)) get the
+same art as the disc's multiplayer maps (preview, `map.glb`, `sky.glb`,
+views) under their own stems (`containment`, `deltatap`, ...), and the
+playlist builder's catalog lists each under the English name and
+description its map list record gives (Containment, Sanctuary, ...),
+with its map id. They are found in two places (`live_mappack`):
+
+- `h2 live assets extract --mappack <iso>`: the map pack disc's
+  `/demos/dlc/<package>/*.map`, named by the package's `patch_v3.lvl`
+  record for the map (turned into a version 2 record:
+  map-pack.md section 1).
+- Where `h2 import-mappack` installed them under a runtime data root:
+  `<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/`, each package's
+  map and its version 2 `patch.lvl` (name at `+0x114`, 32 UTF-16 units;
+  description at `+0x354`, 128; map id at `+0x10c`). `h2 live assets
+  extract` reads the default data root unless `--installed <data>` names
+  another; `h2 play --live-local` reads the default one.
+
+Each map opens with the retail disc's shared maps, like a disc map. A map
+whose stem the disc (or an earlier source) already has is not added
+again. The maps found are part of the art's cache key, so installing the
+map pack later extracts again. Nothing of them is in the repository.
 
 ### `views.json`
 
@@ -367,8 +468,16 @@ view), the same for every view.
    +0x14, the atmospheric fog block at +0x48 (0x18-byte elements: colour,
    maximum density, start, opaque distance), the secondary fog block at
    +0x50 (the same; used when there is no atmospheric fog) and the clear
-   colour at +0xa0. A sky that cannot be read is listed under `skipped`
-   as `map/<stem>/sky`.
+   colour at +0xa0. The lights block at +0x78 (0x34 bytes each: heading
+   and pitch at +0xc, a fog block at +0x2c whose first element has
+   colour at +4 and maximum density at +0x10) gives the `glow`. A sky
+   that cannot be read is listed under `skipped` as `map/<stem>/sky`.
+   **Weather** (`live_weather.rs`): per BSP, the weather palette at
+   `sbsp+0x84` (0x88 bytes: a 32-byte name, the `weat` reference with its
+   ID at +0x24), the weather polyhedra at `sbsp+0x8c` (0x18 bytes: a
+   bounding sphere, then a block of 0x10-byte planes) and the clusters at
+   `sbsp+0x9c` (0xb0 bytes: bounds at +0x54, the weather palette index,
+   a short, at +0x76). A BSP whose weather cannot be read adds none.
    Each view's camera is then fitted to what it draws, not to the frame's
    box: the corners of every drawn triangle cut to the frame (plus 1%),
    projected, with a 3% margin. A level that fills only part of its frame
@@ -400,9 +509,22 @@ view), the same for every view.
 10. **Looks.** For each BSP material whose surface is solid level (not
    glass or water), and each machine's and object's model material: the
    shader's template (`shad +0`) must not be in a `transparent` folder or
-   be an `overlay`; its base map is the first of its bitmaps
-   (`shad +0x20` postprocess, as for the player models) whose name says
-   diffuse (`live_models::bitmap_role`). Decoded once per bitmap (the
+   be an `overlay`; its base map is what the shader draws on texture
+   stage 0 (`live_basemap`): the resolved material's (`tags::material`,
+   docs/shader-instances.md) first level of detail, pass by pass, the
+   instance bitmap on stage 0, skipping engine defaults (`rasterizer`,
+   `default_bitmaps`) and bump maps (`P8Bump`); its tiling is that pass's
+   vertex constant register 18 x and y (stage k's scale is register
+   18 + k: a `tex_bump` pass scales base, detail and bump; a terrain
+   blend's accumulation pass scales its colour overlay and up to four
+   detail maps). When the shader does not resolve or draws no such
+   bitmap, the first of its bitmaps (`shad +0x20` postprocess) whose name
+   says diffuse (`live_models::bitmap_role`; `_bmp` names bump maps) at
+   scale 1. Names alone pick a bump map on Outskirts' beach
+   (`zanzibar_sand_bmp` comes first), which drew as black and white
+   noise; of 7,113 solid shaders on the disc 306 pick another bitmap or
+   scale by the passes, most a scale (a carpet 6 × 6, rubber mats 16 ×
+   16). Decoded once per bitmap (the
    largest stored level, DXT and swizzle as `assets::decode_image` does),
    box-filtered down to 512 pixels; solid looks are made opaque (their
    alpha is a specular or blend mask); cut-out looks (`alpha_test`) have
@@ -560,7 +682,7 @@ Art from an older extractor (the manifest's `extractor` below the running
 players couldn't animate. `h2 live serve` prints a warning naming the
 command to extract again, `h2 live assets check [--out DIR]` exits 1 for
 missing or stale art (deploy/live/setup.sh extracts again then), `h2 play
---live` extracts again by itself (the extractor version is part of the
+--live-local` extracts again by itself (the extractor version is part of the
 cache key), and the viewer says so when the models it is given can't
 animate. The server sends the art with `Cache-Control: no-cache` and the
 viewer asks for each model with the manifest's `source` as a query, so a
@@ -608,11 +730,53 @@ Keys (what telemetry sends):
   at a node named with `hand` (right first), else the root; `head` at the
   top centre of the mesh.
 - One primitive per material: `POSITION`, `NORMAL`, `TEXCOORD_0` (float),
-  u32 indices. Biped and vehicle primitives also have `COLOR_0` (float
+  u32 indices. Biped primitives also have `COLOR_0` (float
   `VEC4`) when any of the model's materials has a change-colour map: red is
   the primary change-colour weight, green the secondary (0..1), sampled
   bilinearly from the material's change-colour map at the vertex. A
   material without a change-colour map has zero weights; weapons have no
+  `COLOR_0`. These are weights, not colours: a reader must not multiply
+  the base colour by them (the viewer turns vertex colours off).
+- **Turrets.** A vehicle's turrets and guns are objects of their own that
+  its model variant attaches (hlmt variants `+0x50`, 0x38 bytes: name
+  string ID at `+0`, objects block at `+0x1c`, 0x10 bytes each: parent
+  marker and child marker string IDs, then the child object reference).
+  The variant is `multiplayer` when the model has one (the Scorpion's
+  `cannon_mp`, the Wraith's `mortar_mp`, which has no side guns), else the
+  object's default (`obje +0x30`), else the first (the Warthog's
+  `default`: the chaingun; `gauss` and `troop` are other variants). Each
+  child is built like a vehicle at rest, in its own colours, its child
+  marker (or its origin, when it names none) on the parent's marker in the
+  vehicle's pose, and its own attached objects in turn (two levels). An
+  object attached to the vehicle itself is drawn as parts that aim (live
+  art 18): a `turret_<n>` node at its attachment frame, extras
+  `{"turret": "<tag stem>"}`, with a mesh of what turns with its yaw
+  (everything but its guns, and what it carries in turn), and under it a
+  `turret_<n>_pitch_<k>` node per gun, at that gun node's rest origin with
+  the turret's axes, with a mesh of what hangs from it. The guns are the
+  turret's nodes named `gun`, `cannon`, `gun_arm` or `turret_gun` with no
+  such node above them (the Warthog's chaingun and gauss `gun`, the
+  Scorpion's `cannon` and coaxial `gun`, the Wraith mortar's `gun_arm`,
+  the Spectre's `turret_gun`); a triangle goes with its first vertex's
+  heaviest node. A reader turns the yaw node about its own up (glTF +y)
+  and each gun about its own side (glTF +z, raising it); at rest they
+  are as the game models them. Parts are not skinned. Its materials join
+  the vehicle's, and its seat nodes join the vehicle's (`seat_gunner` on
+  the Warthog's chaingun) unless the vehicle has that name.
+  `asset.extras.attached` lists the attached objects' tag names. On the disc the Ghost and Banshee attach nothing:
+  their guns are in their hull models.
+- **Vehicle colours.** Halo 2 paints a vehicle with its object's own
+  change colours, not its driver's team (a red player's Banshee is as
+  violet as anyone's). The `obje` change colours (`+0xac`, 0x10 bytes
+  each: a block of initial permutations, then one of functions; a
+  permutation is 0x20 bytes: weight, lower and upper bound RGB, variant
+  string ID) give, per colour, the permutation of the object's default
+  variant (`obje +0x30`), else the first, at the middle of its bounds. On
+  the disc only the Banshee (violet and dark violet; the heretic variant's
+  gold) and the Scorpion (grey, on no marked surface) have any. They are
+  painted into the base maps as the game tints (per channel: one where
+  the change-colour map is empty, the colour where it is full; red
+  primary, green secondary), so a vehicle has no change-colour map and no
   `COLOR_0`.
 - Materials (`material_look`): `baseColorTexture` (an embedded PNG, at most
   512 pixels a side) when the diffuse map decoded, else a grey
@@ -620,8 +784,16 @@ Keys (what telemetry sends):
   - the shader is a bump-env or shiny one (`tex_bump_env*`,
     `tex_bump_shiny`): the base map's alpha is Halo 2's specular mask, and
     becomes a `metallicRoughnessTexture` (green roughness 0.85 to 0.3,
-    blue metalness up to 0.6 for env, 0.35 for shiny); the base map is
-    then stored opaque;
+    blue metalness up to 0.6 for env, 0.35 for shiny, red the mask
+    itself); the base map is then stored opaque. The shader's reflection
+    tint is `extras.h2.env` `{perpendicular, parallel}` (RGB 0..1): its
+    last two colour parameters with any colour (compiled postprocess
+    `+0x0c`, packed ARGB; those after carry only alpha). Facing the eye
+    the reflection takes the first, at a grazing angle the second: the
+    Covenant's sheen (Ghost orange to purple, Spectre pale yellow to blue,
+    Wraith light to deep blue, Banshee blue to dark violet). The viewer
+    adds the environment, clamped to 1 as the game's cube maps are low
+    range, times the mask and the tint (`ENV_FRAGMENT`, at 0.5);
   - it has a self-illumination map (a bitmap named `*illum*`), or is a lit
     display (`illum`, `*meter*`, `*plasma*` templates): `emissiveTexture`
     (that map, or the base map) with `emissiveFactor` 1;
@@ -630,6 +802,22 @@ Keys (what telemetry sends):
     the emission and `extras.h2.blend` `"add"` (the viewer adds them);
     the others are glass, `BLEND` with a see-through blue-grey factor and
     no texture; `overlay` templates (decals) blend by their alpha;
+  - it is an `overlay` decal on an opaque model whose pass blends by
+    colour (render states `ALPHABLENDENABLE`, `SRCBLEND`, `DESTBLEND`;
+    Xbox `D3DBLEND`): `DESTCOLOR`, `SRCCOLOR` doubles what is under it
+    (`extras.h2.blend` `"double"`), `DESTCOLOR`, `ZERO` or `ZERO`,
+    `SRCCOLOR` multiplies it (`"multiply"`). The material is
+    `KHR_materials_unlit`, opaque, its picture as stored (mid-grey leaves
+    the hull alone). Every vehicle overlay on the disc doubles (the
+    Scorpion's `icon`, `number_decal`, `marine`, `no_step`, its cannon's
+    `scorpion_decal`). The viewer blends it so, unlit, not tone mapped,
+    without writing depth and pulled towards the camera (polygon offset);
+  - it is any other `overlay` decal on an opaque model whose picture has
+    no alpha and reads, as decal layers do
+    (pipeline step 7), as doubling or multiplying: it is turned into one
+    blended by alpha that looks about the same (`overlay_as_alpha`; by
+    luminance l, double: white at l − 0.5 when l ≥ 0.5, else black at
+    1 − 2l; multiply: black at 1 − l), not a grey slab;
   - it is alpha-tested (`*alpha_test*`): `alphaMode` `MASK` at 0.5, its
     alpha kept.
   The change-colour map (at most 256 pixels a side) is also stored, its
@@ -657,8 +845,10 @@ Keys (what telemetry sends):
   `rifle`, `pistol`, `missile`, `support`, `sword`, `unarmed`, `flag`,
   `ball` (what multiplayer weapons are held with; `dual`, vehicle seats and
   AI-only classes are left out), states `idle`, `walk`, `run`, `crouch`,
-  `airborne`, `land`, `grenade`, `melee`, `reload`, `fire`, `switch`,
-  `die`, each only where the graph has it. Every joint has a `rotation`
+  `airborne`, `land`, `land_hard`, `grenade`, `melee`, `reload`, `fire`,
+  `switch`, each only where the graph has it; and `any:die`, `any:dead`
+  for every class (before extractor 13, `die` per class was the dead
+  pose). Every joint has a `rotation`
   channel (normalised i16 `VEC4`, the core glTF option) and a
   `translation` channel (float `VEC3`), `LINEAR`, one key per frame at
   30 fps; a channel that never changes in the clip has a single key at
@@ -733,10 +923,17 @@ whole step takes about 0.6 s on 10 cores.
    of a name. Phantoms, Pelicans and some turrets have no seat markers.
 9. **Clips.** In the biped's graph and the graphs it inherits from (its
    own first). The locomotion states are actions of type `any`: `idle`,
-   `walk_front` (walk), `move_front` (run), `airborne`, `land_soft`
-   (land) in mode `combat`, `idle` in mode `crouch` (crouch), and
-   `landing_dead` of class `any` (die, the same clip for every class).
-   These go through the action table, so `unarmed` plays what the graph
+   `walk_front` (walk), `move_front` (run), `airborne` (the whole leap:
+   the game has no take-off clip), `land_soft` (land), `land_hard`
+   (land_hard) in mode `combat`, and `idle` in mode `crouch` (crouch).
+   Dying and lying dead are the same for every class, so they are written
+   once as `any:die` and `any:dead`, first in the glb: `die` is the death
+   animation of a soft kill from the front (`s_kill:front:gut`, its first
+   variant; else `h_kill:front:gut`, else the dead pose), `dead` the
+   action `landing_dead` of class `any` (the body on the ground; the viewer
+   holds the death clip's last frame, and uses this pose for a body it
+   never saw alive). These go
+   through the action table, so `unarmed` plays what the graph
    maps it to (the spartan's sword animations). The weapon states are
    per weapon type in the game (their table is not decoded), so they are
    found by animation name, `combat:<class>[:<type>]:<action>[:varN]`:
@@ -758,7 +955,12 @@ whole step takes about 0.6 s on 10 cores.
     fuel rod, `support` for the brute shot, `sword`, `flag`, `ball`; vehicle
     guns say `fixed`).
 11. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
-   `+4` block, datum first; docs/formats/shader-instances.md). A bitmap's role comes
+   `+4` block, datum first; docs/formats/shader-instances.md). The compiler
+   shares identical compiled data: a shader's postprocess may lie in
+   another shader's payload (the Scorpion's right and spare treads point
+   into its left tread's; the Wraith's boost glow and damage shaders do
+   the same), so the blocks are read from the map's metadata wherever
+   they are, not only the tag's own bytes. A bitmap's role comes
    from generic words in its tag name read at run time: engine defaults
    (`default_bitmaps`, `rasterizer`) are never used; a name ending in
    `_cc` or saying `change_color` (or `color_change`) is the change-colour
@@ -808,22 +1010,30 @@ Do not commit anything they write.
   and upper-body replacements over locomotion, a viewer playing these
   clips does not. `fire` is the overlay applied over the default pose;
   `reload`, `melee` and `fire` are one representative weapon type's for the
-  whole class (the battle rifle's for `rifle`, and so on), and `die` is
-  the graph's `landing_dead` (multiplayer deaths are ragdolls in the
-  game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
+  whole class (the battle rifle's for `rifle`, and so on), and `any:die`
+  is one death animation for every way of dying (multiplayer deaths are
+  ragdolls in the game). No turning, strafing or backwards clips, no aim. Characters without a rifle stance
   use their own idle (grunts the pistol one, hunters and flood forms the
   unarmed one, prophets and sentinels a combat idle); Lord Hood has no idle
   and stands in his rest pose.
-- Vehicles are posed once: no turret aim, no wheel suspension. A vehicle
-  turret is its own tag and model (`cannon` on the scorpion, `mortar` on the
-  wraith, `chaingun`/`gauss` on the warthog), not part of the vehicle. A
+- Vehicles are posed once: no wheel suspension. Turrets aim by their
+  parts (above), at rest until a frame says where; the gun nodes are
+  chosen by name, so a turret whose gun is named otherwise only turns in
+  yaw, and pitch is about the gun node's rest origin, which may not be
+  the game's exact hinge. A Warthog is always the chaingun one (a gauss
+  Warthog is the same tag in another variant). A
   vehicle with no seat markers has no `seat_` nodes, and a seat node is the
   marker's frame, not a seated pose.
 - `COLOR_0` change-colour weights are per vertex, so their edges are as
   coarse as the mesh; the per-pixel map in `extras.h2.change_colour` is
   exact. Only the primary and secondary colours are tinted.
 - No bump or detail maps; reflections are the reader's environment, not
-  the shader's cube map, and the shader's colour parameters (specular and
-  environment tints) are not read, so the chief's visor is the diffuse
-  map's dark colour, not gold.
+  the shader's cube map, tinted by the shader's last two colours; other
+  colour parameters are not read, so the chief's visor is the diffuse
+  map's dark colour, not gold. The Ghost's red glyph is in its base map
+  (no decal): it is drawn as the disc paints it. The Warthog's olive
+  hubs are its tyre map's colour; its rubber and dirt detail maps would
+  vary it but are not drawn.
+- A vehicle is drawn in its default variant: the Banshee's indexed base
+  map shows its first image (the heretic Banshee's is the second).
 - Elite helmets and other permutations: only `base` (or the first).

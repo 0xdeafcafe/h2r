@@ -1,17 +1,17 @@
 [package]
 name = "scenario-edit"
-description = "Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, and an egui panel"
+description = "Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [dependencies]
 map.workspace = true
+assets.workspace = true
 content.workspace = true
 tags.workspace = true
 thiserror.workspace = true
-egui.workspace = true
-egui-wgpu.workspace = true
+wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 xiso.workspace = true
 

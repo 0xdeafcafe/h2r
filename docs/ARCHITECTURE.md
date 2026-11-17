@@ -7,8 +7,12 @@ build time and nothing derived from it is committed.
 ## Targets
 
 - **macOS on arm64 and x86-64, rendering through Metal.** This is the first target.
-- **The TV.** Two candidates: Apple TV (tvOS: arm64 and Metal, so close to the
-  Mac build) or an Xbox in Developer Mode (x86-64 and DX12). Personal,
+- **Apple TV and iPhone/iPad.** tvOS and iOS share the Mac's arm64 and Metal
+  path; the UIKit hosts are in `platform/tvos` and `platform/ios`
+  ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)).
+- **Windows, then Xbox in Developer Mode** (x86-64 and DX12). The runtime and
+  the generated module cross-compile for Windows from a Mac; there is no
+  Windows host app yet ([windows.md](runtime/windows.md)). Personal,
   sideloaded use only.
 - **Rendering goes through wgpu,** which covers Metal, Vulkan and DX12 with
   one renderer.
@@ -31,8 +35,9 @@ favours the parts that editing and modding touch:
 4. Physics and AI, last. Their floating-point behaviour needs the most care.
 
 Platform code (window, input, audio, file access) lives in its own layer,
-so a tvOS or Xbox port only swaps that layer (docs/runtime/tvos.md; Windows in
-docs/runtime/windows.md, the Xbox app in docs/runtime/xbox.md).
+so a tvOS, iOS or Xbox port only swaps that layer (docs/runtime/tvos.md,
+docs/runtime/ios.md; Windows in docs/runtime/windows.md, the Xbox app in
+docs/runtime/xbox.md).
 
 ## The path to good Rust
 
@@ -76,7 +81,7 @@ Statically linked SDK libraries (D3D, DSOUND, XONLINE, XNET, BINK, ...) are
 not recompiled. Their functions are found by signature and replaced at the
 dispatch table with native Rust implementations: D3D on wgpu, DSound on
 cpal, Bink by a high-level player ([bink-hle.md](audio/bink-hle.md)), and Xbox
-Live stubbed out.
+Live by client HLE over our own service ([live.md](live/live.md)).
 
 ## Crates
 
@@ -127,16 +132,26 @@ Every crate below is on master. "Done" means it does what its row says;
 | `settings` | Host settings as a schema: definitions, one store, one writer for `settings.toml` ([feature-engine.md](engine/feature-engine.md), "Settings") | done |
 | `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison ([high-framerate.md](game/high-framerate.md)) | done |
 | `content` | Map packages: manifest, `MapId`, PPF/IPS/BPS patches and the resolver ([maps.md](game/maps.md)) | foundation built |
-| `editor`  | `h2-editor`, the native editor suite (egui + wgpu) and its `Tool` trait ([editor.md](editor/editor.md)) | in progress |
+| `studio`  | `h2-editor`, the native editor suite (Dear ImGui + wgpu): scenario, game variant and playlist tools ([editor.md](editor/editor.md)) | in progress |
+| `editor-core` | The editor's UI-free core: map sources, the undo stack, where variants come from ([editor.md](editor/editor.md)) | in progress |
+| `hopper-edit` | The playlist (`multiplayer_hopper.dat`) editor's logic and session ([editor.md](editor/editor.md)) | in progress |
 | `scenario-edit` | Sapien-style scenario placement editor writing patched `.map` files ([scenario-editor.md](editor/scenario-editor.md)) | in progress |
-| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor panel ([variants.md](editor/variants.md)) | in progress |
+| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor state ([variants.md](editor/variants.md)) | in progress |
 | `live-proto` | Wire types, signing and verification shared by the Live clients and server ([live-api.md](live/live-api.md)) | in progress |
 | `live-server` | The Xbox Live replacement service: signed events on Postgres behind axum ([live.md](live/live.md)) | in progress |
 | `live-hle` | Xbox Live public-entry overrides in the game ([live-boundary.md](live/live-boundary.md)) | in progress, opt-in |
 | `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
 | `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
-| `tvos`    | The tvOS app's Rust half, a static library for the UIKit host in `platform/tvos` ([tvos.md](runtime/tvos.md)) | spike |
-| `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | untested on hardware |
+| `apple-host` | The tvOS and iOS apps' Rust half: a static library the UIKit hosts in `platform/tvos` and `platform/ios` call to boot the game ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)) | in progress |
+| `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
+| `cloud-saves` | Cloud saves on the Live service: merge an account's saves at sign-in, push changes as the game writes them ([live-cloud-saves.md](live/live-cloud-saves.md)) | in progress |
+| `live-menubar` | The optional menu bar app for a Live server run by launchd (`h2 live menubar`; [live-hosting.md](live/live-hosting.md)) | done |
+| `h1map`   | Halo 1 Xbox cache (v5) reader ([h1-map-format.md](formats/h1-map-format.md)) | done |
+| `h1bitmaps` | Halo 1 bitmaps decoded to RGBA8 and converted to Halo 2 `bitm` tags ([h1-bitmaps.md](formats/h1-bitmaps.md)) | done |
+| `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([h1-models.md](formats/h1-models.md)) | in progress |
+| `h1convert` | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([h1-multiplayer.md](game/h1-multiplayer.md)) | in progress: all 13 disc maps convert |
+| `mopp`    | Havok MOPP code for structure BSPs: the engine's interpreter as a query model, and an offline compiler ([mopp.md](formats/mopp.md)) | done |
+| `pathfind` | AI pathfinding data: decode retail, generate from collision geometry, compare, emit `map::build` blocks ([pathfinding.md](formats/pathfinding.md)) | in progress |
 | `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
 
 ### Lifter checks

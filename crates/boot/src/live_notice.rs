@@ -4,9 +4,10 @@
 //! menu's row handler (`0x002308e0`, transport check at `0x00230928`) shows UI
 //! error `0x23`, the dialog that offers the troubleshooter. A sign-in whose
 //! task result is CANNOT_ACCESS_SERVICE reaches the same error through the
-//! connection-result handler (`0x001486fa`). Without `--live` the console
-//! reports no cable, so transport never starts and the first path is taken;
-//! with `--live` and a server that cannot be reached, the second.
+//! connection-result handler (`0x001486fa`). With Live off (`h2 play`
+//! without a Live flag) the console reports no cable, so transport never
+//! starts and the first path is taken; with Live on and a server that cannot
+//! be reached, the second.
 //!
 //! A dialog widget keeps its error ID at `+0x610` and four 256-unit UTF-16
 //! buffers: title `+0x614`, message `+0x814`, then the two button labels.
@@ -46,14 +47,22 @@ pub enum Notice {
     NotSetUp,
     /// Live is on with this server, and sign-in could not reach it.
     Unreachable(String),
+    /// Live is on with this server, but this machine holds no account key
+    /// for it: how to make or recover one (docs/live/live.md, "In-game
+    /// account setup").
+    NoAccount(String),
+    /// [`NoAccount`](Self::NoAccount) on an app build, which lists "New
+    /// Account" to make or add one in game
+    /// ([`LiveConfig::offer_new_account`]).
+    NoAccountInGame(String),
 }
 
 // The message box on the stock dialog is about 244 by 91 pixels, five lines
 // of its body font; each line below measures under 240 pixels. Lines break on
 // `\r`, as the game's own strings do; `|` would start a markup escape.
 const START_AGAIN: &str = "Quit and start again with one of:\r\n\
-                           h2 play --live  (built-in server)\r\n\
-                           h2 play --live --live-server <URL>";
+                           h2 play --live  (live.forbes.red)\r\n\
+                           h2 play --live-local  (this machine)";
 
 impl Notice {
     /// The notice for a boot configuration. Live on without a server signs
@@ -61,6 +70,10 @@ impl Notice {
     pub fn for_config(config: &LiveConfig) -> Option<Self> {
         match (config.enabled, &config.server_url) {
             (false, _) => Some(Self::NotSetUp),
+            (true, Some(url)) if no_accounts(config) && config.offer_new_account => {
+                Some(Self::NoAccountInGame(url.clone()))
+            }
+            (true, Some(url)) if no_accounts(config) => Some(Self::NoAccount(url.clone())),
             (true, Some(url)) => Some(Self::Unreachable(url.clone())),
             (true, None) => None,
         }
@@ -76,6 +89,20 @@ impl Notice {
                 "Can't reach the h2 live server at\r\n{}.\r\n{START_AGAIN}",
                 display_url(url)
             ),
+            Self::NoAccount(url) => format!(
+                "No Live account on this machine yet.\r\n\
+                 Make one: h2 live account create <tag>\r\n\
+                 or recover one in a browser at\r\n{}\r\n\
+                 /dash/signup/recover, then start again.",
+                display_url(url)
+            ),
+            Self::NoAccountInGame(url) => format!(
+                "No Live account on this device yet.\r\n\
+                 Sign in as \"New Account\" to make one\r\n\
+                 or to add yours from\r\n{}\r\n\
+                 (its 6-digit code signs it in).",
+                display_url(url)
+            ),
         }
     }
 
@@ -85,6 +112,16 @@ impl Notice {
         let mut units: Vec<u16> = self.text().encode_utf16().take(MESSAGE_UNITS - 1).collect();
         units.push(0);
         units
+    }
+}
+
+/// Whether the boot's accounts file holds no account with a usable key
+/// (a missing file or no path holds none). An unreadable file is not "no
+/// accounts": sign-in reports it.
+fn no_accounts(config: &LiveConfig) -> bool {
+    match &config.accounts_path {
+        None => true,
+        Some(path) => live_hle::account_setup::load(path).is_ok_and(|a| a.is_empty()),
     }
 }
 
@@ -217,7 +254,32 @@ mod tests {
             enabled,
             accounts_path: None,
             server_url: server_url.map(Into::into),
+            offer_new_account: false,
         }
+    }
+
+    /// An accounts file with `n` keyed entries; removed by the caller.
+    fn accounts_file(n: usize) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "h2-notice-accounts-{}-{n}.json",
+            std::process::id()
+        ));
+        let entries: Vec<String> = (0..n)
+            .map(|i| {
+                live_hle::account_setup::LocalEntry {
+                    xuid: live_proto::Xuid(0x9000000000001 + i as u64),
+                    gamertag: format!("P{i}"),
+                    id: String::new(),
+                    server: "http://127.0.0.1:8074".into(),
+                    server_id: "live.test".into(),
+                    key: Arc::new(live_proto::sign::KeyPair::generate()),
+                }
+                .to_json()
+                .to_string()
+            })
+            .collect();
+        std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
+        path
     }
 
     #[test]
@@ -230,10 +292,46 @@ mod tests {
             Notice::for_config(&config(false, Some("http://a"))),
             Some(Notice::NotSetUp)
         );
+        let one = accounts_file(1);
+        let none = accounts_file(0);
+        let with = |path: &std::path::PathBuf| LiveConfig {
+            accounts_path: Some(path.clone()),
+            ..config(true, Some("http://127.0.0.1:8074"))
+        };
         assert_eq!(
-            Notice::for_config(&config(true, Some("http://127.0.0.1:8074"))),
+            Notice::for_config(&with(&one)),
             Some(Notice::Unreachable("http://127.0.0.1:8074".into()))
         );
+        for no_account in [with(&none), config(true, Some("http://127.0.0.1:8074"))] {
+            assert_eq!(
+                Notice::for_config(&no_account),
+                Some(Notice::NoAccount("http://127.0.0.1:8074".into()))
+            );
+        }
+        // An unreadable file is left to sign-in to report.
+        std::fs::write(&none, "not json").unwrap();
+        assert!(matches!(
+            Notice::for_config(&with(&none)),
+            Some(Notice::Unreachable(_))
+        ));
+        // The app builds say how to make one in game.
+        let app = LiveConfig {
+            offer_new_account: true,
+            ..with(&one)
+        };
+        assert!(matches!(
+            Notice::for_config(&app),
+            Some(Notice::Unreachable(_))
+        ));
+        assert_eq!(
+            Notice::for_config(&LiveConfig {
+                accounts_path: None,
+                ..app
+            }),
+            Some(Notice::NoAccountInGame("http://127.0.0.1:8074".into()))
+        );
+        std::fs::remove_file(one).unwrap();
+        std::fs::remove_file(none).unwrap();
         assert_eq!(Notice::for_config(&config(true, None)), None);
     }
 
@@ -243,7 +341,11 @@ mod tests {
         for n in [
             Notice::NotSetUp,
             Notice::Unreachable("http://127.0.0.1:8074/".into()),
-            Notice::Unreachable(long),
+            Notice::Unreachable(long.clone()),
+            Notice::NoAccount("https://live.forbes.red".into()),
+            Notice::NoAccount(long.clone()),
+            Notice::NoAccountInGame("https://live.forbes.red".into()),
+            Notice::NoAccountInGame(long),
         ] {
             let text = n.text();
             let lines: Vec<&str> = text.split("\r\n").collect();
@@ -264,15 +366,29 @@ mod tests {
                 .text()
                 .starts_with("Xbox Live isn't set up in h2recomp.\r\n")
         );
+        let text = Notice::NotSetUp.text();
         assert!(
-            Notice::NotSetUp
-                .text()
-                .contains("h2 play --live --live-server <URL>")
+            text.contains("\r\nh2 play --live  (live.forbes.red)\r\n"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("h2 play --live-local  (this machine)"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(live_proto::DEFAULT_SERVER.trim_start_matches("https://")),
+            "the notice names the default service"
         );
         assert!(
             Notice::NotSetUp
                 .text()
                 .ends_with("h2 live account create <tag>")
+        );
+        assert_eq!(
+            Notice::NoAccount("https://live.example/".into()).text(),
+            "No Live account on this machine yet.\r\nMake one: h2 live account create <tag>\r\n\
+             or recover one in a browser at\r\nhttps://live.example\r\n\
+             /dash/signup/recover, then start again."
         );
         let unreachable = Notice::Unreachable("http://127.0.0.1:8074/".into()).text();
         assert!(

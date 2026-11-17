@@ -219,27 +219,17 @@ fn saved_variant_verifies() {
     assert!(variants::record::check(&f.variant).is_empty());
 }
 
-/// The panel over the disc's schema: every built-in opens and draws
-/// headlessly, read-only, with nothing the game would reject.
+/// The editor over the disc's schema: every built-in opens read-only, with
+/// nothing the game would reject.
 #[test]
 #[ignore = "needs the user's disc"]
-fn panel_over_the_disc() {
+fn builtins_over_the_disc() {
     let mut m = mainmenu();
     let s = variants::Schema::from_map(&mut m, tags::Language::English).unwrap();
     let n = s.builtins.len();
     let mut e = variants::VariantEditor::new(s, None);
-    let ctx = egui::Context::default();
     for i in 0..n {
         e.open_builtin(i);
         assert!(e.is_read_only() && e.issues().is_empty());
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1280.0, 800.0),
-            )),
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| e.ui(ui));
-        out.textures_delta.clear();
     }
 }

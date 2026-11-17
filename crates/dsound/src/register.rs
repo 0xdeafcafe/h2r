@@ -242,7 +242,7 @@ impl Hle {
     /// a guest thread, and a stream refilled from its callback (Halo's voice
     /// streams, two 20 ms packets) starves whenever that call comes later
     /// than one packet. Add it at the audio quantum's rate on the same clock
-    /// origin as the output's grid (docs/dsound.md, "Notification and
+    /// origin as the output's grid (docs/audio/dsound.md, "Notification and
     /// callback contracts"). Needs [`register`]'s override at the target.
     pub fn completion_dpc(
         self: &Arc<Self>,

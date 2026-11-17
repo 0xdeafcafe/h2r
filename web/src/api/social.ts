@@ -9,7 +9,7 @@ import type { Xuid } from "./types";
 
 // ---------- friends ----------
 
-export interface FriendPresence { state: string; game_id: string | null; since: string | null }
+export interface FriendPresence { state: string; game_id: string | null; activity?: string | null; since: string | null }
 export interface FriendEntry { xuid: Xuid; gamertag: string; friends_since: string; presence: FriendPresence | null }
 export interface FriendRequest { xuid: Xuid; gamertag: string; at: string }
 /** `GET /v1/accounts/{gamertag}/friends`. */
@@ -25,7 +25,9 @@ export const byTag = <T extends { gamertag: string }>(a: T, b: T) => a.gamertag.
 function presenceOf(v: unknown): FriendPresence | null {
   const o = obj(v);
   if (!o || typeof o.state !== "string") return null;
-  return { state: o.state, game_id: typeof o.game_id === "string" ? o.game_id : null, since: typeof o.since === "string" ? o.since : null };
+  const p: FriendPresence = { state: o.state, game_id: typeof o.game_id === "string" ? o.game_id : null, since: typeof o.since === "string" ? o.since : null };
+  if (typeof o.activity === "string" && o.activity) p.activity = o.activity;
+  return p;
 }
 
 function requestOf(v: unknown): FriendRequest | null {
@@ -235,8 +237,10 @@ export function teamErrorText(code: string | undefined, fallback: string): strin
 
 // ---------- reads ----------
 
-async function read(url: string, signal?: AbortSignal): Promise<unknown> {
-  const r = await fetch(url, { signal, headers: { accept: "application/json" } });
+async function read(url: string, signal?: AbortSignal, bearer?: string | null): Promise<unknown> {
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const r = await fetch(url, { signal, headers });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
     try { const b = await r.json(); if (typeof b?.error === "string") { code = b.error; message = b.message ?? message; } } catch { /* not JSON */ }
@@ -247,11 +251,15 @@ async function read(url: string, signal?: AbortSignal): Promise<unknown> {
 
 const items = (b: unknown) => arr(obj(b)?.items);
 
-export function socialApi(t: ServerTarget) {
+/** `reader` gives a `read` token for the signed-in account: a friend's
+ *  presence in a friends-only co-op game shows its details only to readers
+ *  allowed to see that game. */
+export function socialApi(t: ServerTarget, reader: () => Promise<string | null> = async () => null) {
   const u = (p: string) => t.api + p;
   const tag = (s: string) => encodeURIComponent(s);
   return {
-    friends: async (gamertag: string, s?: AbortSignal) => normalizeFriends(await read(u(`/accounts/${tag(gamertag)}/friends`), s)),
+    friends: async (gamertag: string, s?: AbortSignal) =>
+      normalizeFriends(await read(u(`/accounts/${tag(gamertag)}/friends`), s, await reader().catch(() => null))),
     /** Every active team, following cursors (bounded). */
     teams: async (s?: AbortSignal): Promise<Team[]> => {
       const out: Team[] = [];

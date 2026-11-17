@@ -1,6 +1,7 @@
 # Maps: new, edited, patched and shared (design)
 
-Status: design, with the foundation built: `crates/content` (manifest,
+Status: design, with the foundation built and confirmed in the game by the
+owner (2026-11-17): `crates/content` (manifest,
 `MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`
 (including packages installed while the game runs, §3), the boot wiring,
 the scenario editor's "Save as package" and "Open package" (§8), and new
@@ -582,6 +583,16 @@ lowercase); every file name is relative with no `..`, root or backslash,
 and is opened only if, links followed, it stays in the package directory;
 the image is `.png`/`.jpg`/`.jpeg`, starts with a PNG or JPEG signature
 and is at most 512 KB. Unknown keys are refused.
+
+**Variant packages.** A manifest may hold `[[variant]]` tables, each a
+whole map file with its SHA-256 and an `origin` (`content::Variant`,
+`content::Origin`); the converted Halo 1 maps are the first user, one
+variant per sandbox. `Manifest::select_variant` turns one variant into a
+plain derived manifest, so each has its own `MapId` (`origin` is in no id),
+and the resolver loads the default variant (`h1` if present, else the
+first). The form and the package layout are in
+[h1-multiplayer.md](h1-multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
+Nothing yet picks a variant by a setting.
 
 **Choice rule: one package per map name.**
 

@@ -59,6 +59,23 @@
 //! scale 1 the view sleeps: it draws nothing and each frame is the
 //! reference's ([`ScaleStats::reference_frames`]), so a run can start at
 //! 1x and go up without a second backend's work until it does.
+//!
+//! **E3 lighting, phase 1** ([`Lighting`], [`ScaledBackend::follow_lighting`],
+//! docs/graphics/e3-lighting.md): harder retail shadows, in the view only.
+//! Every `D24S8` depth level not of the frame's size (a shadow map) gets a
+//! view copy at [`shadow_scale`] times its size, made at its first use,
+//! with a colour surface of that size to draw it through. Draws that write
+//! the level into a guest-size target are drawn again into the copy,
+//! colour writes off ([`ScaleStats::shadow_draws`]), and a draw that
+//! samples the level reads the copy ([`ScaleStats::shadow_textures`]); the
+//! view's shaders compare it with one tap (`ShaderProvider::set_hard_shadows`).
+//! What the view cannot repeat (guest bytes, a copy, a fill from the alias
+//! mirror, a draw it cannot make) leaves the copy stale, and a stale copy
+//! is filled from the reference at its next use (each guest pixel
+//! repeated; [`ScaleStats::shadow_refills`]) unless a clear makes it fresh
+//! first. The reference keeps every level at 1x and answers every read of
+//! it, so the guest sees retail's bytes. With E3 lighting the view is
+//! awake at render scale 1 too (frame buffers at 1x, shadow maps at 2x).
 
 use std::sync::{Arc, Mutex};
 
@@ -89,6 +106,50 @@ pub fn render_scale_from(value: Option<&str>) -> Result<u32, String> {
 /// [`render_scale_from`] of the environment.
 pub fn render_scale() -> Result<u32, String> {
     render_scale_from(std::env::var("H2_RENDER_SCALE").ok().as_deref())
+}
+
+/// The view's lighting (docs/graphics/e3-lighting.md): the Video screen's
+/// Lighting row, `[graphics] lighting`, `H2_LIGHTING`. Nothing of it
+/// reaches the guest: the reference draws retail whatever this is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Lighting {
+    /// The game's own: shadow maps at the guest's size, sampled as the
+    /// NV2A does (2x2 percentage-closer filtering when the stage filters).
+    #[default]
+    Retail,
+    /// Phase 1 of E3 lighting: shadow maps at [`shadow_scale`] times their
+    /// size in the view, compared with one tap.
+    E3,
+}
+
+/// `H2_LIGHTING`: unset, empty or `retail` is [`Lighting::Retail`]; `e3`
+/// is [`Lighting::E3`].
+pub fn lighting_from(value: Option<&str>) -> Result<Lighting, String> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(Lighting::Retail),
+        Some(v) if v.eq_ignore_ascii_case("retail") => Ok(Lighting::Retail),
+        Some(v) if v.eq_ignore_ascii_case("e3") => Ok(Lighting::E3),
+        Some(v) => Err(format!("H2_LIGHTING={v:?}: expected retail or e3")),
+    }
+}
+
+/// [`lighting_from`] of the environment.
+pub fn lighting() -> Result<Lighting, String> {
+    lighting_from(std::env::var("H2_LIGHTING").ok().as_deref())
+}
+
+/// The factor the view's shadow maps are made at, for render scale
+/// `scale`: 1 (none made) for retail lighting. For E3 lighting the render
+/// scale, so a shadow texel covers no more host pixels than it covers
+/// guest pixels at 1x and a one-tap edge steps no coarser than retail's
+/// filtered one; and at least 2, so it is sharper than retail at 1x too.
+/// Tying it to the render scale keeps one setting and one rescale point;
+/// 512x512 at 6x is 3072x3072, well inside a GPU's texture limit.
+pub fn shadow_scale(scale: u32, lighting: Lighting) -> u32 {
+    match lighting {
+        Lighting::Retail => 1,
+        Lighting::E3 => scale.clamp(2, MAX_SCALE),
+    }
 }
 
 /// The view backend for `scale`, made only above 1: at 1 the run is
@@ -122,6 +183,15 @@ pub trait ScaleView<R: Backend>: Backend {
     ) -> Result<Self::Surface, String>;
     /// Counted draws stop counting (the reference answers every count).
     fn stop_counting(&mut self);
+    /// This backend and `reference` sample each other's results: both
+    /// submit side work as they record it
+    /// ([`GfxBackend::set_defer_side_passes`]), so neither's submissions
+    /// can run ahead of what the other recorded. The default does nothing.
+    fn share_results(&mut self, _reference: &mut R) {}
+    /// E3 lighting's one-tap shadow lookup for the draws prepared from now
+    /// on (`crate::ShaderProvider::set_hard_shadows`). The default does
+    /// nothing.
+    fn set_hard_shadows(&mut self, _on: bool) {}
     /// This backend's handle for `reference`'s texture. `None`: it cannot
     /// sample it.
     fn share_texture(&mut self, reference: &R, texture: &R::Texture) -> Option<Self::Texture>;
@@ -233,6 +303,16 @@ pub struct ScaleStats {
     /// Deferred draws whose outcome when run differed from the judge's
     /// answer given at the time (a judge bug; the guest saw the judge's).
     pub lazy_mismatches: u64,
+    /// The factor shadow maps are made at in the view ([`shadow_scale`]; 1:
+    /// at the guest's size, only in the reference).
+    pub shadow_scale: u32,
+    /// Draws into a shadow map repeated into the view's scaled copy.
+    pub shadow_draws: u64,
+    /// Textures of a shadow map made from the view's scaled copy.
+    pub shadow_textures: u64,
+    /// Scaled shadow-map copies filled from the reference's (each guest
+    /// texel repeated): changes the view could not repeat.
+    pub shadow_refills: u64,
 }
 
 impl std::fmt::Display for ScaleStats {
@@ -242,7 +322,7 @@ impl std::fmt::Display for ScaleStats {
             "{} view frames, {} fallback frames, {} view errors, {} mismatches, {} depth missed, \
              {} colour resyncs, {} depth resyncs, {} depth-only proxy draws, {} scaled depth aliases, \
              {} 1x frames, {} scale changes, reference work {} deferred, {} run late, {} dropped, \
-             {} lazy mismatches",
+             {} lazy mismatches, shadow maps at {}x: {} draws, {} textures, {} refills",
             self.view_frames,
             self.fallback_frames,
             self.view_errors,
@@ -257,7 +337,11 @@ impl std::fmt::Display for ScaleStats {
             self.reference_deferred,
             self.reference_replayed,
             self.reference_dropped,
-            self.lazy_mismatches
+            self.lazy_mismatches,
+            self.shadow_scale,
+            self.shadow_draws,
+            self.shadow_textures,
+            self.shadow_refills
         )
     }
 }
@@ -271,6 +355,7 @@ enum Repair {
     DepthGuestSize = 8,
     DepthWrite = 16,
     DepthUnreadable = 32,
+    ShadowDraw = 64,
 }
 
 /// A reference backend at the guest's size and a view backend at `scale`
@@ -304,6 +389,36 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     judge: Option<Box<dyn DrawJudge>>,
     /// Reference work into scaled surfaces not run yet, in order.
     deferred: Vec<Deferred<R>>,
+    /// The lighting in effect ([`ScaledBackend::set_lighting`]).
+    lighting: Lighting,
+    /// Where the wanted lighting comes from ([`ScaledBackend::follow_lighting`]).
+    follow_lighting: Option<Box<dyn Fn() -> Lighting + Send>>,
+    /// Every depth level that may be a shadow map, by its reference
+    /// surface (module docs).
+    shadows: Vec<ShadowLevel<R::Surface, V::Surface>>,
+}
+
+/// A `D24S8` depth surface not of the frame's size: a shadow map, which
+/// E3 lighting keeps a scaled copy of in the view.
+struct ShadowLevel<R, V> {
+    reference: R,
+    size: (u32, u32),
+    format: D3DFormat,
+    view: Option<ShadowView<V>>,
+}
+
+/// The view's copy of a [`ShadowLevel`].
+struct ShadowView<V> {
+    depth: V,
+    /// A colour surface of the copy's size: the target its draws and
+    /// clears go through, colour writes off.
+    proxy: V,
+    proxy_format: D3DFormat,
+    scale: u32,
+    /// The reference's level changed in a way the copy did not follow:
+    /// its depth, its stencil.
+    stale_depth: bool,
+    stale_stencil: bool,
 }
 
 /// Deferred work past this many calls runs (a bound on memory when no
@@ -432,6 +547,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             return Err(format!("render scale {scale} is not 1 to {MAX_SCALE}"));
         }
         view.stop_counting();
+        let mut reference = reference;
+        view.share_results(&mut reference);
         Ok(Self {
             reference,
             view,
@@ -444,12 +561,16 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             frame_failed: false,
             stats: ScaleStats {
                 scale,
+                shadow_scale: 1,
                 ..ScaleStats::default()
             },
             logged: 0,
             shared: None,
             judge: None,
             deferred: Vec::new(),
+            lighting: Lighting::Retail,
+            follow_lighting: None,
+            shadows: Vec::new(),
         })
         .map(|mut b| {
             b.set_lazy_reference(lazy_reference_from(
@@ -631,6 +752,325 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         self.follow = Some(Box::new(wanted));
     }
 
+    /// The lighting in effect.
+    pub fn lighting(&self) -> Lighting {
+        self.lighting
+    }
+
+    /// Changes the lighting now (module docs). Call it between frames, as
+    /// [`ScaledBackend::follow_lighting`] does at each present; at the
+    /// start of a run, before the first call, is one such point.
+    pub fn set_lighting(&mut self, lighting: Lighting) {
+        self.retarget(self.scale, lighting);
+    }
+
+    /// Reads the wanted lighting from `wanted` at every present and changes
+    /// to it there, as [`ScaledBackend::follow_scale`] does the scale.
+    pub fn follow_lighting(&mut self, wanted: impl Fn() -> Lighting + Send + 'static) {
+        self.follow_lighting = Some(Box::new(wanted));
+    }
+
+    /// The view's scaled copy of each shadow map that has one, with the
+    /// map's guest size.
+    pub fn shadow_copies(&self) -> Vec<((u32, u32), V::Surface)> {
+        self.shadows
+            .iter()
+            .filter_map(|s| s.view.as_ref().map(|v| (s.size, v.depth)))
+            .collect()
+    }
+
+    /// The factor the view's shadow maps are at now ([`shadow_scale`]).
+    fn shadow_factor(&self) -> u32 {
+        shadow_scale(self.scale, self.lighting)
+    }
+
+    /// Whether the view draws: above render scale 1, or with scaled
+    /// shadow maps (E3 lighting, whose view runs at 1x too).
+    fn awake(&self) -> bool {
+        self.scale > 1 || self.shadow_factor() > 1
+    }
+
+    /// Takes the wanted scale and lighting at a frame boundary.
+    fn retarget(&mut self, scale: u32, lighting: Lighting) {
+        let scale = scale.clamp(1, MAX_SCALE);
+        let was_awake = self.awake();
+        if lighting != self.lighting {
+            eprintln!("d3d: lighting {:?} -> {lighting:?}", self.lighting);
+            self.lighting = lighting;
+            self.view.set_hard_shadows(lighting == Lighting::E3);
+        }
+        let old = self.scale;
+        if scale != old {
+            self.rescale(scale);
+        }
+        // Woken by the lighting alone: the view's surfaces hold what they
+        // held when it went to sleep.
+        if self.scale == old && self.awake() && !was_awake {
+            self.settle_quietly();
+            if let Err(e) = self.view.submit_recorded() {
+                self.view_failed("submit", e);
+            }
+            self.view_pending = false;
+            self.fill_scaled();
+        }
+        self.stats.shadow_scale = self.shadow_factor();
+        // Copies at another factor go; the next use makes them again.
+        let keep = self.stats.shadow_scale;
+        for i in 0..self.shadows.len() {
+            if self.shadows[i]
+                .view
+                .as_ref()
+                .is_some_and(|v| v.scale != keep)
+            {
+                self.drop_shadow_view(i);
+            }
+        }
+    }
+
+    /// Fills every scaled surface from the reference's, each guest pixel
+    /// repeated.
+    fn fill_scaled(&mut self) {
+        for i in 0..self.scaled.len() {
+            let (r, v) = (self.scaled[i].reference, self.scaled[i].current);
+            match self.view.fill_from(&mut self.reference, r, v) {
+                Ok(true) => {}
+                Ok(false) => self.stats.depth_missed += 1,
+                Err(e) => self.view_failed("fill", e),
+            }
+        }
+    }
+
+    /// The shadow level whose reference surface is `r`.
+    fn shadow_at(&self, r: &R::Surface) -> Option<usize> {
+        self.shadows.iter().position(|s| s.reference == *r)
+    }
+
+    fn drop_shadow_view(&mut self, i: usize) {
+        if let Some(v) = self.shadows[i].view.take() {
+            for s in [v.depth, v.proxy] {
+                if let Err(e) = self.view.destroy_surface(s) {
+                    self.view_failed("destroy", e);
+                }
+            }
+        }
+    }
+
+    /// Shadow level `i`'s view copy at the current factor, made (stale)
+    /// if it has none. `None` without scaled shadow maps, or when it
+    /// cannot be made.
+    fn shadow_view(&mut self, i: usize) -> Option<&mut ShadowView<V::Surface>> {
+        let f = self.shadow_factor();
+        if f == 1 {
+            return None;
+        }
+        if self.shadows[i].view.as_ref().is_none_or(|v| v.scale != f) {
+            self.drop_shadow_view(i);
+            let (format, (w, h)) = (self.shadows[i].format, self.shadows[i].size);
+            let proxy_format = D3DFormat::LinA8R8G8B8;
+            let depth = match self.view.create_scaled_surface(format, w, h, true, f) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.view_failed("shadow map", e);
+                    return None;
+                }
+            };
+            let proxy = match self
+                .view
+                .create_scaled_surface(proxy_format, w, h, false, f)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = self.view.destroy_surface(depth);
+                    self.view_failed("shadow map", e);
+                    return None;
+                }
+            };
+            self.shadows[i].view = Some(ShadowView {
+                depth,
+                proxy,
+                proxy_format,
+                scale: f,
+                stale_depth: true,
+                stale_stencil: true,
+            });
+        }
+        self.shadows[i].view.as_mut()
+    }
+
+    /// The reference changed shadow level `r` in a way the view did not
+    /// repeat: its copy is filled again at its next use.
+    fn shadow_stale(&mut self, r: &R::Surface) {
+        if let Some(i) = self.shadow_at(r)
+            && let Some(v) = self.shadows[i].view.as_mut()
+        {
+            v.stale_depth = true;
+            v.stale_stencil = true;
+        }
+    }
+
+    /// Fills shadow level `i`'s copy from the reference's level as the
+    /// reference's work so far left it. `false`: it could not.
+    fn refill_shadow(&mut self, i: usize) -> bool {
+        let Some(v) = self.shadows[i].view.as_ref().map(|v| v.depth) else {
+            return false;
+        };
+        self.settle_quietly();
+        self.view_pending = false;
+        match self
+            .view
+            .fill_from(&mut self.reference, self.shadows[i].reference, v)
+        {
+            Ok(true) => {
+                self.stats.shadow_refills += 1;
+                if let Some(v) = self.shadows[i].view.as_mut() {
+                    v.stale_depth = false;
+                    v.stale_stencil = false;
+                }
+                true
+            }
+            Ok(false) => false,
+            Err(e) => {
+                self.view_failed("shadow map fill", e);
+                false
+            }
+        }
+    }
+
+    /// A drawn reference `draw` into shadow level `i` (depth) and `color`:
+    /// repeated into the view's copy, colour writes off, through the
+    /// copy's own colour surface. A draw the copy cannot follow leaves it
+    /// stale; one into a stale copy fills it from the reference instead,
+    /// which holds this draw already.
+    fn shadow_draw(
+        &mut self,
+        i: usize,
+        color_scaled: bool,
+        draw: &ResolvedDraw,
+        textures: [Option<&V::Texture>; 4],
+        sampled: bool,
+    ) {
+        if !writes_depth_or_stencil(draw) {
+            return;
+        }
+        let size = self.shadows[i].size;
+        let Some(v) = self.shadow_view(i) else {
+            return;
+        };
+        if color_scaled || !sampled {
+            v.stale_depth = true;
+            v.stale_stencil = true;
+            return;
+        }
+        let stencil = draw.state.render.stencil.enable;
+        if v.stale_depth || (stencil && v.stale_stencil) {
+            self.refill_shadow(i);
+            return;
+        }
+        let (depth, proxy, format) = (v.depth, v.proxy, v.proxy_format);
+        let mut d = draw.clone();
+        d.state.render.color_write = ColorWriteMask {
+            red: false,
+            green: false,
+            blue: false,
+            alpha: false,
+        };
+        // The copy's colour surface is the level's size: window
+        // coordinates map onto it as they do onto the level.
+        (d.target.width, d.target.height) = size;
+        d.target.format = format;
+        let r = self.view.draw(proxy, Some(depth), &d, textures);
+        self.view_pending = true;
+        match r {
+            Ok(DrawOutcome::Drawn) => self.stats.shadow_draws += 1,
+            Ok(o) => {
+                self.note_once(Repair::ShadowDraw, || {
+                    format!("the view's shadow-map draw was {o:?}")
+                });
+                self.refill_shadow(i);
+            }
+            Err(e) => {
+                self.view_failed("shadow-map draw", e);
+                let r = self.shadows[i].reference;
+                self.shadow_stale(&r);
+            }
+        }
+    }
+
+    /// A reference clear of shadow level `i`, whole (`rects` `None`) or of
+    /// rectangles, repeated into the view's copy through its colour
+    /// surface. A rectangle clear of a stale aspect fills it from the
+    /// reference instead; a whole clear makes what it clears fresh.
+    fn shadow_clear(&mut self, i: usize, clear: Clear, rects: Option<&RectClear>) {
+        if clear.depth.is_none() && clear.stencil.is_none() {
+            return;
+        }
+        let Some(v) = self.shadow_view(i) else {
+            return;
+        };
+        let partial = rects.is_some();
+        let stale = (clear.depth.is_some() && v.stale_depth)
+            || (clear.stencil.is_some() && v.stale_stencil);
+        if partial && stale {
+            self.refill_shadow(i);
+            return;
+        }
+        let (depth, proxy) = (v.depth, v.proxy);
+        if !partial {
+            v.stale_depth &= clear.depth.is_none();
+            v.stale_stencil &= clear.stencil.is_none();
+        }
+        let r = match rects {
+            None => self.view.clear(
+                proxy,
+                Some(depth),
+                Clear {
+                    color: None,
+                    ..clear
+                },
+            ),
+            Some(rc) => self
+                .view
+                .clear_rects(
+                    proxy,
+                    Some(depth),
+                    &RectClear {
+                        color: None,
+                        ..rc.clone()
+                    },
+                )
+                .map(|_| ()),
+        };
+        self.view_pending = true;
+        if let Err(e) = r {
+            self.view_failed("shadow-map clear", e);
+            let r = self.shadows[i].reference;
+            self.shadow_stale(&r);
+        }
+    }
+
+    /// What the view samples for shadow level `r`'s texture: a texture of
+    /// its scaled copy, when it has a fresh one.
+    fn shadow_texture(&mut self, r: &R::Surface) -> Option<V::Texture> {
+        let i = self.shadow_at(r)?;
+        let f = self.shadow_factor();
+        let v = self.shadows[i].view.as_ref()?;
+        if v.scale != f || f == 1 || v.stale_depth {
+            return None;
+        }
+        let depth = v.depth;
+        match self.view.depth_level_texture(depth) {
+            Ok(Some(t)) => {
+                self.stats.shadow_textures += 1;
+                Some(t)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                self.view_failed("shadow-map texture", e);
+                None
+            }
+        }
+    }
+
     /// The view surface standing for `s` now: `None` while the view sleeps
     /// (scale 1) or for a surface only the reference keeps.
     pub fn view_surface(&self, s: &ScaledSurface<R::Surface, V::Surface>) -> Option<V::Surface> {
@@ -638,7 +1078,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     fn live(&self, v: Option<V::Surface>) -> Option<V::Surface> {
-        if self.scale == 1 {
+        if !self.awake() {
             return None;
         }
         let v = v?;
@@ -699,15 +1139,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         }
         // Waking or changing: the new surfaces start as the reference's
         // image, each guest pixel repeated, until they are drawn again.
-        if scale > 1 {
-            for i in 0..self.scaled.len() {
-                let (r, v) = (self.scaled[i].reference, self.scaled[i].current);
-                match self.view.fill_from(&mut self.reference, r, v) {
-                    Ok(true) => {}
-                    Ok(false) => self.stats.depth_missed += 1,
-                    Err(e) => self.view_failed("fill", e),
-                }
-            }
+        if self.awake() {
+            self.fill_scaled();
         }
         eprintln!("d3d: render scale {old}x -> {scale}x");
     }
@@ -1018,6 +1451,17 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
                 depth,
                 target: false,
             });
+        } else if depth
+            && matches!(format, D3DFormat::D24S8 | D3DFormat::LinD24S8)
+            && self.frame.is_some()
+        {
+            // A depth level of another size: a shadow map (module docs).
+            self.shadows.push(ShadowLevel {
+                reference,
+                size: (width, height),
+                format,
+                view: None,
+            });
         }
         Ok(ScaledSurface {
             reference,
@@ -1030,6 +1474,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.settle()?;
         self.before_shared_write(&surface);
         self.reference.destroy_surface(surface.reference)?;
+        if let Some(i) = self.shadow_at(&surface.reference) {
+            self.drop_shadow_view(i);
+            self.shadows.remove(i);
+        }
         if let Some(v) = surface.view {
             let at = self.scaled.iter().position(|s| s.original == v);
             let v = at.map_or(v, |i| self.scaled.remove(i).current);
@@ -1072,6 +1520,9 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         } else {
             self.settle_for(&color, depth.as_ref(), &[])?;
             self.reference.clear(rc, rd, clear)?;
+        }
+        if let Some(i) = rd.and_then(|d| self.shadow_at(&d)) {
+            self.shadow_clear(i, clear, None);
         }
         let vd = self.live(depth.and_then(|d| d.view));
         let r = match (self.live(color.view), depth) {
@@ -1146,6 +1597,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             .iter()
             .zip(&vt)
             .all(|(t, v)| t.is_none() || v.is_some());
+        if drawn && let Some(i) = depth.and_then(|d| self.shadow_at(&d.reference)) {
+            let color_scaled = self.live(color.view).is_some();
+            self.shadow_draw(i, color_scaled, draw, vt, sampled);
+        }
         match (self.live(color.view), depth) {
             (Some(vc), d) if d.is_none() || vd.is_some() => {
                 if !sampled {
@@ -1221,7 +1676,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         if shown {
             self.stats.view_frames += 1;
         } else {
-            if self.scale == 1 {
+            if !self.awake() {
                 self.stats.reference_frames += 1;
             } else {
                 self.stats.fallback_frames += 1;
@@ -1241,11 +1696,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             }
         }
         self.frame_failed = false;
-        // The frame boundary: a wanted scale is made here, before the next
-        // frame's first call.
-        if let Some(wanted) = self.follow.as_ref().map(|f| f()) {
-            self.rescale(wanted);
-        }
+        // The frame boundary: a wanted scale and lighting are made here,
+        // before the next frame's first call.
+        let scale = self.follow.as_ref().map_or(self.scale, |f| f());
+        let lighting = self.follow_lighting.as_ref().map_or(self.lighting, |f| f());
+        self.retarget(scale, lighting);
         if let Some(s) = &self.shared
             && let Ok(mut s) = s.lock()
         {
@@ -1267,6 +1722,14 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             .clear_rects(color.reference, depth.map(|d| d.reference), clear)?;
         if out != DrawOutcome::Drawn {
             return Ok(out);
+        }
+        if let Some(i) = depth.and_then(|d| self.shadow_at(&d.reference)) {
+            let whole = Clear {
+                color: None,
+                depth: clear.depth,
+                stencil: clear.stencil,
+            };
+            self.shadow_clear(i, whole, Some(clear));
         }
         let vd = self.live(depth.and_then(|d| d.view));
         let touches_depth = clear.depth.is_some() || clear.stencil.is_some();
@@ -1335,6 +1798,9 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.settle()?;
         self.before_shared_write(&dst);
         let copied = self.reference.copy_surface(src.reference, dst.reference)?;
+        if copied {
+            self.shadow_stale(&dst.reference);
+        }
         if copied && let Some(vd) = self.live(dst.view) {
             match self.live(src.view) {
                 Some(vs) => match self.view.copy_surface(vs, vd) {
@@ -1365,6 +1831,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             .write_surface(surface.reference, desc, bytes)?;
         if written {
             self.refill(&surface);
+            self.shadow_stale(&surface.reference);
         }
         Ok(written)
     }
@@ -1416,6 +1883,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
 
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.reference.drop_pixel_count(ticket)
+    }
+
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.reference.pixel_count_unsubmitted(ticket)
     }
 
     fn create_texture_target(
@@ -1497,12 +1968,16 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         surface: Self::Surface,
     ) -> Result<Option<Self::Texture>, String> {
         // Depth levels (shadow maps) are compared texel by texel: the view
-        // samples the reference's 1x bits.
+        // samples the reference's 1x bits, or with E3 lighting its own
+        // scaled copy's (the comparison indexes the texels it has).
         self.settle()?;
         let Some(reference) = self.reference.depth_level_texture(surface.reference)? else {
             return Ok(None);
         };
-        let view = self.share(&reference);
+        let view = match self.shadow_texture(&surface.reference) {
+            Some(t) => Some(t),
+            None => self.share(&reference),
+        };
         Ok(Some(ScaledTexture {
             reference,
             view,
@@ -1642,6 +2117,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.reference
             .mirror_load(surface.reference, format, width, height, layout, offset)?;
         self.refill(&surface);
+        self.shadow_stale(&surface.reference);
         Ok(())
     }
 
@@ -1717,6 +2193,15 @@ impl ScaleView<GfxBackend> for GfxBackend {
 
     fn stop_counting(&mut self) {
         self.count_samples = false;
+    }
+
+    fn share_results(&mut self, reference: &mut GfxBackend) {
+        self.set_defer_side_passes(false);
+        reference.set_defer_side_passes(false);
+    }
+
+    fn set_hard_shadows(&mut self, on: bool) {
+        GfxBackend::set_hard_shadows(self, on);
     }
 
     fn share_texture(
@@ -1829,6 +2314,101 @@ impl ScaleView<GfxBackend> for GfxBackend {
     }
 }
 
+/// The retail-or-E3 A/B capture ([`LightingAb`]): a second view over a
+/// [`ScaledBackend`] used as its reference. The inner backend answers the
+/// guest from its 1x reference and draws its own view (retail); this view
+/// draws the same calls at the same scale with the other lighting. It
+/// takes the inner reference's textures and pixels, as a view over a
+/// plain backend does, so the two views differ only where lighting does.
+impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
+    fn create_scaled_surface(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        depth: bool,
+        scale: u32,
+    ) -> Result<gfx::surface::SurfaceId, String> {
+        <Self as ScaleView<GfxBackend>>::create_scaled_surface(self, format, width, height, depth, scale)
+    }
+
+    fn create_scaled_texture_target(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        scale: u32,
+    ) -> Result<gfx::surface::SurfaceId, String> {
+        <Self as ScaleView<GfxBackend>>::create_scaled_texture_target(self, format, width, height, scale)
+    }
+
+    fn stop_counting(&mut self) {
+        self.count_samples = false;
+    }
+
+    fn share_results(&mut self, _reference: &mut ScaledBackend<GfxBackend, GfxBackend>) {
+        // The inner backend turned its own two off when it was made.
+        self.set_defer_side_passes(false);
+    }
+
+    fn set_hard_shadows(&mut self, on: bool) {
+        GfxBackend::set_hard_shadows(self, on);
+    }
+
+    fn share_texture(
+        &mut self,
+        reference: &ScaledBackend<GfxBackend, GfxBackend>,
+        texture: &Tex<GfxBackend, GfxBackend>,
+    ) -> Option<HostTexture> {
+        <Self as ScaleView<GfxBackend>>::share_texture(self, reference.reference(), &texture.reference)
+    }
+
+    fn submit_recorded(&mut self) -> Result<(), String> {
+        self.flush()
+    }
+
+    fn fill_from(
+        &mut self,
+        reference: &mut ScaledBackend<GfxBackend, GfxBackend>,
+        src: Surf<GfxBackend, GfxBackend>,
+        dst: gfx::surface::SurfaceId,
+    ) -> Result<bool, String> {
+        <Self as ScaleView<GfxBackend>>::fill_from(self, reference.reference_mut(), src.reference, dst)
+    }
+
+    fn present_reference(
+        &mut self,
+        reference: &ScaledBackend<GfxBackend, GfxBackend>,
+        surface: Surf<GfxBackend, GfxBackend>,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_from(Some(reference.reference()), surface.reference, flags, gamma)
+    }
+}
+
+/// A same-run A/B of the lighting modes (`H2_BOOT_GFX_LIGHTING_AB`): the
+/// game and its 1x reference once, drawn at the render scale by two views
+/// from the same calls, the inner one retail and the outer one E3.
+pub type LightingAb = ScaledBackend<ScaledBackend<GfxBackend, GfxBackend>, GfxBackend>;
+
+/// [`LightingAb`] over `reference`, a retail view and an E3 view at
+/// `scale` (2 to [`MAX_SCALE`]).
+pub fn lighting_ab(
+    reference: GfxBackend,
+    retail: GfxBackend,
+    e3: GfxBackend,
+    scale: u32,
+) -> Result<LightingAb, String> {
+    if scale < 2 {
+        return Err(format!("the lighting A/B draws at a render scale of 2 or more, not {scale}"));
+    }
+    let inner = ScaledBackend::new(reference, retail, scale)?;
+    let mut outer = ScaledBackend::new(inner, e3, scale)?;
+    outer.set_lighting(Lighting::E3);
+    Ok(outer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1843,6 +2423,27 @@ mod tests {
         for bad in ["0", "7", "1.5", "2x", "-1"] {
             assert!(render_scale_from(Some(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn lighting_is_retail_unless_e3_is_named() {
+        assert_eq!(lighting_from(None), Ok(Lighting::Retail));
+        assert_eq!(lighting_from(Some("")), Ok(Lighting::Retail));
+        assert_eq!(lighting_from(Some("retail")), Ok(Lighting::Retail));
+        assert_eq!(lighting_from(Some(" E3 ")), Ok(Lighting::E3));
+        assert!(lighting_from(Some("stencil")).is_err());
+        assert_eq!(Lighting::default(), Lighting::Retail);
+    }
+
+    #[test]
+    fn e3_shadow_maps_follow_the_render_scale_and_are_at_least_doubled() {
+        for scale in 1..=MAX_SCALE {
+            assert_eq!(shadow_scale(scale, Lighting::Retail), 1);
+        }
+        let e3: Vec<u32> = (1..=MAX_SCALE)
+            .map(|s| shadow_scale(s, Lighting::E3))
+            .collect();
+        assert_eq!(e3, [2, 2, 3, 4, 5, 6]);
     }
 
     #[test]

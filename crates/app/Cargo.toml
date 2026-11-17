@@ -30,6 +30,10 @@ anyhow.workspace = true
 [target.'cfg(not(any(target_os = "tvos", target_os = "ios")))'.dependencies]
 winit = "0.30"
 
+# The Dock icon for the unbundled `h2 play` window (art/app-icon).
+[target.'cfg(target_os = "macos")'.dependencies]
+app-icon = { path = "../app-icon" }
+
 [[bin]]
 name = "h2-app-demo"
 path = "src/bin/demo.rs"

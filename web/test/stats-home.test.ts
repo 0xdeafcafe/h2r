@@ -28,7 +28,7 @@ describe("nav and crumbs", () => {
     const nav = statsNav({ gamertag: "Sneaky Pete" }, true);
     expect(nav.find((n) => n.label === "My Stats")!.href).toBe("/stats/players/Sneaky%20Pete");
     expect(statsNav(null, false).find((n) => n.label === "My Stats")!.href).toBe("/dash/signup");
-    expect(nav.find((n) => n.label === "Admin")!.href).toBe("/stats/admin");
+    expect(nav.find((n) => n.label === "Halo Admin")!.href).toBe("/stats/admin");
   });
 
   test("the way out goes to the dashboard and says so", () => {

@@ -498,6 +498,10 @@ fn bitmap_roles_come_from_their_names() {
         BitmapRole::SelfIllum
     );
     assert_eq!(role(r"objects\c\bitmaps\torso"), BitmapRole::Diffuse);
+    // Bump maps named `_bmp` (the Outskirts beaches' sand).
+    assert_eq!(role(r"scenarios\bitmaps\m\z\z_sand_bmp"), BitmapRole::Other);
+    assert_eq!(role(r"scenarios\bitmaps\m\z\bmp_sand"), BitmapRole::Other);
+    assert_eq!(role(r"scenarios\bitmaps\m\z\bmpfloor"), BitmapRole::Diffuse);
     assert_eq!(role(r"objects\c\bitmaps\torso_bump"), BitmapRole::Other);
     assert_eq!(
         role(r"objects\bitmaps\detail_maps\metal"),
@@ -550,9 +554,10 @@ fn a_bump_env_change_colour_shader_gets_its_maps_and_shine() {
     assert!(t.rgba.chunks(4).all(|p| p[3] == 255));
     assert_eq!(&t.rgba[..3], &[200, 100, 50]);
     let s = m.specular.as_ref().unwrap();
-    // Masked: smooth and metallic (an env shader's 0.6). Unmasked: matte, not metal.
+    // Masked: smooth and metallic (an env shader's 0.6). Unmasked: matte,
+    // not metal. Red is the mask.
     assert_eq!(&s.rgba[0..3], &[255, 77, 153]);
-    assert_eq!(&s.rgba[4..7], &[255, 217, 0]);
+    assert_eq!(&s.rgba[4..7], &[0, 217, 0]);
 }
 
 #[test]
@@ -944,6 +949,9 @@ fn clips_are_planned_from_actions_and_animation_names() {
         st("combat", "any", "any", "landing_dead"),
         st("combat", "unarmed", "any", "idle"),
         st("combat", "dual", "any", "idle"),
+        st("combat", "rifle", "any", "airborne"),
+        st("combat", "rifle", "any", "land_soft"),
+        st("combat", "rifle", "any", "land_hard"),
     ];
     let names: Vec<String> = [
         "combat:rifle:throw_grenade:var0",
@@ -955,6 +963,10 @@ fn clips_are_planned_from_actions_and_animation_names() {
         "combat:rifle:ready",
         "combat:rifle:aim_still_up",
         "combat:pistol:hp:fire_1:var1",
+        "h_kill:front:gut:var1",
+        "s_kill:front:gut:var1",
+        "s_kill:front:gut:var0",
+        "s_kill:front:head:var0",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -964,9 +976,16 @@ fn clips_are_planned_from_actions_and_animation_names() {
     assert_eq!(
         got,
         [
+            // Dying and lying dead once for every class: a soft kill from
+            // the front (its first variant) beats a hard one.
+            ("any:die", ClipFrom::Animation(11)),
+            ("any:dead", ClipFrom::Action(4)),
             ("rifle:idle", ClipFrom::Action(0)),
             ("rifle:run", ClipFrom::Action(1)),
             ("rifle:crouch", ClipFrom::Action(2)),
+            ("rifle:airborne", ClipFrom::Action(7)),
+            ("rifle:land", ClipFrom::Action(8)),
+            ("rifle:land_hard", ClipFrom::Action(9)),
             // `:var0` counts; the battle rifle's melee beats the shotgun's;
             // a reload only per type goes to the first type by name.
             ("rifle:grenade", ClipFrom::Animation(0)),
@@ -974,18 +993,13 @@ fn clips_are_planned_from_actions_and_animation_names() {
             ("rifle:reload", ClipFrom::Animation(4)),
             ("rifle:fire", ClipFrom::Animation(5)),
             ("rifle:switch", ClipFrom::Animation(6)),
-            ("rifle:die", ClipFrom::Action(4)),
             ("pistol:fire", ClipFrom::Animation(8)),
-            ("pistol:die", ClipFrom::Action(4)),
-            ("missile:die", ClipFrom::Action(4)),
-            ("support:die", ClipFrom::Action(4)),
-            ("sword:die", ClipFrom::Action(4)),
             ("unarmed:idle", ClipFrom::Action(5)),
-            ("unarmed:die", ClipFrom::Action(4)),
-            ("flag:die", ClipFrom::Action(4)),
-            ("ball:die", ClipFrom::Action(4)),
         ]
     );
+    // Without a death animation, dying is the dead pose.
+    let plan = plan_clips(&stances, &names[..9]);
+    assert_eq!(plan[0], ("any:die".to_string(), ClipFrom::Action(4)));
     // No dual clips.
     assert!(plan.iter().all(|(n, _)| clip_class(n) != "dual"));
 }
@@ -2250,4 +2264,438 @@ fn shaders_from_the_disc() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("shaders.txt"), &out).unwrap();
     println!("{} lines", out.lines().count());
+}
+
+#[test]
+fn opaque_overlay_decals_blend_by_how_far_they_are_from_grey() {
+    let px = |v: u8| [v, v, v, 255];
+    // Mid-grey-centred stencil: grey vanishes, black darkens fully, a
+    // lighter stroke lightens by half its distance.
+    let mut img = Image {
+        width: 4,
+        height: 1,
+        rgba: [px(128), px(128), px(0), px(200)].concat(),
+    };
+    overlay_as_alpha(&mut img);
+    let a: Vec<u8> = img.rgba.chunks(4).map(|p| p[3]).collect();
+    assert!(a[0] <= 2 && a[1] <= 2, "{a:?}");
+    assert_eq!(&img.rgba[8..12], &[0, 0, 0, 255]);
+    assert_eq!(&img.rgba[12..15], &[255, 255, 255]);
+    assert!((70..=75).contains(&a[3]), "{a:?}");
+    // A picture with its own alpha keeps it.
+    let mut alpha = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![10, 20, 30, 40],
+    };
+    overlay_as_alpha(&mut alpha);
+    assert_eq!(alpha.rgba, [10, 20, 30, 40]);
+    // Through the look: an `overlay` template's picture is converted.
+    let (m, _) = material_look_roles(
+        "number_decal",
+        r"shaders\shader_templates\opaque\overlay",
+        vec![(
+            BitmapRole::Diffuse,
+            Some(Image {
+                width: 2,
+                height: 1,
+                rgba: [px(128), px(0)].concat(),
+            }),
+        )],
+    );
+    assert_eq!(m.blend, Blend::Alpha);
+    assert_eq!(m.texture.unwrap().rgba[7], 255);
+}
+
+#[test]
+fn an_env_shader_tints_its_reflection_by_its_last_two_colours() {
+    // Invented: two colours, then two that carry only alpha (scalars).
+    let colours = [
+        0x00ff_ffff,
+        0x00e0_8040,
+        0x0010_2030,
+        0x4000_0000,
+        0x8000_0000,
+    ];
+    let t = env_tint("tex_bump_env_no_detail", &colours).unwrap();
+    assert!(close(
+        &t.perpendicular,
+        &[224.0 / 255.0, 128.0 / 255.0, 64.0 / 255.0]
+    ));
+    assert!(close(
+        &t.parallel,
+        &[16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0]
+    ));
+    assert!(env_tint("tex_bump_shiny", &colours).is_some());
+    assert!(
+        env_tint("tex_bump", &colours).is_none(),
+        "not environment mapped"
+    );
+    assert!(
+        env_tint("tex_bump_env", &[0x00ff_0000, 0x4000_0000]).is_none(),
+        "one colour"
+    );
+}
+
+#[test]
+fn a_vehicle_is_painted_with_its_own_change_colours() {
+    let px = |r: u8, g: u8| [r, g, 0, 255];
+    let base = Image {
+        width: 2,
+        height: 1,
+        rgba: [[200, 200, 200, 255], [200, 200, 200, 255]].concat(),
+    };
+    // Left: all primary; right: half secondary.
+    let cc = Image {
+        width: 2,
+        height: 1,
+        rgba: [px(255, 0), px(0, 128)].concat(),
+    };
+    let mut src = Source {
+        materials: vec![Material {
+            texture: Some(base.clone()),
+            change_colour: Some(cc.clone()),
+            ..Material::default()
+        }],
+        change_colour: vec![Some(cc.clone())],
+        ..Source::default()
+    };
+    paint_vehicle(&mut src, &[[0.5, 0.25, 1.0], [0.0, 1.0, 0.0]]);
+    let out = src.materials[0].texture.as_ref().unwrap();
+    assert_eq!(&out.rgba[..3], &[100, 50, 200], "primary");
+    // Half secondary (green): red and blue halve, green stays.
+    assert_eq!(&out.rgba[4..7], &[100, 200, 100]);
+    assert!(
+        src.materials[0].change_colour.is_none() && src.change_colour[0].is_none(),
+        "nothing left to tint"
+    );
+    // No colours of its own: left for the reader.
+    let mut plain = Source {
+        materials: vec![Material {
+            texture: Some(base.clone()),
+            change_colour: Some(cc.clone()),
+            ..Material::default()
+        }],
+        change_colour: vec![Some(cc)],
+        ..Source::default()
+    };
+    paint_vehicle(&mut plain, &[]);
+    assert_eq!(plain.materials[0].texture.as_ref().unwrap(), &base);
+    assert!(plain.change_colour[0].is_some());
+}
+
+#[test]
+fn the_specular_mask_rides_in_red() {
+    let base = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![9, 9, 9, 255],
+    };
+    let s = specular_map(&base, 0.6);
+    assert_eq!(s.rgba[0], 255, "full mask");
+    let none = specular_map(
+        &Image {
+            rgba: vec![9, 9, 9, 0],
+            ..base
+        },
+        0.6,
+    );
+    assert_eq!((none.rgba[0], none.rgba[2]), (0, 0));
+}
+
+#[test]
+fn a_pass_blends_as_its_render_states_say() {
+    // The vehicles' overlay decals: DESTCOLOR, SRCCOLOR.
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x306), Some(0x300)),
+        Some(Blend::Double)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x306), Some(0)),
+        Some(Blend::Multiply)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0), Some(0x300)),
+        Some(Blend::Multiply)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(1), Some(1)),
+        Some(Blend::Additive)
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x302), Some(0x303)),
+        Some(Blend::Alpha)
+    );
+    assert_eq!(
+        blend_of_pass(Some(0), Some(0x306), Some(0x300)),
+        None,
+        "not blending"
+    );
+    assert_eq!(
+        blend_of_pass(Some(1), Some(0x307), Some(0x300)),
+        None,
+        "not one we know"
+    );
+    assert_eq!(blend_of_pass(None, None, None), None);
+}
+
+#[test]
+fn a_double_decal_is_unlit_and_says_how_it_blends() {
+    let decal = Material {
+        name: "no_step".into(),
+        texture: Some(Image {
+            width: 1,
+            height: 1,
+            rgba: vec![128, 128, 128, 255],
+        }),
+        blend: Blend::Double,
+        ..Material::default()
+    };
+    let model = Model {
+        mesh_name: "vehicle".into(),
+        primitives: vec![Primitive {
+            material: 0,
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: vec![[0.0; 2]; 3],
+            indices: vec![0, 1, 2],
+            ..Primitive::default()
+        }],
+        materials: vec![decal],
+        ..Model::default()
+    };
+    let (doc, _) = parse_glb(&write_glb(&model));
+    let m = &doc["materials"][0];
+    assert_eq!(m["extras"]["h2"]["blend"], "double");
+    assert!(m["extensions"]["KHR_materials_unlit"].is_object());
+    assert!(
+        m.get("alphaMode").is_none(),
+        "it blends by colour, not alpha"
+    );
+    assert_eq!(doc["extensionsUsed"], json!(["KHR_materials_unlit"]));
+}
+
+#[test]
+fn the_multiplayer_variant_is_drawn_else_the_default() {
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // A Scorpion: its multiplayer cannon.
+    assert_eq!(
+        pick_variant(&names(&["default", "damaged", "multiplayer"]), ""),
+        Some(2)
+    );
+    // A Warthog: its default (chaingun), not the gauss or troop variants.
+    assert_eq!(
+        pick_variant(&names(&["troop", "default", "gauss"]), "default"),
+        Some(1)
+    );
+    assert_eq!(
+        pick_variant(&names(&["default", "heretic"]), ""),
+        Some(0),
+        "no default named: the first"
+    );
+    assert_eq!(pick_variant(&[], "default"), None);
+}
+
+#[test]
+fn an_attached_object_joins_the_mesh_where_its_marker_puts_it() {
+    let tri = |material| Primitive {
+        material,
+        positions: vec![[1.0, 0.0, 0.0]],
+        normals: vec![[1.0, 0.0, 0.0]],
+        uvs: vec![[0.0; 2]],
+        indices: vec![0],
+        ..Primitive::default()
+    };
+    let mut hull = Model {
+        primitives: vec![tri(0)],
+        materials: vec![Material {
+            name: "hull".into(),
+            ..Material::default()
+        }],
+        nodes: vec![(
+            "seat_driver".into(),
+            trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+        )],
+        ..Model::default()
+    };
+    let turret = Model {
+        primitives: vec![tri(0)],
+        materials: vec![Material {
+            name: "gun".into(),
+            ..Material::default()
+        }],
+        nodes: vec![
+            (
+                "seat_gunner".into(),
+                trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+            ),
+            (
+                "seat_driver".into(),
+                trs([5.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0),
+            ),
+        ],
+        ..Model::default()
+    };
+    // The turret marker: two units up, turned 90 degrees about +z.
+    let at = trs([0.0, 0.0, 2.0], yaw(90.0), 1.0);
+    attach_model(&mut hull, turret, &at);
+    assert_eq!(hull.materials.len(), 2);
+    let p = &hull.primitives[1];
+    assert_eq!(p.material, 1, "its materials come after the hull's");
+    assert!(close(&p.positions[0], &[0.0, 1.0, 2.0]));
+    assert!(close(&p.normals[0], &[0.0, 1.0, 0.0]));
+    let names: Vec<&str> = hull.nodes.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["seat_driver", "seat_gunner"],
+        "the hull's seat wins"
+    );
+}
+
+fn bone(name: &str, parent: Option<usize>, t: [f32; 3]) -> Bone {
+    Bone {
+        name: name.into(),
+        parent,
+        translation: t,
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn a_turrets_gun_nodes_are_the_first_named_ones_down_each_branch() {
+    // The Warthog chaingun's shape: the gun under the mount, barrels under the gun.
+    let chaingun = [
+        bone("stationary_mount", None, [0.0; 3]),
+        bone("gun_mount_base", Some(0), [0.0; 3]),
+        bone("chain", Some(1), [0.2, 0.1, 0.3]),
+        bone("gun", Some(1), [0.3, 0.0, 0.4]),
+        bone("barrels", Some(3), [0.1, 0.0, 0.1]),
+    ];
+    assert_eq!(pitch_nodes(&chaingun), [3]);
+    assert_eq!(
+        owners(&chaingun, &[3]),
+        [None, None, None, Some(0), Some(0)]
+    );
+    // The Scorpion's: the cannon and its coaxial gun side by side.
+    let cannon = [
+        bone("turret_rotator", None, [0.0; 3]),
+        bone("turret", Some(0), [0.0, 0.0, 0.5]),
+        bone("cannon", Some(1), [1.1, 0.0, 0.0]),
+        bone("gun", Some(1), [0.6, -0.2, 0.0]),
+    ];
+    assert_eq!(pitch_nodes(&cannon), [2, 3]);
+    assert_eq!(owners(&cannon, &[2, 3]), [None, None, Some(0), Some(1)]);
+    // A gun under a gun pitches with the upper one.
+    let nested = [
+        bone("gun_arm", None, [0.0; 3]),
+        bone("gun", Some(0), [1.0, 0.0, 0.0]),
+    ];
+    assert_eq!(pitch_nodes(&nested), [0]);
+    // A loop in bad data ends.
+    let looped = [bone("a", Some(1), [0.0; 3]), bone("b", Some(0), [0.0; 3])];
+    assert!(pitch_nodes(&looped).is_empty());
+    assert_eq!(owners(&looped, &[]), [None, None]);
+}
+
+/// A turret source: a base quad on node 1 and a gun quad on node 3 (the
+/// chaingun's `gun`, at rest two units up).
+fn turret_source() -> Source {
+    let mut base = quad_piece(0, 0.0);
+    base.nodes = vec![[1, 0, 0, 0]; 4];
+    let mut gun = quad_piece(0, 2.0);
+    gun.nodes = vec![[3, 1, 0, 0]; 4];
+    gun.weights = vec![[0.7, 0.3, 0.0, 0.0]; 4];
+    Source {
+        bones: vec![
+            bone("stationary_mount", None, [0.0; 3]),
+            bone("gun_mount_base", Some(0), [0.0; 3]),
+            bone("chain", Some(1), [0.0; 3]),
+            bone("gun", Some(1), [0.0, 0.0, 2.0]),
+        ],
+        markers: Vec::new(),
+        pieces: vec![base, gun],
+        materials: vec![Material::default()],
+        change_colour: vec![None],
+    }
+}
+
+#[test]
+fn a_source_cut_to_some_nodes_keeps_only_their_triangles_and_vertices() {
+    let src = turret_source();
+    let gun = source_where(&src, |n| n == 3);
+    assert_eq!(gun.pieces.len(), 1);
+    assert_eq!(gun.pieces[0].positions.len(), 4);
+    assert!(gun.pieces[0].positions.iter().all(|p| p[2] >= 2.0));
+    assert_eq!(gun.pieces[0].triangles.len(), 8);
+    let rest = source_where(&src, |n| n != 3);
+    assert!(rest.pieces[0].positions.iter().all(|p| p[2] <= 2.0));
+    assert!(source_where(&src, |_| false).pieces.is_empty());
+}
+
+#[test]
+fn a_turret_is_a_yaw_part_at_its_marker_with_its_gun_hung_from_its_pivot() {
+    let src = turret_source();
+    let at = trs([-0.6, 0.0, 0.75], [0.0, 0.0, 0.0, 1.0], 1.0);
+    let extra = vec![Primitive {
+        material: 4,
+        positions: vec![[9.0, 9.0, 9.0]],
+        indices: vec![0, 0, 0],
+        ..Primitive::default()
+    }];
+    let parts = turret_parts(&src, 0, "chaingun", &at, extra, 3);
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["turret_0", "turret_0_pitch_0"]);
+    assert_eq!(parts[0].parent, None);
+    assert_eq!(parts[0].local, at);
+    assert_eq!(parts[0].extras["turret"], "chaingun");
+    // The base plus what the turret carries; materials moved past the hull's.
+    assert_eq!(parts[0].primitives.len(), 2);
+    assert_eq!(parts[0].primitives[0].material, 3);
+    assert_eq!(parts[0].primitives[1].material, 4, "already offset");
+    assert!(parts[0].primitives[0].positions.iter().all(|p| p[2] <= 2.0));
+    // The gun: its frame at the gun node's rest origin, its triangles
+    // relative to it (the quad from z 2..4 becomes 0..2).
+    assert_eq!(parts[1].parent, Some(0));
+    assert!(close(&parts[1].local[3][..3], &[0.0, 0.0, 2.0]));
+    let zs: Vec<f32> = parts[1].primitives[0]
+        .positions
+        .iter()
+        .map(|p| p[2])
+        .collect();
+    assert!(close(&zs, &[0.0, 0.0, 2.0, 2.0]), "{zs:?}");
+    assert!(
+        parts
+            .iter()
+            .all(|p| p.primitives.iter().all(|q| q.joints.is_empty()))
+    );
+}
+
+#[test]
+fn turret_parts_are_glb_nodes_with_meshes_under_the_root_and_each_other() {
+    let src = turret_source();
+    let at = trs([-0.6, 0.0, 0.75], yaw(90.0), 1.0);
+    let mut model = vehicle(&src, &[], &Pose { nodes: Vec::new() }).unwrap();
+    let hull_triangles = model.triangles();
+    model.parts = turret_parts(&src, 0, "chaingun", &at, Vec::new(), 0);
+    assert_eq!(model.triangles(), 2 * hull_triangles);
+    let (doc, _) = parse_glb(&write_glb(&model));
+    let nodes = doc["nodes"].as_array().unwrap();
+    let find = |name: &str| nodes.iter().position(|n| n["name"] == name).unwrap();
+    let (yaw_node, pitch_node) = (find("turret_0"), find("turret_0_pitch_0"));
+    assert!(
+        doc["nodes"][0]["children"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(yaw_node))
+    );
+    assert_eq!(nodes[yaw_node]["children"], json!([pitch_node]));
+    assert_eq!(nodes[yaw_node]["extras"]["turret"], "chaingun");
+    let meshes = doc["meshes"].as_array().unwrap();
+    assert_eq!(meshes.len(), 3, "the hull's, the turret's, its gun's");
+    assert_ne!(nodes[yaw_node]["mesh"], nodes[pitch_node]["mesh"]);
+    // glTF is y up: the marker two units up the game's z is 0.75 up y.
+    let t = nodes[yaw_node]["translation"].as_array().unwrap();
+    assert!((t[1].as_f64().unwrap() - 0.75).abs() < 1e-6, "{t:?}");
+    let t = nodes[pitch_node]["translation"].as_array().unwrap();
+    assert!((t[1].as_f64().unwrap() - 2.0).abs() < 1e-6, "{t:?}");
 }

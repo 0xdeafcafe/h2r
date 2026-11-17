@@ -16,6 +16,8 @@ pub mod effects;
 pub mod edit;
 /// Relocatable block trees for the whole-cache builder (`map::build`).
 pub mod rebuild;
+/// Tag layout schemas inferred from retail maps; relocation of any tag.
+pub mod schema;
 pub mod wire;
 /// Object collision and physics models (`coll`, `phmo`); see `docs/formats/collision.md`.
 pub mod collision;
@@ -59,6 +61,10 @@ pub mod structure;
 #[cfg(test)]
 mod structure_tests;
 // ---- end geometry sections -------------------------------------------------
+// AI pathfinding data in structure BSPs: docs/formats/pathfinding.md.
+pub mod pathfinding;
+#[cfg(test)]
+mod pathfinding_tests;
 
 /// A malformed or unsupported record, with context added at field boundaries.
 #[derive(Debug, thiserror::Error)]

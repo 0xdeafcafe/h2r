@@ -772,6 +772,39 @@ pub fn at_start(
     ))
 }
 
+/// A co-op guest's campaign start: exactly the host's engine skulls,
+/// whatever this console's profiles have. Ours (from [`COUNT`]) have no
+/// byte in the array: the start hook hands them to `crate::skulls_custom`
+/// (`crate::coop_live::ours_of`).
+pub fn coop_start(mode: Option<u32>, host: &[u8]) -> Option<(Set, String)> {
+    if mode != Some(MODE_CAMPAIGN) {
+        return None;
+    }
+    let mut on = [false; COUNT];
+    for i in host {
+        if let Some(b) = on.get_mut(usize::from(*i)) {
+            *b = true;
+        }
+    }
+    let labels: Vec<&str> = SKULLS
+        .iter()
+        .zip(on)
+        .filter(|(_, o)| *o)
+        .map(|(d, _)| d.label)
+        .collect();
+    Some((
+        on,
+        format!(
+            "skulls: co-op campaign start with the host's skulls: {}",
+            if labels.is_empty() {
+                "none on".to_string()
+            } else {
+                labels.join(", ")
+            }
+        ),
+    ))
+}
+
 /// A pickup call in progress: skull ESI and its byte before.
 type Pending = (u32, Option<bool>);
 
@@ -849,7 +882,14 @@ impl feature::Feature for Skulls {
                         let mem = rt.memory();
                         (options_mode(&*mem, c.cpu.eax), profiles_or_default(&*mem))
                     };
-                    if let Some((on, line)) = at_start(&store, mode, &profiles) {
+                    // A co-op guest plays the host's skulls (docs/live/live-coop.md,
+                    // "Co-op over Live").
+                    let host = crate::coop_live::guest_skulls();
+                    let start = match &host {
+                        Some(host) => coop_start(mode, host),
+                        None => at_start(&store, mode, &profiles),
+                    };
+                    if let Some((on, line)) = start {
                         if apply(&mut *rt.memory(), &on) {
                             tracker.reset(on);
                             eprintln!("{line}");
@@ -858,7 +898,11 @@ impl feature::Feature for Skulls {
                         }
                         // Ours have no byte in the array: their hooks read
                         // this set (crate::skulls_custom).
-                        crate::skulls_custom::set_campaign(&custom_selection(&store, &profiles.0));
+                        // A co-op guest plays the host's.
+                        crate::skulls_custom::set_campaign(&match &host {
+                            Some(host) => crate::coop_live::ours_of(host),
+                            None => custom_selection(&store, &profiles.0),
+                        });
                     } else {
                         // Not a campaign: none of ours act in it.
                         crate::skulls_custom::set_campaign(&[]);

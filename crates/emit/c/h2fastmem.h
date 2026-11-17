@@ -55,9 +55,30 @@ _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32
  * `dirtied` is the physical page this hold last marked dirty (all ones:
  * none): Rust drains dirty bits only under the gate, so while it is held a
  * mark stays set and another store to that page need not repeat it. */
+/* H2_COLD_STATS=1 (emit-time, default off): count every call of
+ * h2_access_cold by why the access was not inline, in the module-wide
+ * h2gen_cold_counts, and print them to stderr every 2^22 calls. With the
+ * gate held the inline check failed (H2C_MISS: a page crossing, no
+ * permission, MMIO, an odd width). Without it, the reason the hold ended:
+ * the handler's start, called by the runner (H2C_ENTRY) or directly with a
+ * lent view (H2C_LENT_ENTRY); back from a direct call (H2C_AFTER_DCALL);
+ * the access count settled (H2C_FLUSH); a runtime call, atomic or event
+ * (H2C_DROP); a loop header ending the hold (H2C_TICK). H2C_NO_GATE counts,
+ * on top, the calls that then could not take the gate (busy, no RAM view)
+ * or failed the inline check under it, and went to the helper. */
+#ifndef H2_COLD_STATS
+#define H2_COLD_STATS 0
+#endif
+enum {
+    H2C_ENTRY, H2C_LENT_ENTRY, H2C_AFTER_DCALL, H2C_FLUSH, H2C_DROP, H2C_TICK, H2C_MISS, H2C_NO_GATE,
+    H2C_COUNT
+};
 typedef struct H2Gate {
     uint32_t held, dirtied;
     H2MemoryData *data;
+#if H2_COLD_STATS
+    uint32_t why; /* H2C_*: why the gate is not held */
+#endif
 } H2Gate;
 #define H2_GATE_TRIPS 32u
 #define H2_ALWAYS_INLINE inline __attribute__((always_inline))
@@ -69,6 +90,41 @@ typedef struct H2Gate {
 #define H2_PRESERVE __attribute__((preserve_most))
 #else
 #define H2_PRESERVE
+#endif
+#if H2_COLD_STATS
+#include <stdio.h>
+/* One array for the whole module: every object's weak definition merges. */
+__attribute__((weak, visibility("default"))) uint64_t h2gen_cold_counts[H2C_COUNT];
+static H2_COLD H2_PRESERVE void h2_cold_note(uint32_t why) {
+    static const char *const names[H2C_COUNT] = {
+        "entry", "lent-entry", "after-dcall", "flush", "drop", "tick", "miss", "no-gate",
+    };
+    __atomic_fetch_add(&h2gen_cold_counts[why], 1u, __ATOMIC_RELAXED);
+    if (why == H2C_NO_GATE) return;
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < H2C_NO_GATE; i++) total += __atomic_load_n(&h2gen_cold_counts[i], __ATOMIC_RELAXED);
+    if (total & ((UINT64_C(1) << 22) - 1u)) return;
+    fprintf(stderr, "h2gen cold accesses: %llu", (unsigned long long)total);
+    for (uint32_t i = 0; i < H2C_COUNT; i++)
+        fprintf(stderr, " %s %llu", names[i], (unsigned long long)__atomic_load_n(&h2gen_cold_counts[i], __ATOMIC_RELAXED));
+    fprintf(stderr, "\n");
+}
+#define H2_COLD_WHY(g, w) ((g).why = (w))
+/* Before h2_access_cold, with the gate state the site saw. */
+#define H2_COLD_NOTE(g) h2_cold_note((g).held ? (uint32_t)H2C_MISS : (g).why)
+/* After it: no gate now means the helper ran, and the next cold access is
+ * the miss's doing. */
+#define H2_COLD_NOTE_AFTER(g)                                                   \
+    do {                                                                        \
+        if (!(g).held) {                                                        \
+            h2_cold_note(H2C_NO_GATE);                                          \
+            (g).why = H2C_MISS;                                                 \
+        }                                                                       \
+    } while (0)
+#else
+#define H2_COLD_WHY(g, w) ((void)0)
+#define H2_COLD_NOTE(g) ((void)0)
+#define H2_COLD_NOTE_AFTER(g) ((void)0)
 #endif
 #if H2_FASTMEM
 #define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {0, UINT32_MAX, NULL}; (void)h2_mem_
@@ -215,12 +271,29 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
         g->held = 0u;
     }
 }
+/* Whether physical page `physical` is already marked dirty. A set bit lies
+ * inside [dirty_lo, dirty_hi): every marker sets the bit and widens the
+ * bounds under the gate, and the drain clears both under it. So a marked
+ * page needs nothing more. */
+#define H2_DIRTY_MARKED(d, physical) \
+    (((d)->dirty[(physical) >> 18] >> (((physical) >> 12) & 63u)) & 1u)
+/* H2_DIRTY_INLINE=1 (emit-time, `H2_DIRTY_INLINE` in the build's
+ * environment; default off): store sites test the bit themselves and call
+ * h2_mark_dirty only for an unmarked page, a load, a shift and a branch
+ * more per store site in exchange for the call. */
+#ifndef H2_DIRTY_INLINE
+#define H2_DIRTY_INLINE 0
+#endif
 /* Mark a physical page dirty for the Rust side's drain. Out of line and
  * register-preserving: a site calls it only for a store to a page other
- * than the one this hold marked last (H2Gate.dirtied). */
+ * than the one this hold marked last (H2Gate.dirtied). A page already
+ * marked (the usual case: hot pages stay marked until the next drain)
+ * writes nothing. */
 static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical) {
     uint32_t p = physical >> 12, word = p >> 6;
-    d->dirty[word] |= UINT64_C(1) << (p & 63u);
+    uint64_t bit = UINT64_C(1) << (p & 63u);
+    if (d->dirty[word] & bit) return;
+    d->dirty[word] |= bit;
     if (word < d->dirty_lo) d->dirty_lo = word;
     if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
 }
@@ -250,7 +323,8 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
         if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
         if ((write) && (g).data->watching && (page).physical != (g).dirtied) {  \
-            h2_mark_dirty((g).data, (page).physical);                           \
+            if (!H2_DIRTY_INLINE || !H2_DIRTY_MARKED((g).data, (page).physical)) \
+                h2_mark_dirty((g).data, (page).physical);                       \
             (g).dirtied = (page).physical;                                      \
         }                                                                       \
         H2_FAST_CHARGE(f);                                                      \
@@ -273,6 +347,21 @@ typedef struct H2Cold {
  * failing that, drop it and take the helper. The helper path is exactly
  * the old slow access: fault order, MMIO and whole-span failure are the
  * helper's. A load's bytes land in `buf`; a store's come from it. */
+/* `width` bytes (one of H2_FAST_WIDTH_OK's) from `src` to `dst`, each as a
+ * constant-size copy: in h2_access_cold the width is not a constant, and a
+ * libc memcpy there was a call, with every register preserve_most keeps
+ * saved around it, at the first access of nearly every guest function. */
+static H2_ALWAYS_INLINE void h2_copy_width(uint8_t *dst, const uint8_t *src, uint32_t width) {
+    switch (width) {
+    case 1u: memcpy(dst, src, 1u); break;
+    case 2u: memcpy(dst, src, 2u); break;
+    case 4u: memcpy(dst, src, 4u); break;
+    case 8u: memcpy(dst, src, 8u); break;
+    case 10u: memcpy(dst, src, 10u); break;
+    case 16u: memcpy(dst, src, 16u); break;
+    default: memcpy(dst, src, width); break;
+    }
+}
 static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAccess *f, uint32_t held, uint32_t pc,
                                                  uint32_t addr, uint32_t width, int write, uint8_t *buf) {
     H2Cold r = {NULL, 0u};
@@ -285,8 +374,8 @@ static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAcces
         H2FastPage page;
         uint8_t *host;
         H2_HELD_TRY(f, g, addr, width, write, page, host, helper);
-        if (write) memcpy(host, buf, width);
-        else memcpy(buf, host, width);
+        if (write) h2_copy_width(host, buf, width);
+        else h2_copy_width(buf, host, width);
         r.held = g.data;
         return r;
     helper:

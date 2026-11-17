@@ -75,6 +75,13 @@ impl ServerIdentity {
     pub fn author(&self) -> String {
         live_proto::Author::Server(self.id.clone()).to_string()
     }
+
+    /// A 32-byte key for `label`, derived from the server key with
+    /// HKDF-SHA256: the sealing key for recovery secrets, the invite-code
+    /// MAC key. It lives and dies with `server.key`.
+    pub fn derive(&self, label: &str) -> [u8; 32] {
+        self.key.derive_key(label)
+    }
 }
 
 /// The `--id` to start a server in `dir` with: as given; else, on a first
@@ -143,7 +150,9 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut f = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut f = options
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
     #[cfg(unix)]
     f.set_permissions(fs::Permissions::from_mode(0o600))?;
     f.write_all(bytes)?;

@@ -48,6 +48,9 @@ iced-x86 = { version = "1", default-features = false, features = ["std", "decode
 timeline = { path = "../timeline" }
 # The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
 lockstep = { path = "../lockstep" }
+# The agent API (H2_AGENT; docs/runtime/agent-api.md).
+agent = { path = "../agent" }
+agent-proto = { path = "../agent-proto" }
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../perf", optional = true }
 
@@ -55,6 +58,7 @@ perf = { path = "../perf", optional = true }
 perf = ["dep:perf"]
 
 [dev-dependencies]
+serde_json.workspace = true
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 

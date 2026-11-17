@@ -1,8 +1,8 @@
 # Custom games browser over Live
 
 Status: the server, HLE and boot pieces are in and synthetically tested.
-Nothing was built or run in the game. The in-game list (§7) is what still
-needs checking.
+The owner has Live working in the game (2026-11-17); §7 is the in-game
+checklist.
 
 What it adds:
 
@@ -335,6 +335,12 @@ label is not shortened.
 
 `H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
 Content Download as retail.
+
+With Live on, a sixth row, **Co-op Campaign**, sits between Custom Game
+Browser and Content Download, with its own pane (the Custom Game pane with
+its help text); the list keeps five item widgets, so Content Download
+scrolls into view ([live-coop.md](live-coop.md) section 10).
+`H2_NO_COOP_ROW=1` takes it out (five rows, as above).
 
 ## 7. To check in game
 

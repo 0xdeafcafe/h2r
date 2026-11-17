@@ -124,6 +124,7 @@ impl DepthFill {
         let has_stencil = format.has_stencil_aspect();
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         {
+            crate::churn::pass();
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("depth fill"),
                 color_attachments: &[],

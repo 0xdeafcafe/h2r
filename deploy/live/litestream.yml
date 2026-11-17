@@ -1,0 +1,21 @@
+# Litestream (https://litestream.io): ships live.db's WAL to R2 as it is
+# written, under litestream/ in the private bucket. Used by compose.yaml's
+# `litestream` service (COMPOSE_PROFILES=backup), and by a bare-metal or
+# launchd `litestream replicate -config deploy/live/litestream.yml`
+# (docs/live/live-hosting.md, "Free hosting"). Every ${VAR} comes from the
+# environment (Litestream expands $VAR and ${VAR}, without defaults):
+# LITESTREAM_DB (the database file), LITESTREAM_BUCKET and the
+# H2_LIVE_S3_* settings the server uses.
+dbs:
+  - path: ${LITESTREAM_DB}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: litestream/live.db
+        endpoint: ${H2_LIVE_S3_ENDPOINT}
+        region: auto
+        access-key-id: ${H2_LIVE_S3_ACCESS_KEY_ID}
+        secret-access-key: ${H2_LIVE_S3_SECRET_ACCESS_KEY}
+        force-path-style: true
+        snapshot-interval: 24h
+        retention: 168h

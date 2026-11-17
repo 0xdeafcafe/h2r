@@ -19,9 +19,10 @@ const USAGE: &str = "usage:
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
-          [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
-          [--live-tunnel [--live-tunnel-name NAME [--live-tunnel-url https://HOST]]
-           [--no-tunnel-setup]]
+          [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
+          [--signin-terminal]
+          [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
+           [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -61,14 +62,28 @@ with the default variant. A name the disc lacks lists them (docs/runtime/level-b
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
---live signs the game in to Xbox Live (docs/live/live.md): it starts a service in
-the process (Postgres from $H2_LIVE_DB or postgres://localhost/h2live, made if
-missing; else a log in the live data directory's server/log, so accounts,
-friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
---live-listen ADDR, serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
-running service instead. The account is --gamertag NAME, or one named after
-your user; either is made on the server and kept in accounts.json if needed.
---live-tunnel (implies --live; --tunnel with --live is the same) publishes
+With no Live flag it plays offline and contacts nothing (--offline or
+--no-live says so explicitly). --live signs the game in to Xbox Live at
+https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
+--live-server URL signs in to that service instead (docs/live/live.md).
+The account is one kept in accounts.json for that server; else --gamertag
+NAME, or the gamertag you last played as on another server (keeping its
+key), or one named after your user. A name new to the server is made
+there (--invite CODE if it is invite-only); one it already has is
+recovered with the code from Account on its dashboard or your
+authenticator app, which the game asks for when you sign in to Live
+(--signin-terminal asks on the terminal before the game starts instead,
+with an invite too). Signed in, the
+account's saves (profiles, variants, campaign saves, profile settings) are
+merged into the data root before the game starts and uploaded as it writes
+them; H2_CLOUD_SAVES=0 turns that off (docs/live/live-cloud-saves.md).
+--live-local runs the service in the process instead (Postgres from
+$H2_LIVE_DB or postgres://localhost/h2live, made if missing; else a log in
+the live data directory's server/log, so accounts, friends, games and the
+MOTD are kept) on 127.0.0.1 and a free port, or --live-listen ADDR (which
+implies --live-local), serving the web app from web/dist ($H2_LIVE_WEB). It
+does not go with --live-server.
+--live-tunnel (implies --live-local; --tunnel is the same) publishes
 the embedded server through a cloudflared quick tunnel so friends can join with
 --live-server <its URL>. With --live-tunnel-name NAME --live-tunnel-url
 https://HOST (or --tunnel-name NAME --hostname HOST) it runs named tunnel NAME
@@ -152,7 +167,16 @@ type PadParts = (
 /// `H2_PAD_SPEAKER`, when set, wins) and, unless `H2_PAD_SPEAKER=0` or audio
 /// is off, the controller-speaker output (docs/audio/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
-fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
+///
+/// Where no PlayStation controller's audio device is found and a Steam
+/// Controller thread runs (`steam`), the routed sounds go to its trackpad
+/// actuators instead, as haptics (`H2_PAD_SPEAKER_DEVICE=haptics` asks for
+/// that alone; docs/input/steam-controller.md). The device list is read once here.
+fn pad_speaker(
+    audio: bool,
+    store: &Arc<settings::Store>,
+    steam: Option<&input::steam_pad::SteamPads>,
+) -> PadParts {
     let env = |k: &str| std::env::var(k).ok();
     let config = dsound::padroute::PadSpeakerConfig::from_env(env)
         .map_err(|e| eprintln!("play: controller speaker off: {e}"))
@@ -196,6 +220,26 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
             "play: controller speaker off (Settings > Controls > Controller Speaker turns it on)"
         );
     }
+    let names = audio::output::DeviceSink::output_device_names();
+    let target = audio::devices::pick_speaker(&names, &config.device, steam.is_some());
+    if let (Some(audio::devices::Speaker::Haptics), Some(pads)) = (target, steam) {
+        eprintln!("play: controller speaker on the Steam Controller's trackpads, as haptics");
+        let pads = pads.clone();
+        let live = Arc::clone(&setting);
+        let side = dsound::SideOutput {
+            open: Box::new(move || {
+                Some(Box::new(boot::steam_speaker::HapticSink::over(pads))
+                    as Box<dyn audio::AudioSink>)
+            }),
+            on_live: Some(Box::new(move |on| live.side_live(on))),
+        };
+        let pad = boot::dsound_glue::PadSpeaker {
+            config: config.for_haptics(),
+            side,
+            setting: Arc::clone(&setting),
+        };
+        return (Some(pad), hid, setting);
+    }
     if let Some(switch) = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch) {
         setting.attach_hid(move |on| switch.set(on));
     }
@@ -230,6 +274,24 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     (Some(pad), hid, setting)
 }
 
+/// The Steam Controller thread, when pads are wanted, the platform has raw
+/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Video screen's
+/// Steam rows (`steam_pad.*`).
+fn steam_pads(
+    config: &app::AppConfig,
+    store: &settings::Store,
+) -> Option<input::steam_pad::SteamPads> {
+    if !config.gamepads
+        || config.scripted_input.is_some()
+        || std::env::var("H2_STEAM_PAD").is_ok_and(|v| v == "0")
+    {
+        return None;
+    }
+    let open = input::steam_pad::platform_opener()?;
+    let tuning = boot::setting_defs::steam_tuning(store);
+    Some(input::steam_pad::spawn(open, tuning, Default::default()))
+}
+
 /// The HID thread, when it may have something to do and can run here.
 fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::pad_hid::PadHid> {
     let open = input::pad_hid::platform_opener().filter(|_| wanted)?;
@@ -240,6 +302,7 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
+#[allow(clippy::too_many_arguments)]
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,
@@ -248,6 +311,7 @@ fn hosted(
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
     store: Arc<settings::Store>,
+    steam: Option<input::steam_pad::SteamPads>,
 ) -> boot::Host {
     let configure = |mut gfx: d3d::GfxBackend| {
         // As for `h2 run`: passes are merged by default (the fast rule;
@@ -276,7 +340,13 @@ fn hosted(
         .get()
         .clamp(1, d3d::scaled::MAX_SCALE);
     let locked = store.state(key).is_some_and(|s| s.locked);
-    let view = (scale > 1 || !locked).then(|| {
+    // E3 lighting (the Lighting row, H2_LIGHTING) draws in the view too,
+    // at 1x as well: a view unless both are locked off.
+    let light = boot::setting_defs::LIGHTING.key;
+    let e3 = boot::setting_defs::lighting_of(store.handle::<u32>(light).get())
+        != d3d::Lighting::Retail;
+    let light_locked = store.state(light).is_some_and(|s| s.locked);
+    let view = (scale > 1 || !locked || e3 || !light_locked).then(|| {
         (
             configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
             scale,
@@ -290,7 +360,7 @@ fn hosted(
     });
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
-    let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store);
+    let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store, steam.as_ref());
     let fov = store.handle::<u32>(boot::setting_defs::FOV.key).get();
     if fov != boot::setting_defs::FOV_RETAIL as u32 {
         eprintln!("play: field of view {fov} degrees");
@@ -335,6 +405,8 @@ fn hosted(
                 host.tick(now) == app::Control::Continue
             }
         })),
+        // `run` sets it when cloud saves are on.
+        on_vfs: None,
     }
 }
 
@@ -555,6 +627,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Err(e) => eprintln!("play: frame rate: {e}"),
         }
     });
+    // Steam Controllers over raw HID (docs/input/steam-controller.md): with the
+    // pads on, no scripted input, and not H2_STEAM_PAD=0. The pads and the
+    // controller speaker share the thread.
+    let steam = steam_pads(&config, &store);
+    config.steam_pads = steam.clone();
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -604,10 +681,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
-    let session = live
-        .enabled
-        .then(|| start_live(&live, &opts.disc))
-        .transpose()?;
+    // With no Live flag, offline (docs/live/live.md "Playing on Live").
+    let session = start_session(&mut live, &opts.disc)?;
+    // Signed in: the account's saves are merged into U: now, before the
+    // game reads them, and pushed as the game writes
+    // (docs/live/live-cloud-saves.md).
+    let cloud = session
+        .as_ref()
+        .and_then(|s| crate::play_cloud::start(s, &opts.data_root, &store));
+    let on_vfs = cloud.as_ref().map(crate::play_cloud::Cloud::on_vfs);
     let live_config = session
         .as_ref()
         .map(|s| s.config.clone())
@@ -630,6 +712,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
     }
+    // The Halo 1 health meter, drawn while the Halo 1 health model runs on
+    // a level whose HUD has none (docs/game/health.md "HUD");
+    // H2_HEALTH_METER_AT=right,top moves it (fractions of the image).
+    config.health_meter = Some(health_meter(std::env::var("H2_HEALTH_METER_AT").ok().as_deref()));
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
         // The follow banner wins the corner; the stats still log.
@@ -650,8 +736,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Arc::clone(&interrupted),
             icons,
             store,
+            steam,
         );
         host.level = level;
+        host.on_vfs = on_vfs;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -678,6 +766,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         report.pacing.sleeps,
         report.pacing.rebases
     );
+    // The last saves go up while an embedded server still runs.
+    drop(cloud);
     drop(session);
     #[cfg(unix)]
     if report.restart_requested {
@@ -714,8 +804,41 @@ fn level_choice(
     Ok(Some((level.trim().to_string(), difficulty)))
 }
 
-/// Starts `--live`: the server and account, with a line saying where the
-/// web app is.
+/// The Live session to play in, if any: none without a Live flag
+/// (nothing is contacted), else the one the flags and `$H2_LIVE_SERVER`
+/// name ([`crate::play_live::choose`]). Asked for and not signed in to is
+/// an error.
+fn start_session(
+    live: &mut crate::play_live::LiveOpts,
+    disc: &std::path::Path,
+) -> Result<Option<crate::play_live::Session>> {
+    use crate::play_live::{Choice, DEFAULT_LIVE_SERVER, choose};
+    let env = std::env::var("H2_LIVE_SERVER").ok();
+    match choose(live, env.as_deref(), DEFAULT_LIVE_SERVER) {
+        Choice::Offline { why } => {
+            if let Some(why) = why {
+                eprintln!("{why}");
+            }
+            Ok(None)
+        }
+        Choice::Local => start_live(live, disc).map(Some),
+        Choice::Server { url, from } => {
+            let note = match from {
+                "--live" => " (the default service; --live-server URL names another)",
+                "H2_LIVE_SERVER" => " (H2_LIVE_SERVER)",
+                _ => "",
+            };
+            eprintln!("live: signing in to {url}{note}");
+            live.server = Some(url.clone());
+            start_live(live, disc).map(Some).with_context(|| {
+                format!("signing in to {url}; without a Live flag h2 play plays offline")
+            })
+        }
+    }
+}
+
+/// Starts the session `live` names: the embedded server (`--live-local`)
+/// or another, and the account, with a line saying where the web app is.
 fn start_live(
     live: &crate::play_live::LiveOpts,
     disc: &std::path::Path,
@@ -726,8 +849,9 @@ fn start_live(
         .unwrap_or_else(|| live_server::DEFAULT_DB.into());
     let places = crate::play_live::Places::under(&crate::live_cmd::live_dir()?);
     // Build the web app first if it is missing or older than its sources
-    // (H2_LIVE_WEB points at a build of your own and skips this).
-    if std::env::var_os("H2_LIVE_WEB").is_none() {
+    // (H2_LIVE_WEB points at a build of your own and skips this). Only the
+    // embedded server serves it.
+    if live.local && std::env::var_os("H2_LIVE_WEB").is_none() {
         let src = crate::web_build::source_dir();
         if src.join("package.json").is_file() {
             let bun = crate::web_build::find_bun();
@@ -750,18 +874,23 @@ fn start_live(
     let has_web = web.is_some();
     // Art for the embedded server, from this disc (extracted once).
     let game_art = live
-        .server
-        .is_none()
+        .local
         .then(|| {
             crate::play_live::game_art(disc, &crate::live_cmd::game_art_dir(&places.server_data))
         })
         .flatten();
     let site = live_server::http::Site { web, game_art };
     let session = crate::play_live::start(live, &db, &places, site, &crate::play_live::os_user())?;
+    let playing = match (&session.account, &session.waiting) {
+        (Some(a), _) => format!("playing as {} ({})", a.gamertag, a.xuid),
+        (None, Some(tag)) => format!(
+            "{tag} needs a code from Account on {}/dash; the game asks for it when you sign in to Xbox Live,",
+            session.server
+        ),
+        (None, None) => "no account yet,".to_string(),
+    };
     eprintln!(
-        "live: playing as {} ({}) on {}{}{}",
-        session.account.gamertag,
-        session.account.xuid,
+        "live: {playing} on {}{}{}",
         session.server,
         session
             .store()
@@ -773,10 +902,10 @@ fn start_live(
     match (session.store(), has_web) {
         (Some(_), true) => {
             eprintln!("live: web app at {}/", session.server);
-            if let Some(link) = &session.signin {
+            if let (Some(link), Some(a)) = (&session.signin, &session.account) {
                 eprintln!(
                     "live: sign this browser in as {} (one use, this machine only): {link}",
-                    session.account.gamertag
+                    a.gamertag
                 );
             }
         }
@@ -808,6 +937,21 @@ fn play_watermark(render_thread: bool) -> app::Watermark {
             "render thread off"
         })
         .with_map(kernel::level::last_map)
+}
+
+/// The window's health meter over boot's published value, placed by
+/// `H2_HEALTH_METER_AT` when it holds `right,top` fractions.
+fn health_meter(at: Option<&str>) -> app::HealthMeter {
+    let m = app::HealthMeter::new(boot::health::overlay_meter);
+    match at.and_then(app::health_meter::parse_at) {
+        Some((r, t)) => m.at(r, t),
+        None => {
+            if let Some(v) = at {
+                eprintln!("health: H2_HEALTH_METER_AT={v:?} is not `right,top` fractions; using the default");
+            }
+            m
+        }
+    }
 }
 
 /// A banner showing the frame stats' rolling window, refreshed once a

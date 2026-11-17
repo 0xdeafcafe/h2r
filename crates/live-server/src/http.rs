@@ -19,6 +19,7 @@ use live_proto::{
 };
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
+use crate::sessions::Viewer;
 use crate::store::Query;
 
 /// Every request body but title files.
@@ -203,11 +204,32 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/content/{sha256}",
             get(crate::content::get_content).put(crate::content::put_content),
         )
+        // Cloud saves (docs/live/live-cloud-saves.md). The segment is
+        // `{gamertag}` as on the other /v1/accounts routes (the router
+        // wants one name per position); these take a xuid there.
+        .route(
+            "/v1/accounts/{gamertag}/storage",
+            get(crate::cloud_saves::list),
+        )
+        .route(
+            "/v1/accounts/{gamertag}/storage/{kind}/{*name}",
+            get(crate::cloud_saves::get_item)
+                .put(crate::cloud_saves::put_item)
+                .delete(crate::cloud_saves::delete_item),
+        )
         .layer(DefaultBodyLimit::disable());
     Router::new()
         .route("/healthz", get(healthz))
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
+        .route(
+            "/v1/accounts/{gamertag}/recover",
+            post(crate::recovery::post_recover),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/recovery",
+            get(crate::recovery::get_recovery).post(crate::recovery::post_recovery),
+        )
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
         .route(
             "/v1/accounts/by-xuid/{xuid}",
@@ -249,6 +271,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/sessions",
             get(crate::sessions::list).post(crate::sessions::create),
         )
+        .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
@@ -300,6 +323,7 @@ pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router
 /// The API plus everything in `site`. `/art/game/*` answers a JSON 404
 /// when there is no game art.
 pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
+    let published = live.published_art().cloned();
     let mut api = api_router(
         live,
         crate::status::SiteFacts {
@@ -307,7 +331,7 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
         },
     );
     api = match &site.game_art {
-        Some(art) => api.merge(crate::art::routes(art)),
+        Some(art) => api.merge(crate::art::routes(art, published)),
         None => api.route(
             &format!("{}/{{*rest}}", crate::art::PREFIX),
             get(|| async { not_found("no game art on this server") }),
@@ -414,8 +438,11 @@ async fn account(
     headers: HeaderMap,
     Path(tag): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.account(&gamertag(&tag)?)?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.account(&gamertag(&tag)?, viewer)?,
+    ))
 }
 
 async fn keys_by_tag(
@@ -433,8 +460,11 @@ async fn account_friends(
     headers: HeaderMap,
     Path(tag): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.friends(&gamertag(&tag)?)?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.friends(&gamertag(&tag)?, viewer)?,
+    ))
 }
 
 async fn keys_by_xuid(
@@ -448,8 +478,8 @@ async fn keys_by_xuid(
 }
 
 async fn presence(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.presence()))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.presence(viewer)))
 }
 
 fn event_query(p: &HashMap<String, String>) -> ApiResult<Query> {
@@ -468,8 +498,11 @@ async fn list_events(
     headers: HeaderMap,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.events(&event_query(&p)?).await?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.events_for(&event_query(&p)?, viewer).await?,
+    ))
 }
 
 async fn post_event(
@@ -550,6 +583,10 @@ struct StreamFilter {
     /// `?frames=packed`: live frames as packed binary messages
     /// (docs/live/live-telemetry.md, Packed frames); JSON otherwise.
     packed: bool,
+    /// `?auth=1`: the first message is a `read` token, on a public server
+    /// too, so the reader sees what that account may (a private server
+    /// always asks for one).
+    auth: bool,
 }
 
 impl StreamFilter {
@@ -588,6 +625,7 @@ async fn stream(
             Some("packed") => true,
             Some(_) => return Err(invalid("frames must be json or packed")),
         },
+        auth: matches!(p.get("auth").map(String::as_str), Some("1" | "true")),
     };
     let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
     Ok(ws
@@ -631,12 +669,24 @@ pub(crate) fn auth_message(live: &Live, text: &str, method: &str) -> Result<i64,
     }
 }
 
+/// An auth message's `read` token: who reads, and when the token expires.
+fn stream_auth(live: &Live, text: &str) -> Result<(Viewer, i64), ApiError> {
+    match serde_json::from_str::<ClientMessage>(text) {
+        Ok(ClientMessage::Auth { token }) => live.read_viewer_until(&token),
+        _ => Err(ApiError::new(
+            ErrorCode::Unauthorized,
+            "expected {\"kind\":\"auth\",\"token\":...}",
+        )),
+    }
+}
+
 /// Sends every stored event after `last` that the filter keeps, then
 /// moves `last` to at least the position the read model had reached.
 async fn catch_up(
     live: &Live,
     socket: &mut WebSocket,
     filter: &StreamFilter,
+    viewer: Viewer,
     last: &mut u64,
 ) -> Result<(), String> {
     const PAGE: usize = 500;
@@ -648,14 +698,12 @@ async fn catch_up(
             .await
             .map_err(|e| e.to_string())?;
         for e in &batch {
-            send(
-                socket,
-                &StreamMessage::Event {
-                    event: Box::new(e.to_wire()),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            // A hidden event is skipped, but the reader's place moves past it.
+            if let Some(w) = live.wire_for(e, viewer) {
+                send(socket, &StreamMessage::Event { event: Box::new(w) })
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             *last = e.position;
         }
         if batch.len() < PAGE {
@@ -675,17 +723,23 @@ async fn run_stream(
     filter: StreamFilter,
 ) -> Result<(), String> {
     let mut expires: Option<i64> = None;
-    if live.policy().private {
+    let mut viewer = Viewer::Anonymous;
+    if live.policy().private || filter.auth {
         let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
         let result = match first {
-            Ok(Some(Ok(Message::Text(text)))) => auth_message(&live, &text, lxm::READ),
+            Ok(Some(Ok(Message::Text(text)))) => stream_auth(&live, &text),
             _ => Err(ApiError::new(
                 ErrorCode::Unauthorized,
                 "send an auth message first",
             )),
         };
         match result {
-            Ok(exp) => expires = Some(exp),
+            Ok((v, exp)) => {
+                viewer = v;
+                // A public server's reader keeps the socket past its
+                // token; a private one must send fresh tokens.
+                expires = live.policy().private.then_some(exp);
+            }
             Err(e) => {
                 close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
                 return Ok(());
@@ -696,7 +750,7 @@ async fn run_stream(
     let mut feed = live.feed();
     let mut frames = live.frames();
     let mut last = filter.from.unwrap_or_else(|| live.position());
-    catch_up(&live, &mut socket, &filter, &mut last).await?;
+    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
     send(&mut socket, &StreamMessage::CaughtUp { position: last })
         .await
         .map_err(|e| e.to_string())?;
@@ -705,7 +759,9 @@ async fn run_stream(
     if filter.packed {
         // Start each live game's stream at its last keyframe.
         for f in live.frames_since_keyframe(&filter.games) {
-            batch.add(&f);
+            if live.frame_shows(&f, viewer) {
+                batch.add(&f);
+            }
         }
         batch.flush(&mut socket).await?;
     }
@@ -724,23 +780,23 @@ async fn run_stream(
                 Ok(e) => {
                     if e.position > last {
                         last = e.position;
-                        if probe.matches(&e) {
-                            send(&mut socket, &StreamMessage::Event { event: Box::new(e.to_wire()) }).await.map_err(|e| e.to_string())?;
+                        if let Some(w) = probe.matches(&e).then(|| live.wire_for(&e, viewer)).flatten() {
+                            send(&mut socket, &StreamMessage::Event { event: Box::new(w) }).await.map_err(|e| e.to_string())?;
                         }
                     }
                 }
                 // Fell behind the feed: re-read from the store.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    catch_up(&live, &mut socket, &filter, &mut last).await?;
+                    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
             frame = frames.recv() => match frame {
-                Ok(f) if filter.games.is_empty() || filter.games.contains(&f.frame.game_id) => {
+                Ok(f) if (filter.games.is_empty() || filter.games.contains(&f.frame.game_id)) && live.frame_shows(&f, viewer) => {
                     if filter.packed {
                         batch.add(&f);
                     } else {
-                        send(&mut socket, &StreamMessage::Frame { frame: Box::new(f.frame.clone()) }).await.map_err(|e| e.to_string())?;
+                        socket.send(Message::Text(f.json_message())).await.map_err(|e| e.to_string())?;
                     }
                 }
                 Ok(_) => {}
@@ -749,7 +805,9 @@ async fn run_stream(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     if filter.packed {
                         for f in live.frames_since_keyframe(&filter.games) {
-                            batch.add(&f);
+                            if live.frame_shows(&f, viewer) {
+                                batch.add(&f);
+                            }
                         }
                     }
                 }
@@ -759,8 +817,11 @@ async fn run_stream(
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
-                Some(Ok(Message::Text(text))) if expires.is_some() => match auth_message(&live, &text, lxm::READ) {
-                    Ok(exp) => expires = Some(exp),
+                Some(Ok(Message::Text(text))) if expires.is_some() => match stream_auth(&live, &text) {
+                    Ok((v, exp)) => {
+                        viewer = v;
+                        expires = Some(exp);
+                    }
                     Err(e) => {
                         close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
                         return Ok(());
@@ -850,10 +911,24 @@ async fn create_invite(
 ) -> ApiResult<Response> {
     let body = body_bytes(body)?;
     if !body.iter().all(u8::is_ascii_whitespace) {
-        let jws = std::str::from_utf8(&body)
+        let text = std::str::from_utf8(&body)
             .map_err(|_| invalid("the body must be a compact JWS"))?
             .trim();
-        let v = crate::invites::create(&live, bearer(&headers), jws).await?;
+        // A bare JWS, or `{"event": <jws>, "code": <custom code>}`.
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WithCode {
+            event: String,
+            code: Option<String>,
+        }
+        let (jws, code) = if text.starts_with('{') {
+            let w: WithCode =
+                serde_json::from_str(text).map_err(|e| invalid(format!("body: {e}")))?;
+            (w.event, w.code)
+        } else {
+            (text.to_string(), None)
+        };
+        let v = crate::invites::create(&live, bearer(&headers), &jws, code.as_deref()).await?;
         return Ok(json(StatusCode::CREATED, &v));
     }
     let days = p
@@ -861,11 +936,9 @@ async fn create_invite(
         .map(|d| d.parse().map_err(|_| invalid("days must be a number")))
         .transpose()?
         .unwrap_or(7);
-    let invite = live.create_invite(bearer(&headers), days)?;
-    Ok(json(
-        StatusCode::CREATED,
-        &serde_json::json!({"invite": invite}),
-    ))
+    live.authorize_operator(bearer(&headers), lxm::INVITES_WRITE)?;
+    let v = crate::invites::create_operator(&live, days, p.get("code").map(String::as_str)).await?;
+    Ok(json(StatusCode::CREATED, &v))
 }
 
 async fn list_games(
@@ -873,7 +946,7 @@ async fn list_games(
     headers: HeaderMap,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
     let paging = paging(&p)?;
     let state = match p.get("state").map(String::as_str) {
         None | Some("") => None,
@@ -898,7 +971,7 @@ async fn list_games(
     };
     Ok(json(
         StatusCode::OK,
-        &live.games_where(state, &filter, before, paging.limit),
+        &live.games_where(state, &filter, viewer, before, paging.limit),
     ))
 }
 
@@ -926,7 +999,8 @@ async fn game(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
+    live.check_game_shows(game_id(&id)?, viewer)?;
     Ok(json(StatusCode::OK, &live.game(game_id(&id)?)?))
 }
 
@@ -936,7 +1010,8 @@ async fn game_frames(
     Path(id): Path<String>,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
+    let viewer = live.read_viewer(bearer(&headers))?;
+    live.check_game_shows(game_id(&id)?, viewer)?;
     let tick = |k: &str| {
         p.get(k)
             .filter(|v| !v.is_empty())

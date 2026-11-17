@@ -10,9 +10,14 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod account_screen;
+pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
+pub mod coop_live;
 pub mod coop_probe;
+pub mod campaign_menu;
+pub mod campaigns;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -20,6 +25,7 @@ pub mod dsound_glue;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
+pub mod health;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -28,6 +34,7 @@ pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
+pub mod agent_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
@@ -44,12 +51,17 @@ pub mod skulls_custom;
 pub mod skulls_menu;
 pub mod skulls_mp;
 pub mod skulls_mp_row;
+pub mod signin_keyboard;
+pub mod signin_screen;
 pub mod skulls_screen;
 pub mod speaker_setting;
+pub mod steam_speaker;
 pub mod ui;
+pub mod ui_kit;
 pub mod video_screen;
 pub mod sse;
 pub mod sweep_diag;
+pub mod touch_glue;
 pub mod stopgaps;
 pub mod trace;
 pub mod wrappers;
@@ -100,12 +112,19 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 
 /// What a module is built from: the image's hash, the generator sources'
 /// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
-/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags.
+/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags,
+/// with the optimisation tiers when `H2_OPT_COLD` asks for them.
 /// [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
-    match emit::compile::cflags() {
+    let flags = emit::compile::cflags().and_then(|mut flags| {
+        if let Some(t) = emit::compile::Tiers::from_env()? {
+            flags.push(format!("tiers {}", t.spec()));
+        }
+        Ok(flags)
+    });
+    match flags {
         Ok(flags) => stamp_with(
             xbe_bytes,
             &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
@@ -255,10 +274,11 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
-        "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
+        "clang ({}): {} compiled, {} reused{}, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
         arch.name(),
         b.compiled,
         b.reused,
+        if b.cold > 0 { format!(", {} sources in the cold tier", b.cold) } else { String::new() },
         b.cache_secs,
         b.compile_secs,
         b.archive_secs,
@@ -371,6 +391,31 @@ mod packaged {
     }
 }
 
+/// Install `bridge` into a generated dylib's boot bridge: the whole table
+/// where it has `h2boot_install_v3`, else (a module built before
+/// `h2abi_v1_exit`) the v2 prefix, whose `charge` and `fast_release` its
+/// handlers still call. Returns the version installed.
+///
+/// # Safety
+/// `lib` must be a dylib built with [`BRIDGE`] (any version) for this host.
+pub unsafe fn install_bridge(lib: &libloading::Library, bridge: &shim::Bridge) -> Result<u32> {
+    type Install = unsafe extern "C" fn(*const shim::Bridge, usize) -> u32;
+    let (version, size, install) = unsafe {
+        if let Ok(f) = lib.get::<Install>(b"h2boot_install_v3") {
+            (3, std::mem::size_of::<shim::Bridge>(), *f)
+        } else {
+            let f = lib
+                .get::<Install>(b"h2boot_install_v2")
+                .context("boot bridge predates optional callbacks; rebuild the generated module")?;
+            (2, shim::Bridge::V2_SIZE, *f)
+        }
+    };
+    if unsafe { install(bridge, size) } != 1 {
+        bail!("boot bridge layout mismatch; rebuild the generated module");
+    }
+    Ok(version)
+}
+
 /// Load the generated dylib, install the bridge, and register every entry
 /// and resume with the runtime's dispatch (RUNTIME-CONTRACT.md §3).
 ///
@@ -383,11 +428,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         if version() != runtime::cpu::ABI_VERSION {
             bail!("module ABI {} != runtime {}", version(), runtime::cpu::ABI_VERSION);
         }
-        let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge, usize) -> u32> =
-            lib.get(b"h2boot_install_v2").context("boot bridge predates optional callbacks; rebuild the generated module")?;
-        if install(&shim::bridge(), std::mem::size_of::<shim::Bridge>()) != 1 {
-            bail!("boot bridge layout mismatch; rebuild the generated module");
-        }
+        install_bridge(&lib, &shim::bridge())?;
         let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
             lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
@@ -545,7 +586,14 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Called once with the kernel's VFS when it is attached, before the
+    /// game runs: `h2 play` watches U: through it for cloud saves
+    /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
+    pub on_vfs: Option<VfsReady>,
 }
+
+/// [`Host::on_vfs`].
+pub type VfsReady = Box<dyn FnOnce(&Arc<std::sync::Mutex<vfs::Vfs>>) + Send>;
 
 /// [`Host::between_slices`]: true to keep running.
 pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
@@ -646,12 +694,22 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    // The health model follows the sandbox the converted Halo 1 maps were
+    // just installed in (docs/game/health.md).
+    {
+        let (store, _) = setting_defs::load(&opts.data_root, &[]);
+        health::set_halo1_sandbox(setting_defs::halo1_sandbox(&store) == "h1");
+    }
+    // A second campaign (docs/game/multiple-campaigns.md): read before the
+    // VFS mounts, which serves its converted maps.
+    let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
+    let campaign_maps = campaigns.as_ref().map(|s| campaigns::host_maps(&opts.data_root, s)).unwrap_or_default();
     // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes);
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes, &campaign_maps);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -665,6 +723,9 @@ pub fn run_hosted_with_live(
         }
     };
     k.set_vfs(v).context("attaching the VFS")?;
+    if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
+        ready(&vfs);
+    }
     // A package installed while the game runs (docs/game/maps.md §3): a Live
     // join tells the VFS to look again at once (it also notices by itself
     // at the map's next open), and the map-slots feature drops the game's
@@ -739,12 +800,22 @@ pub fn run_hosted_with_live(
         )),
         None => None,
     };
+    // More than one campaign (docs/game/multiple-campaigns.md): campaigns
+    // installed under <data>/campaigns get their level lists and the
+    // picker in front of the level select. None installed: nothing is
+    // hooked and the disc is not read for it.
+    let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
+    campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
+    // A Live sign-in that needs a code asks for it in game, on our own
+    // screen opened from the logon's polling (docs/live/live.md, "In-game
+    // sign-in").
+    signin_screen::install(&loaded.runtime, &mut features, _live.as_ref()).context("installing the sign-in prompt")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
@@ -787,6 +858,18 @@ pub fn run_hosted_with_live(
     });
     let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    // Halo 1's health model on Halo 1 maps (docs/game/health.md): no body
+    // regeneration, health packs, a health meter. Off (Halo 2's) until the
+    // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
+    let health_on = health::install(&mut features).context("installing the health model")?;
+    // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
+    // magnetism at each map load, from the Aim Assist setting (Auto: Strong
+    // while the touch controls show). Headless runs keep retail.
+    aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
+    // The iOS touch controls' game side (docs/runtime/ios.md): direct
+    // look into player one's facing, and the layout from player one's
+    // seat and weapon. Idle while no touch controls show.
+    touch_glue::install(&mut features).context("installing the touch glue")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -798,9 +881,14 @@ pub fn run_hosted_with_live(
                 eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
+                // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
+                // changes the view's shadows there too.
                 if let Some(store) = &host.settings {
                     let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
                     b.follow_scale(move || wanted.get());
+                    let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
+                    b.set_lighting(setting_defs::lighting_of(lighting.get()));
+                    b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
@@ -852,6 +940,11 @@ pub fn run_hosted_with_live(
     } else {
         None
     };
+    // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
+    let agent = match agent_glue::socket_from_env() {
+        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path)?),
+        None => None,
+    };
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
@@ -865,7 +958,21 @@ pub fn run_hosted_with_live(
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    let probe_on = coop_probe.is_some();
     coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
+    // Co-op over Live (docs/live/live-coop.md, "Co-op over Live (built)"):
+    // the Xbox Live menu's Co-op Campaign row and screens, and the probe's
+    // hooks armed only for a co-op session. With H2_COOP_PROBE on, the
+    // probe holds those hooks and the screens only advertise and invite.
+    if _live.is_some() && std::env::var_os("H2_NO_COOP_ROW").is_none() {
+        let arm = if probe_on {
+            None
+        } else {
+            coop_probe::install_live(&loaded.runtime, &mut features, &opts.data_root)?
+        };
+        let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
+        custom_games::set_coop_row(on);
+    }
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
@@ -877,6 +984,13 @@ pub fn run_hosted_with_live(
     for n in &installed.notes {
         eprintln!("feature plan: {n}");
     }
+    if let Some(a) = &agent {
+        a.set_plan(&plan, &installed);
+        if let Some(why) = installed.off_reason("agent") {
+            a.agent.set_no_tick_hook();
+            eprintln!("agent: answering between slices only, no pausing: {why}");
+        }
+    }
     if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
         eprintln!("{}", skulls::report(&plan, &installed, store));
     }
@@ -885,6 +999,9 @@ pub fn run_hosted_with_live(
     }
     if skulls_custom_on {
         eprintln!("{}", skulls_custom::report(&plan, &installed));
+    }
+    if health_on {
+        eprintln!("{}", health::report(&plan, &installed));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
@@ -995,6 +1112,9 @@ pub fn run_hosted_with_live(
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
         }
+        if let Some(a) = &agent {
+            a.after_slice(&loaded.runtime, d3d_diag::presents());
+        }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
             && audio_errors.len() < 8
@@ -1014,6 +1134,8 @@ pub fn run_hosted_with_live(
     if let Some(a) = &ds {
         a.output.halt();
     }
+    // Fail what's queued and close the socket before the module goes.
+    drop(agent);
     if let Some(h) = &harness {
         match h.finish() {
             Ok(line) => eprintln!("{line}"),
@@ -1181,6 +1303,8 @@ pub mod log {
 /// Collected shim diagnostics.
 pub(crate) static SHIM_EVENTS: Mutex<Vec<(u32, u32, String)>> = Mutex::new(Vec::new());
 
+#[cfg(test)]
+mod string_ids;
 #[cfg(test)]
 mod tests {
     use super::*;

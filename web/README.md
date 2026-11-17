@@ -31,7 +31,7 @@ Vite proxies `/v1` (including the WebSockets), `/healthz` and
 Mock knobs: `H2_MOCK_HISTORY_MIN` (minutes of simulated history at boot,
 default 20), `H2_MOCK_TAMPER=<n>` (corrupt every nth event's data so the
 "bad signature" state shows up), `H2_MOCK_STATIC=<dir>` (also serve a built
-app with SPA fallback, the way the Rust server will:
+app with SPA fallback, as `h2 live serve` does:
 `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`),
 `H2_MOCK_GAME_ART=1` (serve a stand-in `/art/game` manifest so the game-art
 path runs; see "Game art" below). Without it `/art/game` has no pictures,
@@ -61,7 +61,11 @@ frames' `machines`), two pairs of teleporters with their links and a
 gravity lift (in the glb's extras); `H2_MOCK_FURNITURE=0` leaves it out.
 `H2_MOCK_ADMIN=1` makes every account
 signed up in the browser an admin, so the dashboard's server screen shows "your server"
-and its invites, and the stats site shows the admin area (`mock/admin.ts`).
+and its invites, accounts and import screens, and the stats site shows the
+Halo admin area (`mock/admin.ts`). `H2_MOCK_HOPPER=1` serves a stand-in
+playlist file (invented playlists, plain numbers) so the Halo admin's
+playlist builder has something to edit; without it that tab says nothing
+has been imported yet.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -73,9 +77,16 @@ The choice and recent servers are kept in localStorage.
 ## Two sides
 
 **The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
-a glowing orb, a wireframe tunnel and an arc of menu bars (live now,
-friends, players, game history, sign up / profile, server), each opening a
-bezelled list panel. Keyboard: arrows move, Enter (or `a`) selects,
+a glowing orb, a wireframe tunnel and an arc of menu bars, each opening a
+bezelled list panel (`dash/menu.ts`). Signed out the menu leads with sign
+in, create and recover, then live now, game history, find a game, players
+and settings (the ones that need an account show greyed with a hint).
+Signed in it is live now, find a game, friends, players, game history,
+account (recovery code, authenticator, devices, sign out) and settings;
+profile and the server (`/dash/server`: service admin) sit under settings.
+The Halo admin area (MOTD, playlists, custom content) is on the stats site
+at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
 **The stats site** (`/stats/...`, `src/stats/`) is the record, laid out like
@@ -262,8 +273,11 @@ lays players over the picture using the view's `world_to_pixel` matrix
 and pan and zoom; without them it is the fitted grid as before. The "3D view"
 button opens the level in a window (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
-off by itself on a machine that can't keep up), orbit, top-down and
-follow-a-player cameras, and a grid floor when the map has no geometry. The
+off by itself on a machine that can't keep up), orbit, top-down,
+follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
+either button to look or click to lock the mouse, wheel or trackpad for
+speed, Shift to go faster, one finger to look and two to fly on a touch
+screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
 window can be dragged, resized, maximised, or popped out to
 `/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
 replay session (`src/viewer/session.ts`), and a popped-out window keeps in
@@ -279,7 +293,12 @@ bipeds, campaign), both optional. A vehicle is drawn as its glb from the
 manifest's `models.vehicles`, turned by its forward and up, or as a box of
 about its kind's size; a player's vehicle takes a light wash of their
 colour. Whoever is in one is not drawn themselves: the vehicle stands for
-them and carries their label (seat nodes are not used yet). Actors are
+them and carries their label (seat nodes are not used yet). A turret
+(a vehicle with a `parent`: the Warthog's chaingun, the Scorpion's
+cannon) is not drawn on its own: its vehicle's model turns its
+`turret_<n>` part and raises its guns to the turret's `aim`, else its
+gunner's, eased (`viewer/turrets.ts`, `viewer/turrets3d.ts`), and its
+gunner rides the vehicle. Actors are
 sampled, eased and drawn through the same path as players (an index made
 from their id, negative so it never meets a player's): their species' glb
 in its own colours, else the spartan's untinted, else a small capsule, with
@@ -343,19 +362,33 @@ optional; a frame without them draws as before.
 
 - *Clips.* A models table of version 2 has skinned bipeds whose glb carries
   clips named `<weapon_class>:<state>`, and gives each weapon stem its
-  class. `viewer/anim.ts` (pure) picks the looping state from the stance
-  and speed (idle, walk, run, crouch, airborne, die; a sender without
-  speeds has them worked out from how far the player moved) and lays
-  one-shots over it (fire on a frame's shots, grenade, melee, reload,
-  switch from its actions, land on coming down); the clip is the held
-  weapon's class's, else the rifle's, the unarmed, or any class that has
-  the state, a missing loop falls back to a nearer one and a missing
-  one-shot isn't played. `BipedAnimator` (`viewer/players3d.ts`) plays them
-  on a three.js mixer per biped: loops cross-fade, walk and run are paced
-  to the ground speed, a one-shot outweighs the loop only on the bones it
-  moves, and a dying clip holds its last frame before the model goes. A
+  class (clips every class shares are `any:<state>`). `viewer/anim.ts`
+  (pure) picks the looping state from the stance and speed (idle, walk,
+  run, crouch, airborne, die, dead; a sender without speeds has them
+  worked out from how far the player moved) and lays one-shots over it
+  (fire on a frame's shots, grenade, melee, reload, switch from its
+  actions, land or land_hard on coming down, hard after a drop of more
+  than 1.2 units below the jump's peak); the clip is the held weapon's
+  class's, else the rifle's, the unarmed, or any class that has the
+  state, a missing loop falls back to a nearer one and a missing one-shot
+  isn't played. The game's jump has no take-off clip: `airborne` is the
+  whole leap (tuck, then hang) and plays once from leaving the ground,
+  held; dying plays once (`die`) and holds its last frame; a body first
+  seen already dead lies in `dead`.
+  `BipedAnimator` (`viewer/players3d.ts`) plays them on a three.js mixer
+  per biped: loops cross-fade, walk and run are paced to the ground speed,
+  and a one-shot outweighs the loop only on the bones it moves. An AI's
+  model faces where it aims and its spine takes a third of the aim's turn
+  (at most 0.3 rad) and a pitch of at most 0.6 rad: turning a grunt's or
+  hunter's whole spine to the aim swung its tank or back plates about. A
   version 1 (static) model glides in its pose as before, a capsule squats
   when crouched, and reduced motion leaves every model in its pose.
+- *Bodies* (`viewer/bodies.ts`). A player who dies leaves their model
+  where they fell (where the frames put the dead, which is their body),
+  playing the death clip and holding it; respawning makes a new model and the body stays
+  for a minute, at most 24 of them, all cleared on a seek. AI bodies come
+  in the frames as actors with the `dead` stance and lie until the game
+  clears them away.
 - *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
   A hit draws a line from attacker to victim that fades in a quarter of a
   second, and a hit marker with the damage floating up from the victim for
@@ -369,13 +402,21 @@ optional; a frame without them draws as before.
   the numbers stay put, the line holds instead of flashing, and no grenade
   flies.
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
-  faint grey outline (2D) and has no label.
+  faint grey outline (2D) and has no label. Once the frames carry
+  vehicles the level's own copies (`vehi` placements and multiplayer
+  vehicle spawns) are hidden, so a vehicle isn't drawn twice
+  (`viewer/objects3d.ts`).
 - *Zones* (`viewer/zones.ts`). When a level's glb has `bsp_<n>` nodes, the
-  3D view shows only the one the frames name; with no `bsp` in the frames
-  (or one the glb lacks) it shows every zone not marked cinematic-only in
-  its node's extras, and never none at all. A `backdrop` node (far scenery)
-  is hidden. When the level has several, the toolbar's zone picker offers
-  "Zone in play" (following the frames), "All zones", and each zone by its
+  3D view shows only the zone in play (`ZoneFollower`): the one the frames
+  name when the players are in it (by each zone's bounding box, a unit of
+  margin), else the one the followed player, or most players, stand in,
+  the zone already shown winning ties where zones overlap. A cutscene's
+  zone isn't play. A new zone has to be wanted for 0.8 s before the view
+  moves to it (at once on a seek), and the camera, unless following
+  someone, moves to frame it. With nothing to go on it shows every zone
+  not marked cinematic-only in its node's extras, and never none at all.
+  A `backdrop` node (far scenery) is hidden. When the level has several,
+  the toolbar's zone picker offers "Zone in play", "All zones", and each zone by its
   BSP's name (`extras.name`; cutscene zones too when "Cutscene zones" is
   ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones
@@ -388,10 +429,14 @@ optional; a frame without them draws as before.
   (docs/live/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
   camera before everything else, moving with it but not turning, its
   additive layers left out; behind it is the sky's clear colour, else its
-  fog colour. The sky's fog is linear, clear up to its start past the
-  point in focus and as thick as the game's at its end, but stretched so
-  the far side of the level is never more fogged than the game's most:
-  an overview fades the far side instead of hiding it. With no sky the
+  fog colour. The sky's atmospheric fog is drawn as the game's, not
+  three's: clear up to its start past the point in focus, thickening
+  linearly to the sky's maximum density at its opaque distance and never
+  thicker beyond, so an overview fades the far side instead of hiding it.
+  `useGameFog` patches three's fog chunks for that (the cap is one shared
+  uniform every material's `onBeforeCompile` gets; a material that sets
+  its own must chain the prototype's). A sky without fog but with a
+  sun-lit glow keeps the exponential haze in the glow's colour. With no sky the
   view keeps its own gradient and haze. The occlusion pass leaves out
   anything see-through that writes no depth (`viewer/aopass.ts`).
 

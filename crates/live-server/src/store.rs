@@ -1,8 +1,9 @@
 //! The event store: one append-only log of signed events, ordered by a
 //! global `position`, with per-stream versions, optimistic concurrency and
-//! a per-stream hash chain (docs/live/live-security.md §2). Postgres in
-//! production ([`crate::pg`]), a directory for the embedded server without
-//! one ([`crate::filestore`]), [`MemoryStore`] for tests.
+//! a per-stream hash chain (docs/live/live-security.md §2). SQLite by
+//! default ([`crate::sqlite`]), Postgres when asked for ([`crate::pg`]), a
+//! directory for the embedded server ([`crate::filestore`]), [`MemoryStore`]
+//! for tests. [`crate::copy`] moves a log between them.
 //!
 //! The store keeps each author's JWS untouched; everything a reader needs
 //! is decoded from it, so the other columns are only indexes.
@@ -29,6 +30,42 @@ impl NewEvent {
     /// server verified it on the way in).
     pub fn decode(jws: String, jws_index: Option<usize>) -> Result<Self, SignError> {
         let body = SignedEvent::body_at(&jws, jws_index)?;
+        Ok(NewEvent {
+            jws,
+            jws_index,
+            body,
+        })
+    }
+}
+
+/// Opens stored events' JWS for their bodies, as [`NewEvent::decode`]
+/// does, keeping the last batch it opened: a batch's events are adjacent
+/// rows with the same JWS, so a page of them opens (base64 and JSON) the
+/// batch once, not once a row.
+#[derive(Default)]
+pub(crate) struct BatchDecoder {
+    batch: Option<(String, Vec<EventBody>)>,
+}
+
+impl BatchDecoder {
+    pub(crate) fn decode(
+        &mut self,
+        jws: String,
+        jws_index: Option<usize>,
+    ) -> Result<NewEvent, SignError> {
+        let Some(i) = jws_index else {
+            return NewEvent::decode(jws, None);
+        };
+        if self.batch.as_ref().is_none_or(|(open, _)| *open != jws) {
+            self.batch = None;
+            let bodies = SignedEvent::open_batch(&jws)?.1;
+            self.batch = Some((jws.clone(), bodies));
+        }
+        let (_, bodies) = self.batch.as_ref().expect("opened above");
+        let body = bodies
+            .get(i)
+            .cloned()
+            .ok_or(SignError::Malformed("jws_index out of range"))?;
         Ok(NewEvent {
             jws,
             jws_index,
@@ -87,6 +124,10 @@ pub enum StoreError {
     /// problem.
     #[error("stored event at position {position} does not decode: {reason}")]
     Corrupt { position: u64, reason: String },
+    /// [`EventStore::import`] was given an event that does not follow the
+    /// log it is going into: nothing of that batch was written.
+    #[error("cannot import position {position}: {reason}")]
+    Import { position: u64, reason: String },
 }
 
 /// What [`EventStore::read`] returns: events with `position > after`,
@@ -154,9 +195,86 @@ pub trait EventStore: Send + Sync + 'static {
     /// A wake source that fires after appends commit.
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError>;
 
-    /// `postgres`, `file` or `memory`, for the admin status.
+    /// `sqlite`, `postgres`, `file` or `memory`, for the admin status.
     fn kind(&self) -> &'static str {
         "unknown"
+    }
+
+    /// Writes events exactly as another store recorded them, positions,
+    /// versions and hashes kept, atomically (`h2 live store copy`). Each must
+    /// come after this log's head and continue its stream's version and hash
+    /// chain ([`ImportCheck`]); checked, not trusted. Stores that number
+    /// positions themselves cannot take them.
+    async fn import(&self, events: &[RecordedEvent]) -> Result<(), StoreError> {
+        let position = events.first().map_or(0, |e| e.position);
+        Err(StoreError::Import {
+            position,
+            reason: format!("a {} store cannot be copied into", self.kind()),
+        })
+    }
+
+    /// Every title-file blob's SHA-256, for copying them.
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError>;
+
+    /// Every durable subscriber's checkpoint, for copying them.
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError>;
+}
+
+/// What [`EventStore::import`] checks of each event, given each stream's
+/// last version and hash in the log being written (looked up once per
+/// stream by `last`).
+#[derive(Default)]
+pub struct ImportCheck {
+    head: u64,
+    streams: HashMap<String, (u64, Option<String>)>,
+}
+
+impl ImportCheck {
+    pub fn new(head: u64) -> Self {
+        ImportCheck {
+            head,
+            streams: HashMap::new(),
+        }
+    }
+
+    /// Whether `stream`'s head is known yet (else call [`Self::seed`]).
+    pub fn knows(&self, stream: &str) -> bool {
+        self.streams.contains_key(stream)
+    }
+
+    /// `stream`'s next version and last hash in the log.
+    pub fn seed(&mut self, stream: &str, next: u64, hash: Option<String>) {
+        self.streams.insert(stream.to_string(), (next, hash));
+    }
+
+    /// Checks `e` follows what came before, and records it.
+    pub fn check(&mut self, e: &RecordedEvent) -> Result<(), StoreError> {
+        let fail = |reason: String| StoreError::Import {
+            position: e.position,
+            reason,
+        };
+        if e.position <= self.head {
+            return Err(fail(format!("the log is already at {}", self.head)));
+        }
+        let (next, prev) = self
+            .streams
+            .get(&e.body.stream)
+            .cloned()
+            .expect("seeded before checking");
+        if e.version != next {
+            return Err(fail(format!(
+                "{} is at version {next}, the event says {}",
+                e.body.stream, e.version
+            )));
+        }
+        let hash = chain_hash(prev.as_deref(), &e.jws);
+        if hash != e.hash {
+            return Err(fail(format!("the hash chain of {} breaks", e.body.stream)));
+        }
+        self.head = e.position;
+        self.streams
+            .insert(e.body.stream.clone(), (next + 1, Some(hash)));
+        Ok(())
     }
 }
 
@@ -190,7 +308,7 @@ impl MemoryStore {
     }
 
     /// Every saved checkpoint, for a store that persists them.
-    pub(crate) fn checkpoints(&self) -> HashMap<String, u64> {
+    pub(crate) fn checkpoint_map(&self) -> HashMap<String, u64> {
         self.inner.lock().unwrap().checkpoints.clone()
     }
 }
@@ -294,6 +412,51 @@ impl EventStore for MemoryStore {
 
     async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
         Ok(Box::new(MemoryWake(self.head.subscribe())))
+    }
+
+    /// Positions here are indexes, so only a log with no gaps imports.
+    async fn import(&self, events: &[RecordedEvent]) -> Result<(), StoreError> {
+        let mut log = self.inner.lock().unwrap();
+        let len = log.events.len() as u64;
+        let mut check = ImportCheck::new(len);
+        for (i, e) in events.iter().enumerate() {
+            if e.position != len + 1 + i as u64 {
+                return Err(StoreError::Import {
+                    position: e.position,
+                    reason: "an in-memory log has no gaps in its positions".into(),
+                });
+            }
+            if !check.knows(&e.body.stream) {
+                let (next, hash) = log
+                    .streams
+                    .get(&e.body.stream)
+                    .cloned()
+                    .map_or((0, None), |(n, h)| (n, Some(h)));
+                check.seed(&e.body.stream, next, hash);
+            }
+            check.check(e)?;
+        }
+        for e in events {
+            log.streams
+                .insert(e.body.stream.clone(), (e.version + 1, e.hash.clone()));
+            log.events.push(e.clone());
+        }
+        let head = log.events.len() as u64;
+        drop(log);
+        self.head.send_replace(head);
+        Ok(())
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut names: Vec<_> = self.inner.lock().unwrap().blobs.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
+        let mut all: Vec<_> = self.checkpoint_map().into_iter().collect();
+        all.sort();
+        Ok(all)
     }
 }
 
@@ -452,5 +615,34 @@ mod tests {
     #[tokio::test]
     async fn memory_store_conforms() {
         conformance::run(&MemoryStore::new(), "mem").await;
+    }
+
+    #[test]
+    fn batch_decoder_opens_what_each_row_would() {
+        let key = live_proto::sign::KeyPair::generate();
+        let bodies = |n: u64| -> Vec<EventBody> {
+            (0..3)
+                .map(|i| conformance::event(&key, "s", n * 10 + i).body)
+                .collect()
+        };
+        let one = live_proto::sign::sign_batch(&key, &bodies(1));
+        let two = live_proto::sign::sign_batch(&key, &bodies(2));
+        let single = conformance::event(&key, "s", 99).jws;
+        // Rows as a page holds them: a batch, a single event, the batch
+        // again (not adjacent), another batch.
+        let rows = [
+            (one.clone(), Some(0)),
+            (one.clone(), Some(1)),
+            (single, None),
+            (one.clone(), Some(2)),
+            (two.clone(), Some(0)),
+            (two, Some(2)),
+        ];
+        let mut batches = BatchDecoder::default();
+        for (jws, index) in rows {
+            let expected = NewEvent::decode(jws.clone(), index).unwrap();
+            assert_eq!(batches.decode(jws, index).unwrap(), expected);
+        }
+        assert!(batches.decode(one, Some(3)).is_err(), "out of range");
     }
 }

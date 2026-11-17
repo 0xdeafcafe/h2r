@@ -63,7 +63,7 @@ pub use layout::GuestLayout;
 pub use nv2a::Nv2aShaders;
 pub use resource::AddressMap;
 pub use runtime_glue::register;
-pub use scaled::{ScaledBackend, render_scale};
+pub use scaled::{Lighting, LightingAb, ScaledBackend, lighting_ab, render_scale};
 pub use shader::{ShaderInputs, ShaderProvider};
 pub use threaded::{RENDER_THREAD_START, ThreadedBackend};
 pub use vblank::{FrameWait, register_frame_wait};

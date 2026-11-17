@@ -35,7 +35,7 @@ struct Server {
 }
 
 impl Server {
-    /// `h2 play --live` without Postgres: the file store in `dir`.
+    /// `h2 play --live-local` without Postgres: the file store in `dir`.
     fn start(dir: &Path) -> Self {
         let embedded = live_server::start_embedded(
             live_server::FILE_DB,
@@ -138,6 +138,7 @@ impl World {
                 enabled: true,
                 accounts_path: Some(path.clone()),
                 server_url: Some(url.into()),
+                offer_new_account: false,
             },
             NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31000)),
             ServerOptions {
@@ -365,7 +366,7 @@ fn a_motd_published_from_the_web_editor_reaches_the_game_and_survives_a_restart(
             (default.header.clone(), default.messages.clone())
         );
 
-        // Only an admin may publish; `h2 play --live` makes its own
+        // Only an admin may publish; `h2 play --live-local` makes its own
         // account one.
         assert_eq!(server.put_motd(xuid, &key, &published), Err(403));
         server.embedded.live.grant_admin_runtime(xuid, "Owner");

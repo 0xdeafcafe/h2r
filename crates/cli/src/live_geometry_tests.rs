@@ -1325,6 +1325,16 @@ fn geometry_from_the_disc() {
         let glb = fs::read(out.join("map").join(stem).join("map.glb")).unwrap();
         let (doc, _) = parse_glb(&glb);
         report += &format!("{stem:<20} sky {}\n", doc["asset"]["extras"]["sky"]);
+        for w in doc["asset"]["extras"]["weather"].as_array().into_iter().flatten() {
+            report += &format!(
+                "{stem:<20} weather {} {} x{} in {} boxes, {} kept out\n",
+                w["name"],
+                w["kind"],
+                w["amount"],
+                w["boxes"].as_array().map_or(0, Vec::len),
+                w["exclude"].as_array().map_or(0, Vec::len)
+            );
+        }
         let mut blends: BTreeMap<String, usize> = BTreeMap::new();
         for m in doc["materials"].as_array().into_iter().flatten() {
             if let Some(l) = m["extras"]["layer"].as_str() {
@@ -2186,6 +2196,7 @@ fn sky_materials_blend_by_template_words_and_the_sky_is_in_the_extras() {
             start: 1.0,
             end: 40.0,
         }),
+        glow: None,
         scale: 1.0,
     });
     let (doc, _) = parse_glb(&level.glb());
@@ -2213,6 +2224,7 @@ fn test_look(shader: u32, bitmap: u32, w: u32) -> crate::live_looks::Look {
                     .collect(),
             },
         }),
+        scale: [1.0, 1.0],
     }
 }
 
@@ -2324,8 +2336,8 @@ fn textured_primitives_name_their_class_material_and_share_pictures() {
     )
     .unwrap();
     level.looks = looks;
-    let (glb, pictures) = level.glb_and_picture_bytes();
-    assert!(pictures > 0);
+    let (glb, pictures) = level.glb_and_pictures(false);
+    assert!(pictures.bytes() > 0);
     gltf::Gltf::from_slice(&glb).expect("valid glTF");
     let (doc, bin) = parse_glb(&glb);
     assert_eq!(
@@ -2369,6 +2381,77 @@ fn textured_primitives_name_their_class_material_and_share_pictures() {
         .map(|m| m["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["floor", "shader_100", "shader_101"]);
+}
+
+#[test]
+fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_scale() {
+    let mut looks = crate::live_looks::Looks::default();
+    looks.add(test_look(100, 7, 64));
+    looks.add(crate::live_looks::Look {
+        scale: [4.0, 2.0],
+        ..test_look(101, 0x2a, 32)
+    });
+    let mut tris: Vec<Tri> = flat(0.0, 0.0, 4.0, 4.0, 0.0, true)
+        .map(|t| looked(t, Some(0)))
+        .to_vec();
+    tris.extend(flat(10.0, 0.0, 14.0, 4.0, 0.0, true).map(|t| looked(t, Some(1))));
+    let mut level = Level::build(
+        "lvl",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&tris)))],
+    )
+    .unwrap();
+    level.looks = looks;
+    let embedded = level.glb_and_pictures(false).0;
+    let dir = std::env::temp_dir().join(format!("h2-level-tex-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A stale picture from an earlier extraction goes.
+    std::fs::create_dir_all(dir.join("tex")).unwrap();
+    std::fs::write(dir.join("tex/stale.jpg"), b"x").unwrap();
+    let (glb_bytes, picture_bytes) = level.write_glb(&dir).unwrap();
+    let glb = std::fs::read(dir.join("map.glb")).unwrap();
+    assert_eq!(glb.len(), glb_bytes);
+    assert!(
+        glb.len() + picture_bytes <= embedded.len() + 64,
+        "the pictures moved out"
+    );
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    let images = doc["images"].as_array().unwrap();
+    let uris: Vec<&str> = images.iter().map(|i| i["uri"].as_str().unwrap()).collect();
+    assert_eq!(uris, ["tex/00000007.jpg", "tex/0000002a.jpg"]);
+    for (i, uri) in uris.iter().enumerate() {
+        assert!(images[i].get("bufferView").is_none());
+        assert_eq!(images[i]["mimeType"], "image/jpeg");
+        let file = std::fs::read(dir.join(uri)).unwrap();
+        assert_eq!(&file[..2], [0xff, 0xd8], "a JPEG");
+    }
+    assert!(!dir.join("tex/stale.jpg").exists());
+    let mut unzipped = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(&std::fs::read(dir.join("map.glb.gz")).unwrap()[..]),
+        &mut unzipped,
+    )
+    .unwrap();
+    assert_eq!(unzipped, glb, "the gzip copy is the glb");
+    let materials = doc["materials"].as_array().unwrap();
+    let by_name = |n: &str| materials.iter().find(|m| m["name"] == n).unwrap();
+    assert!(
+        by_name("shader_100")["pbrMetallicRoughness"]["baseColorTexture"]
+            .get("extensions")
+            .is_none()
+    );
+    assert_eq!(
+        by_name("shader_101")["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"]
+            ["scale"],
+        serde_json::json!([4.0, 2.0])
+    );
+    assert_eq!(
+        doc["extensionsUsed"],
+        serde_json::json!(["KHR_texture_transform"])
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -2430,4 +2513,182 @@ fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
     assert_eq!(doc["nodes"][4]["extras"]["item"], "weap");
     // Objects are not in the views' mesh: the pictures are unchanged.
     assert!(level.mesh.objects.is_empty());
+}
+
+/// Every level's BSP and placed-object shaders: the base map by names (the
+/// old rule) beside the base map the shader's passes draw, written to
+/// `$H2_GEOMETRY_CHECK/base_maps.txt` (else `CHECK_DIR`), changed ones
+/// first. Do not commit what it writes.
+#[test]
+#[ignore]
+fn base_maps_on_the_disc() {
+    use std::fmt::Write as _;
+    let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
+    });
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    let (mut changed, mut same, mut none) = (String::new(), 0usize, 0usize);
+    let mut total = 0usize;
+    for (m, _) in levels(&disc) {
+        let (mut map, _) = disc.open(m).unwrap();
+        let mut lib = tags::material::ShaderLibrary::read(&mut map).unwrap();
+        let shaders: Vec<TagId> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == map::FourCC(*b"shad") || t.group == map::FourCC(*b"dahs"))
+            .map(|t| t.id)
+            .collect();
+        for id in shaders {
+            let Some(template) = shader_template(&mut map, id) else {
+                continue;
+            };
+            if crate::live_looks::template_cutout(&template).is_none() {
+                continue;
+            }
+            let Ok((_, bitmaps)) = crate::live_models::shader_bitmaps(&mut map, id) else {
+                continue;
+            };
+            let names: Vec<(u32, String)> = bitmaps
+                .iter()
+                .filter_map(|&b| Some((b.0, map.tag(b).ok()?.name.clone()?)))
+                .collect();
+            let old = crate::live_looks::pick_base(&names);
+            let new = crate::live_basemap::base_map(&mut lib, &mut map, id);
+            total += 1;
+            let name_of = |b: u32| {
+                names
+                    .iter()
+                    .find(|(i, _)| *i == b)
+                    .map_or("?".to_string(), |(_, n)| n.clone())
+            };
+            match new {
+                None => none += 1,
+                Some(b) if Some(b.bitmap.0) == old && b.scale == [1.0, 1.0] => same += 1,
+                Some(b) => {
+                    let shader = map
+                        .tag(id)
+                        .ok()
+                        .and_then(|t| t.name.clone())
+                        .unwrap_or_default();
+                    writeln!(
+                        changed,
+                        "{} {shader} [{}]\n    names: {}\n    passes: {} scale {:?}",
+                        m.name(),
+                        template.rsplit('\\').next().unwrap_or(""),
+                        old.map_or("-".into(), name_of),
+                        name_of(b.bitmap.0),
+                        b.scale
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+    let dir = std::env::var("H2_GEOMETRY_CHECK").unwrap_or_else(|_| CHECK_DIR.into());
+    std::fs::create_dir_all(&dir).unwrap();
+    let head = format!(
+        "solid shaders {total}: same {same}, no stage-0 base {none}, changed {}\n\n",
+        total - same - none
+    );
+    std::fs::write(Path::new(&dir).join("base_maps.txt"), head + &changed).unwrap();
+}
+
+#[test]
+fn a_sky_light_gives_the_glow_of_the_air() {
+    use crate::live_sky::*;
+    let mut b = sky_header();
+    // One light at 0x180 whose fog element is at 0x1c0.
+    put32(&mut b, SKY_LIGHTS, 1);
+    put32(&mut b, SKY_LIGHTS + 4, BASE + 0x180);
+    put32(&mut b, 0x180 + LIGHT_DIRECTION, 2.356f32.to_bits());
+    put32(&mut b, 0x180 + LIGHT_DIRECTION + 4, 0.611f32.to_bits());
+    put32(&mut b, 0x180 + LIGHT_FOG, 1);
+    put32(&mut b, 0x180 + LIGHT_FOG + 4, BASE + 0x1c0);
+    put32(&mut b, 0x1c0, 0xf);
+    for (k, v) in [0.9f32, 0.75, 0.6, 0.2].iter().enumerate() {
+        put32(&mut b, 0x1c4 + 4 * k, v.to_bits());
+    }
+    let view = TagView::new(&b, BASE);
+    let f = sky_fields(&view, &b[..SKY_HEADER]);
+    assert_eq!(
+        f.glow,
+        Some(SkyGlow {
+            colour: [0.9, 0.75, 0.6],
+            density: 0.2,
+            heading: 2.356,
+            pitch: 0.611
+        })
+    );
+    // A light whose fog has no density gives none.
+    put32(&mut b, 0x1d0, 0);
+    let view = TagView::new(&b, BASE);
+    assert_eq!(sky_fields(&view, &b[..SKY_HEADER]).glow, None);
+}
+
+#[test]
+fn weather_falls_in_its_clusters_and_not_in_its_polyhedra() {
+    use crate::live_weather::*;
+    let mut b = vec![0u8; 0x800];
+    // Palette: an empty entry, then "snow_falling" with a weat tag.
+    put32(&mut b, BSP_WEATHER_PALETTE, 2);
+    put32(&mut b, BSP_WEATHER_PALETTE + 4, BASE + 0x100);
+    put32(&mut b, 0x100 + PALETTE_WEATHER, u32::MAX);
+    let e = 0x100 + PALETTE_STRIDE;
+    b[e..e + 12].copy_from_slice(b"snow_falling");
+    put32(&mut b, e + PALETTE_WEATHER, 0xe77d_0608);
+    // Clusters: one with weather 1, one with none, one with weather 0.
+    put32(&mut b, BSP_CLUSTERS, 3);
+    put32(&mut b, BSP_CLUSTERS + 4, BASE + 0x300);
+    for (c, w) in [(0usize, 1u16), (1, 0xffff), (2, 0)] {
+        let at = 0x300 + c * CLUSTER_STRIDE;
+        for (k, v) in [-1.0f32, 2.0, -3.0, 4.0, 0.0, 10.0].iter().enumerate() {
+            put32(&mut b, at + CLUSTER_BOUNDS + 4 * k, v.to_bits());
+        }
+        put16(&mut b, at + CLUSTER_WEATHER, w);
+    }
+    // One polyhedron: the unit box at the origin (six planes).
+    put32(&mut b, BSP_WEATHER_POLYHEDRA, 1);
+    put32(&mut b, BSP_WEATHER_POLYHEDRA + 4, BASE + 0x600);
+    put32(&mut b, 0x600 + POLYHEDRON_PLANES, 6);
+    put32(&mut b, 0x600 + POLYHEDRON_PLANES + 4, BASE + 0x640);
+    let planes = [
+        [1.0f32, 0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [0.0, 0.0, -1.0, 1.0],
+    ];
+    for (i, p) in planes.iter().enumerate() {
+        for (k, v) in p.iter().enumerate() {
+            put32(&mut b, 0x640 + i * PLANE_STRIDE + 4 * k, v.to_bits());
+        }
+    }
+    let view = TagView::new(&b, BASE);
+    let w = bsp_weather(&view, &b[..BSP_HEADER], |id| {
+        (id == TagId(0xe77d_0608)).then(|| r"scenarios\multi\lockout\lockout".to_string())
+    })
+    .unwrap();
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].name, "snow_falling");
+    assert_eq!(w[0].kind, "snow");
+    assert_eq!(w[0].amount, 1.0);
+    // Game x -1..2, y -3..4, z 0..10 is glTF x -1..2, y 0..10, z -4..3.
+    assert_eq!(w[0].boxes, vec![[-1.0, 0.0, -4.0, 2.0, 10.0, 3.0]]);
+    assert_eq!(w[0].exclude.len(), 1);
+    // Game +y is glTF -z.
+    assert!(w[0].exclude[0].contains(&[0.0, 0.0, -1.0, 1.0]));
+    assert!(w[0].exclude[0].contains(&[0.0, 1.0, 0.0, 1.0]));
+}
+
+#[test]
+fn weather_kinds_and_amounts_come_from_names() {
+    use crate::live_weather::*;
+    assert_eq!(weather_kind(&["snow_heavy", r"scenarios\solo\06a\snow_heavy"]), "snow");
+    assert_eq!(weather_kind(&["", r"scenarios\solo\08a\dcr_rain_monsoon"]), "rain");
+    assert_eq!(weather_kind(&["", r"scenarios\skies\deltatemple\weather\misty_rain"]), "rain");
+    assert_eq!(weather_kind(&["", r"scenarios\solo\08b\flood_spores"]), "motes");
+    assert_eq!(weather_amount(&["dcr_rain_heavy"]), 2.0);
+    assert_eq!(weather_amount(&["snow_light"]), 0.5);
+    assert_eq!(weather_amount(&["snow_falling"]), 1.0);
 }

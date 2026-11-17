@@ -4,7 +4,7 @@
 // a token with the signed-in account's key; the server republishes
 // message_of_the_day.dat with the same text in all nine languages.
 
-import { For, Show, createSignal, onMount } from "solid-js";
+import { Index, Show, createSignal, onMount } from "solid-js";
 import { Block, Panel } from "../stats/Layout";
 import { getMotd, putMotd } from "./api";
 import { MOTD_MAX_MESSAGES, MOTD_MAX_UNITS, motdError, type MotdDoc } from "./validate";
@@ -74,26 +74,26 @@ export default function MotdEditor() {
               />
             </label>
             <ul class="adm-messages">
-              <For each={d().messages}>
+              <Index each={d().messages}>
                 {(m, i) => (
                   <li>
                     <input
-                      value={m}
+                      value={m()}
                       maxLength={MOTD_MAX_UNITS}
                       onInput={(e) => {
                         const messages = [...d().messages];
-                        messages[i()] = e.currentTarget.value;
+                        messages[i] = e.currentTarget.value;
                         setDoc({ header: d().header, messages });
                       }}
                     />
                     <button
                       class="adm-x"
                       disabled={d().messages.length <= 1}
-                      aria-label={`Remove message ${i() + 1}`}
+                      aria-label={`Remove message ${i + 1}`}
                       onClick={() =>
                         setDoc({
                           header: d().header,
-                          messages: d().messages.filter((_, j) => j !== i()),
+                          messages: d().messages.filter((_, j) => j !== i),
                         })
                       }
                     >
@@ -101,7 +101,7 @@ export default function MotdEditor() {
                     </button>
                   </li>
                 )}
-              </For>
+              </Index>
             </ul>
             <button
               class="s-btn"

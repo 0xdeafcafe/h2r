@@ -8,7 +8,7 @@ use live_proto::game::{
 
 use crate::event::{
     GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlacedObject, Placements,
-    PlayerState, Snapshot,
+    PlayerState, Snapshot, VehicleState,
 };
 use crate::layout;
 use crate::memory::yaw;
@@ -28,6 +28,10 @@ const MAX_ACTOR_WEAPONS: usize = 512;
 
 /// Name for a vehicle or actor whose tag name is not known.
 const UNKNOWN: &str = "unknown";
+
+/// Most dead bodies a frame carries (with the `dead` stance, after the
+/// living actors, within [`MAX_FRAME_ACTORS`]), nearest to a player first.
+pub const MAX_FRAME_BODIES: usize = 32;
 
 struct Match {
     game_id: String,
@@ -61,6 +65,12 @@ struct Match {
     placements: Placements,
     /// Scratch for [`frame_objects`], kept to spare an allocation a frame.
     found: Vec<u32>,
+    /// Each player's unit while alive, and where it stood, by player index:
+    /// a dead player is placed at their body (else where they fell).
+    player_units: BTreeMap<u32, (u32, [f64; 3], f64)>,
+    /// Every unit a player has had whose body is still in the world: those
+    /// bodies are the players', not AI ones (the viewer leaves its own).
+    player_bodies: std::collections::BTreeSet<u32>,
 }
 
 pub struct Session {
@@ -108,10 +118,7 @@ impl Session {
     /// Sets the signed-in account's XUID on the player who plays from local
     /// slot 0. Other players keep whatever the game said (nothing, today).
     fn link(&self, players: &mut [PlayerState]) {
-        let Some(xuid) = self.signed_in else { return };
-        for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
-            p.player.xuid = Some(xuid);
-        }
+        link(self.signed_in, players);
     }
 
     /// The matchmaking playlist (name, id) multiplayer games start from;
@@ -267,6 +274,8 @@ impl Session {
             hits: Vec::new(),
             placements: Placements::default(),
             found: Vec::new(),
+            player_units: BTreeMap::new(),
+            player_bodies: std::collections::BTreeSet::new(),
         });
     }
 
@@ -321,8 +330,7 @@ impl Session {
     }
 
     pub fn sample(&mut self, snapshot: &Snapshot) {
-        let mut linked = snapshot.players.clone();
-        self.link(&mut linked);
+        let signed_in = self.signed_in;
         let Some(current) = &mut self.current else {
             return;
         };
@@ -330,45 +338,21 @@ impl Session {
             return;
         }
         current.tick = snapshot.tick;
-        let before: BTreeMap<u32, u32> = current
-            .players
-            .iter()
-            .map(|p| (p.player.index, p.datum))
-            .collect();
-        let after: BTreeMap<u32, u32> = snapshot
-            .players
-            .iter()
-            .map(|p| (p.player.index, p.datum))
-            .collect();
-        let left: Vec<u32> = before
-            .iter()
-            .filter(|(index, datum)| after.get(index) != Some(datum))
-            .map(|(index, _)| *index)
-            .collect();
-        let joined: Vec<PlayerState> = linked
-            .iter()
-            .filter(|p| before.get(&p.player.index) != Some(&p.datum))
-            .cloned()
-            .collect();
-        for index in left {
-            Self::event_to(
-                &mut self.output,
-                current.game_id.clone(),
-                live_proto::game::PLAYER_LEFT,
-                PlayerLeft { index },
-            );
+        // Most ticks the roster is as it was: nothing joined or left, and
+        // nothing to copy.
+        if !same_roster(signed_in, &current.players, &snapshot.players) {
+            let mut linked = snapshot.players.clone();
+            link(signed_in, &mut linked);
+            Self::roster_changed(&mut self.output, current, &snapshot.players, linked);
         }
-        for player in joined {
-            Self::event_to(
-                &mut self.output,
-                current.game_id.clone(),
-                live_proto::game::PLAYER_JOINED,
-                live_proto::game::PlayerJoined {
-                    player: player.wire_player(),
-                },
-            );
+        for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
+            if let Some(o) = object.as_ref().filter(|_| player.unit != u32::MAX) {
+                current
+                    .player_units
+                    .insert(player.player.index, (player.unit, o.pos, yaw(o.forward)));
+                current.player_bodies.insert(player.unit);
+            }
         }
-        current.players = linked;
 
         let scores = snapshot.scores();
         if snapshot.has_stats
@@ -460,12 +444,35 @@ impl Session {
                 }
                 observed
             };
+            // A body the game has cleared away is no one's any more.
+            let living: std::collections::BTreeSet<u32> = current
+                .player_units
+                .values()
+                .map(|(unit, _, _)| *unit)
+                .collect();
+            current
+                .player_bodies
+                .retain(|d| living.contains(d) || snapshot.bodies.iter().any(|b| b.datum == *d));
+            let player_units = &current.player_units;
             let players = snapshot
                 .players
                 .iter()
                 .zip(&snapshot.objects)
                 .map(|(player, object)| {
                     let alive = player.unit != u32::MAX;
+                    // The dead lie at their body while it lasts, else where they fell.
+                    let fallen = (!alive)
+                        .then(|| player_units.get(&player.player.index))
+                        .flatten()
+                        .map(|(unit, pos, yaw)| {
+                            snapshot
+                                .bodies
+                                .iter()
+                                .find(|b| b.datum == *unit)
+                                .map_or((*pos, *yaw), |b| {
+                                    (b.object.pos, self::yaw(b.object.forward))
+                                })
+                        });
                     let index = player.player.index;
                     let shots = current.shots.get_mut(&index).map(|p| {
                         let n = p.count.min(MAX_FRAME_SHOTS);
@@ -483,12 +490,17 @@ impl Session {
                     FramePlayer {
                         index,
                         alive,
-                        pos: object.as_ref().map_or([0.0; 3], |o| o.pos),
-                        yaw: object.as_ref().map_or(0.0, |o| yaw(o.forward)),
-                        vehicle: object
+                        pos: object
                             .as_ref()
-                            .and_then(|o| o.vehicle)
-                            .map(|v| format!("{v:08x}")),
+                            .map(|o| o.pos)
+                            .or(fallen.map(|f| f.0))
+                            .unwrap_or([0.0; 3]),
+                        yaw: object
+                            .as_ref()
+                            .map(|o| yaw(o.forward))
+                            .or(fallen.map(|f| f.1))
+                            .unwrap_or(0.0),
+                        vehicle: object.as_ref().and_then(|o| o.vehicle).map(hex),
                         species: object
                             .as_ref()
                             .and_then(|o| o.definition)
@@ -518,6 +530,13 @@ impl Session {
                 actor.grenade = observed.grenade;
             }
             let vehicles = frame_vehicles(snapshot, &actors, tags);
+            let bodies = frame_bodies(
+                snapshot,
+                &current.player_bodies,
+                tags,
+                current.campaign,
+                MAX_FRAME_ACTORS.saturating_sub(actors.len()),
+            );
             let machines = frame_machines(snapshot, &mut current.machines_sent, tags);
             let objects = frame_objects(&current.placements, &snapshot.placed, &mut current.found);
             self.output.push(Output::Frame(Frame {
@@ -525,13 +544,62 @@ impl Session {
                 tick: snapshot.tick,
                 players,
                 vehicles,
-                actors: actors.into_iter().map(|(a, _, _)| a).collect(),
+                actors: actors
+                    .into_iter()
+                    .map(|(a, _, _)| a)
+                    .chain(bodies)
+                    .collect(),
                 hits: frame_hits,
                 bsp: snapshot.bsp,
                 machines,
                 objects,
             }));
         }
+    }
+
+    /// Joins and leaves between the current roster and `linked` (the
+    /// fresh one, XUIDs linked), which then becomes the current one.
+    fn roster_changed(
+        output: &mut Vec<Output>,
+        current: &mut Match,
+        fresh: &[PlayerState],
+        linked: Vec<PlayerState>,
+    ) {
+        let before: BTreeMap<u32, u32> = current
+            .players
+            .iter()
+            .map(|p| (p.player.index, p.datum))
+            .collect();
+        let after: BTreeMap<u32, u32> = fresh.iter().map(|p| (p.player.index, p.datum)).collect();
+        let left: Vec<u32> = before
+            .iter()
+            .filter(|(index, datum)| after.get(index) != Some(datum))
+            .map(|(index, _)| *index)
+            .collect();
+        let joined: Vec<PlayerState> = linked
+            .iter()
+            .filter(|p| before.get(&p.player.index) != Some(&p.datum))
+            .cloned()
+            .collect();
+        for index in left {
+            Self::event_to(
+                output,
+                current.game_id.clone(),
+                live_proto::game::PLAYER_LEFT,
+                PlayerLeft { index },
+            );
+        }
+        for player in joined {
+            Self::event_to(
+                output,
+                current.game_id.clone(),
+                live_proto::game::PLAYER_JOINED,
+                live_proto::game::PlayerJoined {
+                    player: player.wire_player(),
+                },
+            );
+        }
+        current.players = linked;
     }
 
     #[cfg(test)]
@@ -596,6 +664,67 @@ impl Session {
     }
 }
 
+/// Gives local player 0 the signed-in account's XUID.
+fn link(signed_in: Option<live_proto::Xuid>, players: &mut [PlayerState]) {
+    let Some(xuid) = signed_in else { return };
+    for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
+        p.player.xuid = Some(xuid);
+    }
+}
+
+/// Whether `current` is `fresh` once [`link`]ed, without copying it.
+fn same_roster(
+    signed_in: Option<live_proto::Xuid>,
+    current: &[PlayerState],
+    fresh: &[PlayerState],
+) -> bool {
+    current.len() == fresh.len()
+        && current.iter().zip(fresh).all(|(c, f)| {
+            // Every field named, so a new one cannot be missed.
+            let PlayerState {
+                datum,
+                player,
+                appearance,
+                local_user,
+                unit,
+                stats,
+            } = f;
+            let live_proto::game::Player {
+                index,
+                name,
+                xuid,
+                team,
+                local,
+                appearance: wire_appearance,
+            } = player;
+            let xuid = match signed_in {
+                Some(x) if *local_user == Some(0) => Some(x),
+                _ => *xuid,
+            };
+            c.datum == *datum
+                && c.appearance == *appearance
+                && c.local_user == *local_user
+                && c.unit == *unit
+                && c.stats == *stats
+                && c.player.index == *index
+                && c.player.name == *name
+                && c.player.xuid == xuid
+                && c.player.team == *team
+                && c.player.local == *local
+                && c.player.appearance == *wire_appearance
+        })
+}
+
+/// A datum as the frame's object ids write it: eight lower-case hex
+/// digits (`format!("{d:08x}")`, without the formatter).
+fn hex(d: u32) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    (0..8)
+        .rev()
+        .map(|i| char::from(DIGITS[(d >> (i * 4)) as usize & 0xf]))
+        .collect()
+}
+
 fn finite_direction(v: [f64; 3]) -> bool {
     v.iter().all(|c| c.is_finite()) && v.iter().map(|c| c * c).sum::<f64>() > 1e-12
 }
@@ -609,12 +738,12 @@ fn team_name(team: i16, campaign: bool) -> String {
 
 /// The frame's actors, nearest to any live player first, capped; each with
 /// its object state (for vehicles).
-fn frame_actors(
-    snapshot: &Snapshot,
+fn frame_actors<'a>(
+    snapshot: &'a Snapshot,
     tags: Option<&TagNames>,
     campaign: bool,
     shots: &BTreeMap<u32, u32>,
-) -> Vec<(FrameActor, ObjectState, u32)> {
+) -> Vec<(FrameActor, &'a ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
         players
@@ -635,7 +764,7 @@ fn frame_actors(
         .map(|(_, a)| {
             let o = &a.object;
             let actor = FrameActor {
-                id: format!("{:08x}", a.datum),
+                id: hex(a.datum),
                 species: o
                     .definition
                     .zip(tags)
@@ -651,10 +780,60 @@ fn frame_actors(
                     .map(|n| (*n).min(MAX_FRAME_SHOTS))
                     .filter(|n| *n > 0),
                 team: o.team.map(|t| team_name(t, campaign)),
-                vehicle: o.vehicle.map(|v| format!("{v:08x}")),
+                vehicle: o.vehicle.map(hex),
                 ..FrameActor::default()
             };
-            (actor, o.clone(), a.datum)
+            (actor, o, a.datum)
+        })
+        .collect()
+}
+
+/// The dead bodies that are not players' (AI, and bodies the level starts
+/// with), nearest to any live player first, at most [`MAX_FRAME_BODIES`]
+/// and `room`: actors with the `dead` stance, there until the game clears
+/// the body away.
+fn frame_bodies(
+    snapshot: &Snapshot,
+    players: &std::collections::BTreeSet<u32>,
+    tags: Option<&TagNames>,
+    campaign: bool,
+    room: usize,
+) -> Vec<FrameActor> {
+    let near: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
+    let distance = |pos: [f64; 3]| {
+        near.iter()
+            .map(|p| (0..3).map(|i| (p[i] - pos[i]).powi(2)).sum::<f64>())
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut bodies: Vec<_> = snapshot
+        .bodies
+        .iter()
+        .filter(|b| {
+            !players.contains(&b.datum)
+                && finite_direction(b.object.forward)
+                && b.object.pos.iter().all(|c| c.is_finite())
+        })
+        .map(|b| (distance(b.object.pos), b))
+        .collect();
+    bodies.sort_by(|a, b| a.0.total_cmp(&b.0));
+    bodies
+        .into_iter()
+        .take(MAX_FRAME_BODIES.min(room))
+        .map(|(_, b)| {
+            let o = &b.object;
+            FrameActor {
+                id: hex(b.datum),
+                species: o
+                    .definition
+                    .zip(tags)
+                    .and_then(|(d, t)| t.actor_species(d))
+                    .unwrap_or_else(|| UNKNOWN.into()),
+                pos: o.pos,
+                yaw: yaw(o.forward),
+                team: o.team.map(|t| team_name(t, campaign)),
+                stance: Some("dead".into()),
+                ..FrameActor::default()
+            }
         })
         .collect()
 }
@@ -664,7 +843,7 @@ fn frame_actors(
 /// scan's, occupied when a biped is parented to it.
 fn frame_vehicles(
     snapshot: &Snapshot,
-    actors: &[(FrameActor, ObjectState, u32)],
+    actors: &[(FrameActor, &ObjectState, u32)],
     tags: Option<&TagNames>,
 ) -> Vec<FrameVehicle> {
     let kind = |definition: Option<u32>| {
@@ -673,24 +852,39 @@ fn frame_vehicles(
             .and_then(|(d, t)| t.vehicle(d))
             .unwrap_or_else(|| UNKNOWN.into())
     };
+    // The world scan's word on each vehicle: what it is mounted on and
+    // where it aims (a turret), also for one a rider read.
+    let scanned: BTreeMap<u32, &VehicleState> =
+        snapshot.vehicles.iter().map(|v| (v.datum, v)).collect();
+    let aim = |d: u32| {
+        scanned
+            .get(&d)
+            .and_then(|v| v.aim)
+            .filter(|a| finite_direction(*a))
+    };
     let mut seen = std::collections::BTreeSet::new();
     let ridden = snapshot
         .objects
         .iter()
         .flatten()
-        .chain(actors.iter().map(|(_, o, _)| o))
+        .chain(actors.iter().map(|(_, o, _)| *o))
         .filter_map(|o| {
             let id = o.vehicle?;
             if !finite_direction(o.forward) || !finite_direction(o.up) || !seen.insert(id) {
                 return None;
             }
             Some(FrameVehicle {
-                id: format!("{id:08x}"),
+                id: hex(id),
                 kind: kind(o.vehicle_definition),
                 pos: o.pos,
                 forward: o.forward,
                 up: o.up,
                 occupied: true,
+                parent: o
+                    .mount
+                    .or_else(|| scanned.get(&id).and_then(|v| v.parent))
+                    .map(hex),
+                aim: aim(id),
             })
         })
         .collect::<Vec<_>>();
@@ -704,12 +898,14 @@ fn frame_vehicles(
                 && seen.insert(v.datum)
         })
         .map(|v| FrameVehicle {
-            id: format!("{:08x}", v.datum),
+            id: hex(v.datum),
             kind: kind(v.definition),
             pos: v.pos,
             forward: v.forward,
             up: v.up,
             occupied: v.occupied,
+            parent: v.parent.map(hex),
+            aim: aim(v.datum),
         })
         .collect();
     world.sort_by_key(|v| !v.occupied);
@@ -768,7 +964,7 @@ fn frame_machines(
                 .filter(|n| live_proto::game::valid_node(n));
             let frame = FrameMachine {
                 node,
-                id: format!("{:08x}", m.datum),
+                id: hex(m.datum),
                 kind,
                 pos: m.pos,
                 forward: m.forward,
@@ -800,24 +996,40 @@ fn frame_objects(
     let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let unit = |v: [f64; 3]| {
         let len = dot(v, v).sqrt();
-        (len.is_finite() && len > 1e-6).then(|| v.map(|c| c / len))
+        (len.is_finite() && len > 1e-6).then(|| [v[0] / len, v[1] / len, v[2] / len])
     };
+    // Each kind's run of `found` (one slot a placement, `placements.kinds`
+    // holds each kind once), by kind; one pass over `placed` fills them all.
+    const KINDS: usize = 32;
+    let mut runs = [(0usize, 0usize); KINDS];
+    let mut total = 0;
+    for (kind, poses) in &placements.kinds {
+        if let Some(run) = runs.get_mut(*kind as usize) {
+            *run = (total, poses.len());
+            total += poses.len();
+        }
+    }
+    found.clear();
+    found.resize(total, NONE);
+    for (n, p) in placed.iter().enumerate() {
+        let Some(&(start, len)) = runs.get(p.kind as usize) else {
+            continue;
+        };
+        if usize::from(p.index) >= len {
+            continue;
+        }
+        let slot = &mut found[start + usize::from(p.index)];
+        // One on its spawn beats one a player holds.
+        if *slot == NONE || (placed[*slot as usize].parented && !p.parented) {
+            *slot = n as u32;
+        }
+    }
     let mut out = Vec::new();
     for (kind, poses) in &placements.kinds {
-        found.clear();
-        found.resize(poses.len(), NONE);
-        for (n, p) in placed.iter().enumerate() {
-            if p.kind != *kind {
-                continue;
-            }
-            let Some(slot) = found.get_mut(usize::from(p.index)) else {
-                continue;
-            };
-            // One on its spawn beats one a player holds.
-            if *slot == NONE || (placed[*slot as usize].parented && !p.parented) {
-                *slot = n as u32;
-            }
-        }
+        let Some(&(start, len)) = runs.get(*kind as usize) else {
+            continue;
+        };
+        let found = &found[start..start + len];
         let held_is_gone = matches!(
             kind,
             ObjectKind::Weapon | ObjectKind::Equipment | ObjectKind::NetgameEquipment
@@ -879,7 +1091,7 @@ fn frame_hits(
     let object = |datum: u32| {
         (datum != u32::MAX).then(|| match player_of_unit.get(&datum) {
             Some(index) => format!("p{index}"),
-            None => format!("{datum:08x}"),
+            None => hex(datum),
         })
     };
     hits.iter()
@@ -961,6 +1173,7 @@ mod tests {
             vehicles: Vec::new(),
             machines: Vec::new(),
             placed: Vec::new(),
+            bodies: Vec::new(),
             bsp: None,
             hits: Vec::new(),
         }
@@ -975,6 +1188,13 @@ mod tests {
                 Output::Frame(_) => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn hex_writes_a_datum_as_the_formatter_does() {
+        for d in [0, 1, 0xa, 0xe280_0001, 0x9001_0000, u32::MAX] {
+            assert_eq!(hex(d), format!("{d:08x}"));
+        }
     }
 
     #[test]
@@ -1495,6 +1715,98 @@ mod tests {
     }
 
     #[test]
+    fn the_dead_lie_at_their_bodies_and_ai_bodies_stay_until_cleared() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        session.start(&campaign(), vec![p.clone()]);
+        session.set_tag_names(campaign_names());
+        session.take_output();
+        let standing = |pos| ObjectState {
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            ..ObjectState::default()
+        };
+        let mut state = snapshot(2, vec![p.clone()]);
+        state.objects[0] = Some(standing([3.0, 4.0, 5.0]));
+        session.sample(&state);
+        frames(&mut session);
+
+        // The player dies; their body has slid a little. A grunt's body and
+        // a living grunt are about.
+        let mut dead = p.clone();
+        dead.unit = u32::MAX;
+        let mut state = snapshot(4, vec![dead.clone()]);
+        let mut own = actor(1, [3.5, 4.0, 5.0], 0);
+        own.datum = 0x9001_0001;
+        own.object.forward = [0.0, 1.0, 0.0];
+        let grunt_body = actor(2, [9.0, 0.0, 0.0], 3);
+        state.bodies = vec![own, grunt_body];
+        state.actors = vec![actor(3, [20.0, 0.0, 0.0], 3)];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        let me = &frame.players[0];
+        assert!(!me.alive);
+        assert_eq!(me.pos, [3.5, 4.0, 5.0], "at the body");
+        assert!((me.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert_eq!(me.stance.as_deref(), Some("dead"));
+        // The living first, then the AI body as a dead actor; the player's
+        // own body is not an actor.
+        assert_eq!(frame.actors.len(), 2);
+        assert_eq!(frame.actors[0].id, "90030003");
+        assert_ne!(frame.actors[0].stance.as_deref(), Some("dead"));
+        let body = &frame.actors[1];
+        assert_eq!(body.id, "90020002");
+        assert_eq!(body.stance.as_deref(), Some("dead"));
+        assert_eq!(body.species, "grunt");
+        assert_eq!(body.pos, [9.0, 0.0, 0.0]);
+        assert_eq!(body.team.as_deref(), Some("covenant"));
+        assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
+
+        // The game clears the player's body away: they lie where they fell.
+        let mut state = snapshot(6, vec![dead]);
+        state.bodies = vec![];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.players[0].pos, [3.0, 4.0, 5.0]);
+        assert!(frame.actors.is_empty(), "the grunt's body is gone too");
+    }
+
+    #[test]
+    fn bodies_are_capped_within_the_actors() {
+        let mut session = Session::new("test", None);
+        session.start(&campaign(), vec![player(0, 0)]);
+        session.take_output();
+        let mut state = snapshot(2, vec![player(0, 0)]);
+        state.actors = (0..MAX_FRAME_ACTORS as u32 - 4)
+            .map(|i| actor(i, [0.0; 3], 3))
+            .collect();
+        state.bodies = (0..10)
+            .map(|i| actor(200 + i, [i as f64, 0.0, 0.0], 3))
+            .collect();
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.actors.len(), MAX_FRAME_ACTORS);
+        let dead = frame
+            .actors
+            .iter()
+            .filter(|a| a.stance.as_deref() == Some("dead"))
+            .count();
+        assert_eq!(dead, 4, "the nearest bodies fill what room is left");
+        state.actors.clear();
+        state.tick = 4;
+        state.bodies = (0..100)
+            .map(|i| actor(200 + i, [i as f64, 0.0, 0.0], 3))
+            .collect();
+        session.sample(&state);
+        assert_eq!(
+            frames(&mut session).remove(0).actors.len(),
+            MAX_FRAME_BODIES
+        );
+    }
+
+    #[test]
     fn campaign_frames_carry_actors_and_occupied_vehicles() {
         let mut session = Session::new("test", None);
         let mut p = player(0, 0);
@@ -1560,6 +1872,8 @@ mod tests {
                 forward: [0.0, 1.0, 0.0],
                 up: [0.0, 0.6, 0.8],
                 occupied: true,
+                parent: None,
+                aim: None,
             }]
         );
         assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
@@ -1629,6 +1943,35 @@ mod tests {
         );
         state.teams[1].score = 7;
         assert_eq!(state.winner(true), None);
+    }
+
+    #[test]
+    fn an_unchanged_roster_is_the_same_once_linked() {
+        let xuid = live_proto::Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let fresh = vec![player(0, 1), player(1, 2)];
+        let mut current = fresh.clone();
+        link(Some(xuid), &mut current);
+        assert!(same_roster(Some(xuid), &current, &fresh));
+        assert!(
+            !same_roster(None, &current, &fresh),
+            "the link is part of it"
+        );
+        let mut renamed = fresh.clone();
+        renamed[1].player.name = "Q".into();
+        assert!(!same_roster(Some(xuid), &current, &renamed));
+        let mut scored = fresh.clone();
+        scored[0].stats.kills = 1;
+        assert!(!same_roster(Some(xuid), &current, &scored));
+        assert!(!same_roster(Some(xuid), &current, &fresh[..1]));
+    }
+
+    #[test]
+    fn a_stats_change_reaches_the_roster_the_end_reports() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0)]);
+        session.take_output();
+        session.sample(&snapshot(2, vec![player(0, 5)]));
+        assert_eq!(session.current.as_ref().unwrap().players[0].stats.score, 5);
     }
 
     #[test]
@@ -1751,8 +2094,14 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             occupied,
+            parent: None,
+            aim: None,
         };
-        state.vehicles = vec![vehicle(5, false), vehicle(6, true)];
+        // Vehicle 9 is vehicle 6's turret, aiming up and left.
+        let mut turret = vehicle(9, true);
+        turret.parent = Some(0x9006_0006);
+        turret.aim = Some([0.0, 0.6, 0.8]);
+        state.vehicles = vec![vehicle(5, false), vehicle(6, true), turret];
         state.machines = vec![
             machine(7, [1.0, 1.0, 1.0], Some(0.0)),
             machine(8, [2.0, 2.0, 2.0], None),
@@ -1818,10 +2167,15 @@ mod tests {
             vehicles,
             [
                 ("90060006", "warthog", true),
+                ("90090009", "warthog", true),
                 ("90050005", "warthog", false)
             ],
             "occupied first"
         );
+        assert_eq!(frame.vehicles[0].parent, None);
+        assert_eq!(frame.vehicles[0].aim, None);
+        assert_eq!(frame.vehicles[1].parent.as_deref(), Some("90060006"));
+        assert_eq!(frame.vehicles[1].aim, Some([0.0, 0.6, 0.8]));
         let machines: Vec<_> = frame
             .machines
             .iter()

@@ -26,7 +26,7 @@
 //!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -82,9 +82,47 @@ pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -
 pub struct DrawStats {
     pub presents: u64,
     /// (outcome, target) -> draws; the outcome is `None` for drawn.
-    by_outcome: HashMap<(Option<String>, Target), u64>,
+    by_outcome: rustc_hash::FxHashMap<(Option<String>, Target), u64>,
     /// Texture (format, kind) bound to drawn draws -> draws.
-    textures: HashMap<(D3DFormat, TextureKind), u64>,
+    textures: rustc_hash::FxHashMap<(D3DFormat, TextureKind), u64>,
+    /// Frames (numbered as `frame-N.png`) with a drawn draw that samples
+    /// a depth texture: Halo's shadow apply (layer 11) reading a shadow
+    /// map. In order, each once.
+    shadow_frames: Vec<u64>,
+}
+
+/// [`DrawStats::shadow_frames`] of the run, for the screenshot hook
+/// (`H2_BOOT_GFX_SHADOWS`), which may run on the render thread.
+static SHADOW_FRAMES: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
+
+/// Whether frame `n` (as `frame-N.png` numbers it) sampled a shadow map.
+/// Its draws reach the wrapper before its present reaches the backend, so
+/// the answer is final by the time the backend presents it.
+pub fn samples_shadow_map(n: u64) -> bool {
+    SHADOW_FRAMES.lock().unwrap().contains(&n)
+}
+
+/// `frames` (ascending) as ranges, `a-b` or `a`, the first `max` of them.
+fn ranges(frames: &[u64], max: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < frames.len() {
+        let mut j = i;
+        while j + 1 < frames.len() && frames[j + 1] == frames[j] + 1 {
+            j += 1;
+        }
+        if out.len() == max {
+            out.push("...".into());
+            break;
+        }
+        out.push(if i == j {
+            format!("{}", frames[i])
+        } else {
+            format!("{}-{}", frames[i], frames[j])
+        });
+        i = j + 1;
+    }
+    out.join(", ")
 }
 
 /// A draw target's width, height and format.
@@ -114,16 +152,24 @@ impl DrawStats {
         m
     }
 
-    /// Adds one draw.
-    fn add(&mut self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) {
+    /// Adds one draw. `Some(frame)`: the first draw of this frame to
+    /// sample a depth texture (a shadow map).
+    fn add(&mut self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) -> Option<u64> {
         let drawn = matches!(r, Ok(DrawOutcome::Drawn));
         let out = (!drawn).then(|| outcome_name(r));
         *self.by_outcome.entry((out, (t.width, t.height, t.format))).or_default() += 1;
-        if drawn {
-            for ti in info.iter().flatten() {
-                *self.textures.entry((ti.format, ti.kind)).or_default() += 1;
-            }
+        if !drawn {
+            return None;
         }
+        for ti in info.iter().flatten() {
+            *self.textures.entry((ti.format, ti.kind)).or_default() += 1;
+        }
+        let frame = self.presents + 1;
+        let shadow = info.iter().flatten().any(|t| t.format.is_depth());
+        (shadow && self.shadow_frames.last() != Some(&frame)).then(|| {
+            self.shadow_frames.push(frame);
+            frame
+        })
     }
 
     pub fn report(&self) -> String {
@@ -133,6 +179,13 @@ impl DrawStats {
         }
         for (k, v) in &self.textures() {
             s += &format!("  texture {v:>8}  {k}\n");
+        }
+        if !self.shadow_frames.is_empty() {
+            s += &format!(
+                "  shadow-map frames {:>3}  {}\n",
+                self.shadow_frames.len(),
+                ranges(&self.shadow_frames, 40)
+            );
         }
         s
     }
@@ -291,7 +344,10 @@ impl<B> DiagBackend<B> {
 
     /// [`Self::count`] without the names: the path every draw takes.
     fn tally(&self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) {
-        self.stats.lock().unwrap().add(r, t, info);
+        let frame = self.stats.lock().unwrap().add(r, t, info);
+        if let Some(n) = frame {
+            SHADOW_FRAMES.lock().unwrap().insert(n);
+        }
     }
 }
 
@@ -400,6 +456,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
         self.inner.try_pixel_count(ticket)
+    }
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.inner.pixel_count_unsubmitted(ticket)
     }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
@@ -749,6 +808,43 @@ mod tests {
              \x20 texture        1  A8R8G8B8 Cube\n\
              \x20 texture        2  Dxt1 D2\n"
         );
+    }
+
+    /// Frames whose drawn draws sample a depth texture (a shadow map) are
+    /// listed once each, numbered as `frame-N.png` is; a skipped draw or a
+    /// colour texture does not count.
+    #[test]
+    fn report_lists_the_frames_that_sample_a_shadow_map() {
+        let t = TargetInfo { width: 640, height: 480, format: D3DFormat::LinA8R8G8B8, depth_format: None };
+        let tex = |format| TextureInfo {
+            header: 0x1000,
+            palette: 0,
+            format,
+            kind: TextureKind::D2,
+            width: 512,
+            height: 512,
+            depth: 1,
+            levels: 1,
+        };
+        let map = [Some(tex(D3DFormat::LinD24S8)), Some(tex(D3DFormat::L8)), None, None];
+        let colour = [Some(tex(D3DFormat::LinA8R8G8B8)), None, None, None];
+        let mut s = DrawStats::default();
+        let mut seen = Vec::new();
+        for frame in 1..=9u64 {
+            s.presents = frame - 1;
+            seen.push(s.add(&Ok(DrawOutcome::Drawn), &t, &colour));
+            if [3, 4, 5, 8].contains(&frame) {
+                seen.push(s.add(&Ok(DrawOutcome::Drawn), &t, &map));
+                seen.push(s.add(&Ok(DrawOutcome::Drawn), &t, &map));
+            }
+            if frame == 6 {
+                seen.push(s.add(&Ok(DrawOutcome::Skipped("no view".into())), &t, &map));
+            }
+        }
+        let seen: Vec<u64> = seen.into_iter().flatten().collect();
+        assert_eq!(seen, [3, 4, 5, 8]);
+        assert!(s.report().ends_with("  shadow-map frames   4  3-5, 8\n"), "{}", s.report());
+        assert_eq!(ranges(&[1, 2, 4, 6, 7], 2), "1-2, 4, ...");
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

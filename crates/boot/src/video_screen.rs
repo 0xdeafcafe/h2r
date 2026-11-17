@@ -1,7 +1,7 @@
 //! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
 //! (after Player Profiles and Game Variants) that opens a Controls screen
-//! holding our video rows (Field of View, Frame Rate, Resolution, Mute
-//! Button: every setting whose `Def` names this screen, through the `ui`
+//! holding our video rows (Field of View, Frame Rate, Resolution,
+//! Lighting, Mute Button, Aim Assist: every setting whose `Def` names this screen, through the `ui`
 //! model) instead of the retail six. See docs/game/settings-menu.md "Video
 //! screen" for the trace.
 //!
@@ -34,8 +34,11 @@ use std::sync::Arc;
 
 use settings::Store;
 
-use crate::layout_glue::{Gm, ID_BASE};
-use crate::setting_defs::{FOV, PAD_SPEAKER};
+use crate::layout_glue::Gm;
+use crate::setting_defs::{
+    FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
+    TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
+};
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
 
@@ -57,13 +60,22 @@ pub const LIST: List = List::Screen(SCREEN);
 /// The string ids the model's texts take: past the layouts' (`0x00` to
 /// `0x1f`) and the small Controls list's (`0x30`, `0x31`), short of the list
 /// name (`0xff`).
-pub const MODEL_IDS: Range<u32> = ID_BASE + 0x40..ID_BASE + 0xff;
+pub const MODEL_IDS: Range<u32> = MODEL.base..MODEL.base + MODEL.len;
+const MODEL: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("ui model");
 
-/// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_FOV_ROW` and
-/// `H2_NO_VIDEO_SCREEN` take theirs out.
+/// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_STEAM_ROWS`,
+/// `H2_NO_TOUCH_ROWS`, `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs
+/// out. On iOS the touch controls' rows take the Steam Controller's place
+/// (no Steam Controller reaches an iPhone or iPad); elsewhere there are no
+/// touch controls, so no touch rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switches {
     pub speaker_row: bool,
+    /// The Steam Controller's three rows on Controls, after the speaker's.
+    pub steam_rows: bool,
+    /// The touch controls' three rows on Controls (iOS), after the
+    /// speaker's: look speed, crouch, gyro.
+    pub touch_rows: bool,
     pub fov_row: bool,
     pub video_screen: bool,
 }
@@ -71,6 +83,8 @@ pub struct Switches {
 impl Switches {
     pub const ALL: Switches = Switches {
         speaker_row: true,
+        steam_rows: true,
+        touch_rows: false,
         fov_row: true,
         video_screen: true,
     };
@@ -79,11 +93,16 @@ impl Switches {
         let off = |k: &str| std::env::var_os(k).is_some();
         Switches {
             speaker_row: !off("H2_NO_SPEAKER_ROW"),
+            steam_rows: !IOS && !off("H2_NO_STEAM_ROWS"),
+            touch_rows: IOS && !off("H2_NO_TOUCH_ROWS"),
             fov_row: !off("H2_NO_FOV_ROW"),
             video_screen: !off("H2_NO_VIDEO_SCREEN"),
         }
     }
 }
+
+/// The touch controls' rows replace the Steam Controller's here.
+const IOS: bool = cfg!(target_os = "ios");
 
 /// The retail Settings list: its screen id, its datum array's name (VA)
 /// and row count, its row text (thiscall, item at `[esp+4]`, `ret 8`) and
@@ -98,8 +117,8 @@ pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
 
 /// The model of our rows: the Video screen from the settings that name it,
 /// the Video row that opens it on the Settings list (left out when the
-/// screen has no rows), and the Controller Speaker row on Controls (with
-/// the game's own On and Off).
+/// screen has no rows), and on Controls the Controller Speaker row and the
+/// Steam Controller's three (on/off rows with the game's own On and Off).
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title("Video");
     if on.video_screen {
@@ -112,6 +131,25 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     if on.speaker_row {
         controls = controls
             .row(Row::setting(PAD_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID));
+    }
+    // The Steam Controller's rows (docs/input/steam-controller.md) sit with
+    // the controller and speaker options.
+    if on.steam_rows {
+        controls = controls
+            .row(Row::setting(STEAM_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID))
+            .row(Row::setting(STEAM_SENSITIVITY.key))
+            .row(Row::setting(STEAM_LEFT_PAD.key));
+    }
+    // The iOS touch controls' rows (docs/runtime/ios.md).
+    if on.touch_rows {
+        controls = controls
+            .row(Row::setting(TOUCH_LOOK.key))
+            .row(Row::setting(TOUCH_CROUCH.key))
+            .row(Row::setting(TOUCH_GYRO.key))
+            .row(Row::setting(TOUCH_ACCEL.key))
+            .row(
+                Row::setting(TOUCH_AUTO_FIRE.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
+            );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
     Model::new(store, vec![video], vec![controls, settings], MODEL_IDS)
@@ -169,7 +207,7 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, PAD_MUTE, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE, RENDER_SCALE};
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -252,7 +290,10 @@ mod tests {
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key),
+                RowKind::Setting(crate::setting_defs::HALO1_SANDBOX.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -264,9 +305,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 3);
+        assert_eq!(no_fov.rows(LIST).len(), 6);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
-        assert_eq!(m.count(List::Controls, 6), 7, "the speaker row only");
+        assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
         // No Video screen: no Video row on Settings either.
         let none = model(
             store(),
@@ -277,18 +318,53 @@ mod tests {
         )
         .unwrap();
         assert!(none.rows(LIST).is_empty());
-        assert_eq!(none.count(List::Controls, 6), 7);
+        assert_eq!(none.count(List::Controls, 6), 10);
         assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
         let bare = model(
             store(),
             Switches {
                 video_screen: false,
                 speaker_row: false,
+                steam_rows: false,
+                touch_rows: false,
                 fov_row: true,
             },
         )
         .unwrap();
         assert_eq!(bare.count(List::Controls, 6), 6);
+    }
+
+    /// iOS: the touch controls' rows where Steam's would be, drawn with
+    /// their values and stepped by a press.
+    #[test]
+    fn the_touch_rows_take_the_steam_rows_place_on_ios() {
+        let ios = Switches {
+            steam_rows: false,
+            touch_rows: true,
+            ..Switches::ALL
+        };
+        let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
+        assert_eq!(
+            m.count(List::Controls, 6),
+            12,
+            "the speaker's and the touch rows"
+        );
+        assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
+        assert_eq!(drawn(&m, List::Controls, 8), s("Touch Crouch", "Toggle"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Gyro Aim", "0"));
+        assert_eq!(drawn(&m, List::Controls, 10), s("Look Acceleration", "5"));
+        assert!(drawn(&m, List::Controls, 11).is_some(), "Touch Auto Fire");
+        assert_eq!(drawn(&m, List::Controls, 12), None);
+        assert_eq!(
+            m.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
+            None
+        );
+        const { assert!(!Switches::ALL.touch_rows, "no touch controls off iOS") };
+        if cfg!(target_os = "ios") {
+            assert_eq!(Switches::from_env(), ios);
+        } else {
+            assert!(!Switches::from_env().touch_rows);
+        }
     }
 
     #[test]
@@ -304,7 +380,13 @@ mod tests {
         for r in [0i16, 1, 3, -1] {
             assert_eq!(drawn(&m, List::Settings, r), None, "{r}");
         }
-        assert_eq!(drawn(&m, List::Controls, 7), None);
+        assert_eq!(
+            drawn(&m, List::Controls, 7),
+            s("Steam Pad Speaker", "0x2000181")
+        );
+        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "D-Pad"));
+        assert_eq!(drawn(&m, List::Controls, 10), None);
         // The Settings row text draws one text: the label, in slot 0.
         let title = m.title_id(SCREEN).unwrap();
         assert_eq!(settings_text(&m, Some(2)), Some((0, title)));
@@ -325,7 +407,20 @@ mod tests {
             no_speaker.index_of(List::Settings, &RowKind::Open(SCREEN)),
             Some(2)
         );
-        assert_eq!(no_speaker.count(List::Controls, 6), 6);
+        assert_eq!(no_speaker.count(List::Controls, 6), 9, "Steam's rows only");
+        assert_eq!(
+            no_speaker.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
+            Some(6)
+        );
+        let no_steam = model(
+            Arc::new(Store::defaults(ALL)),
+            Switches {
+                steam_rows: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(no_steam.count(List::Controls, 6), 7, "the speaker row only");
     }
 
     #[test]
@@ -351,7 +446,7 @@ mod tests {
     #[test]
     fn the_controls_list_grows_by_our_rows() {
         let m = all();
-        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 7);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 10);
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
@@ -380,9 +475,43 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
-        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "On"));
-        assert_eq!(drawn(&m, LIST, 4), None);
+        assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
+        assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "On"));
+        assert_eq!(drawn(&m, LIST, 5), s("Aim Assist", "Auto"));
+        assert_eq!(drawn(&m, LIST, 6), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        assert_eq!(drawn(&m, LIST, 7), None);
         assert_eq!(drawn(&m, LIST, -1), None);
+    }
+
+    #[test]
+    fn the_halo1_maps_row_picks_the_sandbox_for_the_next_launch() {
+        use crate::setting_defs::{HALO1_SANDBOX, halo1_sandbox};
+        let dir = std::env::temp_dir().join(format!("h2-video-{}-sandbox", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings::path_in(&dir);
+        let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
+        let m = model(Arc::clone(&store), Switches::ALL).unwrap();
+        // The last Video row.
+        let row = m.rows(LIST).len() as i16 - 1;
+        assert_eq!(m.rows(LIST)[row as usize].kind, RowKind::Setting(HALO1_SANDBOX.key));
+        assert_eq!(drawn(&m, LIST, row), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        assert_eq!(
+            press(&m, LIST, row),
+            Chosen::Stepped("multiplayer.halo1_sandbox: h2 from the next launch".into())
+        );
+        assert_eq!(
+            drawn(&m, LIST, row),
+            s("Halo 1 Maps", "Halo 2 Sandbox (restart)")
+        );
+        // Saved for the next launch, when new maps are installed.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("halo1_sandbox = \"h2\""), "{saved}");
+        let again = Store::load(ALL, Some(&path), &|_| None, &[]).0;
+        assert_eq!(halo1_sandbox(&again), "h2");
+        press(&m, LIST, row);
+        assert_eq!(drawn(&m, LIST, row), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -397,9 +526,10 @@ mod tests {
         let fps = store.handle::<u32>(FPS.key);
         let scale = store.handle::<u32>(RENDER_SCALE.key);
         let mute = store.handle::<bool>(PAD_MUTE.key);
+        let lighting = store.handle::<u32>(LIGHTING.key);
         // What the window, the view backend and the HID thread are told.
         let told = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for key in [FPS.key, RENDER_SCALE.key, PAD_MUTE.key] {
+        for key in [FPS.key, RENDER_SCALE.key, LIGHTING.key, PAD_MUTE.key] {
             let told = Arc::clone(&told);
             store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
         }
@@ -435,11 +565,31 @@ mod tests {
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
+        // The Steam Controller's rows step and save like the speaker's.
+        assert_eq!(
+            press(&m, List::Controls, 7),
+            Chosen::Stepped("steam_pad.speaker: false".into())
+        );
+        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
+        press(&m, List::Controls, 8);
+        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "6"));
+        press(&m, List::Controls, 9);
+        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "Stick"));
         assert_eq!(
             press(&m, LIST, 3),
+            Chosen::Stepped("graphics.lighting: e3".into())
+        );
+        assert_eq!(drawn(&m, LIST, 3), s("Lighting", "E3"));
+        assert_eq!(
+            crate::setting_defs::lighting_of(lighting.get()),
+            d3d::Lighting::E3,
+            "applies at once"
+        );
+        assert_eq!(
+            press(&m, LIST, 4),
             Chosen::Stepped("pad.mute_button: false".into())
         );
-        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off"));
+        assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "Off"));
         assert!(!mute.get(), "applies at once");
         // Each change reached its listener, in order, once.
         assert_eq!(
@@ -450,21 +600,28 @@ mod tests {
                 (FPS.key, Value::Int(0)),
                 (FPS.key, Value::Int(30)),
                 (RENDER_SCALE.key, Value::Int(2)),
+                (LIGHTING.key, Value::Int(1)),
                 (PAD_MUTE.key, Value::Bool(false)),
             ]
         );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(press(&m, LIST, 4), Chosen::Nothing);
+        assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 10), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
         assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
         assert_eq!(t["graphics"]["render_scale"].as_integer(), Some(2));
+        assert_eq!(t["graphics"]["lighting"].as_str(), Some("e3"));
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
         assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
+        assert_eq!(t["steam_pad"]["speaker"].as_bool(), Some(false));
+        assert_eq!(t["steam_pad"]["sensitivity"].as_integer(), Some(6));
+        assert_eq!(t["steam_pad"]["left_pad"].as_str(), Some("stick"));
         let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
         assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(next.get(LIGHTING.key), Some(Value::Int(1)));
     }
 
     #[test]
@@ -498,8 +655,15 @@ mod tests {
         ] {
             assert!(text(t), "{t:?}");
         }
-        // Every row applies at once: no "(restart)" text at all.
-        assert!(all.iter().all(|(_, s)| !s.contains("(restart)")), "{all:?}");
+        // Every row applies at once but Halo 1 Maps, whose values say
+        // "(restart)" while the saved one differs.
+        assert!(
+            all.iter()
+                .filter(|(_, s)| s.contains("(restart)"))
+                .all(|(_, s)| s.starts_with("Halo ") && s.contains(" Sandbox")),
+            "{all:?}"
+        );
+        assert!(text("Halo 1 Maps") && text("Halo 2 Sandbox (restart)"));
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
         ids.extend(

@@ -3,6 +3,7 @@
 //! neither guard escapes an invocation. See docs/live/live-boundary.md for the ABI.
 #![deny(unsafe_code)]
 
+pub mod account_setup;
 mod client;
 mod config;
 mod invites;
@@ -19,6 +20,8 @@ mod host;
 mod network;
 mod network_config;
 mod outbox;
+pub mod platform;
+pub mod signin;
 pub use outbox::{
     BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
     MessageValue, RecruitProperties,
@@ -28,9 +31,10 @@ mod qos_memory;
 mod sessions;
 pub use sessions::{
     LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, SkullsProbe,
-    Visibility, VisibilityProbe,
+    Visibility, VisibilityProbe, ping_moved,
 };
 mod state;
+pub use state::coop_activity;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod storage_api;
@@ -39,7 +43,7 @@ pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};
 
-pub use config::{ConfigError, LiveConfig};
+pub use config::{ConfigError, LiveConfig, NEW_ACCOUNT_TAG, NEW_ACCOUNT_XUID};
 use entries::{Entry, Operation};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, GuestFault, TransferAbi};
 pub use state::USER_SIZE;
@@ -124,6 +128,46 @@ pub enum HostSkulls {
     },
 }
 
+/// A friend, as the co-op screen's friends list shows them
+/// ([`Hle::friends`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Friend {
+    pub xuid: live_proto::Xuid,
+    pub gamertag: String,
+    pub online: bool,
+    pub playing: bool,
+    pub activity: Option<String>,
+}
+
+/// The session this console joined, as the server last described it
+/// ([`Hle::joined`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Joined {
+    /// No session joined: no key registered but this console's own.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read (a System Link
+    /// game, or no server).
+    Unknown { session: String },
+    /// Joined it, and this is what its host advertised; `refreshed` when
+    /// read just now rather than at the join.
+    Known {
+        session: Box<live_proto::session::Session>,
+        refreshed: bool,
+    },
+}
+
+impl Joined {
+    /// The co-op campaign of the joined session, when it is one.
+    pub fn campaign(&self) -> Option<&live_proto::session::Campaign> {
+        match self {
+            Joined::Known { session, .. } if session.advertisement.is_coop() => {
+                session.advertisement.campaign.as_ref()
+            }
+            _ => None,
+        }
+    }
+}
+
 pub struct Hle {
     config: LiveConfig,
     state: Mutex<state::State>,
@@ -179,10 +223,64 @@ impl Hle {
             None
         };
         Ok(Arc::new(Self {
+            state: Mutex::new(state::State::new(
+                accounts,
+                address,
+                service,
+                config.clone(),
+            )),
             config,
-            state: Mutex::new(state::State::new(accounts, address, service)),
             network: network::Network::new(network),
         }))
+    }
+    /// Reads the accounts file again (after [`account_setup::save`]), so a
+    /// new or recovered account is listed by `XOnlineGetUsers` and can sign
+    /// in without a restart. Accounts signed in now stay signed in; the
+    /// file is checked as at startup, and on an error nothing changes.
+    /// Returns how many accounts there are. No guest memory access.
+    pub fn reload_accounts(&self) -> Result<usize, ConfigError> {
+        let accounts = self.config.accounts()?;
+        let n = accounts.len();
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_accounts(accounts);
+        Ok(n)
+    }
+    /// The in-game sign-in prompt, while a logon waits for a code
+    /// ([`signin`]). Takes in a finished server call; no guest memory.
+    pub fn signin(&self) -> Option<signin::Prompt> {
+        self.lock().signin()
+    }
+    /// The controller whose prompt should open now: once per sign-in.
+    pub fn take_signin_open(&self) -> Option<u32> {
+        self.lock().take_signin_open()
+    }
+    /// The code the player typed; the check runs on its own thread.
+    /// False when no code is being asked for.
+    pub fn signin_submit(&self, code: &str) -> bool {
+        self.lock().signin_submit(code)
+    }
+    /// Make the gamertag on the server, when the prompt offers that.
+    pub fn signin_create(&self) -> bool {
+        self.lock().signin_create()
+    }
+    /// Text typed on the game's keyboard for a new account's gamertag or
+    /// invite; `None` when the keyboard was backed out of. False when no
+    /// text is being asked for.
+    pub fn signin_typed(&self, text: Option<&str>) -> bool {
+        self.lock().signin_typed(text)
+    }
+    /// The player backed out: the waiting logon fails.
+    pub fn signin_cancel(&self) {
+        self.lock().signin_cancel()
+    }
+    /// The prompt closed; a finished sign-in is forgotten.
+    pub fn signin_dismiss(&self) {
+        self.lock().signin_dismiss()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, state::State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Telemetry can call this after the server assigns a game ID; no I/O or
     /// guest memory access occurs on the caller's thread. None returns to online.
@@ -237,16 +335,16 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_skulls_probe(probe)
     }
-    /// What the host of the session this console joined advertised as its
-    /// skulls: asked of the server again (waiting at most `wait`), else as
-    /// last read (the search or find that led to the join). Call with no
-    /// guest memory held; it never takes guest memory.
-    pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
+    /// The session this console joined, asked of the server again (waiting
+    /// at most `wait`), else as last read (the search, find or invite that
+    /// led to the join). Call with no guest memory held; it never takes
+    /// guest memory.
+    pub fn joined(&self, wait: std::time::Duration) -> Joined {
         let keys = self.network.registered_keys();
         let (id, pending, seen) = {
             let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(id) = s.joined_session(&keys) else {
-                return HostSkulls::NotJoined;
+                return Joined::NotJoined;
             };
             let (pending, seen) = s.refresh_session(&id);
             (id, pending, seen)
@@ -272,13 +370,116 @@ impl Hle {
                 .cloned()
         });
         match known {
-            Some(skulls) => HostSkulls::Known {
-                session: id,
-                skulls: skulls.unwrap_or_default(),
+            Some(session) => Joined::Known {
+                session: Box::new(session),
                 refreshed,
             },
-            None => HostSkulls::Unknown { session: id },
+            None => Joined::Unknown { session: id },
         }
+    }
+    /// What the host of the session this console joined advertised as its
+    /// skulls: [`Hle::joined`]'s answer, for the skulls.
+    pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
+        match self.joined(wait) {
+            Joined::NotJoined => HostSkulls::NotJoined,
+            Joined::Unknown { session } => HostSkulls::Unknown { session },
+            Joined::Known { session, refreshed } => HostSkulls::Known {
+                session: session.session_id.clone(),
+                skulls: session.advertisement.skulls.clone().unwrap_or_default(),
+                refreshed,
+            },
+        }
+    }
+    /// Arms (Some) or leaves (None) a co-op campaign on this console's lobby
+    /// (docs/live/live-coop.md, "Co-op over Live"): its advertisements become
+    /// `coop` sessions naming the campaign, friends-only unless the host
+    /// made them invite-only, carrying the host's campaign `skulls`
+    /// (engine indices) in place of the multiplayer ones, and presence says
+    /// "Co-op: <level>". Open advertisements are updated at once. No guest
+    /// memory access.
+    pub fn set_coop(
+        &self,
+        campaign: Option<live_proto::session::Campaign>,
+        skulls: Option<Vec<u8>>,
+    ) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_coop(campaign, skulls)
+    }
+    /// Co-op ping, the guest's side (docs/live/live-coop.md, "Ping"): one
+    /// ping to the host's QoS responder (its XNet endpoint's port + 2),
+    /// carrying `report`, our last round trip, for the host to show. The
+    /// round trip in ms, None when no echo came back within `timeout`.
+    /// Blocks up to `timeout` with no lock held.
+    pub fn ping_host(
+        &self,
+        host: std::net::SocketAddrV4,
+        report: Option<u16>,
+        timeout: std::time::Duration,
+    ) -> Option<u16> {
+        let qos = std::net::SocketAddrV4::new(*host.ip(), host.port().wrapping_add(2));
+        qos::ping(qos, report.unwrap_or(0), timeout).map(qos::round_trip_ms)
+    }
+    /// Co-op ping, the host's side: keeps the QoS responder up (it answers
+    /// the guest's pings), and returns the slowest round trip a guest
+    /// reported in the last `fresh`.
+    pub fn guest_ping(&self, fresh: std::time::Duration) -> Option<u16> {
+        if let Err(e) = self.network.ensure_responder() {
+            eprintln!("live: co-op ping: the QoS responder did not start: {e}");
+        }
+        self.network
+            .reported_pings(fresh)
+            .into_iter()
+            .map(|(_, ms)| ms)
+            .max()
+    }
+    /// A co-op host's round trip to its guest, for its sessions (None: no
+    /// guest). No guest memory access.
+    pub fn set_coop_ping(&self, ms: Option<u16>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_coop_ping(ms)
+    }
+    /// The co-op campaign armed with [`Hle::set_coop`], if any.
+    pub fn coop(&self) -> Option<live_proto::session::Campaign> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).coop()
+    }
+    /// Presence's activity in words; None clears it. No guest memory access.
+    pub fn set_activity(&self, activity: Option<&str>) -> Result<(), u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_activity(activity)
+    }
+    pub fn activity(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .activity()
+            .map(str::to_owned)
+    }
+    /// Controller `controller`'s friends as last read, online first; asks
+    /// the server again in the background. No guest memory access.
+    pub fn friends(&self, controller: usize) -> Vec<Friend> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .friend_list(controller)
+    }
+    /// Sends `to` a game invitation to this console's advertised lobby from
+    /// controller `controller`'s player; the session id on success. No
+    /// guest memory access.
+    pub fn invite_to_lobby(&self, controller: usize, to: live_proto::Xuid) -> Result<String, u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .invite_to_lobby(controller, to)
+    }
+    /// The signed-in player on controller `controller`, 0 for none.
+    pub fn user(&self, controller: usize) -> u64 {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).user(controller)
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state

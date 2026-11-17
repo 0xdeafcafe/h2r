@@ -414,7 +414,7 @@ render pass and 38cd3f7 onwards at 200, and the later commits in that
 range (compile workers, render thread, W-buffer) change neither count
 nor cost.
 
-**The fast rule** (the default; `H2_GFX_MERGE_PASSES=fast` names it,
+**The fast rule** (the default until 2026-11-18; `H2_GFX_MERGE_PASSES=fast`,
 `GfxBackend::set_merge_discards`) gives a discarding draw a render pass
 of its own only after a partly masked draw (`merge_split` in
 `d3d::gfx_backend`), which is the one trigger the menu cases share.
@@ -434,6 +434,21 @@ visible: the differences are a few levels on edge pixels, and merged
 passes already accept that trade. Whether the exact rule is exact on
 that level frame was not checked: the self-check ran only with the fast
 rule on.
+
+**The loose rule** (the default since 2026-11-18;
+`H2_GFX_MERGE_PASSES=loose`, `GfxBackend::set_merge_masks`) drops the
+merge-rule splits altogether: no draw starts a render pass of its own
+because of the draw before it. Counted draws and target switches still
+split. On Old Mombasa (presents 4000-7000, 1x) it took a 1000-draw frame
+from about 193 render passes to 41 and a 2000-draw frame from 297 to 43,
+and the render thread's encode plus submit at 2000 draws from about 28 to
+16 ms. Most of the splits it removes were discarding draws after a
+partly masked one (`pass_discard` in the frame stats, 149 of the 193).
+The merge self-check at frame 5000 (970 draws) found two passes off:
+1 pixel by 1 level (draws 836-837) and 11 pixels by up to 3 (draws
+897-898). It became the default on the owner's call: edge pixels a few
+levels off, for render-thread headroom in heavy scenes.
+`H2_GFX_MERGE_PASSES=fast` goes back to the fast rule.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 
@@ -513,7 +528,7 @@ persisted through wgpu. What is done instead:
   is still on waits for that one (`prewarm wait`) instead of translating
   it twice. The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
   `~/Library/Caches/h2recomp/pipelines-v2.jsonl` (`$XDG_CACHE_HOME/h2recomp/`
-  elsewhere). It derives from the game's shaders, so it is never committed.
+  on Linux, `%LOCALAPPDATA%\h2recomp\cache\` on Windows). It derives from the game's shaders, so it is never committed.
   Several processes may append to it at once; torn or unparsable lines are
   skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
 
@@ -565,67 +580,17 @@ its own small WGSL pipeline through `GfxContext`/`Presenter`, or into an
 `OffscreenTarget` for `--png` screenshots. Flat, vertex-normal or normal-colour
 shading only; no shaders or textures yet. Its `bsp` binary validates and
 software-renders structure BSPs through the same shared geometry decoder
-(`tags::geometry`, see structure-bsp.md).
+(`tags::geometry`, see structure-bsp.md). Its `shadowlab` binary compares shadow volumes with shadow maps
+(e3-lighting.md, "Phase 3: shadow prototype").
 
 ## Not supported yet (future work)
 
-The two sections below are history: the translators now exist in
-`crates/shaders` (docs/graphics/shaders.md) and are wired in by `d3d::nv2a`. What is
-still missing there: untransformed fixed-function vertices (transform,
-lighting, texgen), fixed-function bump-env ops, colour key and point sprites.
-
-### Pixel processing: register combiners
-
-The NV2A has no programmable pixel shaders. D3D8 `.psh` programs and the
-fixed-function texture stages both compile to 8 general register-combiner
-stages plus a final combiner, which the D3D runtime writes into the `PS*`
-render-state slots (indices 0..56 in `RenderStateType`'s numbering:
-`PSALPHAINPUTS*`, `PSRGBINPUTS*`, `PSFINALCOMBINERINPUTS*`, `PSCONSTANT*`,
-`PSCOMBINERCOUNT`, `PSTEXTUREMODES`, ...). `RenderState` currently ignores these
-and `TextureStageState` only stores the fixed-function ops.
-
-To do: decode the combiner words into a typed description (input mapping, A*B
-+ C*D, mux/sum, scale/bias, output mapping, final combiner `A*B + (1-A)*C + D`,
-and the texture-mode / dot-product / bump-env modes that feed it), generate WGSL
-per distinct combiner state, and cache the shader module alongside the
-pipeline (the shader id in `PipelineKey` is already there for this). How others
-do it:
-
-* Cxbx-Reloaded translates to D3D9 pixel shader assembly/HLSL:
-  `src/core/hle/D3D8/Direct3D9/PixelShader.cpp` and
-  `src/core/hle/D3D8/XbPixelShader.cpp` (commit `585c49a5`).
-* xemu generates GLSL from the combiner registers:
-  `hw/xbox/nv2a/pgraph/glsl/psh.c` (commit `4bdad199`); it also has a Vulkan
-  renderer under `hw/xbox/nv2a/pgraph/vk/` sharing that generator.
-
-Both are GPL; read them for behaviour, do not copy.
-
-### Vertex processing: vertex shader microcode
-
-Xbox vertex shaders are NV2A microcode: 128-bit instructions, a 136-slot
-program, 192 constant registers (`c[-96..95]`), `v0..v15` inputs and a fixed
-output register set, with its own instruction set (MAD/ADD/MUL/MOV/DP3/DP4/DPH/
-RCP/RSQ/EXP/LOG/LIT/DST/MIN/MAX/SLT/SGE/ARL, one scalar and one vector op per
-instruction). It is neither SM1.1 bytecode nor anything wgpu consumes.
-
-To do: a microcode decoder, then a WGSL generator (scalar+vector co-issue to
-sequential statements; constants in a uniform/storage buffer; `ARL` address
-register; output register to varying mapping, including `oFog`, `oPts`,
-`oB0/oB1`). Plus the fixed-function vertex pipeline when no shader is set
-(transform, lighting, texgen, fog), which on hardware is *also* a vertex
-program generated by the D3D runtime; Cxbx and xemu both synthesise one.
-Pointers:
-
-* Cxbx: `src/core/hle/D3D8/Direct3D9/VertexShader.cpp`,
-  `src/core/hle/D3D8/XbVertexShader.cpp` (microcode -> D3D9 vertex shader
-  assembly, plus the declaration remapper).
-* xemu: `hw/xbox/nv2a/pgraph/glsl/vsh.c` (microcode -> GLSL),
-  `hw/xbox/nv2a/pgraph/glsl/vsh-ff.c` (fixed-function replacement program),
-  `hw/xbox/nv2a/pgraph/vsh_regs.h` (field layouts).
-
-Halo 2 almost certainly uses both programmable vertex shaders and the pixel
-combiner path heavily, so these are the largest remaining pieces of the
-renderer, not polish.
+The register-combiner and vertex-microcode translators exist in
+`crates/shaders` ([shaders.md](shaders.md)) and are wired in by `d3d::nv2a`
+(Cxbx and xemu are cited there as references, read for behaviour, not
+copied). What is still missing there: untransformed fixed-function vertices
+(transform, lighting, texgen), fixed-function bump-env ops, colour key and
+point sprites.
 
 ### Smaller gaps
 

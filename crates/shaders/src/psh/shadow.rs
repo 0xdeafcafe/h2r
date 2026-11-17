@@ -34,6 +34,14 @@
 //! (wrap, mirror, clamp) is applied to the texel indices; `BORDER` is
 //! treated as clamp. Only mip level 0 is read.
 //!
+//! **Hard shadows** (E3 lighting, docs/graphics/e3-lighting.md phase 1):
+//! [`super::PixelOptions::hard_shadow`] makes a stage compare once, at the
+//! nearest texel, with no percentage-closer filter. When several stages of
+//! the program sample the same shadow map (taps a pass spreads over
+//! stages and averages in the combiners), each compares at the mean of
+//! their coordinates, so the average is one tap too. Only the
+//! render-scale view sets it; the backend the guest reads never does.
+//!
 //! The renderer hands depth textures over as their raw bits in RGBA8
 //! (`gfx::convert::depth_channels`): 32-bit formats give the depth bytes,
 //! most significant first, in red, green and blue; 16-bit formats give
@@ -188,9 +196,21 @@ fn xps_shadow_addr(i: i32, n: i32, mode: u32) -> i32 {
 }
 "#;
 
+/// The stages a hard stage `i` takes the mean coordinate of: those in
+/// `group`, and `i` itself. Empty when the stage is not hard.
+fn hard_stages(i: usize, group: u8) -> Vec<usize> {
+    if group == 0 {
+        return Vec::new();
+    }
+    let group = group | 1 << i;
+    (0..4).filter(|j| group >> j & 1 != 0).collect()
+}
+
 /// The statement block that sets `t{i}` for a shadow-map stage.
-/// `project3d` selects the `r/q` reference; otherwise it is 0.
-pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool) -> String {
+/// `project3d` selects the `r/q` reference; otherwise it is 0. `hard` is
+/// the stage's [`super::PixelOptions::hard_shadow`] group: zero for
+/// retail's lookup, else one tap at the group's mean coordinate.
+pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, hard: u8) -> String {
     let op = match sh.func {
         AlphaFunc::Never => return format!("t{i} = vec4f(0.0);"),
         AlphaFunc::Always => return format!("t{i} = vec4f(1.0);"),
@@ -198,10 +218,24 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool) -> String {
     };
     let tc = format!("i.t{i}");
     let mut s = String::from("{\n");
-    let _ = writeln!(
-        s,
-        "        let uv = ({tc}.xy / {tc}.w) * xps.tex_scale[{i}].xy;"
-    );
+    let group = hard_stages(i, hard);
+    if group.len() > 1 {
+        let taps: Vec<String> = group
+            .iter()
+            .map(|j| format!("(i.t{j}.xy / i.t{j}.w) * xps.tex_scale[{j}].xy"))
+            .collect();
+        let _ = writeln!(
+            s,
+            "        let uv = ({}) / {:?};",
+            taps.join(" + "),
+            group.len() as f32
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "        let uv = ({tc}.xy / {tc}.w) * xps.tex_scale[{i}].xy;"
+        );
+    }
     if project3d {
         let _ = writeln!(
             s,
@@ -220,7 +254,7 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool) -> String {
     let test = |x: &str, y: &str| {
         format!("select(0.0, 1.0, {dec}(textureLoad(xps_tex{i}, vec2i({x}, {y}), 0)) {op} r)")
     };
-    if sh.linear {
+    if sh.linear && group.is_empty() {
         s.push_str("        let p = uv * vec2f(size) - 0.5;\n");
         s.push_str("        let base = vec2i(floor(p));\n");
         s.push_str("        let f = p - floor(p);\n");
@@ -252,14 +286,16 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool) -> String {
     s
 }
 
-/// The reference evaluation of [`wgsl_stage`]: `t` is the stage's
-/// texture coordinate, `scale` its `tex_scale`.
+/// The reference evaluation of [`wgsl_stage`]: `tc` are the stages'
+/// texture coordinates, `scales` their `tex_scale`, `hard` the stage's
+/// hard-shadow group.
 pub(crate) fn sample(
     stage: usize,
     sh: &Shadow,
     project3d: bool,
-    t: Vec4,
-    scale: Vec4,
+    hard: u8,
+    tc: &[Vec4; 4],
+    scales: &[Vec4; 4],
     sampler: &dyn Sampler,
 ) -> Vec4 {
     match sh.func {
@@ -267,7 +303,24 @@ pub(crate) fn sample(
         AlphaFunc::Always => return [1.0; 4],
         _ => {}
     }
-    let uv = [(t[0] / t[3]) * scale[0], (t[1] / t[3]) * scale[1]];
+    let t = tc[stage];
+    let uv_of = |j: usize| {
+        let (t, s) = (tc[j], scales[j]);
+        [(t[0] / t[3]) * s[0], (t[1] / t[3]) * s[1]]
+    };
+    let group = hard_stages(stage, hard);
+    let uv = if group.len() > 1 {
+        // Summed in stage order, then divided, as the translation does.
+        let mut sum = uv_of(group[0]);
+        for &j in &group[1..] {
+            let p = uv_of(j);
+            sum = [sum[0] + p[0], sum[1] + p[1]];
+        }
+        let n = group.len() as f32;
+        [sum[0] / n, sum[1] / n]
+    } else {
+        uv_of(stage)
+    };
     let r = if project3d {
         (t[2] / t[3]).clamp(0.0, sh.format.max())
     } else {
@@ -280,7 +333,7 @@ pub(crate) fn sample(
         let d = sh.format.decode(sampler.load(stage, x as u32, y as u32));
         if sh.func.passes(d, r) { 1.0f32 } else { 0.0 }
     };
-    let v = if sh.linear {
+    let v = if sh.linear && group.is_empty() {
         let p = [uv[0] * w as f32 - 0.5, uv[1] * h as f32 - 0.5];
         let base = [p[0].floor() as i32, p[1].floor() as i32];
         let f = [p[0] - p[0].floor(), p[1] - p[1].floor()];

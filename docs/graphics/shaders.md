@@ -722,6 +722,13 @@ behaviour follows xemu's `psh_append_shadowmap`:
   indices.
 - `s/q` and `t/q` are multiplied by `tex_scale`, as for colour textures,
   so linear (texel-addressed) shadow maps work.
+- **Hard shadows** (`PixelOptions::hard_shadow`, E3 lighting phase 1,
+  [e3-lighting.md](e3-lighting.md)): a stage with a non-zero mask
+  compares once at the nearest texel, whatever its filter, at the mean of
+  the coordinates of the stages in its mask (the stages that sample the
+  same map), so taps spread over stages collapse to one. Only the
+  render-scale view sets it; all zero is the retail code byte for byte
+  (`tests/shadow.rs`, golden files in `tests/golden/`).
 
 abaire's nxdk_pgraph_tests check the comparison on hardware
 (`texture_shadow_comparator_tests.cpp`, with results in
@@ -828,7 +835,11 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   PCF weights, and wrap, mirror and clamp addressing. NEVER and ALWAYS
   must not sample. The expected values come from the ordering alone, and
   both the interpreter and the GPU must match them exactly (461 fragments
-  on the GPU).
+  on the GPU). The hard (one-tap) option has its own tests there: golden
+  WGSL for retail and for E3 (`tests/golden/shadow_retail.wgsl`,
+  `shadow_e3.wgsl`; retail's text must not change), one tap on the
+  interpreter and the GPU, and stages of one map comparing at their mean
+  coordinate.
 - `tests/render.rs` draws through a linked module with a real texture and
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set

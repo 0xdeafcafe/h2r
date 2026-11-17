@@ -2,7 +2,10 @@
 
 A design for an opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo:
 hard-edged shadows from every direct light, cast by and onto everything, and
-per-pixel lighting with normal maps. Nothing here is built.
+per-pixel lighting with normal maps. Phase 0 (research), phase 1
+(harder, sharper retail shadows in the view: "Phase 1 as built") and phase 3
+(the shadowlab comparison, decided for shadow maps) are done; the rest is
+design. [pstencil.md](pstencil.md) adds the Digsite E3 tag set's lights.
 
 The short version: **the evidence says there is nothing of the cut renderer to
 switch back on in the retail game.** What retail kept is the vocabulary (a
@@ -15,9 +18,10 @@ It was written from the code and docs on master and from public sources,
 without building or running the game. No leaked build, game file or archive
 was downloaded or examined, and none may be for this work.
 
-The setting is `lighting = "retail" | "e3"` in the settings design
-([settings-menu.md](../game/settings-menu.md)), which has no lighting control
-yet. This page proposes `H2_LIGHTING` as the developer flag.
+The setting is `[graphics] lighting = "retail" | "e3"`, the Video screen's
+**Lighting** row ([settings-menu.md](../game/settings-menu.md)), default
+Retail and live. `H2_LIGHTING=e3` (or `retail`) locks it, for development
+and for headless `h2 run`.
 
 ## Evidence labels
 
@@ -38,8 +42,18 @@ yet. This page proposes `H2_LIGHTING` as the developer flag.
 | The aim was one stencil-based model for all lighting, fully dynamic, inspired by SIGGRAPH papers. | P\* | Marty O'Donnell and Jaime Griesemer in Vice's oral history, <https://www.vice.com/en/article/the-complete-untold-history-of-halo-an-oral-history/> |
 | It was tested with weapon-fire and grenade lighting on a night version of a Halo 1 map, in January 2003. | P\* | Perez, via Halopedia citing Bungie.net |
 | Visible in the demo: sharp sun shadows, self-shadowing on characters and vehicles, shadow-casting street lamps, headlight and muzzle-flash lighting. | C | <https://www.halopedia.org/Halo_2_E3_demo> |
-| "Doom 3-style" unified lighting. | C | Wiki and forum wording. No developer statement using it was found. |
-| Normal maps and specular under those lights, light counts, the shader maths. | None | No developer statement was found. Retail has bump mapping regardless (below). |
+| Perez, on the January 2003 screenshot: "taken in January '03 with the graphics engine we went to E3 2003 with." The pstencil engine "just barely poked along at 30fps after herculean effort." | P | Bungie.net, "One Final Effort", 16 April 2010, read on the haloman30 Bungie.net archive mirror |
+| Perez: "we were trying to combine lightmaps for ambient lighting with stencil for directional sources." | P | As above. This is the one first-hand statement of the shading split. |
+| Freidin's pstencil added stencil shadows "using some new techniques that can only be done on the Xbox". He names no technique. | P | Freidin profile (above) |
+| During E3 demo preparation, Jason Jones blames the Pelican for "generating these immense shadow volumes" and calls it "so expensive". | P\* | *Behind the Scenes: Making of Halo 2* (B-roll), via Halopedia's transcript |
+| Joseph Staten, after E3: the aim had been "stencil shadows on everything, real-time reflections in the Master Chief's visor", and they found it impossible. | P\* | Same documentary, via Halopedia's transcript |
+| The August 2002 announcement trailer showed stencil shadows and "extensive use of normal maps"; Halo 2 was to use normal maps everywhere, after Halo 1 used them mostly on the level. | C | TCRF "Prerelease:Halo 2" and Oozer3993's "Assembling a Cathedral out of a Hurricane", both read as search excerpts |
+| Lehto: the stencil version "looked cool" but was too expensive and dropped after the announcement trailer. | P\* | Marcus Lehto on X, January 2020, via Halopedia |
+| The demo's restoration lost "colored gels" support (projected coloured light), which affected Johnson's briefing scene. | C | Digsite's lead ("General") in Halo Waypoint's "Cutting Room Floor: Modding Evolved, Part 1", 2022 |
+| Bloom is computed differently from retail, giving a soft glow over the whole mission. | C | Halopedia's E3 demo page |
+| Forum readings of the E3 footage, 2003-04: every dynamic object casts shadows and self-shadows; a Ghost was seen casting several shadows at once. | C | Beyond3D, "Halo 2 Gameplay Video" (DemoCoder) and "halo 2...multiple shadows cast" (AlNom), read as search excerpts |
+| "Doom 3-style" unified lighting. | C | Wiki and forum wording. No developer statement using it was found. A 2003 forum poster noted Bungie never claimed a unified model; the oral history's "completely dynamic lighting" (Griesemer, Vice) is the closest. |
+| Normal maps and specular under those lights, light counts, falloff, the shader maths. | None | No developer statement on any of these. Freidin speaks only of "per-pixel effects" and approximating real lighting "in the Xbox pixel shader". The footage shows bump relief and strong specular (below, S). Retail has bump mapping regardless (below). |
 
 **Whether the E3 demo itself ran pstencil is disputed.** Perez and O'Donnell
 place it in the demo. Marcus Lehto and Nate Walpole say it was dropped after
@@ -51,6 +65,176 @@ not say outright that the demo build runs pstencil
 We have not examined that material and will not. For this design it does not
 matter which account is right. The target is the look, described in the
 table above.
+
+The weight of public evidence is that the demo did run stencil volumes:
+
+| Account | Says | Label |
+|---|---|---|
+| Perez (2010) | The January 2003 engine is the one taken to E3; it was stencil for direct light. | P |
+| Jason Jones in the making-of B-roll | The Pelican's shadow volumes were hurting the demo during E3 preparation. | P\* |
+| TCRF on the May 2003 builds | pstencil was supposedly cut in February 2003, but the May 3 builds and the E3 demo "seem to feature" it, with stencil shadow volumes rather than the later shadow buffer; the Xbox builds have it, the Windows build has no working lighting. The Master Chief ("cyborg") shader type there is specific to stencil, with a new bump map. | C, read as search excerpts |
+| Vice and Clawsome Gamer (December 2025) | Put pstencil in the May 3 build and credit the demo with "dramatic stencil shadow lighting", without saying the May 11 build runs it. | C |
+| Lehto, Walpole (X, 2020) | Dropped after the August 2002 trailer. | P\* |
+| Modders on the Steam Workshop (2024) | One says pstencil was already cut by E3 and everything is shadow maps; another disagrees, citing the "razor sharp" shadows and the Pelican remark. | C, read as search excerpts |
+
+The modders' claim predates the leak and is about the restoration, which runs
+on the retail engine. Nothing public written after the leak says the May 11
+build lacks stencil volumes.
+
+**Digsite is not a leak.** It is the codename of a community modding group
+that worked with 343 Industries (now Halo Studios) on cut content: "Digsite
+Alpha" for pre-release Halo, "Digsite Delta" for Halo 2. It rebuilt the E3
+level for the retail MCC engine from 343's internal archives and released it
+free on the Steam Workshop on 9 November 2024, with a public GitHub
+repository (`digsite/H2E3`) whose README points to replacement shaders for
+the "not pstencil" lights. We used only its published prose: two Halo
+Waypoint articles, the GitHub README and its description of the shaders, and
+Halopedia's account of Ken Peters' 2024 talk. Separately, press and TCRF
+report that the Digsite project's own repository leaked in December 2024 and
+that more from it, including the E3 build, leaked in December 2025. Those
+files are leaked material and are out of bounds.
+
+## How it was meant to work (public sources)
+
+What the public record supports, put together. Labels as above. Researched
+2026-11-16.
+
+### The model
+
+- **Direct light dynamic, ambient baked.** Every direct source (sun, lamps,
+  headlights, weapon fire, explosions) was a stencil-shadowed light; the
+  lightmap supplied only ambient (Perez, **P**). The night Blood Gulch test
+  was lit by weapon fire and grenades (Perez via Halopedia, **P\***).
+- **Everything casts, including onto itself.** "Stencil shadows on
+  everything" (Staten, **P\***); characters and vehicles self-shadow, and
+  the sun self-shadows objects, which retail does only for dynamic lights
+  (Halopedia, **C**). The Pelican cast volumes big enough to fill the screen
+  (Jones, **P\***).
+- **Per-pixel shading with normal maps on everything.** Normal maps were to
+  be everywhere (**C**); Freidin's work was per-pixel
+  maths in the NV2A pixel shader (**P**); the stencil-specific Master Chief
+  shader came with a new bump map (TCRF, **C**). Visor reflections were a
+  goal (Staten, **P\***).
+- **Coloured projected lights.** Gels were used and were lost in the
+  restoration (Digsite, **C**). Retail lights still have a gel (see "What is
+  still unknown").
+- **Not known from any public source:** light counts, falloff curves, the
+  specular model, how many lights shadowed at once, how the ambient term was
+  computed at night, or which Xbox-only technique Freidin meant. Nothing
+  public describes how the sun's shadow and the lightmap were combined
+  beyond "lightmaps for ambient".
+
+### The techniques of the time
+
+Bungie cited "SIGGRAPH papers" without naming them (Griesemer, Vice,
+**P\***). The public techniques it could have built on, none of them
+confirmed as Bungie's source (**S**):
+
+- Shadow volumes: Crow, 1977; stencil-buffer volumes, Heidmann, 1991.
+- Depth-fail ("Carmack's reverse"): Bilodeau and Songy, 1998-99 (patent
+  US 6,384,822); Carmack's email to Kilgard, May 2000; made robust with caps,
+  depth clamp and an infinite far plane by Everitt and Kilgard, NVIDIA, March
+  2002, which also proposes two-sided stencil.
+- Hardware shadow maps: Williams, 1978; Everitt, Rege and Cebenoyan,
+  "Hardware Shadow Mapping", NVIDIA, 2001-02, for GeForce3-class depth
+  textures with a hardware comparison. The NV2A is of that class and retail
+  Halo 2 uses exactly this ("What replaced it").
+- Per-pixel bump-mapped lighting on fixed-function combiners: Kilgard, GDC
+  2000. The NV2A's register combiners are the same family.
+
+Doom 3, the period's reference for this look, used depth-fail volumes with
+per-pixel normal-mapped lights and no lightmaps. Halo 2's plan differs in one
+way that matters to us: it kept lightmaps for ambient (Perez, **P**).
+
+### The public footage
+
+Bungie's "Halo 2: Full E3 2003 Trailer", the real-time demo, credited to Bungie
+and released after the show, on the Internet Archive (`halo2_e3_realtimedemo_hires`, 9:04, added
+June 2004). We watched the 480x324 file as frame grids every three seconds
+and single frames at the times below. Times are into that file. At this
+resolution edge sharpness is judged only on large shadows. Everything in this
+table is our reading, so **S**.
+
+| Time | What is seen |
+|---|---|
+| 1:07 | The Pelican lands; a large dark shape lies under it on the pad. |
+| 1:45 | Medical bay: bright floor, marines shaded with dark undersides. |
+| 2:00-2:09 | Interior: shadowed areas read as near black. Marines and the gun are silhouettes against a crisp-edged sunlit patch on the floor. |
+| 3:19 | The turret's muzzle flash lights the Chief's back and the turret yellow-white. |
+| 5:00-5:03 | Street lamps throw bright pools on the road below them. |
+| 5:24 | Overpass shadows cross the road with sharp edges. |
+| 5:44-5:49 | Under an overpass, a bright patch on the road moves ahead of the Warthog: headlights. The Warthog itself stays dark. |
+| 6:27 | Chief and marine on the Warthog in shade are almost black, lit only at the edges. |
+| 6:33, 8:36-8:42 | The Brute and Elites show strong bump relief and specular glints on armour. |
+| 7:12 | A lamp pool under an overpass, edge crisp. |
+
+Not judgeable at this resolution: whether shadows leak through thin geometry,
+contact shadows under feet, and how many shadows one object casts. The 343
+Industries community stream from November 2018 on the Internet Archive is
+1080p and would settle some of these; we did not watch it.
+
+### Target look
+
+What phases 4 and 5 should be judged against. Each item has its source.
+
+1. **Hard shadow edges, no visible filtering**, from the sun and from local
+   lights, on large and small casters. Halopedia's "sharp rather than
+   softened" (**C**); Steam commenter's "razor sharp" (**C**); footage 2:00,
+   5:24, 7:12 (**S**).
+2. **Characters and vehicles cast onto the world and onto themselves under
+   the sun**, not only under dynamic lights. Staten (**P\***), Halopedia
+   (**C**), Beyond3D (**C**).
+3. **Large vehicles cast large shadows** (the Pelican). Jones (**P\***),
+   footage 1:07 (**S**).
+4. **Several shadows per object where several lights reach it.** Beyond3D on
+   the Ghost (**C**).
+5. **Lamps cast shadows and throw pools of light** that read as discrete
+   shapes on the ground. Halopedia (**C**), footage 5:00, 7:12 (**S**).
+6. **Vehicle headlights light the road in front** and move with the vehicle.
+   Halopedia (**C**), footage 5:44-5:49 (**S**).
+7. **Weapon fire and explosions light their surroundings**, including the
+   firer. Perez via Halopedia (**P\***), Halopedia on the turret (**C**),
+   footage 3:19 (**S**).
+8. **Shadowed areas are very dark**: low ambient, high contrast, characters
+   close to silhouettes in shade. Footage 2:00-2:09, 6:27 (**S**) only; no
+   statement.
+9. **Lightmaps give the ambient only;** direct light is dynamic. Perez
+   (**P**). For us this stays the lightmap problem below; the item is met for
+   objects and lights, not for the level's baked sun.
+10. **Dynamic lights shade per pixel through normal maps**, so armour and
+    walls show relief under a moving light. Freidin (**P**), normal maps
+    everywhere (**C**), footage 6:33, 8:36 (**S**).
+11. **Specular highlights from dynamic lights** on armour and visors. Staten
+    on the visor (**P\***), footage 8:36-8:42 (**S**).
+12. **Coloured, projected lights (gels)** where a light has one. Digsite
+    (**C**).
+13. **Out of scope but part of the look:** the demo's different bloom
+    (Halopedia, **C**).
+
+### What this means for the technique
+
+Nothing public argues that the look needs stencil volumes. Every description
+of the look is about properties a high-resolution, one-tap shadow map also
+has: hard edges, everything casting, self-shadowing. The only public argument
+for volumes is the Steam commenter's that 2003 hardware could not afford a
+shadow map sharp enough, which is about the Xbox, not about us.
+
+The public reasons Bungie left volumes are the ones our phase 3 measured.
+Perez: "geometry/lighting fidelity compromises" (**P**), that is, meshes
+simplified and closed so volumes work. Griesemer: the shadows did not work
+at all in exteriors (**P\***, Halopedia's paraphrase of his X post). Jones: the Pelican's volumes filled
+the screen (**P\***), which is fill cost. Butcher: the engine could not
+support the environments a Halo game needs (**P\***). Retail and Halo 3 both
+went to shadow maps. Shadow maps are the faithful choice for the look and the
+unfaithful one only for the mechanism, which the non-goals already exclude.
+What volumes would still buy, exact edges at grazing angles and no bias, is
+what items 1 and 2 test, so the shadow-map path should be judged against them
+at the resolutions we ship.
+
+One community claim to discount: that retail still has true stencil lights
+(Zanzibar's swinging lights, Foundation's fan room; ResetEra, 2018, **C**).
+Phase 0 found no shadow-volume path in retail (**R**); those are lights
+without the "no stencil shadow" flag, drawn with shadow buffers.
 
 ## Why it was cut
 
@@ -227,7 +411,10 @@ map):
 
 Most lights have shadows switched off by bit 3, which agrees with the
 community claim about the E3 level's light objects (C above), but the disc
-cannot say which lights those are and we did not try.
+cannot say which lights those are and we did not try. The same bit is the
+no-shadow bit in the Digsite E3 tag set's paired light tags
+([pstencil.md](pstencil.md)). `h2 lights <map>` prints each light's shape and
+this bit, with its placements, attachments and effect parts.
 
 ### Pass taxonomy: the layers
 
@@ -272,8 +459,12 @@ sky, transparents, fog and the rest. The view can tag every draw with
 - What reads the stencil marks of modes 1 and 2, and whether modes 3 to 6 are
   reached at all (indirect calls were not searched).
 - Layers 14 and 20, and the per-light flag bits 3 to 5 at `0x004ba014`.
-- Light kind (definition `+0x04`, `+0x14`), cone, range and gel: which
-  definition fields the light passes' vertex constants come from. These are
+- Which definition fields the light passes' vertex constants come from.
+  The fields themselves are named since: kind at `+0x04` (0 sphere, 2
+  frustum), sphere radius `+0x18`, cone width, stretch, angle, falloff and
+  cutoff `+0x20` to `+0x30`, colours `+0x40` to `+0x6f`, brightness `+0x70`
+  ([effects.md](../formats/effects.md) "ligh"). `+0x14` was not confirmed as
+  anything; it is zero on the study tags. These are
   in `0x00031170`'s callees (`0x0004a1e0` takes 1024.0 and the light, S: the
   scissor) and the engine vector inputs ([shader-instances.md](../formats/shader-instances.md)).
 - The candidate list at `0x00547f98` and the cluster test (`0x000c17f0`).
@@ -295,12 +486,189 @@ the layer number is the pass tag, and the dynamic-light layers are 10 to 13
   size but with no research left in its first half.
 - **Before phase 5:** trace the light passes' vertex constants (cone, range,
   falloff, gel) and layer 14. About a week, static.
-- **Phase 3 (viewer prototype) can start now.** It does not depend on any of
-  this, and the finding that retail has no shadow-volume path means the
-  volumes-against-maps question is open on its merits.
-- **Phase 1** stays the cheapest visible step: shadow buffers are layer 10
-  into target 9 or 10, sampled with `GREATER` on layer 11, which the view can
-  scale and force to one tap without guest changes.
+- **Phase 3 (viewer prototype) is done**: shadow maps, one tap (see "Phase
+  3: shadow prototype").
+- **Phase 1** was the cheapest visible step: shadow buffers are layer 10
+  into target 9 or 10, sampled with `GREATER` on layer 11, which the view
+  scales and forces to one tap without guest changes. Built: "Phase 1 as
+  built" below.
+
+## Phase 1 as built
+
+What was already on master: render scale (`d3d::ScaledBackend`, a 1x
+reference that answers the guest and a scaled view that is shown;
+high-resolution.md phases 1 and 2), per-pass submission, and in-place
+depth sampling: a dirty `D24S8` depth level sampled through its texture
+is turned into a raw-bits texture on the GPU (`Backend::depth_level_texture`,
+`gfx::depth_bits`; [d3d.md](d3d.md) "Lazy depth levels"), with no read-back.
+The shadow comparison already indexed texels by the bound texture's real
+size (`textureDimensions`) and took the coordinate in the guest's size
+(`tex_scale`), which is high-resolution.md's rule 2, so a larger map needed
+no change there. What was missing, and is built:
+
+- **Scaled shadow maps in the view** (`d3d::scaled`). Every `D24S8` depth
+  surface not of the frame's size is a shadow level. With E3 lighting the
+  view keeps a copy of it at `shadow_scale` times its size, made at first
+  use, with a colour surface of that size to draw through. A draw that
+  writes the level into a guest-size target (layer 10, shadow generate) is
+  drawn again into the copy with colour writes off; a clear of it is
+  repeated; a draw that samples it (layer 11, shadow apply) gets a texture
+  of the copy from `depth_level_texture` instead of the reference's 1x one.
+  What the view cannot repeat (guest bytes, a copy, a fill from the alias
+  mirror, a draw it cannot make) marks the copy stale per aspect; a stale
+  copy is filled from the reference (each texel repeated) at its next draw,
+  or skipped for sampling (the 1x texture stands in), unless a clear makes
+  it fresh first. Halo's shadow pass clears the map before it draws, so the
+  mirror refill at each binding costs nothing in the view.
+- **The factor**: tied to the render scale, at least 2
+  (`d3d::scaled::shadow_scale`: 2, 2, 3, 4, 5, 6 for scales 1 to 6). At
+  the render scale a shadow texel covers no more host pixels than it covers
+  guest pixels at 1x, so a one-tap edge steps no coarser on screen than
+  retail's filtered one; the minimum of 2 makes E3 sharper than retail at
+  640x480 too. One setting and one rescale point; 512x512 at 6x is
+  3072x3072, inside any GPU's limit. A separate factor can come later if
+  the pictures ask for it.
+- **One comparison tap** (`shaders::psh::PixelOptions::hard_shadow`, set by
+  `Nv2aShaders` only when the view is told `set_hard_shadows`). A hard stage
+  reads the nearest texel and compares once: no 2x2 percentage-closer
+  filter. If a pass samples one map on several stages (taps the combiners
+  average), each compares at the mean of their coordinates, so the average
+  is one tap too. Whether retail's layer 11 does that is not known (S); the
+  code covers both. Retail's translation is byte for byte what it was
+  (`retail_shadow_lookups_are_unchanged` compares against a golden file
+  written by the code before the option).
+- **At render scale 1** the view used to sleep. With E3 it wakes: the frame
+  at 1x, the shadow maps at 2x.
+- **Live**: `ScaledBackend::follow_lighting` reads the row at every present
+  and changes there, as the scale does. Copies at another factor are
+  dropped at that boundary and made again at their next use.
+- **The guest sees retail**: the reference keeps every level at 1x and
+  answers every read (`read_depth`, `read_surface`, counts, the judge), so
+  game memory, read-backs and the simulation are the 1x run's.
+
+Tests (no game run): `crates/shaders/tests/shadow.rs` (retail and E3 golden
+WGSL; one tap on the interpreter and the GPU; the mean of two stages over
+one map), and `crates/d3d/tests/render_scale.rs`, E3 section, on a headless
+Metal device: the 32x32 map's copy is `32k x 32k` at render scales 1 to 4;
+the guest's written-back map, colour level and device memory, and the
+reference's frame, equal a plain backend's byte for byte; retail through the
+wrapper makes no copy and draws nothing extra; the E3 image is all black or
+white and, against the caster's exact outline, wrong at 186 host pixels at
+2x and 378 at 4x where retail is wrong at 658-688 and 2648-2692; the row
+changes both ways at a frame boundary with no fallback frame, at 1x and 2x.
+
+The run report's `render scale` line ends with `shadow maps at Kx: D draws,
+T textures, R refills`. In a level with shadows, `T` above 0 is the scaled
+map being sampled; `D` above 0 with `T` at 0 means the level went through
+guest memory (written back) and the view sampled the 1x upload, still one
+tap.
+
+**In a level (2026-11-16).** The first level runs, Old Mombasa
+(`03a_oldmombasa`, to present 4087) and The Heretic, at 2x, showed every
+Old Mombasa frame byte for byte the same with and without E3. That is the
+frames, not the path:
+
+- Layers 10 and 11 are the game's only shadow-map path. Shadow generate
+  draws into the 512x512 `LIN_D24S8` level with the 128x128
+  `LIN_A8R8G8B8` target as its colour; shadow apply draws the same
+  casters' receivers into the frame and samples the map (an old draw log
+  has them in pairs of equal vertex counts). Old Mombasa: 5,217 draws into
+  128x128, 5,217 draws with a `LinD24S8` texture, 5,123 repeated into the
+  view's copy, 109 scaled textures sampled against the device's 111
+  in-place depth textures (one per shadow pass), no refill. The Heretic:
+  1,260, 1,260, 90 and 90. Every shadow pass the game made was drawn and
+  sampled at 2x with one tap.
+- The 160x120 and 320x240 targets are the colour levels of the pool over
+  the shadow map (bloom and the like), not shadows. The map goes through
+  the alias mirror between frames (438 stores, 436 loads), which marks the
+  view's copy stale; the next shadow pass clears it whole first, so it is
+  never refilled.
+- About 110 shadow passes in 2,340 frames of the level: the dynamic lights
+  of the opening cinematic. The run wrote one frame in 250, so its nine
+  in-level frames most likely held none. The outdoor shadows of Old
+  Mombasa (buildings, vehicles on the road) are in the lightmaps (layer 3,
+  "What replaced it"), which phase 1 does not touch; sun shadows from
+  objects are phase 4. The Heretic's ten differing frames differ in small
+  spots around the cinematic's lights; whether those frames held a shadow
+  pass was not recorded.
+
+`e3_shadow_maps_survive_halos_render_target_pool` (render_scale.rs) runs
+that order for three frames: shadow pass, a colour level over the map's
+bytes drawn, swap. The map goes through the mirror every frame, and the
+last frame's E3 image is the single-pass scene's exactly, at 1x, 2x and
+4x; it differs from retail's at the shadow's edges and nowhere else
+(within two map texels of the caster's outline); the guest's bytes and the
+reference's frame are the plain backend's.
+
+To catch the frames that do have shadows, the draw diagnostics list them
+(`shadow-map frames K  a-b, c, ...`, frames that drew with a depth texture
+bound) and `H2_BOOT_GFX_SHADOWS=N` writes the first N of them, the same
+frames in a retail and an E3 run.
+
+The first such run (to present 4000) listed 23 frames, `1745-1747,
+3981-4000`, and all 21 pairs were byte for byte the same in retail and E3.
+They were also entirely black, at 2x and at 1x, in both runs: the first
+frames after the level loads, still faded out, and a cut to black in the
+opening cinematic, under which the game still draws its lights' shadow
+passes (21 of them sampled the 2x copy). So `H2_BOOT_GFX_SHADOWS` now skips
+all-black frames and keeps looking.
+
+Run to present 8000, the lit frames differed between retail and E3, and
+between two retail runs just as much, 1x frames included: this deep, two
+headless runs are not the same run. Polled visibility tests answer
+"incomplete" depending on host timing (d3d.md, "Visibility tests"; the
+runs' `visibility_incomplete` counts differ), and the scheduler's slices
+and preemptions differ too. So the comparison is made inside one run:
+`H2_BOOT_GFX_LIGHTING_AB=1` (`d3d::LightingAb`) puts a second view over the
+scaled backend, using it as its reference. The inner backend answers the
+guest from its 1x reference and draws the retail view; the outer view draws
+the same calls at the same scale with E3. Each captured frame is written as
+`frame-N-retail.png` and `frame-N-e3.png`.
+`the_lighting_ab_draws_retail_and_e3_from_one_run` (render_scale.rs) runs
+the pool order through it at 2x and 4x. Each image is byte for byte what
+a run in that mode alone draws, the two differ only within two map texels
+of the caster's outline, and the 1x reference and the guest's bytes are
+the plain backend's.
+
+The first A/B run (to present 8000, pairs from frame 4012) had all 40
+pairs byte for byte the same, with the E3 view drawing 273,913 shadow draws
+and sampling 4,021 2x maps. Those frames are a blurred cinematic shot:
+each view's image is the 1x reference's, every pixel repeated 2x2
+(against a nearest upscale of `frame-N-1x.png` the mean difference is
+below 0.2 of 255). The frame is covered, opaque, by a pass upsampling a
+small pool level, which keeps its guest size in both views
+([high-resolution.md](high-resolution.md), fixed-size targets), so the
+shadows under it never reach the screen in either.
+`a_frame_covered_by_a_small_level_shows_no_lighting_difference`
+(render_scale.rs) reproduces that: the 2x map drawn and sampled every
+frame, and the two views the same. The A/B now compares the views itself
+on every shadow-map frame, writes the first `H2_BOOT_GFX_SHADOWS`
+(default 40) pairs that differ, and reports `lighting A/B: K of M
+shadow-map frames differ between the views (first: ...)`.
+
+Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
+maps stay 1x (their texture comes through guest memory); per-axis scale.
+
+### Captures to take
+
+Each pair the same frame with `H2_LIGHTING=retail` and `=e3`, at
+`H2_RENDER_SCALE=2` (and once at 1 to see E3 at 640x480):
+
+1. **The Heretic** (`00a_introduction`), the cinematic's opening shots:
+   `H2_LEVEL=00a_introduction`, or the menu route of frame-budget.md
+   (presents 4220 to 4520). Headless, `h2 run` with `H2_BOOT_GFX=<dir>` and
+   `H2_BOOT_GFX_EVERY=30` writes `frame-NNNNN.png` (the view) and
+   `frame-NNNNN-1x.png` (the reference, which must be identical between
+   the two runs). Add `H2_BOOT_GFX_SHADOWS=40` (and `H2_BOOT_GFX_EVERY=never`
+   for only those) to write the frames that sample the shadow map: most
+   frames do not.
+2. **Cairo Station** (`H2_LEVEL=01b_spacestation`), the opening corridors
+   with the flashlight on, close to a Marine or a crate between the light
+   and a wall: a dynamic light's shadow (S: which lights cast in which
+   level was not checked, so pick a spot where retail shows a soft shadow).
+3. The same spot in `h2 play` stepping the Lighting row: the edge should
+   go hard at the next frame, with no flash and `d3d: lighting Retail -> E3`
+   on stderr.
 
 ## Goals and non-goals
 
@@ -347,7 +715,7 @@ at the moment the guest reaches them.
 | Which material and pass each draw belongs to | `0x0001bbf0` begins a shader draw and passes (shader, LOD, layer, pass) to `0x00016b90` ([shader-instances.md](../formats/shader-instances.md)) | Decoded |
 | Which geometry each draw belongs to | `0x00041040` branches between structure clusters and render models ([engine-map.md](../engine/engine-map.md)) | Located, marked "likely" |
 | The sun's direction and colour | `sky` lights ([lighting.md](../formats/lighting.md)) | Angles decoded; colour and the rest not |
-| Dynamic lights: position, direction, cone, colour, range | the light datum array at `[0x004e030c]`, read at the per-light pass `0x00031170` ("Phase 0 findings") | Located: frame, colours, intensity, bounds, shadow decision. Cone, range and falloff not traced |
+| Dynamic lights: position, direction, cone, colour, range | the light datum array at `[0x004e030c]`, read at the per-light pass `0x00031170` ("Phase 0 findings"); the record's `ligh` datum gives the definition | Located: frame, colours, intensity, bounds, shadow decision. The definition's shape, cone, range, falloff, colours and brightness are decoded (`tags::effects::light`, [effects.md](../formats/effects.md) "ligh"); which of them feed the light passes' constants is not traced |
 | Object poses and skinning matrices for shadow casters | the guest's object and render-cache data ([objects.md](../formats/objects.md), `0x0003d270`) | Not decoded for this use |
 | Level and model geometry, including what the camera cannot see | tags: `tags::structure`, `tags::geometry`, `tags::model`; collision in [collision.md](../formats/collision.md) | Decoders exist |
 | Which bitmap parameter of a material is its normal map | template and pass bindings ([shader-instances.md](../formats/shader-instances.md)) | Bindings decoded; meanings not named |
@@ -382,7 +750,8 @@ Recommendation: prototype volumes and shadow maps side by side **in the
 viewer** (`crates/viewer`), which already draws structure BSPs and render
 models from tags with no game run. Decide on pictures and timings from that.
 The scene-knowledge work is the same for all three, so the choice does not
-block anything before it.
+block anything before it. That prototype is `shadowlab`; see "Phase 3:
+shadow prototype".
 
 For volumes, the caster geometry is the open design point:
 
@@ -486,8 +855,8 @@ here to show relative size.
 | Phase | Work | Effort | Needs |
 |---|---|---|---|
 | 0 | **Done 2026-11-16** ("Phase 0 findings"). Static research, no runtime change: trace the stencil call sites and name each use; find the light creation and render path from the `ligh` part case (`0x0017ab2e`); read the light flags off engine code; find who draws the shadow depth levels; name the layers in the scene-pass dispatch. Deliverables are docs, decoders and invented-data tests. | 2-4 weeks | Nothing |
-| 1 | Harder retail shadows in the view: scaled shadow buffers, one-tap comparison. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling |
-| 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. | 3-5 weeks | Phase 0 |
+| 1 | **Built 2026-11-16** ("Phase 1 as built"). Harder retail shadows in the view: scaled shadow buffers, one-tap comparison; the Lighting row. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling (all were on master) |
+| 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. The light definitions are ready: `tags::effects::light` reads shape, cone, range, colour and the no-shadow flag, and `h2 lights <map>` lists a map's lights and where they come from (2026-11-16). | 3-5 weeks | Phase 0 |
 | 3 | Viewer prototype: volumes against shadow maps on tag geometry, with timings. Decide. | 2-3 weeks | Nothing; can run beside phase 2 |
 | 4 | Sun shadows from objects in the view, composited as a mask. | 6-10 weeks | Phases 2, 3 |
 | 5 | Per-pixel dynamic lights with normal maps and specular, replacing the guest's light passes in the view. | 8-12 weeks or more | Phase 4, the pass taxonomy |
@@ -512,10 +881,143 @@ Risks, largest first:
 6. **Geometry quality** for volumes: open meshes, alpha-tested casters,
    level-of-detail switches changing silhouettes.
 7. **Cost.** The view already costs a second backend. Volumes add fill, and
-   the buffers add memory at 4K. A CPU-bound runtime at 5-6 fps on the menu
+   the buffers add memory at 4K. A CPU-bound runtime at 11-16 fps on the menu
    has other priorities first; this sits behind 30 fps.
 8. **Expectation.** The result will be a new renderer's idea of the E3 look
    on retail content. It should be described that way to users.
+
+## Phase 3: shadow prototype
+
+`crates/viewer/src/bin/shadowlab` renders one scene with each shadow
+technique, offscreen with wgpu, and times them. It reads the owner's disc at
+run time and writes only into a directory outside the repository; it refuses
+an output path inside it. Nothing it writes from the disc is committed. The
+numbers below are filled in by hand from a run.
+
+```sh
+cargo run -p viewer --release --bin shadowlab -- --list-models <map>
+cargo run -p viewer --release --bin shadowlab -- --out "$OUT" \
+    --model <mode tag> [--model <mode tag>@x,y,z[,yaw]]... [--level-casts] <map>
+cargo run -p viewer --release --bin shadowlab -- --out "$OUT" --synthetic
+```
+
+### What it does
+
+- **Scene.** The scenario's structure BSP (`--bsp N`) as the receiver:
+  clusters plus placed instances, flat shaded. Casters are render models
+  (`--model`, default level of detail or `--lod N`), stood on the level near
+  its centre or placed at a given point. With `--level-casts` the BSP casts
+  too, in every technique. `--synthetic` swaps in invented geometry (a cube,
+  an open box and a plane with a hole over a ground plane).
+- **Lights.** A sun (`--sun YAW,ELEV`) and a point light (`--point`, with a
+  range for falloff). The default camera and point light are framed on the
+  casters; the default sun is fixed (yaw 35, elevation 50) and not yet read
+  from the `sky` tag.
+- **Volumes.** Caster triangles are welded by position, so material and
+  normal seams do not read as holes, and an edge table is built once. Per
+  light, the volume is the lit faces' prisms with shared sides cancelled:
+  sides on the silhouette and on lit faces' open edges, the lit faces as the
+  near cap and their copies at infinity as the far cap. That volume is closed
+  whatever the caster's topology, so depth-fail counting is always well
+  formed; open geometry costs extra side quads instead of leaking. Rendered
+  with an infinite far plane: ambient pass, two-sided stencil pass, additive
+  light pass on stencil 0.
+- **Shadow maps.** The sun gets one orthographic map fitted to the view
+  frustum out to 2.5 times the target distance, with its depth range
+  stretched over every caster, so casters outside the view still cast. A
+  point light gets six cube faces. The map edge scales with the resolution
+  (default 2048 at 1x for the sun, 1024 per cube face). Sampled with one
+  nearest comparison tap (`map-hard`) or nine bilinear comparison taps
+  (`map-pcf`), with slope-scaled bias and a normal offset of 1.5 texels.
+- **Output.** For each light and scale (default 640x480 times 1, 2 and 4):
+  each technique's image, a grid (volume, map-hard, map-pcf, and the
+  volume-against-map-hard difference), `report.md` and `timings.csv`. Times
+  are GPU timestamps at pass boundaries, median of `--frames` (30) frames,
+  or wall time per technique where the adapter has no timestamp queries (the
+  report says which).
+
+### What the invented scenes show
+
+These come from the tests (`cargo test -p viewer --bin shadowlab`), which use
+invented geometry only.
+
+- A closed cube's volume has a four-edge silhouette under a vertical sun and
+  is closed under any light. Depth-pass counting fails with the eye inside a
+  volume; depth-fail does not, but needs both caps.
+- Open edges are counted per mesh (open, non-manifold, winding flips, closed
+  pieces). An open box and a plane with a hole still give closed volumes.
+- Where light enters an open mesh and meets a face turned away from it (the
+  inside of the open box's far wall), the volume lets it through and the map
+  shadows it. That is the open-mesh artefact to look for in the difference
+  images: cyan in the grid.
+- Elsewhere the volume and the one-tap map agree on almost every pixel.
+
+### Results
+
+One run, 2026-11-16: `--model` Master Chief, Elite, Ghost and Banshee on
+Zanzibar's BSP 0, level not casting, default sun and point light, 640x480
+times 1, 2 and 4. Apple M1 Max (Metal), GPU timestamps, median of 30 frames.
+The images and `report.md` stay outside the repository.
+
+Geometry (welded by position):
+
+| Mesh | Triangles | Open edges | Non-manifold | Closed pieces | Closed triangles |
+|---|---:|---:|---:|---:|---:|
+| Level clusters | 12,462 | 146 | 1,114 | 0 of 28 | 0% |
+| Level instance definitions | 3,727 | 35 | 624 | 55 of 145 | 64% |
+| All casters, every level of detail | 8,690 | 308 | 170 | 16 of 93 | 37% |
+
+Per caster the share of closed triangles runs from 0% (Master Chief's lowest
+level of detail, Elite's two highest) to 100% (Master Chief level 1); the
+Banshee has 204 open edges at every level.
+
+Volumes:
+
+| Light | Silhouette edges | Side quads | Of which open | Volume triangles | CPU build ms |
+|---|---:|---:|---:|---:|---:|
+| Sun | 2,487 | 2,511 | 238 | 14,596 | 0.25 |
+| Point | 2,407 | 2,430 | 229 | 14,228 | 0.27 |
+
+GPU ms, total per technique:
+
+| Light | Scale | none | volume | map-hard | map-pcf |
+|---|---:|---:|---:|---:|---:|
+| Sun | 1x | 0.11 | 0.71 | 0.25 | 0.37 |
+| Sun | 2x | 0.16 | 1.19 | 0.78 | 1.65 |
+| Sun | 4x | 0.16 | 1.11 | 1.13 | 2.67 |
+| Point | 1x | 0.10 | 1.12 | 0.76 | 0.60 |
+| Point | 2x | 0.16 | 3.26 | 2.66 | 4.60 |
+| Point | 4x | 0.13 | 3.33 | 2.93 | 6.26 |
+
+Agreement, as a share of pixels facing the light:
+
+| Light | Volume vs map-hard | Volume vs map-pcf | Notes |
+|---|---:|---:|---|
+| Sun | 0.28%, 0.15%, 0.08% at 1x, 2x, 4x | 0.26%, 0.14%, 0.08% | more pixels shadowed only by the volume than only by the map at every scale |
+| Point | 0.09%, 0.05%, 0.03% | 0.09%, 0.05%, 0.03% | as above |
+
+### Deciding
+
+- **Cost.** The stencil pass against the map passes, and how each grows from
+  1x to 4x: volume fill grows with pixels, map cost with the map edge.
+- **Geometry.** Open edges and the share of closed triangles per caster; the
+  side quads on open edges are the extra fill open meshes cost. Per level of
+  detail, whether silhouettes change enough to pop.
+- **Look.** Red and cyan in the grids: red is shadow only the volume casts,
+  cyan only the map. Edge acne or peter-panning in `map-hard`, and how far
+  `map-pcf` softens the hard edge the E3 look wants.
+- **Not covered yet.** Alpha-tested casters (grates, foliage) are drawn
+  solid by both techniques: the prototype does not read materials. Poses: models are
+  drawn unposed, as the model viewer draws them. Cascades: one sun map only.
+
+**Decided: shadow maps, one tap.** Volumes cost as much as a one-tap map or
+more at every scale measured, Halo 2's casters are mostly open meshes (37% of
+caster triangles closed, the level's clusters none), and the two agree on all
+but a fraction of a percent of lit pixels. A study note that recommended
+depth-fail volumes, and why it is not followed, is in
+[pstencil.md](pstencil.md) ("The technique: why shadow maps"). Volumes for
+closed object casters stay the fallback if phase 4's pictures show a case a
+map cannot meet.
 
 ## Sources
 
@@ -548,3 +1050,76 @@ article.
   <https://icode4.coffee/?p=738>
 - The Cutting Room Floor, "Proto:Halo 2": <https://tcrf.net/Proto:Halo_2>
   (not read)
+
+Added 2026-11-16, all accessed that day. Same rules: cited, not copied, no
+leaked file opened. TCRF served a page of instructions aimed at AI agents in
+place of its articles, so TCRF is read through search excerpts only; Beyond3D
+and the Steam Workshop refused the fetch and are search excerpts too. The
+Bungie.net article was read in full on an archive mirror, so its quotes above
+are P.
+
+- Bungie.net, "One Final Effort", urk, 16 April 2010:
+  <https://halo.bungie.net/News/content.aspx?cid=25650>, read at
+  <https://bnetarchive.haloman30.com/News/contenta239.html?type=topnews&cid=25650>
+- Bernie Freidin profile (above), re-read for exact wording
+- Halopedia, "Pstencil" and "Behind the Scenes: Making of Halo 2" (above),
+  re-read for the Jones, Staten, Lehto, Walpole and Griesemer citations
+- Oozer3993, "An Oral History of the Halo 2 E3 2003 Demo" and "Assembling a
+  Cathedral out of a Hurricane", Medium (search excerpts; the site refused
+  the fetch):
+  <https://medium.com/@Oozer3993/an-oral-history-of-the-halo-2-e3-2003-demo-700d978b92dc>,
+  <https://medium.com/@Oozer3993/assembling-a-cathedral-out-of-a-hurricane-the-making-of-halo-2-24652d08d29a>
+- GameWatcher, "Bungie 'literally scrapped' Halo 2's E3 engine", 4 December
+  2010, quoting Butcher's Eurogamer interview (search excerpt):
+  <https://www.gamewatcher.com/2010-12-04-bungie-literally-scrapped-halo-2-s-e3-engine-too-much-for-xbox>
+- The Cutting Room Floor, "Proto:Halo 2/May 3, 2003 Builds and Tools",
+  "Proto:Halo 2/E3 2003 Demo", "Prerelease:Halo 2" (search excerpts only):
+  <https://tcrf.net/Proto:Halo_2/May_3,_2003_Builds_and_Tools>,
+  <https://tcrf.net/Proto:Halo_2/E3_2003_Demo>, <https://tcrf.net/Prerelease:Halo_2>
+- Vice, Denny Connolly, 29 December 2025 (above), re-read; Clawsome Gamer,
+  Jake Bishop, 28 December 2025:
+  <https://clawsomegamer.com/halo-2-e3-2003-demo-build-leaks-playable-earth-city/>
+- Video Games Chronicle on the December 2024 leak and its link to the Digsite
+  project (search excerpt):
+  <https://www.videogameschronicle.com/news/over-25-years-of-classic-halo-content-has-leaked-online/>
+- Halo Waypoint, Alex Wakeford, "Cutting Room Floor: Modding Evolved, Part 1"
+  (2022) and "Digsite Demos: Halo 2" (2024):
+  <https://www.halowaypoint.com/news/cutting-room-floor>,
+  <https://www.halowaypoint.com/news/digsite-demos-halo-2>
+- Digsite, `H2E3` README (prose only): <https://github.com/digsite/H2E3>;
+  Steam Workshop item <https://steamcommunity.com/sharedfiles/filedetails/?id=3360515088>
+  and its discussion threads (search excerpts)
+- Steam Workshop, "Halo 2 Restored Lighting" comments (search excerpts):
+  <https://steamcommunity.com/sharedfiles/filedetails/comments/3276750116>
+- Beyond3D forum, 2003-04 threads "Halo 2 Gameplay Video", "New Halo 2
+  screenshot", "halo 2...multiple shadows cast" (search excerpts):
+  <https://forum.beyond3d.com/threads/halo-2-gameplay-video.4586/>,
+  <https://forum.beyond3d.com/threads/new-halo-2-screenshot.6578/>,
+  <https://forum.beyond3d.com/threads/halo-2-multiple-shadows-cast-im-probably-late.11504/>
+- ResetEra, "DF Retro Extra: Halo 2 - Revisiting E3 2003's Impossible Xbox
+  Demo!" (2018), on Digital Foundry's video of 6 June 2018, which we did not
+  watch: <https://www.resetera.com/threads/df-retro-extra-halo-2-revisiting-e3-2003s-impossible-xbox-demo.47186/>
+- Bungie, "Halo 2: Full E3 2003 Trailer", Internet Archive, watched as
+  described: <https://archive.org/details/halo2_e3_realtimedemo_hires>. Not
+  watched: 343 Industries' 2018 stream,
+  <https://archive.org/details/halo-2-e3-2003-demo-stream-from-343-never-before-seen-alphasbetas-1080p-60-fps>
+- F. C. Crow, "Shadow Algorithms for Computer Graphics", SIGGRAPH 1977
+- T. Heidmann, "Real Shadows, Real Time", IRIS Universe 18, 1991
+- L. Williams, "Casting Curved Shadows on Curved Surfaces", SIGGRAPH 1978
+- C. Everitt and M. J. Kilgard, "Practical and Robust Stenciled Shadow
+  Volumes for Hardware-Accelerated Rendering", NVIDIA, 2002:
+  <https://arxiv.org/abs/cs/0301002>
+- J. Carmack, email to M. Kilgard on depth-fail shadow volumes, May 2000, as
+  described in the paper above and in Wikipedia's "Shadow volume"
+  (<https://en.wikipedia.org/wiki/Shadow_volume>); W. Bilodeau and M. Songy,
+  US patent 6,384,822
+- C. Everitt, A. Rege and C. Cebenoyan, "Hardware Shadow Mapping", NVIDIA
+  white paper, 2001-02 (bibliographic record only)
+- M. J. Kilgard, "A Practical and Robust Bump-mapping Technique for Today's
+  GPUs", GDC 2000:
+  <https://developer.download.nvidia.com/assets/gamedev/docs/bumpmap.pdf>
+  (not read beyond its abstract)
+- H. Chen and X. Liu, "Lighting and Material of Halo 3", SIGGRAPH 2008 course
+  notes, read as search excerpts; the excerpts mention Halo 2 only for its
+  lightmap parameterisation:
+  <https://www.realtimerendering.com/advances/s2008/SIGGRAPH-Lighting%20of%20Halo%203.pdf>

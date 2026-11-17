@@ -43,6 +43,10 @@ fn the_full_plan_builds_and_reads_as_expected() {
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
     r.add(&feature::leaves::EngineLeaves).unwrap();
+    // The aim assist's map-load hook and its per-player multiplayer hooks
+    // (docs/game/aim-assist.md).
+    let settings = settings::Store::defaults(boot::setting_defs::ALL);
+    r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
     let plan = r.build(&feature::Base).unwrap();
     let _ = std::fs::remove_file(path);
     assert_eq!(
@@ -55,14 +59,17 @@ feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
 feature engine-leaves: on
+feature aim-assist: on
 0x000d9640 DAMAGE_REPORT: observe_before [live-telemetry:hits] -> original
 0x00104150 WEAPON_FIRE: observe_before [live-telemetry:shots] -> original
 0x00137fe0 GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash]
 0x001389c0 GAME_END: original -> observe_after [live-telemetry:end]
 0x0015ce70 PLAYER_KILLED: observe_before [live-telemetry:kill] -> original
-0x0018f000 GAME_ACTIVATE: original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
+0x00185be0 PLAYER_CONTROL_UPDATE: before [aim-assist:touch player's aim assist (open)] -> original -> after [aim-assist:touch player's aim assist (close)]
+0x0018f000 GAME_ACTIVATE: before [aim-assist:weapon aim assist] -> original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
+0x001a50a0 AIM_ASSIST_PARAMS: original -> after [aim-assist:touch player's weapon cone]
 0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original
 0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original
 0xa0f01000 entry video-screen:loader
@@ -76,7 +83,7 @@ warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast
     );
     // Shadows only where something runs after the original.
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
-    assert_eq!(shadows, 3);
+    assert_eq!(shadows, 5);
 }
 
 /// With the Rust locale lookup switched off, our strings go back to one
@@ -92,4 +99,47 @@ fn without_the_rust_lookup_one_bridge_hook_serves_our_strings() {
         "{text}"
     );
     assert!(text.contains("locale source ui-strings:our strings (served by the locale bridge)\n"));
+}
+
+/// The agent API (H2_AGENT) shares the tick with telemetry and lockstep,
+/// after both, so a pause holds the tick only once they've seen it; and
+/// it watches the cutscene start and stop (docs/runtime/agent-api.md).
+#[test]
+fn the_agent_observes_the_tick_last_and_the_cutscenes() {
+    let path = std::env::temp_dir().join(format!("h2-plan-agent-{}.jsonl", std::process::id()));
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let config = TelemetryConfig {
+        enabled: true,
+        sink: TelemetrySinkConfig::File(path.clone()),
+    };
+    // The agent added first still runs last.
+    r.add(&agent::AgentFeature(agent::Agent::new())).unwrap();
+    assert!(boot::telemetry::install(&mut r, &config).unwrap().is_some());
+    r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
+        .unwrap();
+    let text = r.build(&feature::Base).unwrap().text();
+    let _ = std::fs::remove_file(path);
+    assert!(text.contains("feature agent: on\n"), "{text}");
+    assert!(
+        text.contains("GAME_TICK: original -> observe_after [live-telemetry:sample, lockstep:hash, agent:serve]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("CINEMATIC_START: original -> observe_after [agent:cinematic-start]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("CINEMATIC_STOP: original -> observe_after [agent:cinematic-stop]\n"),
+        "{text}"
+    );
+}
+
+/// `H2_FEATURES=-agent` leaves every hook out.
+#[test]
+fn the_agent_can_be_switched_off() {
+    let mut r = feature::Registry::new(feature::Switches::parse("-agent").unwrap());
+    assert!(!r.add(&agent::AgentFeature(agent::Agent::new())).unwrap());
+    let text = r.build(&feature::Base).unwrap().text();
+    assert!(text.contains("feature agent: off"), "{text}");
+    assert!(!text.contains("[agent:"), "{text}");
 }

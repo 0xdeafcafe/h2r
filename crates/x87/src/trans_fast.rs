@@ -100,7 +100,55 @@ pub(super) fn x2m1(a: F80) -> Option<(F80, Flags)> {
     if !(-1138..=-1).contains(&f.top()) {
         return None;
     }
-    certify(expm1_series(wf::<2>(f).mul(ln2::<2>())).0)
+    certify(x2m1_value(f))
+}
+
+/// `floor(|2^(j/64) - 1| * 2^128)` for `j` in `-64..=63`, from the 768-bit
+/// reference (`tests::exp2_table_matches_the_768_bit_reference`); `j = 64`
+/// is exactly 1.
+const EXP2M1_J64: [[u64; 2]; 128] = include!("exp2m1_j64.in");
+
+/// `2^(j/64) - 1`.
+fn exp2m1_point(j: i64) -> Fast {
+    if j == 64 {
+        return Fast::one();
+    }
+    let t = Fast::from_be_limbs(&EXP2M1_J64[(j + 64) as usize], -1);
+    if j < 0 { t.neg() } else { t }
+}
+
+/// The nearest `j/64` to `a` (|a| < 1), as `j`.
+fn exp2_point(f: Fin) -> i64 {
+    if f.top() < -7 {
+        return 0; // |64a| < 1/2
+    }
+    // 64|a| = sig * 2^(exp + 6); shift is 58..=64.
+    let shift = (-(f.exp + 6)) as u32;
+    let j = ((f.sig as u128 + (1u128 << (shift - 1))) >> shift) as i64;
+    if f.neg { -j } else { j }
+}
+
+/// 2^a - 1 for the fast path, |a| < 1: `a = j/64 + r` with `|r| <= 1/128`,
+/// so `2^a - 1 = d + e + d*e` with `d = 2^(j/64) - 1` from the table and
+/// `e = expm1(r ln 2)`, a series on `|r ln 2| < 2^-7.5`: about 13 terms
+/// rather than about 30. For `j = 0` it is the plain series, as before.
+/// Within the same error budget
+/// (`tests::unrounded_errors_stay_within_the_documented_budgets`), so an
+/// accepted result is still the 512-bit reference's.
+fn x2m1_value(f: Fin) -> Fast {
+    let a = wf::<2>(f);
+    let j = exp2_point(f);
+    if j == 0 {
+        return expm1_series(a.mul(ln2::<2>())).0;
+    }
+    let r = a.sub(Fast::from_i64(j).scale(-6));
+    let e = if r.is_zero() {
+        Fast::ZERO
+    } else {
+        expm1_series(r.mul(ln2::<2>())).0
+    };
+    let d = exp2m1_point(j);
+    d.add(e.add(d.mul(e)))
 }
 
 /// The reduction's working width: 192 bits, so that the fraction of
@@ -471,6 +519,79 @@ mod tests {
         assert!(hits > iters * 9 / 10, "{hits}");
     }
 
+    /// floor(|2^(j/64) - 1| * 2^128) from the 768-bit reference.
+    fn exp2m1_fixed(j: i64) -> [u64; 2] {
+        let v = expm1_series::<12>(Wf::from_i64(j).scale(-6).mul(ln2::<12>())).0;
+        let top = narrow(v);
+        let m = ((top.m[1] as u128) << 64 | top.m[0] as u128) >> (-1 - v.top());
+        [(m >> 64) as u64, m as u64]
+    }
+
+    #[test]
+    fn exp2_table_matches_the_768_bit_reference() {
+        for (i, entry) in EXP2M1_J64.iter().enumerate() {
+            let j = i as i64 - 64;
+            let want = if j == 0 { [0, 0] } else { exp2m1_fixed(j) };
+            assert_eq!(*entry, want, "j={j}");
+        }
+    }
+
+    #[test]
+    #[ignore = "prints EXP2M1_J64 (src/exp2m1_j64.in)"]
+    fn print_exp2_table() {
+        std::println!("[");
+        for j in -64..64 {
+            let [hi, lo] = if j == 0 { [0, 0] } else { exp2m1_fixed(j) };
+            std::println!("    [{hi:#018x}, {lo:#018x}], // j = {j}");
+        }
+        std::println!("]");
+    }
+
+    /// The table-driven 2^a - 1 near every table point and every rounding
+    /// midpoint between points, against the 512-bit reference.
+    #[test]
+    fn x2m1_matches_the_reference_across_the_exp2_table() {
+        extended_x2m1(0x7c2d_51e8_a3f6_09b4, 3000);
+    }
+
+    #[test]
+    #[ignore = "slow; the default run covers a sample"]
+    fn x2m1_matches_the_reference_across_the_exp2_table_extended() {
+        extended_x2m1(0x41a7_c90e_3b25_d86f, 300_000);
+    }
+
+    fn extended_x2m1(seed: u64, iters: usize) {
+        let mut rng = Rng(seed);
+        let mut hits = 0;
+        for i in 0..iters {
+            // a = k/128 (+/- jitter), k in -127..=127: table points (even
+            // k) and midpoints (odd k); and anywhere.
+            let k = (i / 3) as i64 % 255 - 127;
+            let a = match i % 3 {
+                0 | 1 if k != 0 => {
+                    // Below 2^56, so q stays positive.
+                    let jitter = rng.next() >> (rng.next() % 56 + 8);
+                    let q = (k.unsigned_abs() << 56) as u128; // |a| * 2^63
+                    let q = if rng.next() & 1 == 0 {
+                        q + jitter as u128
+                    } else {
+                        q - jitter as u128
+                    };
+                    let z = q.leading_zeros() - 64;
+                    let v = F80::new((16383 - z) as u16, ((q << z) as u64) | 1 << 63);
+                    if k < 0 { v.neg() } else { v }
+                }
+                _ => rng.f80(-80, -1),
+            };
+            let reference = x2m1_n::<8>(a);
+            if let Some(fast) = x2m1(a) {
+                assert_eq!(fast, reference, "a={a:x?}");
+                hits += 1;
+            }
+        }
+        assert!(hits > iters * 9 / 10, "{hits}");
+    }
+
     #[test]
     fn log2_e_matches_the_768_bit_reference() {
         let v = narrow(Wf::<12>::one().div(ln2::<12>()));
@@ -584,7 +705,7 @@ mod tests {
             );
             let a = operand(rng.f80(-1138, -1)).unwrap();
             check(
-                expm1_series(wf::<2>(a).mul(ln2::<2>())).0,
+                x2m1_value(a),
                 expm1_series(wf::<12>(a).mul(ln2::<12>())).0,
                 96,
             );

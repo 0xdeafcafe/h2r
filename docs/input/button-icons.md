@@ -7,7 +7,7 @@ Xbox 360, PlayStation or keyboard and mouse pictures in their place, following
 whichever device the player last touched.
 
 ```sh
-h2 play disc.iso --icons auto|xbox|xbox360|playstation|keyboard|remote
+h2 play disc.iso --icons auto|xbox|xbox360|playstation|keyboard|remote|steam
 H2_ICONS=playstation h2 run disc.iso ...
 ```
 
@@ -128,6 +128,23 @@ take the text colour. They are plain geometry: no Apple artwork or logo.
 `auto` picks the set when the remote was the device last used (its pad name,
 `Apple TV Remote`, is `input::active::DeviceKind::Remote`).
 
+**Steam Controller** (`steam`). Its A, B, X and Y sit where the Xbox pad's do
+and its triggers are analog, so those keep the retail glyphs. It replaces the
+rest:
+
+| Xbox control | Steam picture |
+|---|---|
+| Black, White | the LB/RB bumper pair, as the Xbox 360 set draws it |
+| Start | a ">" chevron in a faint ring |
+| Back | a "<" chevron in a faint ring |
+| D-pad up, down, left, right | the clickpad ring with that quarter lit (a click on the left trackpad) |
+| Right stick, right stick click | the clickpad with a filled centre (the right trackpad) |
+
+All are white at the retail alpha levels, so they take the text colour, and
+plain geometry: no Valve artwork or logo. `auto` picks the set when a Steam
+Controller was the device last used (its pad name, `Steam Controller`, is
+`input::active::DeviceKind::Steam`).
+
 ### Which button a prompt shows
 
 The game chooses the button code point before the font lookup. The runner
@@ -152,7 +169,7 @@ Two parts, both in `crates/boot/src/icons.rs`.
 
 **1. The fonts get every set.** `vfs::RewriteBackend` wraps the disc. When
 the game opens a file under `maps\fonts` (not the `.txt` tables), the whole
-file is read once, `font::icons::replacements` draws the four sets for that
+file is read once, `font::icons::replacements` draws the sets for that
 font, and `font::patch::apply` appends them. Each set has code points of its
 own, in the unused part of the icon range:
 
@@ -163,6 +180,7 @@ own, in the unused part of the icon range:
 | PlayStation | U+E220 to U+E231 |
 | keyboard and mouse | U+E240 to U+E251 |
 | Apple TV remote | U+E260 to U+E271 |
+| Steam Controller | U+E280 to U+E291 |
 
 `apply` gives each new code point a new record at the end of the record
 table, moves the pixel data up by the size of those records, fixes every
@@ -208,14 +226,15 @@ motion below a controller's drift threshold. A new pad button press, pressure
 increase or deliberate stick deflection selects the pad. Held controls,
 key autorepeat, releases and small stick jitter do not steal the selection.
 If both devices produce new input in one poll, keyboard input wins. A pad whose name says
-Sony, DualShock, DualSense or PlayStation is a PlayStation pad; any other pad
-gets the 360 set.
+Sony, DualShock, DualSense, PlayStation, PS4 or PS5 is a PlayStation pad; the
+Apple TV remote and a Steam Controller (by their names) get their own sets;
+any other pad gets the 360 set.
 
 | `icons` | Shows |
 |---|---|
 | `auto` | the last-used device's set. The first poll identifies an attached pad; otherwise keyboard. Before discovery it prefers an available keyboard. Disconnecting the pad returns to keyboard. |
 | `xbox` | retail; nothing is installed |
-| `xbox360`, `playstation`, `keyboard` | that set, always |
+| `xbox360`, `playstation`, `keyboard`, `remote`, `steam` | that set, always |
 
 ## Limits and open questions
 

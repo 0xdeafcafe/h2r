@@ -181,13 +181,26 @@ impl Layout {
     /// Creates the writable directories and copies the bundled boot cache
     /// into the writable one, skipping files already there. Returns how
     /// many files were copied.
+    ///
+    /// It also copies the bundle's hard-disk seed (the map pack's packages
+    /// from a `maps=all` build, [`crate::maps`]) into the data root, file by
+    /// file, so a tvOS purge of Caches is undone at the next launch.
     pub fn prepare(&self) -> std::io::Result<usize> {
         std::fs::create_dir_all(&self.data)?;
         std::fs::create_dir_all(&self.boot_cache)?;
+        let seeded =
+            crate::maps::seed(&self.bundled_cache.join(crate::maps::SEED_DIR), &self.data)?;
+        if seeded > 0 {
+            eprintln!(
+                "h2host: {seeded} hard-disk file(s) seeded into {}",
+                self.data.display()
+            );
+        }
         let mut copied = 0;
         let Ok(entries) = std::fs::read_dir(&self.bundled_cache) else {
             return Ok(0);
         };
+        // Top-level files only: the seed directory is not boot cache.
         for e in entries.flatten() {
             let to = self.boot_cache.join(e.file_name());
             if e.path().is_file() && !to.exists() {
@@ -339,6 +352,22 @@ mod tests {
             std::fs::read(l.boot_cache.join("analysis-x.h2a")).unwrap(),
             b"written at run time"
         );
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn prepare_seeds_the_hard_disk_from_the_bundle_and_not_the_boot_cache() {
+        let b = temp("hdd");
+        let l = Layout::new(&b, &b.join("caches"), Some(&b.join("documents")));
+        let pkg = "disk/Partition1/TDATA/4D530064/$c/4d53006400000101/example.map";
+        let seeded = l.bundled_cache.join(crate::maps::SEED_DIR).join(pkg);
+        std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
+        std::fs::write(&seeded, b"a map").unwrap();
+        std::fs::write(l.bundled_cache.join("analysis-x.h2a"), b"bundled").unwrap();
+        assert_eq!(l.prepare().unwrap(), 1, "the count is boot cache files");
+        assert_eq!(std::fs::read(l.data.join(pkg)).unwrap(), b"a map");
+        assert!(l.data.starts_with(b.join("documents")));
+        assert!(!l.boot_cache.join(crate::maps::SEED_DIR).exists());
         let _ = std::fs::remove_dir_all(&b);
     }
 }

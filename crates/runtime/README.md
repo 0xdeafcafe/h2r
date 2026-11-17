@@ -81,8 +81,9 @@ performs its own TLS stores.
 ### Optional inline RAM accesses
 
 Generated code uses `h2fastmem.h` unless built with `H2_FASTMEM=0`. The runtime
-provides `h2abi_v1_fast_acquire` and `h2abi_v1_fast_release`; a dynamic bridge
-must forward both. `ExecCtx::enable_fast_memory(false)` selects checked Rust
+provides `h2abi_v1_fast_acquire`, `h2abi_v1_fast_release` and `h2abi_v1_exit`
+(the release with the accounting charge, at every handler exit); a dynamic
+bridge must forward all three. `ExecCtx::enable_fast_memory(false)` selects checked Rust
 helpers in the same generated image for comparison or diagnosis. ABI v2's
 architectural layouts and context preempt-word prefix do not change.
 

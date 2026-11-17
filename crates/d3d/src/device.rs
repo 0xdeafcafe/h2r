@@ -56,7 +56,7 @@ use crate::regs::{RegisterValues, RegisterWindow};
 use crate::resource::{
     AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
 };
-use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
+use crate::shader::{CONSTANTS, Microcode, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
 use crate::state::{DrawState, StateWords, Translator, slot};
 use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
@@ -335,6 +335,9 @@ pub struct Stats {
     pub scissor_split_draws: u64,
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
+    /// Lazy levels left as targets whose guest bytes were not read again:
+    /// the match they held was still those bytes (`H2_D3D_LEAVE_READ`).
+    pub rtt_leave_reads_skipped: u64,
     /// Render-to-texture host surfaces filled from guest memory.
     pub rtt_uploads: u64,
     /// Depth-buffer readbacks for textures that alias its memory
@@ -689,8 +692,19 @@ pub struct Device<B: Backend> {
     push_words: Vec<u32>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
     program_start: u32,
+    /// The last microcode handed to a draw ([`Device::microcode`]).
+    microcode_memo: Option<Microcode>,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
     constants: Box<[u32; CONSTANTS * 4]>,
+    /// Bumped by every write to [`Self::constants`].
+    constants_generation: u64,
+    /// The block the last draw took and [`Self::constants_generation`]
+    /// then: the next draws share it until a register changes.
+    draw_constants: Option<(u64, crate::shader::Constants)>,
+    /// The last draw's PSDEF and combiner words, shared with the next
+    /// draws while they read the same.
+    draw_pixel_shader: Option<Arc<[u32; 60]>>,
+    draw_combiner: Option<Arc<[u32; 57]>>,
     viewport: Viewport,
     transforms: HashMap<u32, [f32; 16]>,
     scissors: Vec<Rect>,
@@ -722,6 +736,14 @@ pub struct Device<B: Backend> {
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
     rtt: HashMap<u32, RttTarget<B::Surface>>,
+    /// Bumped whenever [`Self::rtt`] gains or loses a target or a target
+    /// becomes dirty: what `flush_for_texture` found for a texture holds
+    /// until then.
+    rtt_epoch: u64,
+    /// `flush_for_texture`'s last answer per texture: its header words,
+    /// [`Self::rtt_epoch`] then, and the guest range to flush the mirror
+    /// over. Nothing to write back while both still match.
+    texture_flushed: rustc_hash::FxHashMap<u32, ([u32; 5], u64, u64, u64)>,
     /// Bumped by every draw or clear that may write the device's own depth
     /// buffer (`raster.rs`, textures over [`DEPTH_BUFFER_DATA`]).
     depth_generation: u64,
@@ -752,6 +774,10 @@ pub struct Device<B: Backend> {
     /// render-to-texture and a backend that samples depth surfaces);
     /// `H2_D3D_LAZY_DEPTH=0` turns it off.
     lazy_depth: bool,
+    /// A level left as a target is read from guest memory every time, even
+    /// when its match is already those bytes (`H2_D3D_LEAVE_READ=1`;
+    /// `Device::set_leave_read`).
+    leave_read: bool,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
@@ -855,7 +881,12 @@ impl<B: Backend> Device<B> {
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
+            microcode_memo: None,
             constants: Box::new([0; CONSTANTS * 4]),
+            constants_generation: 0,
+            draw_constants: None,
+            draw_pixel_shader: None,
+            draw_combiner: None,
             viewport: Viewport {
                 x: 0,
                 y: 0,
@@ -884,6 +915,8 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             display: display::Display::default(),
             rtt: HashMap::default(),
+            rtt_epoch: 0,
+            texture_flushed: rustc_hash::FxHashMap::default(),
             depth_generation: 0,
             depth_color: None,
             depth_color_newer: false,
@@ -893,6 +926,7 @@ impl<B: Backend> Device<B> {
             depth_alias: HashMap::default(),
             depth_level_tex: HashMap::default(),
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
+            leave_read: std::env::var_os("H2_D3D_LEAVE_READ").is_some_and(|v| v == "1"),
             rtt_synced: HashMap::default(),
             rtt_stores: HashMap::default(),
             alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
@@ -953,6 +987,38 @@ impl<B: Backend> Device<B> {
     /// Constant register `r` (hardware order, index = register + 96).
     pub fn constant(&self, r: usize) -> [f32; 4] {
         std::array::from_fn(|c| f32::from_bits(self.constants[4 * r + c]))
+    }
+
+    /// Every constant register for a draw: the last draw's block while no
+    /// register has changed since, else one filled in place in the heap (a
+    /// 3 KiB array built on the stack and then moved was a second copy), a
+    /// spare block of a draw already run when there is one
+    /// ([`crate::shader::spare_constants`]); every register is overwritten.
+    fn draw_constants(&mut self) -> crate::shader::Constants {
+        if let Some((generation, c)) = &self.draw_constants
+            && *generation == self.constants_generation
+        {
+            return c.clone();
+        }
+        let mut c = crate::shader::spare_constants();
+        let b = Arc::get_mut(&mut c).expect("a spare block is unshared");
+        for (reg, words) in b.iter_mut().zip(self.constants.as_chunks::<4>().0) {
+            *reg = words.map(f32::from_bits);
+        }
+        self.draw_constants = Some((self.constants_generation, c.clone()));
+        c
+    }
+
+    /// `words` shared: the block in `last` when it holds the same words,
+    /// else a new one, kept in `last` for the next draw.
+    fn shared_words<const N: usize>(
+        last: &mut Option<Arc<[u32; N]>>,
+        words: &[u32; N],
+    ) -> Arc<[u32; N]> {
+        match last {
+            Some(a) if **a == *words => a.clone(),
+            _ => last.insert(Arc::new(*words)).clone(),
+        }
     }
 
     fn live(&self, entry: &'static str) -> Result<(), D3dError> {
@@ -1235,6 +1301,7 @@ impl<B: Backend> Device<B> {
         self.program.fill(0);
         self.program_start = 0;
         self.constants.fill(0);
+        self.constants_generation += 1;
         self.viewport = Viewport {
             x: 0,
             y: 0,
@@ -1611,6 +1678,8 @@ impl<B: Backend> Device<B> {
                             self.stats.hw_methods += 1;
                         }
                         None => {
+                            // Any method may load constants.
+                            self.constants_generation += 1;
                             let mut mems = Memories {
                                 constants: &mut self.constants,
                                 program: &mut self.program,
@@ -2014,6 +2083,7 @@ impl<B: Backend> Device<B> {
         self.depth_level_tex.remove(&header);
         self.mirror_stale.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
+            self.rtt_epoch += 1;
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
@@ -2029,6 +2099,7 @@ impl<B: Backend> Device<B> {
             self.rtt_synced.remove(&h);
             self.rtt_stores.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
+            self.rtt_epoch += 1;
             self.mirror_stale.remove(&h);
             self.depth_level_tex.remove(&h);
             self.backend
@@ -2440,6 +2511,7 @@ impl<B: Backend> Device<B> {
         let words = mem.read_words(data, dwords as usize)?;
         let first = first as usize;
         self.constants[first..first + words.len()].copy_from_slice(&words);
+        self.constants_generation += 1;
         if shadow {
             let base = self.cfg.layout.vs_constants + 4 * first as u32;
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -3260,20 +3332,30 @@ impl<B: Backend> Device<B> {
         ))
     }
 
-    fn microcode(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        for s in self.program_start as usize..PROGRAM_SLOTS {
-            let insn = &self.program[4 * s..4 * s + 4];
-            out.extend_from_slice(insn);
-            if insn[3] & 1 != 0 {
-                break; // FINAL
-            }
+    /// The program from `program_start` up to and including its FINAL
+    /// instruction (or the last slot). While program memory holds the same
+    /// words, every draw gets the same shared copy, so the shader keys built
+    /// from consecutive draws compare by pointer and hash nothing again.
+    /// Checked against program memory each time (one compare of the
+    /// words), so nothing that writes program memory has to say so.
+    fn microcode(&mut self) -> Microcode {
+        let start = (self.program_start as usize).min(PROGRAM_SLOTS);
+        let end = (start..PROGRAM_SLOTS)
+            .find(|&s| self.program[4 * s + 3] & 1 != 0) // FINAL
+            .map_or(PROGRAM_SLOTS, |s| s + 1);
+        let words = &self.program[4 * start..4 * end];
+        if let Some(m) = &self.microcode_memo
+            && **m == *words
+        {
+            return m.clone();
         }
-        out
+        let m = Microcode::new(words.into());
+        self.microcode_memo = Some(m.clone());
+        m
     }
 
     fn shader_inputs(
-        &self,
+        &mut self,
         mem: &dyn GuestMemory,
         vertex: VertexProcessing,
         layout: &VertexLayout,
@@ -3286,17 +3368,19 @@ impl<B: Backend> Device<B> {
             .fold(0u16, |m, a| m | 1 << (a.register.0 & 15));
         let pixel_shader = if self.pixel_shader != 0 {
             let def = mem.read_u32(at(self.pixel_shader, 8)?)?;
-            Some(Box::new(crate::guest::read_array::<60>(mem, def)?))
+            let words = crate::guest::read_array::<60>(mem, def)?;
+            Some(Self::shared_words(&mut self.draw_pixel_shader, &words))
         } else {
             None
         };
+        let combiner: &[u32; 57] = words.render[..57].try_into().expect("57 slots");
         Ok(ShaderInputs {
             vertex,
             provided_inputs: provided,
             vertex_defaults: *self.immediate.registers(),
-            constants: Box::new(std::array::from_fn(|r| self.constant(r))),
+            constants: self.draw_constants(),
             pixel_shader,
-            combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
+            combiner_state: Self::shared_words(&mut self.draw_combiner, combiner),
             final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,
             affine_projection: mem.read_u32(self.cfg.layout.device + field::FLAGS)? & 0x02 != 0,
         })

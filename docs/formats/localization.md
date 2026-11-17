@@ -220,7 +220,7 @@ read-and-validate helper, unresolved names accepted by lookup but rejected by
 validation, duplicate IDs within a range, flag values consuming `--all`/help,
 short `matg`, the exact encoded-byte limit, and a one-MiB string aliased 65
 times to exhaust the scan budget. All fixtures are synthetic.
-The focused `cargo test -p tags -p map -p cli` suite passes 51 tests.
+The focused `cargo test -p tags -p map -p cli` suite covers the above.
 `cargo clippy -p tags -p map -p cli --all-targets --no-deps -- -D warnings`
 passes without lint exceptions; the preexisting needless wrapper in the CLI's
 hex parser was simplified. Formatting checks pass for the localized-text

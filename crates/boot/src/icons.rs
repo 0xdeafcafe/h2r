@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// One bit per (set, button) alias glyph that every font holds: four sets
+/// One bit per (set, button) alias glyph that every font holds: five sets
 /// of 18 need more than one word.
 #[derive(Debug)]
 struct Available([AtomicU64; 2]);
@@ -51,7 +51,7 @@ pub struct IconOptions {
     pub gamepads: bool,
 }
 
-/// `H2_ICONS`: `auto`, `xbox`, `xbox360`, `playstation`, `keyboard` or `remote`.
+/// `H2_ICONS`: `auto`, `xbox`, `xbox360`, `playstation`, `keyboard`, `remote` or `steam`.
 /// `Ok(None)` when unset.
 pub fn choice_from_env() -> anyhow::Result<Option<IconChoice>> {
     match std::env::var("H2_ICONS") {
@@ -205,6 +205,7 @@ impl Icons {
             (IconChoice::Auto, Some(DeviceKind::Xbox)) => IconSet::Xbox360,
             (IconChoice::Auto, Some(DeviceKind::PlayStation)) => IconSet::PlayStation,
             (IconChoice::Auto, Some(DeviceKind::Remote)) => IconSet::Remote,
+            (IconChoice::Auto, Some(DeviceKind::Steam)) => IconSet::Steam,
             (IconChoice::Auto, None) => self.initial,
         }
     }
@@ -432,6 +433,18 @@ mod tests {
             0xe102,
             "X: the remote has none, so Xbox"
         );
+        active.set(DeviceKind::Steam);
+        assert_eq!(icons.current(), IconSet::Steam);
+        assert_eq!(
+            (
+                icons.shown(0xe104),
+                icons.shown(0xe10c),
+                icons.shown(0xe10f)
+            ),
+            (0xe284, 0xe28c, 0xe28f),
+            "Black, Start, right stick"
+        );
+        assert_eq!(icons.shown(0xe100), 0xe100, "A stays Xbox");
         active.set(DeviceKind::Xbox);
         // Units that are not buttons are never touched.
         for unit in [0x41, 0xe0ff, 0xe112, 0xe200] {
@@ -601,6 +614,7 @@ mod tests {
             DeviceKind::Keyboard,
             DeviceKind::Xbox,
             DeviceKind::Remote,
+            DeviceKind::Steam,
         ] {
             active.set(kind);
             let expected = match kind {
@@ -608,6 +622,8 @@ mod tests {
                 DeviceKind::Keyboard => 0xe240,
                 DeviceKind::Xbox => 0xe100,
                 DeviceKind::Remote => 0xe260,
+                // Steam keeps the retail A.
+                DeviceKind::Steam => 0xe100,
             };
             for (addr, arg) in [(GLYPH_LOOKUP, 4), (GLYPH_LOOKUP_CALLBACK, 12)] {
                 for unit in [0xe100, 0x41] {

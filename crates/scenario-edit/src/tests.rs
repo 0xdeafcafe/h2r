@@ -441,7 +441,7 @@ fn panel_state_without_a_window() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("source.map");
     std::fs::write(&src_path, fixture()).unwrap();
-    let mut ed = crate::ScenarioEditor::new();
+    let mut ed = crate::Session::new();
     assert!(!ed.is_dirty());
     ed.open(MapSource::file(&src_path)).unwrap();
     assert!(!ed.is_dirty() && !ed.can_undo());
@@ -479,6 +479,46 @@ fn rotation_matches_the_placement_convention() {
         assert!(geometry::dot(a, b).abs() < 1e-5);
     }
     assert!(close(geometry::cross(f, l), u));
+}
+
+#[test]
+fn decompose_inverts_rotation_and_the_transform_matrix() {
+    for ypr in [
+        [0.0, 0.0, 0.0],
+        [0.3, -0.7, 1.1],
+        [-2.5, 0.4, -0.2],
+        [3.0, 1.2, 2.9],
+    ] {
+        let t = crate::Transform {
+            position: [1.0, -2.0, 3.5],
+            rotation: Some(crate::RotationField::Ypr(ypr)),
+        };
+        let mut m = t.matrix();
+        let (p, back) = geometry::decompose(&m);
+        assert_eq!(p, [1.0, -2.0, 3.5]);
+        for k in 0..3 {
+            assert!((back[k] - ypr[k]).abs() < 1e-4, "{ypr:?} -> {back:?}");
+        }
+        // A gizmo may leave scale in the axes; it is ignored.
+        for v in &mut m[..12] {
+            *v *= 2.0;
+        }
+        let (_, scaled) = geometry::decompose(&m);
+        for k in 0..3 {
+            assert!((scaled[k] - ypr[k]).abs() < 1e-4);
+        }
+    }
+    // Facing-only placements turn about z.
+    let f = crate::Transform {
+        position: [0.0; 3],
+        rotation: Some(crate::RotationField::Facing(0.5)),
+    };
+    assert_eq!(f.ypr(), [0.5, 0.0, 0.0]);
+    // The camera's view and projection make up its view-projection.
+    let cam = Camera::default();
+    let vp = geometry::mul(&cam.proj(1.5), &cam.view());
+    assert_eq!(vp, cam.view_proj(1.5));
+    assert_eq!(geometry::flat(&vp)[4..8], vp[1]);
 }
 
 #[test]
@@ -534,7 +574,6 @@ fn camera_rays_projection_picking_and_planes() {
 /// the machine has no wgpu adapter.
 #[test]
 fn viewport_renders_markers_offscreen() {
-    use egui_wgpu::wgpu;
     let instance = wgpu::Instance::default();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
@@ -590,6 +629,8 @@ fn viewport_renders_markers_offscreen() {
         index: 0,
         position: [0.0; 3],
         axes: geometry::rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
     };
     vp.set_markers(&device, &crate::render::marker_vertices(&[marker], None));
     vp.render(&device, &queue, &cam, size);
@@ -597,6 +638,224 @@ fn viewport_renders_markers_offscreen() {
     assert_ne!(empty, drawn);
     // Orange weapons: red dominates blue.
     assert!(drawn[0] > drawn[2], "{drawn:?}");
+    // The overlay is seen through the marker, blended over it: neither
+    // the marker's colour nor the overlay's alone.
+    let quad = |z| geometry::Tri {
+        p: [[-5.0, -5.0, z], [5.0, -5.0, z], [0.0, 5.0, z]],
+        n: [0.0, 0.0, 1.0],
+    };
+    vp.set_overlay(
+        &device,
+        &crate::render::overlay_vertices(&[quad(-2.0)], [0.0, 0.0, 1.0]),
+    );
+    vp.render(&device, &queue, &cam, size);
+    let ghosted = pixel(&vp);
+    assert_ne!(ghosted, drawn);
+    assert!(ghosted[2] > drawn[2], "blue mixed in: {ghosted:?}");
+    assert!(ghosted[0] > 0, "the marker still shows: {ghosted:?}");
+    vp.set_overlay(&device, &[]);
+    vp.render(&device, &queue, &cam, size);
+    assert_eq!(pixel(&vp), drawn);
+}
+
+/// Transparent parts (glass, water, cloud decks) are neither framed nor
+/// picked: only opaque parts become triangles.
+#[test]
+fn transparent_parts_are_left_out_of_the_opaque_world() {
+    let part = |transparent, z: f32| geometry::WorldPart {
+        transparent,
+        positions: vec![[0.0, 0.0, z], [500.0, 0.0, z], [0.0, 500.0, z]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        uvs: vec![[0.0; 2]; 3],
+        tris: vec![[0, 1, 2]],
+        ..Default::default()
+    };
+    let tris = geometry::opaque_triangles(&[part(true, -14.0), part(false, 2.0)]);
+    assert_eq!(tris.len(), 1);
+    assert_eq!(tris[0].p[0][2], 2.0);
+    assert_eq!(tris[0].n, [0.0, 0.0, 1.0]);
+}
+
+/// Glyphs keep a minimum size on screen: far away they grow, and so does
+/// what picks them.
+#[test]
+fn far_glyphs_grow_and_stay_pickable() {
+    let near = [0.0, 0.0, 10.0];
+    let far = [0.0, 0.0, 400.0];
+    assert_eq!(geometry::glyph_scale(near, [0.0; 3]), 1.0);
+    assert_eq!(geometry::glyph_scale(far, [0.0; 3]), 10.0);
+    let spawn = geometry::Marker {
+        block: BlockKind::StartingLocations,
+        index: 2,
+        position: [0.0; 3],
+        axes: geometry::rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
+    };
+    // 3 units to the side: a miss from close up, a hit from 400 up.
+    let down = |z: f32| Ray {
+        origin: [3.0, 0.0, z],
+        dir: [0.0, 0.0, -1.0],
+    };
+    assert_eq!(geometry::pick(&[spawn], &down(10.0)), None);
+    assert_eq!(
+        geometry::pick(&[spawn], &down(400.0)),
+        Some((BlockKind::StartingLocations, 2))
+    );
+    // Spawns and flags have their own glyphs, bigger than a diamond.
+    for kind in [BlockKind::StartingLocations, BlockKind::NetgameFlags] {
+        let m = geometry::Marker {
+            block: kind,
+            ..spawn
+        };
+        let top = geometry::marker_triangles(&m)
+            .iter()
+            .flatten()
+            .map(|p| p[2])
+            .fold(f32::MIN, f32::max);
+        assert!(top > 1.0, "{kind:?} glyph is {top} tall");
+    }
+}
+
+fn disc_iso() -> std::path::PathBuf {
+    std::env::var_os("H2_DISC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../disc/halo2.iso"))
+        })
+}
+
+/// Ascension regression: its BSP has a 700-unit transparent cloud deck
+/// (part kind 4, `transparent\sky_two_alpha_clouds`) at z = -14.5, below
+/// the playable structure. Drawn opaque and framed, it hid the structure's
+/// lower half and shrank the rest to a speck: only "the ground plane and
+/// rocks" showed. The structure (six clusters) must be opaque world, the
+/// deck must not, and the camera must frame the level, not the deck.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "ascension").unwrap();
+    let mut map = source.open().unwrap();
+    let mut raw = geometry::RawFiles::new(vec![(map::ResourceFile::Local, source.open().unwrap())]);
+    let (parts, failed) = geometry::world_parts(&mut map, &mut raw).unwrap();
+    assert_eq!(failed, 0);
+    let deck: Vec<_> = parts.iter().filter(|p| p.transparent).collect();
+    assert!(!deck.is_empty());
+    let span = |ps: &[&geometry::WorldPart]| {
+        let mut b = geometry::Bounds::EMPTY;
+        ps.iter().flat_map(|p| &p.positions).for_each(|&q| b.add(q));
+        b.max[0] - b.min[0]
+    };
+    assert!(span(&deck) > 600.0, "the cloud deck spans {}", span(&deck));
+    let opaque = geometry::opaque_triangles(&parts);
+    // The structure: the opaque triangles inside its 50-unit footprint.
+    let structure = opaque
+        .iter()
+        .filter(|t| t.p.iter().all(|p| p[0].abs() < 30.0 && p[1].abs() < 30.0))
+        .count();
+    assert!(structure > 8000, "{structure} structure triangles");
+    assert!(
+        !opaque
+            .iter()
+            .any(|t| t.p.iter().all(|p| (p[2] + 14.485).abs() < 0.01) && t.p[0][0].abs() > 300.0),
+        "the cloud deck is in the opaque world"
+    );
+
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "ascension").unwrap();
+    let cam = *s.camera();
+    assert!(cam.distance < 150.0, "framed from {}", cam.distance);
+    assert!(cam.target[0].abs() < 30.0 && cam.target[1].abs() < 30.0);
+    let scene = s.scene().expect("a scene");
+    assert!(
+        scene.stats.textured * 2 > scene.stats.shaders,
+        "{:?}",
+        scene.stats
+    );
+    assert!(
+        scene.stats.modelled * 2 > scene.stats.objects,
+        "{:?}",
+        scene.stats
+    );
+    assert!(
+        scene
+            .world
+            .batches
+            .iter()
+            .any(|b| b.blend == crate::scene::Blend::Translucent)
+    );
+}
+
+/// Framing drops the few placements far outside a level.
+#[test]
+fn trimmed_bounds_drop_outliers() {
+    let mut points: Vec<geometry::Vec3> = (0..40)
+        .map(|i| [i as f32 % 10.0, (i / 10) as f32, 0.0])
+        .collect();
+    points.push([500.0, -300.0, 80.0]);
+    let b = crate::session::trimmed_bounds(&points, 0.04);
+    assert_eq!(b.max, [9.0, 3.0, 0.0]);
+    assert_eq!(b.min, [0.0, 0.0, 0.0]);
+    // Few points: at least the middle one is kept.
+    let one = crate::session::trimmed_bounds(&[[1.0, 2.0, 3.0]], 0.5);
+    assert_eq!((one.min, one.max), ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]));
+}
+
+/// Lockout regression: a few of its placements sit far outside the level,
+/// so framing every placement left the level small in the view. Trimmed
+/// framing must come in at least a quarter closer than the full bounds
+/// would.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_lockout_frames_its_level_not_its_outliers() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "lockout").unwrap();
+    let mut s = crate::Session::new();
+    s.build_scenes = false;
+    s.open_named(source.clone(), "lockout").unwrap();
+    let mut all = geometry::Bounds::EMPTY;
+    s.markers().iter().for_each(|m| all.add(m.position));
+    let full = all.radius() * geometry::FRAME_DISTANCE;
+    let cam = *s.camera();
+    assert!(
+        cam.distance < full * 0.75,
+        "framed from {} (all placements: {full})",
+        cam.distance
+    );
+}
+
+/// The BSP is lit by its lightmap pages: most of Zanzibar's solid world
+/// draws through one.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_zanzibar_world_is_lightmapped() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "zanzibar").unwrap();
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "zanzibar").unwrap();
+    let scene = s.scene().unwrap();
+    assert!(scene.stats.lightmap_pages > 50, "{:?}", scene.stats);
+    let (lit, all) = scene
+        .world
+        .batches
+        .iter()
+        .filter(|b| b.blend != crate::scene::Blend::Translucent)
+        .fold((0, 0), |(l, a), b| {
+            let n = b.indices.len() / 3;
+            (l + if b.lightmap.is_some() { n } else { 0 }, a + n)
+        });
+    assert!(lit * 10 > all * 9, "{lit} of {all} solid triangles lit");
+    // Pages are palette colours, opaque, and not all one value.
+    let page = &scene.textures[scene.world.batches.iter().find_map(|b| b.lightmap).unwrap()];
+    assert!(page.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+    assert!(
+        page.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] != page.rgba[..3])
+    );
 }
 
 /// Reads every map on the owner's disc (`H2_DISC`, else `disc/halo2.iso`),
@@ -978,6 +1237,19 @@ fn growth_is_refused_when_the_metadata_does_not_end_the_file() {
     let mut b = fixture_at_end();
     put(&mut b, sfile(0x11c), META + 0x1100);
     assert!(Scenario::read(&mut open(b)).is_err());
+    // A block between tags, in bytes none owns, reads: a grown block that
+    // tags added by a later rebuild follow.
+    let mut b = fixture_at_end();
+    let flags = Scenario::read(&mut open(b.clone()))
+        .unwrap()
+        .block(BlockKind::NetgameFlags)
+        .clone();
+    let len = flags.len() * flags.entry(0).unwrap().len();
+    assert!(0x1110 + len <= 0x1200, "{len:#x}");
+    b.copy_within(sfile(FLAGS_AT)..sfile(FLAGS_AT) + len, META_FILE + 0x1110);
+    put(&mut b, sfile(0x11c), META + 0x1110);
+    let s = Scenario::read(&mut open(b)).unwrap();
+    assert_eq!(s.block(BlockKind::NetgameFlags).entry(0), flags.entry(0));
 }
 
 #[test]
@@ -986,12 +1258,12 @@ fn panel_delete_and_duplicate() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("fixture.map");
     std::fs::write(&path, fixture_at_end()).unwrap();
-    let mut ed = crate::ScenarioEditor::new();
+    let mut ed = crate::Session::new();
     ed.open(MapSource::file(&path)).unwrap();
     // Full blocks refuse to grow until growth is allowed.
     assert_eq!(
         ed.add_refusal(BlockKind::Weapons),
-        Some(crate::panel::GROWTH_REFUSAL)
+        Some(crate::session::GROWTH_REFUSAL)
     );
     assert!(ed.add_entry(BlockKind::Weapons, Some(0)).is_err());
     ed.remove_entry(BlockKind::Weapons, 0).unwrap();
@@ -1105,7 +1377,7 @@ fn disc_add_and_remove_round_trip() {
 
 mod packages {
     use super::*;
-    use crate::ScenarioEditor;
+    use crate::Session as ScenarioEditor;
     use crate::package::{self, PackageForm};
     use content::patch::Format;
     use content::{Library, Manifest, MapId, Sha256};

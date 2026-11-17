@@ -207,8 +207,10 @@ fn run() -> Result<()> {
     let size = pixel_size(&window)?;
     // SAFETY: `panel` lives until the end of this function, past the shell;
     // this is the UI thread.
+    // The settings store is for the Apple hosts' touch pad; the console
+    // has none.
     let mut shell = match unsafe { h2host::start_in(panel.as_raw(), size, layout) } {
-        Ok(s) => Some(s),
+        Ok((s, _settings)) => Some(s),
         Err(e) => {
             eprintln!("h2uwp: the game did not start: {e:#}");
             storage_check(&local.join("h2data"));
@@ -240,7 +242,9 @@ fn run() -> Result<()> {
             s.resize(pixel_size(&window)?);
         }
         if !reported && let Some(exit) = s.guest_exit() {
-            eprintln!("h2uwp: the game stopped: {exit:?}");
+            // Why, as the Apple hosts log it: a boot that fails before the
+            // menu otherwise looks like a hang on the console.
+            eprintln!("h2uwp: {}", h2host::stopped(exit).1);
             reported = true;
         }
         if VISIBLE.load(Ordering::Relaxed) {

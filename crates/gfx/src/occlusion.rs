@@ -127,6 +127,12 @@ impl PixelReport {
         }
     }
 
+    /// Whether [`submitted`](Self::submitted) was called: until then the
+    /// report is only recorded, and must not be read.
+    pub fn is_submitted(&self) -> bool {
+        self.submission.lock().is_ok_and(|s| s.is_some())
+    }
+
     /// Samples that passed, summed over every counted draw since the clear.
     /// Blocks until the GPU has finished; the encoder the report was
     /// recorded into must have been submitted.
@@ -465,6 +471,7 @@ impl PixelCounter {
                 },
             ],
         });
+        crate::churn::pass();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("gfx pixel count sum"),
             timestamp_writes: None,

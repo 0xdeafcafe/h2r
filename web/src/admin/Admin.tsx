@@ -1,8 +1,9 @@
-// The Admin area, a stats-site page at /stats/admin shown only to admins:
-// the message-of-the-day editor, the playlist (hopper) builder, custom
-// content moderation (map packages, blobs, reports, uploads), plus the
-// one-off import that signs the browser in as an existing CLI account
-// (docs/live/live-admin.md).
+// The Halo admin area, a stats-site page at /stats/admin shown only to
+// admins: the message-of-the-day editor, the playlist (hopper) builder and
+// custom content moderation (map packages, blobs, reports, uploads). Only
+// the game's own things live here; running the service (invites, accounts
+// and admins, importing an account, the server's status) is the dashboard's
+// "server" screens, linked from the title bar (./tabs.ts).
 
 import { Show, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
@@ -11,39 +12,31 @@ import { identity } from "../state/identity";
 import { adminState } from "./state";
 import MotdEditor from "./MotdEditor";
 import HopperBuilder from "./HopperBuilder";
-import ImportAccount from "./ImportAccount";
 import ContentAdmin from "./ContentAdmin";
+import { ADMIN_TABS, IMPORT_ACCOUNT, SERVER_ADMIN, adminTab } from "./tabs";
 import "../styles/admin.css";
 
-const TABS = [
-  { id: "motd", label: "Message of the Day" },
-  { id: "hopper", label: "Playlists" },
-  { id: "content", label: "Custom content" },
-  { id: "import", label: "Import account" },
-];
-
 export default function Admin() {
-  // ?tab=hopper opens the playlists (the dashboard's server screen links here).
+  // ?tab=hopper opens the playlists (the dashboard links here).
   const asked = typeof location !== "undefined" ? new URLSearchParams(location.search).get("tab") : null;
-  const [tab, setTab] = createSignal(TABS.some((t) => t.id === asked) ? asked! : "motd");
+  const [tab, setTab] = createSignal<string>(adminTab(asked));
   const admin = adminState.isMeAdmin;
   return (
     <div class="s-full">
-      <Crumbs trail={[["Home", "/stats"], ["Admin"]]} />
-      <Title class="s-title--bar" right={<A href="/stats">Back to the stats</A>}>
-        Admin
+      <Crumbs trail={[["Home", "/stats"], ["Halo Admin"]]} />
+      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Server admin ›</A>}>
+        Halo Admin
       </Title>
       <div class="adm">
         <Show
           when={identity.me()}
           fallback={
             <Panel title="Sign in first">
-              <p>
-                The admin area needs a signed-in browser account. <A href="/dash/signup">Sign up</A>{" "}
-                makes a new one; to administer as an account the CLI holds (whose key this browser
-                never saw), export it and import it here.
+              <p class="adm-note">
+                The Halo admin area needs a signed-in admin account. Sign in on the{" "}
+                <A href="/dash/signin">dashboard</A>; an account made in the game can be brought into
+                this browser there too (<A href={IMPORT_ACCOUNT}>import account</A>).
               </p>
-              <ImportAccount />
             </Panel>
           }
         >
@@ -55,28 +48,23 @@ export default function Admin() {
                   <Show
                     when={admin() === null}
                     fallback={
-                      <p>
-                        <b>{me().gamertag}</b> is not an admin on this server. The operator grants
-                        it with <code>h2 live admin grant {me().gamertag}</code>, or configures it
-                        at startup (<code>--admin</code>, <code>H2_LIVE_ADMINS</code>).
+                      <p class="adm-note">
+                        <b>{me().gamertag}</b> is not an admin on this server. Admins are chosen by
+                        whoever runs it; the <A href={SERVER_ADMIN}>server admin</A> on the dashboard
+                        lists them.
                       </p>
                     }
                   >
-                    <p>Asking the server whether {me().gamertag} is an admin…</p>
+                    <p class="adm-note">Asking the server whether {me().gamertag} is an admin…</p>
                   </Show>
-                  <details class="adm-hint">
-                    <summary>Signed in as someone else?</summary>
-                    <p>
-                      Sign out in the header, then import the admin account below.{" "}
-                      <button class="s-btn" onClick={() => identity.signOut()}>
-                        Sign out
-                      </button>
-                    </p>
-                  </details>
+                  <p class="adm-note">
+                    Signed in as someone else? Sign out above, then sign in or{" "}
+                    <A href={IMPORT_ACCOUNT}>import</A> the admin account on the dashboard.
+                  </p>
                 </Panel>
               }
             >
-              <Tabs tabs={TABS} active={tab()} onPick={setTab} label="Admin sections" />
+              <Tabs tabs={[...ADMIN_TABS]} active={tab()} onPick={setTab} label="Halo admin sections" />
               <Show when={tab() === "motd"}>
                 <MotdEditor />
               </Show>
@@ -85,9 +73,6 @@ export default function Admin() {
               </Show>
               <Show when={tab() === "content"}>
                 <ContentAdmin />
-              </Show>
-              <Show when={tab() === "import"}>
-                <ImportAccount />
               </Show>
             </Show>
           )}

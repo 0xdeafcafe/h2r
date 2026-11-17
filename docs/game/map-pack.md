@@ -10,8 +10,8 @@ packages, one map each, with a version 2 `patch.lvl` made from the map's
 console as the disc's installer would
 ([section 7](#7-why-the-game-said-the-content-was-damaged)), and the title
 update is kept aside. Tests pass on synthetic discs and on the user's map
-pack ISO. **Not yet seen in game**: the check is in
-[section 8.6](#86-what-to-change-and-the-check).
+pack ISO, and the owner has played the maps in the game (2026-11-17; the
+check is [section 8.6](#86-what-to-change-and-the-check)).
 
 The official Halo 2 Multiplayer Map Pack disc (2005) holds the nine
 downloadable multiplayer maps, a Halo 2 title update, an installer and some
@@ -183,6 +183,10 @@ It never stops the game from starting: a problem is printed as
 passes through. With `--fresh-data` the data dir is emptied at every launch,
 so every launch installs again (about 430 MB).
 
+Without the ISO, the Xbox Live menu's "Content Download" row opens a dialog
+saying where to put it (`mappack.iso` next to `halo2.iso`, then start the
+game): `boot::custom_games` ([live-custom-games.md](../live/live-custom-games.md)).
+
 ## 5. `h2 import-mappack`
 
 The manual path, for a map pack ISO kept elsewhere or to see what would be
@@ -231,7 +235,9 @@ It also writes the update copy that matches your Halo 2 disc to
 The update is deliberately **not** put in `TDATA\4D530064\$u`. If it were
 there, 1.0 would try to relaunch into an image we can't run yet
 ([title-updates.md](../runtime/title-updates.md) 3.6 says the same). It waits under
-`updates/` for `h2 image list` and `h2 image map`.
+`updates/` until the update can be run. `h2 image list` and `h2 image map`
+do not exist yet: they are design only ([title-updates.md](../runtime/title-updates.md)
+section 3.6).
 
 Options:
 
@@ -323,9 +329,10 @@ is for playing them through the title update instead.
 3. **Check the content path** on the update. Trace its `T:\$c` enumeration
    (kernel trace) and confirm the offer ID directory name, then fix
    `vfs::offer_id` if it's wrong.
-4. **Multiplayer**. The maps are multiplayer only. Getting a local
-   multiplayer game going on our runtime is a separate job, after the
-   campaign work.
+4. **Multiplayer**. The maps are multiplayer only. Custom games over Live
+   and system link are the way to play them
+   ([live-custom-games.md](../live/live-custom-games.md)); none has been
+   tried on these maps yet (8.6).
 
 The one-package-per-map layout doesn't serve the update: its packages hold
 no `patch_v3.lvl`, and the update checks that file's digest against the

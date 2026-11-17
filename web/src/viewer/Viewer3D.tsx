@@ -54,9 +54,29 @@ export default function Viewer3D(props: Viewer3DProps) {
   const moveCut = (h: number) => { setCutAt(clampCut(h, range())); if (!cut()) setCut(true); applyCut(); };
   const pickSee = (m: SeeMode) => { setSee(m); scene?.setSeeMode(m); };
   const toggleSee = () => pickSee(nextSee(see()));
+  // The flycam: f toggles it; while it is on, WASD, the arrows, Q, E, Space,
+  // Ctrl and Shift are its (none of them is another key here).
+  const [flying, setFlying] = createSignal(false);
+  const [flyHint, setFlyHint] = createSignal("");
+  let hintTimer: ReturnType<typeof setTimeout> | undefined;
+  const hint = (text: string, ms = 1600) => { setFlyHint(text); clearTimeout(hintTimer); hintTimer = setTimeout(() => setFlyHint(""), ms); };
+  onCleanup(() => clearTimeout(hintTimer));
+  let root!: HTMLDivElement;
+  const toggleFly = () => {
+    if (!scene) return;
+    scene.setFly(!scene.flying);
+    if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag (either button) to look, click to lock the mouse, wheel for speed, Shift for faster, F to leave. Touch: one finger looks, two fly", 6000);
+    else setFlyHint("");
+    root.focus();
+  };
+  const onKeyUp = (e: KeyboardEvent) => { if (scene?.flyKey(e, false)) { e.preventDefault(); e.stopPropagation(); } };
   const onKey = (e: KeyboardEvent) => {
-    if (e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement).closest("input, select, textarea")) return;
-    if (e.key === "c") toggleCut();
+    const typing = (e.target as HTMLElement).closest("input, select, textarea");
+    // Stopped here: the pop-out page takes Space for play and pause.
+    if (!typing && scene?.flyKey(e, true)) { e.preventDefault(); e.stopPropagation(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
+    if (e.key === "f") toggleFly();
+    else if (e.key === "c") toggleCut();
     else if (e.key === "[" || e.key === "]") { if (scene) setRange(scene.cutRange()); moveCut(stepCut(cutValue(), e.key === "]" ? 1 : -1, range())); }
     else if (e.key === "x") toggleSee();
     else return;
@@ -70,7 +90,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   // unless asked; decals, effects, the sky and its fog are, unless not.
   const [level, setLevel] = createSignal<LevelInfo | null>(null);
   const [zonePick, setZonePick] = createSignal<ZonePick>("auto");
-  const [show, setShow] = createSignal({ cinematic: false, backdrop: false, decals: true, effects: true, sky: true, fog: true });
+  const [show, setShow] = createSignal({ cinematic: false, backdrop: false, decals: true, effects: true, sky: true, fog: true, weather: true });
   const flip = (k: keyof ReturnType<typeof show>) => {
     const on = !show()[k];
     setShow({ ...show(), [k]: on });
@@ -80,12 +100,13 @@ export default function Viewer3D(props: Viewer3DProps) {
     else if (k === "decals") scene.setDecals(on);
     else if (k === "effects") scene.setEffects(on);
     else if (k === "sky") scene.setSky(on);
+    else if (k === "weather") scene.setWeather(on);
     else scene.setFog(on);
     setLevel(scene.levelInfo());
   };
   const applyLevel = (s: ViewerScene) => {
     const o = show();
-    s.setCinematic(o.cinematic); s.setBackdrop(o.backdrop); s.setDecals(o.decals); s.setEffects(o.effects); s.setSky(o.sky); s.setFog(o.fog);
+    s.setCinematic(o.cinematic); s.setBackdrop(o.backdrop); s.setDecals(o.decals); s.setEffects(o.effects); s.setSky(o.sky); s.setFog(o.fog); s.setWeather(o.weather);
     s.setZonePick(zonePick());
     setLevel(s.levelInfo());
   };
@@ -144,6 +165,8 @@ export default function Viewer3D(props: Viewer3DProps) {
     }
     const s = scene;
     s.onAoDropped = () => setAo(false);
+    s.onFlyChange = setFlying;
+    s.onFlySpeed = (label) => hint(label);
     if (ao()) setAo(s.setAo(true));
     s.setSeeMode(see());
     s.setTextures(textures());
@@ -192,12 +215,14 @@ export default function Viewer3D(props: Viewer3DProps) {
   }));
 
   return (
-    <div class="v3" tabindex="0" onKeyDown={onKey}>
+    <div class="v3" tabindex="0" ref={root} onKeyDown={onKey} onKeyUp={onKeyUp} onFocusOut={(e) => { if (!root.contains(e.relatedTarget as Node | null)) scene?.flyRelease(); }}>
       <Show when={!failed()} fallback={<p class="v3-fail">{failed()}</p>}>
         <div ref={host} class="v3-host" />
+        <Show when={flyHint()}><div class="v3-fly-hint" role="status">{flyHint()}</div></Show>
         <div class="v3-tools" role="group" aria-label="Camera">
           <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
           <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
+          <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag with either mouse button to look (a click locks the mouse), wheel changes speed, Shift is faster. One finger looks and two fly on a touch screen; a gamepad works too. Key: f">Fly</button>
           <select
             classList={{ on: mode() === "follow" }}
             aria-label="Follow a player"
@@ -257,6 +282,9 @@ export default function Viewer3D(props: Viewer3DProps) {
                   <label title="The level's sky, drawn around the camera"><input type="checkbox" checked={show().sky} onChange={() => flip("sky")} /> Sky</label>
                 </Show>
                 <label title="Fog: the level's own, measured from what the camera looks at"><input type="checkbox" checked={show().fog} onChange={() => flip("fog")} /> Fog</label>
+                <Show when={level()!.weather}>
+                  <label title="The level's rain, snow or drifting motes, where they fall in the game"><input type="checkbox" checked={show().weather} onChange={() => flip("weather")} /> Weather</label>
+                </Show>
                 <Show when={objectKinds().length > 0}>
                   <label title="The objects the level places: scenery, crates, weapons and their spawns, vehicles, controls"><input type="checkbox" checked={objects()} onChange={() => { setObjects(!objects()); scene?.setObjects(objects()); }} /> Objects</label>
                   <For each={objectKinds()}>{(k) => (

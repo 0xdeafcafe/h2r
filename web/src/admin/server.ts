@@ -2,7 +2,11 @@
 // every visitor sees (GET /v1/server), the admin status (GET
 // /v1/admin/status, an `admin.read` token) and invites made by an admin
 // account: a signed `InviteCreated` event POSTed to /v1/invites with an
-// `invites.write` token; the server answers the code.
+// `invites.write` token; the server answers the code. The body is the
+// event's compact JWS, or JSON {event, code} when the admin chooses the
+// code. Generated codes are 25 characters in five groups
+// (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX); custom ones are what the admin typed,
+// and the list never shows them again.
 //
 // Parsing is defensive: an older server answers 404 for the new
 // endpoints and the screen falls back to what discovery says.
@@ -18,6 +22,13 @@ export const INVITE_STREAM = "invites";
 /** The longest an admin's invite may last (the server's MAX_DAYS). */
 export const INVITE_MAX_DAYS = 30;
 export const INVITE_DAY_CHOICES = [1, 7, 30] as const;
+
+/** The next invite length when the "lasts" row is cycled: 1, 7, 30 days
+ *  (the server caps an admin's invite at 30 days, so there is no "never"). */
+export function nextInviteDays(d: number, step: 1 | -1 = 1): number {
+  const c = INVITE_DAY_CHOICES as readonly number[];
+  return c[(Math.max(0, c.indexOf(d)) + step + c.length) % c.length]!;
+}
 
 export interface ServerCounts { accounts: number; online: number; live_games: number; sessions: number }
 
@@ -67,8 +78,10 @@ export interface InviteItem {
   exp: number;
   state: InviteState;
   used_by_gamertag: string | null;
-  /** The code, for open invites only. */
+  /** The code, for open generated invites only (never for custom ones). */
   invite: string | null;
+  /** The admin chose the code. */
+  custom: boolean;
 }
 
 const num = (v: unknown, d = 0): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
@@ -131,6 +144,7 @@ export function parseInvites(body: unknown): InviteItem[] {
     state: (["open", "used", "revoked", "expired"].includes(i.state as string) ? i.state : "open") as InviteState,
     used_by_gamertag: str(i.used_by_gamertag),
     invite: str(i.invite),
+    custom: i.custom === true,
   }));
 }
 
@@ -159,13 +173,6 @@ export function artWords(a: GameArtFacts): string {
   if (!a.present) return "none extracted";
   const who = a.shared ? "shared with everyone" : "this machine only";
   return a.extractor ? `${who} · extractor v${a.extractor}` : who;
-}
-
-/** The CLI line that makes `tag` an admin (the server lets only the
- *  operator grant, docs/live/live-admin.md §5). */
-export function grantCommand(tag: string, revoke = false): string {
-  const t = /\s/.test(tag) ? `"${tag}"` : tag;
-  return `h2 live admin ${revoke ? "revoke" : "grant"} ${t}`;
 }
 
 /** What an admin signs to make an invite lasting `days` from `nowMs`. */
@@ -206,26 +213,50 @@ export async function fetchInvites(api: string, aud: string, me: LocalAccount, f
   return parseInvites(await adminGet(api, "/invites", aud, me, fetchFn));
 }
 
-async function postSigned(api: string, path: string, aud: string, me: LocalAccount, type: string, data: unknown, fetchFn: typeof fetch, nowMs: number): Promise<unknown> {
+/** A custom code's rules (the server's): 4 to 32 printable ASCII
+ *  characters. It matches ignoring case, spaces and dashes. */
+export const CUSTOM_CODE_MIN = 4;
+export const CUSTOM_CODE_MAX = 32;
+export function customCodeError(code: string): string | null {
+  if (code.length < CUSTOM_CODE_MIN || code.length > CUSTOM_CODE_MAX) return `${CUSTOM_CODE_MIN} to ${CUSTOM_CODE_MAX} characters`;
+  if (!/^[\x20-\x7e]+$/.test(code)) return "letters, digits, spaces and punctuation only";
+  return null;
+}
+
+/** The body of `POST /v1/invites`: the event alone, or with a chosen code. */
+export function inviteBody(jws: string, code?: string): { contentType: string; body: string } {
+  return code
+    ? { contentType: "application/json", body: JSON.stringify({ event: jws, code }) }
+    : { contentType: "application/jose", body: jws };
+}
+
+async function postSigned(api: string, path: string, aud: string, me: LocalAccount, type: string, data: unknown, fetchFn: typeof fetch, nowMs: number, code?: string): Promise<unknown> {
   const jws = await signEvent(me, eventBody(me, { stream: INVITE_STREAM, type, data }, nowMs));
   const token = await issueToken(me, aud, INVITES_WRITE, nowMs);
+  const b = inviteBody(jws, code);
   const r = await fetchFn(`${api}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/jose", authorization: `Bearer ${token}` },
-    body: jws,
+    headers: { "content-type": b.contentType, authorization: `Bearer ${token}` },
+    body: b.body,
   });
   if (!r.ok) return fail(r);
   return r.json();
 }
 
-/** Makes an invite lasting `days`; resolves to its code and expiry. */
+/** Makes an invite lasting `days`, with the code `code` if given (trimmed;
+ *  empty means the server makes one); resolves to its code and expiry. */
 export async function createInvite(
   api: string, aud: string, me: LocalAccount, days: number,
-  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
-): Promise<{ invite: string; jti: string; exp: number }> {
-  const b = obj(await postSigned(api, "/invites", aud, me, "InviteCreated", inviteData(days, nowMs), fetchFn, nowMs));
+  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(), code?: string,
+): Promise<{ invite: string; jti: string; exp: number; custom: boolean }> {
+  const want = code?.trim() || undefined;
+  if (want) {
+    const bad = customCodeError(want);
+    if (bad) throw new ApiError(400, "invalid", `that code won't work: ${bad}`);
+  }
+  const b = obj(await postSigned(api, "/invites", aud, me, "InviteCreated", inviteData(days, nowMs), fetchFn, nowMs, want));
   if (typeof b.invite !== "string") throw new ApiError(500, "invalid", "the server sent no invite");
-  return { invite: b.invite, jti: String(b.jti ?? ""), exp: num(b.exp) };
+  return { invite: b.invite, jti: String(b.jti ?? ""), exp: num(b.exp), custom: b.custom === true || !!want };
 }
 
 export async function revokeInvite(api: string, aud: string, me: LocalAccount, jti: string, fetchFn: typeof fetch = fetch, nowMs: number = Date.now()): Promise<void> {
@@ -234,34 +265,83 @@ export async function revokeInvite(api: string, aud: string, me: LocalAccount, j
 
 /** One of the four small pods on a server screen: a place to go, or an
  *  action on the invites screen. */
-export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe"; to?: string; back?: boolean; run?: "create" | "copy" }
+export interface ServerPod { label: string; glyph: "key" | "sign" | "record" | "server" | "history" | "career" | "download" | "globe" | "gear"; to?: string; back?: boolean; run?: "create" | "copy" }
 
-/** The pods of the server overview and the invites screen. Admin tools
- *  only for an admin (`isMeAdmin() === true`); everyone else, and anyone
- *  while that is still unknown, gets the visitor's set. */
-export function serverPods(view: "overview" | "invites", admin: boolean | null): ServerPod[] {
+/** The server screens: the overview, and under it invites, accounts and
+ *  importing an account (/dash/server/<view>). */
+export type ServerView = "overview" | "invites" | "accounts" | "import";
+
+/** Where the dashboard's "halo admin" goes: the stats site's admin area,
+ *  which keeps only the game's own things (the message of the day,
+ *  playlists, custom content). Everything about the service (invites,
+ *  accounts and admins, importing an account, the server) is on the
+ *  dashboard. */
+export const HALO_ADMIN = "/stats/admin";
+
+/** The pods of each server screen. Admin tools only for an admin
+ *  (`isMeAdmin() === true`); everyone else, and anyone while that is still
+ *  unknown, gets the visitor's set. Importing an account is open to
+ *  anyone: it is how a browser signs in as an account the CLI holds. */
+export function serverPods(view: ServerView, admin: boolean | null): ServerPod[] {
   if (admin !== true) {
-    return view === "invites"
-      ? []
-      : [
+    switch (view) {
+      case "overview":
+        return [
           { label: "another server", glyph: "server", to: "/dash/server/connect" },
           { label: "event log", glyph: "history", to: "/stats/events" },
           { label: "players", glyph: "career", to: "/dash/players" },
           { label: "stats site", glyph: "record", to: "/stats" },
         ];
+      case "import":
+        return [
+          { label: "sign in", glyph: "key", to: "/dash/signin" },
+          { label: "create account", glyph: "sign", to: "/dash/signup" },
+          { label: "another server", glyph: "server", to: "/dash/server/connect" },
+          { label: "server", glyph: "globe", to: "/dash/server", back: true },
+        ];
+      default:
+        return [];
+    }
   }
-  if (view === "invites") {
-    return [
-      { label: "new invite", glyph: "key", run: "create" },
-      { label: "copy code", glyph: "download", run: "copy" },
-      { label: "message of the day", glyph: "sign", to: "/stats/admin?tab=motd" },
-      { label: "your server", glyph: "globe", to: "/dash/server", back: true },
-    ];
+  switch (view) {
+    case "invites":
+      return [
+        { label: "new invite", glyph: "key", run: "create" },
+        { label: "copy code", glyph: "download", run: "copy" },
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts" },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "accounts":
+      return [
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "import account", glyph: "download", to: "/dash/server/import" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    case "import":
+      return [
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "your server", glyph: "globe", to: "/dash/server", back: true },
+      ];
+    default:
+      return [
+        { label: "invites", glyph: "key", to: "/dash/server/invites" },
+        { label: "accounts", glyph: "career", to: "/dash/server/accounts" },
+        { label: "halo admin", glyph: "gear", to: HALO_ADMIN },
+        { label: "another server", glyph: "server", to: "/dash/server/connect" },
+      ];
   }
-  return [
-    { label: "invites", glyph: "key", to: "/dash/server/invites" },
-    { label: "message of the day", glyph: "sign", to: "/stats/admin?tab=motd" },
-    { label: "playlists", glyph: "record", to: "/stats/admin?tab=hopper" },
-    { label: "another server", glyph: "server", to: "/dash/server/connect" },
-  ];
+}
+
+/** How an admin came to be one, in words (no commands: granting is the
+ *  operator's, on the server's own machine). */
+export function adminSourceWords(source: string): string {
+  switch (source) {
+    case "configured": return "set at startup";
+    case "granted": return "granted";
+    case "session": return "this session";
+    default: return source;
+  }
 }

@@ -26,6 +26,11 @@ h2 profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
 H2_PROFILE=$TMPDIR/prof <any binary that opens perf::Session::from_env()>
 ```
 
+`h2 profile --help` lists every flag. Beyond the ones named below: `--top`
+(rows per table), `--seconds` (how long the scenario keeps running,
+default 3), `--hz`, `--cpu`, `--work` (build scratch), `--disc` (for
+`boot/menu-hold`) and `--quick` (small workloads).
+
 ### How it samples
 
 A sampler thread wakes at the chosen rate (default 1000 Hz). For each target
@@ -186,7 +191,7 @@ on the row of the host thread that recorded them (process "host").
 | `d3d` | `Swap`, `KickOff`, `pushbuf drain` (arg `bytes`) | `d3d/src/device.rs` |
 | `gfx` | `queue submit`, `present` | `d3d/src/gfx_backend.rs` |
 | `hle` | `hle call` (arg `pc`) around every Rust override | `runtime/src/handler.rs` |
-| `gfx` | `draw` (one D3D draw through the backend), `shader prepare`, `render encode`, `pipeline create` (a pipeline-cache miss), `texture upload`, `surface write`, `surface snapshot` | `d3d/src/gfx_backend.rs`, `gfx/src/renderer.rs` |
+| `gfx` | `draw` (one D3D draw through the backend), `shader prepare`, `flush pass` (arg `draws`), `render encode`, `pipeline wait` (a draw's pipeline still compiling), `texture upload`, `surface write`, `surface snapshot` | `d3d/src/gfx_backend.rs`, `gfx/src/renderer.rs` |
 | `gfx` | GPU round trips: `surface readback`, `pixel count readback`, `GPU wait` (`D3DSWAP_FINISH`) | `d3d/src/gfx_backend.rs` |
 | `guest` | `slice` carries arg `accesses`: the guest accesses it charged to logical time | `kernel::Machine::run` |
 | `kernel` | `idle: clock to deadline` carries arg `ticks`: the logical time the advance skipped | `Machine::run` |
@@ -265,8 +270,9 @@ h2 bench list
 | `hot-loop/alu` | ns/trip | register arithmetic loop in generated code (locals and the back-edge preemption poll) |
 | `hot-loop/memory` | ns/trip | inc/load/add-to-memory loop through `h2abi_v1_read`/`write` |
 | `hot-loop/call` | ns/trip | call/return per trip: two runner transfers and two dispatches |
+| `hot-loop/x87` | ns/trip | x87 load/mul/add/sqrt/div/store in generated code ([below](#native-x87-comparison)) |
 | `d3d/pushbuf-frame` | us/frame | `Device::kick_off` draining 1000 inline QUADLIST draws (26 words each) through push-buffer decode, immediate-mode assembly and a recording backend |
-| `boot/menu-hold` | fps | boot to the main menu, then hold it for `--frames` frames (wall clock); needs the boot hook below |
+| `boot/menu-hold` | fps | boot to the main menu, then hold it for `--frames` frames (wall clock); needs the boot hook below, which is not built |
 
 The hot loops are synthetic x86: assembled with iced-x86, lifted, emitted
 and compiled with clang into `--work` (default `$TMPDIR/h2perf-work`,
@@ -337,7 +343,8 @@ feature, which the CLI's `perf` feature turns on.
    the hooks above. Swap counts frames. For frame times without a trace,
    `H2_FRAME_STATS=1` (docs/runtime/app.md "Frame stats") splits every frame into
    phases at a clock read per phase switch.
-2. **`boot/menu-hold`.** Split `boot::run` into setup and stepping, and
+2. **`boot/menu-hold`** (not built: nothing registers a boot driver, so
+   the scenario reports itself skipped). Split `boot::run` into setup and stepping, and
    implement `perf::boot::BootDriver` on the result:
    - `boot_to_menu()`: run until the main menu is up. For example, step
      until `timeline::frames()` passes a menu frame count, or until the
@@ -363,8 +370,8 @@ feature, which the CLI's `perf` feature turns on.
   before and after each change, then `h2 bench compare`. Use
   `h2 profile hot-loop/memory` or `hot-loop/call` to see which accessor,
   lock or dispatch step dominates, and `--by-category` to watch the
-  runtime-to-guest ratio. Once the boot hook lands, `H2_PROFILE` on a boot
-  gives the same tables for the real game, and the guest-instruction table
+  runtime-to-guest ratio. `H2_PROFILE` with `H2_PERF_FROM` on an `h2 run` or `h2 play`
+  (the first boot hook) gives the same tables for the real game, and the guest-instruction table
   shows which loops are worth a fast path.
 - **wgpu submission (crates/gfx):** `--timeline` with
   `--cats frame,d3d,gfx` shows `queue submit` and `present` spans against
@@ -430,3 +437,19 @@ smallest buffer that fits, so a small buffer is not regrown (a copy of its old
 bytes) when a large one is waiting; and immediate draws fill pooled buffers
 too, where their fresh ones used to overflow the pool, which then freed the
 large buffers the next indexed draws had to allocate and fault in again.
+
+## Test and bench knobs
+
+Environment variables read by individual tests and benches, not by `h2`.
+Unset, each takes its default.
+
+| variable | read by | meaning |
+|---|---|---|
+| `H2_BENCH_FRAMES` | `cargo bench -p d3d` (`pushbuf`, `streams`, `vertex_fetch`) and the d3d benchmark tests (`--ignored`) | frames per run (the default differs per bench) |
+| `H2_BENCH_DRAWS` | the `pushbuf`, `streams` and `vertex_fetch` benches and some d3d benchmark tests | draws per frame (defaults 1200, 1000 and 1000 in the benches) |
+| `H2_BENCH_GUEST_ONLY` | `pushbuf` | set: run only the guest-memory dirty-tracking benchmark, then exit |
+| `H2_BENCH_MODES` | `vertex_fetch` | `cpu` or `gpu`: time one fetch mode only, e.g. to profile it |
+| `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | the ignored `render_churn` test in `crates/d3d/tests/render_churn.rs`, its game-frame section | fills per visit (4), small draws per visit (0), interleaved rounds per submit policy (3) |
+| `H2_DIFF_SEEDS` | `crates/engine/tests/{differential,render_loop_differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the render-loop and layer tests default to `1,7,99`, `differential` to its first default seed |
+| `H2_DIFF_SCALE` | `crates/engine/tests/differential.rs` | a multiplier on the cases per seed (default 1) |
+| `H2_EMIT_FULL` | `crates/emit/tests/entry.rs` (needs `H2_XBE`) | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards) |

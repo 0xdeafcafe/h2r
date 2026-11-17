@@ -777,6 +777,10 @@ and allocations are bounded before anything is read:
     and a sweep of `f32` depths with the values next to each rounding tie;
     `gpu_lazy_depth_levels_sample_and_write_back_as_the_eager_ones` checks
     pixels and guest bytes at the wait against the eager device.
+    With E3 lighting a render-scale view keeps its own scaled copy of each
+    such level and answers this call for itself from the copy
+    (`d3d::scaled`, [e3-lighting.md](e3-lighting.md) "Phase 1 as built");
+    the device and the guest only ever see the reference's.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
     way), or whose format does not match how it is bound, stops too.
@@ -806,9 +810,10 @@ and allocations are bounded before anything is read:
     into 512x512 and 128x128 targets as well as the back buffer. Its one
     shadow map is a `LIN_D24S8` texture (`0x004b50b4`) sampled on stage 0
     with `D3DRS_SHADOWFUNC` `0x204` (`GREATER`); those draws (136,667 over the
-    run) were the only skips left. They are now translated as
-    comparisons (`stored > reference`), but the boot hasn't been rerun
-    with that yet.
+    run) were the only skips left. They are translated as
+    comparisons (`stored > reference`) now, and levels have run with them
+    since (shadow passes sampled in Old Mombasa and The Heretic,
+    [e3-lighting.md](e3-lighting.md) "Phase 1 as built").
 - **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
   `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
   `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
@@ -1084,7 +1089,7 @@ installs every override against the real `crates/runtime`:
 
 ```rust
 let cfg = d3d::DeviceConfig {
-    upload: d3d::UploadPolicy::Always, // until step 3 exists
+    upload: d3d::UploadPolicy::Always, // omit for Tracked, once step 3 is wired
     ..d3d::DeviceConfig::halo2(push_buffer, scratch)
 };
 d3d::runtime_glue::map_device_memory(&mut guest, &cfg)?;
@@ -1127,10 +1132,12 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    - `abi::NATIVE` addresses get no override.
    `tests/registration.rs` runs Halo's boot device sequence through
    `runtime::Runner` with these overrides.
-3. **Write barrier.** `UploadPolicy::Always` (or `Verify`, to find the
-   misses) stays the bring-up default; `DeviceConfig::halo2` alone gives
-   `Tracked`, so set `upload` as above. `Tracked` is only correct once the
-   runtime keeps the invalidation contract above:
+3. **Write barrier.** `DeviceConfig::halo2` gives `Tracked`, which is only
+   correct once the runtime keeps the invalidation contract above. The boot
+   (`boot::d3d_glue`) wires the barrier and runs `Tracked`;
+   `H2_BOOT_UPLOAD_ALWAYS` (any value) switches it to `UploadPolicy::Always`, and
+   `Verify` finds missed stores. Set `upload` as above while the barrier is
+   not wired:
    - Forward every guest store D3D did not make to
      `Device::note_write(addr, len)` (exact) or
      `Device::note_written_pages(addr, len)` (whole pages). That covers stores from lifted code,
@@ -1832,7 +1839,8 @@ copy of a colour surface, for the back buffer read as a texture),
 `SurfaceStore::write_color(ctx, id, &TextureDesc, bytes)`, alpha test in
 the built-in shader, indexed draws (`gfx::Draw::indices`), and sample
 counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
-`Renderer::render_counted`). Still wanted:
+`Renderer::render_counted`), the alias mirror and the GPU depth alias (both
+below). Still wanted:
 
 - **Counting through the draw's own fragment program.** The count pass
   writes 1 for every sample that passes depth/stencil, so alpha test and
@@ -1858,7 +1866,7 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   depth buffer, still go through a CPU round trip: a readback, then a
   decode and an upload. The shadow-map comparison itself is in
   `crates/shaders` (shaders.md, "Shadow maps").
-- **Overlapping levels on the GPU.** Two level headers over one
+- **Overlapping levels on the GPU (done).** Two level headers over one
   allocation (Halo's render-target pool in a level: two 160x120 and a
   320x240 `LIN_A8R8G8B8` level over the 512x512 `LIN_D24S8` shadow map)
   used to move pixels through guest memory: binding or sampling one wrote
@@ -1925,7 +1933,7 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   then by being drawn into, then by header (it was the map's order: two
   headers over the same bytes could pick the wrong one and go through
   guest memory).
-- **Depth aliases on the GPU.** A texture over the depth buffer's memory
+- **Depth aliases on the GPU (done).** A texture over the depth buffer's memory
   (`0x509368` `LIN_A8R8G8B8`, `0x50936C` `LIN_A8B8G8R8`: the menu's fog
   pass, one a frame) was a `read_depth` of the whole buffer, a CPU decode
   and an upload: the guest (or, with the render thread, the render
