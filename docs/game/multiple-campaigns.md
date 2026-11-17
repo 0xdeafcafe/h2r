@@ -1,6 +1,6 @@
 # More than one campaign in the menus
 
-Status: **built, not yet seen running.** The level-list records, the
+Status: **built, and confirmed in the game by the owner (2026-11-17).** The level-list records, the
 picker, the campaign of a started level and per-campaign progress are
 proven by unit tests and an ignored test against the user's disc. Nothing
 here has been run in the game. Started 2026-11-16. Part of

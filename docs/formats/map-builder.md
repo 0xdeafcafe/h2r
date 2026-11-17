@@ -3,8 +3,8 @@
 Status: **Built** (2026-11-16) for the cache layout, string IDs, tag
 names, tag index, metadata with fixups, raw resources, BSP regions and
 the checksum. Proven by synthetic tests and by retail round trips on all
-30 maps of the owner's disc. Nothing here has been loaded by the game yet
-(see "Not verified").
+30 maps of the owner's disc. Maps it writes for the Halo 1 converter load
+and play in the game (owner, 2026-11-17).
 
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
 an existing map in place. The builder in `crates/map/src/build.rs` writes
@@ -300,9 +300,9 @@ missing or garbled surfaces), no crash walking round the map.
 
 ## Not verified (needs a game run, or more work)
 
-- **No built map has been loaded by the game.** The round trips prove the
-  layout is the retail one and that our reader agrees, not that the engine
-  accepts a map whose tags moved.
+- **Only converted Halo 1 maps have been loaded by the game.** The round
+  trips prove the layout is the retail one and that our reader agrees, not
+  that the engine accepts any map whose tags moved.
 - **The index tail.** A map built from scratch has only the index header,
   groups and entries in its index region. Retail maps carry about
   `0x38000` more bytes there, loaded into memory before the BSP space.

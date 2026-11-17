@@ -8,7 +8,7 @@ is built on tests ([section 8](#8-what-is-built-phase-0-first-slice)), as is
 the probe of the retail path ([section 9](#9-probe-phase-2)) and, on the
 assumption that the probe's path works, Co-op over Live itself
 ([section 10](#10-co-op-over-live-built)).
-**No game was built or run for this page or either of those.**
+The owner has Co-op over Live working in the game (2026-11-17).
 
 In short:
 

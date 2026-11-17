@@ -1,6 +1,6 @@
 # Aim assist strength
 
-Status: built and tested on synthetic tags; not yet seen in game.
+Status: built and tested on synthetic tags. Confirmed in the game by the owner (2026-11-17).
 
 The ask: aiming with the iOS on-screen touch controls is much harder than
 with a stick, so the game's aim assist should be able to help more. The
@@ -112,7 +112,7 @@ Default writes the kept retail values back and forgets them. Tests:
 
 ## Multiplayer
 
-Status: built and tested on synthetic memory; not yet seen in game.
+Status: built and tested on synthetic memory. Confirmed in the game by the owner (2026-11-17).
 
 The weapon and globals tags are shared by every player a machine
 simulates, so in a multiplayer game (game options mode 2, `[eax]` at

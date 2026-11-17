@@ -1,7 +1,7 @@
 # Health: Halo 1's model on Halo 2's engine
 
-Status: the hooks, the window meter and the switch are built, tests only;
-not seen running. Nothing calls the switch yet: no map load or converted
+Status: the hooks, the window meter and the switch are built and confirmed in
+the game by the owner (2026-11-17). Nothing calls the switch yet: no map load or converted
 Halo 1 map selects the Halo 1 model, so today it is on only through the
 debug override `H2_HEALTH_MODEL=halo1`. Started 2026-11-16.
 

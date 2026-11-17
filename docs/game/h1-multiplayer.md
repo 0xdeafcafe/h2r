@@ -1,6 +1,7 @@
 # Halo 1 multiplayer maps in the Halo 2 engine (design)
 
-Status: in progress, started 2026-11-16. Each section says what is
+Status: in progress, started 2026-11-16; converted maps confirmed in the
+game by the owner (2026-11-17). Each section says what is
 **Built** (with its proof) and what is design only. This applies the rules
 of [campaigns.md](campaigns.md) to multiplayer: Halo 2's engine runs
 everything (physics, AI, rendering, game types); Halo 1's health bar and

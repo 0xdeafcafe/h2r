@@ -1,6 +1,7 @@
 # Maps: new, edited, patched and shared (design)
 
-Status: design, with the foundation built: `crates/content` (manifest,
+Status: design, with the foundation built and confirmed in the game by the
+owner (2026-11-17): `crates/content` (manifest,
 `MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`
 (including packages installed while the game runs, §3), the boot wiring,
 the scenario editor's "Save as package" and "Open package" (§8), and new
