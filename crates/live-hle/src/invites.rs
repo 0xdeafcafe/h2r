@@ -573,6 +573,52 @@ impl Invites {
         });
         Ok(())
     }
+    /// The invitations waiting for controller `index`'s player, as last
+    /// read.
+    pub fn pending(&self, index: usize) -> Vec<Invite> {
+        self.pending_invites(index)
+    }
+    /// Accepts `invite` for controller `controller`'s player (`actor`)
+    /// outside a guest task, as the friends list's Accept does; on success
+    /// the accepted invitation is queued for the title like one accepted
+    /// there ([`Invites::accepted`]).
+    pub fn accept(
+        &mut self,
+        controller: usize,
+        actor: u64,
+        invite: &Invite,
+        service: Option<&Service>,
+        session: Option<&Session>,
+    ) -> Result<(), u32> {
+        let (Some(service), Some(session)) = (service, session) else {
+            return Err(NO_SESSION);
+        };
+        if controller >= 4 || actor == 0 {
+            return Err(INVALID_USER);
+        }
+        if self.internal.len() + self.tasks.len() >= 64 {
+            return Err(TASK_BUSY);
+        }
+        let pending = service.social(
+            session,
+            actor,
+            SocialRequest::Answer(Answered {
+                by: Xuid(actor),
+                session_id: invite.session_id.clone(),
+                invite_id: invite.id,
+                answer: Answer::Accept,
+            }),
+        )?;
+        self.cache[controller].hidden.insert(invite.id);
+        self.internal.push(Task {
+            pending: Some(pending),
+            controller,
+            status: 0,
+            invite: Some(invite.id),
+            actor,
+        });
+        Ok(())
+    }
     pub fn delete(
         &mut self,
         index: usize,

@@ -155,6 +155,8 @@ pub(crate) struct State {
     /// The sign-in waiting for a code, if any ([`crate::signin`]).
     signin: Option<crate::signin::Signin>,
     activity: Option<String>,
+    /// Co-op test automation (`H2_COOP_AUTO_*`, [`crate::auto`]).
+    auto: crate::auto::Auto,
 }
 impl State {
     pub fn new(
@@ -189,6 +191,7 @@ impl State {
             state_flags: [1; 4],
             game_id: None,
             activity: None,
+            auto: crate::auto::Auto::from_env(),
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -593,6 +596,63 @@ impl State {
         );
         self.invites.friend_list(controller)
     }
+    /// Co-op test automation ([`crate::auto`]), for the first signed-in
+    /// player: keeps the friends view fresh, invites the named friends to
+    /// this console's advertised lobby, and accepts the named host's
+    /// invitation. Nothing when it is off or not signed in.
+    pub fn set_auto(&mut self, auto: crate::auto::Auto) {
+        self.auto = auto;
+    }
+    fn auto_step(&mut self) {
+        if !self.auto.is_on() || self.online_refs == 0 || !self.connected() {
+            return;
+        }
+        let Some(c) = self.user_ids.iter().position(|&u| u != 0) else {
+            return;
+        };
+        let user = self.user_ids[c];
+        let session = self.session();
+        self.invites
+            .refresh(c, user, self.service.as_ref(), session.as_ref());
+        if let Some(v) = self.auto.accept_now(&self.invites.pending(c)) {
+            match self
+                .invites
+                .accept(c, user, &v, self.service.as_ref(), session.as_ref())
+            {
+                Ok(()) => eprintln!(
+                    "coop-auto: accepting {}'s invitation to session {}",
+                    v.gamertag, v.session_id
+                ),
+                Err(e) => {
+                    self.auto.accept_failed(v.id);
+                    eprintln!(
+                        "coop-auto: could not accept {}'s invitation ({e:#010x})",
+                        v.gamertag
+                    );
+                }
+            }
+        }
+        let Some(own) = self.sessions.own_ids().first().copied() else {
+            return;
+        };
+        let id = live_proto::sign::hex(&own);
+        for f in self.auto.invite_now(&id, &self.invites.friend_list(c)) {
+            match self.invites.send(
+                c,
+                user,
+                f.xuid,
+                id.clone(),
+                self.service.as_ref(),
+                session.as_ref(),
+            ) {
+                Ok(()) => eprintln!("coop-auto: invited {} to session {id}", f.gamertag),
+                Err(e) => {
+                    self.auto.invite_failed(&id, f.xuid);
+                    eprintln!("coop-auto: could not invite {} ({e:#010x})", f.gamertag);
+                }
+            }
+        }
+    }
     /// Invites `to` to this console's advertised lobby, from controller
     /// `controller`'s player.
     pub fn invite_to_lobby(
@@ -749,6 +809,7 @@ impl State {
             );
         }
         self.invites.pump(&self.user_ids, &self.user_flags);
+        self.auto_step();
         if let Invites(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);

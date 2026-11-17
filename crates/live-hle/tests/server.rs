@@ -2758,3 +2758,63 @@ fn invites_nonfriend_join_is_refused_and_peer_never_answer_blocks_future_invitat
             .any(|e| e.kind == live_proto::mailbox::ANSWERED && e.data["answer"] == "block")
     );
 }
+
+#[test]
+fn coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    friend_pair(&s, &a, &b);
+    let port = game_port();
+    let mut peer_port = game_port();
+    while peer_port.abs_diff(port) <= 6 {
+        peer_port = game_port();
+    }
+    let mut host = World::raw_network(
+        &s.embedded.url,
+        json!([a.json()]),
+        Duration::from_secs(30),
+        port,
+    );
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_secs(30),
+        peer_port,
+    );
+    host.hle.set_coop_auto(Some("guest"), None);
+    guest.hle.set_coop_auto(None, Some("HOST"));
+    host.logon();
+    guest.logon();
+    invite_host(&mut host);
+    // Nobody presses anything: the host's and the guest's ordinary friends
+    // polling is all that runs.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        host.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        guest.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        if guest.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]) == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no accepted invitation");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(guest.rt.memory().u64(INV_RECORD).unwrap(), a.xuid.0);
+    assert_eq!(guest.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
+    // Once: no second invitation, no second acceptance.
+    for _ in 0..50 {
+        host.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        guest.call("XOnlineFriendsGetLatest", &[0, 100, INV_FRIEND]);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(
+        guest.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        0
+    );
+    let sent = s
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == live_proto::mailbox::SENT)
+        .count();
+    assert_eq!(sent, 1);
+}

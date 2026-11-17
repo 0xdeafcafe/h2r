@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod account_setup;
+mod auto;
 mod client;
 mod config;
 mod invites;
@@ -476,6 +477,16 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .invite_to_lobby(controller, to)
+    }
+    /// Co-op test automation in place of `H2_COOP_AUTO_INVITE` and
+    /// `H2_COOP_AUTO_ACCEPT` (read when the Hle is made): `invite` is a
+    /// comma-separated list of gamertags this console invites to its
+    /// advertised lobby, `accept_from` the host whose invitation it accepts.
+    pub fn set_coop_auto(&self, invite: Option<&str>, accept_from: Option<&str>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_auto(crate::auto::Auto::from_values(invite, accept_from));
     }
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
