@@ -162,6 +162,21 @@ pub fn to_tag_set(
             report.orphan_bsps.push(t.key.clone());
         }
     }
+    // An alias needs an owner with metadata of its own.
+    for t in tags {
+        if let Body::Alias { owner, .. } = &t.body {
+            let ok = matches!(
+                set.tag(ids[owner]).map(|e| &e.payload),
+                Some(TagPayload::Built(_))
+            );
+            if !ok {
+                return Err(Error::Invalid(format!(
+                    "{} is an alias of {owner}, which has no metadata of its own",
+                    t.key
+                )));
+            }
+        }
+    }
     report.bsps = sections.len();
     Ok((set, report))
 }
@@ -303,4 +318,61 @@ impl Ctx<'_> {
         }
         Ok(b)
     }
+}
+
+/// A map's scenario, closed over and laid out from a repository: options
+/// from the manifest of `map` (or of the map whose scenario this is), its
+/// variants, the repository's starting string IDs. Roots are the scenario
+/// and the globals.
+pub fn from_repo(
+    repo_root: &std::path::Path,
+    scenario: &str,
+    map: Option<&str>,
+) -> Result<(TagSet, BuildReport, super::Closure)> {
+    let base = super::TagRepo::open(repo_root)?;
+    let map = match map {
+        Some(m) => m.to_owned(),
+        None => base.map_of_scenario(scenario)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "no manifest names {scenario}; pass the map to take options from"
+            ))
+        })?,
+    };
+    let m = base.manifest(&map)?;
+    let mut repo = super::TagRepo::for_map(repo_root, &map)?;
+    let scenario = TagKey::new(FourCC(*b"scnr"), scenario);
+    let globals = m
+        .globals
+        .clone()
+        .unwrap_or_else(|| TagKey::new(FourCC(*b"matg"), "globals\\globals"));
+    let low_detail = match &m.low_detail {
+        Some(h) => Some(repo.raw_by_hash(h)?),
+        None => None,
+    };
+    let opts = BuildOptions {
+        cache_type: m.cache_type(),
+        name: m.name.clone(),
+        scenario: scenario.clone(),
+        globals: globals.clone(),
+        strings: repo.strings()?,
+        header_template: Some(repo.header(&map)?),
+        low_detail,
+        index_word_14: m.index_word_14,
+    };
+    let closure = super::closure(&mut repo, &[globals, scenario])?;
+    if !closure.missing.is_empty() {
+        let list: Vec<String> = closure
+            .missing
+            .iter()
+            .take(8)
+            .map(|(k, from)| format!("{k} (named by {from})"))
+            .collect();
+        return Err(Error::Invalid(format!(
+            "{} tags missing from the repository: {}",
+            closure.missing.len(),
+            list.join(", ")
+        )));
+    }
+    let (set, report) = to_tag_set(&mut repo, &closure.tags, &opts)?;
+    Ok((set, report, closure))
 }

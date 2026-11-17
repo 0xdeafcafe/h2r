@@ -18,11 +18,15 @@
 //! names. A resource's length is its paired size field when the schema has
 //! one (with two known pairs the inference misses: a bitmap's first level of
 //! detail, a sound chunk), otherwise up to the next raw start of that file.
+use super::store::PutReport;
 use super::{
     Body, Error, LooseTag, Node, Origin, RawRes, Region, Result, TagKey, TagSource, Tree, Value,
     sha256,
 };
-use crate::schema::{Field, Memory, Refusal, Relocator, Schema, Struct, u32_at, visit, walk};
+use crate::schema::{
+    Field, Memory, Refusal, Relocator, Schema, Struct, check_subtree_with, stray_with, u32_at,
+    visit, walk,
+};
 use map::{FourCC, Map, ResourceFile, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -85,12 +89,19 @@ impl<R: Read + Seek> RawFile<R> {
 pub struct SharedFiles<R> {
     /// `mainmenu.map`, `shared.map`, `single_player_shared.map`.
     pub files: [Option<RawFile<R>>; 3],
+    /// Hashes of shared resources already read: (file, offset, length).
+    hashes: HashMap<(usize, u32, u32), [u8; 32]>,
+    /// Take a pointer into a cache that was not supplied as its place
+    /// alone (no length unless stored, no hash), instead of refusing.
+    pub unread_ok: bool,
 }
 
 impl<R: Read + Seek> Default for SharedFiles<R> {
     fn default() -> Self {
         SharedFiles {
             files: [None, None, None],
+            hashes: HashMap::new(),
+            unread_ok: false,
         }
     }
 }
@@ -179,6 +190,9 @@ pub struct MapSource<'s, R> {
     raws: HashMap<[u8; 32], (ResourceFile, u32, u32)>,
     /// BSP-region memory per region base, built on first use.
     bsp_memory: HashMap<u64, Memory>,
+    /// Keep the bytes of every raw resource read, for [`MapSource::take_raw`].
+    pub keep_raw: bool,
+    kept: Vec<([u8; 32], Vec<u8>)>,
 }
 
 impl<'s, R: Read + Seek> MapSource<'s, R> {
@@ -210,7 +224,14 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
             groups,
             raws: HashMap::new(),
             bsp_memory: HashMap::new(),
+            keep_raw: false,
+            kept: Vec::new(),
         })
+    }
+
+    /// Raw resources read since the last call (with [`MapSource::keep_raw`]).
+    pub fn take_raw(&mut self) -> Vec<([u8; 32], Vec<u8>)> {
+        std::mem::take(&mut self.kept)
     }
 
     /// The map.
@@ -263,6 +284,12 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
                 return refuse("alias of no tag".into());
             };
             let start = self.rel.memory().region(l.address).expect("owned").0;
+            if l.address != start {
+                // Inside another tag: a depth-first copy of the owner has no
+                // fixed offset for it, so the tag gets its own copy of the
+                // bytes its layout reaches.
+                return self.extract_inner(key, root, l.address);
+            }
             let owner = self.key_of(owner).expect("owner in the index");
             return Ok(Ok(LooseTag {
                 key,
@@ -276,7 +303,7 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
         let whole = w.src.rel.check(id);
         let result = match whole {
             Ok(_) => w.node(root, l.address, 1, &mut Vec::new(), None),
-            Err(_) => w.by_field(id, root, l.address),
+            Err(_) => w.by_field(root, l.address),
         };
         match result {
             Ok(_) => {
@@ -287,6 +314,44 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
                 }))
             }
             Err(WalkError::Refused(why)) => refuse(why),
+            Err(WalkError::Fatal(e)) => Err(e),
+        }
+    }
+
+    /// A tag whose bytes start inside another tag's, as a tree of its own.
+    fn extract_inner(
+        &mut self,
+        key: TagKey,
+        root: &'s Struct,
+        address: u32,
+    ) -> Result<std::result::Result<LooseTag, Refused>> {
+        let (start, bytes) = self.rel.memory().region(address).expect("owned");
+        let own = (start, start + bytes.len() as u32);
+        if let Err(d) = check_subtree_with(
+            root,
+            address,
+            1,
+            own,
+            self.rel.memory(),
+            &mut Vec::new(),
+            true,
+        ) {
+            return Ok(Err(Refused {
+                key,
+                why: format!(
+                    "inside another tag: {:?} at {:x?} +{:#x}",
+                    d.refusal, d.path, d.offset
+                ),
+            }));
+        }
+        let group = key.group;
+        let mut w = Walker::new(self, group);
+        match w.node(root, address, 1, &mut Vec::new(), None) {
+            Ok(_) => Ok(Ok(LooseTag {
+                key,
+                body: Body::Tree(w.finish()),
+            })),
+            Err(WalkError::Refused(why)) => Ok(Err(Refused { key, why })),
             Err(WalkError::Fatal(e)) => Err(e),
         }
     }
@@ -319,34 +384,37 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
                 .insert(base, Memory::from_regions(regions, spaces));
         }
         let mem = self.bsp_memory.remove(&base).expect("built");
-        let checked = walk(root, l.address, &mem);
-        let out = match checked {
-            Err(d) => Ok(Err(Refused {
-                key,
-                why: format!("{:?} at {:x?} +{:#x}", d.refusal, d.path, d.offset),
-            })),
+        let whole = walk(root, l.address, &mem).is_ok();
+        let mut w = Walker::new(self, t.group);
+        w.memory = Some(&mem);
+        w.region = Region::Bsp;
+        let result = if whole {
+            w.node(root, l.address, 1, &mut Vec::new(), None)
+        } else {
+            w.by_field(root, l.address)
+        };
+        let out = match result {
             Ok(_) => {
-                let mut w = Walker::new(self, t.group);
-                w.memory = Some(&mem);
-                w.region = Region::Bsp;
-                match w.node(root, l.address, 1, &mut Vec::new(), None) {
-                    Ok(_) => {
-                        let tree = w.finish();
-                        Ok(Ok(LooseTag {
-                            key,
-                            body: Body::Tree(tree),
-                        }))
-                    }
-                    Err(WalkError::Refused(why)) => Ok(Err(Refused { key, why })),
-                    Err(WalkError::Fatal(e)) => Err(e),
-                }
+                let tree = w.finish();
+                Ok(Ok(LooseTag {
+                    key,
+                    body: Body::Tree(tree),
+                }))
             }
+            Err(WalkError::Refused(why)) => Ok(Err(Refused { key, why })),
+            Err(WalkError::Fatal(e)) => Err(e),
         };
         self.bsp_memory.insert(base, mem);
         out
     }
 
-    fn read_raw(&mut self, file: ResourceFile, offset: u32, len: u32) -> Result<Vec<u8>> {
+    /// Where a raw resource this source has read sits: (file, offset, length).
+    pub fn raw_place(&self, hash: &[u8; 32]) -> Option<(ResourceFile, u32, u32)> {
+        self.raws.get(hash).copied()
+    }
+
+    /// Bytes of one of the files this source reads.
+    pub fn read_raw(&mut self, file: ResourceFile, offset: u32, len: u32) -> Result<Vec<u8>> {
         match shared_slot(file) {
             None => self.map.read(offset, len),
             Some(i) => self.shared.files[i]
@@ -583,15 +651,45 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
             .collect();
         let len = match shared_slot(p.file) {
             None => self.src.map.extent(p.offset, size, exact, &siblings),
-            Some(i) => self.src.shared.files[i]
-                .as_ref()
-                .ok_or_else(|| {
-                    WalkError::Refused(format!("points into {:?}, not supplied", p.file))
-                })?
-                .extent(p.offset, size, exact, &siblings),
+            Some(i) => match self.src.shared.files[i].as_ref() {
+                Some(f) => f.extent(p.offset, size, exact, &siblings),
+                None if self.src.shared.unread_ok => {
+                    // No cache to read: the pointer alone (length as
+                    // stored, no hash). Enough to compare places.
+                    let r = RawRes {
+                        origin: Origin::External {
+                            file: p.file,
+                            offset: p.offset,
+                        },
+                        len: size.unwrap_or(0),
+                        hash: [0; 32],
+                    };
+                    return Ok(self.push_raw(r));
+                }
+                None => {
+                    return Err(WalkError::Refused(format!(
+                        "points into {:?}, not supplied",
+                        p.file
+                    )));
+                }
+            },
         };
-        let bytes = self.src.read_raw(p.file, p.offset, len)?;
-        let hash = sha256(&bytes);
+        let cached = shared_slot(p.file)
+            .and_then(|i| self.src.shared.hashes.get(&(i, p.offset, len)).copied());
+        let hash = match cached {
+            Some(h) => h,
+            None => {
+                let bytes = self.src.read_raw(p.file, p.offset, len)?;
+                let hash = sha256(&bytes);
+                if let Some(i) = shared_slot(p.file) {
+                    self.src.shared.hashes.insert((i, p.offset, len), hash);
+                }
+                if self.src.keep_raw {
+                    self.src.kept.push((hash, bytes));
+                }
+                hash
+            }
+        };
         self.src.raws.insert(hash, (p.file, p.offset, len));
         let origin = match p.file {
             ResourceFile::Local => Origin::Local,
@@ -600,25 +698,28 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
                 offset: p.offset,
             },
         };
-        let r = RawRes { origin, len, hash };
+        Ok(self.push_raw(RawRes { origin, len, hash }))
+    }
+
+    fn push_raw(&mut self, r: RawRes) -> u32 {
         if let Some(&i) = self.raw_index.get(&r) {
-            return Ok(i);
+            return i;
         }
         let i = self.raws.len() as u32;
         self.raws.push(r.clone());
         self.raw_index.insert(r, i);
-        Ok(i)
+        i
     }
 
     /// A tag the whole-tag check refuses, one root field at a time (see the
     /// module docs).
-    fn by_field(
-        &mut self,
-        id: TagId,
-        root: &Struct,
-        address: u32,
-    ) -> std::result::Result<u32, WalkError> {
-        let mem = self.src.rel.memory();
+    fn by_field(&mut self, root: &Struct, address: u32) -> std::result::Result<u32, WalkError> {
+        let mem = self.memory.unwrap_or(self.src.rel.memory());
+        let (start, bytes) = mem
+            .region(address)
+            .filter(|r| r.0 == address)
+            .ok_or_else(|| WalkError::Refused("no bytes".into()))?;
+        let own_range = (start, start + bytes.len() as u32);
         let own = mem
             .slice(address, root.size)
             .ok_or_else(|| WalkError::Refused("smaller than its root".into()))?
@@ -631,32 +732,35 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
                 blanked[o as usize..o as usize + 8].fill(0);
             }
         }
-        let (start, bytes) = mem.region(address).expect("own bytes");
-        if let Some((k, v)) =
-            crate::schema::stray(root, &blanked, (start, start + bytes.len() as u32), mem)
-        {
+        if let Some((k, v)) = stray_with(root, &blanked, own_range, mem, true) {
             return Err(WalkError::Refused(format!(
                 "{:?} in the root at +{k:#x} ({v:#x})",
                 Refusal::UnknownPointer
             )));
         }
+        let in_metadata = self.memory.is_none();
         let mut root_bytes = own;
         let mut children = Vec::new();
         for (&o, f) in &root.fields {
             let Field::Block(child) = f else { continue };
             let c = u32_at(&root_bytes, o as usize);
             let a = u32_at(&root_bytes, o as usize + 4);
-            if c == 0 || a == 0 {
+            if c == 0 {
+                root_bytes[o as usize + 4..o as usize + 8].fill(0);
                 continue;
             }
-            match self.src.rel.block_field(id, o) {
-                Ok(_) => children.push((o, child.as_ref(), a, c, None)),
+            if a == 0 {
+                continue;
+            }
+            let mem = self.memory.unwrap_or(self.src.rel.memory());
+            match check_subtree_with(child, a, c, own_range, mem, &mut vec![o], true) {
+                Ok(()) => children.push((o, child.as_ref(), a, c, None)),
                 Err(d) => {
                     let flat = child
                         .fields
                         .values()
                         .all(|f| !matches!(f, Field::Block(_) | Field::Raw));
-                    let read = flat
+                    let read = (flat && in_metadata && d.refusal == Refusal::OutOfBounds)
                         .then(|| {
                             let n = c.checked_mul(child.size)?;
                             let off = self.src.map.map.file_offset(a, n).ok()?;
@@ -664,13 +768,11 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
                         })
                         .flatten();
                     match read {
-                        Some(b) if d.refusal == Refusal::OutOfBounds => {
-                            children.push((o, child.as_ref(), a, c, Some(b)))
-                        }
-                        _ => {
+                        Some(b) => children.push((o, child.as_ref(), a, c, Some(b))),
+                        None => {
                             self.losses.push(format!(
-                                "block +{o:#x} ({c} elements) left empty: {:?} at {:x?} +{:#x}",
-                                d.refusal, d.path, d.offset
+                                "block +{o:#x} ({c} elements) left empty: {:?} at {:x?} +{:#x} ({:#x})",
+                                d.refusal, d.path, d.offset, d.value
                             ));
                             root_bytes[o as usize..o as usize + 8].fill(0);
                         }
@@ -684,14 +786,7 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
         root_only
             .fields
             .retain(|_, f| !matches!(f, Field::Block(_)));
-        let index = self.node(
-            &root_only,
-            address,
-            1,
-            &mut Vec::new(),
-            Some(root_bytes.clone()),
-        )?;
-        self.nodes[index as usize].size = root.size;
+        let index = self.node(&root_only, address, 1, &mut Vec::new(), Some(root_bytes))?;
         let mut extra = Vec::new();
         for (o, child, a, c, file) in children {
             let mut path = vec![o];
@@ -712,6 +807,45 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
         }
         node.fields.extend(extra);
         node.fields.sort_by_key(|f| f.0);
+        // Without the whole-tag check nothing says the arrays found cover
+        // the tag: count the bytes they miss that are not padding.
+        let mut spans: Vec<(u32, u32)> = self
+            .seen
+            .keys()
+            .filter(|k| !k.3 && (own_range.0..own_range.1).contains(&k.0))
+            .map(|k| (k.0 - own_range.0, k.1))
+            .collect();
+        spans.push((0, root.size));
+        spans.sort_unstable();
+        let mem = self.memory.unwrap_or(self.src.rel.memory());
+        let tag = mem
+            .slice(own_range.0, own_range.1 - own_range.0)
+            .unwrap_or(&[]);
+        let (mut pos, mut missed, mut gaps) = (0u32, 0u64, 0u32);
+        let mut gap = |lo: u32, hi: u32| {
+            let n = tag[lo as usize..hi as usize]
+                .iter()
+                .filter(|b| **b != 0 && **b != 0xcd)
+                .count();
+            if n > 0 && hi - lo >= 4 {
+                missed += n as u64;
+                gaps += 1;
+            }
+        };
+        for (at, n) in spans {
+            if at > pos {
+                gap(pos, at);
+            }
+            pos = pos.max(at + n);
+        }
+        if (pos as usize) < tag.len() {
+            gap(pos, tag.len() as u32);
+        }
+        if missed > 0 {
+            self.losses.push(format!(
+                "{missed} nonzero bytes in {gaps} ranges no array covers"
+            ));
+        }
         Ok(index)
     }
 }
@@ -746,4 +880,182 @@ impl<R: Read + Seek> TagSource for MapSource<'_, R> {
     fn groups(&self) -> Vec<map::TagGroup> {
         self.groups.clone()
     }
+}
+
+/// Extract every tag of `src` (the map `stem`) into `repo`, with its
+/// manifest, header, low-detail region, group table and string IDs. With
+/// `verify`, each stored file is read back and must decode to the same tag.
+pub fn store_map<R: Read + Seek>(
+    repo: &mut super::TagRepo,
+    src: &mut MapSource<'_, R>,
+    stem: &str,
+    verify: bool,
+) -> Result<PutReport> {
+    use super::store::{Manifest, Stored};
+    let mut report = PutReport::default();
+    src.keep_raw = true;
+    let h = src.map.map.header().clone();
+    let header = src.map.read(0, 0x800)?;
+    let word14 = src.map.read(h.index_offset + 0x14, 4)?;
+    let mut m = Manifest {
+        map: stem.to_owned(),
+        cache_type: u32::from_le_bytes(header[0x140..0x144].try_into().expect("4")),
+        name: h.name.clone(),
+        index_word_14: u32::from_le_bytes(word14[..4].try_into().expect("4")),
+        ..Default::default()
+    };
+    let scenario = src.map.map.scenario().map(|t| t.id);
+    let globals = src.map.map.globals().map(|t| t.id);
+    m.scenario = scenario.and_then(|id| src.key_of(id));
+    m.globals = globals.and_then(|id| src.key_of(id));
+    let low = src.low_detail()?;
+    if !low.is_empty() {
+        m.low_detail = Some(repo.put_raw(&low)?);
+    }
+    repo.merge_groups(&src.groups)?;
+    repo.merge_strings(&src.strings)?;
+    let ids: Vec<TagId> = src.tags.iter().map(|t| t.id).collect();
+    for id in ids {
+        let tag = match src.extract(id)? {
+            Ok(t) => t,
+            Err(r) => {
+                report.refused.push((r.key.clone(), r.why.clone()));
+                m.refused.push((r.key, r.why));
+                continue;
+            }
+        };
+        for (hash, bytes) in src.take_raw() {
+            let rr = RawRes {
+                origin: Origin::Local,
+                len: bytes.len() as u32,
+                hash,
+            };
+            if !repo.has_raw(&rr) {
+                repo.put_raw(&bytes)?;
+                report.raw_new.0 += 1;
+                report.raw_new.1 += bytes.len() as u64;
+            }
+        }
+        if let Some(t) = tag.tree()
+            && !t.losses.is_empty()
+        {
+            report.lossy.push(tag.key.clone());
+        }
+        let variant = match repo.put(&tag)? {
+            Stored::New => {
+                report.new += 1;
+                None
+            }
+            Stored::Same => {
+                report.same += 1;
+                None
+            }
+            Stored::Variant(v) => {
+                report.variants.insert(tag.key.clone(), v.clone());
+                Some(v)
+            }
+        };
+        if verify {
+            let p = repo.path_of(&tag.key, variant.as_deref());
+            let back = super::format::decode(&std::fs::read(&p)?)?;
+            if back != tag {
+                return Err(Error::Invalid(format!(
+                    "{} did not read back the same",
+                    tag.key
+                )));
+            }
+        }
+        m.tags.push((tag.key, variant));
+    }
+    repo.put_manifest(&m, &header)?;
+    src.keep_raw = false;
+    Ok(report)
+}
+
+/// How a rebuilt map compares with its source.
+#[derive(Clone, Debug, Default)]
+pub struct Comparison {
+    /// Tags whose canonical forms (and local raw bytes) match.
+    pub same: usize,
+    /// Tags that differ, with the first differing line of each side.
+    pub differ: Vec<(TagKey, String)>,
+    /// Tags of the rebuilt map the source lacks.
+    pub missing: Vec<TagKey>,
+    /// Tags either side could not extract.
+    pub refused: Vec<(TagKey, String)>,
+    /// Local raw resources compared byte for byte.
+    pub raw_compared: usize,
+    /// Source tags with losses (their canonical forms are compared without
+    /// the loss lines: both sides lose the same).
+    pub lossy: Vec<TagKey>,
+}
+
+/// Compare every tag of `built` with the tag of the same key in `source`:
+/// canonical forms with raw resources by place, then each local resource's
+/// bytes (the source's length, read at the rebuilt map's pointer).
+pub fn compare<R1: Read + Seek, R2: Read + Seek>(
+    built: &mut MapSource<'_, R1>,
+    source: &mut MapSource<'_, R2>,
+) -> Result<Comparison> {
+    let mut out = Comparison::default();
+    for key in built.keys() {
+        let Some(&si) = source.by_key.get(&key) else {
+            out.missing.push(key);
+            continue;
+        };
+        let b = built.extract(built.tags[built.by_key[&key]].id)?;
+        let s = source.extract(source.tags[si].id)?;
+        let (b, s) = match (b, s) {
+            (Ok(b), Ok(s)) => (b, s),
+            (Err(r), _) | (_, Err(r)) => {
+                out.refused.push((key, r.why));
+                continue;
+            }
+        };
+        if s.tree().is_some_and(|t| !t.losses.is_empty()) {
+            out.lossy.push(key.clone());
+        }
+        let strip = |(c, l): (Vec<String>, Vec<RawRes>)| {
+            (
+                c.into_iter()
+                    .filter(|x| !x.starts_with("loss "))
+                    .collect::<Vec<_>>(),
+                l,
+            )
+        };
+        let (cb, lb) = strip(super::canonical_with(&b, false));
+        let (cs, ls) = strip(super::canonical_with(&s, false));
+        if cb != cs {
+            let i = cb
+                .iter()
+                .zip(&cs)
+                .position(|(x, y)| x != y)
+                .unwrap_or(cb.len().min(cs.len()));
+            let line = |c: &[String]| c.get(i).cloned().unwrap_or_else(|| "(end)".into());
+            out.differ.push((
+                key,
+                format!("line {i}: built {} / source {}", line(&cb), line(&cs)),
+            ));
+            continue;
+        }
+        let mut ok = true;
+        for (rb, rs) in lb.iter().zip(&ls) {
+            let Some((file, offset, _)) = built.raw_place(&rb.hash) else {
+                ok = false;
+                break;
+            };
+            let bytes = built.read_raw(file, offset, rs.len)?;
+            out.raw_compared += 1;
+            if super::sha256(&bytes) != rs.hash {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            out.same += 1;
+        } else {
+            out.differ.push((key, "local raw bytes differ".into()));
+        }
+    }
+    Ok(out)
 }

@@ -23,7 +23,7 @@ pub mod format;
 pub mod store;
 
 pub use build::{BuildOptions, to_tag_set};
-pub use extract::{MapSource, SharedFiles};
+pub use extract::{MapSource, SharedFiles, compare, store_map};
 pub use store::TagRepo;
 
 /// What can go wrong reading, writing or building tags.
@@ -300,59 +300,90 @@ pub fn closure(src: &mut dyn TagSource, roots: &[TagKey]) -> Result<Closure> {
 /// strings by text, raw by length and hash). Equal lines mean equal tags,
 /// wherever they sit. Shared nodes appear each time they are reached.
 pub fn canonical(tag: &LooseTag) -> Vec<String> {
-    let mut out = Vec::new();
-    match &tag.body {
-        Body::Alias { owner, offset } => out.push(format!("alias {owner} +{offset:#x}")),
-        Body::Tree(t) => {
-            fn go(t: &Tree, n: u32, path: &mut Vec<u32>, depth: u32, out: &mut Vec<String>) {
-                let node = &t.nodes[n as usize];
-                if depth > 64 {
-                    out.push("too deep".into());
-                    return;
+    canonical_with(tag, true).0
+}
+
+/// [`canonical`], with raw resources noted fully (`full`: length and hash)
+/// or by place only (a shared cache's file and offset, or "local"), and the
+/// local resources in visit order. Comparing a rebuilt map with its source
+/// uses the second form: lengths found without a stored size run to the
+/// next resource, which padding moves, so local bytes are compared apart.
+pub fn canonical_with(tag: &LooseTag, full: bool) -> (Vec<String>, Vec<RawRes>) {
+    struct Cx<'a> {
+        t: &'a Tree,
+        full: bool,
+        out: Vec<String>,
+        locals: Vec<RawRes>,
+    }
+    fn go(cx: &mut Cx, n: u32, path: &mut Vec<u32>, depth: u32) {
+        let t = cx.t;
+        let node = &t.nodes[n as usize];
+        if depth > 64 {
+            cx.out.push("too deep".into());
+            return;
+        }
+        // A data reference (1-byte elements) is one line.
+        let (size, elems) = if node.size <= 1 {
+            (node.bytes.len(), u32::from(!node.bytes.is_empty()))
+        } else {
+            (node.size as usize, node.count)
+        };
+        for i in 0..elems {
+            let lo = i as usize * size;
+            let hi = lo + size;
+            let bytes = &node.bytes[lo..hi];
+            let mut notes = Vec::new();
+            let mut kids = Vec::new();
+            for (o, v) in &node.fields {
+                let o = *o as usize;
+                if o < lo || o >= hi {
+                    continue;
                 }
-                // A data reference (1-byte elements) is one line.
-                let (size, elems) = if node.size <= 1 {
-                    (node.bytes.len(), u32::from(!node.bytes.is_empty()))
-                } else {
-                    (node.size as usize, node.count)
-                };
-                for i in 0..elems {
-                    let lo = i as usize * size;
-                    let hi = lo + size;
-                    let bytes = &node.bytes[lo..hi];
-                    let mut notes = Vec::new();
-                    let mut kids = Vec::new();
-                    for (o, v) in &node.fields {
-                        let o = *o as usize;
-                        if o < lo || o >= hi {
-                            continue;
-                        }
-                        match v {
-                            Value::Block(c) | Value::Data(c) => kids.push((o - lo, *c)),
-                            Value::Ref(k) => notes.push(format!("{:#x}={k}", o - lo)),
-                            Value::String(s) => notes.push(format!("{:#x}='{s}'", o - lo)),
-                            Value::Raw(r) => {
-                                let r = &t.raws[*r as usize];
-                                notes.push(format!("{:#x}=raw {:#x} {}", o - lo, r.len, r.hex()));
+                match v {
+                    Value::Block(c) | Value::Data(c) => kids.push((o - lo, *c)),
+                    Value::Ref(k) => notes.push(format!("{:#x}={k}", o - lo)),
+                    Value::String(s) => notes.push(format!("{:#x}='{s}'", o - lo)),
+                    Value::Raw(r) => {
+                        let r = &t.raws[*r as usize];
+                        let note = match (cx.full, r.origin) {
+                            (true, _) => format!("raw {:#x} {}", r.len, r.hex()),
+                            (false, Origin::External { file, offset }) => {
+                                format!("raw {file:?} {offset:#x}")
                             }
-                            Value::Bsp => notes.push(format!("{:#x}=bsp", o - lo)),
+                            (false, Origin::Local) => "raw local".into(),
+                        };
+                        if r.origin == Origin::Local {
+                            cx.locals.push(r.clone());
                         }
+                        notes.push(format!("{:#x}={note}", o - lo));
                     }
-                    out.push(format!("{path:x?} {} {notes:?}", hex(bytes)));
-                    for (o, c) in kids {
-                        path.push(o as u32);
-                        go(t, c, path, depth + 1, out);
-                        path.pop();
-                    }
+                    Value::Bsp => notes.push(format!("{:#x}=bsp", o - lo)),
                 }
             }
-            go(t, 0, &mut Vec::new(), 0, &mut out);
-            for l in &t.losses {
-                out.push(format!("loss {l}"));
+            cx.out.push(format!("{path:x?} {} {notes:?}", hex(bytes)));
+            for (o, c) in kids {
+                path.push(o as u32);
+                go(cx, c, path, depth + 1);
+                path.pop();
             }
         }
     }
-    out
+    match &tag.body {
+        Body::Alias { owner, offset } => (vec![format!("alias {owner} +{offset:#x}")], Vec::new()),
+        Body::Tree(t) => {
+            let mut cx = Cx {
+                t,
+                full,
+                out: Vec::new(),
+                locals: Vec::new(),
+            };
+            go(&mut cx, 0, &mut Vec::new(), 0);
+            for l in &t.losses {
+                cx.out.push(format!("loss {l}"));
+            }
+            (cx.out, cx.locals)
+        }
+    }
 }
 
 #[cfg(test)]

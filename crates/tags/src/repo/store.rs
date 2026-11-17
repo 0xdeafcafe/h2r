@@ -30,6 +30,9 @@ const REPO_MAGIC: &str = "h2 tag repository";
 /// A repository directory.
 pub struct TagRepo {
     root: PathBuf,
+    /// Count raw resources instead of writing them (to size a repository
+    /// without the disk space): hashes seen and their bytes.
+    pub count_raw: Option<(std::collections::HashSet<String>, u64)>,
     /// Variant per key for the map this repository was opened for.
     variants: HashMap<TagKey, String>,
     groups: Vec<TagGroup>,
@@ -226,6 +229,7 @@ impl TagRepo {
         }
         let mut repo = TagRepo {
             root,
+            count_raw: None,
             variants: HashMap::new(),
             groups: Vec::new(),
         };
@@ -306,12 +310,21 @@ impl TagRepo {
 
     /// Whether the raw store has these bytes.
     pub fn has_raw(&self, raw: &RawRes) -> bool {
-        self.raw_path(&raw.hex()).exists()
+        match &self.count_raw {
+            Some((seen, _)) => seen.contains(&raw.hex()),
+            None => self.raw_path(&raw.hex()).exists(),
+        }
     }
 
     /// Store raw bytes by hash; returns the hash.
     pub fn put_raw(&mut self, bytes: &[u8]) -> Result<String> {
         let h = hex(&sha256(bytes));
+        if let Some((seen, total)) = &mut self.count_raw {
+            if seen.insert(h.clone()) {
+                *total += bytes.len() as u64;
+            }
+            return Ok(h);
+        }
         let p = self.raw_path(&h);
         if !p.exists() {
             write_atomic(&p, bytes)?;
