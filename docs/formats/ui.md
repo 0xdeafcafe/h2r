@@ -446,7 +446,10 @@ the list's anchor, up to the list block's visible count, each one item
 height lower. The height is the item's bounding box (`0x2bafa4`, top minus
 bottom) over its children, leaving out bitmaps whose definition has flag
 bit 0 set (`0x2b0a48`; shader bitmaps have their own test, `0x2b12ba`, not
-read). For the default list skin that is 43 units.
+read). An item's bitmap covers its point's `y` up to `y` plus its
+height (Y up), so the Controls skin's items are 26 units apart (its row
+bar), as the game draws them, and the default skin's 22
+(docs/game/ui-screens.md "Item spacing").
 Anything the tag draws under a list does not move with it, so a screen
 whose hint text sits under its list needs its tag adjusted, as
 `custom_games::extend_tag` does for the Xbox Live menu.

@@ -116,6 +116,7 @@ pub fn class(
         .action(act)
         .sideways()
         .on_free(on_free)
+        .footer(skulls_menu::FOOTER_ID)
 }
 
 /// A difficulty press kept while the page is up: what to run to start.

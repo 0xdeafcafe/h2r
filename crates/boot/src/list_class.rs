@@ -633,6 +633,7 @@ pub struct ListClass {
     buttons: Option<Buttons>,
     sideways: bool,
     on_free: Option<OnFree>,
+    footer: Option<u32>,
     loader: Arc<AtomicU32>,
 }
 
@@ -654,6 +655,7 @@ impl ListClass {
             buttons: None,
             sideways: false,
             on_free: None,
+            footer: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -695,6 +697,12 @@ impl ListClass {
     /// destructor has run, before the stack frees it).
     pub fn on_free(mut self, f: OnFree) -> Self {
         self.on_free = Some(f);
+        self
+    }
+    /// With `id` (a string id) as the footer's button legend ([`FOOTER`]),
+    /// the game's place for one, in place of the pane's own.
+    pub fn footer(mut self, id: u32) -> Self {
+        self.footer = Some(id);
         self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
@@ -1102,6 +1110,24 @@ pub async fn setup_pane(
     description: Option<Description>,
     name: &'static str,
 ) -> Result<Ret, EntryError> {
+    setup_pane_footer(cx, title, None, description, name).await
+}
+
+/// The screen's second built-in text widget, the button legend in the
+/// footer band: made by the header build (`0x22ff53`, `lea ebx, [esi +
+/// 0x338]`) in the header layout's second rectangle (`wigl +0x178`), its
+/// string the pane's button key. Retail screens show "(A) SELECT  (B)
+/// BACK" there, the glyphs U+E100 and U+E101.
+pub const FOOTER: u32 = 0x338;
+
+/// [`setup_pane`], then `footer` (a string id) on the footer legend.
+pub async fn setup_pane_footer(
+    cx: Cx,
+    title: u32,
+    footer: Option<u32>,
+    description: Option<Description>,
+    name: &'static str,
+) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let arg = cx.arg(0)?;
     let r = cx
@@ -1118,6 +1144,15 @@ pub async fn setup_pane(
             .args([title]),
     )
     .await?;
+    if let Some(id) = footer {
+        cx.call(
+            GuestCall::new(points::TEXT_SET.base)
+                .edi(screen.wrapping_add(FOOTER))
+                .esi(screen)
+                .args([id]),
+        )
+        .await?;
+    }
     if let Some(d) = description {
         cx.write(|m| m.write(d.at, &d.block.bytes()))?;
         let widget = cx
@@ -1260,8 +1295,15 @@ impl feature::Feature for ListClass {
                 picture: self.picture,
                 picture_at: tables + PICTURE_BLOCK,
             });
+        let footer = self.footer;
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
-            Box::pin(setup_pane(cx, title, description.clone(), name))
+            Box::pin(setup_pane_footer(
+                cx,
+                title,
+                footer,
+                description.clone(),
+                name,
+            ))
         })?;
         let loader_slot = b.entry("loader slot", move |_| -> EntryFuture {
             Box::pin(async move { Ok(Ret::new(loader, 0)) })

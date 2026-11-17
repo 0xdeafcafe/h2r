@@ -52,6 +52,8 @@ impl Describe for SkullsScreen {
         s.scrolls = true;
         if campaign {
             s.prompts = skulls_prompts();
+            s.footer = true;
+            s.ids.push(skulls_menu::FOOTER_ID);
             s.inputs = vec![
                 Input::Up,
                 Input::Down,
@@ -156,7 +158,11 @@ impl Describe for HostRows {
             };
             Some((l, v, press))
         });
-        coop_spec(coop_live::SCREEN, coop_title(self, &self.0), rows)
+        let mut s = coop_spec(coop_live::SCREEN, coop_title(self, &self.0), rows);
+        // Six rows in five shown: Start scrolls into view (seen in game,
+        // 2026-11-16), and is meant to.
+        s.scrolls = true;
+        s
     }
 }
 
@@ -183,7 +189,10 @@ impl Describe for JoinRows {
             };
             Some((l, v, press))
         });
-        coop_spec(coop_live::JOIN, coop_title(self, &self.0), rows)
+        let mut s = coop_spec(coop_live::JOIN, coop_title(self, &self.0), rows);
+        // Ready, the sixth row, scrolls into view as the host's Start does.
+        s.scrolls = true;
+        s
     }
 }
 
@@ -276,7 +285,7 @@ mod tests {
     #[test]
     fn the_skulls_legend_and_descriptions_are_the_served_ones() {
         assert_eq!(
-            crate::ui_kit::input::legend(&skulls_prompts()),
+            crate::ui_kit::input::footer_legend(&skulls_prompts()),
             skulls_menu::PROMPT
         );
         let s = sample("skulls").unwrap();
@@ -300,16 +309,7 @@ mod tests {
                 .into_iter()
                 .filter(|f| !matches!(f, Finding::Wide { .. } | Finding::Description { .. }))
                 .collect();
-            let expect = match name {
-                // Six rows in the Controls list's five; nothing says the
-                // host screen scrolls.
-                "coop" | "coop.join" => vec![Finding::Rows {
-                    rows: 6,
-                    visible: 5,
-                }],
-                _ => vec![],
-            };
-            assert_eq!(f, expect, "{name}: {f:#?}");
+            assert_eq!(f, vec![], "{name}: {f:#?}");
         }
     }
 
@@ -362,18 +362,34 @@ mod tests {
             if let Some(dir) = &out {
                 std::fs::create_dir_all(dir).unwrap();
                 for focus in [0, s.rows.len().saturating_sub(1)] {
-                    let f = ScreenSpec {
-                        focus,
-                        ..s.clone()
-                    };
+                    let f = ScreenSpec { focus, ..s.clone() };
                     let path = dir.join(format!("{name}-focus{focus}.png"));
                     disc.render(&f).unwrap().write_png(&path).unwrap();
                     eprintln!("wrote {}", path.display());
                 }
             }
         }
+        // The co-op screen as the 2026-11-16 screenshot has it (focus on
+        // row 4) beside that screenshot, scaled to 640 by 480, when
+        // `H2_UI_COMPARE` names it.
+        if let (Some(dir), Some(shot)) = (&out, std::env::var_os("H2_UI_COMPARE")) {
+            let shot =
+                crate::ui_kit::preview::Canvas::read_png(std::path::Path::new(&shot)).unwrap();
+            let s = ScreenSpec {
+                focus: 4,
+                ..sample("coop").unwrap()
+            };
+            let path = dir.join("coop-vs-game.png");
+            disc.render(&s)
+                .unwrap()
+                .beside(&shot)
+                .write_png(&path)
+                .unwrap();
+            eprintln!("wrote {}", path.display());
+        }
         for r in &report {
             eprintln!("finding: {r}");
         }
+        assert!(report.is_empty(), "{} findings", report.len());
     }
 }
