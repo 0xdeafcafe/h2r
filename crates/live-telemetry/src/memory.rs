@@ -352,6 +352,24 @@ fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
     Ok([f(0), f(4), f(8)])
 }
 
+// The body's position, forward and up lie end to end.
+const _: () = assert!(
+    layout::BODY_FORWARD == layout::BODY_POSITION + 12
+        && layout::BODY_UP == layout::BODY_POSITION + 24
+);
+
+/// A body's position, forward and up, in one read (it faults where any of
+/// the three would).
+fn pose(guest: &Guest, body: u32) -> ReadResult<[[f64; 3]; 3]> {
+    let b = guest.read::<36>(body + layout::BODY_POSITION)?;
+    let f = |i: usize| f64::from(f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]));
+    Ok([
+        [f(0), f(4), f(8)],
+        [f(12), f(16), f(20)],
+        [f(24), f(28), f(32)],
+    ])
+}
+
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
 /// within 10% of unit length (the "likely" offset must not send garbage).
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
@@ -411,9 +429,7 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
         .ok()
         .map(|t| t as i16)
         .filter(|t| *t >= 0);
-    let mut pos = vector(guest, body + layout::BODY_POSITION)?;
-    let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
-    let mut up = vector(guest, body + layout::BODY_UP)?;
+    let [mut pos, mut forward, mut up] = pose(guest, body)?;
     let mut vehicle_definition = None;
     let mut mount = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
@@ -427,9 +443,7 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
             let mounted = vehicle_mount(objects, parent_body)?;
             let at = mounted.map_or(parent_body, |(_, b)| b);
             mount = mounted.map(|(m, _)| m);
-            pos = vector(guest, at + layout::BODY_POSITION)?;
-            forward = vector(guest, at + layout::BODY_FORWARD)?;
-            up = vector(guest, at + layout::BODY_UP)?;
+            [pos, forward, up] = pose(guest, at)?;
             Some(parent)
         }
         _ => None,
@@ -705,15 +719,17 @@ fn placed(
     body: u32,
     out: &mut Vec<PlacedObject>,
 ) -> ReadResult<()> {
-    let index = guest.u16(body + layout::BODY_PLACEMENT_INDEX)? as i16;
+    // The parent and the placement index in one read.
+    const PARENT: usize = 0;
+    const INDEX: usize = (layout::BODY_PLACEMENT_INDEX - layout::BODY_PARENT) as usize;
+    let b = guest.read::<{ INDEX + 2 }>(body + layout::BODY_PARENT)?;
+    let index = i16::from_le_bytes([b[INDEX], b[INDEX + 1]]);
     let netgame = guest.u8(body + layout::BODY_NETGAME_EQUIPMENT)? as i8;
     if index < 0 && netgame < 0 {
         return Ok(());
     }
-    let parented = guest.u32(body + layout::BODY_PARENT)? != u32::MAX;
-    let pos = vector(guest, body + layout::BODY_POSITION)?;
-    let forward = vector(guest, body + layout::BODY_FORWARD)?;
-    let up = vector(guest, body + layout::BODY_UP)?;
+    let parented = u32::from_le_bytes(b[PARENT..PARENT + 4].try_into().unwrap()) != u32::MAX;
+    let [pos, forward, up] = pose(guest, body)?;
     let mut push = |kind, index| {
         out.push(PlacedObject {
             kind,
@@ -814,14 +830,7 @@ pub fn placements(guest: &Guest) -> ReadResult<Placements> {
 /// has a parent).
 fn transform(guest: &Guest, body: u32) -> ReadResult<(Option<u32>, [[f64; 3]; 3])> {
     let definition = Some(guest.u32(body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
-    Ok((
-        definition,
-        [
-            vector(guest, body + layout::BODY_POSITION)?,
-            vector(guest, body + layout::BODY_FORWARD)?,
-            vector(guest, body + layout::BODY_UP)?,
-        ],
-    ))
+    Ok((definition, pose(guest, body)?))
 }
 
 /// The active structure BSP index, `None` when negative.
