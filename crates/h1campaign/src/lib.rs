@@ -143,6 +143,10 @@ pub struct Options<'a> {
     /// Retail maps to copy the characters the base lacks from
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
+    /// Halo 1's cinematics and the a10 tutorial: skipped (the default)
+    /// until cutscene animation and recordings are converted
+    /// (docs/game/campaigns.md, Cutscenes).
+    pub cutscenes: h1scripts::compile::Cutscenes,
 }
 
 impl Default for Options<'_> {
@@ -153,6 +157,7 @@ impl Default for Options<'_> {
             scripts: None,
             sounds: 0,
             donors: None,
+            cutscenes: Default::default(),
         }
     }
 }

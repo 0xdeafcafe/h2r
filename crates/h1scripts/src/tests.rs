@@ -863,3 +863,109 @@ mod level_and_seats {
         );
     }
 }
+
+/// `(script static boolean cinematic_skip_start true)`, two dormant
+/// scripts `tutorial_setup` and `fast_setup`, and `(script startup main
+/// (begin (cinematic_skip_start) (wake tutorial_setup)
+/// (ai_conversation_status squad_a)))`, compiled with `cutscenes`.
+fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
+    const SCRIPT: u16 = 10;
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("wake", VOID, ORDINARY, &[SCRIPT]),
+            f("ai_conversation_status", SHORT, ORDINARY, &[AI]),
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.builtins.insert(
+        "wake".into(),
+        H2Builtin {
+            index: 33,
+            return_type: VOID,
+            parameters: vec![SCRIPT],
+            special: false,
+        },
+    );
+    let mut b = Builder::default();
+    let yes = b.atom(BOOL, BOOL, "true", 1);
+    let guard = b.call(0, BOOL, "begin", &[yes]);
+    let dormant = |b: &mut Builder, s: &str| {
+        let text = b.atom(STRING, STRING, s, 0);
+        let p = b.call(3, VOID, "print", &[text]);
+        b.call(0, VOID, "begin", &[p])
+    };
+    let tutorial = dormant(&mut b, "t");
+    let fast = dormant(&mut b, "f");
+    let skip = b.call_with(0, 0, BOOL, 10, "cinematic_skip_start", &[]);
+    let target = b.atom(SCRIPT, SCRIPT, "tutorial_setup", 1);
+    let wake = b.call(1, VOID, "wake", &[target]);
+    let squad = b.atom(AI, AI, "squad_a", 0);
+    let status = b.call(2, SHORT, "ai_conversation_status", &[squad]);
+    let main = b.call(0, VOID, "begin", &[skip, wake, status]);
+    let scripts = vec![
+        ("cinematic_skip_start", 3, BOOL, guard),
+        ("tutorial_setup", 1, VOID, tutorial),
+        ("fast_setup", 1, VOID, fast),
+        ("main", 0, VOID, main),
+    ];
+    let t = read(&scenario(&b, &scripts, &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out =
+        crate::compile::compile_with(&t, &c, &table, &h2, Missing::Stub, cutscenes, &[]).unwrap();
+    let bytes = out.scenario_bytes(BASE);
+    let s = hs::Scenario::decode(&bytes, BASE).unwrap();
+    s.verify_codec_symmetry(&bytes, BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    s
+}
+
+/// The arguments of `main`'s `begin`.
+fn main_body(s: &hs::Scenario) -> Vec<hs::Node> {
+    let root = s.script("main").unwrap().root();
+    let call = s.node(root).unwrap();
+    let mut a = s.node(Datum(call.data())).unwrap().next();
+    let mut v = Vec::new();
+    while a != Datum::NULL {
+        let n = *s.node(a).unwrap();
+        v.push(n);
+        a = n.next();
+    }
+    v
+}
+
+#[test]
+fn skipped_cutscenes_take_halo1_s_skip_path() {
+    use crate::compile::Cutscenes;
+    let wake_arg = |s: &hs::Scenario, n: &hs::Node| {
+        let head = s.node(Datum(n.data())).unwrap();
+        let arg = *s.node(head.next()).unwrap();
+        (
+            arg.data(),
+            s.string(arg.string_offset()).unwrap().to_owned(),
+        )
+    };
+    // Played: the guard is called and the tutorial woken.
+    let s = cutscene_level(Cutscenes::Play);
+    let body = main_body(&s);
+    assert!(body[0].script_call() && body[0].opcode() == 0);
+    assert_eq!(wake_arg(&s, &body[1]), (1, "tutorial_setup".into()));
+    // Skipped: the guard is `false`, the short path woken (script 2).
+    let s = cutscene_level(Cutscenes::Skip);
+    let body = main_body(&s);
+    assert!(body[0].atom() && body[0].opcode() == BOOL && body[0].data() == 0);
+    assert_eq!(s.string(body[0].string_offset()).unwrap(), "false");
+    assert_eq!(wake_arg(&s, &body[1]), (2, "fast_setup".into()));
+    // Either way the stubbed conversation status reads as finished.
+    for s in [cutscene_level(Cutscenes::Play), s] {
+        let status = main_body(&s)[2];
+        assert!(status.atom());
+        assert_eq!((status.opcode(), status.data()), (SHORT, 5));
+    }
+}

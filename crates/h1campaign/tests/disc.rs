@@ -570,6 +570,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000),
         donors: Some(&donors),
+        ..Default::default()
     };
     let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
     println!("{}", done.report);
@@ -686,6 +687,19 @@ fn a30_converts_onto_its_base_and_reads_back() {
             let pn = word(&bytes, pal) as usize;
             let pa = (word(&bytes, pal + 4).wrapping_sub(addr)) as usize;
             let a = (word(&bytes, at + 4).wrapping_sub(addr)) as usize;
+            // Halo 1's placements of this kind, in order: the converted ones
+            // keep it, skipping those whose palette entry did not convert.
+            let h1_kind = {
+                use h1campaign::scenario::h1 as b;
+                [b::WEAPONS, b::EQUIPMENT, b::VEHICLES, b::SCENERY, b::BIPEDS][k]
+            };
+            let scnr1 = h1.tag_data(h1.scenario()).unwrap();
+            let h1_src = h1
+                .tag_space()
+                .block_at(scnr1, h1_kind.0, h1_kind.1)
+                .unwrap();
+            let mut h1_next = 0;
+            let mut later = 0;
             for i in 0..n {
                 let e = &bytes[a + i * stride..a + (i + 1) * stride];
                 let p = u16::from_le_bytes([e[0], e[1]]) as usize;
@@ -702,8 +716,22 @@ fn a30_converts_onto_its_base_and_reads_back() {
                     f32::from_le_bytes(e[8 + 4 * j..12 + 4 * j].try_into().unwrap())
                 });
                 assert!(p3.iter().all(|v| v.is_finite()));
+                // Halo 1's "not placed automatically" is Halo 2's "not at
+                // start" (bit 0 at +4), and no other bit is set.
+                let src = loop {
+                    let h = h1_src[h1_next];
+                    h1_next += 1;
+                    if h[8..20] == e[8..20] {
+                        break h;
+                    }
+                };
+                let want = u32::from(u16::from_le_bytes([src[4], src[5]]) & 1);
+                assert_eq!(word(e, 4), want, "placement {i}: flags");
+                later += want as usize;
             }
-            println!("object block {at:#x}: {n} placements over {pn} palette entries");
+            println!(
+                "object block {at:#x}: {n} placements over {pn} palette entries, {later} not at start"
+            );
         }
     }
 
@@ -853,6 +881,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             scripts: Some(&s),
             sounds: 1000,
             donors: Some(&donors),
+            ..Default::default()
         };
         let done =
             h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
@@ -932,6 +961,7 @@ fn every_campaign_level_converts() {
             scripts: Some(&s),
             sounds: 1000,
             donors: Some(&donors),
+            ..Default::default()
         };
         match h1campaign::convert(&h1, &mut base, &opts) {
             Ok(done) => {

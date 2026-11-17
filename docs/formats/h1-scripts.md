@@ -211,12 +211,21 @@ retail compiler writes them; literals keep their source type.
   cast rules and the builtin table; `hs`'s `casts_disc` checks the same
   rules clean on all 30 retail scenarios (295,322 reached nodes).
 - **Missing builtins** follow `Missing`: `Stub` replaces the call with the
-  expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it;
+  expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it,
+  except the status queries in `compile::DONE_VALUES`, which return the
+  value every use in the ten levels reads as done (`ai_conversation_status`
+  5, `ai_command_list_status` 2, `game_all_quiet` and `game_safe_to_speak`
+  true), so a `sleep_until` on them ends;
   `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1
   name, for the Rust VM to bind (the retail interpreter cannot run it). Both
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
   `missing_globals` (4 across the campaign).
+- **Cutscenes**: `compile_with(.., Cutscenes::Skip, ..)` compiles every call
+  of the level's `cinematic_skip_start` script as `false` (Halo 1's path
+  after a skip) and wakes a10's `fast_setup` where it wakes
+  `tutorial_setup`; `compile` keeps `Cutscenes::Play`. Why, and what each
+  level does: [campaigns.md](../game/campaigns.md) §9, Cutscenes.
 - **References** are Halo 1 group and tag name pairs; the converter maps them.
 
 `Compiled::install(&mut scnr_block, resolve_reference)` adds `map::build`

@@ -116,6 +116,12 @@ pub const PALETTE: usize = 0x28;
 pub mod h1 {
     /// Object names: 32-byte name, `i16` object type, `i16` placement.
     pub const OBJECT_NAMES: (usize, usize) = (0x204, 0x24);
+    /// Placement flags (`u16` at `+4` of every placement kind): bit 0, the
+    /// object is not placed when the level loads, only when a script
+    /// creates it. **V** (`h1_placement_flags`): set on a10's 67 cutscene
+    /// bipeds (the x10 crew in space, Keyes, the hangar marines) and on
+    /// none of its 41 fighting or set-dressing ones.
+    pub const NOT_AUTOMATIC: u16 = 1;
     pub const BIPEDS: (usize, usize) = (0x228, 0x78);
     pub const BIPED_PALETTE: (usize, usize) = (0x234, 0x30);
     pub const VEHICLES: (usize, usize) = (0x240, 0x78);
@@ -852,6 +858,7 @@ pub fn write(
                 &initial,
                 opts.sounds,
                 lean < 2,
+                opts.cutscenes,
             )?);
         }
         None => {
@@ -1017,6 +1024,10 @@ fn place_objects(
             let mut b = Block::zeroed(usize::from(stride));
             b.put_u16(0, p as u16);
             b.put_u16(2, i16_at(e, 2) as u16);
+            // Halo 1's "not placed automatically" (bit 0 of the u16 at +4)
+            // is Halo 2's "not at start" (bit 0 of the u32 at +4): objects
+            // only the scripts create, the cutscene casts among them.
+            b.put_u32(4, u32::from(i16_at(e, 4) as u16 & h1::NOT_AUTOMATIC));
             for (j, v) in f32s::<6>(e, 8).iter().enumerate() {
                 b.put_f32(8 + 4 * j, *v);
             }
@@ -1162,16 +1173,25 @@ fn install_scripts(
     initial: &[String],
     max_sounds: usize,
     level_data: bool,
+    cutscenes: h1scripts::compile::Cutscenes,
 ) -> Result<ScriptReport> {
-    use h1scripts::compile::{Missing, compile};
+    use h1scripts::compile::{Missing, compile_with};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
     let refs: Vec<String> = t
         .references
         .iter()
         .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
         .collect();
-    let mut c = compile(&t, &s.catalog, &s.table, &s.target, Missing::Stub, &refs)
-        .map_err(|e| invalid(format!("scripts: {e}")))?;
+    let mut c = compile_with(
+        &t,
+        &s.catalog,
+        &s.table,
+        &s.target,
+        Missing::Stub,
+        cutscenes,
+        &refs,
+    )
+    .map_err(|e| invalid(format!("scripts: {e}")))?;
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;

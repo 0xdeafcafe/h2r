@@ -21,7 +21,10 @@
 //! - `h1_bsp_switch_volumes`, `h2_bsp_switch_volumes`: where each game
 //!   keeps its BSP switch trigger volumes;
 //! - `lifepod_use`: how Halo 1's scripts and placements use the lifepods
-//!   (their template by role, docs/formats/h1-objects.md).
+//!   (their template by role, docs/formats/h1-objects.md);
+//! - `h1_placement_flags`, `h1_initial_encounters`: which placements
+//!   Halo 1 leaves for the scripts to create, and which encounters it
+//!   creates at load (docs/game/campaigns.md §9, Cutscenes).
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -977,6 +980,112 @@ fn lifepod_use() {
             println!(
                 "{level}: {path}: {} placed, named {named:?}; calls {calls:?}",
                 placed.len()
+            );
+        }
+    }
+}
+
+/// Per Halo 1 level and placed kind: how many placements set each bit of
+/// the `u16` at `+4`, and (`H1_LEVEL`, default a10) each biped's name,
+/// bits, palette tag and position: which objects Halo 1 leaves for the
+/// scripts to create (the cutscene cast).
+#[test]
+#[ignore = "reads the discs"]
+fn h1_placement_flags() {
+    use h1campaign::scenario::h1 as k;
+    let h1p = disc("H1_ISO", "halo1.iso");
+    let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
+    let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
+    let detail = std::env::var("H1_LEVEL").unwrap_or("a10".into());
+    let kinds = [
+        ("weapons", k::WEAPONS, k::WEAPON_PALETTE),
+        ("equipment", k::EQUIPMENT, k::EQUIPMENT_PALETTE),
+        ("vehicles", k::VEHICLES, k::VEHICLE_PALETTE),
+        ("scenery", k::SCENERY, k::SCENERY_PALETTE),
+        ("bipeds", k::BIPEDS, k::BIPED_PALETTE),
+    ];
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        let e = d.map(level).unwrap().clone();
+        let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
+        let scnr = h1.tag_data(h1.scenario()).unwrap();
+        let block =
+            |(at, stride): (usize, usize)| h1.tag_space().block_at(scnr, at, stride).unwrap();
+        let names: Vec<String> = block(k::OBJECT_NAMES)
+            .iter()
+            .map(|b| {
+                let end = b[..32].iter().position(|&c| c == 0).unwrap_or(32);
+                String::from_utf8_lossy(&b[..end]).into_owned()
+            })
+            .collect();
+        for (label, at, pal) in kinds {
+            let pal: Vec<String> = block(pal)
+                .iter()
+                .map(|e| {
+                    h1map::TagRef::read(e, 0)
+                        .and_then(|r| h1.tag(r.id).ok())
+                        .map(|t| t.name.clone())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let src = block(at);
+            let mut bits = [0usize; 16];
+            for e in &src {
+                let f = u16::from_le_bytes([e[4], e[5]]);
+                for (b, n) in bits.iter_mut().enumerate() {
+                    *n += usize::from(f >> b & 1 == 1);
+                }
+                if level == detail && label == "bipeds" {
+                    let p = i16::from_le_bytes([e[0], e[1]]);
+                    let n = i16::from_le_bytes([e[2], e[2 + 1]]);
+                    let pos: Vec<f32> = (0..3)
+                        .map(|i| f32::from_le_bytes(e[8 + 4 * i..12 + 4 * i].try_into().unwrap()))
+                        .collect();
+                    println!(
+                        "  {level} biped {:<24} flags {f:#06x} {:<40} at {pos:.1?}",
+                        usize::try_from(n)
+                            .ok()
+                            .and_then(|n| names.get(n))
+                            .map_or("-", |s| s.as_str()),
+                        usize::try_from(p)
+                            .ok()
+                            .and_then(|p| pal.get(p))
+                            .map_or("-", |s| s.as_str()),
+                    );
+                }
+            }
+            println!(
+                "{level} {label}: {} placements, bits set {bits:?}",
+                src.len()
+            );
+        }
+    }
+}
+
+/// `H1_LEVEL` (default a10): the encounters Halo 1 creates at load
+/// (encounter flag bit 0 clear, placed by the converter's startup
+/// script), each squad's actor variant and first starting location.
+#[test]
+#[ignore = "reads the discs"]
+fn h1_initial_encounters() {
+    let h1p = disc("H1_ISO", "halo1.iso");
+    let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
+    let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
+    let level = std::env::var("H1_LEVEL").unwrap_or("a10".into());
+    let e = d.map(&level).unwrap().clone();
+    let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
+    let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+    for e in ai.encounters.iter().filter(|e| e.flags & 1 == 0) {
+        for s in &e.squads {
+            let variant = usize::try_from(s.actor)
+                .ok()
+                .and_then(|i| ai.actor_palette.get(i).cloned().flatten())
+                .map_or("-".to_owned(), |v| v.name);
+            let at = s.starting_locations.first().map(|l| l.position);
+            println!(
+                "{level} {}/{}: {variant}, {} starting locations, first at {at:.1?}",
+                e.name,
+                s.name,
+                s.starting_locations.len()
             );
         }
     }

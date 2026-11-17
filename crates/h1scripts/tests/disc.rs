@@ -231,3 +231,70 @@ fn every_campaign_script_compiles_and_round_trips() {
         }
     }
 }
+
+/// Under `Cutscenes::Skip`, per level: no call of the skip guard is left
+/// (each became `false`), the stubbed conversation and command list
+/// statuses read as done, and every node is still reached. a10's `(wake tutorial_setup)` wakes `fast_setup`, by its index.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn skipped_cutscenes_on_every_level() {
+    use h1scripts::compile::{Cutscenes, Missing, SKIP_GUARD, compile_with};
+    let (catalog, maps) = h1();
+    let target = h2();
+    let table = h1scripts::translate::Table::build(&catalog, &target);
+    const BASE: u32 = 0x8010_0000;
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let src = decompile(&t, &catalog).unwrap().source;
+        let guards = src.matches(&format!("({SKIP_GUARD})")).count();
+        let mut seen = Vec::new();
+        for cut in [Cutscenes::Play, Cutscenes::Skip] {
+            let c = compile_with(&t, &catalog, &table, &target, Missing::Stub, cut, &[])
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let bytes = c.scenario_bytes(BASE);
+            let s = hs::Scenario::decode(&bytes, BASE).unwrap();
+            s.verify_codec_symmetry(&bytes, BASE).unwrap();
+            assert_eq!(s.reachable(s.roots()).unwrap().len(), c.nodes.len());
+            let text = |n: &hs::Node| s.string(n.string_offset()).unwrap_or("").to_owned();
+            let calls = s
+                .nodes()
+                .iter()
+                .filter(|n| n.script_call())
+                .filter(|n| text(s.node(hs::Datum(n.data())).unwrap()) == SKIP_GUARD)
+                .count();
+            // Script atoms naming a setup script: (index, token); the
+            // data word is `0xffff0000 | index`.
+            let setups: Vec<(u32, String)> = s
+                .nodes()
+                .iter()
+                .filter(|n| n.atom() && n.opcode() == 10)
+                .map(|n| (n.data() & 0xffff, text(n)))
+                .filter(|(_, t)| t.ends_with("_setup"))
+                .collect();
+            seen.push((calls, setups));
+        }
+        let (played, skipped) = (&seen[0], &seen[1]);
+        println!(
+            "{name}: {guards} skip guards in the source; calls left played {} skipped {}; setups woken played {:?} skipped {:?}",
+            played.0, skipped.0, played.1, skipped.1
+        );
+        assert_eq!(played.0, guards, "{name}");
+        assert_eq!(skipped.0, 0, "{name}");
+        let index = |n: &str| t.scripts.iter().position(|s| s.name == n).unwrap() as u32;
+        if name == "a10" {
+            assert!(
+                played
+                    .1
+                    .contains(&(index("tutorial_setup"), "tutorial_setup".into()))
+            );
+            assert!(!skipped.1.iter().any(|(_, t)| t == "tutorial_setup"));
+            assert!(
+                skipped
+                    .1
+                    .contains(&(index("fast_setup"), "fast_setup".into()))
+            );
+        } else {
+            assert_eq!(played.1, skipped.1, "{name}");
+        }
+    }
+}
