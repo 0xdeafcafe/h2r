@@ -58,8 +58,8 @@ shots"):
 - `shots`: the weapon-fire hook counts calls by weapon datum; each tick's
   counts go to the players holding those weapons and add up until their
   next frame. A weapon change or death drops the pending count. Shots of a
-  frame the sink coalesces (it keeps the newest queued frame) are added to
-  the frame it keeps.
+  tick the worker folds into another (see "Threads") are added to the one
+  it keeps.
 
 Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md),
 "AI bipeds, teams and vehicles"):
@@ -212,6 +212,33 @@ never re-sent unchanged:
 The server's live-proto validation ignores the extra `appearance` keys
 until its `Player` type gains the field.
 
+## Threads
+
+The game thread only reads: on each changed tick it fills a snapshot (the
+roster, team scores, the players' objects, and on frame ticks the world
+scan's actors, vehicles, machines, placed objects and bodies, all plain
+values) and queues it with the shots and hits the hooks counted. A start,
+kill or end is read and queued the same way, and the playlist and skull
+settings are queued in order with them. One worker thread
+(`crates/live-telemetry/src/pipeline.rs`) runs the session over the queue
+in order: it builds the events and frames (ids, species, weapon, team and
+stance names, actor order, placements), loads the map's tag names at a
+match start, and hands everything to the sink. It sleeps until something
+is queued.
+
+The worker hands each snapshot back cleared and the game thread fills it
+again, so a steady game allocates nothing for it: the lists keep their
+room, and the roster keeps its names for the next read while the players'
+datums and names are unchanged.
+
+The queue holds every start, kill, end and setting. Ticks are bounded: with
+four waiting (the worker behind, say a slow sink), a new tick is folded
+into the last queued one rather than queued. The later of the two is kept,
+except that a frame tick (even) outlasts a later other tick, so a worker
+behind still sends frames; the one kept takes the other's shots (added)
+and hits (in order, at most 256). The roster and scores of a tick that goes
+are read again the next tick, so only its moment is lost.
+
 ## Failure behaviour
 
 Observer errors and panics are caught, logged once, and disable telemetry. A
@@ -219,11 +246,11 @@ sink error disables later observations without affecting the guest. Override
 installation refuses to replace an existing hook; boot logs the error and
 continues without telemetry.
 
-The sink worker has bounded event and frame queues. Full frame queues drop new
-frames and count the drops. Events are never intentionally dropped to make room
-for frames: if the bounded event queue is full, the observer reports an error
-and disables itself rather than blocking the guest thread. The worker drains
-accepted events during shutdown. TCP connect, TLS/WebSocket handshake, HTTP,
+The worker's queue is bounded (256 entries). Ticks past four waiting are
+folded (see "Threads") and counted. A start, kill or end is never dropped
+to make room: if the queue is full, the observer reports an error and
+disables itself rather than blocking the guest thread. The worker finishes
+everything queued during shutdown. TCP connect, TLS/WebSocket handshake, HTTP,
 and socket operations are time-bounded, and the worker finishes its event drain
 before shutdown completes.
 
@@ -492,7 +519,8 @@ before, each JSON reader cloned and serialised the frame itself, about
 On the game thread, for a campaign scene of 60 actors, 8 vehicles, 12
 machines and 90 placed objects (synthetic guest memory): the object-table
 scan takes 38 µs without the placement reads and 54 µs with them, the frame
-build 14 µs; serialising stays off the game thread, on the sink worker.
+build 14 µs. Since the third telemetry-perf lane the frame build is on the
+worker too (see "Threads"), with serialising.
 At 15 frames a second that is under 0.1% of a core.
 
 ### Benchmarks
@@ -512,10 +540,10 @@ no game run are needed. Each stage runs alone as well:
   scene runs a minute of 30 Hz ticks through the hooks' own entry points
   (weapon fire and damage hooks, then the tick's observation and publish),
   timed and allocation-counted on the calling thread; the best of five
-  runs by median frame tick is kept. Then the frames are packed as the
-  server sink packs them. The bench runs ticks back to back, so the sink's
-  two-frame queue is full and `publish` includes dropping the frame on the
-  game thread (1 to 6 µs); in real time the worker takes it.
+  runs by median frame tick is kept. After each tick, untimed, the bench
+  waits for the worker to finish it (real ticks are 33 ms apart), and
+  records the worker's time apart (`worker`). Then the frames are packed as
+  the server sink packs them.
 - Server: `cargo bench -p live-server --bench telemetry`
   (`crates/live-server/benches/telemetry.rs`, `server.json`): packed
   ingest at 15 Hz a game, signed event batches of 1 and 32, and stream

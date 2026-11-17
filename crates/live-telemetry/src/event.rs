@@ -251,7 +251,7 @@ impl GameInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
     pub has_stats: bool,

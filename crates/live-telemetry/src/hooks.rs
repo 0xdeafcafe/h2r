@@ -8,13 +8,14 @@ use engine::points;
 use runtime::Runtime;
 
 use crate::config::{TelemetryConfig, TelemetrySinkConfig};
-use crate::event::World;
+use crate::event::{PlayerState, World};
 use crate::layout;
 use crate::memory;
+use crate::pipeline::{Kill, Names, Pipeline, Start, Work};
 use crate::server::ServerSink;
 use crate::session::Session;
-use crate::sink::{JsonlSink, QueuedSink};
-use crate::tags::{MapIdLocator, MapLocator, TagNames};
+use crate::sink::{JsonlSink, Sink};
+use crate::tags::{MapIdLocator, MapLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -23,8 +24,9 @@ const MAX_FIRING_WEAPONS: usize = 256;
 const MAX_PENDING_HITS: usize = 256;
 
 pub struct Telemetry {
-    pub(crate) session: Mutex<Session>,
-    sink: QueuedSink,
+    /// The session runs on the pipeline's worker; the game thread only
+    /// reads the guest and queues what it read.
+    pub(crate) pipeline: Pipeline,
     disabled: AtomicBool,
     last_tick: Mutex<Option<u64>>,
     /// Shots by weapon object datum since the last sample, from the weapon
@@ -33,10 +35,9 @@ pub struct Telemetry {
     /// Damage reports since the last sample, from the damage hook (oldest
     /// dropped past [`MAX_PENDING_HITS`]).
     hits: Mutex<Vec<crate::event::HitRecord>>,
-    /// The world scan's buffers and lists, kept between frame ticks.
-    scan: Mutex<(memory::ScanBuffers, World)>,
-    /// The last tick's roster, whose names the next read reuses.
-    roster: Mutex<Vec<crate::event::PlayerState>>,
+    /// The world scan's buffers, and a second roster list for
+    /// [`memory::snapshot_into`], kept between ticks.
+    scan: Mutex<(memory::ScanBuffers, Vec<PlayerState>)>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -45,16 +46,14 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-    pub(crate) fn new(session: Session, sink: QueuedSink) -> Self {
+    pub(crate) fn new(session: Session, sink: impl Sink) -> Self {
         Self {
-            session: Mutex::new(session),
-            sink,
+            pipeline: Pipeline::new(session, sink),
             disabled: AtomicBool::new(false),
             last_tick: Mutex::new(None),
             shots: Mutex::new(BTreeMap::new()),
             hits: Mutex::new(Vec::new()),
             scan: Mutex::default(),
-            roster: Mutex::default(),
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
         }
@@ -76,29 +75,32 @@ impl Telemetry {
     /// from, or `None` for custom games. Nothing sets it yet: live-hle has
     /// no matchmaking (sessions are all advertised `custom`).
     pub fn set_playlist(&self, playlist: Option<(String, String)>) {
-        self.session.lock().unwrap().set_playlist(playlist);
+        self.configure(move |s| s.set_playlist(playlist));
     }
 
     /// The skulls the next multiplayer games run with (the host's set as
     /// the boot applied it at the game's start; docs/game/skulls.md "In
     /// multiplayer"). Campaign games read the skull array instead.
     pub fn set_multiplayer_skulls(&self, skulls: Option<Vec<u8>>) {
-        self.session.lock().unwrap().set_multiplayer_skulls(skulls);
+        self.configure(move |s| s.set_multiplayer_skulls(skulls));
     }
 
     /// Our own skulls (indices 15 and up) the next campaign games run with,
     /// as the boot applied them at the campaign start: they have no byte in
     /// the skull array, so the array alone would miss them.
     pub fn set_campaign_custom_skulls(&self, skulls: Option<Vec<u8>>) {
-        self.session
-            .lock()
-            .unwrap()
-            .set_campaign_custom_skulls(skulls);
+        self.configure(move |s| s.set_campaign_custom_skulls(skulls));
     }
 
-    /// The loaded map's names, if the host has its file and the file's
-    /// scenario datum is the guest's.
-    fn tag_names(&self, guest: &runtime::Guest, map: &str) -> Option<TagNames> {
+    /// A setting for the session, after everything already queued. Once
+    /// telemetry has failed there is no session to set.
+    pub(crate) fn configure(&self, f: impl FnOnce(&mut Session) + Send + 'static) {
+        let _ = self.pipeline.push(Work::Configure(Box::new(f)));
+    }
+
+    /// Where the loaded map's names are, if the host has its file; the
+    /// worker loads them and checks they are the guest's.
+    fn names(&self, guest: &runtime::Guest, map: &str) -> Option<Names> {
         if !live_proto::game::valid_id(map) {
             return None;
         }
@@ -106,22 +108,11 @@ impl Telemetry {
             let maps = self.maps.lock().unwrap();
             (maps.as_ref()?)(map)?
         };
-        let names = match TagNames::load(&file) {
-            Ok(names) => names,
-            Err(error) => {
-                eprintln!("live telemetry: no tag names for {map}: {error}");
-                return None;
-            }
-        };
-        let scenario = memory::tag_index_scenario(guest).ok()?;
-        if !names.is_for(scenario) {
-            eprintln!(
-                "live telemetry: {} is not the loaded {map}",
-                file.path.display()
-            );
-            return None;
-        }
-        Some(names)
+        Some(Names {
+            map: map.to_owned(),
+            file,
+            scenario: memory::tag_index_scenario(guest).ok(),
+        })
     }
 
     /// The weapon fire hook: one shot of the weapon object `weapon`.
@@ -149,18 +140,13 @@ impl Telemetry {
         hits.push(hit);
     }
 
-    #[cfg(test)]
-    pub(crate) fn sink_dropped_frames(&self) -> u64 {
-        self.sink.dropped_frames()
-    }
-
     pub fn disabled(&self) -> bool {
         self.disabled.load(Ordering::Acquire)
     }
 
     fn disable(&self, reason: impl AsRef<str>) {
         if !self.disabled.swap(true, Ordering::AcqRel) {
-            self.sink.log_error(reason.as_ref());
+            self.pipeline.log_error(reason.as_ref());
         }
     }
 
@@ -168,7 +154,7 @@ impl Telemetry {
         if self.disabled() {
             return;
         }
-        if let Some(error) = self.sink.worker_error() {
+        if let Some(error) = self.pipeline.worker_error() {
             self.disable(error);
             return;
         }
@@ -177,17 +163,6 @@ impl Telemetry {
             Ok(Err(error)) => self.disable(error),
             Err(_) => self.disable("panic in observer"),
         }
-    }
-
-    pub(crate) fn publish(&self) -> Result<(), String> {
-        let output = self.session.lock().unwrap().take_output();
-        for output in output {
-            match output {
-                crate::event::Output::Event(event) => self.sink.event(event)?,
-                crate::event::Output::Frame(frame) => self.sink.frame(frame),
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn start(&self, guest: &runtime::Guest) -> Result<(), String> {
@@ -203,7 +178,7 @@ impl Telemetry {
             Vec::new()
         };
         let names = if info.is_match() {
-            self.tag_names(guest, &info.map)
+            self.names(guest, &info.map)
         } else {
             None
         };
@@ -224,68 +199,66 @@ impl Telemetry {
         } else {
             Default::default()
         };
-        {
-            let mut session = self.session.lock().unwrap();
-            session.set_map_id(map_id);
-            session.start_with_teams(&info, players, teams);
-            if let Some(names) = names {
-                session.set_tag_names(names);
-            }
-            session.set_placements(placements);
-        }
+        let tick = info.tick;
+        self.pipeline.push(Work::Start(Box::new(Start {
+            info,
+            players,
+            teams,
+            map_id,
+            placements,
+            names,
+        })))?;
         self.shots.lock().unwrap().clear();
         self.hits.lock().unwrap().clear();
-        *self.last_tick.lock().unwrap() = Some(info.tick);
-        self.publish()
-    }
-
-    pub(crate) fn sample(&self, guest: &runtime::Guest) -> Result<(), String> {
-        if self.observe_tick(guest)? {
-            self.publish()?;
-        }
+        *self.last_tick.lock().unwrap() = Some(tick);
         Ok(())
     }
 
-    /// The tick's observation, into the session's output; false when the
-    /// game tick has not changed since the last one.
+    pub(crate) fn sample(&self, guest: &runtime::Guest) -> Result<(), String> {
+        self.observe_tick(guest).map(|_| ())
+    }
+
+    /// The tick's observation, queued for the worker; false when the game
+    /// tick has not changed since the last one.
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
-        let mut roster = self.roster.lock().unwrap();
-        let mut snapshot = memory::snapshot_after(guest, &mut roster)
-            .map_err(|e| format!("read tick snapshot: {e:?}"))?;
+        let mut scan = self.scan.lock().unwrap();
+        let (buffers, roster) = &mut *scan;
+        // A snapshot the worker is done with: its lists are empty but keep
+        // their allocations, and its roster names this one's.
+        let mut snapshot = self.pipeline.snapshot();
+        if let Err(e) = memory::snapshot_into(guest, &mut snapshot, roster) {
+            self.pipeline.recycle(snapshot);
+            return Err(format!("read tick snapshot: {e:?}"));
+        }
         {
             let mut last = self.last_tick.lock().unwrap();
             if *last == Some(snapshot.tick) {
-                *roster = snapshot.players;
+                self.pipeline.recycle(snapshot);
                 return Ok(false);
             }
             *last = Some(snapshot.tick);
         }
-        snapshot.shots = std::mem::take(&mut *self.shots.lock().unwrap());
-        snapshot.hits = std::mem::take(&mut *self.hits.lock().unwrap());
+        std::mem::swap(&mut snapshot.shots, &mut *self.shots.lock().unwrap());
+        std::mem::swap(&mut snapshot.hits, &mut *self.hits.lock().unwrap());
         // Actors, vehicles and machines only go out in frames (every second
-        // tick). The scan's lists are lent to the snapshot and taken back
-        // after, so a frame tick reuses the last one's allocations.
-        let mut scan = self.scan.lock().unwrap();
-        let (buffers, world) = &mut *scan;
-        let frame_tick = snapshot.tick.is_multiple_of(2);
-        if frame_tick {
+        // tick).
+        if snapshot.tick.is_multiple_of(2) {
+            let mut world = World {
+                actors: std::mem::take(&mut snapshot.actors),
+                vehicles: std::mem::take(&mut snapshot.vehicles),
+                machines: std::mem::take(&mut snapshot.machines),
+                placed: std::mem::take(&mut snapshot.placed),
+                bodies: std::mem::take(&mut snapshot.bodies),
+            };
             // A failed scan sends none rather than stopping telemetry.
-            let _ = memory::world_into(guest, buffers, world);
-            snapshot.actors = std::mem::take(&mut world.actors);
-            snapshot.vehicles = std::mem::take(&mut world.vehicles);
-            snapshot.machines = std::mem::take(&mut world.machines);
-            snapshot.placed = std::mem::take(&mut world.placed);
-            snapshot.bodies = std::mem::take(&mut world.bodies);
+            let _ = memory::world_into(guest, buffers, &mut world);
+            snapshot.actors = world.actors;
+            snapshot.vehicles = world.vehicles;
+            snapshot.machines = world.machines;
+            snapshot.placed = world.placed;
+            snapshot.bodies = world.bodies;
         }
-        self.session.lock().unwrap().sample(&snapshot);
-        if frame_tick {
-            world.actors = snapshot.actors;
-            world.vehicles = snapshot.vehicles;
-            world.machines = snapshot.machines;
-            world.placed = snapshot.placed;
-            world.bodies = snapshot.bodies;
-        }
-        *roster = snapshot.players;
+        self.pipeline.push(Work::Tick(snapshot))?;
         Ok(true)
     }
 
@@ -303,8 +276,7 @@ impl Telemetry {
         }
         let snapshot =
             memory::snapshot(guest).map_err(|e| format!("read final snapshot: {e:?}"))?;
-        self.session.lock().unwrap().end(&snapshot);
-        self.publish()
+        self.pipeline.push(Work::End(Box::new(snapshot)))
     }
 
     fn kill(
@@ -322,14 +294,13 @@ impl Telemetry {
             .find(|p| p.player.index == victim_index)
             .map_or(u32::MAX, |p| p.unit);
         let object = memory::object(guest, unit).map_err(|e| format!("read kill object: {e:?}"))?;
-        self.session.lock().unwrap().kill(
+        self.pipeline.push(Work::Kill(Box::new(Kill {
             tick,
-            (attacker != u32::MAX).then_some(attacker & 0xffff),
-            victim_index,
+            attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
+            victim: victim_index,
             betrayal,
             object,
-        );
-        self.publish()
+        })))
     }
 }
 
@@ -413,16 +384,14 @@ pub fn install(
     if !config.enabled {
         return Ok(None);
     }
-    let sink = match &config.sink {
-        TelemetrySinkConfig::File(path) => QueuedSink::new(JsonlSink::create(path)?, 256, 2),
+    let session =
+        Session::new("h2recomp", Some("h2recomp".into())).with_signed_in(signed_in(config));
+    let telemetry = Arc::new(match &config.sink {
+        TelemetrySinkConfig::File(path) => Telemetry::new(session, JsonlSink::create(path)?),
         TelemetrySinkConfig::Server { base_url, account } => {
-            QueuedSink::new(ServerSink::new(base_url.clone(), account.clone())?, 256, 2)
+            Telemetry::new(session, ServerSink::new(base_url.clone(), account.clone())?)
         }
-    };
-    let telemetry = Arc::new(Telemetry::new(
-        Session::new("h2recomp", Some("h2recomp".into())).with_signed_in(signed_in(config)),
-        sink,
-    ));
+    });
     match registry.add(&TelemetryFeature(Arc::clone(&telemetry))) {
         Ok(true) => Ok(Some(telemetry)),
         Ok(false) => Ok(None),
@@ -453,7 +422,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 2, 1),
+            JsonlSink::create(&path).unwrap(),
         );
         let guest = runtime::Guest::new();
         telemetry.protect(|| telemetry.start(&guest));
@@ -471,7 +440,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 4, 1),
+            JsonlSink::create(&path).unwrap(),
         );
         let mut guest = fixture::memory();
         guest
@@ -490,7 +459,7 @@ mod tests {
         fixture::put_player(&mut guest, 0, "A", 0, true, u32::MAX);
         telemetry.protect(|| telemetry.start(&guest));
         assert!(!telemetry.disabled());
-        assert!(telemetry.session.lock().unwrap().game_id().is_some());
+        assert!(telemetry.pipeline.session().game_id().is_some());
         drop(telemetry);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("GameStarted"));
@@ -505,7 +474,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 4, 1),
+            JsonlSink::create(&path).unwrap(),
         );
         let id = live_proto::maps::MapId([0x5c; 32]);
         let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -548,7 +517,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 8, 1),
+            JsonlSink::create(&path).unwrap(),
         );
         let mut guest = fixture::memory();
         guest
@@ -599,7 +568,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 8, 8),
+            JsonlSink::create(&path).unwrap(),
         );
         let mut guest = fixture::memory();
         guest
@@ -640,7 +609,7 @@ mod tests {
             .map(|line| serde_json::from_str(line).unwrap())
             .filter(|row: &serde_json::Value| row["type"] == "GameFrame")
             .collect();
-        // The sink may coalesce the two frames; their shots then add up.
+        // The worker may fold one tick into the other; shots then add up.
         let shots: u64 = frames
             .iter()
             .map(|f| f["data"]["players"][0]["shots"].as_u64().unwrap_or(0))
@@ -665,7 +634,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 8, 8),
+            JsonlSink::create(&path).unwrap(),
         );
         let mut guest = fixture::memory();
         guest
@@ -766,7 +735,7 @@ mod tests {
         ));
         let telemetry = Telemetry::new(
             Session::new("test", None),
-            QueuedSink::new(JsonlSink::create(&path).unwrap(), 2, 1),
+            JsonlSink::create(&path).unwrap(),
         );
         for weapon in 0..(MAX_FIRING_WEAPONS as u32 + 10) {
             telemetry.fired(weapon);

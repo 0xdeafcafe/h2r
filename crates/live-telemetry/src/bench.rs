@@ -26,7 +26,7 @@ use crate::hooks::Telemetry;
 use crate::layout;
 use crate::memory::fixture::{self, body, object_datum};
 use crate::session::Session;
-use crate::sink::{QueuedSink, Sink};
+use crate::sink::Sink;
 use crate::tags::TagNames;
 
 // Allocations made by this thread (the guest thread in the bench), so the
@@ -69,8 +69,8 @@ fn allocs() -> (u64, u64) {
     (ALLOCS.with(Cell::get), ALLOC_BYTES.with(Cell::get))
 }
 
-/// The sink of the bench: drops everything (the worker's own cost is the
-/// encode stage, measured apart).
+/// The sink of the bench: drops everything (the server sink's own cost is
+/// the encode stage, measured apart).
 struct NullSink;
 
 impl Sink for NullSink {
@@ -78,6 +78,20 @@ impl Sink for NullSink {
         Ok(())
     }
     fn frame(&mut self, _: Frame) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The sink of the golden output: keeps everything the worker sends.
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<Output>>>);
+
+impl Sink for Capture {
+    fn event(&mut self, event: crate::event::GameEvent) -> Result<(), String> {
+        self.0.lock().unwrap().push(Output::Event(event));
+        Ok(())
+    }
+    fn frame(&mut self, frame: Frame) -> Result<(), String> {
+        self.0.lock().unwrap().push(Output::Frame(frame));
         Ok(())
     }
 }
@@ -505,40 +519,33 @@ impl World {
     }
 }
 
-fn telemetry() -> Telemetry {
-    // As `install` makes it: 256 events, 2 frames.
-    Telemetry::new(
-        Session::new("bench", None),
-        QueuedSink::new(NullSink, 256, 2),
-    )
-}
-
-fn start(world: &World) -> Telemetry {
-    let telemetry = telemetry();
+fn start(world: &World, sink: impl Sink) -> Telemetry {
+    let telemetry = Telemetry::new(Session::new("bench", None), sink);
     telemetry.start(&world.guest).unwrap();
-    telemetry.session.lock().unwrap().set_tag_names(tag_names());
+    telemetry.configure(|s| s.set_tag_names(tag_names()));
+    telemetry.pipeline.settle();
     telemetry
 }
 
-/// Every output of `ticks` ticks of `scene`, the game id replaced by a
-/// fixed one.
+/// Every output of `ticks` ticks of `scene` (after its start), the game id
+/// replaced by a fixed one. The worker finishes each tick before the next is read, so
+/// none is folded.
 pub(crate) fn outputs(scene: &Scene, ticks: u32) -> (Vec<Output>, String) {
     let mut world = World::new(scene);
-    let telemetry = start(&world);
-    let mut out = telemetry.session.lock().unwrap().take_output();
+    let out = std::sync::Arc::default();
+    let telemetry = start(&world, Capture(std::sync::Arc::clone(&out)));
+    // The ticks' output only (the golden predates the start's).
+    out.lock().unwrap().clear();
     for tick in 2..2 + ticks {
         world.hooks(&telemetry, scene, tick);
         world.advance(tick);
         assert!(telemetry.observe_tick(&world.guest).unwrap());
-        out.extend(telemetry.session.lock().unwrap().take_output());
+        telemetry.pipeline.settle();
     }
-    let game_id = telemetry
-        .session
-        .lock()
-        .unwrap()
-        .game_id()
-        .unwrap()
-        .to_owned();
+    assert_eq!(telemetry.pipeline.folded_ticks(), 0);
+    let game_id = telemetry.pipeline.session().game_id().unwrap().to_owned();
+    drop(telemetry);
+    let out = std::mem::take(&mut *out.lock().unwrap());
     (out, game_id)
 }
 
@@ -634,18 +641,21 @@ const TICKS: u32 = 1800;
 
 fn bench_scene(scene: &Scene) -> serde_json::Value {
     let mut world = World::new(scene);
-    let telemetry = start(&world);
-    telemetry.publish().unwrap();
+    let telemetry = start(&world, NullSink);
     let mut frame_ticks = (Vec::new(), Vec::new(), Vec::new(), 0u64, 0u64);
     let mut other_ticks = (Vec::new(), Vec::new(), Vec::new(), 0u64, 0u64);
     for tick in 2..2 + WARMUP + TICKS {
         world.advance(tick);
         let (a0, b0) = allocs();
         let (_, hooks) = time(|| world.hooks(&telemetry, scene, tick));
+        let w0 = telemetry.pipeline.work_ns();
         let (observed, observe) = time(|| telemetry.observe_tick(&world.guest).unwrap());
         assert!(observed);
-        let (_, publish) = time(|| telemetry.publish().unwrap());
         let (a1, b1) = allocs();
+        // Real ticks are 33 ms apart: the worker is done long before the
+        // next. Its time is its own thread's, not the game thread's.
+        telemetry.pipeline.settle();
+        let worker = telemetry.pipeline.work_ns() - w0;
         if tick < 2 + WARMUP {
             continue;
         }
@@ -654,9 +664,9 @@ fn bench_scene(scene: &Scene) -> serde_json::Value {
         } else {
             &mut other_ticks
         };
-        bucket.0.push(hooks + observe + publish);
+        bucket.0.push(hooks + observe);
         bucket.1.push(observe);
-        bucket.2.push(publish);
+        bucket.2.push(worker);
         bucket.3 += a1 - a0;
         bucket.4 += b1 - b0;
     }
@@ -677,7 +687,7 @@ fn bench_scene(scene: &Scene) -> serde_json::Value {
         serde_json::json!({
             "total": stats(b.0.clone()),
             "observe": stats(b.1.clone()),
-            "publish": stats(b.2.clone()),
+            "worker": stats(b.2.clone()),
             "allocs_per_tick": b.3 as f64 / n,
             "alloc_bytes_per_tick": b.4 as f64 / n,
         })
@@ -698,7 +708,7 @@ fn bench_scene(scene: &Scene) -> serde_json::Value {
         "readers": {"snapshot": snapshot, "world": world_scan},
         "guest_us_per_second_30hz": per_second_us(30.0),
         "guest_us_per_second_60hz": per_second_us(60.0),
-        "dropped_frames": telemetry.sink_dropped_frames(),
+        "folded_ticks": telemetry.pipeline.folded_ticks(),
         "wire": wire,
     })
 }
@@ -765,7 +775,7 @@ fn bench_guest_tick() {
         .collect();
     for r in &results {
         println!(
-            "{:<12} objects {:>4}  frame tick p50 {:>6.1} µs (p99 {:>7.1}) {:>4.0} allocs  other tick p50 {:>5.1} µs {:>3.0} allocs  | snapshot {:>5.1} µs world {:>6.1} µs | encode {:>5.1} µs  {:>5.0} B/frame packed ({:>6.0} JSON) {:>5.0} KiB/min",
+            "{:<12} objects {:>4}  frame tick p50 {:>6.1} µs (p99 {:>7.1}) {:>4.0} allocs  other tick p50 {:>5.1} µs {:>3.0} allocs  | worker frame {:>5.1} other {:>4.1} µs | snapshot {:>5.1} µs world {:>6.1} µs | encode {:>5.1} µs  {:>5.0} B/frame packed ({:>6.0} JSON) {:>5.0} KiB/min",
             r["scene"].as_str().unwrap(),
             r["objects"],
             r["frame_tick"]["total"]["p50_us"].as_f64().unwrap(),
@@ -773,6 +783,8 @@ fn bench_guest_tick() {
             r["frame_tick"]["allocs_per_tick"].as_f64().unwrap(),
             r["other_tick"]["total"]["p50_us"].as_f64().unwrap(),
             r["other_tick"]["allocs_per_tick"].as_f64().unwrap(),
+            r["frame_tick"]["worker"]["p50_us"].as_f64().unwrap(),
+            r["other_tick"]["worker"]["p50_us"].as_f64().unwrap(),
             r["readers"]["snapshot"]["p50_us"].as_f64().unwrap(),
             r["readers"]["world"]["p50_us"].as_f64().unwrap(),
             r["wire"]["encode"]["p50_us"].as_f64().unwrap(),
