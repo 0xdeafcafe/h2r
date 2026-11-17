@@ -15,6 +15,7 @@ pub mod dispatch;
 mod entry_stats;
 pub mod events;
 pub mod exec;
+pub mod executor;
 #[allow(unsafe_code)]
 pub mod ffi;
 mod frames;
