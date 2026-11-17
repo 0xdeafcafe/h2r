@@ -31,6 +31,7 @@ fn vertex(p: [f32; 3]) -> Vertex {
         frame: [UP, 0, 0],
         texcoord: [p[0], p[1]],
         lightmap: [0.25, 0.75],
+        incident: UP,
     }
 }
 
@@ -123,10 +124,12 @@ fn build_lit(sections: &[Section], lit: bool) -> Built {
         .unwrap();
     let lightmap_bitmap = if lit {
         set.add_group(FourCC(*b"bitm"), None, None);
+        let mut lightmap = Block::zeroed(0x4c);
+        lightmap.block(0x44, 1, Block::zeroed(0x74));
         set.add_tag(
             FourCC(*b"bitm"),
             "invented\\lightmap",
-            TagPayload::Built(Block::zeroed(0x4c)),
+            TagPayload::Built(lightmap),
         )
         .unwrap()
     } else {
@@ -504,4 +507,230 @@ fn each_lightmap_page_gets_its_own_cluster_and_render_info() {
     let g = &Lightmap::read(&mut map, b.ltmp).unwrap().groups[0];
     assert_eq!(g.bitmap, None);
     assert!(g.cluster_render_info.iter().all(|r| r.bitmap_index == -1));
+}
+
+fn f32_at(b: &[u8], at: usize) -> f32 {
+    f32::from_bits(word(b, at))
+}
+
+#[test]
+fn render_fields_are_filled_the_way_retail_fills_them() {
+    let mut m = meshes();
+    m.iter_mut().for_each(|m| m.page = Some(0));
+    let sections = pack(&m, &[0, 1]);
+    let b = build_lit(&sections, true);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let render = StructureRender::read(&mut map, b.sbsp).unwrap();
+    let c = &render.clusters[0];
+    let w = |at: usize| u16::from_le_bytes([c.raw[at], c.raw[at + 1]]);
+
+    // Section info: 7 vertices, 3 triangles, 2 parts; all shadow-casting,
+    // opaque and rigid; lightmap coordinates compressed; one subpart per
+    // part; lit, with incident radiance.
+    let head: Vec<u16> = (0..0x28).step_by(2).map(w).collect();
+    assert_eq!(
+        head,
+        [7, 3, 2, 3, 2, 0, 7, 2, 0, 3, 0, 4, 0, 0, 0, 0, 0, 0, 2, 3]
+    );
+    assert_eq!(&c.raw[0x6c..0x72], [0, 0xff, 0, 0xff, 0xff, 0xff]);
+    assert_eq!(word(&c.raw, 0x94), 0x1234_5678, "the structure checksum");
+
+    // Predicted resources: the cluster's own geometry, then its lightmap
+    // page (the materials' shaders are not in the set: no bitmaps).
+    let tag = map.tag(b.sbsp).unwrap().clone();
+    let at = tag.location.unwrap().address;
+    let p = map.read_tag_bytes(b.sbsp).unwrap();
+    let clusters = (word(&p, 0xa0) - at) as usize;
+    assert_eq!(word(&p, clusters + 0x84), 2);
+    let list = (word(&p, clusters + 0x88) - at) as usize;
+    let bitmap = map
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"bitm"))
+        .unwrap()
+        .id;
+    assert_eq!(&p[list..list + 4], [3, 0, 0, 0]);
+    assert_eq!(word(&p, list + 4), b.sbsp.0);
+    assert_eq!(&p[list + 8..list + 12], [0, 0, 0, 0]);
+    assert_eq!(word(&p, list + 12), bitmap.0);
+
+    // Parts: opaque, flags 0xb, bounding sphere and box of their own
+    // vertices.
+    let mut raw = Mem(b.bytes.clone());
+    let s = c.geometry.load(&mut raw, Some(2)).unwrap().unwrap();
+    assert!(s.parts.iter().all(|p| p.kind == 2 && p.flags == 0xb));
+    let floor = &s.parts[0].raw;
+    let centre: Vec<f32> = (0..3).map(|k| f32_at(floor, 0x10 + 4 * k)).collect();
+    assert_eq!(centre, [0.5, 0.5, 0.0]);
+    assert!((f32_at(floor, 0x2c) - 0.5f32.sqrt()).abs() < 1e-6);
+    let bounds: Vec<f32> = (0..6).map(|k| f32_at(floor, 0x30 + 4 * k)).collect();
+    assert_eq!(bounds, [0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+    assert_eq!(f32_at(&s.parts[1].raw, 0x18), 1.0, "the roof's centre z");
+
+    // Stream 0x30: the incident direction, one packed word per vertex.
+    let incident = s
+        .stream(tags::geometry::VertexKind::Unknown(0x30))
+        .expect("stream 0x30");
+    let d = s.data(incident);
+    assert_eq!(d.len(), 4 * 7);
+    assert!(
+        d.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|v| u32::from_le_bytes(*v) == UP)
+    );
+
+    // Unlit: no lighting flags, no lightmap page predicted.
+    let b = build(&pack(&meshes(), &[0, 1]));
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let render = StructureRender::read(&mut map, b.sbsp).unwrap();
+    let c = &render.clusters[0];
+    assert_eq!(&c.raw[0x26..0x28], [0, 0]);
+    assert_eq!(word(&c.raw, 0x84), 1);
+}
+
+#[test]
+fn a_shaders_bitmaps_are_read_from_its_parameters() {
+    let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
+    for g in [b"bitm", b"shad"] {
+        set.add_group(FourCC(*g), None, None);
+    }
+    let bitmap = |set: &mut TagSet, name: &str| {
+        let mut b = Block::zeroed(0x4c);
+        b.block(0x44, 2, Block::zeroed(2 * 0x74));
+        set.add_tag(FourCC(*b"bitm"), name, TagPayload::Built(b))
+            .unwrap()
+    };
+    let (a, b) = (
+        bitmap(&mut set, "invented\\a"),
+        bitmap(&mut set, "invented\\b"),
+    );
+    // Three parameters: a, b, a again; then a datum that is no bitmap.
+    let mut params = Block::zeroed(0xc * 4);
+    for (i, id) in [a, b, a, TagId(0x1234_0005)].iter().enumerate() {
+        params.bytes[0xc * i..0xc * i + 4].copy_from_slice(&id.0.to_le_bytes());
+    }
+    let mut pp = Block::zeroed(0x7c);
+    pp.block(0x04, 4, params);
+    let mut root = Block::zeroed(0x54);
+    root.block(0x20, 1, pp);
+    let shader = set
+        .add_tag(FourCC(*b"shad"), "invented\\s", TagPayload::Built(root))
+        .unwrap();
+    assert_eq!(shader_bitmaps(&set, shader), [a, b]);
+    assert_eq!(bitmap_images(&set, a), 2);
+    assert_eq!(
+        bitmap_images(&set, shader),
+        0,
+        "not a built bitmap with images"
+    );
+    assert!(shader_bitmaps(&set, TagId::NULL).is_empty());
+}
+
+/// The pass at E `0x00044e90` draws a cluster for a set of volumes through
+/// its section's visibility MOPP (`+0x28`) and takes the object branch,
+/// reading the render entry's null object, when the reorder table (`+0x30`)
+/// is empty: every converted level faulted there at version 7. Retail keys
+/// are subpart indices; a table of at most twice the subparts keeps the
+/// keys direct (`0x000459a8`).
+#[test]
+fn every_section_has_a_visibility_mopp_with_one_leaf_per_subpart() {
+    let sections = pack(&meshes(), &[0, 1]);
+    let b = build(&sections);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let render = StructureRender::read(&mut map, b.sbsp).unwrap();
+    let c = &render.clusters[0];
+    let mut raw = Mem(b.bytes.clone());
+    let s = c.geometry.load(&mut raw, Some(2)).unwrap().unwrap();
+    let block = tags::geometry::load_block(&c.geometry.block, &mut raw)
+        .unwrap()
+        .unwrap();
+    let section = block.section();
+    let subparts = word(section, 0x08) as usize;
+    assert_eq!(subparts, s.subparts.len());
+    // The mask the engine allocates has a bit per subpart (cluster +0x24).
+    assert_eq!(
+        u16::from_le_bytes([c.raw[0x24], c.raw[0x25]]) as usize,
+        subparts
+    );
+    // Leaf order and its inverse: exactly 2n, so the normal path.
+    assert_eq!(word(section, 0x30) as usize, 2 * subparts);
+    let data = block
+        .resources()
+        .iter()
+        .find(|r| r.field_offset == 0x28)
+        .expect("a visibility MOPP");
+    let table = block
+        .resources()
+        .iter()
+        .find(|r| r.field_offset == 0x30)
+        .expect("a reorder table");
+    assert_eq!(data.secondary, 0xffff);
+    assert_eq!(word(section, 0x28), data.size);
+    assert_eq!(
+        (8 + SECTION + data.offset.unwrap() as usize) % 16,
+        0,
+        "the code object is 16-aligned in the loaded block"
+    );
+    let code_bytes = block.resource(data).unwrap();
+    check_visibility(subparts, code_bytes, block.resource(table).unwrap()).unwrap();
+    let code = mopp::Code::parse(code_bytes).unwrap();
+    // Each subpart's own box finds it; nothing but subpart keys is emitted.
+    let keys = mopp::bounds::key_bounds(&code).unwrap();
+    assert_eq!(
+        keys.keys().copied().collect::<Vec<_>>(),
+        (0..subparts as u32).collect::<Vec<_>>()
+    );
+    let v = s.vertices(None).unwrap();
+    for (k, p) in s.parts.iter().enumerate() {
+        let idx = s.part_indices(p);
+        let mut b = mopp::Aabb {
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+        };
+        for &i in idx {
+            for a in 0..3 {
+                b.min[a] = b.min[a].min(v.positions[i as usize][a]);
+                b.max[a] = b.max[a].max(v.positions[i as usize][a]);
+            }
+        }
+        assert!(mopp::query_aabb(&code, &b).unwrap().contains(&(k as u32)));
+    }
+}
+
+/// Converter version 9 keyed every triangle by its part and wrote an
+/// identity table of `n` entries: a wholly seen subtree's first and last
+/// key were read at `table[n + key]`, past the table, and the bits set
+/// from there overran the view's mask area (a30, d20, a10, b30, d40).
+#[test]
+fn a_table_of_n_or_a_key_on_many_leaves_is_refused() {
+    let sections = pack(&meshes(), &[0, 1]);
+    let s = &sections[0];
+    let n = s.parts.len();
+    let (code, table) = visibility_mopp(s);
+    check_visibility(n, &code, &table).unwrap();
+    // The version 9 table: identity, n long.
+    let identity: Vec<u8> = (0..n as u16).flat_map(u16::to_le_bytes).collect();
+    assert!(check_visibility(n, &code, &identity).is_err());
+    // The version 9 code: a leaf per triangle, keyed by part.
+    let mut per_triangle = Vec::new();
+    for (k, p) in s.parts.iter().enumerate() {
+        let first = usize::from(p.first);
+        for t in s.indices[first..first + usize::from(p.count)]
+            .as_chunks::<3>()
+            .0
+        {
+            per_triangle.push(mopp::Surface {
+                key: k as u32,
+                vertices: t
+                    .iter()
+                    .map(|&i| s.vertices[usize::from(i)].position)
+                    .collect(),
+            });
+        }
+    }
+    let v9 = mopp::build(&per_triangle).to_block();
+    if per_triangle.len() > n {
+        assert!(check_visibility(n, &v9, &table).is_err());
+    }
 }
