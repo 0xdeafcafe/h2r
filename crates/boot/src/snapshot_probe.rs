@@ -146,6 +146,41 @@ impl Probe {
 mod tests {
     use super::*;
 
+    /// The features the first Old Mombasa probe run had on, idle: the
+    /// audited ones block nothing.
+    #[test]
+    fn audited_features_block_nothing_while_idle() {
+        let mut r = feature::Registry::new(feature::Switches::default());
+        r.add(&crate::level_boot::LoadedMark(None)).unwrap();
+        r.add(&crate::controls_text::ControlsText).unwrap();
+        r.add(&crate::layout_glue::StringsFeature).unwrap();
+        r.add(&crate::layout_glue::LayoutValueText).unwrap();
+        r.add(&crate::touch_glue::TouchGlue).unwrap();
+        r.add(&crate::map_slots::MapSlots {
+            vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
+        })
+        .unwrap();
+        r.add(&feature::leaves::EngineLeaves).unwrap();
+        r.add(&feature::render_loop::RenderLoop).unwrap();
+        r.add(&TickCounter {
+            ticks: Arc::default(),
+            preempt: true,
+        })
+        .unwrap();
+        crate::health::install(&mut r).unwrap();
+        let plan = r.build(&feature::Base).unwrap();
+        let policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        assert!(
+            policies.iter().all(|(_, p)| *p != "unaudited"),
+            "{policies:?}"
+        );
+        assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
+    }
+
     #[test]
     fn modes() {
         assert_eq!(mode_from(None), Ok(None));

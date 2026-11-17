@@ -307,6 +307,10 @@ impl feature::Feature for Campaigns {
                 }
                 Ok(Flow::Continue)
             });
+        // Progress goes to the profile files on the host disk, like a save
+        // game, outside the snapshot.
+        let s = Arc::clone(st);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || s.selection.snapshot_live()));
         Ok(())
     }
 }

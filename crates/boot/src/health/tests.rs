@@ -416,3 +416,16 @@ fn the_loaded_map_name_reads_from_the_cache_header() {
     assert_eq!(loaded_map_name(&g).unwrap().len(), 32);
     assert!(loaded_map_name(&FakeGuest::new()).is_err());
 }
+
+#[test]
+fn snapshots_wait_for_a_damage_update_or_restore_between_its_hooks() {
+    let s = State::default();
+    assert_eq!(s.live(), None);
+    s.armed.store(true, Ordering::Relaxed);
+    assert!(s.live().unwrap().contains("damage update"));
+    s.armed.store(false, Ordering::Relaxed);
+    *s.restore.lock().unwrap() = Some((1, None));
+    assert!(s.live().unwrap().contains("body restore"));
+    *s.restore.lock().unwrap() = None;
+    assert_eq!(s.live(), None);
+}

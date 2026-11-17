@@ -603,6 +603,19 @@ pub fn array_count(name: u32, count: u32) -> u32 {
     }
 }
 
+/// Why a screen class of ours can't be snapshotted now: one of our loaders
+/// is running the Controls constructor ([`BUILDING`]). The rest is fixed at
+/// build (`LAYOUTS`, `LOADERS`), parked in continuations the machine check
+/// reports (the async entries), or set up again before a screen draws
+/// (`Shown`).
+pub fn building_live() -> Option<String> {
+    building_reason(BUILDING.load(Ordering::SeqCst))
+}
+
+fn building_reason(building: u32) -> Option<String> {
+    (building != 0).then(|| "one of our screens is being built".into())
+}
+
 /// Clears [`BUILDING`] when the constructor call ends, however it ends.
 struct Building;
 
@@ -1330,6 +1343,7 @@ impl feature::Feature for ListClass {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.screen, loader);
+        b.snapshot(feature::SnapshotPolicy::forbid_while(building_live));
         Ok(())
     }
 }
@@ -1338,6 +1352,12 @@ impl feature::Feature for ListClass {
 mod tests {
     use super::*;
     use crate::setting_defs::{ALL, FPS};
+
+    #[test]
+    fn snapshots_wait_while_one_of_our_screens_is_built() {
+        assert_eq!(building_reason(0), None);
+        assert!(building_reason(6).is_some());
+    }
     use crate::video_screen::{self, Switches};
     use engine::entry::{GuestCall as Gc, Regs, testing};
     use engine::testing::FakeGuest;

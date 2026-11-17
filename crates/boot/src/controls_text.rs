@@ -174,6 +174,9 @@ impl feature::Feature for ControlsText {
             "ported row text",
             |cx| -> EntryFuture { Box::pin(row_text(cx)) },
         );
+        // The port's state is its future, parked in a continuation the
+        // machine's quiescence check reports.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
