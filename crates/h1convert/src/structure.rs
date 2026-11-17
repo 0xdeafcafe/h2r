@@ -49,6 +49,10 @@ pub const ELEMENT_21C: usize = 0x40;
 /// reads `+0x20`, E `0x0003f927`).
 pub const ELEMENT_234: usize = 0x30;
 
+/// Size of the audibility element at `sbsp+0x224` (one in every retail
+/// map; see [`Structure::audibility`]).
+pub const AUDIBILITY: usize = 0x34;
+
 /// Most vertices or indices one section holds (`u16` counts and indices).
 pub const SECTION_MAX: usize = 0xffff;
 
@@ -467,6 +471,55 @@ pub struct Structure<'a> {
     pub lightmap_bitmap: TagId,
 }
 
+/// Checks a structure BSP's audibility the way the engine reads it:
+/// `bytes` is the `sbsp` tag as loaded at `address`. The engine compares
+/// clusters `i < j` through the element at `+0x224` when there is one,
+/// reading byte `(n-1)i - i(i+1)/2 + j - 1` of its `+0x24` table and the
+/// same bit of its `+0x1c` words (E `0x00249d60`, `0x00249c20`), and
+/// otherwise through the sound PAS data at `+0xe4` (E `0x00249ed0`), which
+/// no retail map has. So: one element, both tables covering every pair.
+pub fn check_audibility(bytes: &[u8], address: u32) -> std::result::Result<(), String> {
+    let word = |at: usize| -> std::result::Result<u32, String> {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("4")))
+            .ok_or(format!("{at:#x} is past the tag"))
+    };
+    let n = word(0x9c)? as usize;
+    if word(0x224)? < 1 {
+        return Err(format!("no audibility element at +0x224 ({n} clusters)"));
+    }
+    let e = word(0x228)?
+        .checked_sub(address)
+        .ok_or("+0x228 points before the tag")? as usize;
+    let pairs = n * n.saturating_sub(1) / 2;
+    let distances = word(e + 0x24)? as usize;
+    let deafening = word(e + 0x1c)? as usize;
+    if distances < pairs {
+        return Err(format!(
+            "{distances} distance bytes for {pairs} cluster pairs"
+        ));
+    }
+    if deafening * 32 < pairs {
+        return Err(format!(
+            "{deafening} deafening words for {pairs} cluster pairs"
+        ));
+    }
+    for (count, pointer, len) in [(0x24, 0x28, distances), (0x1c, 0x20, 4 * deafening)] {
+        if word(e + count)? == 0 {
+            continue;
+        }
+        let at = word(e + pointer)?
+            .checked_sub(address)
+            .ok_or(format!("audibility +{pointer:#x} points before the tag"))?
+            as usize;
+        if at + len > bytes.len() {
+            return Err(format!("audibility +{count:#x} runs past the tag"));
+        }
+    }
+    Ok(())
+}
+
 /// The eight block fields of a collision BSP as a [`Block`] whose blocks
 /// are fixups.
 pub fn collision_block(bsp: &Bsp) -> Block {
@@ -503,6 +556,37 @@ impl Structure<'_> {
         (0..n)
             .flat_map(|_| row.iter().flat_map(|w| w.to_le_bytes()))
             .collect()
+    }
+
+    /// The audibility element (`sbsp+0x224`, one in every retail map):
+    /// no doors, and for each pair of clusters `i < j` a distance byte
+    /// (`+0x24`, `n(n-1)/2` of them) and an AI-deafening bit (`+0x1c`,
+    /// `ceil(n(n-1)/2 / 32)` words). Every distance is 0 (adjacent: every
+    /// cluster hears and is near every other) and no pair is deafened.
+    ///
+    /// Without it the engine falls back to the sound PAS data at
+    /// `sbsp+0xe4`, empty in every retail map, and reads through its null
+    /// pointer as soon as two clusters are compared (E `0x00249dfa` ->
+    /// `0x00249f03`, called every tick from `0x0018cb77`).
+    pub fn audibility(&self) -> Block {
+        let n = self.clusters();
+        let pairs = n * (n - 1) / 2;
+        let mut e = Block::zeroed(AUDIBILITY);
+        // +0x00 door count 0; +0x04/+0x08 the distance range a byte of
+        // 1..=254 spans (unused here: byte 0 reads as 0.0 directly).
+        let [x0, x1, y0, y1, z0, z1] = self.bounds;
+        let diagonal = ((x1 - x0).powi(2) + (y1 - y0).powi(2) + (z1 - z0).powi(2)).sqrt();
+        e.put_f32(0x04, 0.0)
+            .put_f32(0x08, if diagonal.is_finite() { diagonal } else { 0.0 });
+        if pairs > 0 {
+            e.block(
+                0x1c,
+                pairs.div_ceil(32) as u32,
+                Block::zeroed(4 * pairs.div_ceil(32)),
+            );
+            e.block(0x24, pairs as u32, Block::zeroed(pairs));
+        }
+        e
     }
 
     /// Writes the BSP and lightmap into `set` as built payloads of the
@@ -623,6 +707,7 @@ impl Structure<'_> {
             root.put_f32(0x1ec + 4 * k, *v);
         }
         root.block(0x21c, 1, Block::zeroed(ELEMENT_21C));
+        root.block(0x224, 1, self.audibility());
         root.block(0x234, 1, Block::zeroed(ELEMENT_234));
 
         // Render info per cluster: i16 page, i8 palette -1 (the pages are
