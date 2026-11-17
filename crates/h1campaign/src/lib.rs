@@ -279,7 +279,8 @@ fn convert_with<R: Read + Seek>(
         ..Report::default()
     };
     let scnr = scenario::BaseScenario::read(base)?;
-    let bsps = structure::prepare_all(h1, base, &scnr, &mut report)?;
+    let ambience = h1convert::ambience::read(h1);
+    let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
     let objects_base = if opts.objects {
         let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
         if lean >= 3 {
@@ -296,6 +297,10 @@ fn convert_with<R: Read + Seek>(
     let slot = set.scenario.index();
     set.slots[slot].name = Some(scenario_path.clone());
 
+    // The level's background sounds and sound environments, which the
+    // clusters and the scenario's palettes name.
+    let sounds = ambience.install(&mut set)?.bounded();
+
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
     // under Halo 1's names.
     let mut slots = Vec::new();
@@ -307,13 +312,14 @@ fn convert_with<R: Read + Seek>(
                 set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
             ),
         };
-        let section = b.write(&mut set, sbsp, ltmp)?;
+        let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
         slots.push(scenario::BspSlot {
             section,
             sbsp,
             ltmp,
             checksum: b.checksum,
             centroids: b.centroids(),
+            sounds: b.sound_clusters.clone(),
         });
     }
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
@@ -325,6 +331,7 @@ fn convert_with<R: Read + Seek>(
         &mut set,
         &scnr,
         &slots,
+        &sounds,
         objects_base.as_ref(),
         opts,
         lean,

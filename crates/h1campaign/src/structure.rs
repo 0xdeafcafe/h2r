@@ -45,6 +45,11 @@ pub struct Prepared {
     /// Halo 1's lightmap bitmap, converted, and its tag name.
     pub lightmap: Option<(String, h1models::Converted)>,
     pub pathfinding: PathfindingData,
+    /// Per cluster, its background sound and sound environment (indices
+    /// into the level's palettes, -1 none), and per collision leaf its
+    /// cluster (`h1convert::structure::sound_zones`).
+    pub sound_clusters: Vec<[i16; 2]>,
+    pub sound_leaves: Vec<u16>,
 }
 
 /// Counts for one BSP.
@@ -116,6 +121,7 @@ pub fn prepare_all<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
     scnr: &BaseScenario,
+    ambience: &h1convert::ambience::Ambience,
     report: &mut Report,
 ) -> Result<Vec<Prepared>> {
     let refs = h1.structure_bsps()?;
@@ -126,7 +132,7 @@ pub fn prepare_all<R: Read + Seek>(
             .get(i)
             .or(scnr.descriptors.first())
             .ok_or_else(|| invalid("the base has no BSP"))?;
-        let p = prepare(h1, r, i, base, d.sbsp)?;
+        let p = prepare(h1, r, i, base, d.sbsp, ambience)?;
         report.bsps.push(BspReport {
             index: i,
             clusters: p.sections.len().max(1),
@@ -157,6 +163,7 @@ fn prepare<R: Read + Seek>(
     index: usize,
     base: &mut Map<R>,
     sbsp: TagId,
+    ambience: &h1convert::ambience::Ambience,
 ) -> Result<Prepared> {
     let src = h1.structure_bsp(r)?;
     let [col] = src
@@ -187,7 +194,16 @@ fn prepare<R: Read + Seek>(
             })
         })
         .collect();
-    let sections = structure::pack(&meshes, &material);
+    let mut sections = structure::pack(&meshes, &material);
+    // Ambient sound: the scenario's palettes are rebuilt, so every entry
+    // up to the engine's bound is written (`scenario::write`).
+    let written = h1convert::ambience::written(ambience);
+    let (sound_clusters, sound_leaves) = structure::sound_zones(
+        &src,
+        collision.leaves.len(),
+        |z| ambience.index(index, z, written),
+        &mut sections,
+    )?;
 
     let sbsp_at = base
         .tag(sbsp)?
@@ -267,6 +283,8 @@ fn prepare<R: Read + Seek>(
         templates,
         lightmap,
         pathfinding,
+        sound_clusters,
+        sound_leaves,
     })
 }
 
@@ -293,7 +311,13 @@ impl Prepared {
     /// Writes the BSP and lightmap into the base's `sbsp`/`ltmp` slots,
     /// the lightmap bitmap as a new tag, and the pathfinding into the BSP.
     /// Returns the BSP section's index.
-    pub fn write(&self, set: &mut TagSet, sbsp: TagId, ltmp: TagId) -> Result<usize> {
+    pub fn write(
+        &self,
+        set: &mut TagSet,
+        sbsp: TagId,
+        ltmp: TagId,
+        sounds: &h1convert::ambience::Installed,
+    ) -> Result<usize> {
         let lightmap_bitmap = match &self.lightmap {
             Some((name, bm)) => bm
                 .clone()
@@ -304,6 +328,12 @@ impl Prepared {
         // the level's other BSPs by name), and the material heads naming
         // them.
         let (templates, materials) = self.textures.install(set, &self.templates, &self.picks)?;
+        let sound = h1convert::structure::Sound {
+            backgrounds: sounds.backgrounds.clone(),
+            environments: sounds.environments.clone(),
+            clusters: self.sound_clusters.clone(),
+            leaves: self.sound_leaves.clone(),
+        };
         let s = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
@@ -314,6 +344,7 @@ impl Prepared {
             checksum: self.checksum,
             templates: &templates,
             lightmap_bitmap,
+            sound: &sound,
         };
         let section = s.write(set, sbsp, ltmp)?;
         let element = pathfind::build::element(&self.pathfinding)
