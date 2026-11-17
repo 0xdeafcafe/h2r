@@ -549,7 +549,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         else if (n_) h2_view_spend(h2_mem_, n_);                                \
     } while (0)
 #else
-#define H2_EXIT_SETTLE_(n) h2abi_v1_exit(ctx, (n))
+#define H2_EXIT_SETTLE_(n) h2abi_v1_exit(ctx, n)
 #endif
 #if H2_LEND_COUNT_
 /* A lent handler hands its count back; the runner's charges it all. */

@@ -1695,6 +1695,142 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
     }
 }
 
+/// Stores that alternate between pages (so a hold's last-marked page never
+/// matches), through an alias, and into different words of the dirty
+/// bitmap, mark exactly the physical pages they reach, run after run: each
+/// drain clears the bits, and the next run must set them again rather than
+/// find them marked. With and without `H2_DIRTY_INLINE` (the store site
+/// tests the bit itself) and access accounting.
+#[test]
+fn stores_mark_exactly_their_pages_with_and_without_dirty_inline() {
+    use runtime::watch::{CONTIGUOUS_BASE, DirtyRange};
+    const V: u32 = 0x120000;
+    // V, V+1, V+2 and the alias V+3 (of V's page); V+4 is only read.
+    const PHYS: [u32; 5] = [0x10000, 0x40000, 0x100_0000, 0x10000, 0x14000];
+    let f = function(A, |a| {
+        let mut top = a.create_label();
+        a.mov(eax, 0x5eed_0001u32)?;
+        a.set_label(&mut top)?;
+        a.mov(dword_ptr(edi), eax)?;
+        a.mov(dword_ptr(edi + 0x1000), eax)?;
+        a.mov(dword_ptr(edi + 8), eax)?;
+        a.mov(dword_ptr(edi + 0x2000), eax)?;
+        a.mov(dword_ptr(edi + 0x3010), eax)?;
+        a.add(eax, dword_ptr(edi + 0x4000))?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        a.ret()
+    });
+    let want: Vec<DirtyRange> =
+        [0x10000, 0x40000, 0x100_0000].map(|p| DirtyRange { addr: CONTIGUOUS_BASE | p, len: 0x1000 }).to_vec();
+    for (tag, defines) in [("", "#undef H2_DIRTY_INLINE\n#define H2_DIRTY_INLINE 0\n"), ("-inline", "#undef H2_DIRTY_INLINE\n#define H2_DIRTY_INLINE 1\n")] {
+        for accounting in [false, true] {
+            let (_lib, dispatch) = compile_module_defines(
+                &format!("dirty-pages{tag}"),
+                vec![f.clone()],
+                false,
+                true,
+                emit::opt::Passes::ALL,
+                emit::Codegen { accounting, ..emit::Codegen::default() },
+                defines,
+            );
+            let mut mem = Guest::new();
+            mem.map(A, 4096, 0x2000, Permissions::RX).unwrap();
+            mem.map(STACK & !0xfff, 4096, 0x3000, Permissions::RW).unwrap();
+            for (i, p) in PHYS.into_iter().enumerate() {
+                mem.map(V + i as u32 * 0x1000, 4096, p, Permissions::RW).unwrap();
+            }
+            mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+            let watch = mem.subscribe_writes("dirty-pages");
+            for p in [0x10000, 0x14000, 0x40000, 0x100_0000] {
+                mem.watch_writes(watch, CONTIGUOUS_BASE + p, 4096).unwrap();
+            }
+            let rt = Runtime::new(mem, dispatch);
+            let mut ctx = ExecCtx::new(rt.clone(), 1);
+            for run in 0..3 {
+                // More trips than a hold lasts (H2_GATE_TRIPS): several holds.
+                let mut cpu = CpuAbi { esp: STACK, edi: V, ecx: 100, ..CpuAbi::default() };
+                let t = Runner::default().run(&mut cpu, &mut ctx, A);
+                assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+                let got = rt.memory().take_dirty(watch).unwrap();
+                assert_eq!(got, want, "dirty inline {tag:?}, accounting {accounting}, run {run}");
+            }
+            assert_eq!(rt.memory().u32(V + 0x10).unwrap(), 0x5eed_0001);
+        }
+    }
+}
+
+/// What a store to a page other than the hold's last-marked one costs,
+/// with a write watch active (`watching`): the loop stores to two pages in
+/// turn, both already marked after the first trip, as hot pages stay
+/// between drains. `H2_DIRTY_INLINE=1` tests the bit at the site; without
+/// it the site calls `h2_mark_dirty`, which finds the bit set and returns.
+/// `nowatch` is the same loop with no watch, for reference.
+///
+/// `cargo test -p emit --release --test perf dirty_store_benchmark -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark; run release with --nocapture"]
+fn dirty_store_benchmark() {
+    use runtime::watch::CONTIGUOUS_BASE;
+    const V: u32 = 0x120000;
+    let n: u32 = std::env::var("H2_PERF_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(5_000_000);
+    let trials: usize = std::env::var("H2_PERF_TRIALS").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
+    let f = function(A, |a| {
+        let mut top = a.create_label();
+        a.mov(ecx, n)?;
+        a.set_label(&mut top)?;
+        a.mov(dword_ptr(edi), ecx)?;
+        a.mov(dword_ptr(edi + 0x1000), ecx)?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        a.ret()
+    });
+    let (_lib, dispatch) = compile_module_with(
+        "dirty-store",
+        vec![f],
+        false,
+        true,
+        emit::opt::Passes::from_env().unwrap(),
+        emit::Codegen::from_env().unwrap(),
+    );
+    let mut mem = Guest::new();
+    mem.map(A, 4096, 0x2000, Permissions::RX).unwrap();
+    mem.map(STACK & !0xfff, 4096, 0x3000, Permissions::RW).unwrap();
+    mem.map(V, 0x2000, 0x10000, Permissions::RW).unwrap();
+    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+    let rt = Runtime::new(mem, dispatch);
+    // No watch first: a subscription, once made, stays for the rest.
+    for watched in [false, true] {
+        let watch = watched.then(|| {
+            let mut m = rt.memory();
+            let w = m.subscribe_writes("dirty-store");
+            m.watch_writes(w, CONTIGUOUS_BASE + 0x10000, 0x2000).unwrap();
+            w
+        });
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut times = Vec::new();
+        for _ in 0..trials {
+            let mut cpu = CpuAbi { esp: STACK, edi: V, ..CpuAbi::default() };
+            let start = Instant::now();
+            let t = Runner::default().run(&mut cpu, &mut ctx, A);
+            times.push(start.elapsed().as_secs_f64() * 1e9 / n as f64);
+            assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+        }
+        if let Some(w) = watch {
+            let mut m = rt.memory();
+            assert!(!m.take_dirty(w).unwrap().is_empty());
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "dirty store, {}: n={n}, trials={trials}, min={:.3} median={:.3} max={:.3} ns/iteration (two stores)",
+            if watched { "watch" } else { "nowatch" },
+            times[0],
+            times[trials / 2],
+            times[trials - 1]
+        );
+    }
+}
+
 /// What `H2_DIRTY_INLINE=1` costs in code: every 16th owner of the lifted
 /// image, emitted and compiled at -O2 with the inline RAM path, with and
 /// without the switch, and the `__text` bytes of both (only objects under

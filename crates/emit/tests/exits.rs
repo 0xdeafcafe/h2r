@@ -72,6 +72,9 @@ fn preprocess_text(src: &Path, c: &Path, defines: &[&str]) -> String {
     let mut cmd = Command::new(cc);
     cmd.args(["-E", "-P"])
         .args(emit::compile::cflags().unwrap())
+        // The default exits, whatever the environment asks for; a test of
+        // H2_VIEW_CHARGE defines it again below.
+        .arg("-UH2_VIEW_CHARGE")
         .arg("-I")
         .arg(src);
     for d in defines {
@@ -271,6 +274,61 @@ fn a_direct_call_lends_the_callers_view() {
         features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1"]),
         "1u | (2u | 0u)"
     );
+}
+
+/// `H2_VIEW_CHARGE`: a counting handler with a view calls nothing to
+/// settle. Its exit spends its count in the view, as do its charges and
+/// its loops' budget; each runtime call is left only for no view.
+#[test]
+fn a_view_charging_handler_settles_without_a_call() {
+    let f = function(A, |a| {
+        let mut l = a.create_label();
+        a.set_label(&mut l)?;
+        a.mov(eax, dword_ptr(ecx))?;
+        a.mov(dword_ptr(edx), eax)?;
+        a.dec(esi)?;
+        a.jnz(l)?;
+        a.call(B as u64)?;
+        a.ret()
+    });
+    let g = function(B, |a| {
+        a.mov(eax, dword_ptr(ecx))?;
+        a.ret()
+    });
+    let Some((src, c)) = write(vec![f, g], "exits-view-charge", true) else {
+        common::skip("view charge", "needs h2abi.h (H2ABI_HEADER)");
+        return;
+    };
+    for view in [false, true] {
+        for count in [false, true] {
+            let lend = format!("H2_DIRECT_VIEW={}", u8::from(view));
+            let carry = format!("H2_DIRECT_COUNT={}", u8::from(count));
+            let defines = ["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", &lend, &carry, "H2_VIEW_CHARGE=1"];
+            let all = preprocess_all(&src, &c, &defines);
+            let case = format!("lent views {view}, lent count {count}");
+            // Each exit settles inline with a view, and calls without one.
+            let exit = "if (!h2_mem_) h2abi_v1_exit(ctx, n_); else if (n_) h2_view_spend(h2_mem_, n_);";
+            assert!(all.contains(exit), "{case}: {all}");
+            assert_eq!(calls(&all, "h2abi_v1_exit"), all.matches(exit).count(), "{case}: {all}");
+            // The loop's budget: from the view.
+            let budget = "(h2_mem_ ? h2_view_left(h2_mem_) : h2abi_v1_budget(ctx))";
+            assert!(all.contains(budget), "{case}: {all}");
+            assert_eq!(calls(&all, "h2abi_v1_budget"), all.matches(budget).count(), "{case}: {all}");
+            // A charge (before the direct call) only without a view.
+            for (at, _) in all.match_indices("h2abi_v1_charge(ctx") {
+                let before = &all[..at];
+                assert!(
+                    before.ends_with("} else { h2_gate_drop(h2_mem_, &h2g_); ((void)0); ")
+                        || before.ends_with("if (h2acc && !h2_mem_) { "),
+                    "{case}: a charge with a view: {}",
+                    &all[at.saturating_sub(200)..at + 40]
+                );
+            }
+        }
+    }
+    // Off, the exit is the call.
+    let off = preprocess_all(&src, &c, &["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]);
+    assert!(!off.contains("h2_view_spend(h2_mem_") && !off.contains("h2_view_left(h2_mem_)"), "{off}");
 }
 
 /// Every handler in the file, whitespace collapsed.
