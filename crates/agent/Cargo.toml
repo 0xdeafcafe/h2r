@@ -14,6 +14,8 @@ feature = { path = "../feature" }
 engine = { path = "../engine" }
 live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }
+xapi = { path = "../xapi" }
+input = { path = "../input", default-features = false }
 
 [dev-dependencies]
 live-proto.workspace = true

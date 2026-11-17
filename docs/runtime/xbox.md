@@ -401,15 +401,19 @@ cargo h2 agent --xbox watch phase map
 `h2 agent --socket tcp://HOST:PORT` (or `H2_AGENT=tcp://...`) reaches any
 TCP endpoint, not only the console's.
 
-**The pad.** `input.pad` queues steps for player one (`input::backend::remote`),
-merged over a real pad and the keyboard. A step holds its buttons and
-sticks for `ms` and until the game has read the pad `reads` times (default
-once), so a short press is never lost to a slow frame. Buttons: `a b x y
-black white lt rt` (analog, fully pressed), `up down left right start back
-ls rs`; sticks are -1 to 1 (`left`, `right`), triggers 0 to 1 (`lt`, `rt`).
-`append` adds to what is queued, otherwise it replaces it. When the queue
-empties the pad is released. Pressing needs control (`session.claim`)
-only while another connection holds it.
+**The pad.** `input.pad` queues steps for a player (default player one;
+`input::backend::remote`), merged at XAPI over what the game's controller
+read returns, so a real pad and the keyboard still work. It is the same
+mechanism `h2 serve` and `h2 play` use (agent-api.md, "Phase 3 and 4"). A
+step holds its buttons and sticks for `ms` (or game `ticks`) and until the
+game has read the pad `reads` times (default once), so a short press is
+never lost to a slow frame. Buttons: `a b x y black white lt rt` (analog,
+fully pressed), `up down left right start back ls rs`; sticks are -1 to 1
+(`left`, `right`), triggers 0 to 1 (`lt`, `rt`). `append` adds to what is
+queued, otherwise it replaces it. When the queue empties the pad is
+released. Pressing needs control (`session.claim`) only while another
+connection holds it. The game has to have opened that controller: player
+one is always there while the keyboard pad is on.
 
 **Files and launching.** `platform/xbox/xbox.sh` wraps the Device Portal
 (the same credentials as `deploy.sh`) and `h2 agent`:

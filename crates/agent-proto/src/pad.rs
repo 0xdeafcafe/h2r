@@ -1,5 +1,6 @@
-//! `input.pad`: timed pad steps for player one (docs/runtime/agent-api.md,
-//! "Input"). Plain data: the game's host turns them into pad reports.
+//! `input.pad`: timed pad steps for a player (docs/runtime/agent-api.md,
+//! "Input"). Plain data: the agent's input tap turns them into what the
+//! game's controller reads return.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,14 +28,24 @@ pub struct PadStep {
     pub lt: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt: Option<f32>,
-    /// How long to hold it, in wall-clock ms. Absent: until the next
-    /// `input.pad` or `input.release` (a step after it never starts).
+    /// How long to hold it, in wall-clock ms. With neither `ms` nor
+    /// `ticks`: until the next `input.pad` or `input.release` (a step after
+    /// it never starts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ms: Option<u64>,
+    /// How long to hold it, in game ticks (the stamp's `tick`): the same
+    /// on every run, where `ms` depends on the frame rate. With `ms` too,
+    /// both must pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u64>,
     /// And until the game has read the pad at least this many times
     /// (default 1), so a short press is never lost at a low frame rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reads: Option<u32>,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 fn is_zero2(v: &[f32; 2]) -> bool {
@@ -70,10 +81,33 @@ impl PadStep {
     }
 }
 
+/// When the first step starts: a game tick, or `"now"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AtTick {
+    /// Once the game's own tick (the stamp's `tick`) reaches this.
+    Tick(u64),
+    /// `"now"`: at the next read.
+    Now(Now),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Now {
+    Now,
+}
+
 /// `input.pad`'s params.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PadParams {
+    /// The controller port, 0 to 3 (default 0, player one).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub player: u32,
+    /// When the first of these steps starts (default `"now"`; with
+    /// `append`, once those before it are done and this tick has come).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_tick: Option<AtTick>,
     pub steps: Vec<PadStep>,
     /// Queue after what's already queued instead of replacing it (the
     /// default replaces it, and the step being held, at once).
@@ -105,5 +139,14 @@ mod tests {
             assert!(s.check().is_err(), "{bad}");
         }
         assert!(serde_json::from_str::<PadStep>(r#"{"button":["a"]}"#).is_err());
+        let p: PadParams = serde_json::from_str(
+            r#"{"player":1,"at_tick":120,"steps":[{"buttons":["a"],"ticks":2}]}"#,
+        )
+        .unwrap();
+        assert_eq!((p.player, p.at_tick), (1, Some(AtTick::Tick(120))));
+        assert_eq!(p.steps[0].ticks, Some(2));
+        let p: PadParams = serde_json::from_str(r#"{"at_tick":"now","steps":[]}"#).unwrap();
+        assert_eq!(p.at_tick, Some(AtTick::Now(Now::Now)));
+        assert!(serde_json::from_str::<PadParams>(r#"{"at_tick":"soon","steps":[]}"#).is_err());
     }
 }

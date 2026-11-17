@@ -6,20 +6,22 @@
 //! isn't ticking. Frame stats are collected for a live window when nothing
 //! else started them, so `profile.counters` has frames to report.
 //!
-//! It also answers the host methods: `input.pad`, `input.release` and
-//! `input.state` drive player one's pad (`input::backend::remote`, merged
-//! by the app shell's input; `h2 serve`'s headless pad doesn't merge it),
-//! `profile.sample.*` the in-process sampler ([`crate::sampling`]), and
-//! `host.perf` gives the newest host perf line.
+//! With XAPI input, the agent's input tap goes on `xapi`, wrapping the one
+//! `H2_INPUT_RECORD` or `H2_INPUT_REPLAY` set: `input.pad`,
+//! `input.release`, `input.state`, `input.record`, `input.replay` and
+//! `input.stop` (crates/agent's `tap`). That is the same on `h2 serve`,
+//! `h2 play` and the Xbox app.
+//!
+//! It also answers the host methods `profile.sample.*` (the in-process
+//! sampler, [`crate::sampling`], which `profile.capture {"sample": true}`
+//! runs too) and `host.perf` (the newest host perf line).
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Mutex;
 
 use agent::Access;
-use agent_proto::{PadParams, PadStep, RpcError, code, method};
+use agent_proto::{RpcError, code, method};
 use anyhow::{Context, Result};
-use input::backend::remote::{Remote, Step};
-use input::gamepad::{Buttons, Gamepad};
 use serde_json::{Value, json};
 
 /// The agent attached to one run.
@@ -36,8 +38,16 @@ pub fn socket_from_env() -> Option<PathBuf> {
 }
 
 impl AgentGlue {
-    /// Listens at `path` and adds the feature to `registry`.
-    pub fn install(registry: &mut feature::Registry, path: PathBuf) -> Result<AgentGlue> {
+    /// Listens at `path`, adds the feature to `registry`, and puts the input
+    /// tap on `xapi`. `replaying`: the tap already there is a replay, which
+    /// stands in for the live pad (agent steps go on top of it); otherwise
+    /// it is a recording, which sees agent steps too.
+    pub fn install<S: xapi::Storage>(
+        registry: &mut feature::Registry,
+        path: PathBuf,
+        xapi: Option<&Mutex<xapi::Xapi<S>>>,
+        replaying: bool,
+    ) -> Result<AgentGlue> {
         let endpoint = agent_proto::Endpoint::from(path);
         if let agent_proto::Endpoint::Unix(p) = &endpoint
             && let Some(dir) = p.parent()
@@ -59,6 +69,19 @@ impl AgentGlue {
                 )
             }
             Err(e) => anyhow::bail!("agent: {e}"),
+        }
+        match xapi {
+            Some(x) => {
+                let mut x = x.lock().unwrap_or_else(|e| e.into_inner());
+                let chain = if replaying {
+                    agent::Chain::Before
+                } else {
+                    agent::Chain::After
+                };
+                let inner = x.take_input_tap().map(|t| (t, chain));
+                x.set_input_tap(Some(Box::new(agent.input_tap(inner))));
+            }
+            None => eprintln!("agent: no XAPI input; the input methods are off"),
         }
         // H2_FRAME_STATS and `h2 play` start their own collection; only
         // start a quiet one when neither will.
@@ -93,122 +116,46 @@ fn rpc(code: i64) -> impl Fn(String) -> RpcError {
     move |m| RpcError::new(code, m)
 }
 
+/// The sampler `profile.sample.*` drives, run over a `profile.capture`
+/// window: one sampler, one dump format (`profile.h2prof`, which
+/// `h2 profile remote` resolves).
+struct BootSampler;
+
+impl agent::Sampler for BootSampler {
+    fn start(&mut self) -> std::result::Result<(), String> {
+        crate::sampling::start(Value::Null).map(drop)
+    }
+
+    fn finish(&mut self) -> std::result::Result<Value, String> {
+        crate::sampling::stop(Value::Null)
+    }
+}
+
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
-    agent.add_method(method::INPUT_PAD, Access::Act, |v| {
-        let p: PadParams = serde_json::from_value(v).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
-        let steps = pad_steps(&p.steps).map_err(rpc(code::INVALID_PARAMS))?;
-        let n = steps.len();
-        let remote = Remote::global();
-        if p.append {
-            remote.append(steps);
-        } else {
-            remote.replace(steps);
-        }
-        Ok(json!({ "queued": n, "pad": pad_state(remote) }))
-    });
-    agent.add_method(method::INPUT_RELEASE, Access::Act, |_| {
-        Remote::global().clear();
-        Ok(json!({ "pad": pad_state(Remote::global()) }))
-    });
-    agent.add_method(method::INPUT_STATE, Access::Read, |_| Ok(json!({ "pad": pad_state(Remote::global()) })));
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))
         });
-        agent.add_method(method::SAMPLE_STOP, Access::Act, |v| crate::sampling::stop(v).map_err(rpc(code::UNAVAILABLE)));
+        agent.add_method(method::SAMPLE_STOP, Access::Act, |v| {
+            crate::sampling::stop(v).map_err(rpc(code::UNAVAILABLE))
+        });
+        agent.set_sampler(Box::new(BootSampler));
     }
-    agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| Ok(crate::sampling::status()));
-    agent.add_method(method::HOST_PERF, Access::Read, |_| match crate::host_perf::last_line() {
-        Some((age, line)) => Ok(json!({ "line": line, "age_ms": age.as_millis() as u64 })),
-        None => Err(RpcError::new(
-            code::UNAVAILABLE,
-            "no host perf line yet (H2_HOST_PERF=1; one every 100 frames or 5 s)",
-        )),
+    agent.add_method(method::SAMPLE_STATUS, Access::Read, |_| {
+        Ok(crate::sampling::status())
     });
-}
-
-/// `input.state`'s pad: what is held, and what is queued.
-fn pad_state(r: &Remote) -> Value {
-    let s = r.status();
-    let g = s.pad;
-    let mut buttons: Vec<&str> = Vec::new();
-    for (name, bit) in DIGITAL {
-        if g.buttons.contains(*bit) {
-            buttons.push(name);
-        }
-    }
-    for (name, i) in ANALOG {
-        if g.analog[*i] > 0 {
-            buttons.push(name);
-        }
-    }
-    let axis = |v: i16| (f64::from(v) / 32767.0 * 1000.0).round() / 1000.0;
-    json!({
-        "active": s.active,
-        "queued": s.queued,
-        "done": s.done,
-        "buttons": buttons,
-        "left": [axis(g.thumb_lx), axis(g.thumb_ly)],
-        "right": [axis(g.thumb_rx), axis(g.thumb_ry)],
-    })
-}
-
-const DIGITAL: &[(&str, Buttons)] = &[
-    ("up", Buttons::DPAD_UP),
-    ("down", Buttons::DPAD_DOWN),
-    ("left", Buttons::DPAD_LEFT),
-    ("right", Buttons::DPAD_RIGHT),
-    ("start", Buttons::START),
-    ("back", Buttons::BACK),
-    ("ls", Buttons::LEFT_THUMB),
-    ("rs", Buttons::RIGHT_THUMB),
-];
-
-/// Pressure buttons and their `bAnalogButtons` index.
-const ANALOG: &[(&str, usize)] = &[
-    ("a", 0),
-    ("b", 1),
-    ("x", 2),
-    ("y", 3),
-    ("black", 4),
-    ("white", 5),
-    ("lt", 6),
-    ("rt", 7),
-];
-
-/// `input.pad` steps as pad reports for [`Remote`].
-pub fn pad_steps(steps: &[PadStep]) -> Result<Vec<Step>, String> {
-    steps
-        .iter()
-        .map(|s| {
-            s.check()?;
-            let mut g = Gamepad::default();
-            for b in &s.buttons {
-                let b = b.to_ascii_lowercase();
-                if let Some((_, bit)) = DIGITAL.iter().find(|(n, _)| *n == b) {
-                    g.buttons.set(*bit, true);
-                } else if let Some((_, i)) = ANALOG.iter().find(|(n, _)| *n == b) {
-                    g.analog[*i] = 255;
-                }
-            }
-            let pull = |v: f32| (v * 255.0).round() as u8;
-            if let Some(v) = s.lt {
-                g.analog[6] = pull(v);
-            }
-            if let Some(v) = s.rt {
-                g.analog[7] = pull(v);
-            }
-            let axis = |v: f32| (v * 32767.0).round() as i16;
-            (g.thumb_lx, g.thumb_ly) = (axis(s.left[0]), axis(s.left[1]));
-            (g.thumb_rx, g.thumb_ry) = (axis(s.right[0]), axis(s.right[1]));
-            Ok(Step {
-                pad: g,
-                hold: s.ms.map(Duration::from_millis),
-                reads: s.reads.unwrap_or(1),
-            })
-        })
-        .collect()
+    agent.add_method(
+        method::HOST_PERF,
+        Access::Read,
+        |_| match crate::host_perf::last_line() {
+            Some((age, line)) => Ok(json!({ "line": line, "age_ms": age.as_millis() as u64 })),
+            None => Err(RpcError::new(
+                code::UNAVAILABLE,
+                "no host perf line yet (H2_HOST_PERF=1; one every 100 frames or 5 s)",
+            )),
+        },
+    );
 }
 
 impl Drop for AgentGlue {
@@ -221,36 +168,13 @@ impl Drop for AgentGlue {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pad_steps_become_reports() {
-        let steps: Vec<PadStep> = serde_json::from_value(json!([
-            {"buttons": ["A", "start", "rt"], "left": [0.5, -1], "ms": 120},
-            {"right": [1, 0], "lt": 0.5, "reads": 0}
-        ]))
-        .unwrap();
-        let s = pad_steps(&steps).unwrap();
-        assert_eq!(s[0].pad.analog[0], 255);
-        assert_eq!(s[0].pad.analog[7], 255);
-        assert!(s[0].pad.buttons.contains(Buttons::START));
-        assert_eq!((s[0].pad.thumb_lx, s[0].pad.thumb_ly), (16384, -32767));
-        assert_eq!(s[0].hold, Some(Duration::from_millis(120)));
-        assert_eq!(s[0].reads, 1);
-        assert_eq!(s[1].pad.thumb_rx, 32767);
-        assert_eq!(s[1].pad.analog[6], 128);
-        assert_eq!((s[1].hold, s[1].reads), (None, 0));
-        let bad: Vec<PadStep> = serde_json::from_value(json!([{"buttons": ["jump"]}])).unwrap();
-        assert!(pad_steps(&bad).is_err());
-        // Every name the protocol offers maps to something.
-        for b in agent_proto::PAD_BUTTONS {
-            assert!(DIGITAL.iter().any(|(n, _)| n == b) || ANALOG.iter().any(|(n, _)| n == b), "{b}");
-        }
-    }
+    use std::time::Duration;
 
     #[test]
     fn the_glue_answers_pad_and_profiler_methods() {
         let a = agent::Agent::new();
         add_host_methods(&a);
+        let _tap = a.input_tap(None);
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let c = a.connect(tx);
         struct Nothing;
@@ -263,7 +187,10 @@ mod tests {
             }
         }
         let call = |m: &str, p: Value| -> Value {
-            a.submit(c, &json!({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).to_string());
+            a.submit(
+                c,
+                &json!({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).to_string(),
+            );
             a.between_slices(&mut Nothing, 0);
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
@@ -273,5 +200,10 @@ mod tests {
         assert!(r["result"]["available"].is_boolean(), "{r}");
         let r = call(method::INPUT_PAD, json!({"steps": [{"buttons": ["nope"]}]}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(
+            method::INPUT_PAD,
+            json!({"steps": [{"buttons": ["a"], "ms": 50}]}),
+        );
+        assert_eq!(r["result"]["queued"], 1, "{r}");
     }
 }

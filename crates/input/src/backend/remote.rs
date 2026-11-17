@@ -1,28 +1,34 @@
-//! Player one's pad driven from outside the game: the agent API's
-//! `input.pad` (docs/runtime/agent-api.md, "Input"), for a console nobody
-//! is holding a pad at (docs/runtime/xbox.md, "Remote control").
+//! A pad driven from outside the game: the agent API's `input.pad`
+//! (docs/runtime/agent-api.md, "Input"), for a console nobody is holding a
+//! pad at (docs/runtime/xbox.md, "Remote control") and for `h2 serve`.
 //!
-//! [`Remote`] is a queue of timed steps. [`KeyboardFallback`] merges the
-//! current step into the player-one pad it already builds from the
-//! keyboard and the first physical pad, so the guest sees one pad whoever
-//! presses it. A step ends once its time is up *and* the guest has read
-//! the pad as often as it asks ([`Step::reads`]): at 6 fps a 50 ms press
-//! would otherwise fall between two reads and never happen.
-//!
-//! [`KeyboardFallback`]: crate::backend::fallback::KeyboardFallback
+//! [`Remote`] is a queue of timed steps for one controller port. The
+//! agent's input tap (`crates/agent`, at `xapi`'s `XInputGetState`) merges
+//! the current step over what the port's read returns
+//! ([`merge`](crate::backend::fallback::merge)), so the guest sees one pad
+//! whoever presses it, and counts each read with [`Remote::state_read`]. A
+//! step ends once its time is up *and* the guest has read the pad as often
+//! as it asks ([`Step::reads`]): at 6 fps a 50 ms press would otherwise
+//! fall between two reads and never happen. Time is wall-clock
+//! ([`Step::hold`]), game ticks ([`Step::ticks`]), or both.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gamepad::Gamepad;
 
 /// One pad state and how long to hold it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Step {
     pub pad: Gamepad,
-    /// `None`: hold until the queue is replaced or cleared.
+    /// Wall-clock time to hold it. With `ticks` also `None`: hold until
+    /// the queue is replaced or cleared.
     pub hold: Option<Duration>,
+    /// Game ticks to hold it (as [`Remote::state_at_tick`] is told them).
+    pub ticks: Option<u64>,
+    /// Don't start before the game tick reaches this.
+    pub at_tick: Option<u64>,
     /// Guest reads (`XInputGetState`) the step must see before it ends.
     pub reads: u32,
 }
@@ -39,6 +45,7 @@ struct Inner {
 struct Current {
     step: Step,
     since: Instant,
+    since_tick: Option<u64>,
     reads: u32,
 }
 
@@ -64,13 +71,6 @@ impl Remote {
         Remote::default()
     }
 
-    /// The process's remote pad: the one the app's input merges into
-    /// player one, and the one the agent glue drives.
-    pub fn global() -> &'static Remote {
-        static G: OnceLock<Remote> = OnceLock::new();
-        G.get_or_init(Remote::new)
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -93,30 +93,44 @@ impl Remote {
     }
 
     /// The pad to report at `now`: advances past finished steps first.
+    /// Steps timed in ticks, or waiting for one, don't move.
     pub fn state_at(&self, now: Instant) -> Gamepad {
+        self.state_at_tick(now, None)
+    }
+
+    /// The pad to report at `now` with the game at `tick`: advances past
+    /// finished steps first.
+    pub fn state_at_tick(&self, now: Instant, tick: Option<u64>) -> Gamepad {
         let mut g = self.lock();
         loop {
             match g.current {
                 Some(c) => {
-                    let timed_out = c
-                        .step
+                    let s = c.step;
+                    let wall = s
                         .hold
-                        .is_some_and(|h| now.saturating_duration_since(c.since) >= h);
-                    if !(timed_out && c.reads >= c.step.reads) {
-                        return c.step.pad;
+                        .is_none_or(|h| now.saturating_duration_since(c.since) >= h);
+                    let ticks = s.ticks.is_none_or(|n| {
+                        matches!((tick, c.since_tick), (Some(t), Some(from)) if t.saturating_sub(from) >= n)
+                    });
+                    let timed = s.hold.is_some() || s.ticks.is_some();
+                    if !(timed && wall && ticks && c.reads >= s.reads) {
+                        return s.pad;
                     }
                     g.current = None;
                     g.done += 1;
                 }
-                None => match g.queue.pop_front() {
-                    Some(step) => {
+                None => match g.queue.front() {
+                    Some(step) if step.at_tick.is_none_or(|at| tick.is_some_and(|t| t >= at)) => {
+                        let step = g.queue.pop_front().expect("front");
                         g.current = Some(Current {
                             step,
                             since: now,
+                            since_tick: tick,
                             reads: 0,
                         })
                     }
-                    None => return Gamepad::default(),
+                    // Waiting for its tick: nothing held meanwhile.
+                    _ => return Gamepad::default(),
                 },
             }
         }
@@ -168,16 +182,19 @@ mod tests {
                 pad: pad(Buttons::START),
                 hold: Some(ms(50)),
                 reads: 1,
+                ..Step::default()
             },
             Step {
                 pad: pad(Buttons::DPAD_DOWN),
                 hold: Some(ms(50)),
                 reads: 2,
+                ..Step::default()
             },
             Step {
                 pad: pad(Buttons::BACK),
                 hold: None,
                 reads: 1,
+                ..Step::default()
             },
         ]);
         assert!(r.busy());
@@ -210,6 +227,39 @@ mod tests {
     }
 
     #[test]
+    fn steps_can_wait_for_a_tick_and_hold_for_ticks() {
+        let r = Remote::new();
+        let t = Instant::now();
+        r.replace([
+            Step {
+                pad: pad(Buttons::START),
+                ticks: Some(2),
+                at_tick: Some(10),
+                reads: 1,
+                ..Step::default()
+            },
+            Step {
+                pad: pad(Buttons::BACK),
+                ticks: Some(1),
+                ..Step::default()
+            },
+        ]);
+        assert_eq!(r.state_at_tick(t, Some(9)), Gamepad::default(), "not yet");
+        assert!(r.busy());
+        assert_eq!(r.state_at_tick(t, Some(10)).buttons, Buttons::START);
+        r.state_read();
+        assert_eq!(r.state_at_tick(t, Some(11)).buttons, Buttons::START);
+        // Wall time alone never ends a step timed in ticks.
+        assert_eq!(
+            r.state_at(t + Duration::from_secs(60)).buttons,
+            Buttons::START
+        );
+        assert_eq!(r.state_at_tick(t, Some(12)).buttons, Buttons::BACK);
+        assert_eq!(r.state_at_tick(t, Some(13)), Gamepad::default());
+        assert_eq!(r.status().done, 2);
+    }
+
+    #[test]
     fn append_queues_and_replace_cuts_in() {
         let r = Remote::new();
         let t = Instant::now();
@@ -217,6 +267,7 @@ mod tests {
             pad: pad(b),
             hold: None,
             reads: 0,
+            ..Step::default()
         };
         r.replace([hold(Buttons::START)]);
         r.append([hold(Buttons::BACK)]);

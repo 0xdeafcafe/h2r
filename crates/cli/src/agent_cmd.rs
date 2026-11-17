@@ -24,23 +24,35 @@ or a short form:
   query [JSON]           world.query, e.g. '{\"kind\":[\"actor\"],\"near\":{\"player\":0,\"radius\":20}}'
   object <id>            world.object, e.g. actor.e1230045
   counters               profile.counters (frame-stats window)
+  capture <N|Nms> [sample]  profile.capture over N game ticks or N ms: frame
+                         percentiles, phase totals, spikes over 33.3 ms, a CSV
+                         of every frame; `sample` also runs the sampler
+                         (profile.sample.*) over it
   features               features.list
   claim | release        take or give up control
   pause [max_ms]         session.pause (needs claim, so use it in a `-` script)
   resume                 session.resume
   step <ticks>           session.step
   wait <JSON until> [timeout_ms]
+  record <name> [replace]  input.record: log every controller read to the
+                         cache directory's inputs/<name>.input
+  replay <name>          input.replay: answer controller reads from that log
+  stop                   input.stop: end the recording (writing it) or replay
   sleep <ms>             (scripts only) wait before the next line
   press <b[+b...]> [ms]  input.pad: hold buttons (a b x y black white lt rt up
                          down left right start back ls rs) for ms (default 150)
   stick <left|right> <x> <y> [ms]  input.pad: a stick, -1..1, +y up (no ms: until changed)
   pad <JSON>             input.pad, e.g. '{\"steps\":[{\"buttons\":[\"start\"],\"ms\":100},{\"left\":[0,1],\"ms\":2000}]}'
+                         or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
   unpress                input.release: let go of everything
-  padstate               input.state
+  padstate               input.state: every player's pad, recording or replay
   sample-start [hz]      profile.sample.start (the game thread; the Xbox app)
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
+
+Input calls need no claim while nobody holds control; once a connection
+does, only it may send them. Queued steps outlive the connection and play out.
 
 The socket is --socket (a path, or tcp://HOST:PORT), else --xbox HOST
 (tcp://HOST:4720, the Xbox app; HOST defaults to $H2_XBOX), else $H2_AGENT,
@@ -110,7 +122,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
 fn looks_like_host(w: &str) -> bool {
     !w.starts_with('-') && (w.contains('.') || w.contains(':')) && !w.contains("..") && {
         let head = w.split(':').next().unwrap_or(w);
-        head.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        head.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
             && !agent_proto::method::ALL.contains(&w)
             && !w.starts_with("input.")
             && !w.starts_with("profile.")
@@ -124,10 +137,16 @@ fn looks_like_host(w: &str) -> bool {
 /// `tcp://HOST:4720` for a console address (a port given wins; an
 /// `https://...:11443` Device Portal URL gives its host).
 fn xbox_endpoint(host: &str) -> String {
-    let h = host.split("://").last().unwrap_or(host).trim_end_matches('/');
+    let h = host
+        .split("://")
+        .last()
+        .unwrap_or(host)
+        .trim_end_matches('/');
     let h = h.split('/').next().unwrap_or(h);
     match h.rsplit_once(':') {
-        Some((name, port)) if port != "11443" && port.parse::<u16>().is_ok() => format!("tcp://{name}:{port}"),
+        Some((name, port)) if port != "11443" && port.parse::<u16>().is_ok() => {
+            format!("tcp://{name}:{port}")
+        }
         Some((name, _)) => format!("tcp://{name}:{}", agent_proto::XBOX_PORT),
         None => format!("tcp://{h}:{}", agent_proto::XBOX_PORT),
     }
@@ -238,6 +257,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "claim" => Some(method::CLAIM),
         "release" => Some(method::RELEASE),
         "resume" => Some(method::RESUME),
+        "stop" => Some(method::INPUT_STOP),
         "unpress" => Some(method::INPUT_RELEASE),
         "padstate" => Some(method::INPUT_STATE),
         "sample-stop" => Some(method::SAMPLE_STOP),
@@ -306,7 +326,43 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             extra(5)?;
             return Ok((method::INPUT_PAD.into(), json!({ "steps": [step] })));
         }
-        "pad" => (method::INPUT_PAD, json_arg(arg)?),
+        "pad" => {
+            let p = json_arg(arg)?;
+            if !p.is_object() {
+                bail!(
+                    "pad needs JSON steps, e.g. '{{\"steps\":[{{\"buttons\":[\"a\"],\"ms\":100}}]}}'"
+                );
+            }
+            (method::INPUT_PAD, p)
+        }
+        "record" => {
+            let name = arg.context("record needs a name")?;
+            let p = match words.get(2).map(String::as_str) {
+                None => json!({ "name": name }),
+                Some("replace") => json!({ "name": name, "replace": true }),
+                Some(other) => bail!("record: unexpected {other} (only `replace`)"),
+            };
+            extra(3)?;
+            return Ok((method::INPUT_RECORD.into(), p));
+        }
+        "replay" => (
+            method::INPUT_REPLAY,
+            json!({ "name": arg.context("replay needs a name")? }),
+        ),
+        "capture" => {
+            let n = arg.context("capture needs ticks (300) or milliseconds (5000ms)")?;
+            let mut p = match n.strip_suffix("ms") {
+                Some(ms) => json!({ "ms": number(Some(&ms.to_owned()), "capture")? }),
+                None => json!({ "ticks": number(Some(n), "capture")? }),
+            };
+            match words.get(2).map(String::as_str) {
+                None => {}
+                Some("sample") => p["sample"] = json!(true),
+                Some(other) => bail!("capture: unexpected {other} (only `sample`)"),
+            }
+            extra(3)?;
+            return Ok((method::PROFILE_CAPTURE.into(), p));
+        }
         "sample-start" => (
             method::SAMPLE_START,
             match arg {
@@ -383,34 +439,94 @@ mod tests {
             ("world.query".into(), json!({"limit": 1}))
         );
         assert_eq!(
+            c(r#"pad {"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]}"#),
+            (
+                "input.pad".into(),
+                json!({"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]})
+            )
+        );
+        assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
+        assert_eq!(
+            c("record fight replace"),
+            (
+                "input.record".into(),
+                json!({"name": "fight", "replace": true})
+            )
+        );
+        assert_eq!(
+            c("replay fight"),
+            ("input.replay".into(), json!({"name": "fight"}))
+        );
+        assert_eq!(c("stop"), ("input.stop".into(), Value::Null));
+        assert_eq!(
+            c("capture 300"),
+            ("profile.capture".into(), json!({"ticks": 300}))
+        );
+        assert_eq!(
+            c("capture 5000ms sample"),
+            (
+                "profile.capture".into(),
+                json!({"ms": 5000, "sample": true})
+            )
+        );
+
+        assert_eq!(
             c("press start+a"),
-            ("input.pad".into(), json!({"steps": [{"buttons": ["start", "a"], "ms": 150}]}))
+            (
+                "input.pad".into(),
+                json!({"steps": [{"buttons": ["start", "a"], "ms": 150}]})
+            )
         );
         assert_eq!(
             c("press rt 400"),
-            ("input.pad".into(), json!({"steps": [{"buttons": ["rt"], "ms": 400}]}))
+            (
+                "input.pad".into(),
+                json!({"steps": [{"buttons": ["rt"], "ms": 400}]})
+            )
         );
         assert_eq!(
             c("stick left 0 1 2000"),
-            ("input.pad".into(), json!({"steps": [{"left": [0.0, 1.0], "ms": 2000}]}))
+            (
+                "input.pad".into(),
+                json!({"steps": [{"left": [0.0, 1.0], "ms": 2000}]})
+            )
         );
         assert_eq!(
             c("stick right -0.5 0"),
-            ("input.pad".into(), json!({"steps": [{"right": [-0.5, 0.0]}]}))
+            (
+                "input.pad".into(),
+                json!({"steps": [{"right": [-0.5, 0.0]}]})
+            )
         );
         assert_eq!(c("unpress"), ("input.release".into(), Value::Null));
-        assert_eq!(c("sample-start 2000"), ("profile.sample.start".into(), json!({"hz": 2000})));
-        assert_eq!(c("sample-stop"), ("profile.sample.stop".into(), Value::Null));
+        assert_eq!(
+            c("sample-start 2000"),
+            ("profile.sample.start".into(), json!({"hz": 2000}))
+        );
+        assert_eq!(
+            c("sample-stop"),
+            ("profile.sample.stop".into(), Value::Null)
+        );
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
     }
 
     #[test]
     fn xbox_addresses_become_tcp_endpoints() {
         assert_eq!(xbox_endpoint("10.0.3.29"), "tcp://10.0.3.29:4720");
-        assert_eq!(xbox_endpoint("https://10.0.3.29:11443/"), "tcp://10.0.3.29:4720");
+        assert_eq!(
+            xbox_endpoint("https://10.0.3.29:11443/"),
+            "tcp://10.0.3.29:4720"
+        );
         assert_eq!(xbox_endpoint("10.0.3.29:5000"), "tcp://10.0.3.29:5000");
         assert!(looks_like_host("10.0.3.29") && looks_like_host("xbox.lan"));
-        for call in ["status", "press", "session.status", "input.pad", "-", "watch"] {
+        for call in [
+            "status",
+            "press",
+            "session.status",
+            "input.pad",
+            "-",
+            "watch",
+        ] {
             assert!(!looks_like_host(call), "{call}");
         }
     }
@@ -429,6 +545,14 @@ mod tests {
             "status now",
             "dance",
             "query {}  extra",
+            "pad",
+            "pad [1]",
+            "record",
+            "record a twice",
+            "replay",
+            "capture",
+            "capture soon",
+            "capture 30 loud",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

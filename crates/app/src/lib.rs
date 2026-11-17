@@ -446,12 +446,13 @@ fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
         .flatten();
     let keyboard = if config.keyboard {
         let kb = KeyboardMouse::new(config.bindings.clone());
-        // The agent API's `input.pad` steps merge into player one too
-        // (input::backend::remote; idle unless an agent drives it).
-        manager.add_backend(Box::new(
-            input::backend::fallback::KeyboardFallback::new(kb.clone(), physical, convert)
-                .with_remote(input::backend::remote::Remote::global().clone()),
-        ));
+        // The agent API's `input.pad` doesn't come through here: it merges
+        // over the guest's controller reads at XAPI (crates/agent's tap).
+        manager.add_backend(Box::new(input::backend::fallback::KeyboardFallback::new(
+            kb.clone(),
+            physical,
+            convert,
+        )));
         Some(kb)
     } else {
         if let Some(physical) = physical {

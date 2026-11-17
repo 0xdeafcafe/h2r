@@ -958,6 +958,7 @@ pub fn run_hosted_with_live(
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let lockstep_config = lockstep_glue::Config::from_env();
+    let input_replay = lockstep_config.replay.is_some();
     let mut harness = if lockstep_config.enabled() {
         let h = lockstep_glue::Lockstep::install(&mut features, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
         if let Some(n) = &h.tick_note {
@@ -972,7 +973,7 @@ pub fn run_hosted_with_live(
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         Some(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(&mut features, path) {
+            match agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -980,7 +981,7 @@ pub fn run_hosted_with_live(
                 }
             }
         }
-        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path)?),
+        Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
     // The Rust datum, tag and locale functions, when H2_FEATURES has

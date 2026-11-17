@@ -4,7 +4,10 @@
 //!
 //! * [`Server`] listens and queues requests from connections.
 //! * [`Agent::add_method`] lets the game's host answer more methods
-//!   (pad input, the sampling profiler) on the same thread.
+//!   (the sampling profiler, host perf) on the same thread.
+//! * [`Agent::input_tap`] is `xapi`'s input tap: `input.pad` steps per
+//!   player, `input.record` and `input.replay`, wherever the game has XAPI
+//!   input (`h2 serve`, `h2 play`, the Xbox app).
 //! * [`Agent`] is the executor. The game thread calls
 //!   [`Agent::on_tick`] after each `game_tick` (through [`AgentFeature`],
 //!   a read-only observer on the `frame` bridge) and
@@ -16,15 +19,19 @@
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
 
+mod capture;
 mod exec;
 mod reader;
 mod server;
+mod tap;
 
+pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{Access, Agent, ConnId, HostMethod, Page, TICK_STALE, query};
 pub use reader::{
     GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
 };
 pub use server::Server;
+pub use tap::{AgentTap, Chain, Input, pad_steps};
 
 /// The agent as a feature (`agent`): the tick observer, and the cutscene
 /// start and stop observers that set the `cinematic` phase.
