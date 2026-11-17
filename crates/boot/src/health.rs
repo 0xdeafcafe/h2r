@@ -22,8 +22,9 @@
 //!   (a retail level under the debug switch), the window draws one over
 //!   the game: [`overlay_meter`] is what it shows.
 //!
-//! **The switch.** [`set_mode`] is driven by the map's identity (the
-//! campaigns and h1-mp lanes call it at each game start). The debug
+//! **The switch.** At each game start [`set_mode`] gets [`model_for_map`]
+//! of the loaded map's name: converted Halo 1 maps (`h1_<map>` in the Halo
+//! 1 sandbox, Halo 1's campaign levels) are Halo 1's. The debug
 //! override `H2_HEALTH_MODEL=halo1|halo2` beats it, so the model can be
 //! tried on a retail level.
 
@@ -100,6 +101,57 @@ const NO_METER: u32 = 0x7fc0_0000;
 /// is seen by the next object update.
 pub fn set_mode(m: HealthModel) {
     MAP_MODE.store(m.code(), Ordering::SeqCst);
+}
+
+/// Whether converted Halo 1 multiplayer maps were installed in their Halo
+/// 1 sandbox this run (`multiplayer.halo1_sandbox`, read at boot).
+static HALO1_SANDBOX: AtomicBool = AtomicBool::new(true);
+
+/// Records which sandbox `boot::new_maps` installed converted Halo 1
+/// multiplayer maps in (`multiplayer.halo1_sandbox` is `h1`): the game
+/// start then picks [`model_for_map`] by it.
+pub fn set_halo1_sandbox(on: bool) {
+    HALO1_SANDBOX.store(on, Ordering::SeqCst);
+}
+
+/// Halo 1's campaign levels, as a converted campaign names its map.
+pub const HALO1_LEVELS: [&str; 10] = [
+    "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
+];
+
+/// The model a map asks for by its name (the cache header's): a converted
+/// Halo 1 multiplayer map (`h1_<map>`) is Halo 1's in the Halo 1 sandbox
+/// and Halo 2's in the Halo 2 sandbox, a converted Halo 1 campaign level
+/// is Halo 1's, anything else Halo 2's.
+pub fn model_for_map(name: &str, halo1_sandbox: bool) -> HealthModel {
+    let name = name.trim().to_ascii_lowercase();
+    let halo1 = if name.starts_with("h1_") {
+        halo1_sandbox
+    } else {
+        HALO1_LEVELS.contains(&name.as_str())
+    };
+    if halo1 {
+        HealthModel::Halo1
+    } else {
+        HealthModel::Halo2
+    }
+}
+
+/// The loaded map's short name, in the cache header the game keeps
+/// (docs/live/live-gamestate.md; `live_telemetry`'s `CACHE_MAP_NAME`).
+pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
+
+/// The loaded map's name ([`CACHE_MAP_NAME`], at most 32 bytes).
+pub fn loaded_map_name(m: &dyn GuestMemory) -> Result<String, MemFault> {
+    let mut name = Vec::new();
+    for i in 0..32 {
+        let c = m.u8(CACHE_MAP_NAME + i)?;
+        if c == 0 {
+            break;
+        }
+        name.push(c);
+    }
+    Ok(String::from_utf8_lossy(&name).into_owned())
 }
 
 /// Whether the loaded map's own HUD has the health meter (a converted
@@ -341,17 +393,28 @@ impl feature::Feature for H1Health {
         });
         {
             let s = Arc::clone(&self.state);
-            b.game().on_start("say the health model", move |_| {
-                s.said_hold.store(false, Ordering::Relaxed);
-                eprintln!(
-                    "{}",
-                    start_line(
-                        mode(),
-                        forced().is_some(),
-                        HUD_HAS_METER.load(Ordering::Relaxed)
-                    )
-                );
-            });
+            b.game()
+                .on_start("pick and say the health model", move |o| {
+                    s.said_hold.store(false, Ordering::Relaxed);
+                    // The map's identity picks the model (the debug override
+                    // still beats it).
+                    match loaded_map_name(&*o.guest()) {
+                        Ok(name) => {
+                            set_mode(model_for_map(&name, HALO1_SANDBOX.load(Ordering::Relaxed)))
+                        }
+                        Err(e) => eprintln!(
+                            "health: the map's name could not be read ({e:?}); model unchanged"
+                        ),
+                    }
+                    eprintln!(
+                        "{}",
+                        start_line(
+                            mode(),
+                            forced().is_some(),
+                            HUD_HAS_METER.load(Ordering::Relaxed)
+                        )
+                    );
+                });
         }
         Ok(())
     }

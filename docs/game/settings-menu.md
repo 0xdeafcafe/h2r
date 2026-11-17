@@ -309,6 +309,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | live (the window follows it at its next turn) |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](../graphics/high-resolution.md)) | live (the next frame is at the new size) |
 | lighting | **Built (phase 1):** a "Lighting" row on the Video screen (Retail, E3), saved as `[graphics] lighting` (`"retail"` or `"e3"`). E3 draws the game's shadow maps at the render scale (at least 2x) in the shown image only and compares them with one tap; the guest sees retail. `H2_LIGHTING` locks it when set ([e3-lighting.md](../graphics/e3-lighting.md), "Phase 1 as built") | live (the next frame) |
+| Halo 1 maps | **Built:** a "Halo 1 Maps" row, last on the Video screen (Halo 1 Sandbox, Halo 2 Sandbox), saved as `[multiplayer] halo1_sandbox` (`"h1"` or `"h2"`). Which variant of each converted Halo 1 map `boot::new_maps` installs; `H2_HALO1_SANDBOX` locks it when set ([h1-multiplayer.md](h1-multiplayer.md)) | next launch (the row says "(restart)" until then) |
 | aim assist | **Built:** an "Aim Assist" row on the Video screen (Auto, Default, Strong, Very Strong), saved as `[controls] aim_assist`. Auto is Strong while the iOS touch controls show; in multiplayer only the touch player gets it, per player, and the weapon tags stay retail. `H2_AIM_ASSIST` locks it when set ([aim-assist.md](aim-assist.md)) | next map load |
 | touch controls (iOS) | **Built:** five rows on Controls on iOS, in place of the Steam Controller's: "Touch Look Speed" (1 to 10, `[touch] look`, `H2_TOUCH_LOOK`), "Touch Crouch" (Toggle, Hold; `[touch] crouch`, `H2_TOUCH_CROUCH`), "Gyro Aim" (0 off to 10; `[touch] gyro`, `H2_TOUCH_GYRO`), "Look Acceleration" (0 to 10; `[touch] look_accel`, `H2_TOUCH_LOOK_ACCEL`) and "Touch Auto Fire" (Off, On; `[touch] auto_fire`, `H2_TOUCH_AUTO_FIRE`). `H2_NO_TOUCH_ROWS=1` removes them ([ios.md](../runtime/ios.md#controls)) | live |
 | Steam Controller | **Built:** three rows on Controls with a Steam Controller: "Steam Pad Speaker" (`[steam_pad] speaker`, `H2_STEAM_SPEAKER`), "Trackpad Aim" (1 to 10, default 5; `[steam_pad] sensitivity`, `H2_STEAM_SENSITIVITY`) and "Left Trackpad" (D-Pad, Stick; `[steam_pad] left_pad`, `H2_STEAM_LEFT_PAD`) | live (`boot::setting_defs::steam_tuning`) |
@@ -392,7 +393,7 @@ Notes on specific settings:
 ## Video screen (built)
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with up to six rows:
+row, **Video**. A on it opens a screen titled "Video" with up to seven rows:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -402,10 +403,11 @@ row, **Video**. A on it opens a screen titled "Video" with up to six rows:
 | Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | Mute Button | On, Off | `[pad] mute_button` | at once | `H2_PAD_MUTE` |
 | Aim Assist | Auto, Default, Strong, Very Strong (default Auto: Strong while the touch controls show) | `[controls] aim_assist` | next map load ([aim-assist.md](aim-assist.md)) | `H2_AIM_ASSIST` |
+| Halo 1 Maps | Halo 1 Sandbox, Halo 2 Sandbox (default Halo 1) | `[multiplayer] halo1_sandbox` (`"h1"`, `"h2"`) | next launch, saying "(restart)" until then ([h1-multiplayer.md](h1-multiplayer.md)) | `H2_HALO1_SANDBOX` |
 
 A steps the row's value and saves it to `<data>/settings.toml` at once,
-keeping every other key, and every row applies at once, so none says
-"(restart)": the window follows the frame rate at its next turn
+keeping every other key, and every row but Halo 1 Maps applies at once,
+so only that one says "(restart)": the window follows the frame rate at its next turn
 (`app::fps::FpsControl`), the view backend makes its targets again at the
 next frame boundary on the render thread (`ScaledBackend::follow_scale`,
 [high-resolution.md](../graphics/high-resolution.md)), and so does the lighting

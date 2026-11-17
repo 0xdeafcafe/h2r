@@ -23,3 +23,6 @@ scenario-edit = { path = "../scenario-edit", default-features = false }
 # Converted maps' bitmaps decoded against the base's (tests/disc_maps.rs).
 assets.workspace = true
 xiso.workspace = true
+# The player representation reader, checked in the retail XBE (tests/h2_globals.rs).
+xbe.workspace = true
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

@@ -627,6 +627,12 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    // The health model follows the sandbox the converted Halo 1 maps were
+    // just installed in (docs/game/health.md).
+    {
+        let (store, _) = setting_defs::load(&opts.data_root, &[]);
+        health::set_halo1_sandbox(setting_defs::halo1_sandbox(&store) == "h1");
+    }
     // A second campaign (docs/game/multiple-campaigns.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);

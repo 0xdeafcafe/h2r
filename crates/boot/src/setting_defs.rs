@@ -555,8 +555,11 @@ pub static HALO1_SANDBOX: Def = Def {
     apply: Apply::Restart,
     scope: Scope::Sim,
     tier: Tier::User,
-    // No row yet: `h2 settings` and settings.toml set it.
-    menu: None,
+    // Last on our Video screen, after Aim Assist (docs/game/settings-menu.md).
+    menu: Some(Menu {
+        screen: "video",
+        order: 60,
+    }),
 };
 
 /// The content variant [`HALO1_SANDBOX`] names in `store`: `h1` or `h2`.

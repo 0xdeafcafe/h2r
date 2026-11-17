@@ -271,7 +271,9 @@ Counts on the owner's discs (2026-11-17):
   AI kinds), and stubbed calls changing a30's flow (dialogue waits on
   `sound_impulse_time`, which is stubbed to 0);
 - the health pack on a grenade template; the cyborg as the player (needs
-  the globals' player biped, not located).
+  the globals' player biped: now located, `matg +0x138` elements 0 and 1;
+  `h1convert::globals::set_player_unit(set, cyborg, Players::Campaign)`
+  sets them, h1-multiplayer.md "Halo 1 sandbox").
 
 ## 8. Open questions
 

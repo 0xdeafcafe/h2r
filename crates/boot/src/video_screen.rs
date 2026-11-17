@@ -292,7 +292,8 @@ mod tests {
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
                 RowKind::Setting(PAD_MUTE.key),
-                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key)
+                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key),
+                RowKind::Setting(crate::setting_defs::HALO1_SANDBOX.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -304,7 +305,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 5);
+        assert_eq!(no_fov.rows(LIST).len(), 6);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
         // No Video screen: no Video row on Settings either.
@@ -477,8 +478,40 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
         assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "On"));
         assert_eq!(drawn(&m, LIST, 5), s("Aim Assist", "Auto"));
-        assert_eq!(drawn(&m, LIST, 6), None);
+        assert_eq!(drawn(&m, LIST, 6), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        assert_eq!(drawn(&m, LIST, 7), None);
         assert_eq!(drawn(&m, LIST, -1), None);
+    }
+
+    #[test]
+    fn the_halo1_maps_row_picks_the_sandbox_for_the_next_launch() {
+        use crate::setting_defs::{HALO1_SANDBOX, halo1_sandbox};
+        let dir = std::env::temp_dir().join(format!("h2-video-{}-sandbox", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = settings::path_in(&dir);
+        let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
+        let m = model(Arc::clone(&store), Switches::ALL).unwrap();
+        // The last Video row.
+        let row = m.rows(LIST).len() as i16 - 1;
+        assert_eq!(m.rows(LIST)[row as usize].kind, RowKind::Setting(HALO1_SANDBOX.key));
+        assert_eq!(drawn(&m, LIST, row), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        assert_eq!(
+            press(&m, LIST, row),
+            Chosen::Stepped("multiplayer.halo1_sandbox: h2 from the next launch".into())
+        );
+        assert_eq!(
+            drawn(&m, LIST, row),
+            s("Halo 1 Maps", "Halo 2 Sandbox (restart)")
+        );
+        // Saved for the next launch, when new maps are installed.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("halo1_sandbox = \"h2\""), "{saved}");
+        let again = Store::load(ALL, Some(&path), &|_| None, &[]).0;
+        assert_eq!(halo1_sandbox(&again), "h2");
+        press(&m, LIST, row);
+        assert_eq!(drawn(&m, LIST, row), s("Halo 1 Maps", "Halo 1 Sandbox"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -572,7 +605,7 @@ mod tests {
             ]
         );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(press(&m, LIST, 6), Chosen::Nothing);
+        assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 10), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
@@ -622,8 +655,15 @@ mod tests {
         ] {
             assert!(text(t), "{t:?}");
         }
-        // Every row applies at once: no "(restart)" text at all.
-        assert!(all.iter().all(|(_, s)| !s.contains("(restart)")), "{all:?}");
+        // Every row applies at once but Halo 1 Maps, whose values say
+        // "(restart)" while the saved one differs.
+        assert!(
+            all.iter()
+                .filter(|(_, s)| s.contains("(restart)"))
+                .all(|(_, s)| s.starts_with("Halo ") && s.contains(" Sandbox")),
+            "{all:?}"
+        );
+        assert!(text("Halo 1 Maps") && text("Halo 2 Sandbox (restart)"));
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
         ids.extend(

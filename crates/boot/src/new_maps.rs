@@ -159,7 +159,9 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
             .filter_map(|s| BaseEntry::from_slot(s).map(|b| (b, s)))
             .collect();
         let taken: Vec<u32> = bases.iter().map(|(b, _)| b.map_id).collect();
-        let ids = map_list::list_ids(&chosen.iter().map(|p| p.id).collect::<Vec<_>>(), &taken);
+        // A converted map's list ID is the same in both sandboxes
+        // (`Package::list_key`).
+        let ids = map_list::list_ids(&chosen.iter().map(|p| p.list_key).collect::<Vec<_>>(), &taken);
         let template = map_pack_meta(&content_root);
         // Without a base of its own, a map takes its flags and team counts
         // from the list's first retail map (lowest sort order): what the

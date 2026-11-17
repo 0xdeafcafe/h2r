@@ -221,6 +221,23 @@ pub fn prepare_halo1<R: Read + Seek>(
             applied.vehicles += 1;
         }
     }
+    // The player: Halo 1's multiplayer biped, converted like the objects.
+    let player = player_biped_name(h1);
+    let player_biped = match &player {
+        Some(n) => match objects.object(*b"bipd", n) {
+            Ok(k) => Some(added_datum(first + k)),
+            Err(w) => {
+                applied.unresolved.push(format!("player biped {n}: {w}"));
+                None
+            }
+        },
+        None => {
+            applied
+                .unresolved
+                .push("player biped: the map has no cyborg biped".into());
+            None
+        }
+    };
     let tags_out = objects.take();
     p.applied = applied;
     p.dropped = plan
@@ -232,7 +249,19 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.scenario = s;
     p.objects = Some(tags_out);
     p.objects_first = first;
+    p.player_biped = player_biped;
     Ok(p)
+}
+
+/// The Halo 1 map's multiplayer player biped: the `bipd` named
+/// `cyborg_mp`, else one named `cyborg`.
+pub fn player_biped_name(h1: &H1Map) -> Option<String> {
+    let bipeds = || h1.tags().iter().filter(|t| t.group.to_string() == "bipd");
+    let last = |n: &str| n.rsplit('\\').next().unwrap_or(n).to_ascii_lowercase();
+    bipeds()
+        .find(|t| last(&t.name) == "cyborg_mp")
+        .or_else(|| bipeds().find(|t| last(&t.name).contains("cyborg")))
+        .map(|t| t.name.clone())
 }
 
 /// [`super::convert`] for the Halo 1 sandbox.

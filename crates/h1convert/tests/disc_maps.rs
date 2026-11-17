@@ -396,9 +396,10 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
             eprintln!("    shader {h1s} -> {b}");
         }
         for c in &p.applied.collections {
-            let was = base.tag(c.id).ok().and_then(|t| t.name.clone());
-            eprintln!("    built {} in the slot of {was:?}", c.name);
+            eprintln!("    built {} as {:?}", c.name, c.id);
         }
+        let collections = p.applied.collections.clone();
+        let base_slots = base.index_slots() as usize;
         for d in p.applied.unresolved.iter().chain(&p.dropped) {
             eprintln!("    not placed: {d}");
         }
@@ -412,6 +413,23 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         };
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
+        // Built vehicle collections are added after the base's tags, at
+        // the datums the placements name; no base tag gives up its slot.
+        for c in &collections {
+            let t = m.tag(c.id).unwrap();
+            assert_eq!(t.group, FourCC(*b"vehc"), "{name}: {}", c.name);
+            assert_eq!(t.name.as_deref(), Some(c.name.as_str()), "{name}");
+            assert!(
+                c.id.index() >= base_slots,
+                "{name}: {} reuses a slot",
+                c.name
+            );
+        }
+        assert_eq!(
+            m.index_slots() as usize,
+            base_slots + collections.len(),
+            "{name}"
+        );
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
         // The engine compares every pair of clusters every tick: the
         // audibility element must cover them (the first Blood Gulch's crash).

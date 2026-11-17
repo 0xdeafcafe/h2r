@@ -1,0 +1,167 @@
+//! The player's biped in a converted map's globals (`matg`): which unit a
+//! player spawns as. Shared by the multiplayer converter (the Halo 1
+//! sandbox's cyborg) and the campaign converter (`h1campaign`).
+//!
+//! **The player representation block**, `matg +0x138` (count) / `+0x13c`
+//! (address), elements of `0xbc` bytes. The engine picks the player's unit
+//! in `0x0014f040` (E): EAX the player datum; the player's representation
+//! index is the byte at player `+0x88` (players at `[0x4e8c24]+0x44`,
+//! stride `0x21c`), clamped to the block's last element; when the game
+//! globals' mode (`[0x4e6948]+8`) is 2, multiplayer, index 0 becomes 2 and 1
+//! becomes 3. From the element it returns the tag datum at `+0xb4` and the
+//! word at `+0xb8` (`0x14f0c2`, `0x14f0c9`). Element `+0xb0` is that datum's
+//! group, so `+0xb0` is a tag reference (group, datum). D: on every
+//! multiplayer map of the disc the four elements' `+0xb0` references are
+//! `unit`/none, `unit`/none, `masterchief_mp`, `elite_mp`, and `+0xb8` is 0;
+//! on `01a_tutorial`, element 0 is `masterchief` and the rest none.
+//!
+//! So a multiplayer map's player unit is elements 2 and 3 (one per
+//! representation the profile picks), a campaign's elements 0 and 1.
+
+use map::build::{TagPayload, TagSet};
+use map::{FourCC, TagId};
+
+use crate::{Error, Result};
+
+/// `matg +0x138`: the player representation block (count, then address).
+pub const PLAYER_REPRESENTATION: usize = 0x138;
+/// Its element size (`imul 0xbc` at `0x0014f0bc`).
+pub const PLAYER_REPRESENTATION_SIZE: usize = 0xbc;
+/// The element's unit: a tag reference (group, then datum at `+0xb4`).
+pub const REPRESENTATION_UNIT: usize = 0xb0;
+/// The word read beside the unit (`0x14f0c9`); 0 on every disc map.
+pub const REPRESENTATION_UNIT_WORD: usize = 0xb8;
+
+/// Which game's player representations a map spawns from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Players {
+    /// Elements 0 and 1.
+    Campaign,
+    /// Elements 2 and 3: multiplayer maps the 0 and 1 a profile picks.
+    Multiplayer,
+}
+
+impl Players {
+    /// The elements this game's players are made from.
+    pub fn elements(self) -> [usize; 2] {
+        match self {
+            Players::Campaign => [0, 1],
+            Players::Multiplayer => [2, 3],
+        }
+    }
+}
+
+/// Makes `biped` the unit every player of `players` spawns as, in the
+/// globals of `set` (pinned, as `TagSet::from_map` leaves it). The word
+/// beside the unit is cleared. Returns the units it replaced.
+pub fn set_player_unit(set: &mut TagSet, biped: TagId, players: Players) -> Result<Vec<TagId>> {
+    let globals = set.globals;
+    let tag = set
+        .tag_mut(globals)
+        .ok_or(Error::Invalid("the set has no globals"))?;
+    let TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+        return Err(Error::Invalid("the base globals should be pinned"));
+    };
+    set_player_unit_in(bytes, *address, biped, players)
+}
+
+/// [`set_player_unit`] on the globals' bytes, whose first byte is at
+/// virtual `address`. The block must lie in the bytes.
+pub fn set_player_unit_in(
+    bytes: &mut [u8],
+    address: u32,
+    biped: TagId,
+    players: Players,
+) -> Result<Vec<TagId>> {
+    let word = |b: &[u8], at: usize| -> Result<u32> {
+        b.get(at..at + 4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .ok_or(Error::Invalid("the globals are too short"))
+    };
+    let count = word(bytes, PLAYER_REPRESENTATION)? as usize;
+    let first = word(bytes, PLAYER_REPRESENTATION + 4)?
+        .checked_sub(address)
+        .ok_or(Error::Invalid(
+            "the player representations lie outside the globals",
+        ))? as usize;
+    let mut old = Vec::new();
+    for e in players.elements() {
+        if e >= count {
+            return Err(Error::Invalid(
+                "the globals have too few player representations",
+            ));
+        }
+        let at = first + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_UNIT;
+        if at + 12 > bytes.len() {
+            return Err(Error::Invalid(
+                "the player representations lie outside the globals",
+            ));
+        }
+        old.push(TagId(word(bytes, at + 4)?));
+        bytes[at..at + 4].copy_from_slice(&FourCC(*b"bipd").as_u32().to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&biped.0.to_le_bytes());
+        let w = at - REPRESENTATION_UNIT + REPRESENTATION_UNIT_WORD;
+        bytes[w..w + 4].fill(0);
+    }
+    Ok(old)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invented globals: four representations right after a 0x284 root.
+    fn globals(address: u32) -> Vec<u8> {
+        let mut b = vec![0u8; 0x284 + 4 * PLAYER_REPRESENTATION_SIZE];
+        b[PLAYER_REPRESENTATION..PLAYER_REPRESENTATION + 4].copy_from_slice(&4u32.to_le_bytes());
+        b[PLAYER_REPRESENTATION + 4..PLAYER_REPRESENTATION + 8]
+            .copy_from_slice(&(address + 0x284).to_le_bytes());
+        for e in 0..4 {
+            let at = 0x284 + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_UNIT;
+            b[at + 4..at + 8].copy_from_slice(&(0xe000_0010 + e as u32).to_le_bytes());
+            b[at + 8..at + 12].copy_from_slice(&7u32.to_le_bytes());
+        }
+        b
+    }
+
+    fn unit(b: &[u8], e: usize) -> (u32, u32, u32) {
+        let at = 0x284 + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_UNIT;
+        let w = |o: usize| u32::from_le_bytes(b[at + o..at + o + 4].try_into().unwrap());
+        (w(0), w(4), w(8))
+    }
+
+    #[test]
+    fn multiplayer_players_spawn_as_the_biped_and_campaigns_keep_theirs() {
+        let mut b = globals(0x8000_1000);
+        let old = set_player_unit_in(
+            &mut b,
+            0x8000_1000,
+            TagId(0xe123_0042),
+            Players::Multiplayer,
+        )
+        .unwrap();
+        assert_eq!(old, [TagId(0xe000_0012), TagId(0xe000_0013)]);
+        let bipd = FourCC(*b"bipd").as_u32();
+        for e in [2, 3] {
+            assert_eq!(unit(&b, e), (bipd, 0xe123_0042, 0));
+        }
+        for e in [0, 1] {
+            assert_eq!(unit(&b, e), (0, 0xe000_0010 + e as u32, 7));
+        }
+        let mut c = globals(0x8000_1000);
+        set_player_unit_in(&mut c, 0x8000_1000, TagId(0xe123_0042), Players::Campaign).unwrap();
+        assert_eq!(unit(&c, 0), (bipd, 0xe123_0042, 0));
+        assert_eq!(unit(&c, 2), (0, 0xe000_0012, 7));
+    }
+
+    #[test]
+    fn a_block_outside_the_globals_or_too_short_is_refused() {
+        let mut b = globals(0x8000_1000);
+        assert!(set_player_unit_in(&mut b, 0x8000_2000, TagId(1), Players::Campaign).is_err());
+        b[PLAYER_REPRESENTATION..PLAYER_REPRESENTATION + 4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(set_player_unit_in(&mut b, 0x8000_1000, TagId(1), Players::Multiplayer).is_err());
+        assert!(set_player_unit_in(&mut b, 0x8000_1000, TagId(1), Players::Campaign).is_ok());
+        b.truncate(0x284 + PLAYER_REPRESENTATION_SIZE);
+        assert!(set_player_unit_in(&mut b, 0x8000_1000, TagId(1), Players::Campaign).is_err());
+    }
+}

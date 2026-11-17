@@ -70,6 +70,10 @@ pub struct Package {
     pub dir: PathBuf,
     pub manifest: Manifest,
     pub id: MapId,
+    /// What the map list keys this package by: [`Manifest::variants_key`]
+    /// for a package with variants (one list ID whichever is loaded), else
+    /// [`Self::id`].
+    pub list_key: MapId,
 }
 
 impl Package {
@@ -408,10 +412,17 @@ fn load(dir: &Path, sandbox: Option<&str>) -> Result<Package, ResolveError> {
         })?;
     // A converted map with one whole map per sandbox: load the chosen
     // variant, else the default (docs/game/h1-multiplayer.md).
-    let manifest = Manifest::from_toml(&text)?.select_variant(sandbox);
+    let full = Manifest::from_toml(&text)?;
+    let manifest = full.select_variant(sandbox);
     manifest.validate_in(&dir)?;
     let id = manifest.map_id();
-    Ok(Package { dir, manifest, id })
+    let list_key = full.variants_key().unwrap_or(id);
+    Ok(Package {
+        dir,
+        manifest,
+        id,
+        list_key,
+    })
 }
 
 /// `file` in package `dir`, opened, after checking it is a regular file
@@ -1235,8 +1246,11 @@ pub(crate) mod tests {
         let r = lib.resolve("h1_gulch", &mut &b""[..]).unwrap().unwrap();
         assert_eq!(read(&r, b""), h2);
         assert_ne!(lib.packages()[0].id, id_h1);
+        let key = lib.packages()[0].list_key;
         let lib = Library::open_with_sandbox(&t.0, Some("h1"));
         assert_eq!(lib.packages()[0].id, id_h1);
+        assert_eq!(lib.packages()[0].list_key, key, "one list key for both");
+        assert_ne!(key, id_h1);
         // Only the Halo 2 variant: that one, with its own MapId.
         write(&variant("h2", &h2));
         let mut lib = Library::open(&t.0);

@@ -19,14 +19,16 @@ use crate::sandbox::{H2Item, netgame_type, vehicle_class};
 pub struct NewCollection {
     /// Tag name: `multiplayer\single_vehicles\<role>`.
     pub name: String,
-    /// The index slot it takes (a tag the converted map no longer uses,
-    /// [`crate::slots::spare`]), by that tag's datum, which it keeps.
+    /// Its datum: the first of the `spare` datums [`apply`] is given (the
+    /// converter gives the slots after the base's, where the build adds
+    /// it).
     pub id: TagId,
     /// The vehicle (`vehi`) it spawns.
     pub vehicle: TagId,
     /// Model variant name, or the model's default.
     pub variant: Option<&'static str>,
-    /// The name of the base tag whose slot it takes.
+    /// The name of the base tag whose slot it takes; empty for an added
+    /// slot.
     pub replaces: String,
 }
 
