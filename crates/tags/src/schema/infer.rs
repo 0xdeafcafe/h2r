@@ -24,6 +24,22 @@
 //!    and before the selected file's index, with at least two distinct
 //!    values, all 4-aligned and not all multiples of 64 KiB.
 //!
+//! 5. **BSP descriptors.** Twelve bytes are one when every instance is all
+//!    zero or one of its map's BSP regions (file offset, size, load
+//!    address), and at least one is. Checked before raw pointers, which a
+//!    region's file offset would otherwise pass for.
+//!
+//! 6. **Plain words.** Of what is left, a 4-byte offset is a plain word
+//!    when some instance holds a value inside one of its map's address
+//!    spaces that is not 4-aligned: no pointer is, so the field is data
+//!    (packed indices) the relocation check need not treat as a pointer.
+//!
+//! 7. **Raw sizes.** After the layouts settle, each raw pointer is paired
+//!    with the free word of its element that is, in every instance with a
+//!    non-null pointer, nonzero and no larger than the distance to the next
+//!    raw pointer of that map into the same file (or the end of its raw
+//!    data); of those, the one with the least total slack.
+//!
 //! Offsets are claimed in that order, lowest first, and never overlap.
 //! Ambiguous fields (always zero, or mixed evidence) are left out; the
 //! relocation check ([`super::walk`]) then refuses any tag where such a word
@@ -79,6 +95,10 @@ pub struct MapSample {
     /// by raw-pointer selector (index 0 unused), when they are in the
     /// corpus; 0 when not (then pointers into them are not accepted).
     pub external: [u32; 4],
+    /// BSP regions: (file offset, size, load address).
+    pub bsps: HashSet<(u32, u32, u32)>,
+    /// Address spaces (metadata and BSP regions): `[start, end)`.
+    pub spaces: Vec<(u32, u32)>,
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -133,8 +153,27 @@ impl MapSample {
         let mut tags = Vec::new();
         let list: Vec<_> = map.tags().to_vec();
         let meta = map.metadata_space();
+        let mut bsps = HashSet::new();
+        let mut spaces: Vec<(u32, u32)> = meta
+            .iter()
+            .map(|s| (s.virtual_base, s.virtual_base.saturating_add(s.size)))
+            .collect();
         for t in &list {
             let Some(loc) = t.location else { continue };
+            if Some(loc.space) != meta {
+                let r = (
+                    loc.space.virtual_base,
+                    loc.space.virtual_base.saturating_add(loc.space.size),
+                );
+                if !spaces.contains(&r) {
+                    spaces.push(r);
+                }
+                bsps.insert((
+                    u32::try_from(loc.space.file_offset).unwrap_or(u32::MAX),
+                    loc.space.size,
+                    loc.space.virtual_base,
+                ));
+            }
             let bytes = map.read_tag_bytes(t.id)?;
             tags.push(SampleTag::new(
                 t.group,
@@ -161,6 +200,8 @@ impl MapSample {
             file_size: map.header().file_size,
             raw_end: map.header().index_offset,
             external: [0; 4],
+            bsps,
+            spaces,
         })
     }
 
@@ -272,7 +313,176 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
         }
         schema = next;
     }
+    pair_raw_sizes(&mut schema, maps);
     schema
+}
+
+/// Elements holding raw pointers, by group and block path: (map, tag,
+/// offset of the element in the tag).
+type RawElements = BTreeMap<(FourCC, Vec<u32>), HashSet<(usize, u32, u32)>>;
+
+#[allow(clippy::too_many_arguments)]
+fn raw_elements(
+    m: &MapSample,
+    mi: usize,
+    t: u32,
+    s: &Struct,
+    at: u32,
+    count: u32,
+    key: &mut (FourCC, Vec<u32>),
+    out: &mut RawElements,
+    depth: usize,
+) {
+    let tag = &m.tags[t as usize];
+    let n = u64::from(s.size) * u64::from(count);
+    if depth > 16 || u64::from(at) + n > tag.bytes.len() as u64 {
+        return;
+    }
+    let raw = s.fields.values().any(|f| matches!(f, Field::Raw));
+    for i in 0..count {
+        let e = at + i * s.size;
+        if raw && !out.entry(key.clone()).or_default().insert((mi, t, e)) {
+            continue;
+        }
+        for (&o, f) in &s.fields {
+            if let Field::Block(child) = f {
+                let c = u32_at(&tag.bytes, (e + o) as usize);
+                let a = u32_at(&tag.bytes, (e + o) as usize + 4);
+                let Some(u) = (c > 0).then(|| m.locate(t, a)).flatten() else {
+                    continue;
+                };
+                key.1.push(o);
+                let off = a - m.tags[u as usize].address;
+                raw_elements(m, mi, u, child, off, c, key, out, depth + 1);
+                key.1.pop();
+            }
+        }
+    }
+}
+
+/// Step 7: give every raw pointer its size word (see the module docs).
+fn pair_raw_sizes(schema: &mut Schema, maps: &[MapSample]) {
+    let mut elements = RawElements::new();
+    for (mi, m) in maps.iter().enumerate() {
+        for t in 0..m.tags.len() as u32 {
+            let g = m.tags[t as usize].group;
+            let Some(root) = schema.groups.get(&g) else {
+                continue;
+            };
+            raw_elements(m, mi, t, root, 0, 1, &mut (g, Vec::new()), &mut elements, 0);
+        }
+    }
+    let at_path = |schema: &Schema, (g, path): &(FourCC, Vec<u32>)| -> Option<Struct> {
+        let mut s = schema.groups.get(g)?;
+        for o in path {
+            match s.fields.get(o)? {
+                Field::Block(c) => s = c,
+                _ => return None,
+            }
+        }
+        Some(s.clone())
+    };
+    // Every raw pointer of each map, by file selector: the next one after
+    // a resource bounds its size.
+    let mut starts: Vec<[Vec<u32>; 4]> = vec![Default::default(); maps.len()];
+    for (key, els) in &elements {
+        let Some(s) = at_path(schema, key) else {
+            continue;
+        };
+        for &(mi, t, e) in els {
+            let b = &maps[mi].tags[t as usize].bytes;
+            for (&o, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Raw)) {
+                let v = u32_at(b, (e + o) as usize);
+                if let (false, true) = maps[mi].raw_ok(v) {
+                    starts[mi][(v >> 30) as usize].push(v & 0x3fff_ffff);
+                }
+            }
+        }
+    }
+    for per in &mut starts {
+        for v in per.iter_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+    }
+    // The next start skips the element's own pointers: a bitmap's first
+    // level of detail spans the levels after it.
+    let gap = |mi: usize, v: u32, own: &[u32]| -> u32 {
+        let m = &maps[mi];
+        let sel = (v >> 30) as usize;
+        let off = v & 0x3fff_ffff;
+        let list = &starts[mi][sel];
+        let end = if sel == 0 { m.raw_end } else { m.external[sel] };
+        let next = list[list.partition_point(|&x| x <= off)..]
+            .iter()
+            .copied()
+            .find(|&x| !own.contains(&(x | (v & 0xc000_0000))))
+            .unwrap_or(end);
+        next.min(end) - off
+    };
+    for (key, els) in &elements {
+        let Some(s) = at_path(schema, key) else {
+            continue;
+        };
+        let mut taken: HashSet<u32> = HashSet::new();
+        let mut pairs = Vec::new();
+        for (&r, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Raw)) {
+            let mut best: Option<(u64, u32)> = None;
+            for k in (0..s.size.saturating_sub(3)).step_by(4) {
+                let free = !taken.contains(&k)
+                    && !s
+                        .fields
+                        .iter()
+                        .any(|(&o, f)| o < k + 4 && k < o + f.width());
+                if !free {
+                    continue;
+                }
+                let mut slack = 0u64;
+                let mut any = false;
+                let ok = els.iter().all(|&(mi, t, e)| {
+                    let b = &maps[mi].tags[t as usize].bytes;
+                    let own: Vec<u32> = s
+                        .fields
+                        .iter()
+                        .filter(|(_, f)| matches!(f, Field::Raw))
+                        .map(|(&o, _)| u32_at(b, (e + o) as usize))
+                        .collect();
+                    let p = u32_at(b, (e + r) as usize);
+                    let v = u32_at(b, (e + k) as usize);
+                    match maps[mi].raw_ok(p) {
+                        (true, _) => true,
+                        (false, true) => {
+                            let g = gap(mi, p, &own);
+                            any = true;
+                            slack += u64::from(g.saturating_sub(v));
+                            v > 0 && v <= g
+                        }
+                        (false, false) => false,
+                    }
+                });
+                if ok && any && best.is_none_or(|(b, _)| slack < b) {
+                    best = Some((slack, k));
+                }
+            }
+            if let Some((_, k)) = best {
+                taken.insert(k);
+                pairs.push((k, r));
+            }
+        }
+        if pairs.is_empty() {
+            continue;
+        }
+        let mut s = schema.groups.get_mut(&key.0).expect("group");
+        for o in &key.1 {
+            match s.fields.get_mut(o) {
+                Some(Field::Block(c)) => s = c,
+                _ => unreachable!("path checked"),
+            }
+        }
+        for (k, r) in pairs {
+            s.fields.insert(k, Field::RawSize(r));
+        }
+    }
 }
 
 /// Refinement rounds after the first.
@@ -449,6 +659,24 @@ fn node(maps: &[MapSample], insts: &[Inst], depth: usize) -> Option<Struct> {
             }
         }
     }
+    // 5 (before 4). BSP descriptors.
+    for o in (0..(size as usize).saturating_sub(11)).step_by(4) {
+        if !free(&claimed, o, 12) {
+            continue;
+        }
+        let mut any = false;
+        let ok = elements().all(|(i, e)| {
+            let b = &tag(i).bytes;
+            let t = (u32_at(b, e + o), u32_at(b, e + o + 4), u32_at(b, e + o + 8));
+            let hit = sample(i).bsps.contains(&t);
+            any |= hit;
+            hit || t == (0, 0, 0)
+        });
+        if ok && any {
+            s.fields.insert(o as u32, Field::Bsp);
+            claimed[o..o + 12].fill(true);
+        }
+    }
     // 4. Raw-resource pointers: every instance null or a plausible offset,
     // and at least two distinct non-null values (one repeated constant is
     // too little evidence).
@@ -474,6 +702,24 @@ fn node(maps: &[MapSample], insts: &[Inst], depth: usize) -> Option<Struct> {
         // at least 4-aligned (bitmap pixels are 0x200-aligned).
         if ok && seen.len() >= 2 && (2..16).contains(&tz) {
             s.fields.insert(o as u32, Field::Raw);
+            claimed[o..o + 4].fill(true);
+        }
+    }
+    // 6. Plain words.
+    for o in (0..(size as usize).saturating_sub(3)).step_by(4) {
+        if !free(&claimed, o, 4) {
+            continue;
+        }
+        let odd = elements().any(|(i, e)| {
+            let v = u32_at(&tag(i).bytes, e + o);
+            !v.is_multiple_of(4)
+                && sample(i)
+                    .spaces
+                    .iter()
+                    .any(|&(lo, hi)| (lo..hi).contains(&v))
+        });
+        if odd {
+            s.fields.insert(o as u32, Field::Word);
             claimed[o..o + 4].fill(true);
         }
     }

@@ -61,6 +61,10 @@ pub struct Block {
     /// promises blocks with one key are identical. Retail caches share
     /// identical blocks between tags this way.
     pub share: Option<u64>,
+    /// Address phase: the block's address is `phase` modulo `align`
+    /// (default 0). A tag moved with its source layout keeps its old
+    /// address modulo 16, so its 16-aligned arrays stay aligned.
+    pub phase: u32,
 }
 
 /// One layout-dependent field of a [`Block`].
@@ -103,6 +107,18 @@ pub enum FixupKind {
         section: usize,
         /// Which value.
         field: BspField,
+    },
+    /// An 8-byte tag block or data reference into another tag's (or this
+    /// tag's own) bytes: `count`, then the placed address of `tag` plus
+    /// `offset`. Resolved once every tag is placed, so a tree can keep its
+    /// source layout: one flat block per tag, every pointer a `TagOffset`.
+    TagOffset {
+        /// Count (or byte length) written first.
+        count: u32,
+        /// The tag whose bytes hold the target (any metadata tag in the set).
+        tag: TagId,
+        /// Offset of the target in that tag.
+        offset: u32,
     },
 }
 
@@ -148,6 +164,7 @@ impl Block {
             align: 4,
             fixups: Vec::new(),
             share: None,
+            phase: 0,
         }
     }
     /// A zero-filled block.
@@ -244,7 +261,7 @@ impl FixupKind {
     }
     fn width(&self) -> u32 {
         match self {
-            Self::Block { .. } | Self::Data(_) | Self::TagRef(_) => 8,
+            Self::Block { .. } | Self::Data(_) | Self::TagRef(_) | Self::TagOffset { .. } => 8,
             _ => 4,
         }
     }
@@ -265,6 +282,15 @@ pub enum TagPayload {
     },
     /// A block tree the builder lays out.
     Built(Block),
+    /// No bytes of its own: the index entry has size 0 and the address of
+    /// `tag` plus `offset`, wherever that tag lands. Retail caches have such
+    /// tags (whole tags the compiler shared).
+    Alias {
+        /// The tag whose bytes this one shares (pinned or built).
+        tag: TagId,
+        /// Offset into that tag.
+        offset: u32,
+    },
 }
 
 /// A live tag in a [`TagSet`].
@@ -374,9 +400,10 @@ pub struct TagSet {
     /// relocated retail tags away from their old addresses while reusing
     /// the space they freed.
     pub reverse_built: bool,
-    /// Enforce [`max_metadata_size`] (default true). Off only for offline
-    /// round trips of maps already at the bound: the bound is the largest
-    /// retail map of the type, not a measured engine limit.
+    /// Enforce [`max_metadata_size`] (default true), or the pinned source
+    /// map's own total if that is larger. Off only for offline round trips
+    /// that grow a map at the bound: the bound is the largest retail map of
+    /// the type, not a measured engine limit.
     pub check_tag_memory: bool,
 }
 
@@ -503,6 +530,13 @@ impl TagSet {
             .tag
             .as_mut()
             .filter(|t| t.id == id)
+    }
+    /// The live tag of `group` named `name`.
+    pub fn find(&self, group: FourCC, name: &str) -> Option<TagId> {
+        self.slots.iter().find_map(|s| {
+            let t = s.tag.as_ref()?;
+            (t.group == group && s.name.as_deref() == Some(name)).then_some(t.id)
+        })
     }
     /// The string ID for `value`, adding it to the table if needed.
     pub fn intern(&mut self, value: &str) -> Result<u32> {
@@ -753,6 +787,13 @@ fn intern(
     lookup.insert(value.to_owned(), strings.len() - 1);
     Ok((strings.len() - 1, true))
 }
+/// The first address at or after `at` that is `phase` modulo `align`.
+fn phase_up(at: u64, align: u32, phase: u32) -> u64 {
+    let a = u64::from(align.max(1));
+    let p = u64::from(phase) % a;
+    at + (p + a - at % a) % a
+}
+
 fn round_up(n: u64, align: u64) -> u64 {
     n.div_ceil(align) * align
 }
@@ -792,6 +833,9 @@ struct Region {
     cursor: usize,
     /// Addresses of shared blocks placed so far, by key.
     shared: HashMap<u64, u32>,
+    /// `TagOffset` address words to patch once tags are placed: (byte
+    /// position in `bytes`, tag, offset).
+    deferred: Vec<(usize, TagId, u32)>,
 }
 impl Region {
     fn new(base: u32, bytes: Vec<u8>) -> Self {
@@ -801,12 +845,13 @@ impl Region {
             bytes,
             cursor,
             shared: HashMap::new(),
+            deferred: Vec::new(),
         }
     }
-    fn alloc(&mut self, len: usize, align: u32) -> Result<u32> {
+    fn alloc(&mut self, len: usize, align: u32, phase: u32) -> Result<u32> {
         check_align(align)?;
         let at = u64::from(self.base) + self.cursor as u64;
-        let start = round_up(at, align.into());
+        let start = phase_up(at, align, phase);
         let end = start + len as u64;
         if end > 1 << 32 {
             return Err(Error::Limit);
@@ -848,7 +893,7 @@ impl Region {
         {
             return Ok(a);
         }
-        let addr = self.alloc(block.bytes.len(), block.align)?;
+        let addr = self.alloc(block.bytes.len(), block.align, block.phase)?;
         if let Some(k) = block.share {
             self.shared.insert(k, addr);
         }
@@ -929,6 +974,10 @@ impl Region {
                             selector << 30 | offset
                         }
                     };
+                }
+                FixupKind::TagOffset { count, tag, offset } => {
+                    words[0] = *count;
+                    self.deferred.push((start + at + 4, *tag, *offset));
                 }
                 FixupKind::Bsp { section, field } => {
                     let (offset, size, address) = *r
@@ -1140,6 +1189,9 @@ impl<'a> Builder<'a> {
                 }
                 None => 0,
             };
+            if !region.deferred.is_empty() {
+                return Err(Error::Invalid("tag offsets are only for ordinary metadata"));
+            }
             let used = region.bytes.len() as u32;
             put(&mut region.bytes, 0, used);
             put(&mut region.bytes, 4, bsp_addr);
@@ -1234,13 +1286,15 @@ impl<'a> Builder<'a> {
                     continue;
                 }
                 let align = root.max_align();
+                let phase = root.phase;
                 let size = {
-                    let mut dry = Region::new(0, Vec::new());
+                    // Based at the root's phase, so the root starts at 0.
+                    let mut dry = Region::new(phase % align.max(1), Vec::new());
                     dry.emit_in(root, &resolve, Some(&meta.shared))?;
                     dry.bytes.len()
                 };
                 let fit = holes.iter().enumerate().find_map(|(h, &(lo, hi))| {
-                    let start = round_up((metadata_base as usize + lo) as u64, align.into())
+                    let start = phase_up((metadata_base as usize + lo) as u64, align, phase)
                         as usize
                         - metadata_base as usize;
                     (start + size <= hi).then_some((h, start))
@@ -1255,7 +1309,7 @@ impl<'a> Builder<'a> {
                     // Align the root to the tree's largest alignment so the
                     // layout matches the dry run.
                     None => {
-                        round_up((metadata_base as usize + end) as u64, align.into()) as usize
+                        phase_up((metadata_base as usize + end) as u64, align, phase) as usize
                             - metadata_base as usize
                     }
                 };
@@ -1267,6 +1321,36 @@ impl<'a> Builder<'a> {
                     append = meta.cursor;
                 }
                 tag_layout[i] = (addr, size as u32);
+            }
+        }
+        // Pointers into tags, now that every tag has its address.
+        for (pos, tag, offset) in std::mem::take(&mut meta.deferred) {
+            let i = tag.index();
+            let ok = set.tag(tag).is_some();
+            let (addr, size) = tag_layout.get(i).copied().unwrap_or((0, 0));
+            if !ok || addr == 0 || offset >= size.max(1) {
+                return Err(Error::Invalid("tag offset outside its tag's metadata"));
+            }
+            put(&mut meta.bytes, pos, addr + offset);
+        }
+        // Aliases take their target's address.
+        for (i, slot) in set.slots.iter().enumerate() {
+            if let Some(TagEntry {
+                payload: TagPayload::Alias { tag, offset },
+                ..
+            }) = &slot.tag
+            {
+                let target = set.tag(*tag).map(|t| &t.payload);
+                let (addr, size) = tag_layout.get(tag.index()).copied().unwrap_or((0, 0));
+                if !matches!(
+                    target,
+                    Some(TagPayload::Pinned { .. } | TagPayload::Built(_))
+                ) || addr == 0
+                    || *offset >= size.max(1)
+                {
+                    return Err(Error::Invalid("alias of a tag with no metadata"));
+                }
+                tag_layout[i] = (addr + offset, 0);
             }
         }
         // The reader anchors the metadata region on slot 0's address.
@@ -1313,7 +1397,14 @@ impl<'a> Builder<'a> {
             .checked_add(metadata_size.into())
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(Error::Limit)?;
-        if set.check_tag_memory && memory_size > max_metadata_size(set.cache_type)? {
+        // A map rebuilt from a retail one may stay as large as its source:
+        // the downloadable maps are above the disc's largest (turf's total
+        // is 0x68b000 against the multiplayer 0x62c000), and load.
+        let source = pin.map_or(0, |p| {
+            u64::from(p.metadata_base) - u64::from(INDEX_VIRTUAL_BASE) + u64::from(p.metadata_size)
+        });
+        let bound = u64::from(max_metadata_size(set.cache_type)?).max(source);
+        if set.check_tag_memory && u64::from(memory_size) > bound {
             return Err(Error::Invalid(
                 "metadata exceeds the engine's tag memory for this cache type",
             ));

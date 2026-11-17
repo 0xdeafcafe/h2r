@@ -33,9 +33,19 @@ group bitm 0x4c align 4
   0x44 block 0x74 align 4
 ```
 
-A field line is `<offset> block <element size> align <n>`,
-`<offset> tagref`, `<offset> datum` or `<offset> string`. A data reference
-is a block of 1-byte elements with no fields. Groups whose name has a space
+A field line is one of:
+
+| Line | Bytes | Meaning |
+|---|---|---|
+| `<offset> block <element size> align <n>` | 8 | count, then the address of the child array (a data reference is a block of 1-byte elements with no fields) |
+| `<offset> tagref` | 8 | group, then datum |
+| `<offset> datum` | 4 | a datum |
+| `<offset> string` | 4 | a string ID |
+| `<offset> raw` | 4 | a raw-resource pointer (file selector in the top two bits) |
+| `<offset> size <raw offset>` | 4 | the byte length of the raw resource whose pointer is at `<raw offset>` in the same element |
+| `<offset> bsp` | 12 | a BSP region's file offset, size and load address (`scnr +0x210`) |
+| `<offset> word` | 4 | plain data whose values can fall in an address space but are not pointers (packed 16-bit indices with flag bits) |
+ Groups whose name has a space
 or an unprintable byte are written as 8 hex digits. Bytes with no field line
 are copied unchanged. `Schema::builtin()` parses the checked-in file;
 `Schema::parse` and `Schema::to_text` round-trip it.
@@ -81,6 +91,26 @@ after each round, every tag is walked with the schema so far, and the next
 round's boundaries are the arrays found plus the candidates outside them.
 It stops when the schema stops changing (at most 5 rounds).
 
+Then, on offsets still free:
+
+4. **Raw pointers**: see below.
+5. **BSP descriptors** (before raw pointers, which a region's file offset
+   would pass for): 12 bytes that are, in every instance, all zero or one
+   of the map's BSP regions (file offset, size, load address), at least
+   one matching. Only `scnr 0x210/0x0` qualifies.
+6. **Plain words**: a 4-byte offset where some instance holds a value
+   inside a map's address space that is **not 4-aligned**. No pointer is,
+   so the field is data. These are `coll`'s BSP 2D references and 2D node
+   children (`0x8012000c`, `0x8011800d`: two 16-bit indices with the
+   high bit as a leaf flag), and 41 others. Without this, the check took
+   them for undescribed pointers.
+7. **Raw sizes**: after the layouts settle, each raw pointer is paired
+   with the free word of its element that, in every instance with a
+   non-null pointer, is nonzero and no larger than the distance to the
+   next raw pointer of that map into the same file, skipping the
+   element's own other pointers (a bitmap's first level of detail spans
+   the later ones). Of those, the one with the least total slack wins.
+
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They
 are not marked unknown in the file. A field left out is copied as bytes,
@@ -102,9 +132,9 @@ use tags::schema::{Relocator, Schema, to_built};
 let r = Relocator::new(Schema::builtin(), &mut map)?; // reads the metadata once
 let tree: Result<map::build::Block, tags::schema::Refusal> = r.to_built(id);
 let ids = r.movable(); // tags that can all move together
-r.relocate(&mut set, &ids)?; // set = TagSet::from_map(&mut map)
+r.relocate(&mut set, &ids, true)?; // set = TagSet::from_map(&mut map); true: source layout
 // one-off: tags::schema::to_built(&mut map, id)?
-// load-test map: tags::schema::relocated_variant(&mut map, reverse)?
+// load-test map: tags::schema::relocated_variant(&mut map, reverse, source_layout)?
 ```
 
 `Relocator::check(id)` walks the tag with its group's layout and refuses
@@ -112,8 +142,15 @@ r.relocate(&mut set, &ids)?; // set = TagSet::from_map(&mut map)
 
 - every array inside the tag lies within it, and the arrays **tile the tag
   exactly**: no overlaps (exact duplicates, i.e. shared arrays, count once)
-  and no gaps other than zero padding shorter than 16 bytes
-  (`Uncovered`, `Overlap`, `OutOfBounds`);
+  and no gaps other than padding shorter than 16 bytes (`Uncovered`,
+  `Overlap`, `OutOfBounds`). Padding is: zero; all `0xcd` (the debug
+  heap's uninitialised fill, common in `phmo`, `coll`, `vehi`, `bipd`);
+  1 to 3 bytes up to the next word (after arrays of 2- and 6-byte
+  elements, often stale); or anything shorter than the alignment of the
+  array that follows, when that array starts on it (stale bytes before an
+  8- or 16-aligned array: `coll` planes and surfaces). No word in the tag
+  points into those bytes (the next rule), so dropping them loses nothing
+  reachable;
 - arrays outside the tag (shared blocks) each lie within one other tag;
 - **no word outside a known field holds an address** in the tag, the
   metadata region or any BSP region (`UnknownPointer`). This is what keeps
@@ -133,6 +170,17 @@ in a tag that is not moving is not copied at all, and its pointer stays.
 Tag references, datums, string IDs and raw pointers keep their bytes,
 which stay valid in the same tag set. `schema::remap` (with a `Remapper`)
 rewrites all four for a tree moved between maps.
+
+`relocate(set, ids, source_layout)` has two layouts. **Source layout**
+(`to_built_source`, what the shuffle uses by default) keeps each tag as
+one flat block of its own bytes, every block pointer a
+`FixupKind::TagOffset` into whichever tag holds the target, placed at its
+old address modulo 16. Its size never changes. **Depth-first**
+(`to_built_among`) re-lays children in the builder's order and drops
+padding; that is what a fresh map gets, but a relayout of a map at the
+tag-memory bound can grow it by a page. Either way, retail tags of index
+size 0 (aliases: their address is the start of, or a place in, another
+tag) become `TagPayload::Alias` and follow their owner.
 
 `movable()` returns the accepted tags, minus any tag that a staying tag
 points into: every aligned word of every unaccepted tag is scanned for
@@ -154,76 +202,144 @@ prints the words around one root offset.)
 
 **Shuffle** (`shuffle_every_relocatable_tag`), **V** on all 39 maps: for
 every map, every tag in `movable()` except slot 0 (the builder needs slot 0
-first) is replaced by its built tree. The trees are placed in reverse slot
-order, first-fit into the freed space, so children come out in the
-builder's depth-first order at new addresses. The rebuilt map then reads
+first) is replaced by its built tree (source layout by default,
+`H2_SHUFFLE_LAYOUT=depth` for depth-first). The trees are placed in
+reverse slot order, first-fit into the freed space, so they land at new
+addresses (slot order if that overflows). The rebuilt map then reads
 back with a valid checksum, the same index and string table, every pinned
-tag byte-identical at its address, every moved tag's **address-free tree**
+tag byte-identical at its address, every alias at its owner's new
+address, every moved tag's **address-free tree**
 (`read_tree`: element bytes with block addresses zeroed, children followed,
 including shared ones) identical to the original, and every tag of the
 groups `DecodedTag` supports (`bitm`, `scnr`, `matg`, `sbsp`, `mode`)
 decoding to the same `Debug` text once addresses are masked (or failing
-to decode in both maps). Results on
-2026-11-17:
+to decode in both maps).
 
-With shared blocks kept shared (2026-11-17, round 2), and the tag-memory
-check on:
+Round 3 (2026-11-17), tag-memory check on, **source layout**: **all 39
+maps** pass, every movable tag rebuilt. 31 maps place the trees in reverse
+slot order (0 to 1 tag per map back at its old address by chance). The 8
+maps at the bound (`08b`, `mainmenu`, `shared`, `single_player_shared`,
+`waterworks`, `turf`, `gemini`, `triplicate`) overflow in reverse order
+(fragmenting the freed space) and pass in slot order, where each tag lands
+back at its old address: re-emitted through the builder, but not moved.
+`turf`, `gemini` and `triplicate` were over the disc's multiplayer bound
+as shipped; the builder now allows a rebuild up to its source's own size.
+With `H2_SHUFFLE_LAYOUT=depth` the same 31 pass and those 8 overflow by one
+to six pages. No tree and no decoder result differed on any map.
 
-| Maps | Tags rebuilt | Notes |
+**Coverage** (`coverage_report`), **V**, round 3: 214,153 of 214,518 tags
+(99.8 %) pass the check (round 2: 90.3 %). 66 of 78 groups are fully
+relocatable, among them every group a converted Halo 1 map pulls from a
+Halo 2 base: `weap`, `vehi`, `bipd`, `hlmt`, `phmo`, `shad`, `effe`,
+`mode`, `bitm`, `jmad` (99.9 %), `coll` (99.6 %). The rest:
+
+| Group | Relocatable | Refusal |
 |---|---|---|
-| 31 (every campaign map but `08b`, and every MP and map-pack map but `waterworks`, `turf`, `gemini`, `triplicate`) | every movable tag, in reverse slot order | e.g. lockout 3,744/4,512, headlong 3,975/4,913 |
-| 8 (`08b`, `mainmenu`, `shared`, `single_player_shared`, `waterworks`, `turf`, `gemini`, `triplicate`) | none: over the bound | the test reports them and does not fail. Relayout adds a few KiB of alignment padding (`08b`: moved tags 0x1ab47c to 0x1abb5e bytes, memory 0x6ea000 to 0x6ed000), and these maps have no page to spare in either order. With the check off they pass (round 1) |
-
-Across all maps, 0 to 4 rebuilt tags per map landed back at their old
-address by chance. No tree and no decoder result differed on any map.
-
-**Coverage** (`coverage_report`), **V**: 193,676 of 214,518 tags (90.3 %)
-pass the check. 55 of 78 groups are fully relocatable. The rest:
-
-| Group | Relocatable | Main refusal |
-|---|---|---|
-| `shad` | 9,550 / 14,314 | uncovered bytes |
-| `prt3` | 4,047 / 6,557 | uncovered bytes |
-| `coll` | 245 / 3,616 | undescribed pointers deep in BSP-like blocks (`[1c,4,4,24]+0xc`), uncovered |
-| `phmo` | 75 / 2,874 | uncovered |
-| `jmad` | 2,677 / 2,831 | uncovered |
-| `vrtx` | 1,366 / 2,936 | uncovered |
-| `spas` | 979 / 3,472, `stem` 1,201 / 3,327 | uncovered |
-| `vehi` | 121 / 562, `bipd` 73 / 270, `crea` 9 / 18 | uncovered (object tails) |
-| `DECR` 91 / 100, `PRTM` 292 / 301, `clwd` 1 / 34, `sfx+` 0 / 39, `ugh!` 0 / 39 | | uncovered / undescribed pointers |
-| `hudg` 25 / 39, `scnr` 0 / 39 | | undescribed pointers (`scnr` +0x210 BSP descriptors point into BSP regions) |
-| `colo`, `foot`, `mulg` | | empty tags (size 0): nothing to move |
+| `coll` | 3,601 / 3,616 | undescribed pointers |
+| `prt3` 6,534 / 6,557, `spas` 3,458 / 3,472, `stem` 3,320 / 3,327, `jmad` 2,827 / 2,831 | | undescribed pointers |
+| `scnr` | 0 / 39 | each map differs: undiscovered arrays (zero runs of 0xd2 to 0xdac bytes) and a few undescribed pointers (`[1b8]+0x24`, `[50]`, `[160,48]`). The BSP descriptors themselves are now described (`bsp`). With one instance per map, inference has little to go on |
+| `ugh!` | 2 / 39 | undescribed pointers |
+| `colo`, `foot`, `mulg` | | aliases (size 0): they follow their owner |
 | `sbsp`, `ltmp` | 0 | in BSP regions, not attempted |
-
-"Uncovered" usually means an element size came out too small for some
-instances, or a block the inference missed (all its instances agree on
-nothing), so bytes past it are not reached. These cases are listed per
-place by `H2_SCHEMA_WHY=1`.
 
 Unit tests (`cargo test -p tags schema`), on an invented map: blocks, data
 references, tag references, datums, string IDs and raw pointers are
 inferred; the text form round-trips; tags move and read back identical; an
 undescribed pointer and a missing block field each keep a tag pinned;
 `remap` rewrites tag references (nulling dropped ones), datums, string IDs
-and raw pointers at every depth and leaves scalars alone.
+and raw pointers at every depth and leaves scalars alone; tags move in
+their source layout; a tag tree transplants into another map (references
+reused by name, the raw resource copied) and a tree with an unmovable tag
+is refused whole, leaving the destination unchanged.
 `cargo test -p map build` covers shared blocks placed once.
 
-## Raw-resource pointers (round 2, candidates)
+## Raw-resource pointers and sizes
 
 After the other fields, a 4-byte offset is a **raw pointer** when every
 instance is `0xffffffff`, 0, or a selector plus offset past the header and
 before the selected file's tag index (`mainmenu`, `shared` and
 `single_player_shared` sizes come from the corpus), with at least two
 distinct values, all 4-aligned and not all multiples of 64 KiB (round
-floats and flag words are; bitmap pixels are 0x200-aligned). 60 fields
-qualify, among them the bitmap LOD pointers (`bitm` `0x44/0x1c..0x24`),
-the `matg` locale-table offsets, `mode` section offsets and `ugh!`
-permutations. The rule cannot tell an offset from a **size** with the same
-properties: `scnr 0x210/0x4` (BSP region size) and probably some `sbsp`,
-`vehi` and `weat` fields are sizes. Raw fields get no fixup, so relocation
-inside a map is unaffected (and a raw field holding an address still makes
-the tag refused). They matter only to `remap` when moving tags between
-maps; check them before trusting a transplant.
+floats and flag words are; bitmap pixels are 0x200-aligned). 57 fields
+qualify. 38 have a paired size (step 7). The pairs are right where they can
+be checked against the decoders: `bitm` levels 1 and 2 (`0x20`/`0x38`,
+`0x24`/`0x3c`), `mode` sections, `jmad` resources, `ugh!`, `DECR`, `PRTM`.
+Gaps:
+
+- `bitm 0x44/0x1c` (level 0, size at `0x34`) is not paired: some instance
+  breaks the "no larger than the next pointer" rule.
+- Some pairs in `matg` and `scnr` (one instance per map) are noise.
+- The rule cannot tell an offset from a size with the same properties.
+  Some `sbsp`, `vehi` and `weat` "raw" fields are probably sizes.
+
+Raw fields get no fixup inside a map. They matter to `remap`, and the
+transplant copies local resources by them (next section).
+
+## Transplant (`tags::schema::transplant`)
+
+```rust
+use tags::schema::{Schema, transplant::transplant};
+
+let mut set = map::build::TagSet::from_map(&mut dst_map)?;
+match transplant(Schema::builtin(), &mut src_map, root, &mut set)? {
+    Ok(report) => { /* report.ids: source -> destination datums */ }
+    Err(refused) => { /* tags of the tree the schema cannot move; set unchanged */ }
+}
+let (bytes, _) = set.build()?;
+```
+
+`transplant` closes over tag references and datums from `root`. A tag the
+destination already has (same group and name) is reused, not copied, and
+not followed. The whole tree is checked first. If any tag is refused, the
+set is left unchanged and the refusals come back with their place. Each
+copied tag becomes a depth-first tree (`to_built`, shared arrays copied
+in), rewritten by `remap`:
+
+- tag references and datums go to the destination datums;
+- string IDs are interned by text;
+- a local raw pointer becomes a new local resource (`TagSet::add_raw`, at
+  the source offset's alignment up to 4 KiB);
+- pointers into the shared caches stay as they are.
+
+A resource's length is the larger of its paired size and the distance to
+the next raw pointer of the source map that is not one of the element's
+own (or a BSP region, or the tag index). Copying some padding is harmless.
+Size-0 aliases follow their owner, when they alias its start.
+
+**Proof** (`transplant_a_weapon_between_maps`, **V**, 2026-11-17): the
+retail map is built, read back, and every copied tag compared. Its
+**canonical form** must be identical: every element in visit order, block
+addresses zeroed, tag references and datums as the target's group and name,
+string IDs as text, each paired raw pointer as its resource's bytes. On top
+of that, decoders must agree:
+
+- bitmaps: every image's levels of detail, sizes and bytes;
+- render models: names, section structs, parts, subparts, indices and
+  every vertex buffer's bytes;
+- animation graphs: every resource's bytes.
+
+| Tag | Source → destination | Tree | Copied | Raw |
+|---|---|---|---|---|
+| `weap` SMG (default) | `00a_introduction` → `04b_floodlab` | 209 | 109 (52 `effe`, 21 `snd!`, 9 `bitm`, 6 `shad`, 3 `mode`, 3 `prt3`, ...), 100 reused | 40 external (`single_player_shared`) kept, all 40 compared |
+| `bipd` brute | `00a_introduction` → `01a_tutorial` | 199 | 161 (90 `snd!`, 23 `bitm`, 12 `shad`, 2 `phmo`, 2 `coll`, `clwd`, ...), 38 reused | 120 local copied (2.8 MB), 16 external; 134 compared |
+
+```sh
+H2_DISC=disc/halo2.iso H2_MAPPACK=disc/mappack.iso \
+  cargo test --release -p tags --test tag_schema transplant -- --ignored --nocapture
+# another tag / source map:
+H2_TRANSPLANT='bipd:objects\characters\brute\brute' H2_TRANSPLANT_FROM=00a_introduction ...
+```
+
+Every multiplayer map already has the SMG and every vehicle, so the test
+picks the first map of the source's cache type that lacks the tag.
+`floodcombat_elite` is refused: its tree reaches `sentinel_aggressor`'s
+`jmad`, one of the 4 `jmad` tags with an undescribed pointer
+(`[b4]+0x4`).
+
+**Not yet right for the game:** `snd!` tags index the map's sound
+gestalt (`ugh!`), which is per map. A transplanted sound keeps its source
+indices, so it would play the wrong data until the gestalt entries are
+merged. Nothing has been loaded in game.
 
 ## Load test
 
@@ -243,16 +359,16 @@ in its original order); bisect by building with fewer groups.
 
 ## Open
 
-- **Transplant** (copying a tag graph between maps) has no retail test
-  yet. `remap` is unit-tested; raw pointers are candidates (above), and
-  copying local raw data needs each resource's size, which the schema
-  does not pair with its pointer.
-- The 8 maps at the tag-memory bound need a relayout without padding
-  growth (e.g. emitting children in their source order).
-- The remaining groups above and BSP-region tags (`sbsp`, `ltmp`, which
-  need the builder's BSP sections).
-- Whether the engine accepts moved tags and depth-first child order is
-  untested in game (the `--relocate-all` load test).
+- `ugh!` merging for transplanted sounds (above); `scnr` (per-map
+  undiscovered arrays); the last 0.2 % of `coll`, `prt3`, `spas`, `stem`,
+  `jmad`; BSP-region tags (`sbsp`, `ltmp`, which need the builder's BSP
+  sections).
+- Raw sizes: `bitm` level 0 unpaired, noisy pairs in one-instance groups.
+- The 8 maps at the bound move only in place (slot order). Real movement
+  there needs a placement that does not fragment the freed space.
+- Whether the engine accepts moved tags, either child order, and the
+  relaxed padding rule is untested in game (the `--relocate-all` load
+  test).
 - Ambiguous fields are not marked unknown in the file. The per-tag check
   stands in for that. A new map whose tags put an address in such a field
   will be refused, not mis-relocated.

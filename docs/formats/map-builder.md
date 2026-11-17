@@ -63,6 +63,7 @@ and BSP sections. Each tag's payload is one of:
 | `Built(Block)` | A tree of blocks the builder lays out. Any address. |
 | `Pinned { address, bytes }` | Opaque bytes that must stay at one ordinary-metadata address, because they may hold pointers nobody has described. |
 | `Empty` | No ordinary metadata; index address and size are zero. Retail BSP and lightmap tags, whose bytes sit in a BSP region. |
+| `Alias { tag, offset }` | No bytes of its own: index size 0 and the address of `tag` plus `offset`, wherever that tag lands. Retail caches have such tags (whole tags the compiler shared, e.g. one `hlmt` standing for two names). |
 
 A `Block` is bytes, an alignment (default 4) and a list of fixups. A fixup
 names an offset in the block and what goes there:
@@ -77,6 +78,15 @@ names an offset in the block and what goes there:
 | `StringId(s)` | 4 | the string's ID, interning it if new |
 | `Raw(RawRef)` | 4 | `Local(raw)` the placed file offset; `External { file, offset }` the offset with the selector of `mainmenu.map`, `shared.map` or `single_player_shared.map`; `Null` is `ffffffff` |
 | `Bsp { section, field }` | 4 | a built BSP region's file offset, size or virtual base |
+| `TagOffset { count, tag, offset }` | 8 | count, then the placed address of `tag` plus `offset`: a block pointer into another tag's (or the tag's own) bytes, resolved after every tag is placed. Ordinary metadata only. |
+
+`Block::phase` (default 0) places a block at an address congruent to
+`phase` modulo its alignment instead of a multiple of it. With
+`TagOffset`, a retail tag can move as **one flat block in its source
+layout** (`tags::schema::Relocator::to_built_source`): its bytes as they
+are, every pointer a `TagOffset`, placed at its old address modulo 16 so
+every array inside keeps its alignment. Its size never changes, so a map
+already at the tag-memory bound still fits.
 
 Children are laid out after their parent, depth first, each at its own
 alignment, so a tag's tree is contiguous and the index size covers all of
@@ -84,7 +94,7 @@ it. The builder rejects fixups that overlap or run past their block, a
 block count that does not divide its child's bytes, and references to
 datums not in the set. Bytes without a fixup are copied unchanged, so a
 converter writes scalars directly and leaves only layout-dependent fields
-to fixups. `TagSet::add_tag` gives slot `n` the datum
+to fixups. `TagSet::find(group, name)` looks a tag up by name. `TagSet::add_tag` gives slot `n` the datum
 `(salt_base + n) << 16 | n`.
 
 Retail tags enter the set through `TagSet::from_map`, which pins every tag
@@ -142,7 +152,10 @@ zero for a map built from scratch.
 
 **Limits** (Design, from the engine checks in map-format.md): the file
 must stay under the per-type cache size limit, and `+0x1c` under
-`max_metadata_size(cache_type)` (the largest retail map of the type).
+`max_metadata_size(cache_type)` (the largest retail map of the type on the
+disc), or under the pinned source map's own `+0x1c` if that is larger: the
+map-pack maps `turf` (0x68b000), `gemini` and `triplicate` are above the
+multiplayer bound (0x62c000) as shipped, and load.
 Slots are capped at `0xffff`. A string ID must be under 128 bytes (its
 fixed slot) and its index under 2^24.
 
