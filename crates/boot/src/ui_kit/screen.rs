@@ -281,6 +281,12 @@ impl KitScreen {
         self.prompts = prompts.to_vec();
         self
     }
+    /// The opener-press guard ([`crate::ui_kit::input::OPENER_GUARD`] by
+    /// default).
+    pub fn guard(mut self, guard: std::time::Duration) -> Self {
+        self.guard = OpenerGuard::new(guard);
+        self
+    }
     /// More rows than the list shows is meant: it scrolls.
     pub fn scrolls(mut self) -> Self {
         self.scrolls = true;
@@ -295,10 +301,13 @@ impl KitScreen {
     fn description_slot(&self, row: usize) -> u32 {
         1 + 2 * self.rows.len() as u32 + row as u32
     }
+    fn footer_slot(&self) -> u32 {
+        self.description_slot(self.rows.len())
+    }
     /// The slots the screen needs: fails the build of its class when its
     /// family is too small.
     pub fn slots(&self) -> u32 {
-        self.description_slot(self.rows.len())
+        self.footer_slot() + 1
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -349,11 +358,11 @@ impl KitScreen {
             "{}: opening the keyboard for row {row} ({} characters)",
             self.name, max_chars
         );
-        cx.call(
-            GuestCall::new(crate::signin_keyboard::OPEN)
-                .ecx(0)
-                .args([KEYBOARD_CONTEXT, buffer, u32::from(*max_chars) + 1]),
-        )
+        cx.call(GuestCall::new(crate::signin_keyboard::OPEN).ecx(0).args([
+            KEYBOARD_CONTEXT,
+            buffer,
+            u32::from(*max_chars) + 1,
+        ]))
         .await?;
         Ok(())
     }
@@ -391,6 +400,23 @@ impl KitScreen {
         }
     }
 
+    /// The class's action: A on a row (through its press), X and Start.
+    pub fn action(self: &Arc<Self>) -> Action {
+        let me = Arc::clone(self);
+        Arc::new(move |cx, screen| {
+            let me = Arc::clone(&me);
+            Box::pin(async move { me.act(&cx, screen).await })
+        })
+    }
+    /// The class's destructor step: what waited for the free runs.
+    pub fn on_free(self: &Arc<Self>) -> OnFree {
+        let me = Arc::clone(self);
+        Arc::new(move |cx, screen| {
+            let me = Arc::clone(&me);
+            Box::pin(async move { me.freed(cx, screen).await })
+        })
+    }
+
     /// The list class showing it: A on the row (or X, Start) through the
     /// action, left and right on value rows, the free told.
     pub fn class(self: &Arc<Self>) -> ListClass {
@@ -401,25 +427,19 @@ impl KitScreen {
             self.slots(),
             self.texts.family.len
         );
-        let me = Arc::clone(self);
-        let action: Action = Arc::new(move |cx, screen| {
-            let me = Arc::clone(&me);
-            Box::pin(async move { me.act(&cx, screen).await })
-        });
-        let me = Arc::clone(self);
-        let on_free: OnFree = Arc::new(move |cx, screen| {
-            let me = Arc::clone(&me);
-            Box::pin(async move { me.freed(cx, screen).await })
-        });
-        let mut c = ListClass::with_rows(self.feature, self.name, Arc::clone(self) as Arc<dyn Rows>)
-            .action(action)
-            .sideways()
-            .on_free(on_free);
+        let mut c =
+            ListClass::with_rows(self.feature, self.name, Arc::clone(self) as Arc<dyn Rows>)
+                .action(self.action())
+                .sideways()
+                .on_free(self.on_free());
         if let Some(b) = self.description {
             c = c.description(b);
         }
         if let Some(l) = self.layout {
             c = c.layout(l);
+        }
+        if let Some(text) = self.spec().footer_text() {
+            c = c.footer(self.texts.set(self.footer_slot(), &text));
         }
         c
     }
@@ -441,10 +461,7 @@ impl Rows for KitScreen {
         let mut v = vec![(LABEL_SLOT, self.texts.set(Self::label_slot(i), &label))];
         if self.style == ValueStyle::Column {
             let value = value.unwrap_or_default();
-            v.push((
-                VALUE_SLOT,
-                self.texts.set(Self::label_slot(i) + 1, &value),
-            ));
+            v.push((VALUE_SLOT, self.texts.set(Self::label_slot(i) + 1, &value)));
         }
         v
     }
@@ -528,6 +545,7 @@ impl Describe for KitScreen {
             Input::Start,
         ];
         s.scrolls = self.scrolls;
+        s.footer = true;
         s
     }
 }
@@ -538,7 +556,8 @@ pub struct KitTexts(pub Arc<KitScreen>);
 
 impl feature::Feature for KitTexts {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("ui-kit-texts", "A kit screen's texts").doc("docs/game/ui-screens.md")
+        feature::Manifest::new("ui-kit-texts", "A kit screen's texts")
+            .doc("docs/game/ui-screens.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         let s = &self.0;
@@ -546,8 +565,7 @@ impl feature::Feature for KitTexts {
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
         s.texts.base.store(base, Ordering::SeqCst);
         let me = Arc::clone(s);
-        b.locale()
-            .source(s.name, move |id| me.texts.address(id));
+        b.locale().source(s.name, move |id| me.texts.address(id));
         Ok(())
     }
 }
@@ -572,7 +590,12 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
             .describe("Grunts' heads pop."),
         )
         .row(Row::info("Status", || "Ready".into()))
-        .row(Row::text("Name", 15, || "Chief".into(), |t| format!("typed {t:?}")))
+        .row(Row::text(
+            "Name",
+            15,
+            || "Chief".into(),
+            |t| format!("typed {t:?}"),
+        ))
         .row(Row::action("Start", || Then::Close).describe("Start the level."))
         .prompts(&[
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
@@ -585,7 +608,6 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn rows_show_through_the_familys_slots() {
@@ -605,9 +627,10 @@ mod tests {
         s.texts(1);
         assert_eq!(t(IDS.id(4)), "Ready");
         let d = Rows::description(&s, 0).unwrap();
+        assert_eq!(t(d), "Grunts' heads pop.", "the legend is the footer's");
         assert_eq!(
-            t(d),
-            "Grunts' heads pop.\n\n\u{e10a}\u{e10b} Change   \u{e100} Start   \u{e101} Back"
+            s.spec().footer_text().unwrap(),
+            "\u{e10a}\u{e10b} CHANGE  \u{e100} START  \u{e101} BACK"
         );
         assert!(s.slots() <= IDS.len);
     }
@@ -638,7 +661,162 @@ mod tests {
         let (s, _) = example();
         let spec = s.spec();
         assert_eq!(spec::check_fallback(&spec), vec![]);
-        assert!(s.describe(4).unwrap().starts_with("kit.example: \"Example\"; rows: [0] \"Grunts\" = \"< On >\""));
+        assert!(
+            s.describe(4)
+                .unwrap()
+                .starts_with("kit.example: \"Example\"; rows: [0] \"Grunts\" = \"< On >\"")
+        );
         assert!(s.guard.last().is_some(), "opening starts the guard");
+    }
+
+    /// The screen on the runner, as the game drives it: opened (the
+    /// loader asks `describe`), right on the value row through the event
+    /// slot, B handed to the Controls handler, A on Start through the row
+    /// press (closing, nothing else), then the destructor slot, where the
+    /// work that waited runs; and it runs once.
+    #[test]
+    fn a_full_press_sequence_on_the_runner() {
+        use crate::list_class::{BUTTON_EVENT, RIGHT_EVENT, destructor, event, row_chosen};
+        use engine::entry::{EntryFuture, GuestCall as Gc, Regs, Ret, testing};
+        use engine::points;
+        use engine::testing::FakeGuest;
+        use engine::view::ui as vui;
+
+        const SCREEN: u32 = 0x0010_0000;
+        const EV: u32 = 0x0020_0000;
+        const STACK: u32 = 0x0030_0800;
+        const CHAIN: u32 = 0x0040_0000;
+        const HANDLER: u32 = 0x0000_5010;
+        const DTOR: u32 = 0x0000_5000;
+        const STARTED: u32 = 0x0077_0000;
+
+        let (s, grunts) = example();
+        let work: After = Arc::new(|cx| {
+            Box::pin(async move {
+                cx.call(Gc::new(STARTED)).await?;
+                Ok(())
+            })
+        });
+        let s = Arc::new(
+            KitScreen {
+                rows: Vec::new(),
+                ..s
+            }
+            .row(Row::value(
+                "Grunts",
+                &["On", "Off"],
+                {
+                    let g = Arc::clone(&grunts);
+                    move || g.load(Ordering::SeqCst)
+                },
+                {
+                    let g = Arc::clone(&grunts);
+                    move |v| {
+                        g.store(v, Ordering::SeqCst);
+                        format!("grunts {v}")
+                    }
+                },
+            ))
+            .row(Row::action("Start", move || {
+                Then::CloseThen(Arc::clone(&work))
+            }))
+            .guard(std::time::Duration::ZERO),
+        );
+        let guest = || {
+            let mut g = FakeGuest::new();
+            g.map(SCREEN, 0x1000)
+                .map(EV, 0x100)
+                .map(STACK - 0x800, 0x1000)
+                .map(CHAIN, 0x100);
+            g.put_u32(SCREEN + lifecycle::SCREEN_WINDOW, 5)
+                .put_u32(SCREEN + lifecycle::SCREEN_SLOT, 4);
+            g
+        };
+        let on = |ecx: u32| Regs {
+            ecx,
+            esp: STACK,
+            ..Default::default()
+        };
+
+        // Opened.
+        assert!(
+            s.describe(2)
+                .unwrap()
+                .starts_with("kit.example: \"Example\"")
+        );
+
+        // Right on row 0: the focused row is asked, the value steps.
+        let mut g = guest();
+        g.put_u32(EV, RIGHT_EVENT).put_u32(STACK + 4, EV);
+        let (rows, act) = (Arc::clone(&s) as Arc<dyn Rows>, s.action());
+        let f = move |cx| -> EntryFuture {
+            Box::pin(event(
+                cx,
+                HANDLER,
+                Some(act.clone()),
+                None,
+                Some(rows.clone()),
+            ))
+        };
+        let run = testing::run(&f, g, on(SCREEN), |c, _| Regs {
+            eax: if c.target == points::LIST_FOCUSED_ROW.base {
+                0xe000_0000
+            } else {
+                0
+            },
+            ..Default::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
+        assert_eq!(
+            run.calls,
+            [Gc::new(points::LIST_FOCUSED_ROW.base).eax(SCREEN + vui::LIST)]
+        );
+        assert_eq!(grunts.load(Ordering::SeqCst), 1);
+
+        // B: not ours; the Controls handler closes as on any screen.
+        let mut g = guest();
+        g.put_u32(EV, BUTTON_EVENT)
+            .put_u32(EV + 8, 1)
+            .put_u32(STACK + 4, EV);
+        let (rows, act) = (Arc::clone(&s) as Arc<dyn Rows>, s.action());
+        let f = move |cx| -> EntryFuture {
+            Box::pin(event(
+                cx,
+                HANDLER,
+                Some(act.clone()),
+                None,
+                Some(rows.clone()),
+            ))
+        };
+        let run = testing::run(&f, g, on(SCREEN), |_, _| Regs::default());
+        assert_eq!(run.calls, [Gc::new(HANDLER).ecx(SCREEN).args([EV])]);
+
+        // A on Start (row 1): the press leaves the close to the action,
+        // which closes the screen and nothing else.
+        let mut g = guest();
+        g.put_u32(STACK + 4, CHAIN).put_u32(STACK + 8, CHAIN + 0x40);
+        g.put_u16(CHAIN + 0x40, 1);
+        let (rows, act) = (Arc::clone(&s) as Arc<dyn Rows>, s.action());
+        let f =
+            move |cx| -> EntryFuture { Box::pin(row_chosen(cx, rows.clone(), Some(act.clone()))) };
+        let run = testing::run(&f, g, on(SCREEN + vui::LIST), |_, _| Regs::default());
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        assert_eq!(run.calls, [Gc::new(lifecycle::SCREEN_CLOSE).eax(4).ecx(5)]);
+        assert!(s.after.closing(SCREEN));
+
+        // Freed: the Controls destructor, then what waited; a second free
+        // runs nothing more.
+        for expect in [
+            vec![Gc::new(DTOR).ecx(SCREEN).args([1]), Gc::new(STARTED)],
+            vec![Gc::new(DTOR).ecx(SCREEN).args([1])],
+        ] {
+            let mut g = guest();
+            g.put_u32(STACK + 4, 1);
+            let free = s.on_free();
+            let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, DTOR, free.clone())) };
+            let run = testing::run(&f, g, on(SCREEN), |_, _| Regs::default());
+            assert_eq!(run.result, Ok(Ret::new(0, 4)));
+            assert_eq!(run.calls, expect);
+        }
     }
 }

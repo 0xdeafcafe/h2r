@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::list_class::{ListLayout, TextBlock};
 use crate::ui_kit::ids;
-use crate::ui_kit::input::{Input, Prompt, legend, legend_named};
+use crate::ui_kit::input::{Input, Prompt, footer_legend, legend, legend_named};
 
 /// What a row is.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -124,9 +124,7 @@ impl RowSpec {
     pub fn shown_value(&self) -> Option<String> {
         match &self.kind {
             RowKind::Action => None,
-            RowKind::Value { values, current } => {
-                Some(format!("< {} >", values.get(*current)?))
-            }
+            RowKind::Value { values, current } => Some(format!("< {} >", values.get(*current)?)),
             RowKind::Info { value } | RowKind::Text { value, .. } => {
                 (!value.is_empty()).then(|| value.clone())
             }
@@ -172,6 +170,8 @@ pub enum ListPlace {
     Moved {
         skin: i16,
         anchor: [i16; 2],
+        /// The Controls tag's frame art kept: bitmaps left of this x.
+        bitmaps_left_of: i16,
     },
 }
 
@@ -180,6 +180,7 @@ impl From<Option<ListLayout>> for ListPlace {
         l.map_or(ListPlace::Controls, |l| ListPlace::Moved {
             skin: l.skin,
             anchor: l.anchor,
+            bitmaps_left_of: l.bitmaps_left_of,
         })
     }
 }
@@ -220,6 +221,10 @@ pub struct ScreenSpec {
     pub inputs: Vec<Input>,
     /// More rows than the list shows is meant (the list scrolls).
     pub scrolls: bool,
+    /// The legend goes in the footer band (the screen's button legend,
+    /// `list_class::FOOTER`), as on the game's own screens, rather than
+    /// under the description.
+    pub footer: bool,
     /// The screen's own ids (title and the like).
     pub ids: Vec<u32>,
 }
@@ -237,13 +242,22 @@ impl ScreenSpec {
             prompts: Vec::new(),
             inputs: Vec::new(),
             scrolls: false,
+            footer: false,
             ids: Vec::new(),
         }
+    }
+    /// The footer legend as drawn, when the prompts go there.
+    pub fn footer_text(&self) -> Option<String> {
+        (self.footer && !self.prompts.is_empty()).then(|| footer_legend(&self.prompts))
     }
     /// The focused row's description with the legend under it, as drawn.
     pub fn description_text(&self) -> Option<String> {
         let row = self.rows.get(self.focus)?.description.clone();
-        let legend = legend(&self.prompts);
+        let legend = if self.footer {
+            String::new()
+        } else {
+            legend(&self.prompts)
+        };
         match (row, legend.is_empty()) {
             (Some(d), true) => Some(d),
             (Some(d), false) => Some(format!("{d}\n\n{legend}")),
@@ -292,6 +306,9 @@ pub struct Room<'a> {
     pub description_line: i32,
     /// Whether the fonts draw a code point (the icon range included).
     pub has_glyph: &'a dyn Fn(char) -> bool,
+    /// The footer legend's width, and the text's width in its font.
+    pub footer: i32,
+    pub footer_width: &'a dyn Fn(&str) -> i32,
 }
 
 /// Without the disc: the Controls list's five rows, the skin's 190-unit
@@ -304,6 +321,8 @@ pub mod fallback {
         (s.chars().count() as i32 * 15 + 1) / 2
     }
     pub const LINE: i32 = 15;
+    /// The footer legend's room: header layout 0's second rectangle.
+    pub const FOOTER: i32 = 300;
 }
 
 /// One thing wrong with a screen.
@@ -319,7 +338,11 @@ pub enum Finding {
         room: i32,
     },
     /// The description (with the legend) runs past its rectangle.
-    Description { row: usize, lines: usize, room: usize },
+    Description {
+        row: usize,
+        lines: usize,
+        room: usize,
+    },
     /// A string id no registered family owns.
     Id { row: Option<usize>, id: u32 },
     /// A row the screen cannot act on.
@@ -328,6 +351,8 @@ pub enum Finding {
     Glyph { row: Option<usize>, ch: char },
     /// The focus is past the rows.
     Focus { focus: usize, rows: usize },
+    /// The footer legend is wider than the footer's text.
+    Footer { text: String, width: i32, room: i32 },
 }
 
 impl std::fmt::Display for Finding {
@@ -353,6 +378,9 @@ impl std::fmt::Display for Finding {
                 write!(f, "row {row:?}: U+{:04X} is not in the font", *ch as u32)
             }
             Finding::Focus { focus, rows } => write!(f, "focus {focus} past {rows} rows"),
+            Finding::Footer { text, width, room } => {
+                write!(f, "footer {text:?} is {width} wide in {room}")
+            }
         }
     }
 }
@@ -463,6 +491,17 @@ pub fn check(spec: &ScreenSpec, room: &Room<'_>) -> Vec<Finding> {
             _ => {}
         }
     }
+    if let Some(text) = spec.footer_text() {
+        glyphs(None, &text, &mut out);
+        let w = (room.footer_width)(&text);
+        if w > room.footer {
+            out.push(Finding::Footer {
+                text,
+                width: w,
+                room: room.footer,
+            });
+        }
+    }
     if let Some(d) = spec.description {
         let height = i32::from(d.rect[0]) - i32::from(d.rect[2]);
         let width = i32::from(d.rect[3]) - i32::from(d.rect[1]);
@@ -500,6 +539,8 @@ pub fn check_fallback(spec: &ScreenSpec) -> Vec<Finding> {
         description_width: &w,
         description_line: fallback::LINE,
         has_glyph: &|_| true,
+        footer: fallback::FOOTER,
+        footer_width: &w,
     };
     check(spec, &room)
 }
@@ -518,13 +559,17 @@ mod tests {
             description_width: w,
             description_line: 15,
             has_glyph: &|c| c != '\u{e1ff}',
+            footer: 300,
+            footer_width: w,
         }
     }
 
     #[test]
     fn a_sixth_row_needs_scroll_intent() {
         let mut s = ScreenSpec::new("t", "T");
-        s.rows = (0..6).map(|i| RowSpec::action(&format!("Row {i}"))).collect();
+        s.rows = (0..6)
+            .map(|i| RowSpec::action(&format!("Row {i}")))
+            .collect();
         let w = |t: &str| t.len() as i32 * 7;
         assert_eq!(
             check(&s, &room(&w)),

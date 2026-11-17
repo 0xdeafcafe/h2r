@@ -88,12 +88,18 @@ const ARROW_LABELS: u32 = ROW_LABEL_BASE + 0x80;
 pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
-/// The campaign page's buttons, under every description: the font's
-/// button glyphs (U+E10A and U+E10B the d-pad's left and right, U+E100 A,
-/// U+E101 B, as retail's own button legends write them; each icon set
-/// draws its own). Left or right toggles the focused skull; A (or X or
-/// Start) starts the level (`skulls_screen::continue_level`).
-pub const PROMPT: &str = "\u{e10a}\u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back";
+/// The campaign page's buttons, in the footer band where the game's own
+/// screens put theirs (`list_class::FOOTER`; "(A) SELECT  (B) BACK" is
+/// retail's `a_select_b_back`): the font's button glyphs (U+E10A and
+/// U+E10B the d-pad's left and right, U+E100 A, U+E101 B; each icon set
+/// draws its own), the words in capitals as retail's. Left or right
+/// toggles the focused skull; A (or X or Start) starts the level
+/// (`skulls_screen::continue_level`). Under the descriptions they ran 10
+/// of the 21 past the description's five lines (`ui_kit` preview,
+/// 2026-11-17).
+pub const PROMPT: &str = "\u{e10a}\u{e10b} TOGGLE  \u{e100} START LEVEL  \u{e101} BACK";
+/// The footer legend's id.
+pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 
 /// The reference layout: the campaign level select
 /// (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map,
@@ -259,11 +265,8 @@ pub fn row_of(i: usize) -> Option<i16> {
     ORDER.iter().position(|s| *s == i).map(|r| r as i16)
 }
 
-static DESCRIPTION_TEXTS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    (0..TOTAL)
-        .map(|i| format!("{}\n\n{PROMPT}", description(i)))
-        .collect()
-});
+static DESCRIPTION_TEXTS: LazyLock<Vec<String>> =
+    LazyLock::new(|| (0..TOTAL).map(description).collect());
 
 static FOUND_TEXTS: LazyLock<Vec<(usize, String)>> =
     LazyLock::new(|| (COUNT..TOTAL).map(|i| (i, found_text(i))).collect());
@@ -302,6 +305,7 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     v.push((TITLE_ID, TITLE));
     v.push((LOCKED_ID, LOCKED));
     v.push((MP_TITLE_ID, MP_TITLE));
+    v.push((FOOTER_ID, PROMPT));
     v.extend(ROW_LABELS.iter().map(|(i, t)| (*i, t.as_str())));
     v.extend(
         DESCRIPTION_TEXTS
@@ -813,8 +817,10 @@ mod tests {
             let id = s.description(row_of(i).unwrap()).unwrap();
             assert_eq!(id, description_id(i));
             let shown = text(id);
-            // The buttons under every description, within a widget's 256.
-            assert!(shown.ends_with(&format!("\n\n{PROMPT}")), "{shown}");
+            // The buttons are the footer's, not under the description;
+            // within a widget's 256.
+            assert!(!shown.contains('\u{e100}'), "{shown}");
+            assert_eq!(text(FOOTER_ID), PROMPT);
             assert!(shown.encode_utf16().count() <= 256, "{shown}");
             let d = description(i);
             assert!(d.contains(a.effect), "{d}");
@@ -905,10 +911,11 @@ mod tests {
     #[test]
     fn strings_are_ours_distinct_and_clear_of_the_models() {
         let all = strings();
-        // Labels and descriptions for all, a found message for each of ours.
+        // Labels and descriptions for all, a found message for each of
+        // ours, the titles, Locked and the footer legend.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 3 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 4 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));

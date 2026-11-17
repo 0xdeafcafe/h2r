@@ -200,6 +200,20 @@ pub fn legend(prompts: &[Prompt]) -> String {
         .join("   ")
 }
 
+/// The legend as the game's footers write it: glyph, space, the words in
+/// capitals, two spaces between prompts (`a_select_b_back`: "(A) SELECT
+/// (B) BACK" in mainmenu.map's strings).
+pub fn footer_legend(prompts: &[Prompt]) -> String {
+    prompts
+        .iter()
+        .map(|p| {
+            let g: String = p.glyphs.iter().map(|g| g.char()).collect();
+            format!("{g} {}", p.text.to_uppercase())
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 /// The legend with names in place of glyphs, for logs: `[Left Right]
 /// Toggle   [A] Start Level`.
 pub fn legend_named(prompts: &[Prompt]) -> String {
