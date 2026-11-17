@@ -1113,10 +1113,11 @@ pub fn install(
                 let kind = row.map_or(custom_games::Row::Retail, custom_games::row_kind);
                 // Any other Live menu row ends hosting a co-op campaign
                 // (crate::coop_live); no guest memory is held here.
-                if kind != custom_games::Row::Coop
-                    && let Some(lobby) = crate::coop_live::lobby()
-                {
-                    lobby.leave();
+                if kind != custom_games::Row::Coop {
+                    crate::coop_live::drop_coop_mode();
+                    if let Some(lobby) = crate::coop_live::lobby() {
+                        lobby.leave();
+                    }
                 }
                 if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
@@ -1129,6 +1130,28 @@ pub fn install(
                 if kind == custom_games::Row::Download {
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
+                }
+                if kind == custom_games::Row::Coop && !crate::coop_live::list_ui() {
+                    // The game's own lobby: the Custom Game row's path
+                    // (0x231001: a Live squad session, then the lobby mode),
+                    // whose mode call becomes co-op (crate::coop_live).
+                    let Some(lobby) = crate::coop_live::lobby() else {
+                        eprintln!("coop-live: the co-op hooks are off; nothing opened");
+                        return ctx.runtime().memory().ret(cpu, 8);
+                    };
+                    lobby.open_retail();
+                    let rt = Arc::clone(ctx.runtime());
+                    {
+                        let mut mem = rt.memory();
+                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
+                        mem.set_u16(record, custom_games::RETAIL_CUSTOM_GAME_ROW as u16)?;
+                    }
+                    eprintln!(
+                        "coop-live: Live menu row {} opens the custom game lobby (row {}) in co-op mode",
+                        row.unwrap_or(-1),
+                        custom_games::RETAIL_CUSTOM_GAME_ROW
+                    );
+                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 if kind == custom_games::Row::Coop {
                     let screen = crate::coop_live::lobby().map(|l| l.open_from_menu());

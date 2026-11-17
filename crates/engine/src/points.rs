@@ -392,6 +392,21 @@ points! { ALL;
     /// none) and, for a difficulty, clear the variant (synchronous
     /// protocol). AL 1 when set.
     LOBBY_SET_DIFFICULTY @ 0x0019_a76d: [fn(difficulty: eax) -> al ret 0]; "docs/live/live-coop.md";
+    /// Lobby: put the squad lobby in a mode (stdcall; 0 co-op campaign,
+    /// 2 custom game): the Xbox Live menu's Custom Game row calls it with 2
+    /// once its session is made (`0x23101b`), the lobby's "Switch To: Co-Op
+    /// Game" with 0 (`0x2bba30`).
+    LOBBY_MODE_SET @ 0x0019_9a03: [fn(mode: stack 0) ret 4]; "docs/live/live-coop.md";
+    /// Lobby: why the game cannot start yet (stdcall, an optional float
+    /// out); 9 ready, 7 the teams or co-op check (`0x19a4be`: co-op needs
+    /// exactly two players, both on this console), 8 and 10 the load and
+    /// countdown states. Its status line picks the text (`0x250008`).
+    LOBBY_START_STATE @ 0x0019_a2ce: [fn(progress: stack 0) -> eax ret 4]; "docs/live/live-coop.md";
+    /// The start state's tail after a co-op check that passed: a countdown
+    /// running (`>= 0`, state 10), else everyone ready (`0x592f0`, AL: 9,
+    /// else 8).
+    LOBBY_COUNTDOWN @ 0x0006_4a60: [fn() -> eax ret 0]; "docs/live/live-coop.md";
+    LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
