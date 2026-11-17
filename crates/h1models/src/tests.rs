@@ -735,20 +735,66 @@ fn synthetic_graph_round_trips_through_the_h2_decoder() {
     }
 }
 
+/// The synthetic graph's base animation, re-encoded as compressed data with
+/// a key on every frame, reads back as the uncompressed original (within
+/// the 12-bit rotation quantisation) and converts.
 #[test]
-fn compressed_animations_are_refused() {
+fn compressed_animations_decode_like_their_uncompressed_form() {
     let (mut img, at) = synthetic_graph();
+    let plain = h1::Graph::read(&img, at).unwrap();
+    let src = &plain.animations[0];
+    let n = src.frames[0].len();
+    let f0 = &src.frames[0];
+    let keys = |node: usize| -> Vec<(u16, [f32; 4])> {
+        (1..src.frames.len())
+            .map(|f| (f as u16, src.frames[f][node].rotation))
+            .collect()
+    };
+    let blob = crate::compressed::encode(
+        &f0.iter().map(|t| t.rotation).collect::<Vec<_>>(),
+        &f0.iter().map(|t| t.translation).collect::<Vec<_>>(),
+        &[keys(1)],
+        &[(1..5)
+            .map(|f| (f as u16, src.frames[f][2].translation))
+            .collect()],
+        &[(
+            f0[2].scale,
+            (1..5).map(|f| (f as u16, src.frames[f][2].scale)).collect(),
+        )],
+    );
+    let data = img.alloc(&blob);
     let anims = u32::from_le_bytes(
         img.0[(at - BASE) as usize + 0x78..][..4]
             .try_into()
             .unwrap(),
     );
-    let o = (anims - BASE) as usize + 0x3a;
-    img.0[o] |= 1;
-    assert!(matches!(
-        h1::Graph::read(&img, at),
-        Err(Error::Unsupported(_))
-    ));
+    let e = (anims - BASE) as usize;
+    img.0[e + 0x3a] |= 1;
+    put(&mut img.0, e + 0x8c, 0); // no default data
+    put(&mut img.0, e + 0xa0, blob.len() as u32);
+    put(&mut img.0, e + 0xac, data);
+    let g = h1::Graph::read(&img, at).unwrap();
+    let a = &g.animations[0];
+    let stats = a.compressed.expect("decoded as compressed");
+    assert_eq!(stats.keys, 12);
+    assert_eq!(a.frames.len(), src.frames.len());
+    for (f, (got, want)) in a.frames.iter().zip(&src.frames).enumerate() {
+        for node in 0..n {
+            let (g, w) = (got[node], want[node]);
+            let dot: f32 = (0..4).map(|i| g.rotation[i] * w.rotation[i]).sum();
+            assert!(
+                1.0 - dot.abs() < 1e-5,
+                "frame {f} node {node}: {g:?} vs {w:?}"
+            );
+            assert_eq!(g.translation, w.translation, "frame {f} node {node}");
+            assert_eq!(g.scale, w.scale, "frame {f} node {node}");
+        }
+    }
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
+        assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,4 +1089,218 @@ fn install_at_takes_an_existing_slot_and_keeps_its_datum() {
         c.install_at(&mut set, TagId(0x1234_0099), "x"),
         Err(Error::Invalid(_))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The Halo 1 disc: compressed animations
+// ---------------------------------------------------------------------------
+
+/// Every map on the Halo 1 disc (`$H1_ISO`), in disc order.
+fn h1_disc_maps() -> Option<Vec<(String, h1map::H1Map)>> {
+    let path = std::env::var_os("H1_ISO")?;
+    let file = std::io::BufReader::new(std::fs::File::open(path).expect("H1_ISO opens"));
+    let mut iso = xiso::Xiso::open(file).expect("disc reads");
+    let disc = h1map::disc::Disc::open(&mut iso).expect("a Halo 1 disc");
+    Some(
+        disc.maps
+            .iter()
+            .map(|e| {
+                let bytes = iso.read(e).expect("map reads");
+                let map = h1map::H1Map::from_reader(Cursor::new(bytes)).expect("map parses");
+                (h1map::disc::map_stem(e).to_string(), map)
+            })
+            .collect(),
+    )
+}
+
+/// Rotation angle between two unit quaternions, in radians.
+fn angle(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let dot: f32 = (0..4).map(|i| a[i] * b[i]).sum();
+    2.0 * dot.abs().min(1.0).acos()
+}
+
+/// Largest rotation (radians) and translation differences between two
+/// animations' frames, over the channels `a` animates.
+fn frame_error(a: &h1::Animation, b: &h1::Animation) -> (f32, f32) {
+    assert_eq!(a.frames.len(), b.frames.len(), "{}", a.name);
+    let (mut r, mut t) = (0f32, 0f32);
+    for (fa, fb) in a.frames.iter().zip(&b.frames) {
+        for (n, (x, y)) in fa.iter().zip(fb).enumerate() {
+            if a.has(0, n) {
+                r = r.max(angle(x.rotation, y.rotation));
+            }
+            if a.has(1, n) {
+                for i in 0..3 {
+                    t = t.max((x.translation[i] - y.translation[i]).abs());
+                }
+            }
+        }
+    }
+    (r, t)
+}
+
+/// Every animation graph on every map of the Halo 1 disc reads and
+/// converts; every compressed animation decodes to `frame count` frames of
+/// unit rotations and finite translations and scales, round-trips through
+/// the Halo 2 decoder, and agrees with the uncompressed copies and model
+/// poses that exist for it.
+///
+/// `H1_ISO=disc/halo1.iso cargo test -p h1models --release -- --ignored h1_disc --nocapture`
+#[test]
+#[ignore = "needs $H1_ISO"]
+fn h1_disc_compressed_animations_decode() {
+    let Some(maps) = h1_disc_maps() else {
+        return;
+    };
+    assert_eq!(maps.len(), 24, "maps on the disc");
+    let antr = h1map::Group::new(b"antr");
+    let mode = h1map::Group::new(b"mode");
+    let (mut graphs, mut compressed, mut frames, mut keys) = (0, 0, 0usize, 0usize);
+    let mut failures = Vec::new();
+    let mut no_skeleton = Vec::new();
+    // Undriven rotation channels, and how many sit at the rest pose of the
+    // model with the same node list.
+    let (mut pose_channels, mut pose_matching) = (0usize, 0usize);
+    let mut worst_roundtrip = 0f32;
+    // (map, graph, animation) of each copy, compressed then uncompressed.
+    let pairs = [
+        (
+            (
+                "a50",
+                "cinematics\\animations\\chief\\level_specific\\a50\\a50",
+            ),
+            (
+                "a30",
+                "cinematics\\animations\\chief\\level_specific\\b30\\b30",
+            ),
+            "B30HoloMapShort",
+        ),
+        (
+            ("a10", "cinematics\\animations\\chief\\x30\\x30"),
+            ("a10", "characters\\cyborg\\cyborg"),
+            "stand rifle idle",
+        ),
+    ];
+    let mut copies: Vec<[Option<h1::Animation>; 2]> = vec![[None, None]; pairs.len()];
+    for (stem, map) in &maps {
+        // Models by node list checksum, for the base pose check.
+        let models: Vec<h1::Model> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == mode)
+            .filter_map(|t| h1::Model::read(map, t.data_address).ok())
+            .collect();
+        for t in map.tags().iter().filter(|t| t.group == antr) {
+            graphs += 1;
+            let model = map.find(mode, &t.name);
+            let (g, out) = match crate::graph_from_map(map, t, model) {
+                Ok((g, _, out)) => (g, Some(out)),
+                // A graph without nodes whose model has another name (d40's
+                // airlock door) reads but cannot convert on its own.
+                Err(e) => match h1::Graph::read(map, t.data_address) {
+                    Ok(g) if g.nodes.is_empty() && model.is_none() => {
+                        no_skeleton.push(format!("{stem} {}", t.name));
+                        (g, None)
+                    }
+                    _ => {
+                        failures.push(format!("{stem} {}: {e}", t.name));
+                        continue;
+                    }
+                },
+            };
+            for (k, (c, u, name)) in pairs.iter().enumerate() {
+                for (slot, (m, path)) in [c, u].into_iter().enumerate() {
+                    if (*m, *path) == (stem.as_str(), t.name.as_str()) {
+                        copies[k][slot] = g.animations.iter().find(|a| a.name == *name).cloned();
+                    }
+                }
+            }
+            if g.animations.iter().all(|a| a.compressed.is_none()) {
+                continue;
+            }
+            for a in g.animations.iter().filter(|a| a.compressed.is_some()) {
+                let stats = a.compressed.unwrap();
+                compressed += 1;
+                frames += a.frames.len();
+                keys += stats.keys;
+                let who = format!("{stem} {} / {}", t.name, a.name);
+                if a.frames.len() != usize::from(a.frame_count) {
+                    failures.push(format!("{who}: {} frames", a.frames.len()));
+                }
+                if stats.short_channels != 0 || stats.zero_rotations != 0 {
+                    failures.push(format!("{who}: {stats:?}"));
+                }
+                for (f, pose) in a.frames.iter().enumerate() {
+                    for (n, x) in pose.iter().enumerate() {
+                        let l: f32 = x.rotation.iter().map(|v| v * v).sum();
+                        let finite = x.translation.iter().all(|v| v.is_finite() && v.abs() < 1e4)
+                            && x.scale.is_finite()
+                            && x.scale > 0.0;
+                        if (l - 1.0).abs() > 1e-4 || !finite {
+                            failures.push(format!("{who}: frame {f} node {n}: {x:?}"));
+                        }
+                    }
+                }
+                // Undriven channels hold the per-node statics. Cinematic
+                // graphs often hold a pose there rather than the model's rest
+                // pose (their uncompressed animations do the same), so this
+                // is reported, not asserted.
+                let nodes = g.nodes.len().max(usize::from(a.node_count));
+                if let Some(m) = models.iter().find(|m| {
+                    m.node_list_checksum == a.node_list_checksum && m.nodes.len() == nodes
+                }) {
+                    for (n, node) in m.nodes.iter().enumerate() {
+                        if !a.has(0, n) {
+                            pose_channels += 1;
+                            let e = angle(a.frames[0][n].rotation, h1::normalize(node.rotation));
+                            pose_matching += usize::from(e < 0.01);
+                        }
+                    }
+                }
+            }
+            // Through the Halo 2 decoder.
+            let Some(out) = out else {
+                continue;
+            };
+            let skeleton = if g.nodes.is_empty() {
+                model
+                    .map(|m| {
+                        h1::AnimNode::from_model(&h1::Model::read(map, m.data_address).unwrap())
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let (bytes, ids) = build(vec![(out, t.name.as_str())]);
+            for (name, e) in check_graph(&g, &skeleton, bytes, ids[0]) {
+                worst_roundtrip = worst_roundtrip.max(e[0]);
+                if e[0] > 2e-4 || e[1] != 0.0 || e[2] != 0.0 {
+                    failures.push(format!("{stem} {} / {name}: round trip {e:?}", t.name));
+                }
+            }
+        }
+    }
+    println!(
+        "{} maps, {graphs} graphs, {compressed} compressed animations, {frames} frames, {keys} keys",
+        maps.len()
+    );
+    println!(
+        "rest pose: {pose_matching} of {pose_channels} undriven rotation channels within 0.01 rad of the model's"
+    );
+    println!("read, not converted (no model of the same name): {no_skeleton:?}");
+    println!("halo 2 round trip: max rotation {worst_roundtrip:.2e} rad");
+    for ((c, u, name), [a, b]) in pairs.iter().zip(&copies) {
+        let (a, b) = (
+            a.as_ref().expect("compressed copy"),
+            b.as_ref().expect("plain copy"),
+        );
+        assert!(a.compressed.is_some() && b.compressed.is_none());
+        let (r, t) = frame_error(a, b);
+        println!("{name}: {c:?} vs {u:?}: max rotation {r:.4} rad, translation {t:.2e}");
+        assert_eq!(a.animated, b.animated, "{name}: channels");
+        assert!(r < 0.05 && t < 0.01, "{name}: {r} rad, {t}");
+    }
+    println!("failures: {failures:#?}");
+    assert!(failures.is_empty());
+    assert_eq!(compressed, 186);
 }

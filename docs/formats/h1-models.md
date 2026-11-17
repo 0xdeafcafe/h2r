@@ -1,7 +1,8 @@
 # Halo 1 models and animations as Halo 2 tags (`crates/h1models`)
 
 Status: **Built** (2026-11-16) for Halo 1 Xbox `mode` -> Halo 2 `mode` and
-`antr` -> `jmad`. It is proven by decoding the converted tags through
+`antr` -> `jmad`, including compressed (keyframed) animations
+(2026-11-17). It is proven by decoding the converted tags through
 `crates/tags` and comparing them with the source. No converted tag has been
 loaded by the game yet ("Needs a game run").
 
@@ -27,6 +28,11 @@ run time and print only counts and error figures.
 - **V3:** checked against the `jmad` mode/class/type/action trees of every
   map on the owner's retail disc (30 maps, 2,268 graphs) by the ignored test
   `retail_h2_animation_names` in `crates/h1models/src/names.rs` (2026-11-17).
+- **V4:** checked on every map of the owner's Halo 1 disc (24 maps, 628
+  graphs, 186 compressed animations) by the ignored test
+  `h1_disc_compressed_animations_decode` (2026-11-17).
+- **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
+  `default.xbe` on the disc; addresses are virtual addresses in that XBE).
 - **S:** field order and meaning recalled from general Halo modding
   knowledge (the Halo 1 and Halo 2 editing kits' field names), then checked
   against the data where a V label says so. No community code or
@@ -158,13 +164,13 @@ f32 vector range (`38`). V1 (links).
 | `2c` | u16 node count | V1 (equals the graph's or the model's) |
 | `2e` | u16 loop frame | S |
 | `38` | i16 next animation (random permutation chain) | S |
-| `3a` | u16 flags; bit 0 compressed data | S |
+| `3a` | u16 flags; bit 0 compressed data | X (`0x000a2d60` tests it), V4 |
 | `3c` | i16 sound, `3e` sound frame | S |
 | `48` | tag data: frame info (root movement) | V1 (size 0 when the type is 0) |
 | `5c` | u64 translation flags, one bit per node | V1 (frame sizes) |
 | `6c` | u64 rotation flags | V1 |
 | `7c` | u64 scale flags | V1 |
-| `88` | u32 offset to compressed data; 0 when uncompressed | V1 (0 everywhere) |
+| `88` | u32 offset of the compressed data within the frame data | X, V4 (0 on all 186 compressed animations) |
 | `8c` | tag data: default data | V1 |
 | `a0` | tag data: frame data, frame count x frame size bytes | V1 |
 
@@ -180,9 +186,112 @@ other order (all rotations first) puts float bits where unit quaternions
 should be. **Default data** holds, per node in the same order, the channels
 the node does *not* animate, and is constant over the animation.
 
-**Compressed animations** (flag bit 0, or a nonzero `88`) are refused with
-`Error::Unsupported`. None occur on the two multiplayer maps. The campaign
-maps may have them, and their codec is not documented here yet.
+### Compressed animations
+
+186 animations on the disc have flag bit 0 set, all on cinematic graphs
+(`cinematics\animations\...`: the pilot, captain, chief, Cortana,
+marines and others on a10, a30, a50, b40, c40, d20 and d40). None occur in
+the multiplayer maps. They are keyframed rather than stored per frame;
+`crates/h1models/src/compressed.rs` decodes them to the same per-frame
+transforms as the uncompressed path, and they convert through the same
+`jmad` path.
+
+**Which animations.** The engine (`0x000a2d60`) calls an animation
+compressed when flag bit 0 is set and the byte at `0x00204b6f` (the
+`model_animation_compression` global, 1 in the XBE) is nonzero. X. The
+reader goes by the flag alone. Compressed animations have **no default
+data** (size 0) and their frame size still counts the animated channels
+as if uncompressed (8 x rotations + 12 x translations + 4 x scales). V4.
+
+**Where.** The data starts at frame data + `[+88]`. The frame data's size
+is exactly the compressed data's. X (`0x000a2d90`: `[anim+ac] + [anim+88]`),
+V4.
+
+**Header** (`0x2c`), eleven u32 offsets from the start of the data, then
+the rotation channel table:
+
+| Offset | Points to | Element |
+|---|---|---|
+| `00` | rotation key times | u16 |
+| `04` | rotation statics, **one per node** | 48-bit rotation |
+| `08` | rotation key values | 48-bit rotation |
+| `0c` | translation channel table | u32 |
+| `10` | translation key times | u16 |
+| `14` | translation statics, **one per node** | f32x3 |
+| `18` | translation key values | f32x3 |
+| `1c` | scale channel table | u32 |
+| `20` | scale key times | u16 |
+| `24` | scale statics, **one per scale channel** | f32 |
+| `28` | scale key values | f32 |
+| `2c` | (inline) rotation channel table | u32 |
+
+X: the rotation, translation and scale samplers (`0x000a3750`,
+`0x000a2ee0`, `0x000a2d90`) read these offsets. V4: on all 186 the regions
+are contiguous in this order with no padding, `[00]` is `0x2c` + 4 x
+rotation channels, the tables hold 4 bytes per animated channel, the
+statics 6 x nodes, 12 x nodes and 4 x scale channels, and the data ends
+where the scale keys do.
+
+**Channels.** A channel is a flagged (node, kind) pair, numbered per kind in
+node order. Its table entry is a u32: key count in the low 12 bits, index
+of its first key (into that kind's times and values) in the high 20 bits.
+X (`and 0xfff`, `shr 0xc`). V4: every key index is in range; times
+strictly increase, never include frame 0, and every keyed channel's last
+key is the last frame (frame count - 1). 17 of 3,031 channels have no
+keys.
+
+**Sampling** at frame `f` (X, the three samplers):
+
+- No keys: the static.
+- Before the first key: blend from the static (the value at frame 0) to
+  the first key over frames 0 .. first.
+- On a key: that key. Between keys `k` and `k + 1`: blend by
+  `(f - t[k]) / (t[k+1] - t[k])` (binary search, `0x000a29e0`).
+- Past the last key, between it and frame `t[last] + 1`, the engine blends
+  back toward the static (it samples fractional frames). With integer
+  frames and the last key on the last frame this never applies. The
+  decoder holds the last key there (Design); V4 that it never happens.
+- Blends: translations and scales linearly. Rotations componentwise on the
+  unnormalised values, negating the second when their dot product is
+  negative, then normalised (`0x000b0e70`, `0x000b4320`; a zero result
+  becomes identity).
+
+The rotation and translation statics are indexed by **node**, the scale
+statics by **channel**. X: the rotation and translation samplers index
+their statics with their fourth argument (the node), the scale sampler
+with its third (the channel). V4: the statics' sizes agree (the pilot's
+`aye_aye_sir`: 21 rotation statics, 10 rotation channels, no scale
+statics).
+
+**Undriven channels** take the node's rotation and translation static and
+scale 1. X (`0x000a4d1d`: the default-pose path reads `[+04]` and `[+14]`
+by node and stores 1.0 for scale).
+
+**48-bit rotation.** Three little-endian u16s `w0 w1 w2`, read as one
+48-bit number `w0 << 32 | w1 << 16 | w2`: `i` is bits 36..47, `j` 24..35,
+`k` 12..23, `w` 0..11, each a signed 12-bit value. Each is widened to 16
+bits by repeating its top four bits below it (`v << 4 | v >> 8`) and
+divided by 32767; the result is normalised. X (`0x000a2b70`; the
+constant at `0x001f0ae8` is 1/32767).
+
+**Measured** (V4):
+
+| Check | Result |
+|---|---|
+| Animations, frames, keys | 186, 31,596, 202,404 |
+| Frames per animation | the header's frame count, every one |
+| Rotations | unit, every frame of every node |
+| Translations, scales | finite |
+| a50's chief `B30HoloMapShort` (compressed) against a30's copy on the b30 graph (uncompressed, same 130 frames and channels) | max 0.0026 rad, translation 1.3e-4 |
+| a10's chief x30 `stand rifle idle` (compressed) against the cyborg's (uncompressed, same 59 frames) | max 0.0028 rad, translation 0 |
+| Converted to `jmad` and decoded by `crates/tags` | max 6.1e-5 rad, translation and scale 0 |
+
+The two uncompressed copies agree to under 0.003 rad, which is the
+keyframe reduction's own loss. Undriven channels sit at the rest pose of
+the model with the same node list for 1,426 of 2,007 undriven rotation
+channels (within 0.01 rad), but not generally on these cinematic graphs (the uncompressed
+animations on the same graphs, such as the pilot's `death_pose`, hold
+non-rest poses there too), so the rest pose is not a reference here.
 
 ## Halo 2 output
 
@@ -326,6 +435,7 @@ decode through `tags::model::RenderModelGeometry` and
 ```sh
 H1_MAPS=<dir with beavercreek.map, carousel.map> cargo test -p h1models --release -- --ignored --nocapture
 H2_DISC=disc/halo2.iso [H2_MAP=lockout] cargo test -p h1models --release -- --ignored retail_h2 --nocapture
+H1_ISO=disc/halo1.iso cargo test -p h1models --release -- --ignored h1_disc --nocapture
 ```
 
 Results on 2026-11-16 (beavercreek), every vertex and triangle of every

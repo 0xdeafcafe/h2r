@@ -20,6 +20,7 @@
     clippy::type_complexity
 )]
 
+pub mod compressed;
 pub mod h1;
 pub mod jmad;
 pub mod mode;
