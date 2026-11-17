@@ -314,7 +314,33 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
         schema = next;
     }
     pair_raw_sizes(&mut schema, maps);
+    apply_engine_strides(&mut schema);
     schema
+}
+
+/// Root block element sizes the engine settles where the data can't:
+/// `(group, offset, size, tag reference offsets)`. Inference takes the
+/// smallest gap a block's instances allow, and the scenery palette
+/// (`scnr +0x58`) is followed so closely by other arrays on some maps that
+/// it came out 4 bytes. Every object palette is read with one `0x28`-byte
+/// stride and its datum at `+4` (`0x000a743b`..`0x000a7473`, through the
+/// object type table `0x00468630`; checked in
+/// `h1convert/tests/h2_scenario.rs`).
+pub const ENGINE_STRIDES: &[(FourCC, u32, u32, &[u32])] = &[(FourCC(*b"scnr"), 0x58, 0x28, &[0])];
+
+/// Applies [`ENGINE_STRIDES`] to an inferred schema.
+pub fn apply_engine_strides(schema: &mut Schema) {
+    for &(group, offset, size, refs) in ENGINE_STRIDES {
+        let Some(root) = schema.groups.get_mut(&group) else {
+            continue;
+        };
+        if let Some(Field::Block(child)) = root.fields.get_mut(&offset) {
+            child.size = size;
+            for &r in refs {
+                child.fields.insert(r, Field::TagRef);
+            }
+        }
+    }
 }
 
 /// Elements holding raw pointers, by group and block path: (map, tag,

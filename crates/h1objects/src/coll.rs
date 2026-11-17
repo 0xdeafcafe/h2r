@@ -8,13 +8,24 @@
 //! which fits a node index; not established). Each BSP is the same
 //! narrowing copy the structure uses ([`h1convert::collision::convert`]).
 //!
+//! **BSP physics.** Havok, which moves bipeds, vehicles and dropped items,
+//! sees an object's collision only through its physics model or, with
+//! none, through the permutation's BSP physics slots: one `0x70`-byte slot
+//! per BSP, a Havok shape over the BSP inside a MOPP tree whose code keys
+//! the BSP's surfaces by index (docs/formats/collision.md, "BSP
+//! physics"). Retail writes the slots exactly for the `coll`s of scenery
+//! with no `phmo`, so [`convert_collision`] takes that choice. Without
+//! them the player walks through converted scenery.
+//!
 //! Damage (vitality, region damage thresholds, effects) is not in Halo 2's
 //! `coll`; it is listed in [`CollisionReport`].
 
 use h1models::Converted;
 use map::FourCC;
 use map::build::Block;
-use tags::collision::{BSP_BLOCKS_SIZE, BSP_SIZE, BSP_STRIDES, COLL_ROOT_SIZE};
+use tags::collision::{
+    BSP_BLOCKS_SIZE, BSP_PHYSICS_SIZE, BSP_SIZE, BSP_STRIDES, Bsp, COLL_ROOT_SIZE,
+};
 
 use crate::Result;
 use crate::h1::Collision;
@@ -26,6 +37,10 @@ pub struct CollisionReport {
     pub permutations: usize,
     pub bsps: usize,
     pub surfaces: usize,
+    /// BSP physics slots written (one per BSP, or none).
+    pub bsp_physics: usize,
+    /// Bytes of MOPP code in those slots.
+    pub mopp_bytes: usize,
     /// Halo 1 damage values with no home in Halo 2's `coll`.
     pub body_vitality: f32,
     pub shield_vitality: f32,
@@ -54,6 +69,19 @@ fn block_field(parent: &mut Block, at: u32, child: Block, stride: usize) {
     parent.block(at, count, child);
 }
 
+/// Sharing key for a BSP's child block or MOPP code: placed once however
+/// many `coll`s hold the same bytes (Halo 1 levels carry identical
+/// collision under several names, b40's boulders among them). The engine
+/// only reads these blocks. The key is the bytes' hash with a tag of its
+/// own, so it meets no other sharer's keys.
+fn share_key(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    b"h1objects coll block".hash(&mut h);
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 /// One BSP element (`0x44`): the leading word, then the eight blocks.
 fn bsp_element(bsp: &tags::collision::Bsp, node: u32) -> Block {
     let enc = bsp.encode_blocks(0);
@@ -63,10 +91,12 @@ fn bsp_element(bsp: &tags::collision::Bsp, node: u32) -> Block {
     for (i, stride) in BSP_STRIDES.iter().enumerate() {
         let count = u32::from_le_bytes(enc[i * 8..i * 8 + 4].try_into().unwrap()) as usize;
         let len = count * stride;
+        let bytes = enc[at..at + len].to_vec();
+        let key = share_key(&bytes);
         block_field(
             &mut e,
             4 + 8 * i as u32,
-            Block::new(enc[at..at + len].to_vec()),
+            Block::new(bytes).shared(key),
             *stride,
         );
         at += len;
@@ -74,8 +104,68 @@ fn bsp_element(bsp: &tags::collision::Bsp, node: u32) -> Block {
     e
 }
 
-/// Builds the Halo 2 `coll`.
-pub fn convert_collision(c: &Collision) -> Result<(Converted, CollisionReport)> {
+/// The bounding box of a BSP's vertices: (centre, half extents).
+pub fn bsp_box(bsp: &Bsp) -> ([f32; 3], [f32; 3]) {
+    if bsp.vertices.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for v in &bsp.vertices {
+        for a in 0..3 {
+            lo[a] = lo[a].min(v.point[a]);
+            hi[a] = hi[a].max(v.point[a]);
+        }
+    }
+    (
+        std::array::from_fn(|a| (lo[a] + hi[a]) / 2.0),
+        std::array::from_fn(|a| (hi[a] - lo[a]) / 2.0),
+    )
+}
+
+/// The MOPP code object over a BSP's surfaces, keyed by surface index
+/// (V: every retail slot's code emits keys `0..surfaces`, each once).
+pub fn bsp_mopp(bsp: &Bsp) -> Vec<u8> {
+    let surfaces: Vec<mopp::Surface> = (0..bsp.surfaces.len())
+        .map(|i| mopp::Surface {
+            key: i as u32,
+            vertices: bsp
+                .surface_ring(i)
+                .into_iter()
+                .map(|v| bsp.vertices[v].point)
+                .collect(),
+        })
+        .collect();
+    mopp::build(&surfaces).to_block()
+}
+
+/// One BSP physics slot (`0x70`): the box at `+0x10`/`+0x20`, the `coll`'s
+/// own datum at `+0x30`, the MOPP code block at `+0x64`. The words at
+/// `+0x06`, `+0x46` and `+0x56` are retail's (`0x81`, `0x80`, `0x81`); the
+/// engine rewrites the vtables and pointers at load.
+fn bsp_physics(bsp: &Bsp) -> (Block, usize) {
+    let (center, half) = bsp_box(bsp);
+    let mut e = Block::zeroed(BSP_PHYSICS_SIZE);
+    for a in 0..3 {
+        e.put_f32(0x10 + 4 * a, center[a]);
+        e.put_f32(0x20 + 4 * a, half[a]);
+    }
+    e.put_u16(0x06, 0x81)
+        .put_u16(0x46, 0x80)
+        .put_u16(0x56, 0x81);
+    e.tag_id(0x30, h1models::SELF_ID);
+    let code = bsp_mopp(bsp);
+    let len = code.len();
+    if len > 0 {
+        let key = share_key(&code);
+        e.block(0x64, len as u32, Block::new(code).aligned(16).shared(key));
+    }
+    (e, len)
+}
+
+/// Builds the Halo 2 `coll`. `bsp_physics`: write the BSP physics slots
+/// (a scenery object with no `phmo`).
+pub fn convert_collision(c: &Collision, bsp_physics: bool) -> Result<(Converted, CollisionReport)> {
     let mut report = CollisionReport {
         regions: c.regions.len(),
         body_vitality: c.body_vitality,
@@ -102,6 +192,7 @@ pub fn convert_collision(c: &Collision) -> Result<(Converted, CollisionReport)> 
         let mut perms = Vec::new();
         for (p, perm) in region.permutations.iter().enumerate() {
             let mut bsps = Vec::new();
+            let mut slots = Vec::new();
             for (n, node) in c.nodes.iter().enumerate() {
                 if node.region as usize != r {
                     continue;
@@ -110,13 +201,25 @@ pub fn convert_collision(c: &Collision) -> Result<(Converted, CollisionReport)> 
                     let bsp = h1convert::collision::convert(src)?;
                     report.surfaces += bsp.surfaces.len();
                     bsps.push(bsp_element(&bsp, n as u32));
+                    if bsp_physics {
+                        let (slot, len) = self::bsp_physics(&bsp);
+                        report.mopp_bytes += len;
+                        slots.push(slot);
+                    }
                 }
             }
             report.permutations += 1;
             report.bsps += bsps.len();
+            report.bsp_physics += slots.len();
             let mut e = Block::zeroed(0x14);
             put_sid(&mut e, 0, perm);
             block_field(&mut e, 4, array(bsps, BSP_SIZE), BSP_SIZE);
+            block_field(
+                &mut e,
+                0xc,
+                array(slots, BSP_PHYSICS_SIZE).aligned(16),
+                BSP_PHYSICS_SIZE,
+            );
             perms.push(e);
         }
         let mut e = Block::zeroed(12);
