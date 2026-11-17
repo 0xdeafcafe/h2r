@@ -670,3 +670,30 @@ runner transfers a trip) and `timeline`'s `now_ns_cost`:
 cargo test -p emit --release --test perf runner_transfer_benchmark -- --ignored --nocapture
 cargo test -p timeline --release now_ns_cost -- --ignored --nocapture
 ```
+
+Minimum of 9 trials, ns per runner transfer, quiet runs on a shared
+machine (later A/B rounds were swamped by other builds):
+
+| callees | before | after |
+|---:|---:|---:|
+| 16 | 39.4 | 39.2 |
+| 256 | 42.2 | 40.4 |
+| 1,024 | 48.9 | 42.2 |
+| 4,096 | 48.8 | 45.4 |
+
+With the targets inside the old cache nothing moves within noise; past it
+the misses are gone, and what is left at 1,024 and more is the callees' own
+code and data falling out of the CPU caches. `now_ns`: 8.8 ns a read
+against 25.1 ns for `Instant::elapsed`. Expected in the game, from the
+profile's own counts: most of the 784 miss samples, the 245 of the
+execute check, most of the 238 of the interrupt check, and two thirds of
+the 704 of the clock while frame stats are on, roughly 3% of the game
+thread's CPU.
+
+Left, by size: the handler's first access taking the gate in
+`h2_access_cold` at every runner entry (1,462 + `h2_gate_try` 307), which
+only fewer runner entries or a gate taken in the prologue would remove,
+both generated-code changes; the x87 transcendentals (`fyl2x` 536, `fcos`
+228, `f2xm1` 208, `fsin` 182: the correctly rounded `Wf<2>` series, which
+`H2_X87_NATIVE` does not cover, so f64 would change results); and the D3D
+write barrier's `take_dirty` and guard (about 700).
