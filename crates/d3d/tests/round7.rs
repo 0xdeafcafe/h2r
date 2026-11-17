@@ -425,6 +425,66 @@ fn gpu_visibility_test_counts_samples() {
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
 
+/// Halo's flare tests (colour writes off, no depth writes) leave the
+/// attachments alone, so their render passes are left out
+/// (`gfx::renderer::set_skip_idle_counted`): the same pixels and counts as
+/// with them, and fewer render passes.
+#[test]
+fn idle_counted_draws_take_no_render_pass() {
+    let run = |skip: bool| {
+        let ctx = GfxContext::headless().ok()?;
+        gfx::renderer::set_skip_idle_counted(Some(skip));
+        let (mut d, mut m) = create(GfxBackend::new(ctx), UploadPolicy::Tracked);
+        set_states(&mut d, &mut m);
+        d.set_vertex_shader(&mut m, gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE)
+            .unwrap();
+        let before = gfx::churn::snapshot();
+        let mut counts = Vec::new();
+        for (i, side) in [16.0f32, 24.0, 40.0].into_iter().enumerate() {
+            inline_quad(&mut m, 0.0, 0.0, 64.0, 64.0, [40 * i as u8, 0, 255, 255]);
+            d.set_render_state(&mut m, 67, 0).unwrap(); // COLORWRITEENABLE off
+            begin_inline(&mut m);
+            inline_quad(
+                &mut m,
+                4.0,
+                4.0,
+                4.0 + side,
+                4.0 + side / 2.0,
+                [0, 255, 0, 255],
+            );
+            end(&mut d, &mut m, i as u32).unwrap();
+            d.set_render_state(&mut m, 67, 0x0101_0101).unwrap(); // ALL
+            inline_quad(&mut m, 8.0, 8.0, 20.0, 20.0, [255, 255, 0, 255]);
+            counts.push(get(&mut d, &mut m, i as u32).unwrap().0);
+        }
+        let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+        let skipped = (gfx::churn::snapshot() - before).idle_counted_skipped;
+        gfx::renderer::set_skip_idle_counted(None);
+        let events = d.take_events();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, d3d::Event::DrawSkipped { .. })),
+            "{events:?}"
+        );
+        Some((px, counts, d.backend.batch_stats().render_passes, skipped))
+    };
+    let Some((want_px, want_counts, want_passes, none)) = run(false) else {
+        eprintln!("skipping GPU test: no adapter");
+        return;
+    };
+    let (px, counts, passes, skipped) = run(true).unwrap();
+    assert_eq!(none, 0);
+    assert_eq!(counts, vec![16 * 8, 24 * 12, 40 * 20]);
+    assert_eq!(counts, want_counts);
+    assert!(
+        px == want_px,
+        "pixels differ with idle counted passes left out"
+    );
+    assert!(skipped >= 3, "{skipped}");
+    assert_eq!(passes + skipped, want_passes);
+}
+
 /// Halo's pattern: a test ended each frame and read two frames later,
 /// after two `Swap(0)`s. Its counts, through the backend directly and
 /// through the render thread. `caught_up` runs before each read.

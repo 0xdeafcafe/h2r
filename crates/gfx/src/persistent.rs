@@ -22,6 +22,14 @@
 //! never changes under a draw that still reads it. Free buffers are held
 //! up to half the budget (an eviction frees a quarter at once).
 //!
+//! Staged writes ([`PersistentVertices::set_staged`], what `d3d`'s backend
+//! uses): instead of a `queue.write_buffer` per new buffer (a staging
+//! buffer wgpu makes and frees, about 20 us each), the bytes go into an
+//! upload ring that is written once per flush, and a buffer-to-buffer copy
+//! per new buffer is encoded into a command buffer of its own
+//! ([`PersistentVertices::copy_commands`]) that the owner submits ahead of
+//! the work that draws from them. Same bytes in the same buffers.
+//!
 //! [`Draw::stream_ids`]: crate::renderer::Draw::stream_ids
 //! [`Draw::index_id`]: crate::renderer::Draw::index_id
 
@@ -29,6 +37,7 @@ use std::collections::HashMap;
 
 use crate::context::GfxContext;
 use crate::repack::StreamPlan;
+use crate::ring::UploadRing;
 use crate::vertex::PrimitiveType;
 
 /// Default GPU budget (`H2_VERTEX_CACHE_MB` overrides it).
@@ -93,6 +102,42 @@ pub struct PersistentVertices {
     tick: u64,
     stats: PersistentStats,
     pool: Pool,
+    /// [`set_staged`](Self::set_staged).
+    staged: Option<Staged>,
+}
+
+/// The staging ring and the copies out of it not yet encoded.
+struct Staged {
+    ring: Option<UploadRing>,
+    /// (source, source offset, destination, bytes).
+    copies: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64)>,
+}
+
+/// Initial size of the staging ring (it grows as the upload rings do).
+const STAGING_RING: u64 = 1 << 20;
+
+impl Staged {
+    /// Stages `len` bytes that `fill` writes, for a copy of `len` rounded
+    /// up to 4 into the start of `dst`.
+    fn write(
+        &mut self,
+        ctx: &GfxContext,
+        dst: &wgpu::Buffer,
+        len: usize,
+        fill: impl FnOnce(wgpu::WriteOnly<'_, [u8]>),
+    ) {
+        let ring = self.ring.get_or_insert_with(|| {
+            UploadRing::new(
+                &ctx.device,
+                "persistent staging",
+                wgpu::BufferUsages::COPY_SRC,
+                STAGING_RING,
+            )
+        });
+        let (src, off) = ring.push_with(&ctx.device, &ctx.queue, len, 4, fill);
+        let size = (len as u64).max(4).next_multiple_of(4);
+        self.copies.push((src, off, dst.clone(), size));
+    }
 }
 
 impl PersistentVertices {
@@ -105,7 +150,45 @@ impl PersistentVertices {
             tick: 0,
             stats: PersistentStats::default(),
             pool: Pool::default(),
+            staged: None,
         }
+    }
+
+    /// Writes new buffers through a staging ring and copies the owner
+    /// submits first ([`copy_commands`](Self::copy_commands)) instead of a
+    /// queue write each (module docs). Off by default: the owner must then
+    /// submit [`copy_commands`](Self::copy_commands) ahead of every
+    /// submission that draws from these buffers, after
+    /// [`flush`](Self::flush).
+    pub fn set_staged(&mut self, on: bool) {
+        self.staged = on.then(|| Staged {
+            ring: None,
+            copies: Vec::new(),
+        });
+    }
+
+    /// Hands the staged bytes to the queue (one write).
+    pub fn flush(&mut self, queue: &wgpu::Queue) {
+        if let Some(r) = self.staged.as_mut().and_then(|s| s.ring.as_mut()) {
+            r.flush(queue);
+        }
+    }
+
+    /// The copies of the buffers written since the last call, as one
+    /// command buffer to submit ahead of the draws (after
+    /// [`flush`](Self::flush)); `None` when there are none.
+    pub fn copy_commands(&mut self, device: &wgpu::Device) -> Option<wgpu::CommandBuffer> {
+        let staged = self.staged.as_mut()?;
+        if staged.copies.is_empty() {
+            return None;
+        }
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("persistent copies"),
+        });
+        for (src, off, dst, size) in staged.copies.drain(..) {
+            enc.copy_buffer_to_buffer(&src, off, &dst, 0, size);
+        }
+        Some(enc.finish())
     }
 
     /// A buffer of at least `size` bytes (its size class) for vertices or
@@ -127,7 +210,8 @@ impl PersistentVertices {
             &wgpu::BufferDescriptor {
                 label: Some(label),
                 size: class,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
+                // COPY_SRC: tests read the bytes back.
+                usage: usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
         )
@@ -136,6 +220,12 @@ impl PersistentVertices {
     /// Every draw recorded so far has been submitted: buffers dropped
     /// before now may be written again.
     pub fn submitted(&mut self) {
+        if let Some(s) = self.staged.as_mut() {
+            debug_assert!(s.copies.is_empty(), "submitted with copies not encoded");
+            if let Some(r) = s.ring.as_mut() {
+                r.reset();
+            }
+        }
         let cap = self.budget / 2;
         for (index, b) in self.pool.retired.drain(..) {
             let class = b.size();
@@ -180,7 +270,11 @@ impl PersistentVertices {
         }
         let buffer = self.buffer(ctx, bound.next_multiple_of(4), false);
         let size = buffer.size();
-        {
+        if let Some(staged) = self.staged.as_mut() {
+            staged.write(ctx, &buffer, len, |out| {
+                plan.write_into(guest, vertex_count, out, scratch)
+            });
+        } else {
             crate::churn::queue_write();
             let mut view = ctx
                 .queue
@@ -239,9 +333,15 @@ impl PersistentVertices {
         let bytes: &[u8] = bytemuck::cast_slice(list);
         let size = (bytes.len() as u64).max(4);
         let buffer = self.buffer(ctx, size, true);
-        if !bytes.is_empty() {
-            crate::churn::queue_write();
-            ctx.queue.write_buffer(&buffer, 0, bytes);
+        match self.staged.as_mut() {
+            _ if bytes.is_empty() => {}
+            Some(staged) => staged.write(ctx, &buffer, bytes.len(), |mut out| {
+                out.copy_from_slice(bytes)
+            }),
+            None => {
+                crate::churn::queue_write();
+                ctx.queue.write_buffer(&buffer, 0, bytes);
+            }
         }
         self.stats.index_uploads += 1;
         self.stats.held_bytes += buffer.size();

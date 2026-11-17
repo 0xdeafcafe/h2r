@@ -265,7 +265,7 @@ fn begin<'e>(
     stencil: Option<u8>,
     has_stencil: bool,
 ) -> wgpu::RenderPass<'e> {
-    crate::churn::pass();
+    crate::churn::side_pass();
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("gfx clear"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

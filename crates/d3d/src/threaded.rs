@@ -256,8 +256,18 @@ impl<B: Backend> Worker<B> {
     /// [`Shared::landed`]. Same values as a read: only the wait goes.
     /// Reports finish in order, so it stops at the first not back.
     fn land_pixel_counts(&mut self) -> Result<(), String> {
+        self.land_counts(true)
+    }
+    /// [`land_pixel_counts`](Self::land_pixel_counts); without `submit`, a
+    /// report still in the backend's open encoder stops it instead of
+    /// being submitted early (after each batch: it lands after the
+    /// submission that takes it, at the latest the present).
+    fn land_counts(&mut self, submit: bool) -> Result<(), String> {
         let mut landed = Vec::new();
         for (&proxy, &t) in &self.tickets {
+            if !submit && self.inner.pixel_count_unsubmitted(t) {
+                break;
+            }
             match self.inner.try_pixel_count(t)? {
                 Some(c) => landed.push((proxy, c)),
                 None => break,
@@ -443,7 +453,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     // Counts back since the last present are there for
                     // the guest's next poll, not one present later.
                     if !w.tickets.is_empty() {
-                        w.run(|w| w.land_pixel_counts());
+                        w.run(|w| w.land_counts(false));
                     }
                     let ns = t.elapsed().saturating_sub(slept).as_nanos() as u64;
                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
@@ -977,9 +987,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         PENDING_COUNTS.fetch_add(1, Ordering::Relaxed);
         self.waits.pending_counts += 1;
         if !self.shared.land_kick.swap(true, Ordering::AcqRel) {
+            // The guest is waiting on it: submit a report still open.
             self.post(|w| {
                 w.shared.land_kick.store(false, Ordering::Release);
-                Ok(())
+                w.land_pixel_counts()
             });
         }
         self.flush();

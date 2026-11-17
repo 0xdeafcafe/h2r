@@ -200,69 +200,72 @@ where
         } else {
             out.implemented.push((addr, name));
         }
-        let h = abi::handler(device.clone(), e);
         let dev = device.clone();
         let hook = on_stop.clone();
         let _ = dispatch.register_override(addr, name, move |cpu, ctx, _selector| {
             // Frame stats: the D3D entries are their own phase.
             let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
             let regs = regs(cpu);
-            let (result, fault) = {
+            // One memory guard and one device lock for the whole call: the
+            // drain, the entry, what it leaves to do and the return (each
+            // guard and lock taken again was a gate handshake and a mutex
+            // round trip on every D3D call).
+            let (error, fault) = {
                 let mut guest = ctx.memory();
                 let mut mem = GuestAdapter::new(&mut guest);
-                // Push-buffer callbacks queued before this call run first,
-                // where the GPU would have run them; the entry itself runs
-                // again afterwards (see `deliver_push_callback`).
-                let pending = match dev.lock() {
-                    Ok(mut d) => d.drain_until_callback(&mut mem),
-                    Err(_) => Err(D3dError::Faulted(
-                        "D3D device mutex poisoned by an earlier panic".into(),
-                    )),
-                };
-                match pending {
-                    Ok(Some(cb)) => {
-                        drop(guest);
-                        return deliver_push_callback(cpu, ctx, &dev, cb, addr);
-                    }
-                    Ok(None) => {
-                        let result = h(&regs, &mut mem);
-                        (result, mem.take_fault())
-                    }
-                    Err(e) => (Err(e), mem.take_fault()),
+                match dev.lock() {
+                    Err(_) => (
+                        D3dError::Faulted("D3D device mutex poisoned by an earlier panic".into()),
+                        mem.take_fault(),
+                    ),
+                    // Push-buffer callbacks queued before this call run
+                    // first, where the GPU would have run them; the entry
+                    // itself runs again afterwards (see
+                    // `deliver_push_callback`).
+                    Ok(mut d) => match d.drain_until_callback(&mut mem) {
+                        Ok(Some(cb)) => {
+                            drop(d);
+                            drop(guest);
+                            return deliver_push_callback(cpu, ctx, &dev, cb, addr);
+                        }
+                        Ok(None) => match abi::call(&e, &mut d, &mut mem, &regs) {
+                            Ok(o) => {
+                                apply(cpu, o);
+                                let destroys = d.take_pending_destroys();
+                                let vblanks = d.take_pending_vblanks();
+                                drop(d);
+                                if destroys.is_empty() && vblanks.is_empty() {
+                                    return guest.ret(cpu, o.cleanup);
+                                }
+                                // Resources the entry destroyed go to the
+                                // original D3D_DestroyResource, and vblanks
+                                // counted by Swap to the callback
+                                // (crate::vblank), before the caller resumes.
+                                let ret = guest.ret(cpu, o.cleanup)?;
+                                drop(guest);
+                                let saved = *cpu;
+                                return destroy_then_return(
+                                    cpu,
+                                    ctx,
+                                    destroys.into(),
+                                    vblanks.into(),
+                                    saved,
+                                    ret.target_pc,
+                                );
+                            }
+                            Err(err) => (err, mem.take_fault()),
+                        },
+                        Err(err) => (err, mem.take_fault()),
+                    },
                 }
             };
-            let error = match (result, fault) {
-                (Ok(o), _) => {
-                    apply(cpu, o);
-                    let (destroys, vblanks) = dev
-                        .lock()
-                        .map(|mut d| (d.take_pending_destroys(), d.take_pending_vblanks()))
-                        .unwrap_or_default();
-                    let guest = ctx.memory();
-                    if destroys.is_empty() && vblanks.is_empty() {
-                        return guest.ret(cpu, o.cleanup);
-                    }
-                    // Resources the entry destroyed go to the original
-                    // D3D_DestroyResource, and vblanks counted by Swap to the
-                    // callback (crate::vblank), before the caller resumes.
-                    let ret = guest.ret(cpu, o.cleanup)?;
-                    drop(guest);
-                    let saved = *cpu;
-                    return destroy_then_return(
-                        cpu,
-                        ctx,
-                        destroys.into(),
-                        vblanks.into(),
-                        saved,
-                        ret.target_pc,
-                    );
-                }
+            let error = match (error, fault) {
                 // A guest access failed, directly or while draining the
                 // push buffer: the runtime's own fault.
-                (Err(D3dError::Guest(_) | D3dError::Push(PushError::Guest(_))), Some(fault)) => {
+                (D3dError::Guest(_) | D3dError::Push(PushError::Guest(_)), Some(fault)) => {
                     return Err(fault);
                 }
-                (Err(e), _) => e,
+                (e, _) => e,
             };
             let detail = error.to_string();
             if let Ok(mut d) = dev.lock() {

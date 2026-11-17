@@ -135,10 +135,28 @@ pub enum Counter {
     /// Queued buffer writes from `gfx` (each is a staging buffer wgpu
     /// makes and frees).
     QueueWrites = 10,
+    /// Of [`Passes`](Self::Passes): render passes started because the draw
+    /// before, in the same pending pass, wrote some colour channels but not
+    /// all, and this one writes others (the merge rule's mask split).
+    PassMask = 11,
+    /// Of [`Passes`](Self::Passes): the same split after a draw that wrote
+    /// no colour channel at all.
+    PassNoColor = 12,
+    /// Of [`Passes`](Self::Passes): render passes started for a draw that
+    /// can `discard` (after a partly masked draw with the same mask under
+    /// the fast rule; every one under the exact rule).
+    PassDiscard = 13,
+    /// Of [`Passes`](Self::Passes): visibility-test passes, the count pass
+    /// and the sum of each counted draw and the render pass the draws after
+    /// it resume in.
+    PassCounted = 14,
+    /// Of [`Passes`](Self::Passes): side passes (alias mirror, depth
+    /// aliases and levels, masked clears).
+    PassSide = 15,
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 11;
+pub const COUNTERS: usize = 16;
 
 impl Counter {
     pub const ALL: [Counter; COUNTERS] = [
@@ -153,6 +171,11 @@ impl Counter {
         Counter::VertexReused,
         Counter::Passes,
         Counter::QueueWrites,
+        Counter::PassMask,
+        Counter::PassNoColor,
+        Counter::PassDiscard,
+        Counter::PassCounted,
+        Counter::PassSide,
     ];
 
     pub fn label(self) -> &'static str {
@@ -168,6 +191,11 @@ impl Counter {
             Counter::VertexReused => "vtx_reused",
             Counter::Passes => "passes",
             Counter::QueueWrites => "queue_writes",
+            Counter::PassMask => "pass_mask",
+            Counter::PassNoColor => "pass_nocolor",
+            Counter::PassDiscard => "pass_discard",
+            Counter::PassCounted => "pass_counted",
+            Counter::PassSide => "pass_side",
         }
     }
 }

@@ -848,6 +848,60 @@ us of wgpu and Metal CPU; `passes` in the next capture says how many a
 from (count passes and sums for visibility tests, splits after partly
 masked draws, side passes, clears).
 
+### Render passes by cause (2026-11-17, second round)
+
+The branch measured on the same scene: `passes` 195 a frame at ~1000
+draws (3035 frames), 440-466 at 1250-1500, 312 at 2000 with 537
+`queue_writes`; encode + submit 23.8 ms at 1000 draws against 37.9 on
+master. `passes` grows with draws at about 0.2 a draw, while `submits`
+stays near 28-48 a frame. Visibility tests submit at every
+`EndVisibilityTest` (the report flushed), so they are bounded by the
+submits; side passes (mirror, depth aliases) were a few a frame in the
+profile (`GuestWords` and `DepthBits` sample counts). What grows with
+draws is the merged pass's splits: a draw after a partly masked draw
+(Halo's multipass shaders alternate RGB-only, alpha-only and full
+writes) starts a render pass of its own, the Apple-GPU workaround in
+graphics.md "Merged passes".
+
+The frame stats now split `passes` by cause:
+
+| column | passes |
+|---|---|
+| `pass_mask` | a draw after one that wrote some colour channels but not all, writing others |
+| `pass_nocolor` | the same after a draw that wrote no colour channel |
+| `pass_discard` | a draw that can `discard`, after a partly masked draw with the same mask (fast rule), or every one (exact rule) |
+| `pass_counted` | each visibility test's count pass and sum, and the pass the draws after it resume in |
+| `pass_side` | alias mirror stores and loads, depth aliases and levels, masked clears |
+
+The rest of `passes` is one render pass per pending pass (target
+switches, clears that start a pass) and the present.
+
+Changes in this round:
+
+- A counted draw alone in its run that writes nothing (the flare
+  tests: colour writes off, no depth or stencil writes) no longer gets
+  a render pass after its count pass: it would load and store the
+  attachments unchanged. One pass fewer per flare test.
+  `H2_GFX_IDLE_COUNTED_PASS=1` restores it.
+- The report of a visibility test goes into the open encoder like the
+  other side work, so a test no longer submits on its own (it reaches the
+  GPU with the next submission, at the latest the present; Halo reads it
+  two frames later). A read, or the render thread's poll for a count the
+  guest is spinning on, submits it first. Under `H2_GFX_SIDE_SUBMIT=1` it
+  submits as before.
+- New persistent vertex and index buffers (vertex-cache snapshots) are
+  written through one staging ring per submission and buffer copies,
+  instead of a queue write (a staging buffer) each: most of the 537
+  `queue_writes` at 2000 draws. `H2_GFX_STAGED_UPLOADS=0` restores the
+  queue writes.
+- `H2_GFX_MERGE_PASSES=loose` (opt-in, not exact) drops the merge-rule
+  splits, to measure what `pass_mask` + `pass_nocolor` + `pass_discard`
+  cost and, with `H2_GFX_MERGE_CHECK`, which pixels they protect.
+
+The mask splits are left as they are: each one exists because merged
+and per-draw rendering differ on Apple GPUs without it, and no test can
+show a replacement gives the same pixels.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split
