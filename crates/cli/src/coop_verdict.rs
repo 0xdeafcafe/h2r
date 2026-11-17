@@ -3,9 +3,10 @@
 //! merged log, how a merged line reads, and which checklist steps a log
 //! shows.
 //!
-//! A merged log starts with one `# host <gamertag>` line and a
-//! `# guest <gamertag>` line per guest, then one line per game line:
-//! `[+SECONDS] GAMERTAG | TEXT`.
+//! A merged log starts with one `# host <gamertag>` line, a
+//! `# guest <gamertag>` line per guest and a `# late <gamertag>` line per
+//! guest that joins once the host is in the level (`--late`), then one line
+//! per game line: `[+SECONDS] GAMERTAG | TEXT`.
 
 use std::fmt::Write as _;
 
@@ -15,8 +16,9 @@ use std::fmt::Write as _;
 pub fn wanted(line: &str) -> bool {
     const DROP: [&str; 3] = ["feature plan:", "feature: ", "health: "];
     const DROP_ANY: [&str; 1] = ["hooks installed via feature plan"];
-    const KEEP: [&str; 10] = [
+    const KEEP: [&str; 11] = [
         "coop-live",
+        "coop-jip",
         "coop-probe",
         "coop-auto",
         "skulls",
@@ -49,6 +51,9 @@ pub fn parse_line(line: &str) -> Option<(&str, &str)> {
 pub struct Roles {
     pub host: String,
     pub guests: Vec<String>,
+    /// Guests that join in progress: not in the lobby steps, checked by
+    /// [`Verdict::joins`] instead.
+    pub late: Vec<String>,
 }
 
 impl Roles {
@@ -56,6 +61,9 @@ impl Roles {
         let mut s = format!("# host {}\n", self.host);
         for g in &self.guests {
             let _ = writeln!(s, "# guest {g}");
+        }
+        for g in &self.late {
+            let _ = writeln!(s, "# late {g}");
         }
         s
     }
@@ -67,6 +75,8 @@ impl Roles {
                 r.host = t.trim().into();
             } else if let Some(t) = line.strip_prefix("# guest ") {
                 r.guests.push(t.trim().into());
+            } else if let Some(t) = line.strip_prefix("# late ") {
+                r.late.push(t.trim().into());
             }
         }
         (!r.host.is_empty()).then_some(r)
@@ -188,7 +198,8 @@ const STEPS: &[Step] = &[
 ];
 
 /// Lines that mean something went wrong, whatever the step.
-const TROUBLE: [&str; 8] = [
+const TROUBLE: [&str; 9] = [
+    "coop-jip: back to the lobby",
     "coop-live: ping: no answer",
     "returned 0 (refused)",
     "coop-live: refused",
@@ -221,6 +232,9 @@ pub struct StepResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub steps: Vec<StepResult>,
+    /// One line per late guest: whether and when it joined in progress
+    /// (docs/live/live-coop.md section 14), then the host's admissions.
+    pub joins: Vec<Join>,
     /// Merged lines that look like trouble, as they are.
     pub trouble: Vec<String>,
 }
@@ -237,6 +251,7 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
             Who::Guests => roles.guests.iter().map(String::as_str).collect(),
             Who::Everyone => std::iter::once(roles.host.as_str())
                 .chain(roles.guests.iter().map(String::as_str))
+                .chain(roles.late.iter().map(String::as_str))
                 .collect(),
         };
         let missing: Vec<String> = games
@@ -273,7 +288,78 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         .filter(|l| parse_line(l).is_some_and(|(_, t)| TROUBLE.iter().any(|p| t.contains(p))))
         .map(String::from)
         .collect();
-    Some(Verdict { steps, trouble })
+    let joins = joins(&lines, &roles);
+    Some(Verdict {
+        steps,
+        joins,
+        trouble,
+    })
+}
+
+/// A late guest's join in progress, as its lines and the host's show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Join {
+    pub tag: String,
+    pub joined: bool,
+    pub says: String,
+}
+
+const JOINED: &str = "coop-jip: joined in progress at tick ";
+const BACK: &str = "coop-jip: back to the lobby: ";
+const ADMITTED: &str = "coop-jip: admitted player ";
+
+fn joins(lines: &[(&str, &str)], roles: &Roles) -> Vec<Join> {
+    let after = |tag: &str, p: &str| {
+        lines
+            .iter()
+            .filter(|(t, _)| *t == tag)
+            .find_map(|(_, text)| text.split_once(p).map(|(_, rest)| rest.to_string()))
+    };
+    let mut out = Vec::new();
+    for tag in &roles.late {
+        let (joined, says) = if let Some(rest) = after(tag, JOINED) {
+            // "4322 as player 3"
+            let (tick, player) = rest.split_once(" as ").unwrap_or((rest.as_str(), ""));
+            let player = if player.is_empty() {
+                String::new()
+            } else {
+                format!(" ({player})")
+            };
+            (
+                true,
+                format!("{tag} joined in progress at tick {tick}{player}"),
+            )
+        } else if let Some(why) = after(tag, BACK) {
+            (false, format!("{tag} did not join in progress: {why}"))
+        } else if said(lines, tag, "coop-auto: accepting ") {
+            (
+                false,
+                format!(
+                    "{tag} accepted but never said it joined in progress (was {} in a level?)",
+                    roles.host
+                ),
+            )
+        } else {
+            (false, format!("{tag} never accepted an invitation"))
+        };
+        out.push(Join {
+            tag: tag.clone(),
+            joined,
+            says,
+        });
+    }
+    for (t, text) in lines {
+        if *t == roles.host
+            && let Some((_, rest)) = text.split_once(ADMITTED)
+        {
+            out.push(Join {
+                tag: roles.host.clone(),
+                joined: true,
+                says: format!("{} admitted player {rest}", roles.host),
+            });
+        }
+    }
+    out
 }
 
 /// Whether game `tag` printed a line holding `p`.
@@ -432,6 +518,12 @@ impl Verdict {
             }
             None => s.push_str("every step seen\n"),
         }
+        if !self.joins.is_empty() {
+            s.push_str("join in progress (section 14):\n");
+            for j in &self.joins {
+                let _ = writeln!(s, "  [{}] {}", if j.joined { "x" } else { " " }, j.says);
+            }
+        }
         if !self.trouble.is_empty() {
             s.push_str("trouble:\n");
             for t in self.trouble.iter().take(20) {
@@ -450,6 +542,7 @@ mod tests {
         let roles = Roles {
             host: "Alpha".into(),
             guests: vec!["Bravo".into()],
+            late: vec![],
         };
         let mut s = roles.header();
         for (i, (tag, text)) in lines.iter().enumerate() {
@@ -482,6 +575,7 @@ mod tests {
         let r = Roles {
             host: "Alpha".into(),
             guests: vec!["Bravo".into(), "Charlie".into()],
+            late: vec![],
         };
         assert_eq!(Roles::read(&r.header()), Some(r));
         assert_eq!(Roles::read("[+1.000] Alpha | x\n"), None);
@@ -805,6 +899,7 @@ mod tests {
         let roles = Roles {
             host: "Alpha".into(),
             guests: vec!["Bravo".into(), "Charlie".into()],
+            late: vec![],
         };
         let mut text = roles.header();
         for (t, tag, line) in [
@@ -861,6 +956,111 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("picked another of its rows")
+        );
+    }
+
+    #[test]
+    fn a_late_guest_is_checked_for_its_join_not_the_lobby_steps() {
+        let roles = Roles {
+            host: "Alpha".into(),
+            guests: vec!["Bravo".into()],
+            late: vec!["Charlie".into(), "Delta".into(), "Echo".into()],
+        };
+        assert_eq!(Roles::read(&roles.header()), Some(roles.clone()));
+        let mut text = roles.header();
+        for (tag, line) in [
+            (
+                "Charlie",
+                "coop-auto: accepting Alpha's invitation to session 80",
+            ),
+            (
+                "Charlie",
+                "coop-jip: joined in progress at tick 4322 as player 3",
+            ),
+            (
+                "Alpha",
+                "coop-jip: admitted player 3 at tick 4322 (900 KiB sent, held 840 ms)",
+            ),
+            (
+                "Delta",
+                "coop-auto: accepting Alpha's invitation to session 80",
+            ),
+            (
+                "Delta",
+                "coop-jip: back to the lobby: refused: the game is full",
+            ),
+            (
+                "Echo",
+                "coop-auto: accepting Alpha's invitation to session 80",
+            ),
+            ("Alpha", "coop-live: 15 campaign levels (15 named)"),
+        ] {
+            assert!(wanted(line), "{line}");
+            text.push_str(&format_line(1.0, tag, line));
+            text.push('\n');
+        }
+        let v = verdict(&text, true).unwrap();
+        let says: Vec<(bool, &str)> = v
+            .joins
+            .iter()
+            .map(|j| (j.joined, j.says.as_str()))
+            .collect();
+        assert_eq!(
+            says,
+            [
+                (true, "Charlie joined in progress at tick 4322 (player 3)"),
+                (
+                    false,
+                    "Delta did not join in progress: refused: the game is full"
+                ),
+                (
+                    false,
+                    "Echo accepted but never said it joined in progress (was Alpha in a level?)"
+                ),
+                (
+                    true,
+                    "Alpha admitted player 3 at tick 4322 (900 KiB sent, held 840 ms)"
+                ),
+            ]
+        );
+        // The late ones are not missing from the lobby's guest steps, but
+        // they still have to read the levels like everyone.
+        let joined = v
+            .steps
+            .iter()
+            .find(|s| s.what.contains("the guest is in the host's"))
+            .unwrap();
+        assert_eq!(
+            joined.seen,
+            Seen::No {
+                missing: vec!["Bravo".into()]
+            }
+        );
+        let levels = v
+            .steps
+            .iter()
+            .find(|s| s.what.contains("campaign levels"))
+            .unwrap();
+        assert!(
+            matches!(&levels.seen, Seen::No { missing } if missing.contains(&"Echo".to_string())),
+            "{:?}",
+            levels.seen
+        );
+        let out = v.render();
+        assert!(out.contains("join in progress (section 14):\n  [x] Charlie joined in progress at tick 4322 (player 3)"), "{out}");
+        assert!(out.contains("  [ ] Delta did not join"), "{out}");
+        assert!(v.trouble.iter().any(|t| t.contains("back to the lobby")));
+        // No late guests, no section.
+        let plain = Roles {
+            host: "Alpha".into(),
+            guests: vec!["Bravo".into()],
+            late: vec![],
+        };
+        assert!(
+            !verdict(&plain.header(), false)
+                .unwrap()
+                .render()
+                .contains("join in progress")
         );
     }
 }

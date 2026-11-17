@@ -3,6 +3,9 @@
 //! by itself, and a guest accepts an invitation from the named host by
 //! itself, as if each had pressed through the friends list. Off unless
 //! `H2_COOP_AUTO_INVITE` or `H2_COOP_AUTO_ACCEPT` names someone.
+//! `H2_COOP_AUTO_ACCEPT_DELAY` (seconds) holds the accept back that long
+//! after the invitation was sent, so `h2 coop test --late` has a guest
+//! arrive once the host is in the level (join in progress, section 14).
 //!
 //! The decisions are here, pure; `State` asks them after each pump of the
 //! invitation tasks and does what they say through the same requests the
@@ -20,6 +23,8 @@ use crate::Friend;
 pub(crate) struct Auto {
     invite: Vec<String>,
     accept_from: Option<String>,
+    /// Seconds after an invitation was sent before it is accepted.
+    accept_delay: i64,
     /// (session, xuid) pairs already invited.
     invited: BTreeSet<(String, Xuid)>,
     /// Invitation ids already answered.
@@ -32,6 +37,16 @@ impl Auto {
             std::env::var("H2_COOP_AUTO_INVITE").ok().as_deref(),
             std::env::var("H2_COOP_AUTO_ACCEPT").ok().as_deref(),
         )
+        .accept_after(std::env::var("H2_COOP_AUTO_ACCEPT_DELAY").ok().as_deref())
+    }
+
+    /// Holds accepts back `secs` seconds (a whole number) after the
+    /// invitation was sent. Anything else means at once.
+    pub fn accept_after(mut self, secs: Option<&str>) -> Self {
+        self.accept_delay = secs
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map_or(0, i64::from);
+        self
     }
 
     /// `invite` is a comma-separated list of gamertags.
@@ -84,13 +99,15 @@ impl Auto {
         self.invited.remove(&(session.to_string(), xuid));
     }
 
-    /// The invitation to accept now: the newest from the named host not yet
-    /// answered. Marks it answered.
-    pub fn accept_now(&mut self, pending: &[Invite]) -> Option<Invite> {
+    /// The invitation to accept at `now` (unix seconds): the newest from the
+    /// named host not yet answered and sent at least the delay ago. Marks it
+    /// answered.
+    pub fn accept_now(&mut self, pending: &[Invite], now: i64) -> Option<Invite> {
         let from = self.accept_from.as_ref()?;
         let v = pending
             .iter()
             .filter(|v| v.gamertag.eq_ignore_ascii_case(from) && v.answer.is_none())
+            .filter(|v| now >= v.sent_at.saturating_add(self.accept_delay))
             .filter(|v| !self.accepted.contains(&v.id))
             .max_by_key(|v| v.sent_at)?
             .clone();
@@ -170,12 +187,30 @@ mod tests {
             invite(3, "Mallory", 30),
             answered,
         ];
-        assert_eq!(a.accept_now(&pending).map(|v| v.id), Some(2));
-        assert_eq!(a.accept_now(&pending).map(|v| v.id), Some(1));
-        assert_eq!(a.accept_now(&pending), None);
+        assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(2));
+        assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(1));
+        assert_eq!(a.accept_now(&pending, 100), None);
         a.accept_failed(2);
-        assert_eq!(a.accept_now(&pending).map(|v| v.id), Some(2));
+        assert_eq!(a.accept_now(&pending, 100).map(|v| v.id), Some(2));
         // No name, nothing accepted.
-        assert_eq!(Auto::default().accept_now(&pending), None);
+        assert_eq!(Auto::default().accept_now(&pending, 100), None);
+    }
+
+    #[test]
+    fn a_late_guest_waits_out_the_delay_after_the_invitation() {
+        let pending = [invite(1, "Alpha", 1_000)];
+        let mut a = Auto::from_values(None, Some("Alpha")).accept_after(Some("90"));
+        assert_eq!(a.accept_now(&pending, 1_000), None);
+        assert_eq!(a.accept_now(&pending, 1_089), None);
+        assert_eq!(a.accept_now(&pending, 1_090).map(|v| v.id), Some(1));
+        // Unset or not a number: at once.
+        for d in [None, Some(""), Some("soon"), Some("-5")] {
+            let mut a = Auto::from_values(None, Some("Alpha")).accept_after(d);
+            assert_eq!(
+                a.accept_now(&pending, 1_000).map(|v| v.id),
+                Some(1),
+                "{d:?}"
+            );
+        }
     }
 }
