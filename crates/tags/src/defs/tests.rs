@@ -178,7 +178,14 @@ fn built_trees_round_trip() {
     let mut owner = |k: &TagKey| (k.path == "x").then_some(TagId(0xe0020003));
     let b = to_built(def, &r, &mut owner).unwrap();
     let back = from_built(def, &b).unwrap();
-    assert_eq!(back.at("model"), r.at("model"));
+    // The builder writes a reference's group word from its target.
+    assert_eq!(
+        back.at("model"),
+        Some(&Val::Ref {
+            group: 0,
+            target: Target::Id(TagId(0xe0010002)),
+        })
+    );
     assert_eq!(
         back.at("parts[0].owner"),
         Some(&Val::Datum(Target::Id(TagId(0xe0020003))))

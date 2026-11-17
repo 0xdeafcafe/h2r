@@ -1086,6 +1086,20 @@ pub fn from_built(def: &StructDef, b: &Block) -> Result<Record, DefError> {
     built_read(def, b, 0, "")
 }
 
+/// Reads `count` elements of `def` from one builder block (an array's
+/// child block).
+pub fn from_built_array(def: &StructDef, b: &Block, count: u32) -> Result<Vec<Record>, DefError> {
+    if b.bytes.len() < (def.size * count) as usize {
+        return fail(
+            "",
+            format!("{:#x} bytes for {count} x {:#x}", b.bytes.len(), def.size),
+        );
+    }
+    (0..count)
+        .map(|i| built_read(def, b, i * def.size, &format!("[{i}]")))
+        .collect()
+}
+
 fn built_read(def: &StructDef, b: &Block, at: u32, path: &str) -> Result<Record, DefError> {
     let mut out = Vec::with_capacity(def.fields.len());
     for f in &def.fields {
@@ -1093,7 +1107,52 @@ fn built_read(def: &StructDef, b: &Block, at: u32, path: &str) -> Result<Record,
         let o = at + f.offset;
         let a = o as usize;
         let fx = b.fixups.iter().find(|x| x.offset == o).map(|x| &x.kind);
+        // A converter may write an 8-byte reference where the definition
+        // has the group word and a bare datum (`hlmt +0x10`/`+0x14`): the
+        // reference's datum belongs to the datum field.
+        let straddles = |k: Option<&FixupKind>| matches!(k, Some(FixupKind::TagRef(_)));
+        if matches!(f.kind, Kind::Datum { .. }) && fx.is_none() && o >= 4 {
+            let before = b.fixups.iter().find(|x| x.offset == o - 4).map(|x| &x.kind);
+            if let Some(FixupKind::TagRef(id)) = before {
+                out.push((
+                    f.name.clone(),
+                    Val::Datum(if *id == TagId::NULL {
+                        Target::Null
+                    } else {
+                        Target::Id(*id)
+                    }),
+                ));
+                continue;
+            }
+        }
         let v = if let Some(v) = plain(&f.kind, &b.bytes, a) {
+            if straddles(fx)
+                && matches!(
+                    f.kind,
+                    Kind::Int {
+                        bytes: 4,
+                        count: 1,
+                        ..
+                    }
+                )
+                && def
+                    .fields
+                    .iter()
+                    .any(|n| n.offset == f.offset + 4 && matches!(n.kind, Kind::Datum { .. }))
+            {
+                // The group word of that reference: `0xffffffff` when null
+                // (the builder writes it), else as stored.
+                let null = matches!(fx, Some(FixupKind::TagRef(id)) if *id == TagId::NULL);
+                out.push((
+                    f.name.clone(),
+                    if null {
+                        Val::Int(i64::from(u32::MAX))
+                    } else {
+                        v
+                    },
+                ));
+                continue;
+            }
             if let Some(k) = fx {
                 return fail(&p, format!("a {k:?} fixup on a plain field"));
             }
@@ -1105,14 +1164,23 @@ fn built_read(def: &StructDef, b: &Block, at: u32, path: &str) -> Result<Record,
                     0 => Val::String(Str::Null),
                     w => Val::String(Str::Index(w)),
                 },
-                (Kind::TagRef { .. }, Some(FixupKind::TagRef(id))) => Val::Ref {
-                    group: u32_at(&b.bytes, a),
-                    target: if *id == TagId::NULL {
-                        Target::Null
+                // The builder writes a reference fixup's group word itself:
+                // the target's group, or `0xffffffff` for null. Read back
+                // as it will be written: null as `0xffffffff`, a target's
+                // group as 0 (not known here).
+                (Kind::TagRef { .. }, Some(FixupKind::TagRef(id))) => {
+                    if *id == TagId::NULL {
+                        Val::Ref {
+                            group: u32::MAX,
+                            target: Target::Null,
+                        }
                     } else {
-                        Target::Id(*id)
-                    },
-                },
+                        Val::Ref {
+                            group: 0,
+                            target: Target::Id(*id),
+                        }
+                    }
+                }
                 (Kind::TagRef { .. }, None) => Val::Ref {
                     group: u32_at(&b.bytes, a),
                     target: match u32_at(&b.bytes, a + 4) {

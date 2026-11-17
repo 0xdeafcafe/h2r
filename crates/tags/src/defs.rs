@@ -44,6 +44,10 @@ pub const FILES: &[(&str, &str)] = &[
     ("coll.txt", include_str!("defs/coll.txt")),
     ("phmo.txt", include_str!("defs/phmo.txt")),
     ("shad.txt", include_str!("defs/shad.txt")),
+    ("bitm.txt", include_str!("defs/bitm.txt")),
+    ("jmad.txt", include_str!("defs/jmad.txt")),
+    ("snd_.txt", include_str!("defs/snd_.txt")),
+    ("lsnd.txt", include_str!("defs/lsnd.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
@@ -664,6 +668,23 @@ impl StructDef {
     /// The field named `name`.
     pub fn field(&self, name: &str) -> Option<&FieldDef> {
         self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The element definition of the block or embedded struct at `path`
+    /// (names joined by `.`: `regions.permutations`).
+    pub fn child(&self, path: &str) -> Option<&StructDef> {
+        let (first, rest) = match path.split_once('.') {
+            Some((a, b)) => (a, Some(b)),
+            None => (path, None),
+        };
+        let s = match &self.field(first)?.kind {
+            Kind::Block(s) | Kind::Struct(s) => s,
+            _ => return None,
+        };
+        match rest {
+            Some(r) => s.child(r),
+            None => Some(s),
+        }
     }
 
     /// Bytes of one element by what its fields are (embedded structs
