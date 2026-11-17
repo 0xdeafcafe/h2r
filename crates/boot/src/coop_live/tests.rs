@@ -820,27 +820,103 @@ fn the_lobbys_co_op_check_is_lifted_only_for_two_consoles_in_a_networked_campaig
     let mut s = session(2, 2);
     s.difficulty = 1;
     s.class = 2;
-    assert!(lift_coop_check(START_COOP_OR_TEAMS, Some(&s)));
-    assert!(!lift_coop_check(START_READY, Some(&s)), "only state 7");
-    assert!(!lift_coop_check(START_COOP_OR_TEAMS, None));
+    assert!(lift_coop_check(START_COOP_OR_TEAMS, Some(&s), 2));
+    assert!(!lift_coop_check(START_READY, Some(&s), 2), "only state 7");
+    assert!(!lift_coop_check(START_COOP_OR_TEAMS, None, 2));
     let mut local = s;
     local.class = 0;
     assert!(
-        !lift_coop_check(START_COOP_OR_TEAMS, Some(&local)),
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&local), 2),
         "split screen stays retail"
     );
     let mut mp = s;
     mp.difficulty = coop_probe::NO_DIFFICULTY;
     assert!(
-        !lift_coop_check(START_COOP_OR_TEAMS, Some(&mp)),
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&mp), 2),
         "teams in multiplayer"
     );
     let three = session(3, 3);
-    assert!(!lift_coop_check(START_COOP_OR_TEAMS, Some(&three)));
+    assert!(!lift_coop_check(START_COOP_OR_TEAMS, Some(&three), 2));
     // The retail tail after a passing check.
     assert_eq!(tail_state(0, false), START_COUNTDOWN);
     assert_eq!(tail_state(-1, true), START_READY);
     assert_eq!(tail_state(-1, false), START_NOT_LOADED);
+}
+
+#[test]
+fn a_larger_co_op_lifts_the_lobby_check_for_one_player_per_console_up_to_its_limit() {
+    let net = |peers, players| {
+        let mut s = session(peers, players);
+        s.difficulty = 1;
+        s.class = 2;
+        s
+    };
+    for n in 2..=4 {
+        assert!(
+            lift_coop_check(START_COOP_OR_TEAMS, Some(&net(n, n)), 4),
+            "{n} consoles"
+        );
+    }
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&net(5, 5)), 4),
+        "past the limit"
+    );
+    assert!(lift_coop_check(
+        START_COOP_OR_TEAMS,
+        Some(&net(16, 16)),
+        coop_probe::CEILING
+    ));
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&net(3, 4)), 4),
+        "two players on one console: not stage 1"
+    );
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&net(1, 1)), 4),
+        "one console"
+    );
+    assert!(
+        !lift_coop_check(START_COOP_OR_TEAMS, Some(&net(3, 3)), 2),
+        "the default stays at two"
+    );
+}
+
+#[test]
+fn a_larger_co_op_host_waits_for_up_to_its_limit_and_says_so() {
+    let live = Arc::new(FakeLive::default());
+    let (lobby, arm) = lobby_with(live);
+    arm.set_max_players(4);
+    lobby.open_from_menu();
+    lobby.observe(Some(session(3, 3)));
+    assert_eq!(lobby.checks().blocker(), None, "three of four");
+    lobby.observe(Some(session(4, 4)));
+    assert_eq!(lobby.checks().blocker(), None);
+    lobby.observe(Some(session(5, 5)));
+    assert_eq!(
+        lobby.checks().blocker().as_deref(),
+        Some("5 consoles in the lobby; co-op takes up to 4")
+    );
+    lobby.observe(Some(session(4, 5)));
+    assert_eq!(
+        lobby.checks().blocker().as_deref(),
+        Some("5 players; co-op takes up to 4")
+    );
+}
+
+#[test]
+fn the_lobby_line_says_the_limit_and_fits() {
+    assert_eq!(lobby_line(2), LOBBY_LINE);
+    for n in [3, 4, 8, 16] {
+        let line = lobby_line(n);
+        assert!(line.contains(&format!("up to {n} players")), "{line}");
+        for l in line.split("\r\n") {
+            assert!(l.len() <= 52, "{l:?}");
+        }
+    }
+    let live = Arc::new(FakeLive::default());
+    let (lobby, arm) = lobby_with(live);
+    arm.set_max_players(8);
+    lobby.set_text_base(0x2000_0000);
+    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), lobby_line(8));
 }
 
 #[test]

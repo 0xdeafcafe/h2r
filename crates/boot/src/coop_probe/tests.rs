@@ -166,39 +166,54 @@ fn campaign(s: Session) -> Session {
 #[test]
 fn the_peer_check_is_lifted_only_for_a_two_machine_campaign() {
     assert_eq!(
-        peer_bypass(&campaign(lobby(2, 2))),
-        Bypass::Fake { real: 2 }
+        peer_bypass(&campaign(lobby(2, 2)), MAX_PLAYERS),
+        Bypass::Fake {
+            real: 2,
+            players: None
+        }
     );
     assert_eq!(
-        peer_bypass(&campaign(lobby(2, 1))),
-        Bypass::Fake { real: 2 }
+        peer_bypass(&campaign(lobby(2, 1)), MAX_PLAYERS),
+        Bypass::Fake {
+            real: 2,
+            players: None
+        }
     );
     assert!(
-        matches!(peer_bypass(&lobby(2, 2)), Bypass::Retail(_)),
+        matches!(peer_bypass(&lobby(2, 2), MAX_PLAYERS), Bypass::Retail(_)),
         "multiplayer stays retail"
     );
     assert!(
-        matches!(peer_bypass(&campaign(lobby(1, 1))), Bypass::Retail(_)),
+        matches!(
+            peer_bypass(&campaign(lobby(1, 1)), MAX_PLAYERS),
+            Bypass::Retail(_)
+        ),
         "one machine"
     );
     assert!(matches!(
-        peer_bypass(&campaign(lobby(3, 3))),
+        peer_bypass(&campaign(lobby(3, 3)), MAX_PLAYERS),
         Bypass::Refuse(_)
     ));
     assert!(
-        matches!(peer_bypass(&campaign(lobby(2, 3))), Bypass::Refuse(_)),
+        matches!(
+            peer_bypass(&campaign(lobby(2, 3)), MAX_PLAYERS),
+            Bypass::Refuse(_)
+        ),
         "player cap"
     );
     let gone = Session {
         state: 2,
         ..campaign(lobby(2, 2))
     };
-    assert!(matches!(peer_bypass(&gone), Bypass::Retail(_)));
+    assert!(matches!(peer_bypass(&gone, MAX_PLAYERS), Bypass::Retail(_)));
     let ended = Session {
         state: 9,
         ..campaign(lobby(2, 2))
     };
-    assert!(matches!(peer_bypass(&ended), Bypass::Retail(_)));
+    assert!(matches!(
+        peer_bypass(&ended, MAX_PLAYERS),
+        Bypass::Retail(_)
+    ));
 }
 
 fn join(players: u32, difficulty: u16) -> JoinInputs {
@@ -216,12 +231,15 @@ fn join(players: u32, difficulty: u16) -> JoinInputs {
 #[test]
 fn joinable_drops_only_the_campaign_clause_and_caps_at_two() {
     // Multiplayer: as retail either way.
-    assert!(joinable(&join(1, 0xffff), false));
-    assert!(joinable(&join(1, 0xffff), true));
+    assert!(joinable(&join(1, 0xffff), None));
+    assert!(joinable(&join(1, 0xffff), Some(MAX_PLAYERS)));
     // Campaign: retail says no; the probe says yes while one player is in.
-    assert!(!joinable(&join(1, 1), false));
-    assert!(joinable(&join(1, 1), true));
-    assert!(!joinable(&join(2, 1), true), "two players: full");
+    assert!(!joinable(&join(1, 1), None));
+    assert!(joinable(&join(1, 1), Some(MAX_PLAYERS)));
+    assert!(
+        !joinable(&join(2, 1), Some(MAX_PLAYERS)),
+        "two players: full"
+    );
     // Every other retail clause still holds.
     for j in [
         JoinInputs {
@@ -253,14 +271,14 @@ fn joinable_drops_only_the_campaign_clause_and_caps_at_two() {
             ..join(1, 1)
         },
     ] {
-        assert!(!joinable(&j, true), "{j:?}");
+        assert!(!joinable(&j, Some(MAX_PLAYERS)), "{j:?}");
         assert!(
             !joinable(
                 &JoinInputs {
                     difficulty: 0xffff,
                     ..j
                 },
-                false
+                None
             ),
             "{j:?}"
         );
@@ -270,7 +288,7 @@ fn joinable_drops_only_the_campaign_clause_and_caps_at_two() {
             life_cycle: 5,
             ..join(1, 1)
         },
-        true
+        Some(MAX_PLAYERS)
     ));
 }
 
@@ -286,12 +304,15 @@ fn want() -> Want {
 #[test]
 fn the_host_sets_the_lobby_once_a_second_machine_is_in() {
     assert!(
-        matches!(host_setup(&lobby(1, 1), &want()), Setup::Wait(w) if w.contains("second machine"))
+        matches!(host_setup(&lobby(1, 1), &want(), MAX_PLAYERS), Setup::Wait(w) if w.contains("second machine"))
     );
-    assert_eq!(host_setup(&lobby(2, 2), &want()), Setup::Due);
-    assert_eq!(host_setup(&campaign(lobby(2, 2)), &want()), Setup::Done);
+    assert_eq!(host_setup(&lobby(2, 2), &want(), MAX_PLAYERS), Setup::Due);
     assert_eq!(
-        host_setup(&campaign(lobby(1, 1)), &want()),
+        host_setup(&campaign(lobby(2, 2)), &want(), MAX_PLAYERS),
+        Setup::Done
+    );
+    assert_eq!(
+        host_setup(&campaign(lobby(1, 1)), &want(), MAX_PLAYERS),
         Setup::Done,
         "done needs no guest"
     );
@@ -299,26 +320,39 @@ fn the_host_sets_the_lobby_once_a_second_machine_is_in() {
         difficulty: 3,
         ..campaign(lobby(2, 2))
     };
-    assert_eq!(host_setup(&hard, &want()), Setup::Due, "another difficulty");
+    assert_eq!(
+        host_setup(&hard, &want(), MAX_PLAYERS),
+        Setup::Due,
+        "another difficulty"
+    );
     let guest = Session {
         local_peer_params: 1,
         local_peer: 1,
         ..lobby(2, 2)
     };
-    assert!(matches!(host_setup(&guest, &want()), Setup::Wait(w) if w.contains("host")));
+    assert!(
+        matches!(host_setup(&guest, &want(), MAX_PLAYERS), Setup::Wait(w) if w.contains("host"))
+    );
     let other_class = Session {
         class: 2,
         ..lobby(2, 2)
     };
-    assert!(matches!(host_setup(&other_class, &want()), Setup::Wait(_)));
-    assert!(matches!(host_setup(&lobby(3, 3), &want()), Setup::Wait(_)));
+    assert!(matches!(
+        host_setup(&other_class, &want(), MAX_PLAYERS),
+        Setup::Wait(_)
+    ));
+    assert!(matches!(
+        host_setup(&lobby(3, 3), &want(), MAX_PLAYERS),
+        Setup::Wait(_)
+    ));
     assert!(matches!(
         host_setup(
             &Session {
                 state: 1,
                 ..lobby(2, 2)
             },
-            &want()
+            &want(),
+            MAX_PLAYERS
         ),
         Setup::Wait(_)
     ));
@@ -341,27 +375,192 @@ fn the_setup_calls_are_the_menus_two() {
 
 #[test]
 fn the_peer_limit_goes_back_to_two_for_a_campaign() {
+    // What 0x6e720 leaves a campaign: peer limit 1, player limit 2.
     let one = Session {
         max_peers: 1,
+        max_players: 2,
         ..campaign(lobby(2, 2))
     };
-    assert_eq!(max_peers_fix(&one), Some(2));
     assert_eq!(
-        max_peers_fix(&Session {
-            max_peers: 2,
-            ..one
-        }),
-        None
+        limits_fix(&one, MAX_PLAYERS),
+        LimitsFix {
+            peers: Some(2),
+            players: None
+        },
+        "two players: only the peer limit, as before"
     );
     assert_eq!(
-        max_peers_fix(&Session {
-            max_peers: 1,
-            ..lobby(2, 2)
-        }),
-        None,
+        limits_fix(
+            &Session {
+                max_peers: 2,
+                ..one
+            },
+            MAX_PLAYERS
+        ),
+        LimitsFix::default()
+    );
+    assert_eq!(
+        limits_fix(
+            &Session {
+                max_peers: 1,
+                ..lobby(2, 2)
+            },
+            MAX_PLAYERS
+        ),
+        LimitsFix::default(),
         "multiplayer"
     );
-    assert_eq!(max_peers_fix(&Session { state: 0, ..one }), None);
+    assert_eq!(
+        limits_fix(&Session { state: 0, ..one }, MAX_PLAYERS),
+        LimitsFix::default()
+    );
+}
+
+#[test]
+fn a_larger_co_op_lifts_both_limits_to_it() {
+    let one = Session {
+        max_peers: 1,
+        max_players: 2,
+        ..campaign(lobby(4, 4))
+    };
+    assert_eq!(
+        limits_fix(&one, 4),
+        LimitsFix {
+            peers: Some(4),
+            players: Some(4)
+        }
+    );
+    assert_eq!(
+        limits_fix(&one, CEILING),
+        LimitsFix {
+            peers: Some(16),
+            players: Some(16)
+        }
+    );
+    assert_eq!(
+        limits_fix(
+            &Session {
+                max_peers: 16,
+                max_players: 16,
+                ..one
+            },
+            4
+        ),
+        LimitsFix::default(),
+        "never lowered"
+    );
+}
+
+#[test]
+fn a_larger_co_op_shows_the_start_one_peer_and_two_players() {
+    // Up to the limit: one peer, and two players when there are more.
+    assert_eq!(
+        peer_bypass(&campaign(lobby(3, 3)), 4),
+        Bypass::Fake {
+            real: 3,
+            players: Some(3)
+        }
+    );
+    assert_eq!(
+        peer_bypass(&campaign(lobby(16, 16)), CEILING),
+        Bypass::Fake {
+            real: 16,
+            players: Some(16)
+        }
+    );
+    assert_eq!(
+        peer_bypass(&campaign(lobby(2, 2)), 4),
+        Bypass::Fake {
+            real: 2,
+            players: None
+        },
+        "two players pass 0x6ee9b as they are"
+    );
+    // Past the limit: retail refuses.
+    assert!(
+        matches!(peer_bypass(&campaign(lobby(5, 5)), 4), Bypass::Refuse(w) if w.contains("5 peers"))
+    );
+    assert!(
+        matches!(peer_bypass(&campaign(lobby(4, 5)), 4), Bypass::Refuse(w) if w.contains("5 players"))
+    );
+    assert!(
+        matches!(peer_bypass(&lobby(4, 4), 4), Bypass::Retail(_)),
+        "multiplayer"
+    );
+}
+
+#[test]
+fn the_window_puts_both_counts_back() {
+    let mut m = Fake::default();
+    let s = campaign(lobby(4, 4));
+    put_session(&mut m, &s);
+    m.set_u32(s.addr + layout::PEERS, 1);
+    m.set_u32(s.addr + layout::PLAYERS, START_PLAYER_CHECK);
+    let lines = restore_counts(
+        &mut m,
+        Pending {
+            addr: s.addr,
+            peers: 4,
+            players: Some(4),
+        },
+        "before OPTIONS_NEW",
+    );
+    assert_eq!(m.u32(s.addr + layout::PEERS), Some(4));
+    assert_eq!(m.u32(s.addr + layout::PLAYERS), Some(4));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[1].contains("player count back to 4"), "{lines:?}");
+    // Two players: only the peers were changed.
+    m.set_u32(s.addr + layout::PEERS, 1);
+    let lines = restore_counts(
+        &mut m,
+        Pending {
+            addr: s.addr,
+            peers: 2,
+            players: None,
+        },
+        "after a refused start",
+    );
+    assert_eq!(m.u32(s.addr + layout::PEERS), Some(2));
+    assert_eq!(m.u32(s.addr + layout::PLAYERS), Some(4), "untouched");
+    assert_eq!(lines.len(), 1);
+}
+
+#[test]
+fn a_larger_co_op_stays_joinable_and_due_up_to_its_limit() {
+    let mut j = join(3, 1);
+    assert!(joinable(&j, Some(4)));
+    assert!(!joinable(&j, Some(MAX_PLAYERS)), "two: full at two");
+    j.players = 4;
+    assert!(!joinable(&j, Some(4)), "full at the limit");
+    assert!(!joinable(&j, None), "retail: never for a campaign");
+    assert_eq!(host_setup(&lobby(3, 3), &want(), 4), Setup::Due);
+    assert_eq!(host_setup(&lobby(4, 4), &want(), 4), Setup::Due);
+    assert!(
+        matches!(host_setup(&lobby(5, 5), &want(), 4), Setup::Wait(w) if w.contains("stops at 4"))
+    );
+}
+
+#[test]
+fn the_limit_is_the_hosts_setting_and_a_guest_follows_the_host() {
+    let arm = Arm::session();
+    assert_eq!(arm.max_players(), MAX_PLAYERS, "retail by default");
+    assert_eq!(arm.set_max_players(4), 4);
+    assert_eq!(arm.set_max_players(1), MAX_PLAYERS, "held to 2");
+    assert_eq!(arm.set_max_players(99), CEILING, "held to 16");
+    arm.set_max_players(4);
+    let host = campaign(lobby(3, 3));
+    assert!(host.is_host());
+    assert_eq!(arm.limit_for(&host), 4);
+    let guest = Session {
+        local_peer: 1,
+        ..host
+    };
+    assert_eq!(arm.limit_for(&guest), CEILING);
+    assert_eq!(
+        Arm::forced(None).max_players(),
+        MAX_PLAYERS,
+        "the probe stays at two"
+    );
 }
 
 fn put_session(m: &mut Fake, s: &Session) {

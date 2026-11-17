@@ -62,6 +62,17 @@ pub const COOP_TAKES_TWO: u32 = 0x0e00_01ec;
 pub const LOBBY_LINE: &str = "Co-op over Xbox Live: 2 players, one per console.\r\n\
                               Invite a friend from Co-op Campaign.";
 
+/// The lobby line for a co-op limit of `max` players: [`LOBBY_LINE`] for
+/// two, else "up to `max`". Each line fits the lobby's 52 characters.
+pub fn lobby_line(max: u32) -> String {
+    if max <= coop_probe::MAX_PLAYERS {
+        return LOBBY_LINE.into();
+    }
+    format!(
+        "Xbox Live co-op: up to {max} players, one per console.\r\nInvite friends from Co-op Campaign."
+    )
+}
+
 /// Halo 2's own campaign id.
 const RETAIL_CAMPAIGN: u32 = 1;
 
@@ -340,6 +351,8 @@ pub struct Guest {
 pub struct Checks {
     /// The squad session is in a lobby or game state.
     pub session: bool,
+    /// The co-op player limit (`coop.max_players`), one per console.
+    pub max: u32,
     pub peers: u32,
     pub players: u32,
     /// The level resolved with campaign and map ids.
@@ -360,14 +373,17 @@ impl Checks {
         if self.peers < 2 {
             return Some("waiting for a second console".into());
         }
-        if self.peers > 2 {
-            return Some(format!(
-                "{} consoles in the lobby; co-op takes 2",
-                self.peers
-            ));
+        let max = self.max.max(coop_probe::MAX_PLAYERS);
+        let takes = if max == coop_probe::MAX_PLAYERS {
+            "co-op takes 2".to_owned()
+        } else {
+            format!("co-op takes up to {max}")
+        };
+        if self.peers > max {
+            return Some(format!("{} consoles in the lobby; {takes}", self.peers));
         }
-        if self.players > 2 {
-            return Some(format!("{} players; co-op takes 2", self.players));
+        if self.players > max {
+            return Some(format!("{} players; {takes}", self.players));
         }
         None
     }
@@ -610,6 +626,7 @@ impl Lobby {
         let s = self.lock().session;
         Checks {
             session: s.is_some(),
+            max: self.max_players(),
             peers: s.map_or(0, |s| s.peers),
             players: s.map_or(0, |s| s.players),
             level: want.is_some(),
@@ -774,13 +791,26 @@ impl Lobby {
     /// The texts' guest address (the feature's allocation).
     pub fn set_text_base(&self, base: u32) {
         self.texts.base.store(base, Ordering::SeqCst);
-        self.texts.set(LINE_SLOT, LOBBY_LINE);
+        self.texts.set(LINE_SLOT, &lobby_line(self.max_players()));
     }
     pub fn guest(&self) -> Option<Guest> {
         match &self.lock().role {
             Role::Guest(g) => Some(g.clone()),
             _ => None,
         }
+    }
+    /// The host's co-op player limit (`coop.max_players`; 2 without hooks).
+    pub fn max_players(&self) -> u32 {
+        self.arm
+            .as_ref()
+            .map_or(coop_probe::MAX_PLAYERS, |a| a.max_players())
+    }
+    /// The limit the lobby's checks use for session `s` on this console
+    /// ([`Arm::limit_for`]).
+    pub fn limit_for(&self, s: &coop_probe::Session) -> u32 {
+        self.arm
+            .as_ref()
+            .map_or(coop_probe::MAX_PLAYERS, |a| a.limit_for(s))
     }
     /// The co-op hooks are on.
     pub fn armed(&self) -> bool {
@@ -1292,11 +1322,24 @@ pub const START_READY: u32 = 9;
 pub const START_NOT_LOADED: u32 = 8;
 pub const START_COUNTDOWN: u32 = 10;
 /// Whether a start state of 7 is the co-op check on a Live co-op lobby:
-/// a networked campaign session of two consoles and two players. Then the
-/// state is what the retail tail gives after a passing check.
-pub fn lift_coop_check(state: u32, s: Option<&coop_probe::Session>) -> bool {
+/// a networked campaign session of 2 to `max` consoles with one player
+/// each. Then the state is what the retail tail gives after a passing
+/// check.
+///
+/// The check (`0x19a3ed`..`0x19a41c`) counts, over the 16 player slots,
+/// the players present (`0x19a951`) and those on this console
+/// (`0x19ab77`), and passes only for exactly two, both local: split
+/// screen. Over Live each console has one local player, so it always
+/// fails; the lift stands in for "one player per console, 2 to `max`".
+pub fn lift_coop_check(state: u32, s: Option<&coop_probe::Session>, max: u32) -> bool {
     state == START_COOP_OR_TEAMS
-        && s.is_some_and(|s| s.is_campaign() && s.class != 0 && s.peers == 2 && s.players == 2)
+        && s.is_some_and(|s| {
+            s.is_campaign()
+                && s.class != 0
+                && s.peers >= 2
+                && s.peers == s.players
+                && s.peers <= max
+        })
 }
 /// The retail tail after a passing co-op check (`0x19a4c5`): a countdown
 /// running gives 10, else everyone loaded 9, else 8.
@@ -1419,7 +1462,10 @@ async fn start_state(
     reentry.store(false, Ordering::SeqCst);
     let state = r?.eax;
     let session = lobby.session();
-    let out = if lift_coop_check(state, session.as_ref()) {
+    let max = session
+        .as_ref()
+        .map_or(coop_probe::MAX_PLAYERS, |s| lobby.limit_for(s));
+    let out = if lift_coop_check(state, session.as_ref(), max) {
         let countdown = cx
             .call(GuestCall::new(points::LOBBY_COUNTDOWN.base))
             .await?

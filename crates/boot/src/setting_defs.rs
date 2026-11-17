@@ -345,6 +345,42 @@ pub static LIVE_VISIBILITY: Def = Def {
     menu: None,
 };
 
+/// The most players a co-op campaign over Live takes, one per console
+/// (`crate::coop_probe`, docs/live/live-coop.md section 12). Only the host's
+/// value counts: it lifts the session's, the lobby's and the start's
+/// limits to it. 2 is retail co-op.
+pub static COOP_MAX_PLAYERS: Def = Def {
+    key: "coop.max_players",
+    label: "Co-op Players",
+    help: "The most players a co-op campaign you host over Xbox Live takes, one \
+           per console: 2 (the game's own) up to 16. Above 2 is experimental: \
+           players 3 and up start beside the others and the levels' scripts \
+           only know two players (docs/live/live-coop.md section 12). Applies \
+           at the next launch.",
+    kind: Kind::Int {
+        valid: 2..=16,
+        steps: &[2, 3, 4, 8, 16],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(2),
+    env: Some("H2_COOP_MAX_PLAYERS"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// [`COOP_MAX_PLAYERS`] in `store`, held to 2 to 16.
+pub fn coop_max_players(store: &Store) -> u32 {
+    match store.get(COOP_MAX_PLAYERS.key) {
+        Some(Value::Int(n)) => crate::coop_probe::clamp_players(n),
+        _ => crate::coop_probe::MAX_PLAYERS,
+    }
+}
+
 /// How strong the weapons' aim assist is (crate::aim_assist,
 /// docs/game/aim-assist.md). Read at each map load.
 pub static AIM_ASSIST: Def = Def {
@@ -582,6 +618,7 @@ pub static ALL: &[&Def] = &[
     &STEAM_SENSITIVITY,
     &STEAM_LEFT_PAD,
     &LIVE_VISIBILITY,
+    &COOP_MAX_PLAYERS,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -723,8 +760,10 @@ mod tests {
                 ("H2_TOUCH_LOOK_ACCEL", "off"),
                 ("H2_TOUCH_AUTO_FIRE", "1"),
                 ("H2_HALO1_SANDBOX", "h2"),
+                ("H2_COOP_MAX_PLAYERS", "4"),
             ],
         );
+        assert_eq!(coop_max_players(&s), 4);
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(halo1_sandbox(&s), "h2");
@@ -853,6 +892,27 @@ mod tests {
             s.step(AIM_ASSIST.key).unwrap();
             assert_eq!(s.get(AIM_ASSIST.key), Some(Value::Int(want)));
         }
+    }
+
+    #[test]
+    fn co_op_takes_two_players_unless_the_host_asks_for_more() {
+        let data = tmp("coop-max");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(coop_max_players(&s), 2, "retail co-op by default");
+        assert_eq!(COOP_MAX_PLAYERS.scope, Scope::Sim);
+        assert_eq!(COOP_MAX_PLAYERS.apply, Apply::Restart);
+        std::fs::write(settings::path_in(&data), "[coop]\nmax_players = 4\n").unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(coop_max_players(&s), 4);
+        let (s, _) = with_env(&data, &[("H2_COOP_MAX_PLAYERS", "16")]);
+        assert_eq!(coop_max_players(&s), 16);
+        assert!(s.state(COOP_MAX_PLAYERS.key).unwrap().locked);
+        // Outside 2 to 16: refused, the default holds.
+        let (s, p) = with_env(&data, &[("H2_COOP_MAX_PLAYERS", "17")]);
+        assert!(!p.is_empty());
+        assert!((2..=16).contains(&coop_max_players(&s)));
     }
 
     #[test]
