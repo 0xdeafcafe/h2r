@@ -51,6 +51,7 @@ pub mod skulls_custom;
 pub mod skulls_menu;
 pub mod skulls_mp;
 pub mod skulls_mp_row;
+pub mod signin_keyboard;
 pub mod signin_screen;
 pub mod skulls_screen;
 pub mod speaker_setting;

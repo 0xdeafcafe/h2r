@@ -51,6 +51,10 @@ pub enum Notice {
     /// for it: how to make or recover one (docs/live/live.md, "In-game
     /// account setup").
     NoAccount(String),
+    /// [`NoAccount`](Self::NoAccount) on an app build, which lists "New
+    /// Account" to make or add one in game
+    /// ([`LiveConfig::offer_new_account`]).
+    NoAccountInGame(String),
 }
 
 // The message box on the stock dialog is about 244 by 91 pixels, five lines
@@ -66,6 +70,9 @@ impl Notice {
     pub fn for_config(config: &LiveConfig) -> Option<Self> {
         match (config.enabled, &config.server_url) {
             (false, _) => Some(Self::NotSetUp),
+            (true, Some(url)) if no_accounts(config) && config.offer_new_account => {
+                Some(Self::NoAccountInGame(url.clone()))
+            }
             (true, Some(url)) if no_accounts(config) => Some(Self::NoAccount(url.clone())),
             (true, Some(url)) => Some(Self::Unreachable(url.clone())),
             (true, None) => None,
@@ -87,6 +94,13 @@ impl Notice {
                  Make one: h2 live account create <tag>\r\n\
                  or recover one in a browser at\r\n{}\r\n\
                  /dash/signup/recover, then start again.",
+                display_url(url)
+            ),
+            Self::NoAccountInGame(url) => format!(
+                "No Live account on this device yet.\r\n\
+                 Sign in as \"New Account\" to make one\r\n\
+                 or to add yours from\r\n{}\r\n\
+                 (its 6-digit code signs it in).",
                 display_url(url)
             ),
         }
@@ -240,6 +254,7 @@ mod tests {
             enabled,
             accounts_path: None,
             server_url: server_url.map(Into::into),
+            offer_new_account: false,
         }
     }
 
@@ -299,6 +314,22 @@ mod tests {
             Notice::for_config(&with(&none)),
             Some(Notice::Unreachable(_))
         ));
+        // The app builds say how to make one in game.
+        let app = LiveConfig {
+            offer_new_account: true,
+            ..with(&one)
+        };
+        assert!(matches!(
+            Notice::for_config(&app),
+            Some(Notice::Unreachable(_))
+        ));
+        assert_eq!(
+            Notice::for_config(&LiveConfig {
+                accounts_path: None,
+                ..app
+            }),
+            Some(Notice::NoAccountInGame("http://127.0.0.1:8074".into()))
+        );
         std::fs::remove_file(one).unwrap();
         std::fs::remove_file(none).unwrap();
         assert_eq!(Notice::for_config(&config(true, None)), None);
@@ -312,7 +343,9 @@ mod tests {
             Notice::Unreachable("http://127.0.0.1:8074/".into()),
             Notice::Unreachable(long.clone()),
             Notice::NoAccount("https://live.forbes.red".into()),
-            Notice::NoAccount(long),
+            Notice::NoAccount(long.clone()),
+            Notice::NoAccountInGame("https://live.forbes.red".into()),
+            Notice::NoAccountInGame(long),
         ] {
             let text = n.text();
             let lines: Vec<&str> = text.split("\r\n").collect();

@@ -172,6 +172,7 @@ fn hle_with(path: &Path, url: &str) -> Arc<Hle> {
             enabled: true,
             accounts_path: Some(path.into()),
             server_url: Some(url.into()),
+            offer_new_account: false,
         },
         NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31910)),
         ServerOptions {
@@ -380,6 +381,7 @@ fn without_a_server_an_identity_waiting_for_a_code_is_an_invalid_user() {
             enabled: true,
             accounts_path: Some(path),
             server_url: None,
+            offer_new_account: false,
         },
         SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31911),
     )
@@ -406,4 +408,193 @@ impl World {
         );
         status
     }
+}
+
+/// The app's configuration: the "New Account" row offered, the accounts
+/// file in `dir` (not there yet on a first start).
+fn hle_offering(dir: &Path, url: &str) -> (Arc<Hle>, PathBuf) {
+    let path = dir.join("live").join("accounts.json");
+    let hle = Hle::with_server_options(
+        LiveConfig {
+            enabled: true,
+            accounts_path: Some(path.clone()),
+            server_url: Some(url.into()),
+            offer_new_account: true,
+        },
+        NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31912)),
+        ServerOptions {
+            request_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (hle, path)
+}
+
+impl World {
+    /// The listed users' gamertags, in order.
+    fn listed(&mut self) -> Vec<String> {
+        assert_eq!(self.call("XOnlineGetUsers", &[DATA, OUT]), 0);
+        let n = self.u32(OUT);
+        let m = self.rt.memory();
+        (0..n)
+            .map(|i| {
+                let mut tag = [0u8; 16];
+                m.read_bytes(DATA + i * live_hle::USER_SIZE as u32 + 12, &mut tag, 1)
+                    .unwrap();
+                let end = tag.iter().position(|b| *b == 0).unwrap_or(16);
+                String::from_utf8_lossy(&tag[..end]).into_owned()
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn the_new_account_row_makes_a_free_gamertag_and_signs_it_in() {
+    let server = Server::new();
+    let dir = temp("new");
+    let (hle, path) = hle_offering(&dir, server.url());
+    let mut w = World::new(&hle);
+    w.start();
+    // A first start: no file, only the row.
+    assert_eq!(w.listed(), [live_hle::NEW_ACCOUNT_TAG]);
+
+    let task = w.logon_first();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), 0, "pending");
+    assert_eq!(hle.take_signin_open(), Some(0));
+    assert_eq!(hle.signin().unwrap().phase, Phase::Gamertag { error: None });
+    // Backing out of the keyboard leaves the question; the logon waits.
+    assert!(hle.signin_typed(None));
+    assert_eq!(hle.signin().unwrap().phase, Phase::Gamertag { error: None });
+    // Not a gamertag: said with no request.
+    assert!(hle.signin_typed(Some("no_underscores!")));
+    assert_eq!(
+        hle.signin().unwrap().phase,
+        Phase::Gamertag {
+            error: Some(SetupError::BadGamertag)
+        }
+    );
+    assert!(!hle.signin_submit("123456"), "no code asked for");
+    assert!(hle.signin_typed(Some(" Fresh Face ")));
+    assert_eq!(hle.signin().unwrap().gamertag, "Fresh Face");
+    let Phase::Created { info: Some(info) } = settled(&hle) else {
+        panic!("made, with its recovery secret");
+    };
+    assert_eq!(info.code.len(), 7);
+    assert!(!hle.signin_typed(Some("Another")), "nothing asked any more");
+    assert_eq!(w.finish(task), CONNECTED);
+    let saved = account_setup::load(&path).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].gamertag, "Fresh Face");
+    let users = w.call("XOnlineGetLogonUsers", &[]);
+    assert_eq!(
+        w.xuid(users),
+        saved[0].xuid.0,
+        "signed in as the new account"
+    );
+    hle.signin_dismiss();
+    assert_eq!(hle.signin(), None);
+    // Listed now, with the row still there for another.
+    assert_eq!(w.listed(), ["Fresh Face", live_hle::NEW_ACCOUNT_TAG]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_taken_gamertag_is_kept_waiting_and_its_code_signs_it_in() {
+    let server = Server::new();
+    let (made, recovery) = account_setup::create(server.url(), "Owner", None).unwrap();
+    let secret = recovery.unwrap().secret;
+    let dir = temp("taken");
+    let (hle, path) = hle_offering(&dir, server.url());
+    let mut w = World::new(&hle);
+    w.start();
+    let task = w.logon_first();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), 0);
+    assert!(hle.signin_typed(Some("Owner")));
+    assert_eq!(settled(&hle), Phase::Code { error: None });
+    let p = hle.signin().unwrap();
+    assert_eq!((p.gamertag.as_str(), p.controller), ("Owner", 0));
+    // Saved as waiting for its code, no key yet.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(file[0]["gamertag"], "Owner");
+    assert_eq!(file[0]["needs_code"], true);
+    assert!(file[0].get("key").is_none());
+    assert!(account_setup::load(&path).unwrap().is_empty());
+
+    assert!(hle.signin_submit(&code_of(&secret)));
+    assert_eq!(settled(&hle), Phase::Done);
+    assert_eq!(w.finish(task), CONNECTED);
+    let saved = account_setup::load(&path).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].xuid, made.xuid);
+    let users = w.call("XOnlineGetLogonUsers", &[]);
+    assert_eq!(
+        w.xuid(users),
+        made.xuid.0,
+        "signed in as the account itself"
+    );
+    // The waiting entry gives way to the ready one.
+    assert_eq!(w.listed(), ["Owner", live_hle::NEW_ACCOUNT_TAG]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn backing_out_of_a_taken_gamertag_lists_it_waiting() {
+    let server = Server::new();
+    account_setup::create(server.url(), "Elsewhere", None).unwrap();
+    let dir = temp("taken-cancel");
+    let (hle, _) = hle_offering(&dir, server.url());
+    let mut w = World::new(&hle);
+    w.start();
+    let task = w.logon_first();
+    assert!(hle.signin_typed(Some("Elsewhere")));
+    assert_eq!(settled(&hle), Phase::Code { error: None });
+    hle.signin_cancel();
+    assert_eq!(w.finish(task), INVALID_USER);
+    hle.signin_dismiss();
+    assert_eq!(w.listed(), ["Elsewhere", live_hle::NEW_ACCOUNT_TAG]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_invite_only_server_asks_for_an_invite() {
+    let dir = temp("invite");
+    let server_dir = temp("invite-server");
+    let server = live_server::start_embedded_with(
+        live_server::MEMORY_DB,
+        "127.0.0.1:0".parse().unwrap(),
+        &server_dir,
+        live_server::http::Site::default(),
+        live_server::Policy {
+            invite_only: true,
+            ..live_server::Policy::default()
+        },
+    )
+    .unwrap();
+    let (hle, path) = hle_offering(&dir, &server.url);
+    let mut w = World::new(&hle);
+    w.start();
+    let task = w.logon_first();
+    assert!(hle.signin_typed(Some("Invited")));
+    assert_eq!(settled(&hle), Phase::Invite { error: None });
+    assert!(hle.signin_typed(Some("")));
+    assert_eq!(
+        hle.signin().unwrap().phase,
+        Phase::Invite {
+            error: Some(SetupError::NeedsInvite)
+        }
+    );
+    assert!(hle.signin_typed(Some("NOT-A-REAL-CODE")));
+    let Phase::Invite { error: Some(_) } = settled(&hle) else {
+        panic!("a bad invite asks again");
+    };
+    // Back out of the invite: the gamertag again.
+    assert!(hle.signin_typed(None));
+    assert_eq!(hle.signin().unwrap().phase, Phase::Gamertag { error: None });
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), 0, "still waiting");
+    assert!(!path.exists(), "nothing saved");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&server_dir);
+    let _ = std::fs::remove_dir_all(&dir);
 }

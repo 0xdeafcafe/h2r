@@ -176,6 +176,7 @@ impl World {
                 enabled: true,
                 accounts_path: Some(path.clone()),
                 server_url: Some(url.into()),
+                offer_new_account: false,
             },
             NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
             ServerOptions {

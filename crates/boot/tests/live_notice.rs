@@ -157,6 +157,7 @@ fn local_only_live_installs_nothing() {
         enabled: true,
         accounts_path: None,
         server_url: None,
+        offer_new_account: false,
     };
     assert!(!live_notice::install(&rt, &config).unwrap());
     assert_eq!(rt.memory().mappings(), before);

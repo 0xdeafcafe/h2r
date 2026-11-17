@@ -459,6 +459,52 @@ pub fn save(path: &Path, entry: &LocalEntry) -> Result<(), SetupError> {
     write_private(path, format!("{text}\n").as_bytes()).map_err(|_| SetupError::Save)
 }
 
+/// A stable nonzero xuid for a gamertag the server gave none for: the game
+/// lists the identity by it until the real one replaces it (the same as
+/// `h2 play`'s).
+pub fn stand_in_xuid(gamertag: &str) -> Xuid {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in gamertag.to_ascii_lowercase().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    Xuid(0x0009_0000_0000_0000 | (h & 0xffff_ffff) | 1)
+}
+
+/// Adds `gamertag` on `server` to the accounts file at `path` as an
+/// identity waiting for its recovery code (`needs_code`, no key): it is
+/// listed for sign-in, which asks for the code in game
+/// ([`crate::signin`]). Nothing changes when the file already lists that
+/// gamertag waiting. Other entries are kept as they were.
+pub fn save_waiting(path: &Path, gamertag: &str, server: &str) -> Result<(), SetupError> {
+    let mut entries = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Vec<Map<String, Value>>>(&bytes)
+            .map_err(|_| SetupError::Save)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return Err(SetupError::Save),
+    };
+    let tag = gamertag.trim();
+    let listed = entries.iter().any(|e| {
+        e.get("needs_code").and_then(Value::as_bool) == Some(true)
+            && e.get("gamertag")
+                .and_then(Value::as_str)
+                .is_some_and(|g| g.eq_ignore_ascii_case(tag))
+    });
+    if listed {
+        return Ok(());
+    }
+    let Value::Object(new) = json!({
+        "xuid": stand_in_xuid(tag),
+        "gamertag": tag,
+        "server": server.trim_end_matches('/'),
+        "needs_code": true,
+    }) else {
+        unreachable!("an entry is an object")
+    };
+    entries.push(new);
+    let text = serde_json::to_string_pretty(&entries).map_err(|_| SetupError::Save)?;
+    write_private(path, format!("{text}\n").as_bytes()).map_err(|_| SetupError::Save)
+}
+
 /// Every usable entry in the accounts file at `path` (see
 /// [`LocalEntry::from_json`]); a missing file has none.
 pub fn load(path: &Path) -> Result<Vec<LocalEntry>, SetupError> {

@@ -16,6 +16,7 @@ fn disabled_live_leaves_console_dispatch_and_guest_mappings_unchanged() {
         enabled: false,
         accounts_path: Some("/nonexistent/live.json".into()),
         server_url: None,
+        offer_new_account: false,
     };
     assert!(
         live_glue::install(&rt, &k, &config, None)
@@ -40,6 +41,7 @@ fn enabled_live_registers_boundary_sets_existing_phy_config_and_stores_url() {
         enabled: true,
         accounts_path: None,
         server_url: Some("https://live.example/base".into()),
+        offer_new_account: false,
     };
     let hle = live_glue::install(&rt, &k, &config, None).unwrap().unwrap();
     assert_eq!(hle.config(), &config);
@@ -61,6 +63,7 @@ fn invalid_account_configuration_does_not_enable_phy_or_register_partial_boundar
         enabled: true,
         accounts_path: Some("/nonexistent/live.json".into()),
         server_url: None,
+        offer_new_account: false,
     };
     assert!(live_glue::install(&rt, &k, &config, None).is_err());
     assert_eq!(k.console_config().phy_link, 0);
@@ -131,6 +134,7 @@ fn explicit_network_settings_reach_hle_without_changing_live_config_contract() {
         enabled: true,
         accounts_path: None,
         server_url: Some("https://service.example/base".into()),
+        offer_new_account: false,
     };
     let network = live_hle::NetworkConfig::from_values(
         Some("192.168.1.50:31000"),
@@ -166,6 +170,7 @@ fn disabled_explicit_network_install_ignores_invalid_network_and_accounts() {
         enabled: false,
         accounts_path: Some("/nonexistent/live-hle.json".into()),
         server_url: None,
+        offer_new_account: false,
     };
     let network = live_hle::NetworkConfig::new("0.0.0.0:0".parse().unwrap());
     assert!(
