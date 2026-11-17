@@ -13,6 +13,12 @@ struct FakeLive {
     friends: Vec<live_hle::Friend>,
     invites: Mutex<Vec<Xuid>>,
     joined: Mutex<Option<live_hle::Joined>>,
+    /// What a ping to the host answers, and the pings made.
+    echo: Option<u16>,
+    pings: Mutex<Vec<(std::net::SocketAddrV4, Option<u16>)>>,
+    /// The guest's report the host reads, and what it advertised.
+    reported: Option<u16>,
+    advertised: Mutex<Vec<Option<u16>>>,
 }
 
 impl Live for FakeLive {
@@ -32,6 +38,16 @@ impl Live for FakeLive {
             .unwrap()
             .clone()
             .unwrap_or(live_hle::Joined::NotJoined)
+    }
+    fn ping_host(&self, host: std::net::SocketAddrV4, report: Option<u16>) -> Option<u16> {
+        self.pings.lock().unwrap().push((host, report));
+        self.echo
+    }
+    fn guest_ping(&self) -> Option<u16> {
+        self.reported
+    }
+    fn set_coop_ping(&self, ms: Option<u16>) {
+        self.advertised.lock().unwrap().push(ms);
     }
 }
 
@@ -253,7 +269,7 @@ fn start_waits_for_two_consoles_and_the_status_says_who() {
     let (lobby, _) = lobby_with(Arc::clone(&live));
     lobby.open_from_menu();
     let rows = HostRows(Arc::clone(&lobby));
-    assert_eq!(rows.count(), 5);
+    assert_eq!(rows.count(), 6, "fits the list's six item widgets");
     assert_eq!(lobby.status(), "Invite a friend");
     assert_eq!(
         rows.press(ROW_START),
@@ -314,15 +330,16 @@ fn the_host_rows_have_labels_and_values() {
         lobby.texts.get(title - TEXT_ID_BASE).unwrap(),
         "Co-op Campaign"
     );
-    let got: Vec<_> = (0..5).map(|r| rows.row_texts(r).unwrap()).collect();
+    let got: Vec<_> = (0..6).map(|r| rows.row_texts(r).unwrap()).collect();
     assert_eq!(got[0], ("Level".into(), "First Level".into()));
     assert_eq!(got[1], ("Difficulty".into(), "Easy".into()));
     assert_eq!(got[2].0, "Invite a Friend");
     assert_eq!(got[3], ("Status".into(), "Invite a friend".into()));
-    assert_eq!(got[4].0, "Start");
-    assert_eq!(rows.row_texts(5), None);
+    assert_eq!(got[4], ("Ping".into(), "-".into()), "no guest yet");
+    assert_eq!(got[5].0, "Start");
+    assert_eq!(rows.row_texts(6), None);
     // Distinct slots per row and screen.
-    let ids: Vec<u32> = (0..5)
+    let ids: Vec<u32> = (0..6)
         .flat_map(|r| rows.texts(r))
         .map(|(_, id)| id)
         .collect();
@@ -379,7 +396,7 @@ fn coop_session(skulls: Option<Vec<u8>>) -> live_proto::session::Session {
 #[test]
 fn a_guest_in_a_coop_session_arms_and_opens_the_join_screen_once() {
     let (lobby, arm) = lobby_with(Arc::default());
-    // Ours (16) are left out; the engine's go to the campaign start.
+    // The engine's (0, 4) and ours (16): all of them carry.
     let j = live_hle::Joined::Known {
         session: Box::new(coop_session(Some(vec![0, 4, 16]))),
         refreshed: true,
@@ -388,7 +405,11 @@ fn a_guest_in_a_coop_session_arms_and_opens_the_join_screen_once() {
     assert!(arm.active());
     assert_eq!(arm.want(), None, "a guest sets no level");
     let g = lobby.guest().unwrap();
-    assert_eq!((g.host.as_str(), g.skulls.clone()), ("Alpha", vec![0, 4]));
+    assert_eq!(
+        (g.host.as_str(), g.skulls.clone()),
+        ("Alpha", vec![0, 4, 16])
+    );
+    assert_eq!(ours_of(&g.skulls), vec![16], "ours go to skulls_custom");
     assert!(lobby.in_coop());
     assert!(lobby.take_open_join());
     assert!(!lobby.take_open_join(), "once");
@@ -401,7 +422,7 @@ fn a_guest_in_a_coop_session_arms_and_opens_the_join_screen_once() {
     assert_eq!(rows.row_texts(0).unwrap().1, "Alpha");
     assert_eq!(rows.row_texts(1).unwrap().1, "Outskirts");
     assert_eq!(rows.row_texts(2).unwrap().1, "Heroic");
-    assert_eq!(rows.row_texts(3).unwrap().1, "2 from the host");
+    assert_eq!(rows.row_texts(3).unwrap().1, "3 from the host");
     assert_eq!(rows.row_texts(4).unwrap().1, "No lobby");
     let mut s = session(2, 2);
     s.host_peer = 1;
@@ -490,6 +511,79 @@ fn a_co_op_guest_starts_with_exactly_the_hosts_skulls() {
         crate::skulls::coop_start(Some(2), &[0]).is_none(),
         "multiplayer"
     );
+}
+
+#[test]
+fn the_host_advertises_its_own_skulls_after_the_engines() {
+    let mut on = [false; crate::skulls::COUNT];
+    on[4] = true;
+    on[0] = true;
+    assert_eq!(
+        host_campaign_skulls(Some(on), &[16, 20]),
+        vec![0, 4, 16, 20]
+    );
+    assert_eq!(host_campaign_skulls(None, &[17]), vec![17], "ours alone");
+    assert_eq!(host_campaign_skulls(None, &[]), Vec::<u8>::new());
+    // The wire takes them: a co-op session may carry any skull.
+    live_proto::skulls::validate(&host_campaign_skulls(Some(on), &[16, 20])).unwrap();
+    // And a guest hands back exactly ours.
+    assert_eq!(ours_of(&[0, 4, 16, 20, 99]), vec![16, 20]);
+}
+
+// ---- ping ----
+
+#[test]
+fn a_guest_pings_its_host_and_reports_its_last_round_trip() {
+    let live = Arc::new(FakeLive {
+        echo: Some(42),
+        ..Default::default()
+    });
+    let (lobby, _) = lobby_with(Arc::clone(&live));
+    lobby.ping_once();
+    assert!(live.pings.lock().unwrap().is_empty(), "idle: no ping");
+    assert_eq!(lobby.ping_text(), "-");
+    let j = live_hle::Joined::Known {
+        session: Box::new(coop_session(None)),
+        refreshed: true,
+    };
+    assert!(lobby.joined(&j));
+    let host = lobby.guest().unwrap().endpoint.unwrap();
+    lobby.ping_once();
+    lobby.ping_once();
+    assert_eq!(
+        *live.pings.lock().unwrap(),
+        vec![(host, None), (host, Some(42))],
+        "the second ping carries the first's round trip"
+    );
+    assert_eq!(lobby.ping(), Some(42));
+    let rows = JoinRows(Arc::clone(&lobby));
+    assert_eq!(rows.row_texts(0).unwrap().1, "Alpha, 42 ms");
+    assert!(
+        live.advertised.lock().unwrap().is_empty(),
+        "a guest advertises nothing"
+    );
+}
+
+#[test]
+fn a_host_shows_and_advertises_its_guests_report() {
+    let live = Arc::new(FakeLive {
+        reported: Some(57),
+        ..Default::default()
+    });
+    let (lobby, _) = lobby_with(Arc::clone(&live));
+    lobby.open_from_menu();
+    assert_eq!(lobby.role(), Role::Host);
+    lobby.ping_once();
+    assert_eq!(*live.advertised.lock().unwrap(), vec![Some(57)]);
+    let rows = HostRows(Arc::clone(&lobby));
+    assert_eq!(
+        rows.row_texts(ROW_PING).unwrap(),
+        ("Ping".to_owned(), "57 ms".to_owned())
+    );
+    assert!(live.pings.lock().unwrap().is_empty(), "a host pings nobody");
+    lobby.leave();
+    lobby.ping_once();
+    assert_eq!(lobby.ping_text(), "-", "idle again");
 }
 
 // ---- the Live menu ----
@@ -621,9 +715,9 @@ fn the_screens_and_the_hooks_share_the_plan() {
 }
 
 /// Opening the co-op screen showed the community variants' names: the
-/// texts' ids shared their index (`0xffe0xx`), and their lookup ignores the
-/// top byte. Every id of ours must be one no other source of ours answers,
-/// on the whole id and on its low 24 bits.
+/// texts' ids shared their index (`0xffe0xx`), and their lookup ignored the
+/// top byte then. The co-op ids stay clear on the low 24 bits too; every
+/// family against every other is `crate::string_ids`.
 #[test]
 fn the_co_op_text_ids_are_nobody_elses() {
     use crate::{campaign_menu, community_variants, layout_glue, skulls_menu};

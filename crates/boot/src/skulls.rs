@@ -772,9 +772,10 @@ pub fn at_start(
     ))
 }
 
-/// A co-op guest's campaign start: exactly the host's skulls (engine
-/// indices; ours, from [`COUNT`], are left out), whatever this console's
-/// profiles have.
+/// A co-op guest's campaign start: exactly the host's engine skulls,
+/// whatever this console's profiles have. Ours (from [`COUNT`]) have no
+/// byte in the array: the start hook hands them to `crate::skulls_custom`
+/// (`crate::coop_live::ours_of`).
 pub fn coop_start(mode: Option<u32>, host: &[u8]) -> Option<(Set, String)> {
     if mode != Some(MODE_CAMPAIGN) {
         return None;
@@ -883,8 +884,9 @@ impl feature::Feature for Skulls {
                     };
                     // A co-op guest plays the host's skulls (docs/live/live-coop.md,
                     // "Co-op over Live").
-                    let start = match crate::coop_live::guest_skulls() {
-                        Some(host) => coop_start(mode, &host),
+                    let host = crate::coop_live::guest_skulls();
+                    let start = match &host {
+                        Some(host) => coop_start(mode, host),
                         None => at_start(&store, mode, &profiles),
                     };
                     if let Some((on, line)) = start {
@@ -896,7 +898,11 @@ impl feature::Feature for Skulls {
                         }
                         // Ours have no byte in the array: their hooks read
                         // this set (crate::skulls_custom).
-                        crate::skulls_custom::set_campaign(&custom_selection(&store, &profiles.0));
+                        // A co-op guest plays the host's.
+                        crate::skulls_custom::set_campaign(&match &host {
+                            Some(host) => crate::coop_live::ours_of(host),
+                            None => custom_selection(&store, &profiles.0),
+                        });
                     } else {
                         // Not a campaign: none of ours act in it.
                         crate::skulls_custom::set_campaign(&[]);
