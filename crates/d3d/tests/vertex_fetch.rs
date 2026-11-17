@@ -269,7 +269,7 @@ impl Gpu {
             shader: ShaderInputs {
                 vertex: VertexProcessing::Program {
                     start: 0,
-                    microcode: program_words(),
+                    microcode: program_words().into(),
                 },
                 provided_inputs: 1 | 1 << 3,
                 vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],

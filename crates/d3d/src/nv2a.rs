@@ -140,7 +140,7 @@ struct PretransformedKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum VertexSource {
-    Microcode(Vec<u32>),
+    Microcode(crate::shader::Microcode),
     Pretransformed(PretransformedKey),
 }
 

@@ -32,8 +32,82 @@ pub enum VertexProcessing {
         start: u32,
         /// Microcode from `start` up to and including the final instruction
         /// (4 dwords per slot).
-        microcode: Vec<u32>,
+        microcode: Microcode,
     },
+}
+
+/// Vertex microcode, shared: the device hands every draw of an unchanged
+/// program the same words, and the shader keys built from a draw hold them
+/// too. A clone is a reference count; equality is pointer equality first
+/// (then the words); the hash is the words' hash, made once. It
+/// dereferences to the words, and prints and serializes as them (as the
+/// `Vec<u32>` it replaces did), so persisted program ids are unchanged.
+#[derive(Clone)]
+pub struct Microcode {
+    words: std::sync::Arc<[u32]>,
+    hash: u64,
+}
+
+impl Microcode {
+    /// Shares `words`, hashing them once.
+    pub fn new(words: std::sync::Arc<[u32]>) -> Self {
+        // FNV-1a over the dwords: only in-process maps use it.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for w in words.iter() {
+            hash = (hash ^ *w as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self { words, hash }
+    }
+
+    /// Whether `self` and `other` share their words (not only equal ones).
+    pub fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.words, &other.words)
+    }
+}
+
+impl From<Vec<u32>> for Microcode {
+    fn from(words: Vec<u32>) -> Self {
+        Self::new(words.into())
+    }
+}
+
+impl std::ops::Deref for Microcode {
+    type Target = [u32];
+    fn deref(&self) -> &[u32] {
+        &self.words
+    }
+}
+
+impl PartialEq for Microcode {
+    fn eq(&self, other: &Self) -> bool {
+        self.same(other) || (self.hash == other.hash && self.words == other.words)
+    }
+}
+
+impl Eq for Microcode {}
+
+impl std::hash::Hash for Microcode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl std::fmt::Debug for Microcode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.words.iter()).finish()
+    }
+}
+
+impl serde::Serialize for Microcode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.words.iter())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Microcode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Vec::<u32>::deserialize(d).map(Self::from)
+    }
 }
 
 /// Everything a translated shader pair consumes for one draw.
@@ -153,4 +227,44 @@ pub trait ShaderJudge: Send {
     /// `Err(reason)` exactly where `prepare` fails. `present[n]`: stage
     /// `n` has a sampleable texture view.
     fn check(&mut self, draw: &crate::backend::ResolvedDraw, present: [bool; 4]) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Microcode;
+    use std::hash::{BuildHasher, Hash};
+
+    /// Shared microcode prints, serializes (so persisted program ids) and
+    /// compares as the words it holds, shared or not.
+    #[test]
+    fn microcode_is_its_words() {
+        let words = vec![0x1234_5678u32, 0, 7, 0xFFFF_FFFF];
+        let a = Microcode::from(words.clone());
+        let b = Microcode::from(words.clone());
+        let c = Microcode::from(vec![1u32, 2, 3, 5]);
+        assert!(!a.same(&b));
+        assert!(a.same(&a.clone()));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(*a, words[..]);
+        assert_eq!(format!("{a:?}"), format!("{words:?}"));
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&words).unwrap()
+        );
+        assert_eq!(
+            crate::pipeline_store::program_id(&a),
+            crate::pipeline_store::program_id(&words)
+        );
+        let back: Microcode = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+        assert_eq!(back, a);
+        let s = std::hash::RandomState::new();
+        let h = |m: &Microcode| {
+            let mut st = s.build_hasher();
+            m.hash(&mut st);
+            std::hash::Hasher::finish(&st)
+        };
+        assert_eq!(h(&a), h(&b));
+        assert_eq!(h(&back), h(&a));
+    }
 }

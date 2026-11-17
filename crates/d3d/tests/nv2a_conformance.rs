@@ -355,7 +355,7 @@ impl Gpu {
                 (
                     VertexProcessing::Program {
                         start: 0,
-                        microcode: passthrough(),
+                        microcode: passthrough().into(),
                     },
                     Some(Box::new(w)),
                     Box::new(words.render[..57].try_into().unwrap()),

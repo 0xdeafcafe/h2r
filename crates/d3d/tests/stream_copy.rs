@@ -241,6 +241,41 @@ fn backend_streams_match_guest_bytes_through_reused_buffers() {
     check(draws(std::mem::take(&mut d.backend.calls)), want);
 }
 
+/// Draws of a program left as it is in program memory share one copy of
+/// its microcode (the shader key compares it by pointer); another program
+/// loaded over it gets its own, and loading the first again gives its
+/// words back.
+#[test]
+fn draws_of_an_unchanged_program_share_its_microcode() {
+    use d3d::shader::VertexProcessing;
+    let (mut d, mut m) = setup(RecordingBackend::new());
+    bind(&mut d, &mut m, set_headers(0), 0);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+    let other = program(&[Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None)
+        .to_out(false, OutReg::Pos, 0xF)
+        .last()]);
+    m.write(FUNCTION + 0x200, &other).unwrap();
+    d.load_vertex_shader_program(&mut m, FUNCTION + 0x200, 0)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.load_vertex_shader_program(&mut m, FUNCTION, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let code: Vec<_> = draws(std::mem::take(&mut d.backend.calls))
+        .into_iter()
+        .map(|draw| match draw.shader.vertex {
+            VertexProcessing::Program { microcode, .. } => microcode,
+            v => panic!("{v:?}"),
+        })
+        .collect();
+    assert_eq!(code.len(), 4);
+    assert!(code[0].same(&code[1]), "one copy for an unchanged program");
+    assert_ne!(code[1], code[2], "another program");
+    assert_eq!(code[2].len(), 4, "one instruction");
+    assert_eq!(code[3], code[0], "the first program again");
+    assert_eq!(code[0].len(), 12, "three instructions");
+}
+
 #[test]
 fn render_thread_streams_match_guest_bytes_through_returned_buffers() {
     let (mut d, mut m) = setup(ThreadedBackend::new(RecordingBackend::new()).unwrap());
