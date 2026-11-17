@@ -23,7 +23,7 @@ use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, FriendAction, LIVE_DIR_ENV, friend_run, status_of};
 
 const USAGE: &str = "usage:
-  h2 coop test [--disc ISO] [--players N] [--auto] [--root DIR] [--out DIR]
+  h2 coop test [--disc ISO] [--players N] [--auto] [--late] [--root DIR] [--out DIR]
                [--ip ADDR] [--port N] [--server-port N] [--pad host|guest]
                [--extras] [--fresh] [--dry-run] [-- <more h2 play arguments>]
   h2 coop verdict <coop.log> [--auto]
@@ -55,6 +55,11 @@ Co-op Campaign, a level and difficulty, then Start Game.
 accepts by itself, as if pressed through the friends list. Without it,
 invite from the host's lobby (Y, the friends list) and accept on the guest.
 
+--late (with --auto, 3 players or more): the last guest accepts 120 s after
+its invitation (H2_COOP_AUTO_ACCEPT_DELAY), so it arrives while the host is
+in the level and joins in progress (docs/live/live-coop.md section 14); the
+checklist then says whether and at which tick it joined.
+
 Every game's whole stderr goes to <root>/logs/<time>/<gamertag>.log, and
 their co-op lines (coop-live, coop-probe, coop-auto, skulls, session) to
 coop.log there, with the time since the start. When the last window
@@ -76,6 +81,9 @@ pub const TAGS: [&str; 16] = [
 const DEFAULT_PORT: u16 = 31000;
 const PORT_STEP: u16 = 10;
 const DEFAULT_SERVER_PORT: u16 = 8075;
+/// How long `--late`'s last guest waits after its invitation: time to
+/// pick a level, start it and load in.
+pub const LATE_SECS: u32 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {
@@ -88,6 +96,8 @@ pub struct Opts {
     pub disc: PathBuf,
     pub players: usize,
     pub auto: bool,
+    /// The last guest accepts [`LATE_SECS`] after its invitation.
+    pub late: bool,
     pub root: PathBuf,
     pub out: Option<PathBuf>,
     pub ip: Option<Ipv4Addr>,
@@ -124,6 +134,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     let mut disc = env("H2_DISC").map(PathBuf::from);
     let mut players = 2;
     let mut auto = false;
+    let mut late = false;
     let mut root = None;
     let mut out = None;
     let mut ip = None;
@@ -147,6 +158,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .with_context(|| format!("--players {v}: 2 to {}", TAGS.len()))?;
             }
             "--auto" => auto = true,
+            "--late" => late = true,
             "--root" => root = Some(PathBuf::from(value("--root")?)),
             "--out" => out = Some(PathBuf::from(value("--out")?)),
             "--ip" => {
@@ -182,6 +194,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         }
     }
     let disc = disc.with_context(|| format!("no disc: --disc ISO or H2_DISC\n\n{USAGE}"))?;
+    if late && (!auto || players < 3) {
+        bail!("--late needs --auto and --players 3 or more (the last guest joins late)");
+    }
     let last = u32::from(port) + u32::from(PORT_STEP) * (players as u32 - 1) + 6;
     if port == 0 || last > 65535 {
         bail!("--port {port}: the games need {port} to {last}");
@@ -194,6 +209,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         disc,
         players,
         auto,
+        late,
         root,
         out,
         ip,
@@ -295,6 +311,9 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                     env.push(("H2_COOP_AUTO_INVITE".into(), tags[1..].join(",")));
                 } else {
                     env.push(("H2_COOP_AUTO_ACCEPT".into(), tags[0].into()));
+                    if opts.late && i == tags.len() - 1 {
+                        env.push(("H2_COOP_AUTO_ACCEPT_DELAY".into(), LATE_SECS.to_string()));
+                    }
                 }
             }
             Game {
@@ -487,10 +506,7 @@ fn test(opts: Opts) -> Result<()> {
     let stamp = stamp(crate::live_cmd::now());
     let logs = opts.root.join("logs").join(stamp);
     fs::create_dir_all(&logs)?;
-    let roles = Roles {
-        host: games[0].tag.clone(),
-        guests: games[1..].iter().map(|g| g.tag.clone()).collect(),
-    };
+    let roles = roles(&games, opts.late);
     eprintln!(
         "coop test: Live server {} ({} store), web app at {}/",
         embedded.url, embedded.store, embedded.url
@@ -545,6 +561,22 @@ fn test(opts: Opts) -> Result<()> {
     Ok(())
 }
 
+/// Who hosts, who joins in the lobby and who (`late`: the last guest)
+/// joins in progress.
+pub fn roles(games: &[Game], late: bool) -> Roles {
+    let mut guests: Vec<String> = games[1..].iter().map(|g| g.tag.clone()).collect();
+    let late = if late {
+        guests.pop().into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    Roles {
+        host: games[0].tag.clone(),
+        guests,
+        late,
+    }
+}
+
 /// What the user presses next, once the host is at its main menu.
 pub fn next_steps(roles: &Roles, auto: bool) -> String {
     let host = &roles.host;
@@ -554,11 +586,19 @@ pub fn next_steps(roles: &Roles, auto: bool) -> String {
     } else {
         format!("in the lobby press Y and invite {guests}; on {guests}, accept in the friends list")
     };
-    format!(
+    let mut line = format!(
         "coop test: next, on {guests}'s window{s}: Xbox Live (to sign in). Then on {host}'s window: \
          Xbox Live > Co-op Campaign > pick a level and difficulty; {joining}; then Start Game on {host}.",
         s = if roles.guests.len() > 1 { "s" } else { "" },
-    )
+    );
+    if !roles.late.is_empty() {
+        let late = roles.late.join(" and ");
+        line.push_str(&format!(
+            " {late}: Xbox Live too; it accepts {LATE_SECS} s after the invitation, to join in \
+             progress, so have {host} in the level by then."
+        ));
+    }
+    line
 }
 
 /// How long the host may take from its sign-in to its main menu (the

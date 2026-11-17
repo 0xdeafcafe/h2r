@@ -355,7 +355,7 @@ pub static COOP_MAX_PLAYERS: Def = Def {
     help: "The most players a co-op campaign you host over Xbox Live takes, one \
            per console: 2 (the game's own) up to 16. Above 2 is experimental: \
            players 3 and up start beside the others and the levels' scripts \
-           only know two players (docs/live/live-coop.md section 12). Applies \
+           only know two players (docs/live/live-coop.md section 13). Applies \
            at the next launch.",
     kind: Kind::Int {
         valid: 2..=16,
@@ -379,6 +379,35 @@ pub fn coop_max_players(store: &Store) -> u32 {
         Some(Value::Int(n)) => crate::coop_probe::clamp_players(n),
         _ => crate::coop_probe::MAX_PLAYERS,
     }
+}
+
+/// Whether a co-op campaign this console hosts over Xbox Live lets a friend
+/// join while it runs (coop::join, docs/live/live-coop.md section 14).
+pub static COOP_JOIN_IN_PROGRESS: Def = Def {
+    key: "coop.join_in_progress",
+    label: "Join In Progress",
+    help: "A friend can join a co-op campaign you host while it runs: the game \
+           holds for a second or two while it sends them where everyone is, and \
+           nobody goes back to a checkpoint. Off, joining waits for the next \
+           level (docs/live/live-coop.md section 14).",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_COOP_JOIN_IN_PROGRESS"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Sim,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// [`COOP_JOIN_IN_PROGRESS`] in `store`.
+pub fn coop_join_in_progress(store: &Store) -> bool {
+    !matches!(
+        store.get(COOP_JOIN_IN_PROGRESS.key),
+        Some(Value::Bool(false))
+    )
 }
 
 /// How strong the weapons' aim assist is (crate::aim_assist,
@@ -619,6 +648,7 @@ pub static ALL: &[&Def] = &[
     &STEAM_LEFT_PAD,
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
+    &COOP_JOIN_IN_PROGRESS,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -761,9 +791,11 @@ mod tests {
                 ("H2_TOUCH_AUTO_FIRE", "1"),
                 ("H2_HALO1_SANDBOX", "h2"),
                 ("H2_COOP_MAX_PLAYERS", "4"),
+                ("H2_COOP_JOIN_IN_PROGRESS", "0"),
             ],
         );
         assert_eq!(coop_max_players(&s), 4);
+        assert!(!coop_join_in_progress(&s));
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(halo1_sandbox(&s), "h2");
@@ -913,6 +945,25 @@ mod tests {
         let (s, p) = with_env(&data, &[("H2_COOP_MAX_PLAYERS", "17")]);
         assert!(!p.is_empty());
         assert!((2..=16).contains(&coop_max_players(&s)));
+    }
+
+    #[test]
+    fn join_in_progress_is_on_unless_turned_off() {
+        let data = tmp("coop-jip");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert!(coop_join_in_progress(&s));
+        assert_eq!(COOP_JOIN_IN_PROGRESS.apply, Apply::Live);
+        std::fs::write(
+            settings::path_in(&data),
+            "[coop]\njoin_in_progress = false\n",
+        )
+        .unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert!(!coop_join_in_progress(&s));
+        let (s, _) = with_env(&data, &[("H2_COOP_JOIN_IN_PROGRESS", "1")]);
+        assert!(coop_join_in_progress(&s));
     }
 
     #[test]

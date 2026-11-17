@@ -13,6 +13,9 @@
 //!   port; a machine's own samples are assigned `delay` frames ahead.
 //! - [`peer`]: one machine's end: schedule, link and hash comparison. A
 //!   frame may start only when both ports' pads for it are in hand.
+//! - [`join`]: join in progress: a newcomer asks, the host holds its tick,
+//!   snapshots and sends the state in chunks, and admits the player on the
+//!   next tick once the newcomer has restored it.
 //! - [`tap`]: the schedule as an `xapi::tap::InputTap`, so every
 //!   `XInputGetState` is answered from the agreed frame and never from the
 //!   local device.
@@ -20,6 +23,7 @@
 //! Nothing here reads a clock or a device by itself: the caller says when a
 //! frame starts and passes the local pad in, which is what makes it testable.
 
+pub mod join;
 pub mod link;
 pub mod peer;
 pub mod relay;
