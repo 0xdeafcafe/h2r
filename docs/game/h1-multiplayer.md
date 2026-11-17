@@ -386,6 +386,17 @@ cargo h2 h1 convert disc/halo1.iso beavercreek --out ~/h2-h1maps [--sandbox h2] 
 cargo h2 h1 convert path/to/beavercreek.map --dry-run
 ```
 
+`--fresh` (multiplayer only) writes the same map with **nothing pinned**:
+every tag is rebuilt as a tree, and the base's raw resources, sound
+chunks and low-detail bitmaps are copied, so nothing depends on the base's
+file layout. The scenario is built from its blocks. See
+[tag-schema.md](../formats/tag-schema.md), "Fresh maps". The output path
+and manifest are the same as without it:
+
+```sh
+cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps --fresh
+```
+
 The Halo 1 map is a `.map` file or a disc and a map name; the base comes
 from the Halo 2 disc (`--disc`, else `$H2_DISC`, else `disc/halo2.iso`).
 It prints the structure (clusters, vertices, triangles, materials), the

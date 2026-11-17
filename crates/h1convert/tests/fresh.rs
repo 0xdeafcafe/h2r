@@ -1,0 +1,406 @@
+//! A Halo 1 multiplayer map converted **fresh** (nothing of its Halo 2
+//! base pinned), from the owner's discs (`$H1_ISO`, `$H2_DISC`), checked
+//! against the pinned conversion of the same map. Nothing is written to
+//! disk; counts go to stdout. `H1_MAPS=a,b` picks maps (default
+//! `bloodgulch`).
+
+use std::collections::{BTreeMap, HashSet};
+use std::fs::File;
+use std::io::{BufReader, Cursor};
+
+use h1convert::convert::{Sandbox, known, prepare, structure_mopp};
+use h1map::H1Map;
+use map::{FourCC, Map, TagId};
+use tags::schema::{Field, Memory, Schema, Struct, visit};
+
+type M = Map<Cursor<Vec<u8>>>;
+
+fn h2_map(iso: &mut xiso::Xiso<BufReader<File>>, name: &str) -> M {
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.rsplit(['/', '\\']).next() == Some(&format!("{name}.map")))
+        .unwrap_or_else(|| panic!("no {name}.map on the Halo 2 disc"));
+    Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+}
+
+fn word(b: &[u8], at: u32) -> u32 {
+    u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap())
+}
+
+/// One element in address-free form: block addresses zeroed, each local
+/// raw pointer as the bytes it names (its paired size, else 16 bytes),
+/// external ones as they are.
+fn element(s: &Struct, e: &[u8], file: &[u8]) -> String {
+    let mut bytes = e.to_vec();
+    let mut raws = Vec::new();
+    for (&o, f) in &s.fields {
+        match f {
+            Field::Block(_) => bytes[o as usize + 4..o as usize + 8].fill(0),
+            Field::Raw => {
+                let v = word(e, o);
+                bytes[o as usize..o as usize + 4].fill(0);
+                if v == u32::MAX || v == 0 {
+                    raws.push("null".to_owned());
+                } else if v >> 30 != 0 {
+                    raws.push(format!("{v:#x}"));
+                } else {
+                    let n = s
+                        .fields
+                        .iter()
+                        .find_map(|(&k, f)| {
+                            matches!(f, Field::RawSize(r) if *r == o).then(|| word(e, k))
+                        })
+                        .unwrap_or(16) as usize;
+                    let at = v as usize;
+                    raws.push(format!("{:02x?}", file.get(at..at + n)));
+                }
+            }
+            _ => {}
+        }
+    }
+    format!("{bytes:02x?} {raws:?}")
+}
+
+/// The tag's elements in visit order, address-free.
+fn canonical(s: &Struct, address: u32, mem: &Memory, file: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    visit(s, address, mem, &mut |s, e, path| {
+        out.push(format!("{path:x?} {}", element(s, e, file)));
+    })
+    .expect("visit");
+    out
+}
+
+/// Every tag reference and datum of every ordinary tag must name a tag of
+/// the map, of the referenced group (or a descendant), with data (BSP
+/// tags excepted). Returns (references checked, problems).
+fn reference_sweep(m: &M, mem: &Memory) -> (usize, Vec<String>) {
+    let schema = Schema::builtin();
+    let descends = |g: FourCC, of: FourCC| {
+        g == of
+            || m.groups()
+                .iter()
+                .any(|x| x.class == g && (x.parent == Some(of) || x.grandparent == Some(of)))
+    };
+    let in_bsp = |g: FourCC| g == FourCC(*b"sbsp") || g == FourCC(*b"ltmp");
+    let (mut n, mut bad) = (0, Vec::new());
+    for t in m.tags() {
+        let (Some(l), Some(s)) = (t.location, schema.groups.get(&t.group)) else {
+            continue;
+        };
+        if mem.region(l.address).is_none_or(|r| r.0 != l.address) {
+            continue;
+        }
+        let label = format!("{} {}", t.group, t.name.as_deref().unwrap_or("?"));
+        visit(s, l.address, mem, &mut |s, e, _| {
+            for (&o, f) in &s.fields {
+                let (g, d) = match f {
+                    // Retail has references with a null group and a real
+                    // datum (two `mode`s naming a `shad`): no group check.
+                    Field::TagRef => (
+                        Some(word(e, o))
+                            .filter(|&g| g != u32::MAX)
+                            .map(|g| FourCC(g.to_be_bytes())),
+                        word(e, o + 4),
+                    ),
+                    Field::TagId => (None, word(e, o)),
+                    _ => continue,
+                };
+                if d == u32::MAX {
+                    continue;
+                }
+                n += 1;
+                match m.tag(TagId(d)) {
+                    Err(_) => bad.push(format!("{label}: {d:#x} names no tag")),
+                    Ok(r) if g.is_some_and(|g| !descends(r.group, g)) => {
+                        bad.push(format!("{label}: a {:?} reference names a {}", g, r.group))
+                    }
+                    Ok(r) if r.location.is_none() && !in_bsp(r.group) => bad.push(format!(
+                        "{label}: {} {} has no data",
+                        r.group,
+                        r.name.as_deref().unwrap_or("?")
+                    )),
+                    Ok(_) => {}
+                }
+            }
+        })
+        .unwrap_or_else(|| bad.push(format!("{label}: does not walk")));
+    }
+    (n, bad)
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let h2_iso = std::env::var("H2_DISC").expect("set H2_DISC");
+    let maps: Vec<String> = std::env::var("H1_MAPS").map_or_else(
+        |_| vec!["bloodgulch".to_owned()],
+        |s| s.split(',').map(str::to_owned).collect(),
+    );
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let mut h2 = xiso::Xiso::open(BufReader::new(File::open(&h2_iso).unwrap())).unwrap();
+    let schema = Schema::builtin();
+    for name in maps {
+        let started = std::time::Instant::now();
+        let Some(e) = disc.map(&name).cloned() else {
+            println!("{name}: not on this Halo 1 disc");
+            continue;
+        };
+        let file = iso.read(&e).unwrap();
+        let sha = content::Sha256::of(&file);
+        let h1 = H1Map::from_reader(Cursor::new(file)).unwrap();
+        let base_name = known(&name).unwrap().1;
+        let mut base = h2_map(&mut h2, base_name);
+        let p = prepare(&h1, sha, &mut base, Sandbox::Halo2).unwrap();
+        let mopp = structure_mopp(&p.collision).unwrap();
+        let pinned = p.build(&mut base, &mopp).unwrap().bytes;
+        let fresh = p.build_fresh(&mut base, &mopp).unwrap();
+        let r = &fresh.report;
+        println!(
+            "{name} onto {base_name}: fresh {} bytes (pinned {}); {} tags unpinned ({} aliases), \
+             {} raw resources ({} bytes) copied, {} external kept, {} sound chunks; \
+             scenario blocks copied {}, left empty {:x?}",
+            fresh.bytes.len(),
+            pinned.len(),
+            r.unpinned,
+            r.aliases,
+            r.raw.0,
+            r.raw.1,
+            r.external,
+            r.sound_chunks,
+            r.scenario_blocks.len(),
+            r.scenario_skipped
+        );
+
+        let mut m = Map::from_reader(Cursor::new(pinned.clone())).unwrap();
+        let mut f = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        f.validate_checksum().unwrap();
+        assert_eq!(f.tags().len(), m.tags().len());
+        let mm = Memory::of(&mut m).unwrap();
+        let fm = Memory::of(&mut f).unwrap();
+
+        // The same index: every tag where it was, with data where it had.
+        for (a, b) in m.tags().iter().zip(f.tags()) {
+            assert_eq!((a.id, a.group, &a.name), (b.id, b.group, &b.name));
+            assert_eq!(a.location.is_some(), b.location.is_some(), "{:?}", a.name);
+        }
+
+        // Every reference resolves.
+        let (n, bad) = reference_sweep(&f, &fm);
+        assert!(
+            bad.is_empty(),
+            "{} problems: {:#?}",
+            bad.len(),
+            &bad[..bad.len().min(20)]
+        );
+        let (pn, _) = reference_sweep(&m, &mm);
+
+        // Every tag the same, address-free, raw data by its bytes; the
+        // scenario block by block.
+        let (mut same, mut by_group) = (0, BTreeMap::<String, u32>::new());
+        let skip: HashSet<[u8; 4]> = [*b"sbsp", *b"ltmp", *b"ugh!", *b"scnr"].into();
+        for t in m.tags().to_vec() {
+            let (Some(a), Some(s)) = (t.location, schema.groups.get(&t.group)) else {
+                continue;
+            };
+            if skip.contains(&t.group.0) || mm.region(a.address).is_none_or(|r| r.0 != a.address) {
+                continue;
+            }
+            let b = f.tag(t.id).unwrap().location.unwrap();
+            let x = canonical(s, a.address, &mm, &pinned);
+            let y = canonical(s, b.address, &fm, &fresh.bytes);
+            if x != y {
+                let i = x.iter().zip(&y).position(|(p, q)| p != q).unwrap_or(0);
+                panic!(
+                    "{} {:?} differs at element {i}:\n{:?}\n{:?}",
+                    t.group,
+                    t.name,
+                    x.get(i),
+                    y.get(i)
+                );
+            }
+            same += 1;
+            *by_group.entry(t.group.to_string()).or_default() += 1;
+        }
+        let scnr = m.scenario().unwrap().clone();
+        let root = &schema.groups[&FourCC(*b"scnr")];
+        let (sa, sb) = (
+            scnr.location.unwrap().address,
+            f.scenario().unwrap().location.unwrap().address,
+        );
+        let (rx, ry) = (
+            m.read_tag_bytes(scnr.id).unwrap(),
+            f.read_tag_bytes(scnr.id).unwrap(),
+        );
+        for &(o, n) in &r.scenario_blocks {
+            let Some(Field::Block(c)) = root.fields.get(&o) else {
+                unreachable!()
+            };
+            if r.scenario_flat.contains(&o) {
+                // Grown by the editor, outside every tag: compare bytes.
+                let len = n * c.size;
+                let read = |map: &mut M, b: &[u8]| {
+                    let off = map.file_offset(word(b, o + 4), len).unwrap();
+                    map.read_file_range(off, len.into()).unwrap()
+                };
+                assert_eq!(
+                    read(&mut m, &rx),
+                    read(&mut f, &ry),
+                    "scenario block {o:#x}"
+                );
+                continue;
+            }
+            let only = Struct {
+                size: root.size,
+                align: root.align,
+                fields: [(o, Field::Block(c.clone()))].into(),
+            };
+            let x = canonical(&only, sa, &mm, &pinned);
+            let y = canonical(&only, sb, &fm, &fresh.bytes);
+            if o == 0x210 {
+                // The descriptor's region words name each map's own region.
+                assert_eq!(x.len(), y.len());
+                continue;
+            }
+            assert_eq!(x[1..], y[1..], "scenario block {o:#x}");
+        }
+        // The scenario root's scalars and references.
+        let mut differ = Vec::new();
+        for k in (0..root.size).step_by(4) {
+            let in_block = root
+                .fields
+                .iter()
+                .any(|(&o, f)| matches!(f, Field::Block(_)) && (o..o + 8).contains(&k));
+            if !in_block && word(&rx, k) != word(&ry, k) {
+                differ.push(k);
+            }
+        }
+        assert!(
+            differ.is_empty(),
+            "scenario root words differ at {differ:x?}"
+        );
+
+        // The sound gestalt: same blocks, same chunk data.
+        use h1sounds::gestalt::{ChunkPointer, SoundGestalt};
+        let ugh = m
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"ugh!"))
+            .unwrap()
+            .clone();
+        let ga = SoundGestalt::decode(
+            &m.read_tag_bytes(ugh.id).unwrap(),
+            ugh.location.unwrap().address,
+        )
+        .unwrap();
+        let gb = SoundGestalt::decode(
+            &f.read_tag_bytes(ugh.id).unwrap(),
+            f.tag(ugh.id).unwrap().location.unwrap().address,
+        )
+        .unwrap();
+        assert_eq!((&ga.flat, &ga.nested), (&gb.flat, &gb.nested));
+        assert_eq!(ga.chunks.len(), gb.chunks.len());
+        let chunk = |c: &h1sounds::gestalt::Chunk, file: &[u8]| match c.pointer {
+            ChunkPointer::Stored(p) if p >> 30 == 0 => {
+                let at = p as usize;
+                file.get(at..at + (c.size & 0x7fff_ffff) as usize)
+                    .map(<[u8]>::to_vec)
+            }
+            _ => None,
+        };
+        for (a, b) in ga.chunks.iter().zip(&gb.chunks) {
+            assert_eq!(a.size, b.size);
+            assert_eq!(
+                chunk(a, &pinned),
+                chunk(b, &fresh.bytes),
+                "sound chunk data"
+            );
+        }
+
+        // Bitmaps decode the same: every level of detail and low-detail
+        // range holds the same bytes.
+        let mut bitmaps = 0;
+        // Ranges are file offsets (low-detail ones already past the
+        // region's start).
+        let range = |r: &tags::ResourceRange, file: &[u8]| {
+            if r.pointer.file != map::ResourceFile::Local {
+                return Some(format!("{:?}", r.pointer));
+            }
+            let at = r.pointer.offset as usize;
+            file.get(at..at + r.size as usize)
+                .map(|b| format!("{b:02x?}"))
+        };
+        for t in m
+            .tags()
+            .to_vec()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"bitm"))
+        {
+            let x = tags::DecodedTag::read(&mut m, t.id).unwrap();
+            let y = tags::DecodedTag::read(&mut f, t.id).unwrap();
+            let (tags::TagData::Bitmap(x), tags::TagData::Bitmap(y)) = (&x.data, &y.data) else {
+                unreachable!()
+            };
+            assert_eq!(x.images.len(), y.images.len());
+            for (p, q) in x.images.iter().zip(&y.images) {
+                for (a, b) in p.lods.iter().zip(&q.lods) {
+                    assert_eq!(
+                        a.as_ref().map(|a| range(a, &pinned)),
+                        b.as_ref().map(|b| range(b, &fresh.bytes)),
+                        "{:?} level of detail",
+                        t.name
+                    );
+                }
+                assert_eq!(
+                    p.low_detail.as_ref().map(|a| range(a, &pinned)),
+                    q.low_detail.as_ref().map(|b| range(b, &fresh.bytes)),
+                    "{:?} low detail",
+                    t.name
+                );
+            }
+            bitmaps += 1;
+        }
+
+        // Every language's string table (matg's locale data, raw) the same.
+        let (lm, lf) = (
+            tags::Localization::read(&mut m).unwrap(),
+            tags::Localization::read(&mut f).unwrap(),
+        );
+        for lang in tags::Language::ALL {
+            assert_eq!(
+                format!("{:?}", lm.table(lang)),
+                format!("{:?}", lf.table(lang)),
+                "{lang:?} strings"
+            );
+        }
+
+        // The structure: the scenario's descriptor names the fresh map's
+        // region, which holds the converted BSP.
+        let sbsp = f
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"sbsp"))
+            .unwrap();
+        let (x, y) = (
+            m.read_tag_bytes(sbsp.id).unwrap(),
+            f.read_tag_bytes(sbsp.id).unwrap(),
+        );
+        assert_eq!(x.len(), y.len(), "structure size");
+
+        println!(
+            "  read back: {} tags, {n} references resolve (pinned map: {pn}); \
+             {same} tags identical address-free ({by_group:?}); scenario: {} blocks identical, \
+             root identical; sound gestalt identical ({} chunks); {bitmaps} bitmaps decode \
+             identically; 9 languages' strings identical; structure {} bytes ({:?})",
+            f.tags().len(),
+            r.scenario_blocks.len(),
+            gb.chunks.len(),
+            y.len(),
+            started.elapsed()
+        );
+    }
+}

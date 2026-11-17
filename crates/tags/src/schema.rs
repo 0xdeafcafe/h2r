@@ -472,27 +472,8 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
         for i in 0..count {
             let e = (i * s.size) as usize;
             let elem = &bytes[e..e + s.size as usize];
-            let mut covered = vec![false; elem.len()];
-            // Raw fields are checked too: one holding an address is a
-            // misclassified pointer.
-            for (&o, f) in s.fields.iter().filter(|(_, f)| !matches!(f, Field::Raw)) {
-                covered[o as usize..(o + f.width()) as usize].fill(true);
-            }
-            for (&o, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Bsp)) {
-                let w = |k: u32| u32_at(elem, (o + k) as usize);
-                let t = (w(0), w(4), w(8));
-                if t != (0, 0, 0) && !mem.bsps.contains(&t) {
-                    return Err(fail(Refusal::UnknownPointer, &path, o + 8, t.2));
-                }
-            }
-            for k in (0..elem.len().saturating_sub(3)).step_by(4) {
-                if covered[k..k + 4].iter().any(|c| *c) {
-                    continue;
-                }
-                let v = u32_at(elem, k);
-                if (address..end).contains(&v) || mem.hit(v) {
-                    return Err(fail(Refusal::UnknownPointer, &path, k as u32, v));
-                }
+            if let Some((k, v)) = stray(s, elem, (address, end), mem) {
+                return Err(fail(Refusal::UnknownPointer, &path, k, v));
             }
             for (&o, f) in &s.fields {
                 if let Field::Block(child) = f {
@@ -540,6 +521,73 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
         return Err(fail(Refusal::Uncovered, &[], pos, len - pos));
     }
     Ok(out)
+}
+
+/// The first word of `elem` (an element of `s`) outside every known field
+/// that holds an address in the tag (`own`) or in a known space, or a BSP
+/// descriptor matching no region: `(offset, value)`. Raw fields are checked
+/// too: one holding an address is a misclassified pointer.
+fn stray(s: &Struct, elem: &[u8], own: (u32, u32), mem: &Memory) -> Option<(u32, u32)> {
+    let mut covered = vec![false; elem.len()];
+    for (&o, f) in s.fields.iter().filter(|(_, f)| !matches!(f, Field::Raw)) {
+        covered[o as usize..(o + f.width()) as usize].fill(true);
+    }
+    for (&o, _) in s.fields.iter().filter(|(_, f)| matches!(f, Field::Bsp)) {
+        let w = |k: u32| u32_at(elem, (o + k) as usize);
+        let t = (w(0), w(4), w(8));
+        if t != (0, 0, 0) && !mem.bsps.contains(&t) {
+            return Some((o + 8, t.2));
+        }
+    }
+    (0..elem.len().saturating_sub(3)).step_by(4).find_map(|k| {
+        let v = u32_at(elem, k);
+        (!covered[k..k + 4].iter().any(|c| *c) && ((own.0..own.1).contains(&v) || mem.hit(v)))
+            .then_some((k as u32, v))
+    })
+}
+
+/// Check `count` elements of `s` at `at` and everything below them, without
+/// the whole-tag tiling rule: every array in bounds, no stray pointer.
+fn check_subtree(
+    s: &Struct,
+    at: u32,
+    count: u32,
+    own: (u32, u32),
+    mem: &Memory,
+    path: &mut Vec<u32>,
+) -> Result<(), Detail> {
+    let fail = |refusal, path: &[u32], offset, value| Detail {
+        refusal,
+        path: path.to_vec(),
+        offset,
+        value,
+    };
+    let n = u64::from(s.size) * u64::from(count);
+    let Some(bytes) = u32::try_from(n).ok().and_then(|n| mem.slice(at, n)) else {
+        return Err(fail(Refusal::OutOfBounds, path, at, count));
+    };
+    if path.len() > 64 {
+        return Err(fail(Refusal::OutOfBounds, path, at, count));
+    }
+    for i in 0..count {
+        let e = (i * s.size) as usize;
+        let elem = &bytes[e..e + s.size as usize];
+        if let Some((k, v)) = stray(s, elem, own, mem) {
+            return Err(fail(Refusal::UnknownPointer, path, k, v));
+        }
+        for (&o, f) in &s.fields {
+            if let Field::Block(child) = f {
+                let c = u32_at(elem, o as usize);
+                let a = u32_at(elem, o as usize + 4);
+                if c != 0 && a != 0 {
+                    path.push(o);
+                    check_subtree(child, a, c, own, mem, path)?;
+                    path.pop();
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether the gap `bytes` at offset `pos` (shorter than [`MAX_ALIGN`]) is
@@ -641,7 +689,7 @@ fn tree(s: &Struct, cx: &TreeCtx, at: u32, count: u32) -> Block {
 
 /// Relocates the tags of one map with a schema.
 pub struct Relocator<'s> {
-    schema: &'s Schema,
+    pub(crate) schema: &'s Schema,
     memory: Memory,
     tags: Vec<map::Tag>,
     by_id: std::collections::HashMap<TagId, usize>,
@@ -830,6 +878,48 @@ impl<'s> Relocator<'s> {
         // Roots are never shared.
         block.share = None;
         Ok(block)
+    }
+
+    /// One block field of the tag's root, at `field`, as a depth-first
+    /// tree with everything below it copied: `(count, child)`, `None` when
+    /// empty. Checks only that subtree (bounds, stray pointers), not the
+    /// whole tag, so it works for a tag the schema cannot move whole (a
+    /// `scnr` rebuilt from chosen blocks).
+    pub fn block_field(&self, id: TagId, field: u32) -> Result<Option<(u32, Block)>, Detail> {
+        let plain = |refusal| Detail {
+            refusal,
+            path: vec![field],
+            offset: 0,
+            value: 0,
+        };
+        let tag = self.tag(id).ok_or(plain(Refusal::NoData))?;
+        let root = self
+            .schema
+            .groups
+            .get(&tag.group)
+            .ok_or(plain(Refusal::NoSchema))?;
+        let Some(Field::Block(child)) = root.fields.get(&field) else {
+            return Err(plain(Refusal::NoSchema));
+        };
+        let l = tag.location.ok_or(plain(Refusal::NoData))?;
+        let bytes = self
+            .memory
+            .slice(l.address, root.size)
+            .ok_or(plain(Refusal::NoData))?;
+        let c = u32_at(bytes, field as usize);
+        let a = u32_at(bytes, field as usize + 4);
+        if c == 0 || a == 0 {
+            return Ok(None);
+        }
+        let own = (l.address, l.address + l.size);
+        check_subtree(child, a, c, own, &self.memory, &mut vec![field])?;
+        let cx = TreeCtx {
+            mem: &self.memory,
+            salt: self.salt,
+            own,
+            stays: &|_| false,
+        };
+        Ok(Some((c, tree(child, &cx, a, c))))
     }
 
     /// The tag as one flat block in its **source layout**: its bytes as

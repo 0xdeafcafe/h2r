@@ -4,6 +4,7 @@
 //! ```text
 //! H1_ISO=disc/halo1.iso cargo test -p h1sounds --release -- --ignored every_h1 --nocapture
 //! H2_DISC=disc/halo2.iso cargo test -p h1sounds --release -- --ignored retail_gestalts --nocapture
+//! H2_DISC=disc/halo2.iso cargo test -p h1sounds --release -- --ignored every_retail_sound_merges
 //! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
 //!     cargo test -p h1sounds --release -- --ignored converted --nocapture
 //! ```
@@ -492,4 +493,130 @@ fn converted_sounds_read_back_sample_identical() {
             out.len()
         );
     }
+}
+
+/// Keeps names and pointers as they are.
+struct Same;
+
+impl h1sounds::MergeMap for Same {
+    fn name(&mut self, id: u32) -> h1sounds::Result<u32> {
+        Ok(id)
+    }
+    fn raw(
+        &mut self,
+        p: h1sounds::gestalt::ChunkPointer,
+        _: u32,
+    ) -> h1sounds::Result<h1sounds::gestalt::ChunkPointer> {
+        Ok(p)
+    }
+}
+
+/// Every retail `snd!` on every map, merged one by one into an empty
+/// gestalt, names the same entries there as it did in its own: playback,
+/// scale, each range's name, parameters and runtime flag bits, each
+/// permutation's bytes and chunks, custom playback and extra info. The
+/// merged gestalt still builds. Sounds with promotions are refused and
+/// counted.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn every_retail_sound_merges() {
+    use h1sounds::convert::snd;
+    let u16_at = |b: &[u8], o: usize| usize::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let (mut merged, mut promoted) = (0usize, 0usize);
+    for stem in h2_stems() {
+        let bytes = h2_bytes(&stem);
+        let (src, _) = gestalt_of(&bytes);
+        let mut m = Map::from_reader(Cursor::new(&bytes)).unwrap();
+        let sounds: Vec<_> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
+            .map(|t| t.id)
+            .collect();
+        let mut dst = SoundGestalt::default();
+        for id in sounds {
+            let h = m.read_tag_bytes(id).unwrap();
+            let out = match h1sounds::merge_sound(&src, &h, &mut dst, id.0, &mut Same) {
+                Ok(o) => o,
+                Err(h1sounds::Error::Unsupported(_)) if h[snd::PROMOTION] != 0xff => {
+                    promoted += 1;
+                    continue;
+                }
+                Err(e) => panic!("{stem} {id:?}: {e}"),
+            };
+            merged += 1;
+            assert_eq!(out[snd::MAX_PLAY_TIME..], h[snd::MAX_PLAY_TIME..snd::LEN]);
+            assert_eq!(
+                dst.element(blocks::PLAYBACKS, u16_at(&out, snd::PLAYBACK)),
+                src.element(blocks::PLAYBACKS, u16_at(&h, snd::PLAYBACK))
+            );
+            assert_eq!(
+                dst.element(blocks::SCALES, out[snd::SCALE].into()),
+                src.element(blocks::SCALES, h[snd::SCALE].into())
+            );
+            let flag = |g: &SoundGestalt, at: usize| {
+                g.flat[blocks::RUNTIME_PERMUTATION_FLAGS][at / 8] >> (at % 8) & 1
+            };
+            for r in 0..usize::from(h[snd::PITCH_RANGE_COUNT]) {
+                let a = src.element(blocks::PITCH_RANGES, u16_at(&h, snd::FIRST_PITCH_RANGE) + r);
+                let b = dst.element(
+                    blocks::PITCH_RANGES,
+                    u16_at(&out, snd::FIRST_PITCH_RANGE) + r,
+                );
+                assert_eq!(
+                    src.element(blocks::IMPORT_NAMES, u16_at(a, 0)),
+                    dst.element(blocks::IMPORT_NAMES, u16_at(b, 0))
+                );
+                assert_eq!(
+                    src.element(blocks::PITCH_RANGE_PARAMETERS, u16_at(a, 2)),
+                    dst.element(blocks::PITCH_RANGE_PARAMETERS, u16_at(b, 2))
+                );
+                let n = u16_at(a, 10);
+                assert_eq!((u16_at(a, 4), n), (u16_at(b, 4), u16_at(b, 10)));
+                if u16_at(a, 4) == 0xffff {
+                    for p in 0..n {
+                        assert_eq!(flag(&src, u16_at(a, 6) + p), flag(&dst, u16_at(b, 6) + p));
+                    }
+                } else {
+                    assert_eq!(u16_at(a, 6), u16_at(b, 6));
+                }
+                for p in 0..n {
+                    let pa = src.element(blocks::PERMUTATIONS, u16_at(a, 8) + p);
+                    let pb = dst.element(blocks::PERMUTATIONS, u16_at(b, 8) + p);
+                    assert_eq!(
+                        src.element(blocks::IMPORT_NAMES, u16_at(pa, 0)),
+                        dst.element(blocks::IMPORT_NAMES, u16_at(pb, 0))
+                    );
+                    assert_eq!(pa[2..12], pb[2..12]);
+                    let c = u16_at(pa, 14);
+                    assert_eq!(c, u16_at(pb, 14));
+                    assert_eq!(
+                        src.chunks[u16_at(pa, 12)..][..c],
+                        dst.chunks[u16_at(pb, 12)..][..c]
+                    );
+                }
+            }
+            for (i, at) in [(blocks::CUSTOM_PLAYBACKS, snd::CUSTOM_PLAYBACK)] {
+                if h[at] != 0xff {
+                    assert_eq!(
+                        src.nested[i][usize::from(h[at])],
+                        dst.nested[i][usize::from(out[at])]
+                    );
+                }
+            }
+            if u16_at(&h, snd::EXTRA_INFO) != 0xffff {
+                let a = &src.nested[blocks::EXTRA_INFOS][u16_at(&h, snd::EXTRA_INFO)];
+                let b = &dst.nested[blocks::EXTRA_INFOS][u16_at(&out, snd::EXTRA_INFO)];
+                assert_eq!(a.children, b.children);
+                assert_eq!(a.bytes[..0x20], b.bytes[..0x20]);
+            }
+        }
+        let _ = dst.to_block();
+        println!(
+            "{stem:>22}: merged into {:?}",
+            (0..11).map(|i| dst.count(i)).collect::<Vec<_>>()
+        );
+    }
+    println!("{merged} sounds merged, {promoted} with promotions refused");
+    assert!(merged > 0);
 }

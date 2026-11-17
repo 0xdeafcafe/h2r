@@ -11,6 +11,7 @@
 //! - [`shaders`]: the base shader each Halo 1 shader draws with.
 //! - [`slots`]: tag-index slots a conversion may reuse for new tags.
 //! - [`convert`]: a whole map, onto a base, with its package manifest.
+//! - [`fresh`]: the same map with nothing of the base pinned.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
 //! the `#[ignore]`d ones read maps from `$H1_MAP_DIR` at run time.
@@ -19,6 +20,7 @@
 pub mod apply;
 pub mod collision;
 pub mod convert;
+pub mod fresh;
 pub mod globals;
 pub mod placements;
 pub mod query;
@@ -55,6 +57,9 @@ pub enum Error {
         "the Halo 1 sandbox needs Halo 1's objects (convert::halo1); or convert with the Halo 2 sandbox"
     )]
     Halo1Sandbox,
+    /// A fresh map couldn't be assembled.
+    #[error("fresh map: {0}")]
+    Fresh(String),
     /// The base map couldn't be read or the map couldn't be built.
     #[error(transparent)]
     Map(#[from] map::Error),

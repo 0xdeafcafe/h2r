@@ -1,0 +1,355 @@
+//! A converted multiplayer map with **nothing pinned** (`h1 convert
+//! --fresh`).
+//!
+//! The pinned conversion ([`Prepared::build`]) keeps the base map's file
+//! and metadata image and changes tags inside it. A fresh map starts from
+//! an empty [`TagSet`] (no [`map::build::PinnedImage`]) that takes the
+//! pinned set's index as it is (same slots, names, datums and string
+//! table), so no reference needs rewriting, and gives every tag a payload
+//! the builder lays out itself:
+//!
+//! | Tag | Payload |
+//! |---|---|
+//! | every ordinary tag | the schema's depth-first tree ([`tags::schema::transplant::Unpinner`]); local raw resources copied into the new file |
+//! | size-0 aliases | [`TagPayload::Alias`] of their owner |
+//! | `scnr` | built from scratch: the root's scalars and tag references, every root block field zeroed, then each block the converted scenario fills that the schema can copy ([`Relocator::block_field`]); the BSP descriptors' region words become [`FixupKind::Bsp`] |
+//! | `ugh!` | [`h1sounds::gestalt::SoundGestalt`], chunks' local raw copied |
+//! | converted tags (structure, lightmap, collections, objects) | as the conversion built them |
+//!
+//! So the map carries the base's tags (everything Coagulation has, whether
+//! Blood Gulch uses it or not), the converted ones, and no byte of the
+//! base's file beyond what those tags name.
+
+use std::io::{Cursor, Read, Seek};
+
+use map::build::{BspField, FixupKind, TagPayload, TagSet};
+use map::{FourCC, Map, TagId};
+use tags::schema::transplant::Unpinner;
+use tags::schema::{Field, Relocator, Schema};
+
+use crate::convert::{Prepared, map_name};
+use crate::{Error, Result};
+
+/// `scnr` BSP descriptors: block field and element size.
+const BSPS: u32 = 0x210;
+const BSP: u32 = 0x44;
+
+/// What [`Prepared::build_fresh`] did.
+#[derive(Debug, Clone, Default)]
+pub struct FreshReport {
+    /// Tags turned from pinned bytes into built trees.
+    pub unpinned: usize,
+    /// Of them, size-0 aliases.
+    pub aliases: usize,
+    /// Local raw resources copied into the new file, and their bytes.
+    pub raw: (usize, u64),
+    /// Pointers into the shared caches, kept.
+    pub external: usize,
+    /// `scnr` root block fields copied, as `(offset, elements)`.
+    pub scenario_blocks: Vec<(u32, u32)>,
+    /// Of them, copied flat from outside every tag (blocks the scenario
+    /// editor grew).
+    pub scenario_flat: Vec<u32>,
+    /// `scnr` root block fields the converted scenario fills but the
+    /// schema cannot copy (left empty), with why.
+    pub scenario_skipped: Vec<(u32, String)>,
+    /// Sound gestalt chunks whose raw data was copied.
+    pub sound_chunks: usize,
+    /// Bytes of the low-detail bitmap region copied.
+    pub low_detail: u32,
+}
+
+/// A fresh map.
+#[derive(Debug, Clone)]
+pub struct Fresh {
+    /// `h1_<map>`.
+    pub name: String,
+    /// The map file.
+    pub bytes: Vec<u8>,
+    /// What was done.
+    pub report: FreshReport,
+}
+
+impl Prepared {
+    /// The converted map with nothing pinned (see the module docs).
+    pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
+        let (pinned, bytes, section) = self.assemble(base, mopp)?;
+        let mut src = Map::from_reader(Cursor::new(bytes))?;
+        let mut fresh = unpinned_copy(&pinned);
+        // The pinned map keeps the base's file prefix, so the base's own
+        // BSP regions and low-detail region are still there, unnamed:
+        // resources end before them.
+        let h = base.header();
+        let mut bounds = vec![h.low_detail_offset];
+        let meta = base.metadata_space();
+        for t in base.tags() {
+            if let Some(l) = t.location.filter(|l| Some(l.space) != meta) {
+                bounds.push(u32::try_from(l.space.file_offset).unwrap_or(u32::MAX));
+            }
+        }
+        let report = unpin_all(&pinned, &mut src, &mut fresh, section, &bounds)?;
+        let (bytes, _) = fresh.build()?;
+        Ok(Fresh {
+            name: map_name(&self.h1_name),
+            bytes,
+            report,
+        })
+    }
+}
+
+/// A set with `pinned`'s index, strings, raw resources and BSP sections,
+/// and nothing pinned. Payloads are copied as they are; [`unpin_all`]
+/// replaces the pinned ones.
+pub fn unpinned_copy(pinned: &TagSet) -> TagSet {
+    let mut set = TagSet::new(pinned.cache_type, &pinned.name, &pinned.scenario_path);
+    set.groups = pinned.groups.clone();
+    set.strings = pinned.strings.clone();
+    set.slots = pinned.slots.clone();
+    set.scenario = pinned.scenario;
+    set.globals = pinned.globals;
+    set.index_word_14 = pinned.index_word_14;
+    set.raw = pinned.raw.clone();
+    set.bsps = pinned.bsps.clone();
+    set.salt_base = pinned.salt_base;
+    // Header values the builder does not own (dependency identities and
+    // the like) stay the base's; no byte of its file does.
+    set.header_template = pinned.pinned.as_ref().map(|p| p.header.clone());
+    set
+}
+
+/// Replace every pinned payload of `fresh` (a copy of `pinned`, whose
+/// built map is `src`) with a built one. `section` is the converted
+/// structure's BSP section, which the scenario's first descriptor names.
+/// `bounds` are more file offsets no copied resource runs past (regions of
+/// `src`'s file that no tag names).
+pub fn unpin_all<R: Read + Seek>(
+    pinned: &TagSet,
+    src: &mut Map<R>,
+    fresh: &mut TagSet,
+    section: usize,
+    bounds: &[u32],
+) -> Result<FreshReport> {
+    let schema = Schema::builtin();
+    let mut u = Unpinner::new(schema, src).map_err(tags_error)?;
+    u.add_starts(bounds.iter().copied());
+    let mut report = FreshReport::default();
+    // The low-detail bitmap region, which bitmaps index into, as a raw
+    // resource of its own.
+    let h = src.header().clone();
+    if h.low_detail_size > 0 {
+        let bytes = src.read_file_range(h.low_detail_offset.into(), h.low_detail_size.into())?;
+        let align = 1 << h.low_detail_offset.trailing_zeros().min(12);
+        fresh.low_detail = Some(fresh.add_raw(bytes, align));
+        report.low_detail = h.low_detail_size;
+    }
+    let ugh = FourCC(*b"ugh!");
+    let mut ordinary = Vec::new();
+    let mut gestalt = None;
+    for slot in &pinned.slots {
+        let Some(t) = &slot.tag else { continue };
+        let TagPayload::Pinned { address, bytes } = &t.payload else {
+            continue;
+        };
+        if t.id == pinned.scenario {
+            continue;
+        }
+        if t.group == ugh {
+            gestalt = Some((t.id, *address, bytes.clone()));
+            continue;
+        }
+        if bytes.is_empty() {
+            report.aliases += 1;
+        }
+        ordinary.push(t.id);
+    }
+    report.unpinned = match u.unpin(src, &ordinary, fresh).map_err(tags_error)? {
+        Ok(n) => n,
+        Err(refused) => {
+            let list: Vec<String> = refused
+                .iter()
+                .take(12)
+                .map(|r| {
+                    format!(
+                        "{} {} ({:?} at {:x?} +{:#x})",
+                        r.group, r.name, r.detail.refusal, r.detail.path, r.detail.offset
+                    )
+                })
+                .collect();
+            return Err(Error::Fresh(format!(
+                "{} tags the schema cannot move: {}",
+                refused.len(),
+                list.join("; ")
+            )));
+        }
+    };
+    if let Some((id, address, bytes)) = gestalt {
+        report.sound_chunks = sound_gestalt(&mut u, src, fresh, id, address, &bytes)?;
+        report.unpinned += 1;
+    }
+    scenario(&mut u, src, fresh, pinned.scenario, section, &mut report)?;
+    report.unpinned += 1;
+    report.raw = u.raw;
+    report.external = u.external;
+    Ok(report)
+}
+
+fn word(b: &[u8], at: u32) -> u32 {
+    u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().expect("4"))
+}
+
+fn tags_error(e: tags::Error) -> Error {
+    Error::Fresh(e.to_string())
+}
+
+/// The `ugh!` as a built tree, its chunks' local raw copied. Returns the
+/// chunks copied.
+fn sound_gestalt<R: Read + Seek>(
+    u: &mut Unpinner,
+    src: &mut Map<R>,
+    fresh: &mut TagSet,
+    id: TagId,
+    address: u32,
+    bytes: &[u8],
+) -> Result<usize> {
+    use h1sounds::gestalt::{ChunkPointer, SoundGestalt, blocks};
+    let mut g =
+        SoundGestalt::decode(bytes, address).map_err(|e| Error::Fresh(format!("ugh!: {e}")))?;
+    // Extra infos (lip-sync) hold a raw pointer at +8 with no stored
+    // length: copy up to the next known raw start, chunks included.
+    const EXTRA_RAW: usize = 8;
+    let extra = |e: &h1sounds::gestalt::Nested| {
+        u32::from_le_bytes(e.bytes[EXTRA_RAW..EXTRA_RAW + 4].try_into().expect("4"))
+    };
+    u.add_starts(g.chunks.iter().filter_map(|c| match c.pointer {
+        ChunkPointer::Stored(p) => Some(p),
+        ChunkPointer::Local(_) => None,
+    }));
+    u.add_starts(g.nested[blocks::EXTRA_INFOS].iter().map(extra));
+    let mut copied = 0;
+    for e in &mut g.nested[blocks::EXTRA_INFOS] {
+        let p = extra(e);
+        if p != u32::MAX && p != 0 && p >> 30 == 0 {
+            // A raw resource of its own, at the file offset the builder
+            // gives it: no fixup in this model, so the pointer is written
+            // after layout (see `extra_info_raw`).
+            return Err(Error::Invalid(
+                "the sound gestalt has local lip-sync data, which a fresh map cannot place yet",
+            ));
+        }
+    }
+    for c in &mut g.chunks {
+        if let ChunkPointer::Stored(p) = c.pointer
+            && p != u32::MAX
+            && p >> 30 == 0
+        {
+            let len = c.size & 0x7fff_ffff;
+            c.pointer = ChunkPointer::Local(u.copy_raw(src, fresh, p, len).map_err(tags_error)?);
+            copied += 1;
+        }
+    }
+    fresh
+        .tag_mut(id)
+        .ok_or(Error::Invalid("no ugh! slot"))?
+        .payload = TagPayload::Built(g.to_block());
+    Ok(copied)
+}
+
+/// The scenario, built from scratch (module docs).
+fn scenario<R: Read + Seek>(
+    u: &mut Unpinner,
+    src: &mut Map<R>,
+    fresh: &mut TagSet,
+    id: TagId,
+    section: usize,
+    report: &mut FreshReport,
+) -> Result<()> {
+    let schema = Schema::builtin();
+    let root_layout = &schema.groups[&FourCC(*b"scnr")];
+    let bytes = src.read_tag_bytes(id)?;
+    let size = root_layout.size as usize;
+    let mut root_bytes = bytes
+        .get(..size)
+        .ok_or(Error::Invalid("the scenario is smaller than its root"))?
+        .to_vec();
+    let blocks: Vec<(u32, &tags::schema::Struct)> = root_layout
+        .fields
+        .iter()
+        .filter_map(|(&o, f)| match f {
+            Field::Block(c) => Some((o, &**c)),
+            _ => None,
+        })
+        .collect();
+    for &(o, _) in &blocks {
+        root_bytes[o as usize..o as usize + 8].fill(0);
+    }
+    let mut root = map::build::Block::new(root_bytes);
+    let rel: &Relocator = u.relocator();
+    let mut children = Vec::new();
+    for &(o, layout) in &blocks {
+        match rel.block_field(id, o) {
+            Ok(None) => {}
+            Ok(Some((count, mut child))) => {
+                if o == BSPS {
+                    if count != 1 {
+                        return Err(Error::Invalid(
+                            "a multiplayer scenario should have one BSP descriptor",
+                        ));
+                    }
+                    for (at, field) in [
+                        (0, BspField::FileOffset),
+                        (4, BspField::Size),
+                        (8, BspField::Address),
+                    ] {
+                        child.fixup(at, FixupKind::Bsp { section, field });
+                    }
+                    debug_assert_eq!(layout.size, BSP);
+                }
+                report.scenario_blocks.push((o, count));
+                children.push((o, count, child));
+            }
+            Err(d) => {
+                // A block the scenario editor grew is appended to the
+                // metadata outside every tag (netgame flags, say). With no
+                // child block and no raw field, its bytes are the whole
+                // of it: copy them as they are.
+                let flat = layout
+                    .fields
+                    .values()
+                    .all(|f| !matches!(f, Field::Block(_) | Field::Raw));
+                let count = word(&bytes, o);
+                let at = word(&bytes, o + 4);
+                let read = flat
+                    .then(|| {
+                        let n = count.checked_mul(layout.size)?;
+                        let off = src.file_offset(at, n).ok()?;
+                        src.read_file_range(off, n.into()).ok()
+                    })
+                    .flatten();
+                match read {
+                    Some(b) => {
+                        report.scenario_blocks.push((o, count));
+                        report.scenario_flat.push(o);
+                        children.push((o, count, map::build::Block::new(b).aligned(layout.align)));
+                    }
+                    None => report.scenario_skipped.push((
+                        o,
+                        format!("{:?} at {:x?} +{:#x}", d.refusal, d.path, d.offset),
+                    )),
+                }
+            }
+        }
+    }
+    if !report.scenario_blocks.iter().any(|b| b.0 == BSPS) {
+        return Err(Error::Invalid("the scenario's BSP descriptor did not copy"));
+    }
+    for (o, count, child) in children {
+        root.block(o, count, child);
+    }
+    u.localise(root_layout, &mut root, 1, src, fresh)
+        .map_err(tags_error)?;
+    fresh
+        .tag_mut(id)
+        .ok_or(Error::Invalid("no scenario slot"))?
+        .payload = TagPayload::Built(root);
+    Ok(())
+}

@@ -232,6 +232,43 @@ matches; the base's own sounds still resolve to the same chunks.
 | beavercreek, every sound | 316 | 902 | 21,532,928 | 837.7 s |
 | a30 dialogue (classes 19, 44, 46, 47; every 4th) | 257 | 1,283 | 36,806,272 | 1,669.2 s |
 
+## Merging a moved sound (`h1sounds::merge_sound`)
+
+A `snd!` moved to another map (`tags::schema::transplant`) still holds
+indices into its source map's gestalt.
+`merge_sound(src_gestalt, snd_bytes, dst_gestalt, owner, map)` appends the
+entries it names to the destination gestalt and returns the `snd!` with
+new indices:
+
+- playback, scale and pitch range parameters, deduplicated;
+- pitch ranges and permutations, appended in order, with import names
+  mapped through `MergeMap::name` (source string ID to destination);
+- chunks appended, each pointer mapped through `MergeMap::raw` (the
+  caller copies local raw, or keeps shared-cache pointers);
+- runtime permutation flag bits: when `+4` is `ffff`, each range gets a
+  fresh byte-aligned run with the source bits copied; the other form
+  (`+4` = 0) keeps `+6` as it is;
+- custom playback and extra info appended whole, and the extra info's
+  owner set to `owner`. An extra info's raw pointer may only be mapped to
+  a stored pointer;
+- sounds with a promotion (`+0xc` not `ff`) are refused
+  (`Error::Unsupported`), since the promotion rules hold indices this
+  doesn't map.
+
+**Proof.** Two tests:
+
+- `a_moved_sound_takes_its_gestalt_entries_and_flag_bits` uses invented
+  gestalts.
+- `every_retail_sound_merges` (**V**, 2026-11-17) merges every `snd!` of
+  every retail map, one by one, into an empty gestalt. Each merged sound
+  names the same entries as it did in its own gestalt: bytes, names,
+  chunks and flag bits. 65,078 sounds merge; 231 with promotions are
+  refused.
+
+```sh
+H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
+```
+
 ## Classes
 
 Both games number classes in one list that Halo 2 extended, so most keep

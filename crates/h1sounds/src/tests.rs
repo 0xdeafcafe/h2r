@@ -432,3 +432,159 @@ fn a_map_without_a_gestalt_gets_one() {
     let h = tags::sound::read_header(&mut m, ids[0]).unwrap();
     assert_eq!(g.resolve(&h).unwrap().ranges.len(), 2);
 }
+
+/// Maps names by adding `0x1000` and stored pointers by adding `0x100`.
+struct Shift(Vec<(u32, u32)>);
+
+impl crate::MergeMap for Shift {
+    fn name(&mut self, id: u32) -> crate::Result<u32> {
+        Ok(id + 0x1000)
+    }
+    fn raw(&mut self, p: ChunkPointer, size: u32) -> crate::Result<ChunkPointer> {
+        let ChunkPointer::Stored(v) = p else {
+            panic!("source pointers are stored")
+        };
+        self.0.push((v, size));
+        Ok(ChunkPointer::Stored(v + 0x100))
+    }
+}
+
+fn element(i: usize, fill: u8) -> Vec<u8> {
+    vec![fill; crate::gestalt::STRIDES[i]]
+}
+
+#[test]
+fn a_moved_sound_takes_its_gestalt_entries_and_flag_bits() {
+    use crate::convert::snd;
+    use crate::gestalt::{Chunk, Nested};
+    let mut src = SoundGestalt::default();
+    src.push(blocks::PLAYBACKS, &element(blocks::PLAYBACKS, 1), false);
+    src.push(blocks::PLAYBACKS, &element(blocks::PLAYBACKS, 2), false);
+    src.push(blocks::SCALES, &element(blocks::SCALES, 3), false);
+    for id in [10u32, 11, 12, 13] {
+        src.push(blocks::IMPORT_NAMES, &id.to_le_bytes(), false);
+    }
+    src.push(blocks::PITCH_RANGE_PARAMETERS, &element(3, 4), false);
+    src.push(blocks::PITCH_RANGE_PARAMETERS, &element(3, 5), false);
+    // Range 0: one permutation; range 1: three, flags from bit 3.
+    let range = |name: u16, params: u16, enc: u16, flags: u16, first: u16, n: u16| {
+        let mut e = Vec::new();
+        for v in [name, params, enc, flags, first, n] {
+            e.extend_from_slice(&v.to_le_bytes());
+        }
+        e
+    };
+    src.push(blocks::PITCH_RANGES, &range(0, 0, 0, 0xffff, 0, 1), false);
+    src.push(blocks::PITCH_RANGES, &range(1, 1, 0xffff, 3, 1, 3), false);
+    let perm = |name: u16, first: u16, n: u16| {
+        let mut e = vec![0u8; 16];
+        e[0..2].copy_from_slice(&name.to_le_bytes());
+        e[5] = 7;
+        e[8..12].copy_from_slice(&0x500u32.to_le_bytes());
+        e[12..14].copy_from_slice(&first.to_le_bytes());
+        e[14..16].copy_from_slice(&n.to_le_bytes());
+        e
+    };
+    src.push(blocks::PERMUTATIONS, &perm(0, 0, 1), false);
+    src.push(blocks::PERMUTATIONS, &perm(2, 1, 2), false);
+    src.push(blocks::PERMUTATIONS, &perm(3, 3, 0), false);
+    src.push(blocks::PERMUTATIONS, &perm(2, 3, 1), false);
+    for c in 0..4u32 {
+        src.chunks.push(Chunk {
+            pointer: ChunkPointer::Stored(0x40_0000 + c * 0x1000),
+            size: 0x8000_0000 | (0x200 + c),
+            runtime: u32::MAX,
+        });
+    }
+    src.flat[blocks::RUNTIME_PERMUTATION_FLAGS] = vec![0b0010_1000, 0];
+    src.nested[blocks::CUSTOM_PLAYBACKS].push(Nested {
+        bytes: element(blocks::CUSTOM_PLAYBACKS, 6),
+        children: vec![
+            crate::gestalt::Child {
+                count: 0,
+                bytes: Vec::new()
+            };
+            2
+        ],
+    });
+
+    // Sound B: playback 1, scale 0, range 1, custom playback 0.
+    let mut header = vec![0u8; snd::LEN];
+    header[snd::PLAYBACK] = 1;
+    header[snd::FIRST_PITCH_RANGE] = 1;
+    header[snd::PITCH_RANGE_COUNT] = 1;
+    header[snd::PROMOTION] = 0xff;
+    header[snd::CUSTOM_PLAYBACK] = 0;
+    header[snd::EXTRA_INFO..snd::EXTRA_INFO + 2].fill(0xff);
+    header[snd::MAX_PLAY_TIME] = 0x42;
+
+    // The destination already has B's playback and one other chunk.
+    let mut dst = SoundGestalt::default();
+    dst.push(blocks::PLAYBACKS, &element(blocks::PLAYBACKS, 9), false);
+    dst.push(blocks::PLAYBACKS, &element(blocks::PLAYBACKS, 2), false);
+    dst.flat[blocks::RUNTIME_PERMUTATION_FLAGS] = vec![0xff];
+    dst.chunks.push(src.chunks[0]);
+    let mut map = Shift(Vec::new());
+    let out = crate::merge_sound(&src, &header, &mut dst, 0xe1e1_0005, &mut map).unwrap();
+
+    assert_eq!(
+        out[snd::PLAYBACK],
+        1,
+        "deduplicated against the destination"
+    );
+    assert_eq!(out[snd::SCALE], 0);
+    assert_eq!(out[snd::FIRST_PITCH_RANGE], 0);
+    assert_eq!(out[snd::CUSTOM_PLAYBACK], 0);
+    assert_eq!(out[snd::MAX_PLAY_TIME], 0x42, "other fields kept");
+    assert_eq!(dst.count(blocks::PITCH_RANGES), 1);
+    assert_eq!(dst.count(blocks::PERMUTATIONS), 3);
+    assert_eq!(dst.chunks.len(), 1 + 3);
+    let r = dst.element(blocks::PITCH_RANGES, 0).to_vec();
+    let at = |b: &[u8], o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+    let name = |n: u16| {
+        let e = dst.element(blocks::IMPORT_NAMES, n as usize);
+        u32::from_le_bytes(e.try_into().unwrap())
+    };
+    assert_eq!(name(at(&r, 0)), 11 + 0x1000);
+    assert_eq!(dst.element(3, at(&r, 2) as usize), &element(3, 5)[..]);
+    assert_eq!(
+        (at(&r, 4), at(&r, 6), at(&r, 8), at(&r, 10)),
+        (0xffff, 8, 0, 3)
+    );
+    assert_eq!(
+        dst.flat[blocks::RUNTIME_PERMUTATION_FLAGS],
+        [0xff, 0b101],
+        "bits 3..6 of the source become bits 8..11"
+    );
+    let p: Vec<_> = (0..3)
+        .map(|n| dst.element(blocks::PERMUTATIONS, n).to_vec())
+        .collect();
+    assert_eq!(name(at(&p[0], 0)), 12 + 0x1000);
+    assert_eq!(name(at(&p[1], 0)), 13 + 0x1000);
+    assert_eq!((at(&p[0], 12), at(&p[0], 14)), (1, 2));
+    assert_eq!((at(&p[1], 12), at(&p[1], 14)), (3, 0));
+    assert_eq!((at(&p[2], 12), at(&p[2], 14)), (3, 1));
+    assert_eq!(p[0][5], 7);
+    assert_eq!(
+        dst.chunks[1].pointer,
+        ChunkPointer::Stored(0x40_1000 + 0x100)
+    );
+    assert_eq!(dst.chunks[1].size, src.chunks[1].size, "flag bit kept");
+    assert_eq!(
+        map.0,
+        [(0x40_1000, 0x201), (0x40_2000, 0x202), (0x40_3000, 0x203)]
+    );
+    assert_eq!(
+        dst.nested[blocks::CUSTOM_PLAYBACKS],
+        src.nested[blocks::CUSTOM_PLAYBACKS]
+    );
+
+    // The merged gestalt still builds and reads back.
+    let _ = dst.to_block();
+
+    header[snd::PROMOTION] = 0;
+    assert!(matches!(
+        crate::merge_sound(&src, &header, &mut dst, 0, &mut map),
+        Err(Error::Unsupported(_))
+    ));
+}

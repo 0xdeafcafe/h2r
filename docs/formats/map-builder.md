@@ -199,6 +199,21 @@ region: every later block with the same key gets the first one's address
 and is not written again. The relocator keys every array this way so
 blocks the retail compiler shared stay shared.
 
+### Header template and low-detail bitmaps (unpinned sets)
+
+A set with no `PinnedImage` normally starts from a zero header. Two fields
+let it carry what a decomposed map would have pinned:
+
+- `header_template: Option<Vec<u8>>`: a whole `0x800`-byte header used for
+  the fields the builder doesn't own (any other length is an error). The
+  builder still writes its own fields over it. A pinned set ignores it.
+- `low_detail: Option<RawId>`: a raw resource holding the low-detail
+  bitmap region. The builder writes its file offset at `+0x158` and its
+  length at `+0x15c`.
+
+`h1convert::fresh` sets both from the base map
+(`a_header_template_and_low_detail_raw_reach_the_header` tests them).
+
 ### Adding tags to a pinned map
 
 `add_tag` on a set from `TagSet::from_map` works; the index grows at build

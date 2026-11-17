@@ -201,7 +201,7 @@ fn relocated<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
 ) -> Result<()> {
     let mut order = "reverse slot";
-    let (ids, bytes, layout) = match tags::schema::relocated_variant(map, true, false)
+    let (ids, bytes, layout) = match tags::schema::relocated_variant(map, true, true)
         .map_err(anyhow::Error::from)
         .and_then(|(set, ids)| Ok((ids, set.build()?)))
     {
@@ -209,7 +209,7 @@ fn relocated<R: std::io::Read + std::io::Seek>(
         Err(e) => {
             println!("reverse order failed ({e}); trying slot order");
             order = "slot";
-            let (set, ids) = tags::schema::relocated_variant(map, false, false)?;
+            let (set, ids) = tags::schema::relocated_variant(map, false, true)?;
             let (bytes, layout) = set
                 .build()
                 .context("building the relocated variant (this map is at the tag-memory bound)")?;

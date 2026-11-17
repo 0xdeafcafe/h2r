@@ -2441,6 +2441,7 @@ dependencies = [
  "h1bitmaps",
  "h1map",
  "h1models",
+ "h1sounds",
  "iced-x86",
  "map",
  "mopp",
