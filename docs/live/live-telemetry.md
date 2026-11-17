@@ -627,6 +627,35 @@ What is left on the game thread is reading the guest: the snapshot (about
 first touch of each object's body (the fixture spaces bodies 4 KiB apart;
 the game packs them).
 
+The fourth lane worked on the server and the web page. Server, before and
+after, both at a load average of 177 to 188, so read the numbers as
+directions, not measurements (the CPU-only `open+verify` step, whose code
+did not change, ran 3x faster in the after run):
+
+| stage | before | after |
+|---|---:|---:|
+| ingest, 64 games at 15 Hz | 1874 µs/frame (534/s) | 672 µs/frame (1489/s) |
+| ingest, one game flat out | 681 µs/frame | 343 µs/frame |
+| packed keyframe decode | 618 µs | 413 µs |
+| events, batch of 1 | 2150 µs/event | 1487 µs/event |
+| events, batch of 32 | 922 µs/event (29.5 ms/batch) | 621 µs/event (19.9 ms/batch) |
+| fan-out, packed, 1 / 10 / 100 readers | 64.7 / 18.6 / 11.5 µs/frame/reader | 29.7 / 12.8 / 11.9 |
+
+What changed: ingest takes a lock per game rather than one for all games,
+and the read model's write lock once a second, not every frame. A stream
+reader's token and batch timers are made once. The packed decoder reads a
+word at a time, moves unchanged entities out of the previous frame instead
+of cloning them, and sizes its lists up front. A batch's JWS is stored
+once (`batches`) rather than in each of its events' rows: a batch of 32
+writes about 15 KiB of JWS, not 490 KiB, and in memory its events share
+one copy.
+
+Web (`bun`, unloaded): decode 110 → 72 µs a frame (keyframe 232 → 159),
+push 7 µs either way, repaint 160 → 95 µs (vehicles 33 → 12, machines
+36 → 8, objects 43 → 26; actors 39 µs either way). Converted entities are
+cached on the decoded entity, and a frame's sampled lists are made once
+per frame and shared across repaints.
+
 ## Runtime validation needed first
 
 Unit tests use synthetic guest memory and do not execute the game. Before
