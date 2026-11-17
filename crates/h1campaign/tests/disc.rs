@@ -110,6 +110,85 @@ const OBJECT_GROUPS: [&[u8; 4]; 12] = [
     b"bloc", b"crea",
 ];
 
+/// Per group, the root block fields (`tags::schema` offsets) that hold at
+/// least one element on every retail tag of that group (groups with at
+/// least 20 tags: 05a's five skies all have a bitmap layer, but 21 of the
+/// disc's 91 have none). The engine indexes some such blocks without a count
+/// check (a30's second fault: `mode +0x34` section groups, read at
+/// `0x0013767a`), so a converted tag that leaves one empty is suspect.
+type Filled = std::collections::HashMap<FourCC, std::collections::BTreeSet<u32>>;
+
+fn map_memory(m: &mut Map<Cursor<Vec<u8>>>) -> tags::schema::Memory {
+    let space = m.metadata_space().unwrap();
+    let meta = m
+        .read_file_range(space.file_offset, u64::from(space.size))
+        .unwrap();
+    tags::schema::Memory::from_regions(
+        vec![(space.virtual_base, meta)],
+        vec![(space.virtual_base, space.virtual_base + space.size)],
+    )
+}
+
+fn root_blocks(st: &tags::schema::Struct) -> impl Iterator<Item = u32> + '_ {
+    st.fields
+        .iter()
+        .filter(|(_, f)| matches!(f, tags::schema::Field::Block(_)))
+        .map(|(at, _)| *at)
+}
+
+fn count_at(mem: &tags::schema::Memory, a: u32) -> u32 {
+    mem.slice(a, 4)
+        .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+}
+
+/// [`Filled`] from a retail map.
+fn filled_profile(m: &mut Map<Cursor<Vec<u8>>>) -> Filled {
+    let mem = map_memory(m);
+    let schema = tags::schema::Schema::builtin();
+    let mut seen: std::collections::HashMap<FourCC, (usize, std::collections::BTreeSet<u32>)> =
+        Default::default();
+    for t in m.tags() {
+        let (Some(loc), Some(st)) = (t.location, schema.groups.get(&t.group)) else {
+            continue;
+        };
+        let full: std::collections::BTreeSet<u32> = root_blocks(st)
+            .filter(|at| count_at(&mem, loc.address + at) > 0)
+            .collect();
+        let e = seen.entry(t.group).or_insert_with(|| (0, full.clone()));
+        e.0 += 1;
+        e.1 = e.1.intersection(&full).copied().collect();
+    }
+    seen.into_iter()
+        .filter(|(_, (n, s))| *n >= 20 && !s.is_empty())
+        .map(|(g, (_, s))| (g, s))
+        .collect()
+}
+
+/// Root blocks of the tag `id` that every retail tag of its group fills
+/// and this one leaves empty.
+fn empty_where_retail_fills(
+    m: &Map<Cursor<Vec<u8>>>,
+    mem: &tags::schema::Memory,
+    filled: &Filled,
+    id: TagId,
+) -> Vec<String> {
+    let Ok(t) = m.tag(id) else { return Vec::new() };
+    let (Some(loc), Some(want)) = (t.location, filled.get(&t.group)) else {
+        return Vec::new();
+    };
+    want.iter()
+        .filter(|at| count_at(mem, loc.address + **at) == 0)
+        .map(|at| {
+            format!(
+                "{} {}: block +{at:#x} is empty; every retail {} fills it",
+                t.group,
+                t.name.as_deref().unwrap_or("?"),
+                t.group
+            )
+        })
+        .collect()
+}
+
 /// The object sweep over a built map: from `roots` (palette entries and
 /// AI characters), every object, `hlmt` and `char` reachable through tag
 /// references is checked, and each reference it holds must name a tag of
@@ -118,12 +197,16 @@ const OBJECT_GROUPS: [&[u8; 4]; 12] = [
 /// rigid-body nodes: `object_new` sizes an object's node matrices by the
 /// `hlmt` count (at least one), and the model, graph and physics write one
 /// per their node (a30's first crash: converted `hlmt`s had none).
+/// Every tag reached, and every tag one of them names, is also checked
+/// against `filled` (root blocks retail always fills).
 /// Returns (tags checked, problems).
 fn object_sweep(
     m: &Map<Cursor<Vec<u8>>>,
     mem: &tags::schema::Memory,
     roots: &[TagId],
+    filled: &Filled,
 ) -> (usize, Vec<String>) {
+    let mut shape_checked = std::collections::HashSet::new();
     let schema = tags::schema::Schema::builtin();
     let word = |a: u32| {
         mem.slice(a, 4)
@@ -141,7 +224,7 @@ fn object_sweep(
     };
     let unloaded = |g: FourCC| g == FourCC(*b"sbsp") || g == FourCC(*b"ltmp");
     let follow = |g: FourCC| {
-        OBJECT_GROUPS.iter().any(|o| g.0 == **o) || g == FourCC(*b"hlmt") || g == FourCC(*b"char")
+        OBJECT_GROUPS.iter().any(|o| g.0 == **o) || [*b"hlmt", *b"char", *b"sky "].contains(&g.0)
     };
     let mut queue: Vec<TagId> = roots
         .iter()
@@ -166,11 +249,17 @@ fn object_sweep(
         let Some(st) = schema.groups.get(&t.group) else {
             continue;
         };
+        if shape_checked.insert(id) {
+            bad.extend(empty_where_retail_fills(m, mem, filled, id));
+        }
         let mut refs = Vec::new();
         tag_refs(st, loc.address, 1, mem, &mut refs, 0);
         for (at, g, r) in refs {
             if r == TagId::NULL || g.0 == [0xff; 4] {
                 continue;
+            }
+            if shape_checked.insert(r) {
+                bad.extend(empty_where_retail_fills(m, mem, filled, r));
             }
             match m.tag(r) {
                 Err(_) => bad.push(format!(
@@ -240,25 +329,53 @@ fn palette_roots(bytes: &[u8], addr: u32, mem: &tags::schema::Memory) -> Vec<Tag
     out
 }
 
-/// The sweep over a whole map: its scenario's palettes and AI characters.
-fn sweep_map(m: &mut Map<Cursor<Vec<u8>>>) -> (usize, Vec<String>) {
+/// The sweep over a whole map: its scenario's palettes, skies and AI characters,
+/// checked against `filled` (from the retail base).
+fn sweep_map(m: &mut Map<Cursor<Vec<u8>>>, filled: &Filled) -> (usize, Vec<String>) {
     let scnr = m.scenario().unwrap().clone();
     let addr = scnr.location.unwrap().address;
-    let space = m.metadata_space().unwrap();
-    let meta = m
-        .read_file_range(space.file_offset, u64::from(space.size))
-        .unwrap();
-    let mem = tags::schema::Memory::from_regions(
-        vec![(space.virtual_base, meta)],
-        vec![(space.virtual_base, space.virtual_base + space.size)],
-    );
+    let mem = map_memory(m);
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let mut roots = palette_roots(&bytes, addr, &mem);
+    // The skies (`scnr +0x8`, a reference each): their models are converted too.
+    let skies = count_at(&mem, addr + 8);
+    let at = count_at(&mem, addr + 0xc);
+    roots.extend((0..skies).map(|i| TagId(count_at(&mem, at + 8 * i + 4))));
     let view = tags::geometry::TagView::new(&bytes, addr);
     if let Ok(ai) = h1ai::h2::ScenarioAi::read(&view) {
         roots.extend(ai.character_palette.iter().copied());
     }
-    object_sweep(m, &mem, &roots)
+    object_sweep(m, &mem, &roots, filled)
+}
+
+/// Placement scales (`+0x20`, f32) of the weapons, equipment and vehicles
+/// placed, by bit pattern: (zeros, ones, others). Zero is retail's usual
+/// value (05a: 528 of 634 placements, all types), so a converted zero
+/// is not a defect.
+fn placement_scales(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<(&'static str, [usize; 3])> {
+    let scnr = m.scenario().unwrap().clone();
+    let mem = map_memory(m);
+    let root = scnr.location.unwrap().address;
+    let mut out = Vec::new();
+    for ty in tags::object::OBJECT_TYPES {
+        let Some((at, _, stride)) = ty.placement else {
+            continue;
+        };
+        let n = count_at(&mem, root + u32::from(at));
+        let a = count_at(&mem, root + u32::from(at) + 4);
+        let mut c = [0; 3];
+        for i in 0..n {
+            c[match count_at(&mem, a + i * u32::from(stride) + 0x20) {
+                0 => 0,
+                0x3f80_0000 => 1,
+                _ => 2,
+            }] += 1;
+        }
+        if n > 0 {
+            out.push((ty.group, c));
+        }
+    }
+    out
 }
 
 /// The sweep finds nothing on the base level as shipped, so a problem it
@@ -269,13 +386,22 @@ fn sweep_map(m: &mut Map<Cursor<Vec<u8>>>) -> (usize, Vec<String>) {
 #[ignore = "reads disc/halo2.iso"]
 fn object_sweep_is_clean_on_the_retail_base() {
     let mut base = h2_map(h1campaign::BASE);
-    let (n, bad) = sweep_map(&mut base);
+    let filled = filled_profile(&mut base);
+    let (n, bad) = sweep_map(&mut base, &filled);
     println!("{}: {n} tags swept", h1campaign::BASE);
+    println!(
+        "placement scales (0, 1, other): {:?}",
+        placement_scales(&mut base)
+    );
     assert!(bad.is_empty(), "{bad:#?}");
     if let Ok(path) = std::env::var("H1_SWEEP_MAP") {
         let mut m = Map::from_reader(Cursor::new(std::fs::read(&path).unwrap())).unwrap();
-        let (n, bad) = sweep_map(&mut m);
+        let (n, bad) = sweep_map(&mut m, &filled);
         println!("{path}: {n} tags swept, {} problems", bad.len());
+        println!(
+            "placement scales (0, 1, other): {:?}",
+            placement_scales(&mut m)
+        );
         assert!(bad.is_empty(), "{bad:#?}");
     }
 }
@@ -307,6 +433,7 @@ fn h1_trigger_volumes_read() {
 fn a30_converts_onto_its_base_and_reads_back() {
     let h1 = h1_level("a30");
     let mut base = h2_map(h1campaign::BASE);
+    let filled = filled_profile(&mut base);
     let layers = std::env::var("H1_LAYERS").unwrap_or_else(|_| "objects,ai,scripts".into());
     let s = layers.contains("scripts").then(scripting);
     let opts = Options {
@@ -476,7 +603,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     // The object sweep: every object, model and character the scenario
     // names resolves, with data, and every hlmt covers its model's nodes.
     if opts.objects {
-        let (n, bad) = sweep_map(&mut m);
+        let (n, bad) = sweep_map(&mut m, &filled);
         println!("object sweep: {n} tags");
         assert!(bad.is_empty(), "{bad:#?}");
     }

@@ -207,8 +207,13 @@ section:
 | Marker groups (`58`, `0xc`) | one per Halo 1 marker name: name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: all 922 lockout markers sit in named groups at `58`, with a node in range and a unit rotation; `20` is 0 on 842 and nonzero on 80 (likely a scale; meaning not established) |
 | Materials (`60`, `0x20`) | first reference null, second the caller's `shad` for that shader index, or null | map-format.md |
 | Header `44` | Halo 1 node list checksum | S |
+| Section groups (`34`, `0xc`) | one: detail levels `0x3f` (all six) at `00`, compound nodes (`04` block) empty; the LOD bytes at `3c`..`41` stay 0, naming it | V: all 181 of 05a's `mode`s have exactly this. E: `0x00137650` reads `groups[byte[3c + lod]]`'s `+4` (compound node count) with no count check and adds the node count; an empty block faulted at `0x0013767a` (a30's second crash) |
 
-Left empty: section groups (`34`), the LOD section-group bytes, the node
+Header flags (`04`): left 0. Retail sets `0x8` on all and `0x4` on 167
+of 181 (not the first-person models); with `0x4` set, `0x00137650`
+skips the section group and counts one. Meaning not established.
+
+Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
 blocks the decoder does not interpret (`10`, `28`, `30`, `44`, `54`, `5c`).
 
@@ -348,8 +353,8 @@ The rotation error is the i16 re-quantisation of normalised quaternions.
 
 ## Needs a game run
 
-- Whether the engine draws a model whose section groups, PRT and other
-  unread header blocks are empty, and whether it needs the section blocks
+- Whether the engine draws a model whose PRT and other
+  unread header blocks are empty, with header flags 0, and whether it needs the section blocks
   the decoder skips.
 - Part kinds 2 and 4 for opaque and transparent, the part fields from
   `0e`, and the section record's `24`..`2c`.

@@ -63,6 +63,34 @@ fn hlmt_nodes_match_the_render_model() {
     assert_eq!(names(&nodes, n), names(mode_nodes, 0x60));
 }
 
+/// Every converted model has the one section group retail models have:
+/// the engine indexes `mode +0x34` by the detail level's byte at `+0x3c`
+/// with no count check (a30's second fault, on an empty block).
+#[test]
+fn converted_models_have_one_section_group() {
+    use map::build::FixupKind;
+    let (img, at) = synthetic_model();
+    let m = h1::Model::read(&img, at).unwrap();
+    let out = convert_model(&m, "thing", &ModelOptions::default()).unwrap();
+    let (count, child) = out
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            FixupKind::Block { count, child }
+                if f.offset as usize == crate::mode::SECTION_GROUPS =>
+            {
+                Some((*count, child))
+            }
+            _ => None,
+        })
+        .expect("section groups");
+    assert_eq!(count, 1);
+    assert_eq!(child.bytes, [0x3f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert!(child.fixups.is_empty());
+    assert_eq!(&out.root.bytes[0x3c..0x42], [0; 6]);
+}
+
 fn build(tags: Vec<(Converted, &str)>) -> (Vec<u8>, Vec<TagId>) {
     let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
     let ids = tags

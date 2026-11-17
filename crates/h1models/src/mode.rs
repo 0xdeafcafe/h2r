@@ -193,6 +193,7 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
     h.block(0x14, 1, compression);
     h.block(0x1c, regions.len() as u32, array(regions, REGION_LEN));
     h.block(0x24, sections.len() as u32, array(sections, SECTION_LEN));
+    h.block(SECTION_GROUPS as u32, 1, section_group());
     h.put_u32(0x44, model.node_list_checksum);
     h.block(0x48, nodes.len() as u32, array(nodes, NODE_LEN));
     h.block(0x58, groups.len() as u32, array(groups, MARKER_GROUP_LEN));
@@ -202,6 +203,24 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
         root: h,
         raw,
     })
+}
+
+/// `mode +0x34`: section groups (`0xc` each); `+0x3c..+0x42` holds one
+/// group index per detail level (zero: the first group).
+pub const SECTION_GROUPS: usize = 0x34;
+
+/// The one section group every converted model gets: all six detail
+/// levels (`+0` `0x3f`), no compound nodes (`+4` block, empty).
+///
+/// **E** (`0x00137650`): the engine counts a model's node maps as the
+/// compound nodes of `groups[lod_index[lod]]` plus the node count, with no
+/// check on the group count; with none it read a null block (a30's second
+/// fault, `0x0013767a`, on the converted ammo pack). **V** (05a, 181
+/// retail `mode`s): every one has exactly this one group and zero indices.
+fn section_group() -> Block {
+    let mut g = Block::zeroed(0xc);
+    g.put_u16(0, 0x3f);
+    g
 }
 
 /// Default-pose node blocks, with the inverse of each node's model-space
