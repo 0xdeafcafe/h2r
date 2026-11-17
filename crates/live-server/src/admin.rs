@@ -845,7 +845,7 @@ mod tests {
                 position: self.position,
                 version: 0,
                 hash: String::new(),
-                jws: body.sign(&self.key),
+                jws: body.sign(&self.key).into(),
                 jws_index: None,
                 body,
             }

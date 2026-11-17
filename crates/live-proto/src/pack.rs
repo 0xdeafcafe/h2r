@@ -146,6 +146,17 @@ impl<'a> BitReader<'a> {
         if self.pos + n as usize > self.bytes.len() * 8 {
             return Err(PackError::Short);
         }
+        // Up to 56 bits lie in the eight bytes from the first one: one
+        // little-endian word, shifted (when there are eight to read).
+        let at = self.pos / 8;
+        if n <= 56
+            && let Some(word) = self.bytes.get(at..at + 8)
+        {
+            let word = u64::from_le_bytes(word.try_into().expect("eight bytes"));
+            let v = (word >> (self.pos % 8)) & ((1u64 << n) - 1);
+            self.pos += n as usize;
+            return Ok(v);
+        }
         let mut v = 0u64;
         let mut got = 0;
         while got < n {
@@ -848,8 +859,13 @@ fn frame_of(
     lists: &[Vec<Entity>; 5],
     hits: &[Entity],
 ) -> Result<Frame> {
+    // Sized up front: collecting through `Result` would grow it by doubling.
     fn map<T>(l: &[Entity], f: fn(&Entity) -> Result<T>) -> Result<Vec<T>> {
-        l.iter().map(f).collect()
+        let mut out = Vec::with_capacity(l.len());
+        for e in l {
+            out.push(f(e)?);
+        }
+        Ok(out)
     }
     Ok(Frame {
         game_id: game_id.to_owned(),
@@ -1155,15 +1171,21 @@ fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Ent
     }
 }
 
+/// Reads a delta list against `prev`, the frame before's, which it takes
+/// apart: an unchanged entity (a run) is moved, not copied. A changed one
+/// is copied from where its original is now (it may be referred to again).
 fn read_delta(
     r: &mut BitReader,
     schema: &[Field],
     max: usize,
-    prev: &[Entity],
+    prev: &mut [Entity],
     strings: &[String],
 ) -> Result<Vec<Entity>> {
+    const HERE: usize = usize::MAX;
     let n = read_count(r, max)?;
-    let mut out = Vec::with_capacity(n);
+    let mut out: Vec<Entity> = Vec::with_capacity(n);
+    // Where each of `prev` was moved to in `out` (HERE: not moved).
+    let mut moved: Vec<usize> = Vec::new();
     let mut cursor = 0usize;
     while out.len() < n {
         if !r.bit()? {
@@ -1171,23 +1193,35 @@ fn read_delta(
             if out.len() + run > n || cursor + run > prev.len() {
                 return Err(PackError::Bad("run past the list"));
             }
-            out.extend_from_slice(&prev[cursor..cursor + run]);
+            if moved.is_empty() {
+                moved.resize(prev.len(), HERE);
+            }
+            for (k, e) in prev[cursor..cursor + run].iter_mut().enumerate() {
+                moved[cursor + k] = out.len();
+                out.push(std::mem::take(e));
+            }
             cursor += run;
             continue;
         }
         if r.bit()? {
             let j = cursor as i64 + r.seg(0)?;
-            let before = usize::try_from(j)
+            let j = usize::try_from(j)
                 .ok()
-                .and_then(|j| prev.get(j).map(|e| (j, e)));
-            let (j, before) = before.ok_or(PackError::Bad("entity refers past the list"))?;
-            let mask: Vec<bool> = schema
-                .iter()
-                .map(|f| if f.key { Ok(false) } else { r.bit() })
-                .collect::<Result<_>>()?;
+                .filter(|j| *j < prev.len())
+                .ok_or(PackError::Bad("entity refers past the list"))?;
+            let before = match moved.get(j) {
+                Some(&at) if at != HERE => &out[at],
+                _ => &prev[j],
+            };
+            let mut mask = 0u32;
+            for (idx, f) in schema.iter().enumerate() {
+                if !f.key && r.bit()? {
+                    mask |= 1 << idx;
+                }
+            }
             let mut e = before.clone();
             for (idx, field) in schema.iter().enumerate() {
-                if mask[idx] {
+                if mask & (1 << idx) != 0 {
                     e[idx] = read_field(r, *field, Some(&before[idx]), strings)?;
                 }
             }
@@ -1380,20 +1414,23 @@ impl Decoder {
         let key = r.bit()?;
         let sid = r.eg(0)?;
         let seq = r.eg(8)?;
-        let empty = StreamState::default();
-        let prev = if key {
-            &empty
+        // A delta takes the stream's state apart (it is replaced either
+        // way; after a frame that does not decode, the next delta is a gap).
+        let mut prev = if key {
+            StreamState::default()
         } else {
             match self.streams.get(&sid) {
                 // A delta is against a frame of its own version.
-                Some(s) if s.seq.checked_add(1) == Some(seq) && s.version == version => s,
+                Some(s) if s.seq.checked_add(1) == Some(seq) && s.version == version => {
+                    self.streams.remove(&sid).expect("there")
+                }
                 _ => return Err(PackError::Gap { sid, seq }),
             }
         };
         let mut state = StreamState {
             seq,
             version,
-            strings: prev.strings.clone(),
+            strings: std::mem::take(&mut prev.strings),
             ..StreamState::default()
         };
         if key {
@@ -1401,7 +1438,7 @@ impl Decoder {
             state.tick = r.eg(20)?;
             state.bsp = if r.bit()? { Some(r.eg(1)?) } else { None };
         } else {
-            state.game_id = prev.game_id.clone();
+            state.game_id = std::mem::take(&mut prev.game_id);
             state.tick = prev
                 .tick
                 .checked_add(r.eg(2)?)
@@ -1426,7 +1463,7 @@ impl Decoder {
             state.lists[n] = if key {
                 read_full(&mut r, schema, *max, &state.strings)?
             } else {
-                read_delta(&mut r, schema, *max, &prev.lists[n], &state.strings)?
+                read_delta(&mut r, schema, *max, &mut prev.lists[n], &state.strings)?
             };
         }
         let frame = frame_of(&state.game_id, state.tick, state.bsp, &state.lists, &hits)?;

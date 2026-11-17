@@ -403,7 +403,7 @@ async fn old_accounts_set_up_recovery_and_a_restart_keeps_secrets() {
                 time::OffsetDateTime::now_utc(),
             );
             live_server::store::NewEvent {
-                jws: body.sign(&h.operator),
+                jws: body.sign(&h.operator).into(),
                 jws_index: None,
                 body,
             }

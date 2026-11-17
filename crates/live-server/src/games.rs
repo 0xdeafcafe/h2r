@@ -31,10 +31,12 @@ pub const FRAMES_PAGE: usize = 600;
 /// at 15 Hz): what a reader that joins or falls behind waits for at most.
 const STREAM_KEYFRAME_EVERY: u64 = 15;
 
-/// Per-game frame bookkeeping for the ingest path.
+/// Per-game frame bookkeeping for the ingest path. The map's lock is held
+/// only to find a game's clock; each game's frames are packed under its
+/// own lock, so games ingest side by side.
 #[derive(Default)]
 pub struct IngestState {
-    games: Mutex<HashMap<String, FrameClock>>,
+    games: Mutex<HashMap<String, Arc<Mutex<FrameClock>>>>,
     /// The next packed stream id (one per game while it sends frames).
     next_sid: std::sync::atomic::AtomicU64,
 }
@@ -69,6 +71,22 @@ impl LiveFrame {
                 serde_json::to_string(&message).expect("serializes").into()
             })
             .clone()
+    }
+}
+
+impl IngestState {
+    /// Game `id`'s clock, made (with the next stream id) on its first frame.
+    fn clock(&self, id: &str) -> Arc<Mutex<FrameClock>> {
+        let mut games = self.games.lock().unwrap();
+        if let Some(clock) = games.get(id) {
+            return Arc::clone(clock);
+        }
+        let sid = self
+            .next_sid
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let clock = Arc::new(Mutex::new(FrameClock::new(Instant::now(), sid)));
+        games.insert(id.to_owned(), Arc::clone(&clock));
+        clock
     }
 }
 
@@ -397,11 +415,13 @@ impl Live {
                 return Err(conflict("nonce already used"));
             }
         }
+        // The batch's events share its JWS (one copy, not one an event).
+        let jws: Arc<str> = jws.into();
         let events = bodies
             .into_iter()
             .enumerate()
             .map(|(i, body)| NewEvent {
-                jws: jws.to_string(),
+                jws: Arc::clone(&jws),
                 jws_index: Some(i),
                 body,
             })
@@ -428,24 +448,19 @@ impl Live {
         game::normalize_frame(&mut frame);
         let now_s = now();
         self.model.touch_game(&frame.game_id, now_s);
-        let (record, live) = {
-            let mut games = self.ingest.games.lock().unwrap();
+        let clock = self.ingest.clock(&frame.game_id);
+        let record = {
+            let mut clock = clock.lock().unwrap();
             let now = Instant::now();
-            let clock = games.entry(frame.game_id.clone()).or_insert_with(|| {
-                let sid = self
-                    .ingest
-                    .next_sid
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                FrameClock::new(now, sid)
-            });
             let record = match clock.admit(&mut frame, now, now_s) {
                 None => return Ok(FrameOutcome::Throttled),
                 Some(record) => record,
             };
-            (record, clock.publish(frame))
+            // Sent under the game's lock: its frames go out in order.
+            let _ = self.frames.send(clock.publish(frame));
+            record
         };
         let recorded = record.is_some();
-        let _ = self.frames.send(live);
         if let Some(frame) = record {
             let data = recorded_data(&frame, author);
             let event = self.server_event(game::stream(&frame.game_id), game::GAME_FRAME, data);
@@ -462,10 +477,16 @@ impl Live {
     /// or those in `games`): what a packed reader that joins or fell
     /// behind is sent first.
     pub fn frames_since_keyframe(&self, games: &[String]) -> Vec<Arc<LiveFrame>> {
-        let all = self.ingest.games.lock().unwrap();
-        all.iter()
-            .filter(|(id, _)| games.is_empty() || games.contains(id))
-            .flat_map(|(_, clock)| clock.since_key.iter().cloned())
+        let clocks: Vec<_> = {
+            let all = self.ingest.games.lock().unwrap();
+            all.iter()
+                .filter(|(id, _)| games.is_empty() || games.contains(id))
+                .map(|(_, clock)| Arc::clone(clock))
+                .collect()
+        };
+        clocks
+            .iter()
+            .flat_map(|clock| clock.lock().unwrap().since_key.clone())
             .collect()
     }
 

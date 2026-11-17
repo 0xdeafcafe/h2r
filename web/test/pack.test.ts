@@ -75,6 +75,41 @@ describe("packed frames", () => {
     }
   });
 
+  test("a delta shares the frame objects of entities it did not change", () => {
+    const { bin, json } = load("campaign");
+    const d = new FrameDecoder();
+    const frames = records(bin).map((r) => d.decode(r).frame);
+    let shared = 0, fresh = 0;
+    for (let i = 1; i < frames.length; i++) {
+      if (records(bin)[i]![0]! & 0x10) continue; // a keyframe makes all anew
+      const before = new Set<unknown>(frames[i - 1]!.actors ?? []);
+      for (const a of frames[i]!.actors ?? []) before.has(a) ? shared++ : fresh++;
+    }
+    expect(shared).toBeGreaterThan(0);
+    expect(fresh).toBeGreaterThan(0);
+    // Sharing changes nothing.
+    expect(frames).toEqual(json);
+  });
+
+  test("bit reader codes, every width at every bit offset", () => {
+    const bytes = new Uint8Array(16).map((_, i) => (i * 0x9d + 0x35) & 0xff);
+    const at = (pos: number, n: number) => {
+      let v = 0;
+      for (let k = 0; k < n; k++) v += ((bytes[(pos + k) >> 3]! >> ((pos + k) & 7)) & 1) * 2 ** k;
+      return v;
+    };
+    for (let n = 0; n <= 32; n++) {
+      for (let pos = 0; pos + n <= bytes.length * 8; pos += 3) {
+        const r = new BitReader(bytes);
+        if (pos) r.bits(pos % 24), pos % 24 === pos || r.bits(pos - (pos % 24));
+        expect(r.bits(n)).toBe(at(pos, n));
+      }
+    }
+    const r = new BitReader(bytes);
+    r.bits(24);
+    expect(() => r.bits(24 * 4 + 9)).toThrow(PackError);
+  });
+
   test("bit reader codes", () => {
     // 0b1 (eg k0 = 0), then 0b010 = eg k0 of 1 read LSB first: bits 1,0,1,0 ...
     const r = new BitReader(new Uint8Array([0b00001011, 0xff]));

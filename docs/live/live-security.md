@@ -104,7 +104,10 @@ Exact rules:
   empty for the stream's first event.
 - **Batches.** A batch is one JWS whose payload is a JSON array of event
   bodies. Each stored event keeps the batch `jws` plus `jws_index`, its
-  element in that array; its hash uses the batch JWS string.
+  element in that array; its hash uses the batch JWS string. (The
+  databases store the batch JWS once, in `batches`, and its events' rows
+  name it; a read gives each event the whole JWS back, so nothing a
+  verifier sees changes.)
 - **Time.** The body's `at` is the author's clock; the wire `at` is the same
   value, copied. The server's append time is not part of the event.
 

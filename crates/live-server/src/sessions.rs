@@ -211,10 +211,12 @@ impl Live {
         if changed.is_empty() {
             return Ok(self.position());
         }
+        // The batch's events share its JWS.
+        let jws: std::sync::Arc<str> = jws.into();
         let events = changed
             .into_iter()
             .map(|i| NewEvent {
-                jws: jws.into(),
+                jws: std::sync::Arc::clone(&jws),
                 jws_index: Some(i),
                 body: bodies[i].clone(),
             })

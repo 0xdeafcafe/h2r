@@ -6,21 +6,26 @@
 //! for tests. [`crate::copy`] moves a log between them.
 //!
 //! The store keeps each author's JWS untouched; everything a reader needs
-//! is decoded from it, so the other columns are only indexes.
+//! is decoded from it, so the other columns are only indexes. A batch JWS
+//! (one signature over many events) is kept once, not once an event: in
+//! memory its events share it ([`Arc`]); the databases store it in
+//! `batches` under [`batch_key`] and its events' rows name it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use live_proto::WireEvent;
 use live_proto::sign::{EventBody, SignError, SignedEvent, chain_hash};
+use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 /// An event ready to append: its JWS (already verified, or signed by the
 /// server), which element of a batch JWS it is, and the body it signs.
+/// A batch's events share one JWS.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewEvent {
-    pub jws: String,
+    pub jws: Arc<str>,
     pub jws_index: Option<usize>,
     pub body: EventBody,
 }
@@ -28,7 +33,8 @@ pub struct NewEvent {
 impl NewEvent {
     /// Decodes a stored event's body from its JWS, without verifying (the
     /// server verified it on the way in).
-    pub fn decode(jws: String, jws_index: Option<usize>) -> Result<Self, SignError> {
+    pub fn decode(jws: impl Into<Arc<str>>, jws_index: Option<usize>) -> Result<Self, SignError> {
+        let jws = jws.into();
         let body = SignedEvent::body_at(&jws, jws_index)?;
         Ok(NewEvent {
             jws,
@@ -41,36 +47,71 @@ impl NewEvent {
 /// Opens stored events' JWS for their bodies, as [`NewEvent::decode`]
 /// does, keeping the last batch it opened: a batch's events are adjacent
 /// rows with the same JWS, so a page of them opens (base64 and JSON) the
-/// batch once, not once a row.
+/// batch once, not once a row, and shares one copy of its JWS.
 #[derive(Default)]
 pub(crate) struct BatchDecoder {
-    batch: Option<(String, Vec<EventBody>)>,
+    batch: Option<(Arc<str>, Vec<EventBody>)>,
 }
 
 impl BatchDecoder {
     pub(crate) fn decode(
         &mut self,
-        jws: String,
+        jws: &str,
         jws_index: Option<usize>,
     ) -> Result<NewEvent, SignError> {
         let Some(i) = jws_index else {
             return NewEvent::decode(jws, None);
         };
-        if self.batch.as_ref().is_none_or(|(open, _)| *open != jws) {
+        if self.batch.as_ref().is_none_or(|(open, _)| **open != *jws) {
             self.batch = None;
-            let bodies = SignedEvent::open_batch(&jws)?.1;
-            self.batch = Some((jws.clone(), bodies));
+            let bodies = SignedEvent::open_batch(jws)?.1;
+            self.batch = Some((jws.into(), bodies));
         }
-        let (_, bodies) = self.batch.as_ref().expect("opened above");
+        let (jws, bodies) = self.batch.as_ref().expect("opened above");
         let body = bodies
             .get(i)
             .cloned()
             .ok_or(SignError::Malformed("jws_index out of range"))?;
         Ok(NewEvent {
-            jws,
+            jws: Arc::clone(jws),
             jws_index,
             body,
         })
+    }
+}
+
+/// The key a batch JWS is stored under in the databases' `batches` table:
+/// hex(sha256(jws)).
+pub(crate) fn batch_key(jws: &str) -> String {
+    format!("{:x}", Sha256::digest(jws.as_bytes()))
+}
+
+/// Which `batches` row each event of an append (or import) names, and
+/// whether that row still has to be written: once a batch, however many
+/// events it has.
+#[derive(Default)]
+pub(crate) struct BatchRows {
+    last: Option<(Arc<str>, String)>,
+}
+
+impl BatchRows {
+    /// For an event about to be stored: `None` if it is a single event
+    /// (its row keeps its own JWS), else its batch's key and whether this
+    /// is the first of the batch's events here (so the batch row is due).
+    pub(crate) fn key(
+        &mut self,
+        jws: &Arc<str>,
+        jws_index: Option<usize>,
+    ) -> Option<(String, bool)> {
+        jws_index?;
+        if let Some((last, key)) = &self.last
+            && last == jws
+        {
+            return Some((key.clone(), false));
+        }
+        let key = batch_key(jws);
+        self.last = Some((Arc::clone(jws), key.clone()));
+        Some((key, true))
     }
 }
 
@@ -80,7 +121,7 @@ pub struct RecordedEvent {
     pub position: u64,
     pub version: u64,
     pub hash: String,
-    pub jws: String,
+    pub jws: Arc<str>,
     pub jws_index: Option<usize>,
     pub body: EventBody,
 }
@@ -97,7 +138,7 @@ impl RecordedEvent {
             data: b.data.clone(),
             author: b.author.clone(),
             kid: b.kid.clone(),
-            jws: self.jws.clone(),
+            jws: self.jws.to_string(),
             jws_index: self.jws_index,
             hash: self.hash.clone(),
         }
@@ -477,9 +518,83 @@ pub(crate) mod conformance {
             time::OffsetDateTime::now_utc(),
         );
         NewEvent {
-            jws: body.sign(key),
+            jws: body.sign(key).into(),
             jws_index: None,
             body,
+        }
+    }
+
+    /// A batch JWS of `n` events on `stream`, and their bodies.
+    pub fn batch(key: &KeyPair, stream: &str, n: u64) -> (Arc<str>, Vec<EventBody>) {
+        let bodies: Vec<EventBody> = (0..n).map(|i| event(key, stream, 100 + i).body).collect();
+        (live_proto::sign::sign_batch(key, &bodies).into(), bodies)
+    }
+
+    /// A log as a server before `batches` wrote it, every row with its own
+    /// JWS: a single event, then a batch of three on `stream`, chained.
+    pub fn legacy_log(key: &KeyPair, stream: &str) -> Vec<RecordedEvent> {
+        let (jws, bodies) = batch(key, stream, 3);
+        let mut rows: Vec<NewEvent> = vec![event(key, stream, 1)];
+        rows.extend(bodies.into_iter().enumerate().map(|(i, body)| NewEvent {
+            jws: Arc::clone(&jws),
+            jws_index: Some(i),
+            body,
+        }));
+        let mut prev: Option<String> = None;
+        rows.into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let hash = chain_hash(prev.as_deref(), &e.jws);
+                prev = Some(hash.clone());
+                RecordedEvent {
+                    position: i as u64 + 1,
+                    version: i as u64,
+                    hash,
+                    jws: e.jws,
+                    jws_index: e.jws_index,
+                    body: e.body,
+                }
+            })
+            .collect()
+    }
+
+    /// `store` was opened on [`legacy_log`]'s rows, written the old way:
+    /// they read back unchanged (their chain verifies), and the stream
+    /// carries on with a batch stored the new way.
+    pub async fn upgraded(store: &dyn EventStore, key: &KeyPair, legacy: &[RecordedEvent]) {
+        let stream = legacy[0].body.stream.clone();
+        let q = Query {
+            stream: Some(stream.clone()),
+            ..Query::after(0, 100)
+        };
+        let old = store.read(&q).await.unwrap();
+        assert_eq!(old, legacy);
+        let mut prev: Option<String> = None;
+        for e in &old {
+            assert_eq!(e.hash, chain_hash(prev.as_deref(), &e.jws));
+            prev = Some(e.hash.clone());
+        }
+        let (jws, bodies) = batch(key, &stream, 2);
+        let next = store
+            .append(
+                bodies
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, body)| NewEvent {
+                        jws: Arc::clone(&jws),
+                        jws_index: Some(i),
+                        body,
+                    })
+                    .collect(),
+                &[(stream, legacy.len() as u64)],
+            )
+            .await
+            .unwrap();
+        let all = store.read(&q).await.unwrap();
+        assert_eq!(all[..legacy.len()], *legacy);
+        assert_eq!(all[legacy.len()..], next);
+        for w in all.windows(2) {
+            assert_eq!(w[1].hash, chain_hash(Some(&w[0].hash), &w[1].jws));
         }
     }
 
@@ -581,6 +696,47 @@ pub(crate) mod conformance {
         };
         assert!(store.read(&excluded).await.unwrap().is_empty());
 
+        // A batch's events (one JWS) read back whole, each with its own
+        // body and a chain link over the batch's JWS, around a single
+        // event and across two appends of the same batch's events.
+        let c = format!("{prefix}-c");
+        let batch = batch(&key, &c, 3);
+        let at = |i: usize| NewEvent {
+            jws: Arc::clone(&batch.0),
+            jws_index: Some(i),
+            body: batch.1[i].clone(),
+        };
+        let mut written = store
+            .append(vec![at(0), event(&key, &c, 7), at(1)], &[(c.clone(), 0)])
+            .await
+            .unwrap();
+        written.extend(store.append(vec![at(2)], &[]).await.unwrap());
+        let read = store
+            .read(&Query {
+                stream: Some(c.clone()),
+                ..Query::after(base, 100)
+            })
+            .await
+            .unwrap();
+        assert_eq!(read, written);
+        assert_eq!(
+            read.iter().map(|e| e.jws_index).collect::<Vec<_>>(),
+            [Some(0), None, Some(1), Some(2)]
+        );
+        let mut prev: Option<String> = None;
+        for e in &read {
+            assert_eq!(e.hash, chain_hash(prev.as_deref(), &e.jws));
+            assert_eq!(
+                NewEvent::decode(Arc::clone(&e.jws), e.jws_index)
+                    .unwrap()
+                    .body,
+                e.body
+            );
+            prev = Some(e.hash.clone());
+        }
+        assert_eq!(*read[0].jws, *batch.0);
+        assert_eq!(*read[3].jws, *batch.0);
+
         // Blobs and checkpoints.
         let sha = format!("{prefix}-sha");
         assert_eq!(store.blob(&sha).await.unwrap(), None);
@@ -627,7 +783,7 @@ mod tests {
         };
         let one = live_proto::sign::sign_batch(&key, &bodies(1));
         let two = live_proto::sign::sign_batch(&key, &bodies(2));
-        let single = conformance::event(&key, "s", 99).jws;
+        let single = conformance::event(&key, "s", 99).jws.to_string();
         // Rows as a page holds them: a batch, a single event, the batch
         // again (not adjacent), another batch.
         let rows = [
@@ -641,8 +797,8 @@ mod tests {
         let mut batches = BatchDecoder::default();
         for (jws, index) in rows {
             let expected = NewEvent::decode(jws.clone(), index).unwrap();
-            assert_eq!(batches.decode(jws, index).unwrap(), expected);
+            assert_eq!(batches.decode(&jws, index).unwrap(), expected);
         }
-        assert!(batches.decode(one, Some(3)).is_err(), "out of range");
+        assert!(batches.decode(&one, Some(3)).is_err(), "out of range");
     }
 }

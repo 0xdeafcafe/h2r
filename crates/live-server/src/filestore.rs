@@ -4,6 +4,8 @@
 //!
 //! ```text
 //! <dir>/events.jsonl      one line per append: {"events":[{"jws","jws_index"}..]}
+//!                         (a batch's JWS once: its later events on the
+//!                         line leave `jws` out)
 //! <dir>/blobs/<sha256>    title-file bytes, content-addressed
 //! <dir>/checkpoints.json  {"name": position}
 //! <dir>/lock              held exclusively while the store is open
@@ -24,7 +26,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{
+    BatchDecoder, EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, Wake,
+};
 
 #[derive(Serialize, Deserialize)]
 struct Line {
@@ -33,6 +37,9 @@ struct Line {
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
+    /// Left out (empty) for an element of the batch the event before it
+    /// on the line is in. Lines from before that always have it.
+    #[serde(default, skip_serializing_if = "str::is_empty")]
     jws: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     jws_index: Option<usize>,
@@ -98,10 +105,24 @@ impl FileStore {
                 position: head + 1,
                 reason: format!("{}: {e}", dir.join("events.jsonl").display()),
             })?;
-            let mut events = Vec::with_capacity(parsed.events.len());
+            let mut events: Vec<NewEvent> = Vec::with_capacity(parsed.events.len());
+            let mut batches = BatchDecoder::default();
             for s in parsed.events {
                 let position = head + events.len() as u64 + 1;
-                events.push(NewEvent::decode(s.jws, s.jws_index).map_err(|e| {
+                let jws: std::sync::Arc<str> = match (s.jws.is_empty(), events.last()) {
+                    (false, _) => s.jws.into(),
+                    // The same batch as the event before.
+                    (true, Some(prev)) if s.jws_index.is_some() && prev.jws_index.is_some() => {
+                        std::sync::Arc::clone(&prev.jws)
+                    }
+                    _ => {
+                        return Err(StoreError::Corrupt {
+                            position,
+                            reason: "an event without a JWS".into(),
+                        });
+                    }
+                };
+                events.push(batches.decode(&jws, s.jws_index).map_err(|e| {
                     StoreError::Corrupt {
                         position,
                         reason: e.to_string(),
@@ -177,9 +198,20 @@ impl EventStore for FileStore {
         let line = Line {
             events: events
                 .iter()
-                .map(|e| Stored {
-                    jws: e.jws.clone(),
-                    jws_index: e.jws_index,
+                .enumerate()
+                .map(|(i, e)| {
+                    let same_batch = i > 0
+                        && e.jws_index.is_some()
+                        && events[i - 1].jws_index.is_some()
+                        && events[i - 1].jws == e.jws;
+                    Stored {
+                        jws: if same_batch {
+                            String::new()
+                        } else {
+                            e.jws.to_string()
+                        },
+                        jws_index: e.jws_index,
+                    }
                 })
                 .collect(),
         };
@@ -326,6 +358,47 @@ mod tests {
             next[0].hash,
             live_proto::sign::chain_hash(Some(&all[2].hash), &next[0].jws)
         );
+        drop(s);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A log from before batches were written once (each event of a batch
+    /// on the line with the whole JWS) replays as before, and a new batch
+    /// goes on its line once.
+    #[tokio::test]
+    async fn a_log_from_before_batches_were_written_once_still_verifies() {
+        let d = dir("legacy");
+        let key = KeyPair::generate();
+        let legacy = conformance::legacy_log(&key, "game-legacy");
+        fs::create_dir_all(&d).unwrap();
+        let line = |events: &[RecordedEvent]| {
+            let events: Vec<_> = events
+                .iter()
+                .map(|e| serde_json::json!({"jws": &*e.jws, "jws_index": e.jws_index}))
+                .collect();
+            serde_json::json!({ "events": events }).to_string() + "\n"
+        };
+        fs::write(
+            d.join("events.jsonl"),
+            line(&legacy[..1]) + &line(&legacy[1..]),
+        )
+        .unwrap();
+        let s = FileStore::open(&d).await.unwrap();
+        conformance::upgraded(&s, &key, &legacy).await;
+        let all = s.read(&Query::after(0, 100)).await.unwrap();
+        drop(s);
+        let text = fs::read_to_string(d.join("events.jsonl")).unwrap();
+        let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        let jws: Vec<_> = last["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.get("jws").is_some())
+            .collect();
+        assert_eq!(jws, [true, false], "the batch's JWS once");
+        // And it all replays.
+        let s = FileStore::open(&d).await.unwrap();
+        assert_eq!(s.read(&Query::after(0, 100)).await.unwrap(), all);
         drop(s);
         fs::remove_dir_all(&d).unwrap();
     }
