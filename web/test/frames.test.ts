@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Frame } from "../src/api/types";
-import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleFrames } from "../src/state/frames";
+import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleFrames, sampleObjects, sampleVehicles } from "../src/state/frames";
 
 const f = (tick: number, players: Array<[number, number, number, boolean?, number?]>): Frame => ({
   game_id: "g", tick,
@@ -99,5 +99,33 @@ describe("FrameBuffer", () => {
     expect(b.liveMarkers(200, 1000)).toHaveLength(1);
     expect(b.liveMarkers(200, 1000)[0]!.x).toBe(8);
     expect(b.liveMarkers(2000, 1000)).toHaveLength(0);
+  });
+});
+
+describe("per-frame caches", () => {
+  const veh = (id: string, x: number, parent?: string) => ({
+    id, kind: "warthog", pos: [x, 5, 5] as [number, number, number], forward: [1, 0, 0] as [number, number, number],
+    up: [0, 0, 1] as [number, number, number], occupied: true, ...(parent ? { parent } : {}),
+  });
+
+  test("seating a turret does not change the frame's cached vehicles", () => {
+    const f1: Frame = { game_id: "g", tick: 0, players: [], vehicles: [veh("hog", 0), veh("gun", 5, "hog")] };
+    const f2: Frame = { game_id: "g", tick: 10, players: [], vehicles: [veh("gun", 5, "hog")] };
+    // Seated on the hog in the first frame alone, every time.
+    for (let k = 0; k < 2; k++) expect(sampleVehicles([f1], 0).find((v) => v.id === "gun")!.x).toBe(0);
+    // Past halfway the hog is gone: the turret is where both frames have it.
+    expect(sampleVehicles([f1, f2], 7.5).find((v) => v.id === "gun")!.x).toBe(5);
+  });
+
+  test("repeated samples give equal, separate lists", () => {
+    const f1: Frame = { game_id: "g", tick: 0, players: [], vehicles: [veh("a", 0)], objects: [{ k: "scen", i: 1, p: [1, 2, 3] }] };
+    const f2: Frame = { game_id: "g", tick: 10, players: [], vehicles: [veh("a", 1), veh("b", 2)], objects: [{ k: "scen", i: 1, p: [2, 2, 3] }] };
+    const one = sampleVehicles([f1, f2], 6), two = sampleVehicles([f1, f2], 6);
+    expect(one).toEqual(two);
+    expect(one).not.toBe(two);
+    expect(one.map((v) => v.id)).toEqual(["a", "b"]);
+    expect(one[0]!.x).toBeCloseTo(0.6);
+    expect(sampleObjects([f1, f2], 5)![0]!.p![0]).toBeCloseTo(1.5);
+    expect(sampleObjects([f1, f2], 5)).toEqual(sampleObjects([f1, f2], 5));
   });
 });

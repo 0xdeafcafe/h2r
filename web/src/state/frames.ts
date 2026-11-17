@@ -342,15 +342,32 @@ function fromFrameVehicle(v: FrameVehicle): SampledVehicle | null {
 }
 
 /** Puts each turret where the vehicle it is mounted on is (when that one
- *  is in the list). */
-function seatTurrets(list: SampledVehicle[]): SampledVehicle[] {
-  if (!list.some((v) => v.parent)) return list;
+ *  is in the list): a new list, the turrets new objects (the others may be
+ *  a frame's cached ones, never changed). */
+function seatTurrets(list: readonly SampledVehicle[]): SampledVehicle[] {
+  if (!list.some((v) => v.parent)) return list.slice();
   const byId = new Map(list.map((v) => [v.id, v]));
-  for (const v of list) {
+  return list.map((v) => {
     const p = v.parent ? byId.get(v.parent) : undefined;
-    if (p && !p.parent) Object.assign(v, { x: p.x, y: p.y, z: p.z, forward: p.forward, up: p.up });
+    return p && !p.parent ? { ...v, x: p.x, y: p.y, z: p.z, forward: p.forward, up: p.up } : v;
+  });
+}
+
+/** A frame's vehicles as sampled, in order, and the last of each id: made
+ *  once a frame (frames do not change), shared by every repaint. */
+function vehiclesOf(f: Frame): { list: SampledVehicle[]; byId: Map<string, SampledVehicle> } {
+  const list: SampledVehicle[] = [], byId = new Map<string, SampledVehicle>();
+  for (const raw of f.vehicles ?? []) {
+    const v = fromFrameVehicle(raw);
+    if (v) { list.push(v); byId.set(v.id, v); }
   }
-  return list;
+  return { list, byId };
+}
+const vehicleCache = new WeakMap<Frame, ReturnType<typeof vehiclesOf>>();
+function vehiclesCached(f: Frame) {
+  let c = vehicleCache.get(f);
+  if (!c) { c = vehiclesOf(f); vehicleCache.set(f, c); }
+  return c;
 }
 
 /** The vehicles at a (fractional) tick. One in only the earlier frame
@@ -360,15 +377,16 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
   const i = findFrame(frames, tick);
   if (i < 0) return [];
   const fa = frames[i]!, fb = frames[i + 1];
-  const from = (fa.vehicles ?? []).map(fromFrameVehicle).filter((v): v is SampledVehicle => !!v);
+  const from = vehiclesCached(fa).list;
   if (!fb || fb.tick <= fa.tick) return seatTurrets(from);
   const t = Math.min(1, Math.max(0, (tick - fa.tick) / (fb.tick - fa.tick)));
-  const next = new Map<string, SampledVehicle>();
-  for (const raw of fb.vehicles ?? []) { const v = fromFrameVehicle(raw); if (v) next.set(v.id, v); }
+  const next = vehiclesCached(fb).byId;
+  // The later frame's vehicles the earlier one has too.
+  const matched = new Set<string>();
   const out: SampledVehicle[] = [];
   for (const a of from) {
-    const b = next.get(a.id);
-    next.delete(a.id);
+    const b = matched.has(a.id) ? undefined : next.get(a.id);
+    matched.add(a.id);
     if (!b) { if (t < 0.5) out.push(a); continue; }
     if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(t < 0.5 ? a : b); continue; }
     const v: SampledVehicle = {
@@ -383,7 +401,7 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
     if (aim) v.aim = aim;
     out.push(v);
   }
-  if (t >= 0.5) for (const b of next.values()) out.push(b);
+  if (t >= 0.5) for (const [id, b] of next) if (!matched.has(id)) out.push(b);
   return seatTurrets(out);
 }
 
@@ -412,6 +430,20 @@ export function fromFrameMachine(m: FrameMachine): SampledMachine | null {
   return { id, node, kind: cleanId(m.kind) ?? "machine", x: m.pos[0], y: m.pos[1], z: m.pos[2], forward: cleanAim(m.forward) ?? [1, 0, 0], up: cleanAim(m.up) ?? [0, 0, 1], position };
 }
 
+/** A frame's machines as sampled (at most [`MAX_MACHINES`] read), made
+ *  once a frame and shared, as vehicles are. */
+function machinesOf(f: Frame): SampledMachine[] {
+  const out: SampledMachine[] = [];
+  for (const raw of (f.machines ?? []).slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) out.push(m); }
+  return out;
+}
+const machineCache = new WeakMap<Frame, SampledMachine[]>();
+function machinesCached(f: Frame): SampledMachine[] {
+  let c = machineCache.get(f);
+  if (!c) { c = machinesOf(f); machineCache.set(f, c); }
+  return c;
+}
+
 /** How many frames back a machine's last word is looked for: recorded
  *  frames carry every machine, live ones only those that moved. */
 const MACHINE_LOOKBACK = 4;
@@ -425,13 +457,12 @@ export function sampleMachines(frames: readonly Frame[], tick: number): SampledM
   if (i < 0) return [];
   const at = new Map<string, { m: SampledMachine; tick: number }>();
   for (let j = i; j >= 0 && j > i - MACHINE_LOOKBACK; j--) {
-    const list = frames[j]!.machines;
-    if (!list) continue;
-    for (const raw of list.slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m && !at.has(m.id)) at.set(m.id, { m, tick: frames[j]!.tick }); }
+    if (!frames[j]!.machines) continue;
+    for (const m of machinesCached(frames[j]!)) if (!at.has(m.id)) at.set(m.id, { m, tick: frames[j]!.tick });
   }
   const fb = frames[i + 1];
   const next = new Map<string, SampledMachine>();
-  if (fb && fb.tick > frames[i]!.tick) for (const raw of (fb.machines ?? []).slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) next.set(m.id, m); }
+  if (fb && fb.tick > frames[i]!.tick) for (const m of machinesCached(fb)) next.set(m.id, m);
   const out: SampledMachine[] = [];
   for (const { m: a, tick: ta } of at.values()) {
     const b = next.get(a.id);
@@ -453,6 +484,23 @@ export const MAX_OBJECTS = 2048;
 const finite3 = (v: unknown): v is [number, number, number] =>
   Array.isArray(v) && v.length === 3 && v.every((c) => typeof c === "number" && Number.isFinite(c));
 
+/** A frame's scenario objects (at most [`MAX_OBJECTS`]), each one's
+ *  `kind:index` key, and the ones there (not gone) by key: made once a
+ *  frame. */
+function objectsOf(f: Frame): { list: FrameObject[]; keys: string[]; there: Map<string, FrameObject> } {
+  const list = (f.objects ?? []).slice(0, MAX_OBJECTS);
+  const keys = list.map((o) => `${o.k}:${o.i}`);
+  const there = new Map<string, FrameObject>();
+  list.forEach((o, n) => { if (!o.gone) there.set(keys[n]!, o); });
+  return { list, keys, there };
+}
+const objectCache = new WeakMap<Frame, ReturnType<typeof objectsOf>>();
+function objectsCached(f: Frame) {
+  let c = objectCache.get(f);
+  if (!c) { c = objectsOf(f); objectCache.set(f, c); }
+  return c;
+}
+
 /** Scenario objects not where the scenario put them at `tick`: the frame
  *  behind it says which (moved, or gone), and a moved one eases towards
  *  where the next frame has it. Null with no frame behind `tick`. */
@@ -460,27 +508,27 @@ export function sampleObjects(frames: readonly Frame[], tick: number): FrameObje
   const i = findFrame(frames, tick);
   if (i < 0) return null;
   const a = frames[i]!, b = frames[i + 1];
-  const list = (a.objects ?? []).slice(0, MAX_OBJECTS);
-  const next = new Map<string, FrameObject>();
-  if (b && b.tick > a.tick) for (const o of (b.objects ?? []).slice(0, MAX_OBJECTS)) if (!o.gone) next.set(`${o.k}:${o.i}`, o);
+  const { list, keys } = objectsCached(a);
+  const next = b && b.tick > a.tick ? objectsCached(b).there : undefined;
   const t = b && b.tick > a.tick ? Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick))) : 0;
   const out: FrameObject[] = [];
-  for (const o of list) {
+  for (let n = 0; n < list.length; n++) {
+    const o = list[n]!;
     if (typeof o.k !== "string" || typeof o.i !== "number") continue;
     if (o.gone) { out.push({ k: o.k, i: o.i, gone: true }); continue; }
     if (!finite3(o.p)) continue;
     const f = finite3(o.f) ? o.f : [1, 0, 0] as [number, number, number];
     const u = finite3(o.u) ? o.u : [0, 0, 1] as [number, number, number];
-    const n = next.get(`${o.k}:${o.i}`);
-    if (!n || !finite3(n.p) || t === 0 || (n.p[0] - o.p[0]) ** 2 + (n.p[1] - o.p[1]) ** 2 + (n.p[2] - o.p[2]) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) {
+    const m = next?.get(keys[n]!);
+    if (!m || !finite3(m.p) || t === 0 || (m.p[0] - o.p[0]) ** 2 + (m.p[1] - o.p[1]) ** 2 + (m.p[2] - o.p[2]) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) {
       out.push({ k: o.k, i: o.i, p: [o.p[0], o.p[1], o.p[2]], f, u });
       continue;
     }
     out.push({
       k: o.k, i: o.i,
-      p: [lerp(o.p[0], n.p[0], t), lerp(o.p[1], n.p[1], t), lerp(o.p[2], n.p[2], t)],
-      f: finite3(n.f) ? nlerpAim(f, n.f, t) : f,
-      u: finite3(n.u) ? nlerpAim(u, n.u, t) : u,
+      p: [lerp(o.p[0], m.p[0], t), lerp(o.p[1], m.p[1], t), lerp(o.p[2], m.p[2], t)],
+      f: finite3(m.f) ? nlerpAim(f, m.f, t) : f,
+      u: finite3(m.u) ? nlerpAim(u, m.u, t) : u,
     });
   }
   return out;
