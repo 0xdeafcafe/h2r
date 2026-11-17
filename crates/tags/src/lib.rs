@@ -16,6 +16,9 @@ pub mod effects;
 pub mod edit;
 /// Relocatable block trees for the whole-cache builder (`map::build`).
 pub mod rebuild;
+/// Typed tag definitions: every field named or an explicit unknown span;
+/// see `docs/formats/tag-definitions.md`.
+pub mod defs;
 /// Tag layout schemas inferred from retail maps; relocation of any tag.
 pub mod schema;
 /// The loose tag repository: one position-independent file per tag, extracted
