@@ -89,7 +89,7 @@ pub struct Target {
 impl Target {
     /// The named builtins and types of an observed Halo 2 catalog.
     pub fn from_catalog(c: &hs::Catalog) -> Self {
-        let builtins = c
+        let mut builtins: HashMap<String, H2Builtin> = c
             .named_functions()
             .into_iter()
             .filter_map(|(i, name)| {
@@ -105,6 +105,7 @@ impl Target {
                 ))
             })
             .collect();
+        crate::identified::name_unnamed(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),
