@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 const USAGE: &str = "usage:
-  h2 agent <call> [args] [--socket PATH] [--timeout SECONDS]
+  h2 agent <call> [args] [--socket PATH|tcp://HOST:PORT] [--xbox [HOST]] [--timeout SECONDS]
   h2 agent - [--socket PATH]          calls from stdin, one per line, on one connection
   h2 agent watch [phase map bsp pause] print events until the game exits
 
@@ -26,28 +26,38 @@ or a short form:
   counters               profile.counters (frame-stats window)
   capture <N|Nms> [sample]  profile.capture over N game ticks or N ms: frame
                          percentiles, phase totals, spikes over 33.3 ms, a CSV
-                         of every frame; `sample` adds perf's folded stacks
+                         of every frame; `sample` also runs the sampler
+                         (profile.sample.*) over it
   features               features.list
   claim | release        take or give up control
   pause [max_ms]         session.pause (needs claim, so use it in a `-` script)
   resume                 session.resume
   step <ticks>           session.step
   wait <JSON until> [timeout_ms]
-  pad <JSON>             input.pad, e.g. '{\"player\":0,\"buttons\":[\"a\"],\"hold_ticks\":10}'
-                         or '{\"sticks\":{\"left\":[0,1]},\"at_tick\":\"now\",\"hold_ticks\":90}'
-  clear [player]         input.clear: drop queued pad packets
   record <name> [replace]  input.record: log every controller read to the
                          cache directory's inputs/<name>.input
   replay <name>          input.replay: answer controller reads from that log
   stop                   input.stop: end the recording (writing it) or replay
-  input                  input.status (with replay counts while replaying)
   sleep <ms>             (scripts only) wait before the next line
+  press <b[+b...]> [ms]  input.pad: hold buttons (a b x y black white lt rt up
+                         down left right start back ls rs) for ms (default 150)
+  stick <left|right> <x> <y> [ms]  input.pad: a stick, -1..1, +y up (no ms: until changed)
+  pad <JSON>             input.pad, e.g. '{\"steps\":[{\"buttons\":[\"start\"],\"ms\":100},{\"left\":[0,1],\"ms\":2000}]}'
+                         or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
+  unpress                input.release: let go of everything
+  padstate               input.state: every player's pad, recording or replay
+  sample-start [hz]      profile.sample.start (the game thread; the Xbox app)
+  sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
+  sample-status          profile.sample.status
+  hostperf               host.perf: the newest host perf line
 
-Input calls (pad, clear, record, replay, stop) need control. Run alone, they claim it for the
-call; queued packets outlive the connection and play out.
+Input calls need no claim while nobody holds control; once a connection
+does, only it may send them. Queued steps outlive the connection and play out.
 
-The socket is --socket, else $H2_AGENT, else the cache directory's
-h2recomp/agent.sock, where `h2 serve` listens by default. Results print as
+The socket is --socket (a path, or tcp://HOST:PORT), else --xbox HOST
+(tcp://HOST:4720, the Xbox app; HOST defaults to $H2_XBOX), else $H2_AGENT,
+else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
+by default. Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a
 script stops at its first error).";
 
@@ -59,6 +69,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--socket" => socket = Some(PathBuf::from(it.next().context("--socket needs a path")?)),
+            "--xbox" => {
+                // A host may follow; a call never looks like one.
+                let host = match it.as_slice().first() {
+                    Some(h) if looks_like_host(h) => it.next(),
+                    _ => std::env::var("H2_XBOX").ok().filter(|h| !h.is_empty()),
+                }
+                .context("--xbox needs the console's address (or set H2_XBOX)")?;
+                socket = Some(PathBuf::from(xbox_endpoint(&host)));
+            }
             "--timeout" => {
                 let s: f64 = it
                     .next()
@@ -92,9 +111,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "watch" => watch(&mut c, &rest[1..]),
         _ => {
             let (m, p) = parse_call(&rest)?;
-            if claims_alone(&m) {
-                call(&mut c, method::CLAIM, Value::Null)?;
-            }
             let v = call(&mut c, &m, p)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
@@ -102,10 +118,38 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
-/// Input methods need control; run alone, the call claims it first. (A
-/// pause or step alone would end with the connection, so those don't.)
-fn claims_alone(m: &str) -> bool {
-    m.starts_with("input.") && method::CONTROL.contains(&m)
+/// Whether `--xbox`'s next word is an address rather than a call.
+fn looks_like_host(w: &str) -> bool {
+    !w.starts_with('-') && (w.contains('.') || w.contains(':')) && !w.contains("..") && {
+        let head = w.split(':').next().unwrap_or(w);
+        head.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            && !agent_proto::method::ALL.contains(&w)
+            && !w.starts_with("input.")
+            && !w.starts_with("profile.")
+            && !w.starts_with("host.")
+            && !w.starts_with("world.")
+            && !w.starts_with("session.")
+            && !w.starts_with("features.")
+    }
+}
+
+/// `tcp://HOST:4720` for a console address (a port given wins; an
+/// `https://...:11443` Device Portal URL gives its host).
+fn xbox_endpoint(host: &str) -> String {
+    let h = host
+        .split("://")
+        .last()
+        .unwrap_or(host)
+        .trim_end_matches('/');
+    let h = h.split('/').next().unwrap_or(h);
+    match h.rsplit_once(':') {
+        Some((name, port)) if port != "11443" && port.parse::<u16>().is_ok() => {
+            format!("tcp://{name}:{port}")
+        }
+        Some((name, _)) => format!("tcp://{name}:{}", agent_proto::XBOX_PORT),
+        None => format!("tcp://{h}:{}", agent_proto::XBOX_PORT),
+    }
 }
 
 fn call(c: &mut Client, m: &str, p: Value) -> Result<Value> {
@@ -213,8 +257,12 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "claim" => Some(method::CLAIM),
         "release" => Some(method::RELEASE),
         "resume" => Some(method::RESUME),
-        "input" => Some(method::INPUT_STATUS),
         "stop" => Some(method::INPUT_STOP),
+        "unpress" => Some(method::INPUT_RELEASE),
+        "padstate" => Some(method::INPUT_STATE),
+        "sample-stop" => Some(method::SAMPLE_STOP),
+        "sample-status" => Some(method::SAMPLE_STATUS),
+        "hostperf" => Some(method::HOST_PERF),
         _ => None,
     };
     if let Some(m) = bare {
@@ -242,10 +290,48 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             },
         ),
         "step" => (method::STEP, json!({ "ticks": number(arg, "step")? })),
+        "press" => {
+            let buttons: Vec<&str> = arg
+                .context("press needs buttons, e.g. a or start+a")?
+                .split('+')
+                .filter(|b| !b.is_empty())
+                .collect();
+            let ms = match words.get(2) {
+                Some(_) => number(words.get(2), "press's ms")?,
+                None => 150,
+            };
+            extra(3)?;
+            return Ok((
+                method::INPUT_PAD.into(),
+                json!({ "steps": [{ "buttons": buttons, "ms": ms }] }),
+            ));
+        }
+        "stick" => {
+            let side = arg.context("stick needs left or right")?;
+            if side != "left" && side != "right" {
+                bail!("stick: left or right, not {side}");
+            }
+            let axis = |i: usize| -> Result<f64> {
+                words
+                    .get(i)
+                    .context("stick needs x and y, -1 to 1")?
+                    .parse::<f64>()
+                    .context("stick needs x and y, -1 to 1")
+            };
+            let mut step = json!({});
+            step[side.as_str()] = json!([axis(2)?, axis(3)?]);
+            if words.len() > 4 {
+                step["ms"] = json!(number(words.get(4), "stick's ms")?);
+            }
+            extra(5)?;
+            return Ok((method::INPUT_PAD.into(), json!({ "steps": [step] })));
+        }
         "pad" => {
             let p = json_arg(arg)?;
             if !p.is_object() {
-                bail!("pad needs a JSON packet, e.g. '{{\"buttons\":[\"a\"]}}'");
+                bail!(
+                    "pad needs JSON steps, e.g. '{{\"steps\":[{{\"buttons\":[\"a\"],\"ms\":100}}]}}'"
+                );
             }
             (method::INPUT_PAD, p)
         }
@@ -277,11 +363,11 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             extra(3)?;
             return Ok((method::PROFILE_CAPTURE.into(), p));
         }
-        "clear" => (
-            method::INPUT_CLEAR,
+        "sample-start" => (
+            method::SAMPLE_START,
             match arg {
                 None => Value::Null,
-                Some(_) => json!({ "player": number(arg, "clear")? }),
+                Some(_) => json!({ "hz": number(arg, "sample-start")? }),
             },
         ),
         "wait" => {
@@ -353,14 +439,13 @@ mod tests {
             ("world.query".into(), json!({"limit": 1}))
         );
         assert_eq!(
-            c(r#"pad {"buttons": ["a"], "hold_ticks": 4}"#),
+            c(r#"pad {"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]}"#),
             (
                 "input.pad".into(),
-                json!({"buttons": ["a"], "hold_ticks": 4})
+                json!({"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]})
             )
         );
-        assert_eq!(c("clear 1"), ("input.clear".into(), json!({"player": 1})));
-        assert_eq!(c("input"), ("input.status".into(), Value::Null));
+        assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
         assert_eq!(
             c("record fight replace"),
             (
@@ -384,22 +469,75 @@ mod tests {
                 json!({"ms": 5000, "sample": true})
             )
         );
+
+        assert_eq!(
+            c("press start+a"),
+            (
+                "input.pad".into(),
+                json!({"steps": [{"buttons": ["start", "a"], "ms": 150}]})
+            )
+        );
+        assert_eq!(
+            c("press rt 400"),
+            (
+                "input.pad".into(),
+                json!({"steps": [{"buttons": ["rt"], "ms": 400}]})
+            )
+        );
+        assert_eq!(
+            c("stick left 0 1 2000"),
+            (
+                "input.pad".into(),
+                json!({"steps": [{"left": [0.0, 1.0], "ms": 2000}]})
+            )
+        );
+        assert_eq!(
+            c("stick right -0.5 0"),
+            (
+                "input.pad".into(),
+                json!({"steps": [{"right": [-0.5, 0.0]}]})
+            )
+        );
+        assert_eq!(c("unpress"), ("input.release".into(), Value::Null));
+        assert_eq!(
+            c("sample-start 2000"),
+            ("profile.sample.start".into(), json!({"hz": 2000}))
+        );
+        assert_eq!(
+            c("sample-stop"),
+            ("profile.sample.stop".into(), Value::Null)
+        );
+        assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
     }
 
     #[test]
-    fn input_calls_alone_claim_control_and_others_do_not() {
-        assert!(claims_alone("input.pad"));
-        assert!(claims_alone("input.clear"));
-        assert!(claims_alone("input.record"));
-        assert!(claims_alone("input.stop"));
-        assert!(!claims_alone("input.status"));
-        assert!(!claims_alone("session.pause"));
-        assert!(!claims_alone("world.count"));
+    fn xbox_addresses_become_tcp_endpoints() {
+        assert_eq!(xbox_endpoint("10.0.3.29"), "tcp://10.0.3.29:4720");
+        assert_eq!(
+            xbox_endpoint("https://10.0.3.29:11443/"),
+            "tcp://10.0.3.29:4720"
+        );
+        assert_eq!(xbox_endpoint("10.0.3.29:5000"), "tcp://10.0.3.29:5000");
+        assert!(looks_like_host("10.0.3.29") && looks_like_host("xbox.lan"));
+        for call in [
+            "status",
+            "press",
+            "session.status",
+            "input.pad",
+            "-",
+            "watch",
+        ] {
+            assert!(!looks_like_host(call), "{call}");
+        }
     }
 
     #[test]
     fn mistakes_are_refused() {
         for s in [
+            "press",
+            "press a x",
+            "stick up 0 1",
+            "stick left 0",
             "step",
             "step x",
             "wait",
@@ -409,7 +547,6 @@ mod tests {
             "query {}  extra",
             "pad",
             "pad [1]",
-            "clear x",
             "record",
             "record a twice",
             "replay",

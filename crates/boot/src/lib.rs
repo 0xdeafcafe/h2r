@@ -28,6 +28,7 @@ pub mod fov_row;
 pub mod game_glue;
 pub mod health;
 pub mod host_perf;
+pub mod sampling;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -969,6 +970,17 @@ pub fn run_hosted_with_live(
     };
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
     let agent = match agent_glue::socket_from_env() {
+        // Over TCP (the Xbox app) a refused port must not stop the game:
+        // it runs on, undriven, and says why.
+        Some(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
+            match agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    eprintln!("agent: not listening: {e:#}");
+                    None
+                }
+            }
+        }
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
@@ -1097,6 +1109,11 @@ pub fn run_hosted_with_live(
     }
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
+    // The sampler's main target (agent glue sets it too).
+    #[cfg(feature = "perf")]
+    if sampling::seconds_from_env().is_some() {
+        sampling::set_game_thread();
+    }
     for slice in 0..opts.max_slices {
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
@@ -1117,7 +1134,14 @@ pub fn run_hosted_with_live(
                 _ => eprintln!("perf: session from present {n}"),
             }
             perf_session = perf::Session::from_env();
+            // H2_SAMPLE_SECONDS: the in-process sampler's dump instead
+            // (sampling.rs; for the Xbox app, which can't symbolise).
+            if let Some(s) = sampling::seconds_from_env() {
+                sampling::start_timed(s);
+            }
         }
+        #[cfg(feature = "perf")]
+        sampling::tick();
         if let Some(pad) = &pad {
             script.step(slice, pad);
         }

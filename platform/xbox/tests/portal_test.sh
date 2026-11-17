@@ -63,7 +63,9 @@ while [ $# -gt 0 ]; do
     --netrc-file) netrc=$2; shift ;;
     -H) case "$2" in X-CSRF-Token:*) csrf=${2#X-CSRF-Token: } ;; Content-Length:*) cl=${2#Content-Length: } ;; esac; shift ;;
     -d) data=1; shift ;;
-    -F) forms="$forms ${2%%=*}"; shift ;;
+    -F) forms="$forms ${2%%=*}"
+        case "$2" in *=@*) up=${2#*=@}; cp "${up%%;*}" "$STUB_DIR/upload"; echo "${up#*;}" >"$STUB_DIR/upload.name" ;; esac
+        shift ;;
     -sk) ;;
     *) url=$1 ;;
   esac
@@ -82,6 +84,9 @@ case "$method ${url#https://10.0.0.9:11443}" in
   "GET /api/app/packagemanager/packages") body=$(cat "$STUB_DIR/pkgs.json") ;;
   # The real portal answers 411 to a POST with no body length.
   "POST /api/taskmanager/app"*) if [ "$csrf" != tok123 ]; then status=403; elif [ "$cl" != 0 ] || [ -z "$data" ]; then status=411; fi ;;
+  "DELETE /api/taskmanager/app"*) [ "$csrf" = tok123 ] || status=403 ;;
+  "GET /api/filesystem/apps/file"*) body=$(cat "$STUB_DIR/file" 2>/dev/null || echo missing) ;;
+  "POST /api/filesystem/apps/file"* | "DELETE /api/filesystem/apps/file"*) [ "$csrf" = tok123 ] || status=403 ;;
   *) status=404 ;;
 esac
 [ -n "$out" ] && printf '%s' "$body" >"$out"
@@ -116,4 +121,51 @@ POST /api/taskmanager/app?appid=aDJyZWNvbXAuSGFsbzJfcThidzJyN2hrYTBtYSFBcHA=&pac
 
 # Without an address it stops before touching anything.
 if H2_XBOX= sh "$here/deploy.sh" "$work/h2recomp.msix" >/dev/null 2>&1; then fail "ran without H2_XBOX"; fi
+
+# xbox.sh: LocalState files and app control through the same portal.
+full=h2recomp.Halo2_1.0.0.0_x64__q8bw2r7hka0ma
+ls_query="knownfolderid=LocalAppData&packagefullname=$full&path=%5CLocalState"
+b64full=aDJyZWNvbXAuSGFsbzJfMS4wLjAuMF94NjRfX3E4Yncycjdoa2EwbWE=
+launch="POST /api/taskmanager/app?appid=aDJyZWNvbXAuSGFsbzJfcThidzJyN2hrYTBtYSFBcHA=&package=$b64full"
+xbox() {
+  : >"$work/stub/calls"
+  PATH="$work/bin:$PATH" STUB_DIR="$work/stub" H2_XBOX=10.0.0.9 TMPDIR="$work" \
+    sh "$here/xbox.sh" "$@" >"$work/out" 2>&1 || { cat "$work/out"; fail "xbox.sh $* failed"; }
+}
+xbox level 03a_oldmombasa heroic
+eq "$(cut -d' ' -f1-3 "$work/stub/calls")" "GET /api/app/packagemanager/packages csrf=
+POST /api/filesystem/apps/file?$ls_query csrf=tok123
+DELETE /api/taskmanager/app?package=$b64full&forcestop=yes csrf=tok123
+$launch csrf=tok123" "level requests"
+eq "$(cat "$work/stub/upload")" "H2_LEVEL=03a_oldmombasa
+H2_DIFFICULTY=heroic" "level writes h2env"
+eq "$(cat "$work/stub/upload.name")" "filename=h2env" "the upload's name"
+xbox level menu
+eq "$(sed -n 2p "$work/stub/calls" | cut -d' ' -f1-2)" "DELETE /api/filesystem/apps/file?$ls_query&filename=h2env" "menu removes h2env"
+printf 'h2uwp: starting\n' >"$work/stub/file"
+xbox log
+eq "$(cat "$work/out")" "h2uwp: starting" "log prints the file"
+eq "$(sed -n 2p "$work/stub/calls" | cut -d' ' -f1-2)" "GET /api/filesystem/apps/file?$ls_query&filename=h2uwp.log" "log fetches h2uwp.log"
+if PATH="$work/bin:$PATH" STUB_DIR="$work/stub" H2_XBOX=10.0.0.9 TMPDIR="$work" sh "$here/xbox.sh" env PATH=/x >/dev/null 2>&1; then
+  fail "env took a variable that isn't H2_"
+fi
+grep -q "secret" "$work/out" && fail "the password reached xbox.sh's output"
+
+# profile: the agent's sampler, the dump fetched, then symbolised with
+# build/symbols (stand-ins for h2 agent and the symboliser).
+printf '#!/bin/sh\necho "agent $*" >>"$STUB_DIR/agent"\n' >"$work/bin/fakeagent"
+printf '#!/bin/sh\necho "symbolize $*"\n' >"$work/bin/fakesym"
+chmod +x "$work/bin/fakeagent" "$work/bin/fakesym"
+mkdir -p "$work/syms"
+: >"$work/syms/h2game.dll"; : >"$work/syms/h2uwp.exe"; : >"$work/syms/h2uwp.map"
+printf 'h2prof 1\n' >"$work/stub/file"
+H2_XBOX_AGENT_CMD="$work/bin/fakeagent" H2_XBOX_SYMBOLIZE_CMD="$work/bin/fakesym" \
+  H2_XBOX_SYMBOLS="$work/syms" H2_XBOX_PROFILE_DIR="$work" xbox profile 0 500
+eq "$(cat "$work/stub/agent")" "agent --xbox 10.0.0.9 sample-start 500
+agent --xbox 10.0.0.9 sample-stop" "profile drives the sampler"
+eq "$(sed -n 2p "$work/stub/calls" | cut -d' ' -f1-2)" "GET /api/filesystem/apps/file?$ls_query&filename=profile.h2prof" "profile fetches the dump"
+dump=$(ls "$work"/xbox-*.h2prof)
+eq "$(cat "$dump")" "h2prof 1" "the dump is kept"
+grep -q "^symbolize $dump --image $work/syms/h2game.dll --image $work/syms/h2uwp.exe --map $work/syms/h2uwp.map" "$work/out" ||
+  { cat "$work/out"; fail "profile symbolises with build/symbols"; }
 echo "portal_test: ok"

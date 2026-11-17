@@ -28,6 +28,11 @@ audio = { path = "../audio" }
 app = { path = "../app", default-features = false, features = ["game-controller"] }
 input = { path = "../input", default-features = false, features = ["game-controller"] }
 
+[features]
+# The in-process sampling profiler (boot's perf; the agent API's
+# profile.sample.*). The Xbox app turns it on (crates/uwp-host).
+perf = ["boot/perf"]
+
 [[example]]
 # Mac-side packer: the trimmed disc, the device module framework and the
 # boot cache for an app bundle (platform/tvos/build.sh, platform/ios/build.sh).

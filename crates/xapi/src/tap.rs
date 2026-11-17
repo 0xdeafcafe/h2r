@@ -153,6 +153,15 @@ impl Recorder {
         )
     }
 
+    /// A recorder that continues `log`: after loading a machine snapshot,
+    /// pass the saved run's reads up to the snapshot's input cursor, and
+    /// the new reads follow them with the same numbering.
+    pub fn resume(log: InputLog) -> (Self, Arc<Mutex<InputLog>>) {
+        let (recorder, shared) = Self::new();
+        *shared.lock().unwrap_or_else(|e| e.into_inner()) = log;
+        (recorder, shared)
+    }
+
     /// Stamps each read with the current value of `ticks`.
     pub fn with_ticks(mut self, ticks: Arc<AtomicU64>) -> Self {
         self.ticks = Some(ticks);
@@ -207,6 +216,17 @@ impl Replayer {
             },
             stats,
         )
+    }
+
+    /// A replayer that carries on from a machine snapshot: its first read
+    /// is the log's read `next`, the input cursor the snapshot recorded
+    /// (the saving run's [`ReplayStats::replayed`], or its recorder's log
+    /// length). `replayed` starts at `next`, so it stays the cursor.
+    pub fn resume(log: InputLog, next: usize) -> (Self, Arc<Mutex<ReplayStats>>) {
+        let (mut replayer, stats) = Self::new(log);
+        replayer.next = next;
+        stats.lock().unwrap_or_else(|e| e.into_inner()).replayed = next as u64;
+        (replayer, stats)
     }
 }
 
@@ -305,5 +325,42 @@ mod tests {
                 handle_mismatches: 1
             }
         );
+    }
+
+    #[test]
+    fn replay_and_recording_resume_from_a_snapshot_cursor() {
+        let (mut rec, log) = Recorder::new();
+        for i in 0..5u8 {
+            rec.read(7, &mut 0, &mut packet(i));
+        }
+        let log = log.lock().unwrap().clone();
+
+        // A run replaying the log is snapshotted after two reads.
+        let (mut play, stats) = Replayer::new(log.clone());
+        for _ in 0..2 {
+            play.read(7, &mut 0, &mut packet(0));
+        }
+        let cursor = stats.lock().unwrap().replayed as usize;
+        assert_eq!(cursor, 2);
+
+        // Loading the snapshot resumes at read 2, as the run would have.
+        let (mut resumed, resumed_stats) = Replayer::resume(log.clone(), cursor);
+        for i in 2..5u8 {
+            let (mut status, mut p) = (9, packet(100));
+            resumed.read(7, &mut status, &mut p);
+            assert_eq!((status, p), (0, packet(i)));
+        }
+        assert_eq!(resumed_stats.lock().unwrap().replayed, 5);
+
+        // Recording on from the snapshot keeps the numbering dense.
+        let prefix = InputLog {
+            reads: log.reads[..cursor].to_vec(),
+        };
+        let (mut rec, shared) = Recorder::resume(prefix);
+        rec.read(7, &mut 0, &mut packet(42));
+        let text = shared.lock().unwrap().to_text();
+        let reparsed = InputLog::parse(&text).unwrap();
+        assert_eq!(reparsed.reads.len(), 3);
+        assert_eq!(reparsed.reads[2].packet, packet(42));
     }
 }

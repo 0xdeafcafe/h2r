@@ -51,6 +51,8 @@ lockstep = { path = "../lockstep" }
 # The agent API (H2_AGENT; docs/runtime/agent-api.md).
 agent = { path = "../agent" }
 agent-proto = { path = "../agent-proto" }
+# The agent glue's host methods (input.pad, profile.sample.*).
+serde_json.workspace = true
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../perf", optional = true }
 
@@ -58,7 +60,6 @@ perf = { path = "../perf", optional = true }
 perf = ["dep:perf"]
 
 [dev-dependencies]
-serde_json.workspace = true
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 

@@ -319,6 +319,9 @@ rebuilt from guest state. That is the largest piece of work here and the
 riskiest (**S**). The fallback is the game's own checkpoint plus level
 boot: coarser, but it exists.
 
+The design, the inventory of host-side state and the phases are in
+[snapshots.md](snapshots.md).
+
 Snapshots never enter the repository: they contain game data.
 
 **Edits** change the state directly, at a tick boundary:
@@ -342,8 +345,9 @@ Snapshots never enter the repository: they contain game data.
 Three levels, all ending up as pad packets through the normal input path,
 so the game can't tell an agent from a person:
 
-1. **Raw**: `input.pad {player, at_tick, buttons, sticks, triggers,
-   hold_ticks}`; a queue of timed packets.
+1. **Raw**: `input.pad {player, at_tick, steps: [{buttons, left, right,
+   lt, rt, ms, ticks, reads}]}`; a queue of timed steps per player
+   (**Code**, "Phase 3 and 4" below).
 2. **Recorded**: `input.record {name}` / `input.replay {name}`, the
    `xapi::tap` log (**Code**), stored next to a snapshot so the pair replays
    exactly.
@@ -516,7 +520,11 @@ How it behaves (**Code**, with tests in `crates/agent`):
   else `$H2_AGENT`, else `~/Library/Caches/h2recomp/agent.sock`
   (`$XDG_CACHE_HOME` or `~/.cache` elsewhere), not `$TMPDIR`, which differs
   between agent sessions. A socket file nobody answers on is replaced; a
-  live one is an error. Unix only; elsewhere listening fails and says so.
+  live one is an error. `tcp://HOST:PORT` (as `--socket` or `H2_AGENT`)
+  listens or connects over TCP instead (`agent_proto::Endpoint`), which
+  is how the Xbox app is reached (`h2 agent --xbox HOST`, port 4720;
+  [xbox.md](xbox.md) "Remote control"). TCP has no authentication. Unix
+  sockets are Unix only; elsewhere use TCP.
 - **Where answers are read.** The `agent` feature observes `GAME_TICK`
   last, after telemetry and lockstep (`boot/tests/feature_plan.rs`), and
   answers there with `boundary: "tick"`. Between slices it answers what
@@ -573,6 +581,15 @@ How it behaves (**Code**, with tests in `crates/agent`):
   `H2_FEATURES=-agent` removes the hooks; requests then get answers only
   between slices.
 
+- **Host methods.** A host adds its own methods with
+  `Agent::add_method(name, Access::Read | Access::Act, f)`; an `Act`
+  method is refused (`NOT_CONTROLLER`) while another connection holds
+  control. `boot::agent_glue` adds `profile.sample.start`, `.stop` and
+  `.status` (the in-process sampler, with boot's `perf` feature;
+  [xbox.md](xbox.md) "Profiling on the console") and `host.perf` (the
+  last host perf line). The input methods are host methods too, added
+  with the agent's input tap (phase 3 below).
+
 Not built in phase 1: fade detection, the UI stack, HUD, snapshots,
 input, overrides, experiments, live switch changes. (The MCP front end
 is dropped, not pending.)
@@ -581,26 +598,28 @@ is dropped, not pending.)
 
 Raw and recorded input (phase 3 without `state.*` and `hs.eval`), and a
 profile capture with spikes (phase 4 without owners or engine spans).
-Input is `crates/agent/src/tap.rs`, the capture `crates/agent/src/capture.rs`
-and `timeline::phase::capture_begin`/`capture_end`; boot puts the tap on
+Input is `crates/agent/src/tap.rs` over `input::backend::remote`'s step
+queue, the capture `crates/agent/src/capture.rs` and
+`timeline::phase::capture_begin`/`capture_end`; boot puts the tap on
 `xapi` in `crates/boot/src/agent_glue.rs`.
 
 ```sh
-h2 agent pad '{"player":0,"buttons":["a"],"hold_ticks":10}'
-h2 agent pad '{"sticks":{"left":[0,1]},"at_tick":"now","hold_ticks":90}'
-h2 agent input                                  # open ports, queues, mode
+h2 agent press a                                # A for 150 ms
+h2 agent pad '{"player":1,"at_tick":900,"steps":[{"buttons":["rt"],"ticks":30}]}'
+h2 agent pad '{"steps":[{"left":[0,1],"ticks":90},{"buttons":["a"],"reads":2}]}'
+h2 agent padstate                               # every port, open ports, mode
 h2 agent record courtyard                       # ...play or pad...
 h2 agent stop                                   # writes inputs/courtyard.input
 h2 agent replay courtyard
 h2 agent capture 900                            # 900 ticks, about 30 s
 h2 agent capture 10000ms sample                 # h2 built --features perf
-printf 'claim\npad {"buttons":["start"],"hold_ticks":2}\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
+printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
 ```
 
-Methods added: `input.pad`, `input.clear`, `input.record`,
-`input.replay`, `input.stop`, `input.status`, `profile.capture`. All but
-`input.status` and `profile.capture` need `session.claim`; run alone, the
-CLI's input short forms claim for the call.
+Methods: `input.pad`, `input.release`, `input.state`, `input.record`,
+`input.replay`, `input.stop` (host methods the input tap adds; `Act`
+access but `input.state`, so no claim is needed while nobody holds
+control), and `profile.capture` (core, read-only).
 
 How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
 `crates/timeline`):
@@ -608,36 +627,48 @@ How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
 - **Where input goes in.** The agent's tap is an `xapi::tap::InputTap`,
   the layer `H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use: it sees each
   `XInputGetState` result just before the guest gets it, so the game reads
-  agent input exactly as it reads a pad. It wraps the tap those set: a
-  replay runs first (it stands in for the pad) and agent packets go on
-  top; a recording runs last, so it logs agent packets too. Taps are now
-  told which port each handle opened on (`InputTap::opened`), which is how
-  a packet for `player` 1 finds controller port 1. Without XAPI input,
-  input calls answer `UNAVAILABLE`.
-- **Pad packets.** `input.pad {player, at_tick | delay_ticks, hold_ticks,
-  buttons, sticks, triggers}`. `player` is the controller port (0 to 3).
-  The clock is the game's own tick (the stamp's `tick`): a packet holds
-  for reads made while the stamp reads `at_tick` to `at_tick + hold_ticks
-  - 1`, so `"now"` (the default) starts with the next read. `hold_ticks`
-  defaults to 1, at most 18000. A holding packet replaces the whole pad:
-  what it doesn't name is released and centred. Buttons are `a b x y black
-  white` (pressed fully), `start back dpad_up dpad_down dpad_left
-  dpad_right left_thumb right_thumb`; sticks are `[x, y]` from -1 to 1 (up
-  is +y); triggers 0 to 1. When two packets hold at once the later one
-  wins. The packet number moves whenever the pad the game gets changes,
-  as a real pad's does; until the first packet, reads pass untouched, so a
-  run with the agent on and no packets is byte for byte the same input.
-  Packets outlive the connection that sent them (so a one-shot `h2 agent
-  pad` works) and are dropped when the map changes, since the tick starts
-  again. The reply says `open: false` when the game hasn't opened that
-  controller: the packet is kept, but nothing reads it.
+  agent input exactly as it reads a pad. Every host that runs the game
+  through boot's XAPI has it: `h2 serve` (headless pad), `h2 play` and
+  the Xbox app. (The first Xbox build merged steps into the app shell's
+  player-one pad, `KeyboardFallback`, which `h2 serve` doesn't use; the
+  tap replaced it so there is one mechanism.) It wraps the tap those env
+  vars set: a replay runs first (it stands in for the pad) and agent
+  steps go on top; a recording runs last, so it logs agent steps too.
+  Taps are told which port each handle opened on (`InputTap::opened`),
+  which is how a step for `player` 1 finds controller port 1. Without
+  XAPI input there is no tap, and the input methods aren't listed.
+- **Pad steps.** `input.pad {player, at_tick, steps, append}`, each step
+  `{buttons, left, right, lt, rt, ms, ticks, reads}`. `player` is the
+  controller port (0 to 3, default 0). Each port has a queue of steps
+  (`input::backend::remote::Remote`). A step holds for `ms` of wall time,
+  `ticks` of game time (the stamp's `tick`, the same on every run), or
+  both, and until the game has read the pad `reads` times (default once),
+  so a short press is never lost to a slow frame; with neither `ms` nor
+  `ticks` it holds until replaced. `at_tick` (a tick, or `"now"`, the
+  default) holds the first step back until the game's tick reaches it.
+  `append` adds to the queue, otherwise it replaces it; `input.release
+  {player}` empties one port's queue, or all of them. A step merges over
+  what the read returns (`input::backend::fallback::merge`, as the
+  keyboard merges over a pad): buttons are or'd, a stick or trigger the
+  step moves wins. Buttons are `a b x y black white lt rt` (analog, fully
+  pressed), `up down left right start back ls rs`; sticks `[x, y]` from
+  -1 to 1 (up is +y); triggers 0 to 1. The packet number moves whenever
+  the pad the game gets changes, as a real pad's does; until the first
+  step, reads pass untouched, so a run with the agent on and no steps is
+  byte for byte the same input. Queues outlive the connection that filled
+  them (so a one-shot `h2 agent press` works) and are emptied when the map
+  changes, since the tick starts again. The reply says `open: false` when
+  the game hasn't opened that controller: the steps are kept, but nothing
+  reads them. `input.state` gives `pad` (player one), `pads` (every port:
+  `active`, `queued`, `done`, what is held), `open` ports, `tick`, and the
+  recording or replay below.
 - **Recording and replay.** `input.record {name, replace}` logs every
   read (status, handle, the 22 bytes, the game tick) to the cache
   directory's `inputs/<name>.input` in `xapi::tap`'s text format, the one
   `H2_INPUT_RECORD` writes; it's written at `input.stop`, or when the game
   exits. Names are letters, digits, `.`, `_`, `-`; an existing log is kept
   unless `replace` is true. `input.replay {name}` answers reads from a log
-  read for read (keyed by read index, as `H2_INPUT_REPLAY`). `input.status`
+  read for read (keyed by read index, as `H2_INPUT_REPLAY`). `input.state`
   and `input.stop` give its counts: `reads` in the log, `replayed`,
   `matched` (same handle as recorded), `handle_mismatches` (the runs have
   parted) and `past_end` (left live). One recording or replay at a time.
@@ -663,12 +694,14 @@ How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
-- **Sampling.** `sample: true` also runs `perf::Session` over the window,
-  started on the game thread, and returns `sampling.folded`, the folded
-  stacks (`profile.txt` and `profile.json` beside it). Only an h2 built
-  with `--features perf` has the sampler; otherwise the capture still
-  runs and `sampling.unavailable` says why. Resolving the samples runs on
-  the game thread when the window ends and can take a while.
+- **Sampling.** `sample: true` also runs the in-process sampler
+  (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
+  is what `profile.sample.stop` answers: the module-relative dump
+  (`profile.h2prof` under `H2_SAMPLE_DIR`, which `h2 profile remote`
+  resolves) and its sample count. Only an h2 built with `--features perf`
+  on a host with a sampler has it; otherwise, or while a
+  `profile.sample.start` run holds it, the capture still runs and
+  `sampling.unavailable` says why.
 - **World counts of effects, projectiles and particles.** Not built.
   `live-telemetry` doesn't read them: its world scan reads every object
   header, so projectiles would be a cheap count by the header's type byte
@@ -681,7 +714,8 @@ designed separately), `hs.eval`, intent input (`look_at`, `move_to`),
 per-owner attribution and engine-phase spans, events for frame-budget
 misses, and the effect, projectile and particle counts above. Nothing
 here was run against the game: input reaching the guest is proven at the
-`xapi` tap with synthetic pads, captures with synthetic frames.
+`xapi` tap with synthetic pads, captures with synthetic frames and a fake
+sampler.
 
 ## Open decisions
 

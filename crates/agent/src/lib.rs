@@ -1,7 +1,13 @@
-//! The agent API server (docs/runtime/agent-api.md): a Unix socket in the
-//! game process that answers JSON-RPC requests about the running game.
+//! The agent API server (docs/runtime/agent-api.md): a Unix socket (or a
+//! TCP port, for the Xbox app) in the game process that answers JSON-RPC
+//! requests about the running game.
 //!
 //! * [`Server`] listens and queues requests from connections.
+//! * [`Agent::add_method`] lets the game's host answer more methods
+//!   (the sampling profiler, host perf) on the same thread.
+//! * [`Agent::input_tap`] is `xapi`'s input tap: `input.pad` steps per
+//!   player, `input.record` and `input.replay`, wherever the game has XAPI
+//!   input (`h2 serve`, `h2 play`, the Xbox app).
 //! * [`Agent`] is the executor. The game thread calls
 //!   [`Agent::on_tick`] after each `game_tick` (through [`AgentFeature`],
 //!   a read-only observer on the `frame` bridge) and
@@ -16,35 +22,16 @@
 mod capture;
 mod exec;
 mod reader;
-#[cfg(unix)]
 mod server;
 mod tap;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
-pub use exec::{Agent, ConnId, Page, TICK_STALE, query};
+pub use exec::{Access, Agent, ConnId, HostMethod, Page, TICK_STALE, query};
 pub use reader::{
     GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
 };
-#[cfg(unix)]
 pub use server::Server;
-pub use tap::{AgentTap, Chain, gamepad};
-
-/// The socket is a Unix socket; elsewhere listening fails with a clear error.
-#[cfg(not(unix))]
-pub struct Server(std::path::PathBuf);
-
-#[cfg(not(unix))]
-impl Server {
-    pub fn listen(path: &std::path::Path, _agent: Agent) -> std::io::Result<Server> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            format!("{}: the agent API needs Unix sockets", path.display()),
-        ))
-    }
-    pub fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
+pub use tap::{AgentTap, Chain, Input, pad_steps};
 
 /// The agent as a feature (`agent`): the tick observer, and the cutscene
 /// start and stop observers that set the `cinematic` phase.

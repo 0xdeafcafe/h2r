@@ -5920,6 +5920,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "snapshot"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "lockstep",
+ "runtime",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -171,6 +171,18 @@ impl Shell {
             .with_title(self.config.title.clone())
             .with_inner_size(LogicalSize::new(w.max(160), h.max(120)))
             .with_min_inner_size(LogicalSize::new(160, 120));
+        if let Some((index, count)) = self.config.tile
+            && let Some(monitor) = event_loop.primary_monitor()
+        {
+            let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            if let Some((x, y, w, h)) =
+                crate::tile::tile((size.width, size.height), 40.0, index, count)
+            {
+                attrs = attrs
+                    .with_position(winit::dpi::LogicalPosition::new(x, y))
+                    .with_inner_size(LogicalSize::new(w, h));
+            }
+        }
         if self.config.fullscreen {
             attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
         }

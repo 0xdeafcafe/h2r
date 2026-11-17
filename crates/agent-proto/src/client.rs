@@ -2,14 +2,68 @@
 //! for [`Client::next_event`].
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::{Event, Request, RpcError, ServerLine};
+use crate::{Endpoint, Event, Request, RpcError, ServerLine};
+
+/// The connection under a [`Client`].
+enum Conn {
+    #[cfg(unix)]
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+
+impl Conn {
+    fn try_clone(&self) -> std::io::Result<Conn> {
+        Ok(match self {
+            #[cfg(unix)]
+            Conn::Unix(s) => Conn::Unix(s.try_clone()?),
+            Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
+        })
+    }
+
+    fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Conn::Unix(s) => s.set_read_timeout(t),
+            Conn::Tcp(s) => s.set_read_timeout(t),
+        }
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Conn::Unix(s) => s.read(buf),
+            Conn::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Conn::Unix(s) => s.write(buf),
+            Conn::Tcp(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Conn::Unix(s) => s.flush(),
+            Conn::Tcp(s) => s.flush(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum CallError {
@@ -38,15 +92,36 @@ impl From<std::io::Error> for CallError {
 }
 
 pub struct Client {
-    out: UnixStream,
-    lines: BufReader<UnixStream>,
+    out: Conn,
+    lines: BufReader<Conn>,
     next_id: u64,
     events: VecDeque<Event>,
 }
 
 impl Client {
+    /// Connects to a Unix socket at `path`, or to TCP when `path` reads
+    /// `tcp://HOST:PORT` ([`Endpoint::parse`]).
     pub fn connect(path: &Path) -> std::io::Result<Client> {
-        let s = UnixStream::connect(path)?;
+        Self::connect_to(&Endpoint::from(path.to_path_buf()))
+    }
+
+    pub fn connect_to(endpoint: &Endpoint) -> std::io::Result<Client> {
+        let s = match endpoint {
+            #[cfg(unix)]
+            Endpoint::Unix(p) => Conn::Unix(UnixStream::connect(p)?),
+            #[cfg(not(unix))]
+            Endpoint::Unix(p) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!("{}: no Unix sockets here; use tcp://HOST:PORT", p.display()),
+                ));
+            }
+            Endpoint::Tcp(a) => {
+                let s = TcpStream::connect(a.as_str())?;
+                s.set_nodelay(true)?;
+                Conn::Tcp(s)
+            }
+        };
         Ok(Client {
             out: s.try_clone()?,
             lines: BufReader::new(s),

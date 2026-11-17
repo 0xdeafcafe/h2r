@@ -15,11 +15,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agent_proto::{
-    At, Boundary, Capture, CaptureParams, ClearParams, CountParams, Counters, Counts, Event,
-    EventKind, Features, GroupBy, InputStatus, InputStopped, Kind, Notification, OBJECT_FIELDS,
-    Object, ObjectId, ObjectParams, ObjectResult, PROTOCOL, PadParams, Padded, PauseParams, Phase,
-    QueryParams, QueryResult, RecordParams, ReplayParams, Request, Response, RpcError, Sampling,
-    Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
+    At, Boundary, Capture, CaptureParams, CountParams, Counters, Counts, Event, EventKind,
+    Features, GroupBy, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams,
+    ObjectResult, PROTOCOL, PauseParams, Phase, QueryParams, QueryResult, Request, Response,
+    RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -29,6 +28,22 @@ use crate::reader::{GameStatus, Reader};
 
 /// One connection.
 pub type ConnId = u64;
+
+/// Who may call a host method ([`Agent::add_method`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Any connection: it only reads.
+    Read,
+    /// Any connection while none holds control, else only the controller:
+    /// it acts on the game (pad input, the profiler), and a one-shot
+    /// `h2 agent` call should not need `session.claim` first.
+    Act,
+}
+
+/// A method the game's host answers ([`Agent::add_method`]): params in,
+/// result or error out. It runs on the game's thread with the agent's
+/// state locked, so it must be quick and must not call the [`Agent`].
+pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
 
 /// With no tick for this long the game counts as loading, and world reads
 /// are answered between slices instead of waiting for a tick.
@@ -84,14 +99,14 @@ struct State {
     shutdown: bool,
     /// The game thread is inside the pause loop, holding the tick.
     holding: bool,
+    /// Methods the host answers, by name.
+    host: BTreeMap<String, (Access, HostMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
     /// it out): nothing can pause, and world reads come between slices.
     no_tick_hook: bool,
-    /// Pad packets and the controllers the game has open, shared with the
-    /// input tap.
+    /// Pad queues, recording or replay, the controllers the game has open
+    /// and where logs go: shared with the input tap and its methods.
     input: Arc<Mutex<Input>>,
-    /// Where input logs (and captures) go; the cache directory unless set.
-    dir: Option<PathBuf>,
     /// The `profile.capture` running.
     capture: Option<Capturing>,
     /// Frame stats (`timeline::phase` unless a test sets one).
@@ -244,6 +259,24 @@ impl Agent {
         self.lock().no_tick_hook = true;
     }
 
+    /// Answers `name` with `f` (replacing an earlier one of that name).
+    /// A result that is a JSON object gets the `at` stamp unless it has
+    /// one. Core methods can't be replaced.
+    pub fn add_method(
+        &self,
+        name: &str,
+        access: Access,
+        f: impl FnMut(Value) -> Result<Value, RpcError> + Send + 'static,
+    ) {
+        assert!(
+            !method::ALL.contains(&name),
+            "{name} is a core method of the agent API"
+        );
+        self.lock()
+            .host
+            .insert(name.to_owned(), (access, Box::new(f)));
+    }
+
     /// The feature plan's text, for `features.list`.
     pub fn set_plan(&self, lines: Vec<String>) {
         self.lock().plan = lines;
@@ -263,7 +296,7 @@ impl Agent {
             input::lock(&s.input).mode(),
             agent_proto::InputMode::Recording { .. }
         );
-        if recording && let Err(e) = s.stop_input() {
+        if recording && let Err(e) = input::stop_and_write(&s.input) {
             eprintln!("agent: writing the input recording at exit: {}", e.message);
         }
         s.shutdown = true;
@@ -294,16 +327,18 @@ impl Agent {
     }
 
     /// The input tap for `xapi`, wrapping the one already there (`inner`,
-    /// from `H2_INPUT_RECORD` or `H2_INPUT_REPLAY`) where `Chain` says.
+    /// from `H2_INPUT_RECORD` or `H2_INPUT_REPLAY`) where `Chain` says, and
+    /// the `input.*` host methods that drive it.
     pub fn input_tap(&self, inner: Option<(Box<dyn xapi::tap::InputTap>, Chain)>) -> AgentTap {
         let input = Arc::clone(&self.lock().input);
+        input::add_input_methods(self, &input);
         AgentTap::new(input, inner)
     }
 
     /// Where input logs (and captures) are written (default: the cache
     /// directory, `agent_proto::cache_dir`).
     pub fn set_dir(&self, dir: PathBuf) {
-        self.lock().dir = Some(dir);
+        input::lock(&self.lock().input).dir = Some(dir);
     }
 
     /// Where frames for `profile.capture` come from (tests).
@@ -489,10 +524,10 @@ impl State {
             self.map_ticks += 1;
         }
         if old.map.is_some() && old.map != self.game.map {
-            // A cutscene doesn't outlive its map, nor do pad packets (the
+            // A cutscene doesn't outlive its map, nor do pad steps (the
             // game's tick starts again).
             self.cinematic = false;
-            input::lock(&self.input).clear(None);
+            input::lock(&self.input).clear_pads();
         }
         if let Some(t) = self.game.tick {
             input::lock(&self.input).set_clock(t);
@@ -674,6 +709,22 @@ impl State {
             )));
         }
         let p = req.params;
+        if let Some((access, _)) = self.host.get(m) {
+            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
+                return Some(Err(RpcError::new(
+                    code::NOT_CONTROLLER,
+                    "another connection holds control",
+                )));
+            }
+            let at = to_value(self.at());
+            let (_, f) = self.host.get_mut(m)?;
+            return Some(f(p).map(|mut v| {
+                if let Value::Object(o) = &mut v {
+                    o.entry("at").or_insert(at);
+                }
+                v
+            }));
+        }
         Some(match m {
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
@@ -682,7 +733,13 @@ impl State {
                 controller: self.controller == Some(conn),
                 claimed: self.controller.is_some(),
             })),
-            method::METHODS => Ok(Value::from(method::ALL.to_vec())),
+            method::METHODS => Ok(Value::from(
+                method::ALL
+                    .iter()
+                    .map(|m| (*m).to_owned())
+                    .chain(self.host.keys().cloned())
+                    .collect::<Vec<String>>(),
+            )),
             method::CLAIM if self.conns.get(&conn).is_none_or(|c| c.closing) => Err(RpcError::new(
                 code::NOT_CONTROLLER,
                 "a closed connection can't take control",
@@ -799,12 +856,6 @@ impl State {
                 at: self.at(),
                 plan: self.plan.clone(),
             })),
-            method::INPUT_PAD => params::<PadParams>(p).and_then(|pp| self.pad(&pp).map(to_value)),
-            method::INPUT_CLEAR => params::<ClearParams>(p).map(|cp| {
-                let cleared = input::lock(&self.input).clear(cp.player);
-                serde_json::json!({ "at": self.at(), "cleared": cleared })
-            }),
-            method::INPUT_STATUS => Ok(to_value(self.input_status())),
             method::PROFILE_CAPTURE => {
                 let cp = match params::<CaptureParams>(p) {
                     Ok(cp) => cp,
@@ -815,14 +866,6 @@ impl State {
                     Err(e) => Some(Err(e)),
                 };
             }
-            method::INPUT_RECORD => params::<RecordParams>(p).and_then(|rp| self.record(rp)),
-            method::INPUT_REPLAY => params::<ReplayParams>(p).and_then(|rp| self.replay(rp)),
-            method::INPUT_STOP => self.stop_input().map(|ended| {
-                to_value(InputStopped {
-                    at: self.at(),
-                    ended,
-                })
-            }),
             other => Err(RpcError::new(
                 code::METHOD_NOT_FOUND,
                 format!("no method {other}; session.methods lists them"),
@@ -966,10 +1009,7 @@ impl State {
             None => {
                 Err("sampling needs an h2 built with --features perf; this one wasn't".to_owned())
             }
-            Some(_) => {
-                let dir = self.dir().join("captures").join(format!("{stem}.profile"));
-                self.sampler.as_mut().unwrap().start(&dir)
-            }
+            Some(s) => s.start(),
         });
         self.capture = Some(Capturing {
             conn,
@@ -1022,24 +1062,13 @@ impl State {
         }
         let c = self.capture.take().expect("checked above");
         let frames = self.frames().end().unwrap_or_default();
+        let unavailable = |e: String| serde_json::json!({ "unavailable": e });
         let sampling = c.sampling.map(|s| match s {
-            Err(e) => Sampling {
-                folded: None,
-                unavailable: Some(e),
-            },
+            Err(e) => unavailable(e),
             Ok(()) => match self.sampler.as_mut().map(|s| s.finish()) {
-                Some(Ok(path)) => Sampling {
-                    folded: Some(path.display().to_string()),
-                    unavailable: None,
-                },
-                Some(Err(e)) => Sampling {
-                    folded: None,
-                    unavailable: Some(e),
-                },
-                None => Sampling {
-                    folded: None,
-                    unavailable: Some("the sampler went away".into()),
-                },
+                Some(Ok(v)) => v,
+                Some(Err(e)) => unavailable(e),
+                None => unavailable("the sampler went away".into()),
             },
         });
         let stats = capture::summarise(&frames, &c.marks, c.budget_ms, c.spikes);
@@ -1066,103 +1095,7 @@ impl State {
     }
 
     fn dir(&self) -> PathBuf {
-        self.dir.clone().unwrap_or_else(agent_proto::cache_dir)
-    }
-
-    fn pad(&self, p: &PadParams) -> Result<Padded, RpcError> {
-        let mut i = input::lock(&self.input);
-        if !i.tap {
-            return Err(no_tap());
-        }
-        let q = i
-            .push(p)
-            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
-        drop(i);
-        Ok(Padded {
-            at: self.at(),
-            player: p.player,
-            from_tick: q.from,
-            until_tick: q.until,
-            queued: q.queued,
-            open: q.open,
-        })
-    }
-
-    fn log_path(&self, name: &str) -> Result<PathBuf, RpcError> {
-        if !agent_proto::valid_log_name(name) {
-            return Err(RpcError::new(
-                code::INVALID_PARAMS,
-                format!("{name:?}: a log name is letters, digits, '.', '_' and '-'"),
-            ));
-        }
-        Ok(self.dir().join("inputs").join(format!("{name}.input")))
-    }
-
-    fn record(&self, p: RecordParams) -> Result<Value, RpcError> {
-        let path = self.log_path(&p.name)?;
-        if !input::lock(&self.input).tap {
-            return Err(no_tap());
-        }
-        if path.exists() && !p.replace {
-            return Err(RpcError::new(
-                code::INVALID_PARAMS,
-                format!("{} exists; \"replace\": true overwrites it", path.display()),
-            ));
-        }
-        let mut i = input::lock(&self.input);
-        i.record(&p.name, path)
-            .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
-        Ok(serde_json::json!({ "at": self.at(), "mode": i.mode() }))
-    }
-
-    fn replay(&self, p: ReplayParams) -> Result<Value, RpcError> {
-        let path = self.log_path(&p.name)?;
-        if !input::lock(&self.input).tap {
-            return Err(no_tap());
-        }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display())))?;
-        let log = xapi::tap::InputLog::parse(&text)
-            .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display())))?;
-        let mut i = input::lock(&self.input);
-        i.replay(&p.name, path, log)
-            .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
-        Ok(serde_json::json!({ "at": self.at(), "mode": i.mode() }))
-    }
-
-    /// Ends a recording (writing its file) or a replay.
-    fn stop_input(&mut self) -> Result<agent_proto::InputMode, RpcError> {
-        let stopped = input::lock(&self.input).stop();
-        let Some((ended, file)) = stopped else {
-            return Err(RpcError::new(
-                code::INVALID_REQUEST,
-                "nothing is recording or replaying",
-            ));
-        };
-        if let Some((path, log)) = file {
-            let write = path
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&path, log.to_text()));
-            if let Err(e) = write {
-                return Err(RpcError::new(
-                    code::UNAVAILABLE,
-                    format!("writing {}: {e}", path.display()),
-                ));
-            }
-        }
-        Ok(ended)
-    }
-
-    fn input_status(&self) -> InputStatus {
-        let i = input::lock(&self.input);
-        InputStatus {
-            at: self.at(),
-            mode: i.mode(),
-            queued: i.queued_by_port(),
-            open: i.open_ports(),
-            tap: i.tap,
-        }
+        input::lock(&self.input).dir()
     }
 
     fn counters(&self) -> Result<Counters, RpcError> {
@@ -1188,13 +1121,6 @@ impl State {
             counts,
         })
     }
-}
-
-fn no_tap() -> RpcError {
-    RpcError::new(
-        code::UNAVAILABLE,
-        "this game has no input tap (it runs without XAPI input)",
-    )
 }
 
 fn round(v: f64) -> f64 {

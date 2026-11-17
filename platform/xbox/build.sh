@@ -3,13 +3,27 @@
 # (docs/runtime/xbox.md):
 #
 #   platform/xbox/build.sh /abs/path/to/disc/halo2.iso [--no-module]
+#       [--maps demo|all] [--mappack /abs/path/to/mappack.iso]
 #
 #   build/package/           the package's contents: h2uwp.exe, h2game.dll
 #                            (+ .stamp), disc/, bootcache/, AppxManifest.xml, Assets/
+#   build/package/bootcache/h2data/
+#                            with --maps all and --mappack: the map pack as
+#                            nine 1.0 content packages (h2 import-mappack),
+#                            copied into LocalState\h2data at the first launch
 #   build/h2recomp.msix      the signed package
 #   build/h2recomp.cer       its certificate (the console must trust it;
 #                            deploy.sh sends it with the package)
 #   build/h2recomp.aumid     the app's AUMID, for launching by hand
+#   build/symbols/           this build's h2uwp.exe, its linker map
+#                            (h2uwp.map) and h2game.dll, for symbolising
+#                            console profiles (xbox.sh profile)
+#
+# --maps demo (the default) packs the menu, The Heretic and Zanzibar
+# (h2host::layout::DISC_FILES, about 1 GB); --maps all packs the whole disc
+# and, with --mappack, the Multiplayer Map Pack (7 GB or more), as
+# platform/apple/build.sh does for tvOS and iOS. Going back to demo removes
+# what all added.
 #
 # --no-module keeps an existing build/package/h2game.dll (the slow part:
 # the whole-XBE lift, emit and about 16 minutes of clang). Rebuild it
@@ -28,15 +42,34 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-iso=${1:?usage: build.sh /abs/path/to/halo2.iso [--no-module]}
+usage="usage: build.sh /abs/path/to/halo2.iso [--no-module] [--maps demo|all] [--mappack ISO]"
+iso=${1:?$usage}
 shift
 pack_args=
-for a in "$@"; do
-  case "$a" in
+maps=demo
+mappack=
+while [ $# -gt 0 ]; do
+  case "$1" in
     --no-module) pack_args=--no-module ;;
-    *) echo "build.sh: unknown argument $a" >&2; exit 2 ;;
+    --maps)
+      maps=${2:?build.sh: --maps needs demo or all}
+      shift ;;
+    --mappack)
+      mappack=${2:?build.sh: --mappack needs a path}
+      shift ;;
+    *) echo "build.sh: unknown argument $1" >&2; exit 2 ;;
   esac
+  shift
 done
+case "$maps" in
+  demo | all) ;;
+  *) echo "build.sh: --maps must be demo or all, not $maps" >&2; exit 2 ;;
+esac
+if [ -n "$mappack" ]; then
+  [ "$maps" = all ] || { echo "build.sh: --mappack needs --maps all" >&2; exit 2; }
+  [ -f "$mappack" ] || { echo "build.sh: no map pack disc at $mappack" >&2; exit 2; }
+fi
+[ "${H2_XBOX_BUILD_DRY_RUN:-}" = 1 ] && { echo "build.sh: maps=$maps mappack=${mappack:-none} pack_args=${pack_args:-none}"; exit 0; }
 publisher=CN=h2recomp-dev
 out=${H2_XBOX_OUT:-$here/build}
 stage=$out/package
@@ -48,7 +81,7 @@ command -v osslsigncode >/dev/null || { echo "build.sh: no osslsigncode (brew in
 # Each part increases, so an install over an earlier build is an update:
 # 1.0.<yyddd>.<minute of the day>.
 version=1.0.$(date -u +%y%j | sed 's/^0*//').$(( $(date -u +%H | sed 's/^0//') * 60 + $(date -u +%M | sed 's/^0//') ))
-mkdir -p "$stage"
+mkdir -p "$stage" "$out/symbols"
 
 # The toolchain for the cross build and the module (H2_XWIN, H2_LLVM, ...).
 . "$root/platform/windows/env.sh"
@@ -61,17 +94,33 @@ echo "build.sh: h2uwp.exe for x86_64-pc-windows-msvc (static CRT, app container)
 # /APPCONTAINER marks the executable for the UWP app container. wgpu's GL
 # backend (never used: app::embedded::host_surface::backends) imports
 # opengl32.dll and two gdi32 pixel-format calls, which the console may not
-# have; delay-loading them keeps the loader from looking.
+# have; delay-loading them keeps the loader from looking. /map writes the
+# linker map that names its functions for console profiles (nothing in
+# the executable changes).
 (cd "$root" && CARGO_TARGET_DIR="$xbox_target" \
   CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS -C target-feature=+crt-static -C link-arg=/APPCONTAINER" \
   cargo rustc -Zbuild-std=std,panic_abort --target x86_64-pc-windows-msvc --release -p uwp-host --bin h2uwp -- \
-  -C link-arg=/DELAYLOAD:opengl32.dll -C link-arg=/DELAYLOAD:gdi32.dll -C link-arg=delayimp.lib)
+  -C link-arg=/DELAYLOAD:opengl32.dll -C link-arg=/DELAYLOAD:gdi32.dll -C link-arg=delayimp.lib \
+  "-C" "link-arg=/map:$out/symbols/h2uwp.map")
 cp "$xbox_target/x86_64-pc-windows-msvc/release/h2uwp.exe" "$stage/h2uwp.exe"
+cp "$stage/h2uwp.exe" "$out/symbols/h2uwp.exe"
 
 echo "build.sh: disc subset, game module and boot cache"
 (cd "$root" && env -u RUSTC_BOOTSTRAP CARGO_TARGET_DIR="$host_target" \
-  cargo run --release -p apple-host --example pack -- "$iso" "$stage" --platform xbox $pack_args)
+  cargo run --release -p apple-host --example pack -- "$iso" "$stage" --platform xbox --maps "$maps" $pack_args)
 [ -f "$stage/h2game.dll" ] || { echo "build.sh: no h2game.dll yet; run without --no-module once" >&2; exit 1; }
+cp "$stage/h2game.dll" "$out/symbols/h2game.dll"
+
+# The map pack lives on the hard disk, not the disc: the same import as
+# `h2 play` does on the Mac, into the package's seed, which the app copies
+# into LocalState\h2data at launch (h2host::maps, Layout::prepare).
+seed=$stage/bootcache/h2data
+rm -rf "$seed"
+if [ -n "$mappack" ]; then
+  echo "build.sh: map pack packages from $mappack"
+  (cd "$root" && env -u RUSTC_BOOTSTRAP CARGO_TARGET_DIR="$host_target" \
+    cargo run --release -q -p cli -- import-mappack "$mappack" --data "$seed" --no-update --force)
+fi
 
 echo "build.sh: manifest $version"
 ids=$(cd "$root" && env -u RUSTC_BOOTSTRAP CARGO_TARGET_DIR="$host_target" \

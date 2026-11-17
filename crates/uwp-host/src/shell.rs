@@ -199,6 +199,26 @@ fn run() -> Result<()> {
     target.SetRoot(&visual)?;
     let panel: ISwapChainPanelNative = Panel { compositor: compositor.clone(), visual: visual.clone() }.into();
 
+    // LocalState\h2env: the game's environment (H2_LEVEL to boot into a
+    // level, ...), before the defaults below so it can override them.
+    game_env(&local);
+    // The agent API over TCP (docs/runtime/xbox.md, "Remote control"): on
+    // unless LocalState\agent-off. Profiles go to LocalState.
+    if crate::switches::agent(&local) && std::env::var_os("H2_AGENT").is_none() {
+        // SAFETY: before the guest, render and audio threads exist.
+        unsafe { std::env::set_var("H2_AGENT", crate::switches::agent_endpoint()) };
+    }
+    match std::env::var("H2_AGENT") {
+        Ok(a) if !a.is_empty() => eprintln!(
+            "h2uwp: agent API on {a} (LocalState\\{} turns it off)",
+            crate::switches::AGENT_OFF
+        ),
+        _ => eprintln!("h2uwp: agent API off"),
+    }
+    if std::env::var_os("H2_SAMPLE_DIR").is_none() {
+        // SAFETY: before the guest, render and audio threads exist.
+        unsafe { std::env::set_var("H2_SAMPLE_DIR", &local) };
+    }
     // The host perf line (docs/runtime/xbox.md, "Where frame time goes"):
     // on by default; LocalState\host-perf-off turns it off.
     let perf = crate::switches::host_perf(&local);
@@ -271,6 +291,26 @@ fn run() -> Result<()> {
     vfs::flush_pending_metadata();
     drop(panel);
     Ok(())
+}
+
+/// Sets the variables `LocalState\h2env` names (`switches::parse_env`),
+/// logging each; one already set wins.
+fn game_env(local: &Path) {
+    let path = local.join(crate::switches::ENV_FILE);
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let (vars, bad) = crate::switches::parse_env(&text);
+    for b in bad {
+        eprintln!("h2uwp: {}: {b}", path.display());
+    }
+    for (k, v) in vars {
+        if std::env::var_os(&k).is_some() {
+            eprintln!("h2uwp: {k} is already set; {} leaves it", crate::switches::ENV_FILE);
+            continue;
+        }
+        eprintln!("h2uwp: {k}={v} (from {})", crate::switches::ENV_FILE);
+        // SAFETY: before the guest, render and audio threads exist.
+        unsafe { std::env::set_var(&k, &v) };
+    }
 }
 
 /// Logs each file-system step the hard disk's mount takes, with the host

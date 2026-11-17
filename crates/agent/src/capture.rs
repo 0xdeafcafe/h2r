@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use agent_proto::{CaptureStats, CountStats, PhaseStats, Spike};
 use timeline::phase::{COUNTERS, Counter, FrameSample, PHASES, Phase};
@@ -32,14 +32,14 @@ impl FrameSource for TimelineFrames {
     }
 }
 
-/// A sampling profiler run over the window (`perf::Session`, when the
-/// game was built with the `perf` feature).
+/// A sampling profiler run over the window: the game's own
+/// (`profile.sample.*`, boot's `sampling`, with the `perf` feature).
 pub trait Sampler: Send {
-    /// Starts sampling the calling thread (the game's) and the threads
-    /// registered with it, to write into `dir`.
-    fn start(&mut self, dir: &Path) -> Result<(), String>;
-    /// Stops and writes the profile; returns the folded stacks' path.
-    fn finish(&mut self) -> Result<PathBuf, String>;
+    /// Starts sampling the game's threads.
+    fn start(&mut self) -> Result<(), String>;
+    /// Stops and writes the profile; answers what `profile.sample.stop`
+    /// would (where the dump went, how many samples).
+    fn finish(&mut self) -> Result<serde_json::Value, String>;
 }
 
 /// One game tick seen during the capture: when it ended, and where.

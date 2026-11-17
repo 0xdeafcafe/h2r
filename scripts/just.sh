@@ -138,6 +138,9 @@ h2_size_warning() {
   if [ "$target" = tvos ]; then
     echo "just: on tvOS the map pack is copied into Caches, which tvOS may purge when short of space; the app copies it back at the next launch."
   fi
+  if [ "$target" = xbox ]; then
+    echo "just: on Xbox the map pack is copied into LocalState at the first launch (NTFS does not clone), so that launch takes longer."
+  fi
   if [ "${maps:-demo}" = all ] && [ -z "${mappack:-}" ]; then
     echo "just: no map pack disc (disc/mappack.iso, mappack= or H2_MAPPACK): the disc's own maps only."
   fi
