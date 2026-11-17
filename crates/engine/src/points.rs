@@ -431,6 +431,24 @@ points! { ALL;
     /// them every player's unit (`0x14df40`, `0x14deb0`) and "some player
     /// dead" (`players_globals+5`); AL 1 when safe.
     SAVE_SAFE @ 0x0022_6190: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The host's answer to a join request (session in EAX, request in
+    /// EDI): 0 accepts, 3 refuses unless the session state (`S+0x741c`)
+    /// is 5 (the lobby), 2 for an invite-only session, 4 when full.
+    SESSION_JOIN_CHECK @ 0x0006_2fe0: [fn(session: eax, request: edi) -> eax ret 0], Optional; "docs/live/live-coop.md";
+    /// Sync-server: start sending the game state to a joining client's
+    /// view (EAX): compress the block and queue the join and state pieces
+    /// ahead of its updates. AL 1 when queued.
+    SIM_JOIN_SEND_STATE @ 0x0008_62e0: [fn(view: eax) -> al ret 0], Optional; "docs/live/live-coop.md";
+    /// Sync-client: the synchronous-join message (view in EDI, the
+    /// server's update number on the stack). AL 1 when taken.
+    SIM_JOIN_RECEIVE @ 0x0008_5dc0: [fn(view: edi, update: stack 0) -> al ret 4], Optional; "docs/live/live-coop.md";
+    /// Sync-client: the last (empty) game-state piece: decompress what
+    /// arrived (`length` bytes) into the game-state block. AL 1 when it
+    /// came to `0x3fe000` bytes.
+    SIM_STATE_RECEIVED @ 0x0006_aa20: [fn(world: edi, length: stack 0) -> al ret 4], Optional; "docs/live/live-coop.md";
+    /// Apply one update record (stack): player entries, the player-set
+    /// change (`+0xDD0`, mask `+0xDD4`), events, the save flag (`+0x403C`).
+    SIM_UPDATE_APPLY @ 0x0006_83a0: [opaque], Optional; "docs/live/live-coop.md";
     /// Save the game state (checkpoint): the save callbacks, then the
     /// writer `0x2151f0`.
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";

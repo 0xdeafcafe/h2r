@@ -14,6 +14,7 @@ pub mod account_screen;
 pub mod aim_assist;
 pub mod community_variants;
 pub mod controls_text;
+pub mod coop_jip;
 pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
@@ -1015,6 +1016,13 @@ pub fn run_hosted_with_live(
             let n = arm.set_max_players(i64::from(setting_defs::coop_max_players(store)));
             if n != coop_probe::MAX_PLAYERS {
                 eprintln!("coop-live: co-op takes up to {n} players (coop.max_players)");
+            }
+            // coop.join_in_progress: the host lets friends join a running
+            // game (docs/live/live-coop.md 14).
+            let jip = setting_defs::coop_join_in_progress(store);
+            coop_jip::set_enabled(jip);
+            if !jip {
+                eprintln!("coop-jip: off (coop.join_in_progress)");
             }
         }
         let on = coop_live::install(&mut features, _live.clone(), arm, host.settings.clone(), &opts.disc)?;
