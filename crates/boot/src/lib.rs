@@ -324,6 +324,21 @@ pub struct Module {
     pub resumes: usize,
 }
 
+impl Module {
+    /// With a module built with `H2_PGO=gen`, write its raw profile now
+    /// (`H2_PGO_OUT`, default `$TMPDIR/h2.profraw`) and say so on stderr.
+    /// The profile runtime writes it again at exit; this one covers a run
+    /// that ends here (`H2_BOOT_STOP_AT_PRESENT`) but not the process.
+    pub fn write_profile(&self) {
+        // SAFETY: load_module only accepts our modules.
+        match unsafe { emit::compile::pgo::write_profile(&self._lib) } {
+            None => {}
+            Some(Ok(path)) => eprintln!("pgo: raw profile written to {}", path.display()),
+            Some(Err(e)) => eprintln!("pgo: {e}"),
+        }
+    }
+}
+
 /// Install `bridge` into a generated dylib's boot bridge: the whole table
 /// where it has `h2boot_install_v3`, else (a module built before
 /// `h2abi_v1_exit`) the v2 prefix, whose `charge` and `fast_release` its
@@ -1067,6 +1082,9 @@ pub fn run_hosted_with_live(
     if let Some(a) = &ds {
         a.output.halt();
     }
+    // H2_PGO=gen: the run is over (a present count, the slice limit, the
+    // host); the training profile is complete.
+    module.write_profile();
     // Fail what's queued and close the socket before the module goes.
     drop(agent);
     if let Some(h) = &harness {

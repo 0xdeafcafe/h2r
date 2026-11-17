@@ -156,7 +156,7 @@ a fresh temporary at its destination.
 
 The default remains `H2_OPT=1 H2_DEBUG=lines`: `-O1 -gline-tables-only`,
 with strict floating-point behavior. `H2_OPT` also accepts `0`, `g`, `s`,
-`2`; `H2_DEBUG` accepts `none`, `lines`, `full`. Both are cache-keyed.
+`2`, `3`; `H2_DEBUG` accepts `none`, `lines`, `full`. Both are cache-keyed.
 `H2_OPT=0 H2_DEBUG=none` is available for compile-speed experiments, but
 can make guest execution slower; it is not the default.
 
@@ -178,6 +178,60 @@ stamp records the cold level and a hash of the hot list, so `h2 run` and
 same as before. `h2 build` prints how many sources were cold. It only
 changes how fast cold code runs, never what it does; measure fps before
 relying on it (build-perf.md has the compile-time side).
+
+### Compiler switches (opt-in): `-O3`, the CPU, PGO
+
+All off by default; each adds flags to `compile::cflags`, so each is in
+every object's key and in the boot stamp. Set the same values on `h2 run`
+and `h2 play` as on `h2 build`, or they rebuild (`crates/emit/src/compile/pgo.rs`).
+
+- `H2_OPT=3`: `-O3`.
+- `H2_CPU=<name>`: `-mcpu=<name>` (`apple-m1`, `apple-m3`, ...) for arm64
+  targets (macOS, tvOS, iOS); an x86_64 target (Intel in `--arch all`,
+  Windows) compiles without it. Clang rejects an unknown name.
+- `H2_PGO=gen`: `-fprofile-instr-generate`. The module link passes the
+  same flag, so the clang driver links its own profile runtime
+  (`libclang_rt.profile_osx.a` from `clang -print-resource-dir`) into
+  `libh2game.dylib`, with a small shim (`pgo::SHIM`). The raw profile goes
+  to `H2_PGO_OUT` (read when the module loads; default
+  `$TMPDIR/h2.profraw`; llvm's `%p`/`%m` patterns work): written at the end
+  of every `boot::run` (`H2_BOOT_STOP_AT_PRESENT`, the slice limit, the
+  window closing), printing `pgo: raw profile written to …`, and again by
+  the runtime at exit. Not for Windows yet.
+- `H2_PGO=use:<file.profdata>`: `-fprofile-instr-use=<file>` (made
+  absolute), `-Wno-profile-instr-out-of-date`,
+  `-Wno-profile-instr-unprofiled`, and `-DH2_PGO_PROFILE=<content hash>`,
+  which no source reads: it keys the objects and the stamp on the
+  profile's contents, so a new profile at the same path recompiles. The
+  file must stay in place for `h2 run`/`play` to match the stamp.
+
+Merge with the `llvm-profdata` of the clang that compiled
+(`xcrun llvm-profdata` beside `/usr/bin/clang`: the versions printed by
+`clang --version` and `xcrun llvm-profdata --version` should agree; a raw
+profile newer than the tool is rejected). Static functions are named by
+source file name in the profile, not path, so the training and the use
+build may use different `--out` directories. The loop on the real image
+(the training level is a choice; any headless run works):
+
+```
+OUT=$TMPDIR/h2pgo; T=$TMPDIR/h2pgo-run
+cargo build --release -p cli
+# 1. Instrumented build, then the training run with the same switches.
+H2_OPT=2 H2_PGO=gen target/release/h2 build disc/halo2.iso --out $OUT/gen
+H2_OPT=2 H2_PGO=gen H2_PGO_OUT=$T/h2-%p.profraw \
+H2_LEVEL=03a_oldmombasa H2_BOOT_STOP_AT_PRESENT=4000 \
+target/release/h2 run disc/halo2.iso --out $OUT/gen --data $T/data --fresh-data
+# 2. Merge (one or more runs).
+xcrun llvm-profdata merge -o $T/h2.profdata $T/h2-*.profraw
+# 3. The optimised build, and the same switches to run or play it.
+H2_OPT=2 H2_PGO=use:$T/h2.profdata target/release/h2 build disc/halo2.iso --out $OUT/use
+H2_OPT=2 H2_PGO=use:$T/h2.profdata target/release/h2 play disc/halo2.iso --out $OUT/use
+```
+
+`crates/emit/tests/pgo.rs` runs the same loop on a synthetic handler:
+an instrumented build writes a profile, `llvm-profdata merge` and `show`
+read it, a `use` build compiles, links and computes the same result, and
+`H2_OPT=3` and `H2_CPU` build; each keys its objects apart.
 
 The CLI prints emission receipt validation, analysis, lift/plan, C emission,
 object dependency/driver discovery, hash/pin work, clang wall time, archive validation/creation,
