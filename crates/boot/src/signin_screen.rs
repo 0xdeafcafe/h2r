@@ -62,7 +62,7 @@ pub const TASK_CONTINUE: u32 = 0x003a_0620;
 
 /// Our string ids: the title, then the label and the description, each a
 /// pair the text alternates between.
-pub const ID_BASE: u32 = crate::layout_glue::ID_BASE + 0x0500_0000;
+pub const ID_BASE: u32 = crate::ui_kit::ids::family("signin").base;
 pub const TITLE_ID: u32 = ID_BASE + 0x10;
 pub const TEXT_IDS: [u32; 4] = [
     ID_BASE + 0x11,
@@ -84,8 +84,8 @@ const PAGE_BUFFERS: u32 = 8;
 /// Directions are not button events: the controller update raises them as
 /// event kinds 1 to 4 (`list_class::UP_EVENT` and on), from the d-pad or
 /// the left stick, again every 250 ms while held.
-pub const A_BUTTON: u32 = 0;
-pub const B_BUTTON: u32 = 1;
+pub const A_BUTTON: u32 = crate::ui_kit::input::A_BUTTON;
+pub const B_BUTTON: u32 = crate::ui_kit::input::B_BUTTON;
 
 /// The description: the right half of the screen, the level select's
 /// description font and colour. `H2_SIGNIN_TEXT_RECT=top,left,bottom,right`
@@ -110,13 +110,14 @@ impl Press {
     /// An event's kind and button words: a direction (d-pad or stick), or
     /// A or B.
     pub fn from_event(kind: u32, button: u32) -> Option<Press> {
-        Some(match (kind, button) {
-            (list_class::UP_EVENT, _) => Press::Up,
-            (list_class::DOWN_EVENT, _) => Press::Down,
-            (list_class::LEFT_EVENT, _) => Press::Left,
-            (list_class::RIGHT_EVENT, _) => Press::Right,
-            (list_class::BUTTON_EVENT, A_BUTTON) => Press::A,
-            (list_class::BUTTON_EVENT, B_BUTTON) => Press::B,
+        use crate::ui_kit::input::Input;
+        Some(match Input::from_event(kind, button)? {
+            Input::Up => Press::Up,
+            Input::Down => Press::Down,
+            Input::Left => Press::Left,
+            Input::Right => Press::Right,
+            Input::A => Press::A,
+            Input::B => Press::B,
             _ => return None,
         })
     }
@@ -534,16 +535,8 @@ async fn act(cx: &Cx, rows: &SigninRows, screen: u32) -> Result<(), EntryError> 
         return open_keyboard(cx, rows, field).await;
     }
     if effect == Effect::Close {
-        let (window, slot) = cx.read(|m| -> Result<_, MemFault> {
-            Ok((m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?))
-        })?;
         eprintln!("signin prompt: closing");
-        cx.call(
-            GuestCall::new(crate::skulls_screen::SCREEN_CLOSE)
-                .eax(slot)
-                .ecx(window),
-        )
-        .await?;
+        crate::ui_kit::lifecycle::close(cx, screen).await?;
     }
     Ok(())
 }
@@ -575,9 +568,6 @@ pub async fn open_keyboard(cx: &Cx, rows: &SigninRows, field: Field) -> Result<(
     .await?;
     Ok(())
 }
-
-const SCREEN_WINDOW: u32 = 0x74;
-const SCREEN_SLOT: u32 = 0x78;
 
 /// The served strings: a page of ours the locale lookup reads.
 pub struct Strings(pub Arc<SigninRows>);

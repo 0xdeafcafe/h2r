@@ -501,7 +501,7 @@ impl Mem for Guest {
 /// [`description_id`] from [`description_for`]. So the claim is on the
 /// whole id: another family of ours may share the index with another top
 /// byte (`crate::string_ids` checks every family against every other).
-const ID_BASE: u32 = 0x00ff_e000;
+const ID_BASE: u32 = crate::ui_kit::ids::family("community variants").base;
 pub fn is_ours(id: u32) -> bool {
     id & 0xffff_ff00 == ID_BASE
 }

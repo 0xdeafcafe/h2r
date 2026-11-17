@@ -197,8 +197,9 @@ pub fn disc_levels(disc: &Path) -> anyhow::Result<Vec<Level>> {
 /// (`community_variants` takes `0x??ffe0xx`, the layouts' family
 /// `0x??fff0xx`), so the index differs from theirs, not just the top byte:
 /// `0x20ffe000` showed the community variants' names in place of ours.
-pub const TEXT_ID_BASE: u32 = 0x20ff_d000;
-pub const TEXT_SLOTS: u32 = 128;
+pub const TEXT_ID_BASE: u32 = TEXT_FAMILY.base;
+pub const TEXT_SLOTS: u32 = TEXT_FAMILY.len;
+const TEXT_FAMILY: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("co-op texts");
 pub const TEXT_SLOT_LEN: u32 = 128;
 
 /// Text slots in guest memory: a string id per slot, its text written when
@@ -1082,22 +1083,9 @@ impl Rows for JoinRows {
 
 // ---- actions ----
 
-/// A screen's window and slot (`+0x74`, `+0x78`), and the close the generic
-/// back handler makes (`crate::skulls_screen::SCREEN_CLOSE`).
-const SCREEN_WINDOW: u32 = 0x74;
-const SCREEN_SLOT: u32 = 0x78;
-
+/// Closes `screen` as B does (`crate::ui_kit::lifecycle::close`).
 async fn close(cx: &Cx, screen: u32) -> Result<(), EntryError> {
-    let (window, slot) = cx.read(|m| -> Result<_, MemFault> {
-        Ok((m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?))
-    })?;
-    cx.call(
-        GuestCall::new(crate::skulls_screen::SCREEN_CLOSE)
-            .eax(slot)
-            .ecx(window),
-    )
-    .await?;
-    Ok(())
+    crate::ui_kit::lifecycle::close(cx, screen).await
 }
 
 /// The host's Start: the campaign menu's setters put the level and

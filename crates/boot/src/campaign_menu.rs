@@ -40,7 +40,7 @@ pub const LEVEL_SELECT_LOADER: u32 = 0x002b_130a;
 /// (the return address of its call to `0x149f49`).
 pub const MAIN_MENU_REQUEST_RET: u32 = 0x002b_16f3;
 /// Our strings: the title, then one label a row.
-pub const ID_BASE: u32 = crate::layout_glue::ID_BASE + 0x0200_0000;
+pub const ID_BASE: u32 = crate::ui_kit::ids::family("campaign picker").base;
 pub const TITLE_ID: u32 = ID_BASE;
 const TITLE: &str = "Campaign";
 /// The most campaigns the picker lists (Halo 2 and 63 more).
