@@ -283,6 +283,8 @@ impl GfxBackend {
         let mut renderer = Renderer::new(&ctx);
         // `H2_GFX_STAGED_UPLOADS=0`: a queue write per persistent buffer.
         renderer.set_staged_uploads(std::env::var_os("H2_GFX_STAGED_UPLOADS").is_none_or(|v| v != "0"));
+        // `H2_GFX_VERTEX_SLABS=0`: a buffer per persistent stream.
+        renderer.set_vertex_slabs(std::env::var_os("H2_GFX_VERTEX_SLABS").is_none_or(|v| v != "0"));
         Self {
             ctx,
             store,

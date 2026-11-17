@@ -938,8 +938,7 @@ impl Renderer {
             .enumerate()
             .map(|(i, (sp, vs))| {
                 if let Some(&Some(id)) = d.stream_ids.get(i) {
-                    let (buf, len) = persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
-                    return (buf, 0, len);
+                    return persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
                 }
                 let len = sp.host_bytes(d.vertex_count);
                 let (buf, off) = self
@@ -951,14 +950,11 @@ impl Renderer {
             })
             .collect();
         let (vertices, indices) = match kept {
-            Some((buf, len, count)) => (count, Some((buf, 0, len))),
+            Some((buf, off, len, count)) => (count, Some((buf, off, len))),
             None => {
                 let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
                 let indices = list.map(|idx| match kept_id {
-                    Some(id) => {
-                        let (buf, len) = self.persistent.put_indices(ctx, id, d.primitive, &idx);
-                        (buf, 0, len)
-                    }
+                    Some(id) => self.persistent.put_indices(ctx, id, d.primitive, &idx),
                     None => {
                         let bytes: &[u8] = bytemuck::cast_slice(&idx);
                         let len = (bytes.len() as u64).max(4);
@@ -1040,9 +1036,22 @@ impl Renderer {
         self.persistent.set_staged(on);
     }
 
+    /// Persistent vertex and index regions are carved out of a few large
+    /// slabs (on, the default) or get a buffer each
+    /// ([`PersistentVertices::set_slabs`]). Switch before the first draw.
+    pub fn set_vertex_slabs(&mut self, on: bool) {
+        self.persistent.set_slabs(on);
+    }
+
     /// Counters of the persistent vertex buffers ([`Draw::stream_ids`]).
     pub fn persistent_stats(&self) -> PersistentStats {
         self.persistent.stats()
+    }
+
+    /// Buffers the persistent vertex and index regions take
+    /// ([`PersistentVertices::buffers`]).
+    pub fn persistent_buffers(&self) -> usize {
+        self.persistent.buffers()
     }
 
     /// Lets the upload rings reuse their space: call after submitting every
