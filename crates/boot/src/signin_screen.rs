@@ -27,6 +27,13 @@
 //! prompt out: the waiting sign-in is cancelled at once and fails, with a
 //! line saying to use `h2 play --signin-terminal`.
 //!
+//! **A new account** (the app builds' "New Account" identity,
+//! [`live_hle::LiveConfig::offer_new_account`]): the page asks for a
+//! gamertag, then an invite when the server wants one; A opens the game's
+//! own keyboard for it ([`crate::signin_keyboard`]) and the typed text
+//! goes to [`Hle::signin_typed`]. A taken gamertag turns the page into
+//! the code prompt above.
+//!
 //! The pure part ([`CodeEntry`], [`page`]) is tested here; the guest side
 //! needs a game run (the checklist in docs/live/live.md).
 
@@ -42,6 +49,7 @@ use runtime::{CpuAbi, ExecCtx, GuestFault, Runtime, TransferAbi, abi};
 
 use crate::account_screen::{LINE_CHARS, layout, recovery_lines, wrap};
 use crate::list_class::{self, Action, Button, Buttons, ListClass, LiveText, Rows, TextBlock};
+use crate::signin_keyboard::{self as keyboard, Field, Typing};
 use crate::ui::{Chosen, LABEL_SLOT};
 
 /// The screen id and feature id.
@@ -65,6 +73,12 @@ pub const TEXT_IDS: [u32; 4] = [
 pub const TITLE: &str = "Xbox Live sign-in";
 /// Bytes per served string buffer (UTF-8 and its NUL).
 pub const BUFFER: u32 = 0x200;
+/// The page's buffers: the title, [`TEXT_IDS`]'s four, the keyboard's
+/// title and subtitle ([`keyboard::Typing::title`]), then the keyboard's
+/// UTF-16 text.
+const KEYBOARD_TITLES: u32 = 5;
+const KEYBOARD_TEXT: u32 = 7;
+const PAGE_BUFFERS: u32 = 8;
 
 /// Button words in a button event (`list_class::BUTTON_EVENT`): A, B.
 /// Directions are not button events: the controller update raises them as
@@ -122,6 +136,8 @@ pub enum Effect {
     Cancel,
     /// Close the screen ([`Hle::signin_dismiss`]).
     Close,
+    /// Open the keyboard for this field.
+    Keyboard(Field),
 }
 
 /// The code being typed with the d-pad.
@@ -160,6 +176,8 @@ impl CodeEntry {
                 Effect::Redraw
             }
             (Phase::Code { .. }, Press::A) => Effect::Submit(self.code()),
+            (Phase::Gamertag { .. }, Press::A) => Effect::Keyboard(Field::Gamertag),
+            (Phase::Invite { .. }, Press::A) => Effect::Keyboard(Field::Invite),
             (Phase::Create { error }, Press::A) if !needs_invite(error) => Effect::Create,
             (p, Press::A | Press::B) if p.finished() => Effect::Close,
             (_, Press::B) => Effect::Cancel,
@@ -236,6 +254,26 @@ pub fn page(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> (String, St
             });
             (format!("Sign in as {tag}"), l)
         }
+        Phase::Gamertag { error } => {
+            let mut l = wrap(&format!("A gamertag on {host}."), LINE_CHARS);
+            l.push("Taken? Yours signs in with its code.".into());
+            l.extend(match error {
+                Some(e) => wrap(&e.to_string(), LINE_CHARS),
+                None => vec!["A: type it. B: cancel.".into()],
+            });
+            ("New Xbox Live account".into(), l)
+        }
+        Phase::Invite { error } => {
+            let mut l = wrap(
+                &format!("{host} needs an invite to make {tag}."),
+                LINE_CHARS,
+            );
+            l.extend(match error {
+                Some(e) => wrap(&e.to_string(), LINE_CHARS),
+                None => vec!["A: type the code. B: cancel.".into()],
+            });
+            ("Invite code".into(), l)
+        }
         Phase::Working => (
             "Checking...".into(),
             vec![format!("Checking with {host}..."), "B: cancel".into()],
@@ -310,6 +348,8 @@ pub struct SigninRows {
     /// The page of served strings ([`TEXT_IDS`], [`TITLE_ID`]).
     page: Arc<std::sync::OnceLock<u32>>,
     shown: Mutex<Shown>,
+    /// The keyboard opened for the page's gamertag or invite.
+    typing: Typing,
 }
 
 impl SigninRows {
@@ -318,6 +358,7 @@ impl SigninRows {
             hle,
             page: Arc::default(),
             shown: Mutex::default(),
+            typing: Typing::default(),
         }
     }
 
@@ -343,9 +384,43 @@ impl SigninRows {
                 self.hle.signin_dismiss();
             }
             Effect::Close => self.hle.signin_dismiss(),
-            Effect::None | Effect::Redraw => {}
+            Effect::None | Effect::Redraw | Effect::Keyboard(_) => {}
         }
         effect
+    }
+
+    /// The keyboard's text buffer, once the page is in.
+    pub fn keyboard_buffer(&self) -> Option<u32> {
+        self.page.get().map(|base| base + BUFFER * KEYBOARD_TEXT)
+    }
+
+    /// Our string ids' addresses in the page at `base`, with the retail
+    /// keyboard's titles while one of ours is open.
+    pub fn string(&self, base: u32, id: u32) -> Option<u32> {
+        string_at(base, id).or_else(|| {
+            self.typing
+                .title(id)
+                .map(|i| base + BUFFER * (KEYBOARD_TITLES + i as u32))
+        })
+    }
+
+    /// The keyboard's text once it closed, to the HLE.
+    fn poll_keyboard(&self, m: &dyn engine::memory::GuestMemory) -> Result<(), MemFault> {
+        let Some(buffer) = self.keyboard_buffer() else {
+            return Ok(());
+        };
+        if let Some((field, text)) = self.typing.poll(m, buffer)? {
+            eprintln!(
+                "signin prompt: the {field:?} keyboard closed{}",
+                if text.is_some() {
+                    " with text"
+                } else {
+                    " empty"
+                }
+            );
+            self.hle.signin_typed(text.as_deref());
+        }
+        Ok(())
     }
 
     fn ids(&self) -> (u32, u32) {
@@ -401,6 +476,9 @@ impl Rows for SigninRows {
         }
         live
     }
+    fn write_texts(&self, m: &mut dyn engine::memory::GuestMemory) -> Result<(), MemFault> {
+        self.poll_keyboard(m)
+    }
 }
 
 /// Our string ids' addresses in the page at `base`: the title first, then
@@ -451,7 +529,11 @@ pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
 /// A on the row (or Start): the press, then closing the screen when it is
 /// done with.
 async fn act(cx: &Cx, rows: &SigninRows, screen: u32) -> Result<(), EntryError> {
-    if rows.press(Press::A) == Effect::Close {
+    let effect = rows.press(Press::A);
+    if let Effect::Keyboard(field) = effect {
+        return open_keyboard(cx, rows, field).await;
+    }
+    if effect == Effect::Close {
         let (window, slot) = cx.read(|m| -> Result<_, MemFault> {
             Ok((m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?))
         })?;
@@ -466,6 +548,34 @@ async fn act(cx: &Cx, rows: &SigninRows, screen: u32) -> Result<(), EntryError> 
     Ok(())
 }
 
+/// Opens the game's keyboard for `field` on the page's empty text buffer,
+/// for the signing-in controller ([`crate::signin_keyboard`]).
+pub async fn open_keyboard(cx: &Cx, rows: &SigninRows, field: Field) -> Result<(), EntryError> {
+    let (Some(&base), Some(buffer)) = (rows.page.get(), rows.keyboard_buffer()) else {
+        eprintln!("signin prompt: no text page; the keyboard is not opened");
+        return Ok(());
+    };
+    let controller = rows.hle.signin().map_or(0, |p| p.controller);
+    let [title, subtitle] = field.titles();
+    cx.write(|m| -> Result<(), MemFault> {
+        m.write(base + BUFFER * KEYBOARD_TITLES, &served(title))?;
+        m.write(base + BUFFER * (KEYBOARD_TITLES + 1), &served(subtitle))?;
+        m.write(buffer, &keyboard::units(""))
+    })?;
+    rows.typing.start(field);
+    eprintln!(
+        "signin prompt: opening the keyboard for the {field:?} (context {}, controller {controller})",
+        field.context()
+    );
+    cx.call(GuestCall::new(keyboard::OPEN).ecx(controller).args([
+        field.context(),
+        buffer,
+        field.max_chars() + 1,
+    ]))
+    .await?;
+    Ok(())
+}
+
 const SCREEN_WINDOW: u32 = 0x74;
 const SCREEN_SLOT: u32 = 0x78;
 
@@ -477,10 +587,11 @@ impl feature::Feature for Strings {
         Manifest::new("signin-strings", "The sign-in prompt's text").doc("docs/live/live.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let base = b.guest_alloc(BUFFER * 5, Permissions::RW)?;
+        let base = b.guest_alloc(BUFFER * PAGE_BUFFERS, Permissions::RW)?;
         self.0.page.set(base).ok();
+        let rows = Arc::clone(&self.0);
         b.locale()
-            .source("signin text", move |id| string_at(base, id));
+            .source("signin text", move |id| rows.string(base, id));
         Ok(())
     }
 }
@@ -622,6 +733,14 @@ mod tests {
         }
     }
 
+    fn test_hle() -> Arc<Hle> {
+        Hle::with_address(
+            live_hle::LiveConfig::default(),
+            "127.0.0.1:3074".parse().unwrap(),
+        )
+        .unwrap()
+    }
+
     fn code() -> Phase {
         Phase::Code { error: None }
     }
@@ -684,6 +803,48 @@ mod tests {
             assert_eq!(e.press(&done, Press::B), Effect::Close);
         }
         assert_eq!(e.code(), "000000", "nothing typed off the code page");
+        // A new account's text is typed on the keyboard.
+        let tag = Phase::Gamertag { error: None };
+        assert_eq!(e.press(&tag, Press::A), Effect::Keyboard(Field::Gamertag));
+        assert_eq!(e.press(&tag, Press::Up), Effect::None);
+        assert_eq!(e.press(&tag, Press::B), Effect::Cancel);
+        let invite = Phase::Invite {
+            error: Some(SetupError::InviteInvalid),
+        };
+        assert_eq!(e.press(&invite, Press::A), Effect::Keyboard(Field::Invite));
+        assert_eq!(e.press(&invite, Press::B), Effect::Cancel);
+        assert_eq!(e.code(), "000000");
+    }
+
+    #[test]
+    fn the_new_account_pages_ask_for_a_gamertag_then_an_invite() {
+        let e = CodeEntry::default();
+        let (label, body) = page(Some(&prompt(Phase::Gamertag { error: None })), &e, 0);
+        assert_eq!(label, "New Xbox Live account");
+        assert!(body.contains("live.forbes.red"), "{body}");
+        assert!(body.contains("A: type it"), "{body}");
+        let bad = Phase::Gamertag {
+            error: Some(SetupError::BadGamertag),
+        };
+        let (_, body) = page(Some(&prompt(bad)), &e, 0);
+        assert!(!body.contains("A: type it"), "the error instead: {body}");
+        let (label, body) = page(Some(&prompt(Phase::Invite { error: None })), &e, 0);
+        assert_eq!(label, "Invite code");
+        assert!(body.contains("needs an invite"), "{body}");
+    }
+
+    #[test]
+    fn the_keyboard_titles_are_served_only_while_it_is_open() {
+        let rows = SigninRows::new(test_hle());
+        let base = 0x0010_0000;
+        assert_eq!(rows.string(base, TITLE_ID), Some(base));
+        assert_eq!(rows.string(base, keyboard::GAMERTAG_TITLE_IDS[0]), None);
+        rows.typing.start(Field::Gamertag);
+        assert_eq!(
+            rows.string(base, keyboard::GAMERTAG_TITLE_IDS[1]),
+            Some(base + BUFFER * (KEYBOARD_TITLES + 1))
+        );
+        assert_eq!(rows.string(base, keyboard::INVITE_TITLE_ID), None);
     }
 
     #[test]
@@ -763,6 +924,8 @@ mod tests {
         ];
         for e in errors {
             phases.push(Phase::Code { error: e.clone() });
+            phases.push(Phase::Gamertag { error: e.clone() });
+            phases.push(Phase::Invite { error: e.clone() });
             phases.push(Phase::Create { error: e });
         }
         let long = Prompt {

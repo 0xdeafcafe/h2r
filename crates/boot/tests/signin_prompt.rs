@@ -58,6 +58,7 @@ fn a_waiting_sign_in_opens_the_prompt_once_and_stays_pending() {
             enabled: true,
             accounts_path: Some(path),
             server_url: Some("http://127.0.0.1:9".into()),
+            offer_new_account: false,
         },
         NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31920)),
         ServerOptions {

@@ -136,6 +136,7 @@ pub fn config(data: &Path, env: Option<&str>) -> (LiveConfig, Vec<String>) {
                 enabled: true,
                 accounts_path: Some(accounts_path(data)),
                 server_url: Some(server),
+                offer_new_account: true,
             }
         }
     };
@@ -178,6 +179,7 @@ mod tests {
                 enabled: true,
                 accounts_path: Some(data.join("live/accounts.json")),
                 server_url: Some(live_proto::DEFAULT_SERVER.into()),
+                offer_new_account: true,
             }
         );
         assert!(

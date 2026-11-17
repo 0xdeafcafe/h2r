@@ -283,6 +283,7 @@ fn hle_with(path: &Path, url: &str) -> Arc<Hle> {
             enabled: true,
             accounts_path: Some(path.into()),
             server_url: Some(url.into()),
+            offer_new_account: false,
         },
         NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31900)),
         ServerOptions {

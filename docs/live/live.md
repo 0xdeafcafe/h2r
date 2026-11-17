@@ -1334,9 +1334,111 @@ cancelled at once, with a line pointing at `--signin-terminal`);
 Every step logs a `live:` or `signin prompt:` line on stderr.
 
 The app builds (iOS, tvOS) run the same HLE and boot glue, so an entry
-marked `needs_code` in `live/accounts.json` asks in game the same way.
-Nothing writes such an entry there yet: a gamertag new to the device has to
-be typed, which needs the keyboard (above).
+marked `needs_code` in `live/accounts.json` asks in game the same way, and
+they offer a new account in game (next).
+
+#### A new account in game
+
+On the app builds there is no terminal, so the account list itself offers
+the way in. `live_hle::platform::config` sets
+`LiveConfig::offer_new_account`, which does two things
+(`live_hle::config`):
+
+- A missing `live/accounts.json` is no accounts rather than an error (the
+  first start), and
+- the list gets one more identity, "New Account" (`NEW_ACCOUNT_TAG`, xuid
+  `NEW_ACCOUNT_XUID`, `0x0009000100000000`, outside the stand-ins' range),
+  marked as waiting.
+
+Signing in with it starts a `Signin` that asks for a gamertag first
+(`Signin::adding`). The prompt's phases before the code page:
+
+| Phase | Shows | A | B |
+|---|---|---|---|
+| Gamertag | "A gamertag on HOST", the last error | open the keyboard | cancel |
+| Invite | "HOST needs an invite to make TAG", the last error | open the keyboard | cancel |
+
+The typed text goes to `Hle::signin_typed(Some(text))`, a backed-out
+keyboard to `signin_typed(None)` (from the invite: back to the gamertag).
+A gamertag that isn't one is refused without a request. Otherwise
+`account_setup::create` runs on its own thread, with the invite when one
+was typed:
+
+- **Free:** the account is made and saved to the accounts files, the
+  recovery secret is shown once (Created), and the logon goes on as the new
+  account, as above.
+- **Taken:** the gamertag is saved as waiting for its code
+  (`account_setup::save_waiting`: `{xuid: stand_in_xuid(tag), gamertag,
+  server, needs_code: true}`, added once, other entries kept), and the page
+  becomes the code page for that gamertag. The right code signs in as the
+  account itself. Backing out leaves the waiting entry, which the list
+  shows from then on.
+- **The server wants an invite:** the first refusal asks for one (Invite,
+  no error), and a bad one says so and asks again.
+- **Anything else** (unreachable, busy, server error) is said on the
+  gamertag page.
+
+**The keyboard** (`crates/boot/src/signin_keyboard.rs`). A on either page
+opens the game's own on-screen keyboard. On the app builds the host's
+system keyboard types into it (`keyboard_glue`). It is opened with the
+retail opener `0x00238c21`: stdcall `(context, buffer, capacity)`, `ret
+0xc`, the player in CL. The opener creates the screen through its loader
+`0x0023784f` and edits our UTF-16 buffer (a page of ours) in place.
+Static reading of the keyboard (retail 5849):
+
+- `0x002381de` backs the text up at `+0x618` and points `+0x818` at the
+  buffer.
+- B copies the backup back (`0x00237fcc`).
+- Done checks the text against the context's flags in the table at
+  `0x0044a9f8` and then runs the context's case of the jump table at
+  `0x00238468`.
+
+Contexts 8 to 11 and 17 to 20 only close the screen on Done. Contexts 16 to
+19 swap in the keyboard's own buffers when it is laid out (`0x00237a74`).
+So:
+
+- The gamertag uses context **8**: Done needs a letter or digit, and the
+  capacity is cut to 17 units.
+- The invite uses context **20**: no check, up to 150 units, and no title
+  of its own (string id 0).
+
+While one of ours is open, the prompt's string source answers that
+context's title ids (`0x0d00044f` and `0x12000450`, or 0) with our words.
+The buffer starts empty, so empty text when the keyboard closes means B.
+The prompt's row text polls for that close: once the shared channel's
+screen (`0x0054dba8 + 8`) is no longer the keyboard on our buffer, the text
+is read and passed on. A keyboard that never shows within 120 polls counts
+as backed out.
+
+Not established without a run:
+
+- what contexts 8 and 20 show around our title text;
+- that opening the keyboard from our screen's row press draws it on top
+  and takes input;
+- that row text keeps being asked while the keyboard covers the prompt
+  (the close is still seen when the prompt is back on top);
+- that the host keyboard bridge finds it (it accepts contexts up to 20);
+- how the game takes the signed-in user's xuid and gamertag changing from
+  "New Account" to the new account's under it.
+
+**Checklist for a run on tvOS or iOS** (fresh install, or
+`live/accounts.json` deleted):
+
+1. Xbox Live on the main menu lists "New Account". Pick it. Stderr:
+   `live: New Account: asking in game for a gamertag on <url>` and
+   `signin prompt: opening for controller 0`.
+2. The prompt reads "New Xbox Live account". Press A: `signin prompt:
+   opening the keyboard for the Gamertag (context 8, controller 0)`; the
+   game's keyboard opens, titled "Your gamertag", and the system keyboard
+   comes up with it.
+3. Type a free gamertag, Done: `the Gamertag keyboard closed with text`,
+   then `live: making <tag>`; the recovery secret page; A finishes signing
+   in.
+4. Again with a gamertag made elsewhere: the code page for it; enter the
+   6-digit code from its Account page.
+5. Against an invite-only server: the invite page; A opens the keyboard,
+   titled "Invite code".
+6. B on the keyboard: the page is asked again; B on the prompt cancels.
 
 **Checklist for a game run** (`h2 play --live-server URL` with an account
 made on that server's web dashboard and none on this machine):
@@ -1364,7 +1466,12 @@ made on that server's web dashboard and none on this machine):
 Tests: `crates/live-hle/tests/signin_code.rs` (the logon pending through a
 wrong code, the right code against the embedded server's real TOTP, both
 files saved, the countdown to a lockout, cancel, create, unreachable, no
-server); `crates/live-hle/src/config.rs` (the list);
+server; New Account making a free gamertag, a taken one kept waiting and
+signed in with its code, backing out of one, an invite-only server);
+`crates/live-hle/src/config.rs` (the list, the New Account row);
+`crates/boot/tests/new_account_prompt.rs` (New Account opening the prompt
+through the runner; A opening the retail keyboard on our buffer, with our
+title); `crates/boot/src/signin_keyboard.rs` (reading the text back);
 `crates/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
 five lines of 40); `crates/boot/src/list_class.rs` (a class's own buttons,
 live text); `crates/cli/src/play_live.rs` (the hand-off).

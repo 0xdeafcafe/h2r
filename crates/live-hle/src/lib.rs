@@ -43,7 +43,7 @@ pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};
 
-pub use config::{ConfigError, LiveConfig};
+pub use config::{ConfigError, LiveConfig, NEW_ACCOUNT_TAG, NEW_ACCOUNT_XUID};
 use entries::{Entry, Operation};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, GuestFault, TransferAbi};
 pub use state::USER_SIZE;
@@ -264,6 +264,12 @@ impl Hle {
     /// Make the gamertag on the server, when the prompt offers that.
     pub fn signin_create(&self) -> bool {
         self.lock().signin_create()
+    }
+    /// Text typed on the game's keyboard for a new account's gamertag or
+    /// invite; `None` when the keyboard was backed out of. False when no
+    /// text is being asked for.
+    pub fn signin_typed(&self, text: Option<&str>) -> bool {
+        self.lock().signin_typed(text)
     }
     /// The player backed out: the waiting logon fails.
     pub fn signin_cancel(&self) {

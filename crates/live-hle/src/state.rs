@@ -208,9 +208,19 @@ impl State {
     pub fn signin_create(&mut self) -> bool {
         self.signin.as_mut().is_some_and(|s| s.create())
     }
+    pub fn signin_typed(&mut self, text: Option<&str>) -> bool {
+        self.signin.as_mut().is_some_and(|s| s.typed(text))
+    }
     pub fn signin_cancel(&mut self) {
-        if let Some(s) = self.signin.as_mut() {
-            s.cancel();
+        let Some(s) = self.signin.as_mut() else {
+            return;
+        };
+        s.cancel();
+        // A gamertag found taken was saved as waiting for its code: list it
+        // now, so a later sign-in can pick it.
+        match self.config.accounts() {
+            Ok(accounts) => self.accounts = accounts,
+            Err(e) => eprintln!("live: reading the accounts after sign-in: {e}"),
         }
     }
     /// The prompt closed: forget a sign-in that has nothing more to ask
@@ -1034,7 +1044,7 @@ impl State {
                 }
                 // An identity waiting for a code: the logon waits for the
                 // prompt (crate::signin). One per logon, and only with a server.
-                let waiting: Vec<(usize, String)> = users
+                let waiting: Vec<(usize, u64, String)> = users
                     .as_chunks::<USER_SIZE>()
                     .0
                     .iter()
@@ -1044,7 +1054,7 @@ impl State {
                         self.accounts
                             .iter()
                             .find(|a| id != 0 && a.xuid == id && a.needs_code)
-                            .map(|a| (slot, a.gamertag.clone()))
+                            .map(|a| (slot, a.xuid, a.gamertag.clone()))
                     })
                     .collect();
                 let server_url = self.config.server_url.clone();
@@ -1063,10 +1073,15 @@ impl State {
                     return Ok(OUT_OF_MEMORY);
                 };
                 let session = self.service.as_ref().map(|_| Session::new(handle));
-                if let Some(((slot, tag), url)) = waiting {
-                    eprintln!("live: {tag} needs a code to sign in on {url}; asking in game");
+                if let Some(((slot, xuid, tag), url)) = waiting {
                     let files = crate::signin::files(self.config.accounts_path.as_deref());
-                    self.signin = Some(crate::signin::Signin::new(handle, slot, &tag, &url, files));
+                    self.signin = Some(if xuid == crate::config::NEW_ACCOUNT_XUID {
+                        eprintln!("live: {tag}: asking in game for a gamertag on {url}");
+                        crate::signin::Signin::adding(handle, slot, &url, files)
+                    } else {
+                        eprintln!("live: {tag} needs a code to sign in on {url}; asking in game");
+                        crate::signin::Signin::new(handle, slot, &tag, &url, files)
+                    });
                     m.set_u32(handle, 0)?;
                     m.set_u32(a[4], handle)?;
                     self.tasks.insert(

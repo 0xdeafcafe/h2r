@@ -15,7 +15,17 @@ pub struct LiveConfig {
     pub accounts_path: Option<PathBuf>,
     /// Base URL for all Live service calls. None selects local sign-in only.
     pub server_url: Option<String>,
+    /// List [`NEW_ACCOUNT_TAG`] for sign-in beside the accounts, and read a
+    /// missing accounts file as none: picking it makes or adds an account
+    /// in game ([`crate::signin`]). The app builds set it
+    /// ([`crate::platform::config`]); they have no terminal to ask in.
+    pub offer_new_account: bool,
 }
+
+/// The identity listed when [`LiveConfig::offer_new_account`] is set; its
+/// xuid is outside the stand-ins' range ([`crate::account_setup::stand_in_xuid`]).
+pub const NEW_ACCOUNT_TAG: &str = "New Account";
+pub const NEW_ACCOUNT_XUID: u64 = 0x0009_0001_0000_0000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -63,10 +73,28 @@ impl LiveConfig {
         if !self.enabled {
             return Ok(Vec::new());
         }
-        let Some(path) = &self.accounts_path else {
-            return Ok(Vec::new());
+        let mut accounts = match (&self.accounts_path, self.offer_new_account) {
+            (None, _) => Vec::new(),
+            (Some(path), offer) => match std::fs::read(path) {
+                Ok(json) => parse_accounts(&json)?,
+                // The app's first start: no account yet, made in game.
+                Err(e) if offer && e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e.into()),
+            },
         };
-        parse_accounts(&std::fs::read(path)?)
+        if self.offer_new_account
+            && self.server_url.is_some()
+            && accounts.len() < 16
+            && accounts.iter().all(|a| a.xuid != NEW_ACCOUNT_XUID)
+        {
+            accounts.push(Account {
+                xuid: NEW_ACCOUNT_XUID,
+                gamertag: NEW_ACCOUNT_TAG.into(),
+                key: None,
+                needs_code: true,
+            });
+        }
+        Ok(accounts)
     }
 }
 
@@ -233,14 +261,48 @@ mod tests {
             LiveConfig {
                 enabled: false,
                 accounts_path: None,
-                server_url: None
+                server_url: None,
+                offer_new_account: false,
             }
         );
         let config = LiveConfig {
             enabled: true,
             accounts_path: Some("/nonexistent/live-hle-accounts.json".into()),
             server_url: Some("https://server.example/base".into()),
+            offer_new_account: false,
         };
         assert!(matches!(config.accounts(), Err(ConfigError::Read(_))));
+    }
+    #[test]
+    fn the_app_lists_a_new_account_row_and_starts_with_no_file() {
+        let config = LiveConfig {
+            enabled: true,
+            accounts_path: Some("/nonexistent/live-hle-accounts.json".into()),
+            server_url: Some("https://server.example/base".into()),
+            offer_new_account: true,
+        };
+        let accounts = config.accounts().unwrap();
+        let listed: Vec<_> = accounts
+            .iter()
+            .map(|a| (a.xuid, a.gamertag.as_str(), a.needs_code))
+            .collect();
+        assert_eq!(listed, [(NEW_ACCOUNT_XUID, NEW_ACCOUNT_TAG, true)]);
+        // Without a server there is nothing to make an account on.
+        let offline = LiveConfig {
+            server_url: None,
+            ..config.clone()
+        };
+        assert!(offline.accounts().unwrap().is_empty());
+        // A file that is there but bad is still an error.
+        let dir = std::env::temp_dir().join(format!("live-hle-new-row-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("accounts.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let bad = LiveConfig {
+            accounts_path: Some(path),
+            ..config
+        };
+        assert!(matches!(bad.accounts(), Err(ConfigError::Json)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

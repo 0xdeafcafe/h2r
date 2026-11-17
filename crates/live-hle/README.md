@@ -43,7 +43,10 @@ Private account keys stay in host memory and are never logged or copied to the
 guest. Without a server URL, local sign-in remains available. An account
 marked `needs_code` keeps its logon pending while the boot's prompt asks for a
 recovery code; `signin.rs` checks it off the game thread, saves the key and
-lets the logon go on (docs/live/live.md, "In-game sign-in").
+lets the logon go on (docs/live/live.md, "In-game sign-in"). With
+`LiveConfig::offer_new_account` (the app builds) the list also holds "New
+Account", whose sign-in asks for a gamertag typed in game and makes it, or
+asks for its code when it is taken ("A new account in game").
 
 
 Run `cargo test -p live-hle` for synthetic boundary and real loopback tests;
