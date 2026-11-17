@@ -109,11 +109,11 @@ Each step is proven with tests; the user plays the result.
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
 8. **Menus.** The campaign picker and its level list (§4), and progress
    saved per campaign. **Built** ([multiple-campaigns.md](multiple-campaigns.md)),
-   not yet seen running.
+   confirmed in the game.
 
 ## 4. More than one campaign
 
-**Built, not yet seen running:** [multiple-campaigns.md](multiple-campaigns.md).
+**Built, confirmed in the game:** [multiple-campaigns.md](multiple-campaigns.md).
 In short: the level lists in `mainmenu.map`'s globals (`+0x170` start
 levels, `+0x178` the level select's campaigns and levels) are keyed by
 campaign id and have free slots, and looking a level up, starting it and

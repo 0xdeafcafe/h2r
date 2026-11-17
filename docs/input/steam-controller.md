@@ -1,7 +1,7 @@
 # Steam Controller
 
-Status: built and unit tested on synthetic reports; not yet tried on a
-controller. "To try on hardware" lists what to check, and "Unverified" what
+Status: built and unit tested on synthetic reports, and confirmed on a
+controller by the owner (2026-11-17). "To try on hardware" lists what to check, and "Unverified" what
 the tests cannot show.
 
 Both Valve controllers are read over raw HID, wired, through their wireless

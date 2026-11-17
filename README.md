@@ -22,14 +22,11 @@ tools to convert Halo 1's maps into Halo 2's engine.
 Speed is the big gap: about 11-16 fps in the main menu and about 15 in The
 Heretic on an M-series Mac, against a target of 30
 ([perf-budget.md](docs/perf/perf-budget.md),
-[frame-budget.md](docs/perf/frame-budget.md)). Much of the newer work is
-built and proven by tests but not yet confirmed in the game; the table says
-which.
+[frame-budget.md](docs/perf/frame-budget.md)).
 
 ## Features
 
-**Built**: works in the game or the tools. **Tests**: built and proven by
-tests, not yet confirmed in the game. **Design**: written up, not built.
+**Built**: works in the game or the tools. **Design**: written up, not built.
 
 | Area | Feature | State | Docs |
 | --- | --- | --- | --- |
@@ -49,21 +46,21 @@ tests, not yet confirmed in the game. **Design**: written up, not built.
 | Game | Expanded settings screens: Video, Controls, FOV | Built | [settings](docs/game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
 | | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
-| | Aim assist strength setting | Tests | [aim assist](docs/game/aim-assist.md) |
+| | Aim assist strength setting | Built | [aim assist](docs/game/aim-assist.md) |
 | | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
-| | New, edited and patched maps as packages | Tests | [maps](docs/game/maps.md) |
-| | More than one campaign: picker and per-campaign progress | Tests | [campaigns](docs/game/multiple-campaigns.md) |
-| | Halo 1 health model and meter | Tests | [health](docs/game/health.md) |
+| | New, edited and patched maps as packages | Built | [maps](docs/game/maps.md) |
+| | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/game/multiple-campaigns.md) |
+| | Halo 1 health model and meter | Built | [health](docs/game/health.md) |
 | | Forge, saved films and theater | Design | [forge](docs/game/forge.md), [theater](docs/game/theater.md) |
-| Halo 1 | All 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Tests | [h1 multiplayer](docs/game/h1-multiplayer.md) |
+| Halo 1 | All 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](docs/game/h1-multiplayer.md) |
 | | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](docs/formats/h1-map-format.md), [models](docs/formats/h1-models.md) |
 | Input | Remappable bindings, input timelines, typing into the game's keyboard | Built | [input](docs/input/input.md) |
 | | Button icons that follow the pad (Xbox, PlayStation, keyboard); extra button layouts | Built | [icons](docs/input/button-icons.md), [layouts](docs/input/controller-layouts.md) |
 | | DualSense: speaker and mute button | Built | [PlayStation](docs/audio/playstation-audio.md) |
-| | Steam Controller | Tests | [Steam](docs/input/steam-controller.md) |
+| | Steam Controller | Built | [Steam](docs/input/steam-controller.md) |
 | Live | Service: accounts, friends, teams, invites, stats, title files, cloud saves, custom maps, a relay | Built | [live](docs/live/live.md), [API](docs/live/live-api.md) |
 | | In the game: sign-in, matchmaking, custom games browser | Built | [matchmaking](docs/live/live-matchmaking.md), [custom games](docs/live/live-custom-games.md) |
-| | Co-op campaign over Live | Tests | [co-op](docs/live/live-coop.md) |
+| | Co-op campaign over Live | Built | [co-op](docs/live/live-coop.md) |
 | | Web app: dashboard, stats, live top-down map, replays, admin | Built | [web](web/README.md), [art](docs/live/live-art.md) |
 | | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2, a menu bar app | Built | [hosting](docs/live/live-hosting.md) |
 | Editor | `h2-editor`: 3D viewport, placements, game variants, playlists, Halo 1 maps | Built | [guide](docs/editor/editor-guide.md) |
@@ -84,9 +81,8 @@ In priority order:
    ([architecture-review.md](docs/perf/architecture-review.md)).
 2. Fidelity gaps, such as point sprites and the open items in
    [BOOT.md](docs/runtime/BOOT.md) and [shaders.md](docs/graphics/shaders.md).
-3. Confirm the **Tests** rows above in the game.
-4. 60 and 120 fps, and the rest of E3 lighting.
-5. Later: Forge, theater, and a Windows and Xbox host app.
+3. 60 and 120 fps, and the rest of E3 lighting.
+4. Later: Forge, theater, and a Windows and Xbox host app.
 
 ## Requirements
 
