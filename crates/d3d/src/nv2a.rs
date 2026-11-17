@@ -407,13 +407,9 @@ pub fn guest_def(
     let mut words = *psdef;
     words[..57].copy_from_slice(combiner_state);
     words[54] = texture_modes;
-    // On the stack: the judge builds one per draw on the guest's thread,
-    // and a collected flat_map grew a vector a byte at a time.
-    let mut bytes = [0u8; 240];
-    for (b, w) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(&words) {
-        *b = w.to_le_bytes();
-    }
-    let mut def = PixelShaderDef::from_bytes(&bytes).expect("60 dwords");
+    // Straight from the words: the judge builds one per draw on the
+    // guest's thread.
+    let mut def = PixelShaderDef::from_words(&words);
     def.explicit_final = final_latch;
     def
 }

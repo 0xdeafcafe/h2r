@@ -366,3 +366,43 @@ wrote last, was the next fix: the alias mirror (2026-11-15, docs/graphics/d3d.md
 - **Measurement noise.** These are single runs on a shared machine with
   load swinging between 7 and 100. Repeat on a quiet machine before
   quoting fps.
+
+## The draw path on the guest's thread (2026-11-17)
+
+Old Mombasa at ~2000 draws a frame (PGO image, 500 Hz profile): the D3D
+overrides are 21% of the game thread's samples, `DrawIndexedVertices`
+alone 11%. Of a draw, the parts that read guest memory (state arrays,
+vertex attribute format, stream and texture headers, index lists, vertex
+bytes not in the vertex cache, the PSDEF and device fields) must stay at
+the call: the game rewrites all of them right after it returns, and on
+the Xbox the only thing that kept the GPU's view of them valid was the
+fence, which this device answers as complete when it hands it out. So
+deferring the copies to a worker would need every fence, `Lock`,
+`BlockOnResource` and busy check to wait for that worker, and still be
+wrong for memory the game reuses without asking (the vertex cache's
+write watch only covers windows it has read). What is pure host work on
+that thread is small and spread out: the shader judge (`Nv2aJudge`,
+1.1% of the game thread: `program_key`, the `ProgramKey` hash and
+compare), `TranslateMemo` (0.4%), `draw_state` (1.0%: a 1176-byte state
+copy and an `Arc` per draw), the vertex layout clone (0.3%) and the
+queue push (0.8%). The judge's verdict decides whether the draw marks
+its target written, which feeds RTT write-backs the guest reads, so it
+has to be known before the call returns too.
+
+Cut since, same values:
+
+- `PixelShaderDef::from_words`: the judge built the PSDEF through a byte
+  array and a collected `Vec<u32>` per draw; now from the words.
+- **Draw sharing** (`Device::set_draw_sharing`, on unless
+  `H2_D3D_DRAW_SHARING=0`): a draw whose state arrays read the same as
+  the pushed snapshot shares it instead of allocating a copy, and a
+  vertex program the game switches back to (A, B, A) gets its earlier
+  `Microcode` (64 kept), so the judge's and the provider's keys compare
+  it by pointer instead of comparing its words. Only which allocation
+  backs a value changes. `tests/draw_sharing.rs` runs a synthetic frame
+  (`tests/draw_frame`) with it on and off: the same backend calls, stats,
+  events and guest memory, directly and behind the render thread, and the
+  same judge verdicts with no render-thread miss.
+- `cargo bench -p d3d --bench draw_main` gives guest-thread microseconds
+  per draw for that frame at 2000 draws, sharing off and on, behind the
+  render thread with the judge (as in the game) and on the device alone.

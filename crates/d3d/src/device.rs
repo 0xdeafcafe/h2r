@@ -107,6 +107,10 @@ pub const COPY_SWAP_FLAG: u32 = 0x4000;
 pub const COMMIT_KEEPS: u32 = 0xC000_0070;
 /// Most vertices one draw may use (the NV2A index range is 2^20).
 pub const MAX_VERTICES: u32 = 1 << 20;
+
+/// Vertex programs [`Device::microcode`] keeps so a program the game
+/// switches back to gets its earlier shared copy.
+const MICROCODE_SEEN: usize = 64;
 /// Most bytes the device reads from guest memory for one stream or index
 /// list.
 pub const MAX_SPAN: u64 = 64 << 20;
@@ -694,6 +698,14 @@ pub struct Device<B: Backend> {
     program_start: u32,
     /// The last microcode handed to a draw ([`Device::microcode`]).
     microcode_memo: Option<Microcode>,
+    /// The programs draws used most recently, oldest first, at most
+    /// [`MICROCODE_SEEN`] ([`Device::microcode`]).
+    microcode_seen: Vec<Microcode>,
+    /// Draws share what they read the same as before: the pushed state
+    /// snapshot ([`Device::draw_state`]) and earlier microcode copies
+    /// ([`Device::microcode`]). Only sharing changes, never a value. On
+    /// unless `H2_D3D_DRAW_SHARING=0` ([`Device::set_draw_sharing`]).
+    draw_sharing: bool,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
     constants: Box<[u32; CONSTANTS * 4]>,
     /// Bumped by every write to [`Self::constants`].
@@ -882,6 +894,8 @@ impl<B: Backend> Device<B> {
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
             microcode_memo: None,
+            microcode_seen: Vec::new(),
+            draw_sharing: std::env::var_os("H2_D3D_DRAW_SHARING").is_none_or(|v| v != "0"),
             constants: Box::new([0; CONSTANTS * 4]),
             constants_generation: 0,
             draw_constants: None,
@@ -3349,7 +3363,29 @@ impl<B: Backend> Device<B> {
         {
             return m.clone();
         }
-        let m = Microcode::new(words.into());
+        // A program seen before gets the copy it had then, so keys made
+        // for it (the judge's, the provider's) still compare by pointer
+        // when the game switches back to it (A, B, A, ...).
+        let m = if self.draw_sharing {
+            let hash = Microcode::hash_words(words);
+            match self
+                .microcode_seen
+                .iter()
+                .find(|m| m.words_hash() == hash && ***m == *words)
+            {
+                Some(m) => m.clone(),
+                None => {
+                    let m = Microcode::new(words.into());
+                    if self.microcode_seen.len() >= MICROCODE_SEEN {
+                        self.microcode_seen.remove(0);
+                    }
+                    self.microcode_seen.push(m.clone());
+                    m
+                }
+            }
+        } else {
+            Microcode::new(words.into())
+        };
         self.microcode_memo = Some(m.clone());
         m
     }
@@ -3881,6 +3917,15 @@ impl<B: Backend> Device<B> {
         self.glyph_smoothing = on;
     }
 
+    /// Whether draws share the pushed state snapshot and earlier microcode
+    /// copies when they read the same words (on by default;
+    /// `H2_D3D_DRAW_SHARING=0` turns it off). Changes which allocations
+    /// back a draw, never what it holds or what any backend sees.
+    pub fn set_draw_sharing(&mut self, on: bool) {
+        self.draw_sharing = on;
+        self.microcode_seen.clear();
+    }
+
     /// Info about the host texture cached for `header` (with `palette` for
     /// P8), if any, under any `COLORSIGN`.
     pub fn cached_texture(&self, header: u32, palette: u32) -> Option<TextureInfo> {
@@ -3904,8 +3949,18 @@ impl<B: Backend> Device<B> {
     /// live arrays are what the GPU sees, and they become the pushed state.
     /// The draw and the pushed snapshot share the words until either side
     /// changes (a setter copies the snapshot then, `Arc::make_mut`).
+    /// When the arrays still hold the pushed snapshot's words (no state
+    /// changed since the last draw or commit), the draw shares that
+    /// snapshot instead of a new copy.
     fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<Arc<StateWords>, D3dError> {
-        let s = Arc::new(self.state(mem)?);
+        let s = self.state(mem)?;
+        if self.draw_sharing
+            && let Some(p) = &self.pushed
+            && **p == s
+        {
+            return Ok(p.clone());
+        }
+        let s = Arc::new(s);
         self.pushed = Some(s.clone());
         Ok(s)
     }
