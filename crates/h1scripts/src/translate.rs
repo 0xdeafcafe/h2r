@@ -24,6 +24,14 @@ pub const RENAMES: &[(&str, &str)] = &[
     // squad's remaining vitality, 0 when all are dead (a30's waits on
     // `(> 0.3 (ai_living_fraction x))` and `(= 0.0 ...)`).
     ("ai_living_fraction", "ai_strength"),
+    // The ticks left of a playing impulse sound (0 once it ends), as Halo
+    // 1's. Halo 2's evaluator 0x2a9fe0 finds the sound among the 16 script
+    // impulses and returns its permutation's length less the time played,
+    // times 30 (0x18a240). Halo 1's scripts wait on it after nearly every
+    // line of dialogue; stubbed to 0, those waits ended at once, and a
+    // script that replays a sound each time the wait ends replayed it every
+    // tick. `docs/formats/h1-scripts.md`.
+    ("sound_impulse_time", "sound_impulse_language_time"),
 ];
 
 /// Halo 2 builtins no retail script calls, so unnamed in the catalog, named

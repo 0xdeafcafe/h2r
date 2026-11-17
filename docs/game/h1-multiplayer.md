@@ -560,13 +560,14 @@ don't move). Roots kept whatever references them (`fresh::KEEP_GROUPS`):
 (`KEEP_PREFIXES`: a `stem` names `spas` passes by a word the tree doesn't
 hold as a reference). No group the engine walks on its own is confirmed
 in the XBE yet; the list is the conservative guess a game run tests.
-Blood Gulch on Coagulation drops 227 tags (76 `bitm`, 44 `shad`, 14
-`snd!`, 12 `mode`, 11 `hlmt`, 10 `lsnd`, 10 `scen`, ...), 13 palette
-entries and 19 tag list entries; all 21580 references in the kept tags
-still resolve (`tests/fresh.rs`). The scenery palette at `+0x58` is left
-alone: the schema gives it 4-byte elements where the object types table
-gives it `0x28`; settle that first. The dropped tags' raw data stays in
-the file, unused.
+Blood Gulch on Coagulation drops 253 tags (85 `bitm`, 50 `shad`, 15
+`snd!`, 14 `mode`, 13 `hlmt`, 12 `scen`, 11 `lsnd`, ...), 25 palette
+entries and 21 tag list entries; all 21471 references in the kept tags
+still resolve (`tests/fresh.rs`, converter version 17). The scenery palette at `+0x58` is
+pruned like the others (converter version 17): its elements are `0x28`
+bytes, a reference at `+0`, which the XBE settles
+(`docs/formats/tag-schema.md`, "Engine strides"). The dropped tags' raw
+data stays in the file, unused.
 
 **The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
 the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,
@@ -771,6 +772,20 @@ Halo 2 flags (`placements::h2_flags`). Danger Canyon, Death Island,
 Gephyrophobia, Ice Fields, Infinity and Timberland aren't on the Xbox
 disc.
 
+**Weather is not converted.** Halo 1's rain and snow (`rain` particle
+systems in the BSP's weather palette) have a Halo 2 home: every `weat`
+reference on the disc is at `+0x20` of a `0x88`-byte weather palette
+element, in the structure at `sbsp +0x84` (50 references) or the
+scenario at `+0x260` (12), and a cluster picks its entry at `+0x76`
+(`weather_systems_are_named_by_the_weather_palettes`,
+`h1convert/tests/h2_scenario.rs`; E for the structure fields, table
+above). What stops it: Halo 2's `weat` is opaque
+([lighting.md](../formats/lighting.md): its particle simulation and
+render blocks are unreviewed), so a Halo 1 system can't be written into
+one, and pointing the palette at a retail `weat` would be Halo 2's
+weather, not Halo 1's. The structure side is also the render lane's
+(`structure.rs`). The palette stays empty and each cluster `-1`.
+
 ## Still to do, in order
 
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
@@ -779,9 +794,10 @@ disc.
    decals (above); the base's unreachable tags are dropped in fresh
    builds (`fresh::prune`, above); Halo 1's background sounds and sound
    environments fill the scenario's palettes ("Ambient sound"). Each
-   cluster names its pair (above), on campaign levels too. Left:
-   `h1campaign` calling `h1sounds::looping` for its scripts'
-   `looping_sound` references, and the scenery palette at `+0x58`.
+   cluster names its pair (above), on campaign levels too, and
+   `h1campaign` converts its scripts' `looping_sound` references with
+   `h1sounds::looping` (campaigns.md, "Music and the map file"). The
+   scenery palette at `+0x58` is settled (`0x28`) and pruned.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models
    (item 6). Next: Halo 1's tiling scales.

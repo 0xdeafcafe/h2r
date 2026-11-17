@@ -199,6 +199,22 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
     (b"vehi", &["lifepod"], "objects\\vehicles\\pelican\\pelican"),
 ];
 
+/// Halo 1 craft built on another vehicle's template ([`TEMPLATES`]) that
+/// keep none of its looping sounds. The lifepod stands on the pelican,
+/// whose attachments (`obje +0x94`) loop six engine, hover and banking
+/// sounds at every placement: every lifepod a10 places hummed the
+/// pelican's engine for the whole level. Halo 1's own looping sounds are not converted, so the
+/// craft is quiet; the template's other attachments (lights, contrails)
+/// stay.
+pub const QUIET_STAND_INS: &[&str] = &["lifepod"];
+
+/// Whether the Halo 1 vehicle at `path` drops its template's looping
+/// sounds ([`QUIET_STAND_INS`]).
+pub fn quiet_stand_in(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    QUIET_STAND_INS.iter().any(|w| path.contains(w))
+}
+
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
 /// table order: the converter takes the first the base map holds.
 pub fn template_candidates(group: &[u8; 4], path: &str) -> Vec<&'static str> {
@@ -226,6 +242,10 @@ pub mod h2 {
     pub const BOUNDING_OFFSET: usize = 0x08;
     pub const DEFAULT_VARIANT: usize = 0x30;
     pub const MODEL: usize = 0x34;
+    /// Attachments: `0x18` each, an 8-byte reference first (E,
+    /// `docs/formats/objects.md`).
+    pub const ATTACHMENTS: usize = 0x94;
+    pub const ATTACHMENT: usize = 0x18;
     /// `weap` root.
     pub const HEAT_RECOVERY_THRESHOLD: usize = 0x150;
     pub const OVERHEATED_THRESHOLD: usize = 0x154;
@@ -833,6 +853,45 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Gives `root` its own copy of the template's attachments without the
+    /// looping sounds ([`QUIET_STAND_INS`]); every other element is the
+    /// template's as stored.
+    fn drop_looping_attachments(
+        &self,
+        rep: &mut ObjectReport,
+        root: &mut Block,
+        tpl_root: &[u8],
+    ) -> Result<()> {
+        let lsnd = u32::from_be_bytes(*b"lsnd");
+        let n = crate::base::u32_at(tpl_root, h2::ATTACHMENTS) as usize;
+        let mut kept = Vec::with_capacity(n);
+        for i in 0..n {
+            let e = self
+                .base
+                .element(tpl_root, h2::ATTACHMENTS, h2::ATTACHMENT, i)?
+                .expect("below the count");
+            if crate::base::u32_at(&e, 0) == lsnd {
+                if let Some(id) = self.base.reference(&e, 0) {
+                    let name = self.base.name(id).map_or("?", |(_, n)| n);
+                    rep.no_home
+                        .push(format!("template looping sound dropped: {name}"));
+                }
+            } else {
+                kept.push(e);
+            }
+        }
+        if kept.len() == n {
+            return Ok(());
+        }
+        if kept.is_empty() {
+            root.bytes[h2::ATTACHMENTS..h2::ATTACHMENTS + 8].fill(0);
+        } else {
+            let k = kept.len() as u32;
+            root.block(h2::ATTACHMENTS as u32, k, Block::new(kept.concat()));
+        }
+        Ok(())
+    }
+
     fn report(tag: &Tag, template: &str) -> ObjectReport {
         ObjectReport {
             group: tag.group.to_string(),
@@ -1398,6 +1457,9 @@ impl<'a> Converter<'a> {
             tag.group,
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
+        if &g == b"vehi" && quiet_stand_in(&tag.name) {
+            self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
+        }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(
