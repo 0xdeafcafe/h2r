@@ -992,6 +992,13 @@ pub fn run_hosted_with_live(
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
+    // Which pages the render front-end writes and the sim reads, when
+    // H2_FEATURES has render-census (off by default;
+    // docs/graphics/pipelined-render.md).
+    let census = feature::render_census::RenderCensus::new()
+        .with_region(d3d_glue::PUSH_BASE, d3d_glue::PUSH_BASE + d3d_glue::PUSH_LEN, "push_buffer")
+        .with_region(d3d_glue::SCRATCH_BASE, d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
+    features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
