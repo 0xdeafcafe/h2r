@@ -53,6 +53,16 @@ impl Base {
         Ok(self.meta.slice(t.3, def.root_size.into())?.to_vec())
     }
 
+    /// A tag's first `len` bytes, for groups with no root size here.
+    pub fn head(&self, id: TagId, len: u64) -> Result<Vec<u8>> {
+        let t = self
+            .tags
+            .iter()
+            .find(|t| t.0 == id)
+            .ok_or_else(|| Error::NoTemplate(format!("{id:?}")))?;
+        Ok(self.meta.slice(t.3, len)?.to_vec())
+    }
+
     /// Element `i` (`stride` bytes) of the block field at `at` in `bytes`.
     pub fn element(
         &self,

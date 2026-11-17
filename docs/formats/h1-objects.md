@@ -124,10 +124,10 @@ camouflage, 4 full-spectrum vision, **5 health**, 6 grenade), `30a` i16
 grenade type, `30c` f32 powerup time, `310` pickup sound. V1 (the health
 pack is type 5 with a positive time; the grenades are type 6).
 
-### `bipd`, `vehi`
+### `bipd`, `vehi`, `scen`
 
-Read as the `obje` header plus every reference (`refs::scan`). Their
-tuning is not read yet (below).
+Read as the `obje` header (plus every reference, `refs::scan`, for the
+units). Their tuning is not read yet (below).
 
 ### `coll` (root `0x298`)
 
@@ -157,7 +157,13 @@ Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
 on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
 health pack on the overshield, cyborg on `masterchief_mp`, warthog and
-ghost on Halo 2's. The template's root is copied; the fields below get
+ghost on Halo 2's. For campaign bases (05a_deltaapproach): pelican on the
+pelican, Covenant dropship on the phantom, wraith on the wraith, the
+Covenant gun turret on `c_turret_ap`, lifepods on `insertion_pod` (03a,
+06a, 08a have it; 05a does not); placed elites, grunts, jackals and
+engineers on Halo 2's elite, grunt, jackal and drone, every other placed
+biped (marines, Keyes, the pilot) on `masterchief`; scenery on Delta
+Halo's `statue_shard_large` (a static rock with collision and no `phmo`). The template's root is copied; the fields below get
 Halo 1's values; the model reference becomes a converted `hlmt`; the rest
 stays the template's. Template child blocks that are not rebuilt keep
 their retail addresses (aliasing, as retail does 13,099 times), so the
@@ -169,7 +175,13 @@ tags must go into a `TagSet` made from that base map.
 object has none, as on the weapons), **physics model: the template's
 `phmo`, borrowed** (warthog's for the warthog, ghost's for the ghost,
 `masterchief`'s for the cyborg; Coagulation's weapons and equipment have
-none). Variants are emptied (count 0); regions are rebuilt from the
+none). The borrowed `phmo` is dropped (null) when its rigid bodies
+(`phmo +0x38`, `0x90` each, node `i16` first) name a node past the
+converted model's count: the physics model writes a matrix per rigid
+body's node into the object's `hlmt`-sized array (Nodes, below). That is
+why humans take the Chief, whose `phmo` stays inside a Halo 1 human's 20
+nodes, and not the marine (node 36); grunts, monitors, flood forms and
+small devices then have no physics model. Variants are emptied (count 0); regions are rebuilt from the
 converted model's region and permutation names. `obje default_variant`
 is set to 0.
 

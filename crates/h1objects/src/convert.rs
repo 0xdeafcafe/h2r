@@ -128,6 +128,18 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         &["cyborg"],
         "objects\\characters\\masterchief\\masterchief_mp",
     ),
+    // Placed bipeds (bodies, cinematic characters): the nearest biped a
+    // campaign base carries (05a_deltaapproach has all of these). Humans
+    // take the Chief: the template's physics model is borrowed, and the
+    // marine's reaches nodes past a Halo 1 human's 20.
+    (b"bipd", &["elite"], "objects\\characters\\elite\\elite"),
+    (b"bipd", &["grunt"], "objects\\characters\\grunt\\grunt"),
+    (b"bipd", &["jackal"], "objects\\characters\\jackal\\jackal"),
+    (
+        b"bipd",
+        &["engineer"],
+        "objects\\characters\\bugger\\bugger",
+    ),
     (
         b"bipd",
         &[],
@@ -154,6 +166,34 @@ pub const TEMPLATES: &[(&[u8; 4], &[&str], &str)] = &[
         "objects\\vehicles\\scorpion\\scorpion",
     ),
     (b"vehi", &["banshee"], "objects\\vehicles\\banshee\\banshee"),
+    // Campaign craft: Halo 2's counterpart where a base carries one
+    // (05a_deltaapproach has the pelican, phantom, wraith and Covenant
+    // turret; 03a, 06a and 08a the insertion pod).
+    (b"vehi", &["pelican"], "objects\\vehicles\\pelican\\pelican"),
+    (
+        b"vehi",
+        &["dropship"],
+        "objects\\vehicles\\phantom\\phantom",
+    ),
+    (b"vehi", &["wraith"], "objects\\vehicles\\wraith\\wraith"),
+    (
+        b"vehi",
+        &["gun turret"],
+        "objects\\vehicles\\c_turret_ap\\c_turret_ap",
+    ),
+    // Scenery: a static rock of Delta Halo's with collision and no physics
+    // model, so a converted model never inherits physics built for other
+    // nodes.
+    (
+        b"scen",
+        &[],
+        "scenarios\\objects\\solo\\deltatemple\\statue_shard_large\\statue_shard_large",
+    ),
+    (
+        b"vehi",
+        &["lifepod"],
+        "objects\\vehicles\\insertion_pod\\insertion_pod",
+    ),
 ];
 
 /// Every template row that matches a Halo 1 tag of `group` at `path`, in
@@ -250,6 +290,8 @@ pub mod h2 {
     pub const HLMT_COLLISION: usize = 0x08;
     pub const HLMT_ANIMATION: usize = 0x10;
     pub const HLMT_PHYSICS_MODEL: usize = 0x20;
+    /// `phmo`: rigid bodies (`0x90` each, node `i16` at `+0`).
+    pub const PHMO_RIGID_BODIES: usize = 0x38;
     pub const HLMT_VARIANTS: usize = 0x50;
     pub const HLMT_REGIONS: usize = 0x70;
     pub const HLMT_NODES: usize = 0x78;
@@ -510,6 +552,7 @@ impl<'a> Converter<'a> {
             b"proj" => self.projectile(tag, template)?,
             b"eqip" => self.equipment(tag)?,
             b"bipd" | b"vehi" => self.unit(tag)?,
+            b"scen" => self.scenery(tag)?,
             _ => return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
         };
         self.done.insert(tag.id.0, id);
@@ -620,9 +663,25 @@ impl<'a> Converter<'a> {
         hlmt.tag_ref(h2::HLMT_RENDER as u32, mode);
         hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.unwrap_or(TagId::NULL));
         hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
+        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
         rep.physics = Some(
             match self.base.reference(&hlmt.bytes, h2::HLMT_PHYSICS_MODEL) {
-                Some(p) => format!("borrowed: {}", self.base.name(p).map_or("?", |n| n.1)),
+                Some(p) => {
+                    // The physics model writes one matrix per rigid body's node;
+                    // the object holds the hlmt's count. A template whose rigid
+                    // bodies reach past the converted nodes would write past
+                    // them, so it is not borrowed.
+                    let top = self.phmo_top_node(p)?;
+                    let name = self.base.name(p).map_or("?", |n| n.1).to_owned();
+                    if top >= i64::from(count.max(1)) {
+                        hlmt.tag_ref(h2::HLMT_PHYSICS_MODEL as u32, TagId::NULL);
+                        format!(
+                            "none: the template's {name} reaches node {top}, the model has {count}"
+                        )
+                    } else {
+                        format!("borrowed: {name}")
+                    }
+                }
                 None => "none (the template has no phmo)".into(),
             },
         );
@@ -630,7 +689,6 @@ impl<'a> Converter<'a> {
         // One node per render-model node: the engine sizes an object's node
         // matrices by this count, and the converted model and graph write
         // one per their node (h1models::mode::hlmt_nodes).
-        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
         if count == 0 {
             hlmt.bytes[h2::HLMT_NODES..h2::HLMT_NODES + 8].fill(0);
         } else {
@@ -676,6 +734,19 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         )))
+    }
+
+    /// The highest node a `phmo`'s rigid bodies name (`+0x38`, `0x90`
+    /// each, node `i16` first), `-1` with none.
+    fn phmo_top_node(&self, phmo: TagId) -> Result<i64> {
+        let root = self.base.head(phmo, h2::PHMO_RIGID_BODIES as u64 + 8)?;
+        let mut top = -1i64;
+        let mut i = 0;
+        while let Some(e) = self.base.element(&root, h2::PHMO_RIGID_BODIES, 0x90, i)? {
+            top = top.max(i64::from(i16::from_le_bytes([e[0], e[1]])));
+            i += 1;
+        }
+        Ok(top)
     }
 
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
@@ -1220,6 +1291,27 @@ impl<'a> Converter<'a> {
             &tag.name,
             Converted {
                 group: FourCC(*b"eqip"),
+                root,
+                raw: Vec::new(),
+            },
+        ))
+    }
+
+    fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
+        let object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
+        let (tpl, tpl_name) = self.template(b"scen", &tag.name, b"scen")?;
+        let tpl_root = self.base.root(tpl)?;
+        let mut rep = Self::report(tag, &tpl_name);
+        let mut root = Block::new(tpl_root.clone());
+        self.header(&mut rep, &mut root, &object, &tag.name)?;
+        rep.no_home
+            .push("scen tuning (pathfinding and lightmapping policy): the template's".into());
+        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
+        self.tree.reports.push(rep);
+        Ok(self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"scen"),
                 root,
                 raw: Vec::new(),
             },

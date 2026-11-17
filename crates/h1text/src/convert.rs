@@ -46,6 +46,30 @@ impl Locales {
         Self::default()
     }
 
+    /// A table that extends an existing English table (the base map's
+    /// `(string ID, blob offset)` index and its blob), so a converted
+    /// level keeps every base string and its rows: new rows go after them.
+    pub fn extending(index: &[u8], blob: Vec<u8>) -> Result<Self> {
+        if !index.len().is_multiple_of(8) {
+            return Err(Error::Invalid("locale index is not whole rows".into()));
+        }
+        let rows: Vec<(u32, u32)> = index
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|r| {
+                (
+                    u32::from_le_bytes(r[0..4].try_into().expect("4")),
+                    u32::from_le_bytes(r[4..8].try_into().expect("4")),
+                )
+            })
+            .collect();
+        if rows.iter().any(|r| r.1 as usize >= blob.len().max(1)) {
+            return Err(Error::Invalid("locale row past its blob".into()));
+        }
+        Ok(Self { rows, blob })
+    }
+
     /// Mints one row: `name` interned into `set` as the string ID, `text`
     /// appended NUL-terminated to the blob. Returns the packed ID.
     pub fn add(&mut self, set: &mut TagSet, name: &str, text: &str) -> Result<StringId> {

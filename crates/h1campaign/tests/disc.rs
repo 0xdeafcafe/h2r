@@ -568,14 +568,48 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let sky = TagId(word(&bytes, (word(&bytes, 0xc) - addr) as usize + 4));
     assert_eq!(m.tag(sky).unwrap().group, FourCC(*b"sky "));
 
+    // The campaign players (globals player representation 0 and 1) are
+    // the converted Halo 1 cyborg.
+    if opts.objects {
+        let matg = m
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"matg"))
+            .unwrap()
+            .clone();
+        let g = m.read_tag_bytes(matg.id).unwrap();
+        let ga = matg.location.unwrap().address;
+        let rep = (word(&g, 0x13c) - ga) as usize;
+        for i in 0..2 {
+            let unit = TagId(word(&g, rep + i * 0xbc + 0xb4));
+            let t = m.tag(unit).unwrap();
+            assert_eq!(t.group, FourCC(*b"bipd"));
+            assert_eq!(
+                t.name.as_deref(),
+                Some(h1campaign::scenario::PLAYER_BIPED),
+                "player {i}"
+            );
+        }
+        println!(
+            "campaign players 0 and 1: {}",
+            h1campaign::scenario::PLAYER_BIPED
+        );
+    }
+
     // Objects: every placement's palette entry names a converted tag.
     if opts.objects {
-        for (k, (at, pal)) in [(0x90usize, 0x98usize), (0x80, 0x88), (0x70, 0x78)]
-            .into_iter()
-            .enumerate()
+        for (k, (at, pal)) in [
+            (0x90usize, 0x98usize),
+            (0x80, 0x88),
+            (0x70, 0x78),
+            (0x50, 0x58),
+            (0x60, 0x68),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let n = word(&bytes, at) as usize;
-            let stride = [0x54, 0x38, 0x54][k];
+            let stride = [0x54, 0x38, 0x54, 0x5c, 0x54][k];
             let pn = word(&bytes, pal) as usize;
             let pa = (word(&bytes, pal + 4).wrapping_sub(addr)) as usize;
             let a = (word(&bytes, at + 4).wrapping_sub(addr)) as usize;
@@ -587,7 +621,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
                 let t = m.tag(id).unwrap();
                 assert_eq!(
                     t.group,
-                    FourCC([*b"weap", *b"eqip", *b"vehi"][k]),
+                    FourCC([*b"weap", *b"eqip", *b"vehi", *b"scen", *b"bipd"][k]),
                     "placement {i}"
                 );
                 // Inside the level's bounds (any BSP), give or take.
@@ -637,6 +671,35 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
+        // Halo 1's initially created encounters: a startup script places
+        // their squad groups, each argument resolved to a group.
+        if opts.ai && !r.initial.is_empty() {
+            let sc = hs_s.script(h1campaign::scenario::INITIAL_SCRIPT).unwrap();
+            assert_eq!(sc.kind(), 0, "startup");
+            let mut placed = Vec::new();
+            for n in hs_s.nodes() {
+                if n.atom() || n.data() == u32::MAX {
+                    continue;
+                }
+                let Ok(head) = hs_s.node(hs::Datum(n.data())) else {
+                    continue;
+                };
+                if hs_s.string(head.string_offset()).ok() != Some("ai_place") {
+                    continue;
+                }
+                let arg = hs_s.node(head.next()).unwrap();
+                // One argument, as most retail calls (no count).
+                assert_eq!(arg.next(), hs::Datum::NULL);
+                placed.push(arg.data());
+            }
+            let view = tags::geometry::TagView::new(&bytes, addr);
+            let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
+            for g in &r.initial {
+                let i = ai.squad_groups.iter().position(|x| &x.name == g).unwrap();
+                assert!(placed.contains(&(0x4000_0000 | i as u32)), "group {g}");
+            }
+            println!("placed at startup: {:?}", r.initial);
+        }
     }
 
     // Sounds: each converted one (named as in Halo 1) resolves through the
@@ -701,22 +764,15 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
     let mut bad = Vec::new();
     for level in levels.split(',') {
         let h1 = h1_level(level);
-        let mut base = h2_map(h1campaign::BASE);
+        let mut base = h2_map(h1campaign::base_for(level));
         let opts = Options {
             objects: true,
             ai: true,
             scripts: Some(&s),
             sounds: 1000,
         };
-        let done = match h1campaign::convert(&h1, &mut base, &opts) {
-            Ok(d) => d,
-            // Not this test's subject (a50 and b40 overflow the base's tag
-            // memory today); the levels that build are checked.
-            Err(e) => {
-                println!("{level}: skipped, does not convert: {e}");
-                continue;
-            }
-        };
+        let done =
+            h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
         let found = sc.unrunnable(&catalog).unwrap();
@@ -732,4 +788,50 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         );
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn every_campaign_level_converts() {
+    let s = scripting();
+    let only = std::env::var("H1_LEVELS").ok();
+    let mut failed = Vec::new();
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|l| l == level))
+        {
+            continue;
+        }
+        let h1 = h1_level(level);
+        let base_name = h1campaign::base_for(level);
+        let mut base = h2_map(base_name);
+        let filled = filled_profile(&mut base);
+        let opts = Options {
+            objects: true,
+            ai: true,
+            scripts: Some(&s),
+            sounds: 1000,
+        };
+        match h1campaign::convert(&h1, &mut base, &opts) {
+            Ok(done) => {
+                let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+                m.validate_checksum().unwrap();
+                println!("{}", done.report);
+                let (n, bad) = sweep_map(&mut m, &filled);
+                println!("  object sweep: {n} tags, {} problems", bad.len());
+                if !bad.is_empty() {
+                    failed.push(format!("{level}: sweep {bad:#?}"));
+                }
+                for g in done.report.groups.iter().take(8) {
+                    println!("  memory: {} built {:#x} pinned {:#x}", g.0, g.1, g.2);
+                }
+            }
+            Err(e) => {
+                println!("{level} on {base_name}: FAILED: {e}");
+                failed.push(format!("{level}: {e}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
 }

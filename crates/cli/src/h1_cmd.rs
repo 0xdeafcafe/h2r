@@ -854,7 +854,10 @@ fn campaign_scripting(a: &ConvertArgs, h2: &Path) -> Result<Option<h1campaign::S
 /// (docs/game/campaigns.md). Point `--out` at `<data>/campaigns/halo1`.
 fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
     let level = h1.header().name.to_ascii_lowercase();
-    let base_name = a.base.clone().unwrap_or_else(|| h1campaign::BASE.into());
+    let base_name = a
+        .base
+        .clone()
+        .unwrap_or_else(|| h1campaign::base_for(&level).into());
     let disc = h2_disc(a);
     let mut base = map::Map::from_reader(Cursor::new(read_h2_map(&disc, &base_name)?))
         .with_context(|| format!("reading {base_name}.map"))?;

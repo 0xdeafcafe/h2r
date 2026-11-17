@@ -348,3 +348,29 @@ fn a_tag_tree_transplants_into_another_map() {
     assert_eq!(refused[0].detail.refusal, Refusal::UnknownPointer);
     assert_eq!(dst.slots.len(), before);
 }
+
+#[test]
+fn an_emptied_field_leaves_its_array_out() {
+    let (mut map, ids) = invented(3, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let mut r = Relocator::new(&schema, &mut map).unwrap();
+    let id = ids[1];
+    // No other tag's arrays sit inside it.
+    assert!(r.pointed_into(id).is_empty());
+    let full = r.to_built(id).unwrap();
+    assert!(full.fixups.iter().any(|f| f.offset == 8));
+    let at = map.tag(id).unwrap().location.unwrap().address;
+    assert!(r.memory_mut().patch(at + 8, &[0; 8]));
+    assert!(!r.memory_mut().patch(0x10, &[0; 8]));
+    // The plain check refuses the tag now (its old array is uncovered);
+    // the emptied build accepts it and leaves the block out.
+    assert_eq!(r.check(id).unwrap_err().refusal, Refusal::Uncovered);
+    let emptied = r.to_built_emptied(id).unwrap();
+    // An empty block stays a zero-count field with no elements.
+    assert!(emptied.fixups.iter().all(|f| f.offset != 8
+        || matches!(&f.kind, map::build::FixupKind::Block { count: 0, child } if child.bytes.is_empty())));
+    assert_eq!(&emptied.bytes[8..16], &[0; 8]);
+    assert!(emptied.tree_len() < full.tree_len());
+}

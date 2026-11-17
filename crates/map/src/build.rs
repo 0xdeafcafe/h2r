@@ -400,6 +400,10 @@ pub struct TagSet {
     /// relocated retail tags away from their old addresses while reusing
     /// the space they freed.
     pub reverse_built: bool,
+    /// Place built tags largest first (default false), so the biggest get
+    /// the holes pinned tags left (a rebuilt scenario or sound gestalt in
+    /// its own old range) before small tags split them.
+    pub largest_built_first: bool,
     /// Enforce [`max_metadata_size`] (default true), or the pinned source
     /// map's own total if that is larger. Off only for offline round trips
     /// that grow a map at the bound: the bound is the largest retail map of
@@ -483,6 +487,7 @@ impl TagSet {
             pinned: None,
             reuse_free_space: true,
             reverse_built: false,
+            largest_built_first: false,
             check_tag_memory: true,
         }
     }
@@ -701,6 +706,7 @@ impl TagSet {
             salt_base: 0xe174,
             reuse_free_space: true,
             reverse_built: false,
+            largest_built_first: false,
             check_tag_memory: true,
             pinned: Some(PinnedImage {
                 header,
@@ -1274,11 +1280,18 @@ impl<'a> Builder<'a> {
             .bytes
             .len()
             .max(pin.map_or(0, |p| p.metadata_size as usize));
-        let order: Vec<usize> = if set.reverse_built {
+        let mut order: Vec<usize> = if set.reverse_built {
             (0..set.slots.len()).rev().collect()
         } else {
             (0..set.slots.len()).collect()
         };
+        if set.largest_built_first {
+            // Stable, so equal sizes keep slot order.
+            order.sort_by_cached_key(|&i| match set.slots[i].tag.as_ref().map(|t| &t.payload) {
+                Some(TagPayload::Built(root)) => std::cmp::Reverse(root.tree_len()),
+                _ => std::cmp::Reverse(0),
+            });
+        }
         for i in order {
             let Some(t) = &set.slots[i].tag else { continue };
             if let TagPayload::Built(root) = &t.payload {

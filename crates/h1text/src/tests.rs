@@ -717,3 +717,32 @@ fn real_disc_a30_converts_and_reads_back_through_halo_2() {
     eprintln!("a30: {checked} strings read back identical");
     assert!(checked > 100);
 }
+
+#[test]
+fn an_extended_table_keeps_the_base_rows_first() {
+    let mut set = TagSet::new(CacheType::Campaign, "synth", "levels\\synth\\synth");
+    set.strings = vec![Some(String::new())];
+    // A base table of two rows: "one", "two".
+    let mut index = Vec::new();
+    for (key, at) in [(0x0100_0001u32, 0u32), (0x0100_0002, 4)] {
+        index.extend_from_slice(&key.to_le_bytes());
+        index.extend_from_slice(&at.to_le_bytes());
+    }
+    let blob = b"one\0two\0".to_vec();
+    let mut locales = Locales::extending(&index, blob.clone()).unwrap();
+    assert_eq!(locales.len(), 2);
+    let ustr = Ustr {
+        strings: vec!["three".into()],
+    };
+    let (unic, ids) = locales.add_ustr(&mut set, "h1\\list", &ustr).unwrap();
+    // The base rows and blob are untouched; the new row follows them, and
+    // the unic's English range starts after the base rows.
+    assert_eq!(&locales.index()[..16], &index[..]);
+    assert_eq!(&locales.index()[16..20], &ids[0].0.to_le_bytes());
+    assert_eq!(&locales.index()[20..24], &8u32.to_le_bytes());
+    assert_eq!(locales.blob(), b"one\0two\0three\0");
+    assert_eq!(&unic.root.bytes[0x10..0x14], &[2, 0, 1, 0]);
+    // Malformed tables are refused.
+    assert!(Locales::extending(&index[..12], blob.clone()).is_err());
+    assert!(Locales::extending(&index, b"x\0".to_vec()).is_err());
+}
