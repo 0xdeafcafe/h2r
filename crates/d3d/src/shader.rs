@@ -17,6 +17,34 @@ pub const PROGRAM_SLOTS: usize = 136;
 /// Vertex shader constant registers (`c[-96..95]`, stored 0..191).
 pub const CONSTANTS: usize = 192;
 
+/// A draw's constant registers ([`ShaderInputs::constants`]).
+pub type Constants = Box<[[f32; 4]; CONSTANTS]>;
+
+/// Constant blocks of draws already run, for the next draws to fill: with
+/// the render thread, a draw's 3 KiB block was allocated on the game
+/// thread and freed on the render thread, every draw, and the allocator
+/// returned the freed pages to the system (`madvise`) as fast.
+static SPARE_CONSTANTS: std::sync::Mutex<Vec<Constants>> = std::sync::Mutex::new(Vec::new());
+
+/// Most blocks kept spare (6 MiB).
+const SPARE_CONSTANT_BLOCKS: usize = 2048;
+
+/// A constant block to overwrite: a spare one, or a new one.
+pub fn spare_constants() -> Constants {
+    let spare = SPARE_CONSTANTS.lock().ok().and_then(|mut s| s.pop());
+    spare.unwrap_or_else(|| Box::new([[0.0; 4]; CONSTANTS]))
+}
+
+/// Keeps the blocks of draws already run for [`spare_constants`], up to a
+/// limit (the rest are freed); takes the lock once.
+pub fn recycle_constants(blocks: &mut Vec<Constants>) {
+    if let Ok(mut s) = SPARE_CONSTANTS.lock() {
+        let room = SPARE_CONSTANT_BLOCKS.saturating_sub(s.len());
+        s.extend(blocks.drain(..).take(room));
+    }
+    blocks.clear();
+}
+
 /// How vertices are processed for a draw.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VertexProcessing {
@@ -233,6 +261,28 @@ pub trait ShaderJudge: Send {
 mod tests {
     use super::Microcode;
     use std::hash::{BuildHasher, Hash};
+
+    /// A recycled constant block comes back for the next draw instead of
+    /// a new allocation.
+    #[test]
+    fn constant_blocks_are_reused() {
+        let mut block = super::spare_constants();
+        block[7] = [1.0, 2.0, 3.0, 4.0];
+        let at = &*block as *const _;
+        let mut spent = vec![block];
+        super::recycle_constants(&mut spent);
+        assert!(spent.is_empty());
+        // Other tests may take or give blocks meanwhile: look for ours.
+        let mut taken = Vec::new();
+        let found = (0..super::SPARE_CONSTANT_BLOCKS).any(|_| {
+            let b = super::spare_constants();
+            let hit = std::ptr::eq(&*b, at);
+            taken.push(b);
+            hit
+        });
+        super::recycle_constants(&mut taken);
+        assert!(found);
+    }
 
     /// Shared microcode prints, serializes (so persisted program ids) and
     /// compares as the words it holds, shared or not.
