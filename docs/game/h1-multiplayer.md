@@ -206,32 +206,8 @@ The base's old BSP region stays in the file, unused.
   level becomes one cluster or more per page (Beaver Creek 14, Blood
   Gulch 16); parts never span sections. Streams written:
   `01` position, `18` texture coordinate, `1b` frame, `1f` lightmap
-  coordinate, `30` incident light direction (Halo 1's lightmap vertex
-  direction, the same 11:11:10 packing; the normal where a vertex has
-  none). One subpart per part.
-- **Every render field retail fills** (docs/formats/structure-bsp.md,
-  "Geometry header", "Section struct"). Parts: kind 2 (opaque) and flags
-  `0xb`, as on all 2,450 retail multiplayer parts; the bounding sphere
-  (`+0x10` centre of the box, `+0x2c` farthest vertex from it, at least
-  1 mm) and the box (`+0x30`). Cluster section info: shadow-casting,
-  opaque and rigid counts equal to the totals, compression flags 4 (the
-  `i16` lightmap coordinates), the subpart count, lighting flags 3
-  (lightmap coordinates and incident radiance; 0 for an unlit cluster).
-  Cluster tail: `+0x6c`/`+0x6d` `0xff`, the structure checksum at
-  `+0x94`, and the predicted resources (`+0x84`): the cluster's own
-  geometry (type 3), its lightmap page (type 0, image = page) and every
-  bitmap its materials' shaders name (type 0, image 0), which the engine
-  loads for the camera's cluster and those it sees before drawing (E
-  `0x0016e5e0`). Lightmap bucket entries (types 6 to 8) are never
-  written: the converted lightmap has no buckets and the engine indexes
-  them unchecked. Until converter version 7 all of these were zero and
-  the level drew as one flat colour. `tests/render_fields.rs` surveys
-  which 16-bit words of every drawn retail multiplayer cluster, part and
-  section are nonzero and fails if any word retail always fills is empty
-  in a converted map, except those it lists: the cluster's portals (Halo
-  1's are not converted) and the section's visibility MOPP code (`+0x28`)
-  and reorder table (`+0x30`), a Havok MOPP over the subparts the
-  converter cannot build (so no subpart is culled).
+  coordinate. Part kind 2 (a drawn kind; which drawn kind means what is
+  unknown), triangle-list flag, one subpart per part.
 - **Clusters see each other.** The visibility rows have every cluster's
   bit set, and every collision leaf is in cluster 0, so everything is
   drawn from everywhere. Halo 1's own portals and clusters are the
