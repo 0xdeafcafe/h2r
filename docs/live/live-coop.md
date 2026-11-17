@@ -1128,7 +1128,10 @@ the host. The host advertises both (`coop_live::host_campaign_skulls`).
   see them) and for the stats summary (non-admins get the public one). A
   running game follows its session's visibility when the host changes it,
   and keeps the last one once it ends. The web reads all of these as the
-  signed-in account (a `read` token, and `?auth=1` on the stream). Co-op sessions show as "Co-op
+  signed-in account (a `read` token, and `?auth=1` on the stream), and
+  reads again at once on a sign-in or sign-out. Presence follows the
+  same rule: a reader who may not see the host's or guest's co-op game
+  sees them "In a game", with no game id and no "Co-op: <level>". Co-op sessions show as "Co-op
   campaign" with level, difficulty, players and the host's ping in Find a game;
   friends' activity shows in the friends lists.
 

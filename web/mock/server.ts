@@ -32,6 +32,7 @@ import { openAccountRequest } from "./account";
 import { mockGameArt } from "./gameart";
 import { Social } from "./social";
 import { Sessions } from "./sessions";
+import { streamAuthStep } from "./streamauth";
 import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
 import { campaignHook } from "./campaign";
@@ -131,6 +132,8 @@ interface StreamData {
   from: number | null;
   exclude: Set<string> | null;
   types: Set<string> | null;
+  /** `?auth=1`: waiting for the auth message before the replay. */
+  waiting: boolean;
 }
 
 function wants(d: StreamData, type: string) {
@@ -394,6 +397,7 @@ const server = Bun.serve<WsData>({
       const data: StreamData = {
         kind: "stream", games: csv(games), from: from === null ? null : Number(from),
         exclude: csv(u.searchParams.get("exclude")), types: csv(u.searchParams.get("types")),
+        waiting: ["1", "true"].includes(u.searchParams.get("auth") ?? ""),
       };
       if (srv.upgrade(req, { data })) return undefined;
       return err(400, "invalid", "expected a WebSocket upgrade");
@@ -402,39 +406,55 @@ const server = Bun.serve<WsData>({
   },
   websocket: {
     open(ws) {
-      if (ws.data.kind !== "stream") return;
-      const from = ws.data.from;
-      // Replay events after `from` (exclusive), then caught_up, then live.
-      const d = ws.data as StreamData;
-      const start = from === null ? world.log.length : Math.max(0, from);
-      for (let i = start; i < world.log.length; i++) {
-        const ev = world.log[i]!;
-        if (wants(d, ev.type)) ws.send(JSON.stringify({ kind: "event", event: ev }));
-      }
-      ws.send(JSON.stringify({ kind: "caught_up", position: world.log.length }));
-      readers.add(ws);
+      if (ws.data.kind !== "stream" || ws.data.waiting) return;
+      replay(ws);
     },
     message(ws, raw) {
-      if (ws.data.kind !== "ingest") return;
-      let msg: { kind?: string; token?: string; frame?: Frame; game_id?: string; events?: Array<{ type: string; data: unknown }> };
-      try { msg = JSON.parse(String(raw)); } catch { return; }
-      const d = ws.data as IngestData;
-      if (!d.authed) {
-        if (msg.kind === "auth" && msg.token) { d.authed = true; return; }
-        ws.close(4401, "first message must be auth");
+      if (ws.data.kind === "stream") {
+        const d = ws.data as StreamData;
+        const step = streamAuthStep(d.waiting, raw);
+        if (step === "close") ws.close(4401, "first message must be auth");
+        else if (step === "replay") { d.waiting = false; replay(ws); }
         return;
       }
-      if (msg.kind === "frame" && msg.frame) {
-        const s = JSON.stringify({ kind: "frame", frame: msg.frame });
-        for (const r of readers) r.send(s);
-      } else if (msg.kind === "events" && msg.game_id && msg.events) {
-        world.append(`game-${msg.game_id}`, msg.events, null);
-      }
+      ingestMessage(ws, raw);
     },
     close(ws) {
       readers.delete(ws);
     },
   },
 });
+
+/** Replays events after `from` (exclusive), then caught_up, then live. */
+function replay(ws: import("bun").ServerWebSocket<WsData>) {
+  const d = ws.data as StreamData;
+  const from = d.from;
+  const start = from === null ? world.log.length : Math.max(0, from);
+  for (let i = start; i < world.log.length; i++) {
+    const ev = world.log[i]!;
+    if (wants(d, ev.type)) ws.send(JSON.stringify({ kind: "event", event: ev }));
+  }
+  ws.send(JSON.stringify({ kind: "caught_up", position: world.log.length }));
+  readers.add(ws);
+}
+
+/** An ingest socket's message: auth first, then frames and events. */
+function ingestMessage(ws: import("bun").ServerWebSocket<WsData>, raw: string | Buffer) {
+  if (ws.data.kind !== "ingest") return;
+  let msg: { kind?: string; token?: string; frame?: Frame; game_id?: string; events?: Array<{ type: string; data: unknown }> };
+  try { msg = JSON.parse(String(raw)); } catch { return; }
+  const d = ws.data as IngestData;
+  if (!d.authed) {
+    if (msg.kind === "auth" && msg.token) { d.authed = true; return; }
+    ws.close(4401, "first message must be auth");
+    return;
+  }
+  if (msg.kind === "frame" && msg.frame) {
+    const s = JSON.stringify({ kind: "frame", frame: msg.frame });
+    for (const r of readers) r.send(s);
+  } else if (msg.kind === "events" && msg.game_id && msg.events) {
+    world.append(`game-${msg.game_id}`, msg.events, null);
+  }
+}
 
 console.log(`[mock] h2 live mock on http://${server.hostname}:${server.port} (${world.liveGames().length} live games)`);

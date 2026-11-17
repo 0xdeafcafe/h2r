@@ -274,6 +274,9 @@ function createLive() {
     ingestGames,
     checkGameEvents,
     useServer,
+    /** Starts the connection over on the same server: the snapshot and the
+     *  stream again, as whoever reads now (a sign-in or sign-out). */
+    reload: () => connect(server()),
     start,
     api: () => rest,
     setReader(fn: () => Promise<string | null>) { reader = fn; },

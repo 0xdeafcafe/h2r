@@ -51,6 +51,10 @@ pub struct Presence {
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
     pub last_seen: i64,
+    /// The friends-only and invite-only sessions the player was in when it
+    /// set this presence: its game id and activity show only to readers who
+    /// may see them ([`crate::sessions::presence_detail_shows`]).
+    pub private_sessions: Vec<String>,
 }
 
 /// One account's friendship relations, projected from the friend events on
@@ -174,6 +178,11 @@ pub struct State {
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
     pub outlines: HashMap<String, Outline>,
+    /// For each `SignedIn`/`PresenceChanged` event (by log position) set
+    /// while its player was in a friends-only or invite-only session: those
+    /// sessions, so the log can hide the event's game id and activity from
+    /// readers who may not see them.
+    pub presence_context: HashMap<u64, Vec<String>>,
 }
 
 impl State {
@@ -529,6 +538,11 @@ impl Model {
                     None => b.at.clone(),
                 };
                 let state = d.state.unwrap_or_else(|| "online".into());
+                let private_sessions = crate::sessions::private_sessions_of(&s, d.xuid);
+                if !private_sessions.is_empty() {
+                    s.presence_context
+                        .insert(e.position, private_sessions.clone());
+                }
                 s.presence.insert(
                     d.xuid,
                     Presence {
@@ -537,6 +551,7 @@ impl Model {
                         activity: d.activity,
                         since,
                         last_seen: at,
+                        private_sessions,
                     },
                 );
             }

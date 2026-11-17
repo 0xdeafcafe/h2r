@@ -964,8 +964,10 @@ impl Live {
         let items: Vec<WireEvent> = {
             let s = self.model.read();
             read.iter()
-                .filter(|e| crate::sessions::event_shows_to(&s, &e.body.stream, viewer))
-                .map(RecordedEvent::to_wire)
+                .filter_map(|e| match viewer {
+                    crate::sessions::Viewer::Admin => Some(e.to_wire()),
+                    _ => crate::sessions::wire_for(&s, e, viewer),
+                })
                 .collect()
         };
         Ok(Page {
@@ -1047,7 +1049,9 @@ impl Live {
         })
     }
 
-    pub fn presence(&self) -> Page<Presence> {
+    /// Who is online, with each player's game id and activity as `viewer`
+    /// may see them ([`crate::sessions::presence_for`]).
+    pub fn presence(&self, viewer: crate::sessions::Viewer) -> Page<Presence> {
         let position = self.position();
         let s = self.model.read();
         let mut items: Vec<Presence> = s
@@ -1055,12 +1059,13 @@ impl Live {
             .iter()
             .filter_map(|(xuid, p)| {
                 let a = s.accounts.get(xuid)?;
+                let (game_id, activity) = presence_of(&s, *xuid, p, viewer);
                 Some(Presence {
                     xuid: *xuid,
                     gamertag: a.gamertag.clone(),
                     state: p.state.clone(),
-                    game_id: p.game_id.clone(),
-                    activity: p.activity.clone(),
+                    game_id,
+                    activity,
                     since: p.since.clone(),
                 })
             })
@@ -1077,7 +1082,11 @@ impl Live {
     /// with its current presence, absent when offline) and its pending
     /// requests in and out, sorted by gamertag — one document, so the
     /// game's friends enumeration needs just this call.
-    pub fn friends(&self, tag: &Gamertag) -> Result<Friends, ApiError> {
+    pub fn friends(
+        &self,
+        tag: &Gamertag,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<Friends, ApiError> {
         let position = self.position();
         let s = self.model.read();
         let a = s
@@ -1101,11 +1110,14 @@ impl Live {
                     xuid: *xuid,
                     gamertag: a.gamertag.clone(),
                     friends_since: since.clone(),
-                    presence: s.presence.get(xuid).map(|p| FriendPresence {
-                        state: p.state.clone(),
-                        game_id: p.game_id.clone(),
-                        activity: p.activity.clone(),
-                        since: p.since.clone(),
+                    presence: s.presence.get(xuid).map(|p| {
+                        let (game_id, activity) = presence_of(&s, *xuid, p, viewer);
+                        FriendPresence {
+                            state: p.state.clone(),
+                            game_id,
+                            activity,
+                            since: p.since.clone(),
+                        }
                     }),
                 })
             })
@@ -1148,6 +1160,30 @@ impl Live {
             .ok_or_else(|| not_found("title file bytes are missing"))?;
         Ok((meta, bytes))
     }
+}
+
+/// A presence's game id and activity as `viewer` may see them: the private
+/// sessions it was set in and the ones its player is in now both count.
+fn presence_of(
+    s: &State,
+    xuid: Xuid,
+    p: &crate::model::Presence,
+    viewer: crate::sessions::Viewer,
+) -> (Option<String>, Option<String>) {
+    let mut sessions = p.private_sessions.clone();
+    for id in crate::sessions::private_sessions_of(s, xuid) {
+        if !sessions.contains(&id) {
+            sessions.push(id);
+        }
+    }
+    crate::sessions::presence_for(
+        s,
+        xuid,
+        p.game_id.as_ref(),
+        p.activity.as_ref(),
+        &sessions,
+        viewer,
+    )
 }
 
 #[cfg(test)]
