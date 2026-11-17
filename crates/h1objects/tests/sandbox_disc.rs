@@ -81,8 +81,18 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
 
     let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
     // The Halo 1 objects, then Halo 1's textures (bitmaps, shader copies;
-    // a structure bitmap an object already added is reused).
-    let textures = p.textures.bitmaps.len()
+    // a structure bitmap an object already added is reused), skies and
+    // ambience (looping sounds, the sounds they play, environments; a
+    // sound an object already added is reused).
+    let ambience = &p.ambience;
+    let textures = ambience.backgrounds.len()
+        + ambience
+            .backgrounds
+            .iter()
+            .map(|(_, l)| l.sounds.len())
+            .sum::<usize>()
+        + ambience.environments.len()
+        + p.textures.bitmaps.len()
         + p.textures.copies.len()
         + p.skies
             .skies

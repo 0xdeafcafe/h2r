@@ -13,6 +13,8 @@
 //!   chunks in the gestalt. Samples are copied as they are; Xbox ADPCM is
 //!   never re-encoded.
 //! - [`class`] maps Halo 1 sound classes to Halo 2's.
+//! - [`looping`] converts looping sounds (`lsnd`, with the sounds they
+//!   play) and sound environments (`snde`).
 //!
 //! Layouts and evidence: `docs/formats/h1-sounds.md`. No game data is in
 //! this crate or its tests; real maps are read only by `#[ignore]` tests.
@@ -25,6 +27,7 @@ pub mod convert;
 pub mod decode;
 pub mod gestalt;
 pub mod h1;
+pub mod looping;
 pub mod merge;
 
 pub use convert::{ConvertedSound, convert_sound, install_sounds};

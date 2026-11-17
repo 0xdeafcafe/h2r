@@ -274,10 +274,11 @@ The base's old BSP region stays in the file, unused.
   element of the base's skies block names one (element `k` Halo 1's sky
   `k`, or Halo 1's last), so none names the base's. Rat Race and Chiron
   TL34 are indoors and name no sky: the base's stays, unseen. `disc_maps.rs`
-  checks every converted map's skies. The base's background sound,
-  sound environment and decorator blocks (`convert::BASE_BLOCKS`:
-  `scnr+0x250` 3 `lsnd`, `+0x258` 4 `snde`, `+0x378` 2 `DECR` on
-  Coagulation, D) are emptied: the converted clusters name none of them. The base per map (`convert::MAPS`):
+  checks every converted map's skies. The base's decorator block
+  (`convert::BASE_BLOCKS`: `+0x378`, 2 `DECR` on Coagulation, D) is
+  emptied: the converted clusters name none. The background sound and
+  sound environment palettes (`scnr+0x250`, `+0x258`) name Halo 1's
+  (below, "Ambient sound"). The base per map (`convert::MAPS`):
   Coagulation for the maps with vehicles (below), Beaver Creek otherwise.
   Waterworks (snow, and a wraith) would suit Sidewinder and Ice Fields,
   but Sidewinder's placements grow Waterworks' metadata past the engine's
@@ -438,6 +439,31 @@ and manifest are the same as without it:
 ```sh
 cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 ```
+
+**Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
+Halo 1 keeps a level's background sounds and sound environments in the
+structure (`sbsp +0x1fc`, `0x74` each, and `+0x208`, `0x50` each; a name
+and the `lsnd` or `snde` at `+0x20`); Halo 2 in the scenario
+(`scnr +0x250`, `0x64` each, and `+0x258`, `0x48` each). Each Halo 1
+looping sound converts with every `snd!` it plays
+(`h1sounds::looping::read_looping`, then `install_looping`, which adds
+the sounds to the `ugh!` in one pass and reuses any tag already of that
+path); each sound environment converts with its four intensities from
+linear to decibels (`read_environment`). The base scenario is pinned, so
+the entries are written into the base's own palette storage, as many as
+it holds (Coagulation 3 and 4, Beaver Creek 2 and 3; every Halo 1
+multiplayer level has 1 and 1), and the count shrinks to that. Halo 1 has
+no cutoff distance or interpolation speed; the values written are ones
+retail uses. Blood Gulch gets `sound\sfx\ambience\multiplayer\bloodgultch`
+(its one track plays `countryday2`) and `mountains`. Clusters still name
+neither palette (-1), so nothing plays until the structure writes the
+indices (Halo 1's cluster `+0x04` and `+0x06`, `i16`: 0 on every
+cluster of Blood Gulch and a10, whose palettes have one entry each; to
+confirm). A gestalt that gains sounds is built, not pinned, and a fresh
+build now copies its base chunks from the pinned file too
+(`fresh::sound_gestalt`). `h1sounds/tests/looping_disc.rs`: all 734
+looping sounds (829 tracks, 52 detail sounds, 1261 sounds) and 63 sound
+environments on the disc convert.
 
 **The base's unreachable tags are dropped (`fresh::prune`).** After the
 fresh tree is built, the base's palette entries at `scnr+0xe0` (scenery),
@@ -668,10 +694,12 @@ disc.
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. ~~**Decals and lights** of the base~~: lights emptied, no placed
    decals (above); the base's unreachable tags are dropped in fresh
-   builds (`fresh::prune`, above). Left: Halo 1's own background sounds
-   (`lsnd`) and sound environments for the clusters, through a shared
-   `h1sounds` `lsnd` converter that `h1campaign`'s `looping_sound`
-   hooks can call too; and the scenery palette at `+0x58`.
+   builds (`fresh::prune`, above); Halo 1's background sounds and sound
+   environments fill the scenario's palettes ("Ambient sound"). Left:
+   each cluster's palette indices (the structure, with the render
+   lane's next round), `h1campaign` calling `h1sounds::looping` for its
+   scripts' `looping_sound` references, and the scenery palette at
+   `+0x58`.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above), and object and scenery models
    (item 6). Next: Halo 1's tiling scales.

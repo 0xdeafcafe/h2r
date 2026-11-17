@@ -22,6 +22,7 @@
 
 use std::io::{Cursor, Read, Seek};
 
+use h1sounds::gestalt::SoundGestalt;
 use map::build::{BspField, FixupKind, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::schema::transplant::Unpinner;
@@ -150,6 +151,15 @@ pub fn unpin_all<R: Read + Seek>(
     let mut gestalt = None;
     for slot in &pinned.slots {
         let Some(t) = &slot.tag else { continue };
+        // A gestalt that gained sounds (`h1sounds::install_sounds`) is
+        // built, but its base chunks still point into the base's file.
+        if t.group == ugh
+            && let TagPayload::Built(b) = &t.payload
+        {
+            let g = SoundGestalt::from_block(b).map_err(|e| Error::Fresh(format!("ugh!: {e}")))?;
+            gestalt = Some((t.id, g));
+            continue;
+        }
         let TagPayload::Pinned { address, bytes } = &t.payload else {
             continue;
         };
@@ -157,7 +167,9 @@ pub fn unpin_all<R: Read + Seek>(
             continue;
         }
         if t.group == ugh {
-            gestalt = Some((t.id, *address, bytes.clone()));
+            let g = SoundGestalt::decode(bytes, *address)
+                .map_err(|e| Error::Fresh(format!("ugh!: {e}")))?;
+            gestalt = Some((t.id, g));
             continue;
         }
         if bytes.is_empty() {
@@ -185,8 +197,8 @@ pub fn unpin_all<R: Read + Seek>(
             )));
         }
     };
-    if let Some((id, address, bytes)) = gestalt {
-        report.sound_chunks = sound_gestalt(&mut u, src, fresh, id, address, &bytes)?;
+    if let Some((id, g)) = gestalt {
+        report.sound_chunks = sound_gestalt(&mut u, src, fresh, id, g)?;
         report.unpinned += 1;
     }
     scenario(&mut u, src, fresh, pinned.scenario, section, &mut report)?;
@@ -204,19 +216,16 @@ fn tags_error(e: tags::Error) -> Error {
     Error::Fresh(e.to_string())
 }
 
-/// The `ugh!` as a built tree, its chunks' local raw copied. Returns the
-/// chunks copied.
+/// The `ugh!` as a built tree, the chunks stored in `src`'s file copied
+/// (chunks already local stay). Returns the chunks copied.
 fn sound_gestalt<R: Read + Seek>(
     u: &mut Unpinner,
     src: &mut Map<R>,
     fresh: &mut TagSet,
     id: TagId,
-    address: u32,
-    bytes: &[u8],
+    mut g: SoundGestalt,
 ) -> Result<usize> {
-    use h1sounds::gestalt::{ChunkPointer, SoundGestalt, blocks};
-    let mut g =
-        SoundGestalt::decode(bytes, address).map_err(|e| Error::Fresh(format!("ugh!: {e}")))?;
+    use h1sounds::gestalt::{ChunkPointer, blocks};
     // Extra infos (lip-sync) hold a raw pointer at +8 with no stored
     // length: copy up to the next known raw start, chunks included.
     const EXTRA_RAW: usize = 8;

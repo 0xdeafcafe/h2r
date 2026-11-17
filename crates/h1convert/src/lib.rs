@@ -17,6 +17,7 @@
 //! the `#[ignore]`d ones read maps from `$H1_MAP_DIR` at run time.
 #![forbid(unsafe_code)]
 
+pub mod ambience;
 pub mod apply;
 pub mod collision;
 pub mod convert;
@@ -83,6 +84,10 @@ pub enum Error {
     Textures(String),
     #[error("sky: {0}")]
     Sky(String),
+    /// The level's background sounds or sound environments couldn't be
+    /// added ([`ambience`]).
+    #[error("ambience: {0}")]
+    Sound(String),
     #[error("ui.map: {0}")]
     Ui(String),
     /// A converted tag couldn't be installed.

@@ -162,6 +162,9 @@ pub struct Prepared {
     pub textures: crate::textures::Retexture,
     /// The level's own skies ([`crate::sky`]), in place of the base's.
     pub skies: crate::sky::Skies,
+    /// The level's own background sounds and sound environments
+    /// ([`crate::ambience`]), in place of the base's.
+    pub ambience: crate::ambience::Ambience,
     /// Whether triangles were flipped to Halo 2's winding.
     pub flipped: bool,
     /// The base's trigger volumes, moved out of the level when built.
@@ -248,29 +251,23 @@ fn bsp_descriptor(scnr: &[u8], address: u32) -> Result<(u32, TagId, TagId)> {
 
 /// Base scenario blocks of things placed for the base's own level that no
 /// converted map wants, emptied ([`clear_base_blocks`]): `(offset, what)`.
-/// D (Coagulation, every element's references by group): `+0x250` names
-/// 3 `lsnd` (the background sound palette), `+0x258` 4 `snde` (the sound
-/// environment palette), `+0x378` 2 `DECR` (decorator sets: the base's
-/// grass and rocks, placed by its own clusters). The converted clusters
-/// name no background sound or sound environment (palette entry -1,
-/// [`crate::structure`]) and no decorator. `+0xe8` (0x6c each, D: 21 on
+/// D (Coagulation, every element's references by group): `+0x378` 2
+/// `DECR` (decorator sets: the base's grass and rocks, placed by its own
+/// clusters); the converted clusters name no decorator. The background
+/// sound and sound environment palettes (`+0x250`, `+0x258`) name Halo
+/// 1's instead ([`crate::ambience`]). `+0xe8` (0x6c each, D: 21 on
 /// Coagulation, 10 on Beaver Creek) places light fixtures: `+0x00` an
 /// index into the `ligh` palette at `+0xf0` (0x28 each, the tag at `+0`;
 /// 6 and 2 entries), `+0x02` the object name (-1 on all), `+0x08` the
 /// position, inside the base's level on both. Neither base's scenario
 /// names a `deca` from any block (their 51 decals are effects'), so there
 /// are no placed decals to empty.
-pub const BASE_BLOCKS: [(usize, &str); 4] = [
-    (0xe8, "light fixtures"),
-    (0x250, "background sounds"),
-    (0x258, "sound environments"),
-    (0x378, "decorators"),
-];
+pub const BASE_BLOCKS: [(usize, &str); 2] = [(0xe8, "light fixtures"), (0x378, "decorators")];
 
 /// Empties each of [`BASE_BLOCKS`] in a scenario payload: count and
 /// pointer zero. Returns the elements dropped, per block.
-pub fn clear_base_blocks(scnr: &mut [u8]) -> Result<[u32; 4]> {
-    let mut dropped = [0; 4];
+pub fn clear_base_blocks(scnr: &mut [u8]) -> Result<[u32; 2]> {
+    let mut dropped = [0; 2];
     for (k, (at, _)) in BASE_BLOCKS.iter().enumerate() {
         let field = scnr
             .get_mut(*at..*at + 8)
@@ -489,6 +486,7 @@ pub fn prepare<R: Read + Seek>(
         material_shaders,
         textures,
         skies: crate::sky::read(h1),
+        ambience: crate::ambience::read(h1),
         flipped,
         trigger_volumes,
         bounds: src.world_bounds(),
@@ -655,6 +653,7 @@ impl Prepared {
             self.textures
                 .install(&mut set, &self.templates, &self.texture_picks())?;
         let skies = self.skies.install(&mut set)?;
+        let ambience = self.ambience.install(&mut set)?;
         let structure = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
@@ -681,6 +680,7 @@ impl Prepared {
         park_trigger_volumes(bytes, *address)?;
         crate::sky::patch_scenario(bytes, *address, &skies)?;
         clear_base_blocks(bytes)?;
+        crate::ambience::patch_scenario(bytes, *address, &ambience)?;
         let (at, _, _) = bsp_descriptor(bytes, *address)?;
         let off = at.wrapping_sub(*address) as usize;
         bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());
