@@ -423,7 +423,7 @@ impl Live {
         dispatcher.subscribe(recovery.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
-        let stats = Arc::new(crate::stats::Stats::default());
+        let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
@@ -944,17 +944,30 @@ impl Live {
     }
 
     pub async fn events(&self, query: &Query) -> Result<Page<WireEvent>, ApiError> {
+        self.events_for(query, crate::sessions::Viewer::Admin).await
+    }
+
+    /// `GET /v1/events` as `viewer` reads it: the events it may not see
+    /// ([`crate::sessions::event_shows_to`]) are left out, but the cursor
+    /// still moves past them, so a page can be short, or empty with a
+    /// `next`: read on until `next` is null.
+    pub async fn events_for(
+        &self,
+        query: &Query,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<Page<WireEvent>, ApiError> {
         let position = self.position();
-        let items: Vec<WireEvent> = self
-            .store
-            .read(query)
-            .await?
-            .iter()
-            .map(RecordedEvent::to_wire)
-            .collect();
-        let next = (items.len() == query.limit)
-            .then(|| items.last().map(|e| e.position.to_string()))
+        let read = self.store.read(query).await?;
+        let next = (read.len() == query.limit)
+            .then(|| read.last().map(|e| e.position.to_string()))
             .flatten();
+        let items: Vec<WireEvent> = {
+            let s = self.model.read();
+            read.iter()
+                .filter(|e| crate::sessions::event_shows_to(&s, &e.body.stream, viewer))
+                .map(RecordedEvent::to_wire)
+                .collect()
+        };
         Ok(Page {
             items,
             next,

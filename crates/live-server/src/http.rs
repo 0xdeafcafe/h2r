@@ -19,6 +19,7 @@ use live_proto::{
 };
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
+use crate::sessions::Viewer;
 use crate::store::Query;
 
 /// Every request body but title files.
@@ -494,8 +495,11 @@ async fn list_events(
     headers: HeaderMap,
     Params(p): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
-    live.authorize_read(bearer(&headers))?;
-    Ok(json(StatusCode::OK, &live.events(&event_query(&p)?).await?))
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &live.events_for(&event_query(&p)?, viewer).await?,
+    ))
 }
 
 async fn post_event(
@@ -576,6 +580,10 @@ struct StreamFilter {
     /// `?frames=packed`: live frames as packed binary messages
     /// (docs/live/live-telemetry.md, Packed frames); JSON otherwise.
     packed: bool,
+    /// `?auth=1`: the first message is a `read` token, on a public server
+    /// too, so the reader sees what that account may (a private server
+    /// always asks for one).
+    auth: bool,
 }
 
 impl StreamFilter {
@@ -614,6 +622,7 @@ async fn stream(
             Some("packed") => true,
             Some(_) => return Err(invalid("frames must be json or packed")),
         },
+        auth: matches!(p.get("auth").map(String::as_str), Some("1" | "true")),
     };
     let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
     Ok(ws
@@ -657,12 +666,24 @@ pub(crate) fn auth_message(live: &Live, text: &str, method: &str) -> Result<i64,
     }
 }
 
+/// An auth message's `read` token: who reads, and when the token expires.
+fn stream_auth(live: &Live, text: &str) -> Result<(Viewer, i64), ApiError> {
+    match serde_json::from_str::<ClientMessage>(text) {
+        Ok(ClientMessage::Auth { token }) => live.read_viewer_until(&token),
+        _ => Err(ApiError::new(
+            ErrorCode::Unauthorized,
+            "expected {\"kind\":\"auth\",\"token\":...}",
+        )),
+    }
+}
+
 /// Sends every stored event after `last` that the filter keeps, then
 /// moves `last` to at least the position the read model had reached.
 async fn catch_up(
     live: &Live,
     socket: &mut WebSocket,
     filter: &StreamFilter,
+    viewer: Viewer,
     last: &mut u64,
 ) -> Result<(), String> {
     const PAGE: usize = 500;
@@ -674,14 +695,17 @@ async fn catch_up(
             .await
             .map_err(|e| e.to_string())?;
         for e in &batch {
-            send(
-                socket,
-                &StreamMessage::Event {
-                    event: Box::new(e.to_wire()),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            // A hidden event is skipped, but the reader's place moves past it.
+            if live.event_shows(e, viewer) {
+                send(
+                    socket,
+                    &StreamMessage::Event {
+                        event: Box::new(e.to_wire()),
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            }
             *last = e.position;
         }
         if batch.len() < PAGE {
@@ -701,17 +725,23 @@ async fn run_stream(
     filter: StreamFilter,
 ) -> Result<(), String> {
     let mut expires: Option<i64> = None;
-    if live.policy().private {
+    let mut viewer = Viewer::Anonymous;
+    if live.policy().private || filter.auth {
         let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
         let result = match first {
-            Ok(Some(Ok(Message::Text(text)))) => auth_message(&live, &text, lxm::READ),
+            Ok(Some(Ok(Message::Text(text)))) => stream_auth(&live, &text),
             _ => Err(ApiError::new(
                 ErrorCode::Unauthorized,
                 "send an auth message first",
             )),
         };
         match result {
-            Ok(exp) => expires = Some(exp),
+            Ok((v, exp)) => {
+                viewer = v;
+                // A public server's reader keeps the socket past its
+                // token; a private one must send fresh tokens.
+                expires = live.policy().private.then_some(exp);
+            }
             Err(e) => {
                 close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
                 return Ok(());
@@ -722,7 +752,7 @@ async fn run_stream(
     let mut feed = live.feed();
     let mut frames = live.frames();
     let mut last = filter.from.unwrap_or_else(|| live.position());
-    catch_up(&live, &mut socket, &filter, &mut last).await?;
+    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
     send(&mut socket, &StreamMessage::CaughtUp { position: last })
         .await
         .map_err(|e| e.to_string())?;
@@ -731,7 +761,9 @@ async fn run_stream(
     if filter.packed {
         // Start each live game's stream at its last keyframe.
         for f in live.frames_since_keyframe(&filter.games) {
-            batch.add(&f);
+            if live.frame_shows(&f, viewer) {
+                batch.add(&f);
+            }
         }
         batch.flush(&mut socket).await?;
     }
@@ -750,19 +782,19 @@ async fn run_stream(
                 Ok(e) => {
                     if e.position > last {
                         last = e.position;
-                        if probe.matches(&e) {
+                        if probe.matches(&e) && live.event_shows(&e, viewer) {
                             send(&mut socket, &StreamMessage::Event { event: Box::new(e.to_wire()) }).await.map_err(|e| e.to_string())?;
                         }
                     }
                 }
                 // Fell behind the feed: re-read from the store.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    catch_up(&live, &mut socket, &filter, &mut last).await?;
+                    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
             frame = frames.recv() => match frame {
-                Ok(f) if filter.games.is_empty() || filter.games.contains(&f.frame.game_id) => {
+                Ok(f) if (filter.games.is_empty() || filter.games.contains(&f.frame.game_id)) && live.frame_shows(&f, viewer) => {
                     if filter.packed {
                         batch.add(&f);
                     } else {
@@ -775,7 +807,9 @@ async fn run_stream(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     if filter.packed {
                         for f in live.frames_since_keyframe(&filter.games) {
-                            batch.add(&f);
+                            if live.frame_shows(&f, viewer) {
+                                batch.add(&f);
+                            }
                         }
                     }
                 }
@@ -785,8 +819,11 @@ async fn run_stream(
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
-                Some(Ok(Message::Text(text))) if expires.is_some() => match auth_message(&live, &text, lxm::READ) {
-                    Ok(exp) => expires = Some(exp),
+                Some(Ok(Message::Text(text))) if expires.is_some() => match stream_auth(&live, &text) {
+                    Ok((v, exp)) => {
+                        viewer = v;
+                        expires = Some(exp);
+                    }
                     Err(e) => {
                         close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
                         return Ok(());
