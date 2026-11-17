@@ -55,7 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 
 use ir::{
-    Addr, Atomic, AtomicOp, BinOp, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, Intrinsic,
+    Addr, Atomic, AtomicOp, BinOp, CallKind, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, Intrinsic,
     IrFunction, IrInsn, RepKind, Segment, Slice, Stmt, StopReason, Target, Temp, UnOp, Value, Width,
 };
 
@@ -1088,6 +1088,27 @@ impl Emitter<'_> {
                     format!(
                         "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
                         symbol(*t)
+                    ),
+                );
+            }
+            // A call through a pointer, back to this handler: H2_ICALL finds
+            // the target's handler in the direct slots the runner filled
+            // and calls it as H2_DCALL would (H2_INDIRECT_CALLS), or leaves
+            // for the runner as below.
+            Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
+                if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
+            {
+                self.settle(lazy::ALL, d);
+                let label = if self.shape.loops.headers.contains(continuation) { "P" } else { "L" };
+                let (spill, reload) =
+                    if self.x87 { ("H2X87_SPILL()", "H2X87_RELOAD()") } else { ("(void)0", "(void)0") };
+                let refresh = if self.polled { "H2_ACC_REFRESH()" } else { "(void)0" };
+                let dirty = self.dirty_at(pc);
+                self.line(
+                    d,
+                    format!(
+                        "H2_ICALL({}, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
+                        val(v)
                     ),
                 );
             }
