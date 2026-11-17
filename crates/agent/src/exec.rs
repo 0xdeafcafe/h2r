@@ -10,13 +10,15 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::tap::{self as input, AgentTap, Chain, Input};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agent_proto::{
     At, Boundary, ClearParams, CountParams, Counters, Counts, Event, EventKind, Features, GroupBy,
-    InputStatus, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams, ObjectResult,
-    PROTOCOL, PadParams, Padded, PauseParams, Phase, QueryParams, QueryResult, Request, Response,
-    RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
+    InputStatus, InputStopped, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams,
+    ObjectResult, PROTOCOL, PadParams, Padded, PauseParams, Phase, QueryParams, QueryResult,
+    RecordParams, ReplayParams, Request, Response, RpcError, Status, StepParams, SubscribeParams,
+    Until, WaitParams, Waited, code, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -87,6 +89,8 @@ struct State {
     /// Pad packets and the controllers the game has open, shared with the
     /// input tap.
     input: Arc<Mutex<Input>>,
+    /// Where input logs (and captures) go; the cache directory unless set.
+    dir: Option<PathBuf>,
 }
 
 struct Conn {
@@ -231,6 +235,14 @@ impl Agent {
     /// paused game go.
     pub fn shutdown(&self) {
         let mut s = self.lock();
+        // A recording still running is kept.
+        let recording = matches!(
+            input::lock(&s.input).mode(),
+            agent_proto::InputMode::Recording { .. }
+        );
+        if recording && let Err(e) = s.stop_input() {
+            eprintln!("agent: writing the input recording at exit: {}", e.message);
+        }
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
@@ -257,6 +269,12 @@ impl Agent {
     pub fn input_tap(&self, inner: Option<(Box<dyn xapi::tap::InputTap>, Chain)>) -> AgentTap {
         let input = Arc::clone(&self.lock().input);
         AgentTap::new(input, inner)
+    }
+
+    /// Where input logs (and captures) are written (default: the cache
+    /// directory, `agent_proto::cache_dir`).
+    pub fn set_dir(&self, dir: PathBuf) {
+        self.lock().dir = Some(dir);
     }
 
     pub fn is_paused(&self) -> bool {
@@ -734,6 +752,14 @@ impl State {
                 serde_json::json!({ "at": self.at(), "cleared": cleared })
             }),
             method::INPUT_STATUS => Ok(to_value(self.input_status())),
+            method::INPUT_RECORD => params::<RecordParams>(p).and_then(|rp| self.record(rp)),
+            method::INPUT_REPLAY => params::<ReplayParams>(p).and_then(|rp| self.replay(rp)),
+            method::INPUT_STOP => self.stop_input().map(|ended| {
+                to_value(InputStopped {
+                    at: self.at(),
+                    ended,
+                })
+            }),
             other => Err(RpcError::new(
                 code::METHOD_NOT_FOUND,
                 format!("no method {other}; session.methods lists them"),
@@ -825,13 +851,14 @@ impl State {
         }
     }
 
+    fn dir(&self) -> PathBuf {
+        self.dir.clone().unwrap_or_else(agent_proto::cache_dir)
+    }
+
     fn pad(&self, p: &PadParams) -> Result<Padded, RpcError> {
         let mut i = input::lock(&self.input);
         if !i.tap {
-            return Err(RpcError::new(
-                code::UNAVAILABLE,
-                "this game has no input tap (it runs without XAPI input)",
-            ));
+            return Err(no_tap());
         }
         let q = i
             .push(p)
@@ -847,10 +874,77 @@ impl State {
         })
     }
 
+    fn log_path(&self, name: &str) -> Result<PathBuf, RpcError> {
+        if !agent_proto::valid_log_name(name) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("{name:?}: a log name is letters, digits, '.', '_' and '-'"),
+            ));
+        }
+        Ok(self.dir().join("inputs").join(format!("{name}.input")))
+    }
+
+    fn record(&self, p: RecordParams) -> Result<Value, RpcError> {
+        let path = self.log_path(&p.name)?;
+        if !input::lock(&self.input).tap {
+            return Err(no_tap());
+        }
+        if path.exists() && !p.replace {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("{} exists; \"replace\": true overwrites it", path.display()),
+            ));
+        }
+        let mut i = input::lock(&self.input);
+        i.record(&p.name, path)
+            .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
+        Ok(serde_json::json!({ "at": self.at(), "mode": i.mode() }))
+    }
+
+    fn replay(&self, p: ReplayParams) -> Result<Value, RpcError> {
+        let path = self.log_path(&p.name)?;
+        if !input::lock(&self.input).tap {
+            return Err(no_tap());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display())))?;
+        let log = xapi::tap::InputLog::parse(&text)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display())))?;
+        let mut i = input::lock(&self.input);
+        i.replay(&p.name, path, log)
+            .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
+        Ok(serde_json::json!({ "at": self.at(), "mode": i.mode() }))
+    }
+
+    /// Ends a recording (writing its file) or a replay.
+    fn stop_input(&mut self) -> Result<agent_proto::InputMode, RpcError> {
+        let stopped = input::lock(&self.input).stop();
+        let Some((ended, file)) = stopped else {
+            return Err(RpcError::new(
+                code::INVALID_REQUEST,
+                "nothing is recording or replaying",
+            ));
+        };
+        if let Some((path, log)) = file {
+            let write = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, log.to_text()));
+            if let Err(e) = write {
+                return Err(RpcError::new(
+                    code::UNAVAILABLE,
+                    format!("writing {}: {e}", path.display()),
+                ));
+            }
+        }
+        Ok(ended)
+    }
+
     fn input_status(&self) -> InputStatus {
         let i = input::lock(&self.input);
         InputStatus {
             at: self.at(),
+            mode: i.mode(),
             queued: i.queued_by_port(),
             open: i.open_ports(),
             tap: i.tap,
@@ -880,6 +974,13 @@ impl State {
             counts,
         })
     }
+}
+
+fn no_tap() -> RpcError {
+    RpcError::new(
+        code::UNAVAILABLE,
+        "this game has no input tap (it runs without XAPI input)",
+    )
 }
 
 fn round(v: f64) -> f64 {

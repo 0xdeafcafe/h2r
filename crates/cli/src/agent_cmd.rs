@@ -33,10 +33,14 @@ or a short form:
   pad <JSON>             input.pad, e.g. '{\"player\":0,\"buttons\":[\"a\"],\"hold_ticks\":10}'
                          or '{\"sticks\":{\"left\":[0,1]},\"at_tick\":\"now\",\"hold_ticks\":90}'
   clear [player]         input.clear: drop queued pad packets
-  input                  input.status
+  record <name> [replace]  input.record: log every controller read to the
+                         cache directory's inputs/<name>.input
+  replay <name>          input.replay: answer controller reads from that log
+  stop                   input.stop: end the recording (writing it) or replay
+  input                  input.status (with replay counts while replaying)
   sleep <ms>             (scripts only) wait before the next line
 
-Input calls (pad, clear) need control. Run alone, they claim it for the
+Input calls (pad, clear, record, replay, stop) need control. Run alone, they claim it for the
 call; queued packets outlive the connection and play out.
 
 The socket is --socket, else $H2_AGENT, else the cache directory's
@@ -207,6 +211,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "release" => Some(method::RELEASE),
         "resume" => Some(method::RESUME),
         "input" => Some(method::INPUT_STATUS),
+        "stop" => Some(method::INPUT_STOP),
         _ => None,
     };
     if let Some(m) = bare {
@@ -241,6 +246,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             }
             (method::INPUT_PAD, p)
         }
+        "record" => {
+            let name = arg.context("record needs a name")?;
+            let p = match words.get(2).map(String::as_str) {
+                None => json!({ "name": name }),
+                Some("replace") => json!({ "name": name, "replace": true }),
+                Some(other) => bail!("record: unexpected {other} (only `replace`)"),
+            };
+            extra(3)?;
+            return Ok((method::INPUT_RECORD.into(), p));
+        }
+        "replay" => (
+            method::INPUT_REPLAY,
+            json!({ "name": arg.context("replay needs a name")? }),
+        ),
         "clear" => (
             method::INPUT_CLEAR,
             match arg {
@@ -325,12 +344,26 @@ mod tests {
         );
         assert_eq!(c("clear 1"), ("input.clear".into(), json!({"player": 1})));
         assert_eq!(c("input"), ("input.status".into(), Value::Null));
+        assert_eq!(
+            c("record fight replace"),
+            (
+                "input.record".into(),
+                json!({"name": "fight", "replace": true})
+            )
+        );
+        assert_eq!(
+            c("replay fight"),
+            ("input.replay".into(), json!({"name": "fight"}))
+        );
+        assert_eq!(c("stop"), ("input.stop".into(), Value::Null));
     }
 
     #[test]
     fn input_calls_alone_claim_control_and_others_do_not() {
         assert!(claims_alone("input.pad"));
         assert!(claims_alone("input.clear"));
+        assert!(claims_alone("input.record"));
+        assert!(claims_alone("input.stop"));
         assert!(!claims_alone("input.status"));
         assert!(!claims_alone("session.pause"));
         assert!(!claims_alone("world.count"));
@@ -349,6 +382,9 @@ mod tests {
             "pad",
             "pad [1]",
             "clear x",
+            "record",
+            "record a twice",
+            "replay",
         ] {
             assert!(parse_call(&words(s)).is_err(), "{s}");
         }

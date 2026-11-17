@@ -933,3 +933,114 @@ fn bad_pad_packets_are_refused_and_a_map_change_drops_the_queue() {
     a.on_tick(&mut g);
     assert_eq!(tap_read(&mut tap, 0x5800_0004).buttons.0, 0);
 }
+
+/// A scratch directory for files the agent writes.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("h2-agent-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+#[test]
+fn a_recording_over_the_api_is_written_by_name_and_replays_with_its_counts() {
+    use xapi::tap::InputTap;
+    let dir = scratch("record");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let (c, rx) = client(&a);
+    let mut g = level();
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    let call = |id: u64, m: &str, p: Value, g: &mut Fake| {
+        ask(&a, c, id, m, p);
+        a.on_tick(g);
+        next(&rx)
+    };
+    call(1, method::CLAIM, Value::Null, &mut g);
+    for bad in [json!({"name": "../escape"}), json!({"name": ""})] {
+        assert_eq!(
+            call(2, method::INPUT_RECORD, bad, &mut g)["error"]["code"],
+            code::INVALID_PARAMS
+        );
+    }
+    let v = call(3, method::INPUT_RECORD, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["result"]["mode"]["mode"], "recording", "{v}");
+    let v = call(
+        4,
+        method::INPUT_PAD,
+        json!({"buttons": ["y"], "hold_ticks": 3}),
+        &mut g,
+    );
+    assert!(v["result"].is_object(), "{v}");
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        seen.push(tap_read(&mut tap, 0x5800_0000));
+    }
+    let v = call(5, method::INPUT_STATUS, Value::Null, &mut g);
+    assert_eq!(
+        (v["result"]["mode"].as_str(), v["result"]["reads"].as_u64()),
+        (Some("recording"), Some(4))
+    );
+    let v = call(6, method::INPUT_STOP, Value::Null, &mut g);
+    let path = v["result"]["path"].as_str().unwrap().to_owned();
+    assert_eq!(path, dir.join("inputs/fight.input").display().to_string());
+    assert_eq!(v["result"]["reads"], 4);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .starts_with(xapi::tap::HEADER)
+    );
+    assert_eq!(
+        call(7, method::INPUT_STOP, Value::Null, &mut g)["error"]["code"],
+        code::INVALID_REQUEST
+    );
+    // Taken again only when asked to replace it.
+    let v = call(8, method::INPUT_RECORD, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["error"]["code"], code::INVALID_PARAMS);
+
+    let v = call(9, method::INPUT_REPLAY, json!({"name": "fight"}), &mut g);
+    assert_eq!(v["result"]["mode"]["reads"], 4, "{v}");
+    let mut got = Vec::new();
+    for _ in 0..5 {
+        got.push(tap_read(&mut tap, 0x5800_0000));
+    }
+    assert_eq!(got[..4], seen[..]);
+    let v = call(10, method::INPUT_STATUS, Value::Null, &mut g);
+    let r = &v["result"];
+    assert_eq!(r["mode"], "replaying");
+    assert_eq!(
+        (r["replayed"].as_u64(), r["matched"].as_u64()),
+        (Some(4), Some(4))
+    );
+    assert_eq!(r["past_end"], 1);
+    let v = call(11, method::INPUT_REPLAY, json!({"name": "other"}), &mut g);
+    assert!(v["error"].is_object());
+    let v = call(12, method::INPUT_STOP, Value::Null, &mut g);
+    assert_eq!(v["result"]["mode"], "replaying");
+    assert_eq!(
+        call(13, method::INPUT_REPLAY, json!({"name": "missing"}), &mut g)["error"]["code"],
+        code::INVALID_PARAMS
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_recording_left_running_is_written_when_the_game_exits() {
+    use xapi::tap::InputTap;
+    let dir = scratch("exit");
+    let a = Agent::new();
+    a.set_dir(dir.clone());
+    let (c, rx) = client(&a);
+    let mut tap = a.input_tap(None);
+    tap.opened(0x5800_0000, 0);
+    ask(&a, c, 1, method::CLAIM, Value::Null);
+    ask(&a, c, 2, method::INPUT_RECORD, json!({"name": "left"}));
+    a.on_tick(&mut level());
+    next(&rx);
+    next(&rx);
+    tap_read(&mut tap, 0x5800_0000);
+    a.shutdown();
+    let text = std::fs::read_to_string(dir.join("inputs/left.input")).unwrap();
+    assert_eq!(xapi::tap::InputLog::parse(&text).unwrap().reads.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

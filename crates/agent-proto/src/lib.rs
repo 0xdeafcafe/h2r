@@ -69,6 +69,9 @@ pub mod method {
     pub const FEATURES: &str = "features.list";
     pub const INPUT_PAD: &str = "input.pad";
     pub const INPUT_CLEAR: &str = "input.clear";
+    pub const INPUT_RECORD: &str = "input.record";
+    pub const INPUT_REPLAY: &str = "input.replay";
+    pub const INPUT_STOP: &str = "input.stop";
     pub const INPUT_STATUS: &str = "input.status";
 
     /// Every method, in the order `session.methods` lists them.
@@ -89,11 +92,23 @@ pub mod method {
         FEATURES,
         INPUT_PAD,
         INPUT_CLEAR,
+        INPUT_RECORD,
+        INPUT_REPLAY,
+        INPUT_STOP,
         INPUT_STATUS,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
-    pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP, INPUT_PAD, INPUT_CLEAR];
+    pub const CONTROL: &[&str] = &[
+        PAUSE,
+        RESUME,
+        STEP,
+        INPUT_PAD,
+        INPUT_CLEAR,
+        INPUT_RECORD,
+        INPUT_REPLAY,
+        INPUT_STOP,
+    ];
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
@@ -786,15 +801,94 @@ pub struct ClearParams {
     pub player: Option<u32>,
 }
 
+/// `input.record`: start logging every controller read the game makes
+/// to the cache directory's `inputs/<name>.input` (an `xapi::tap` input
+/// log, the format `H2_INPUT_RECORD` writes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordParams {
+    pub name: String,
+    /// Overwrite a log of that name (default: refuse).
+    #[serde(default)]
+    pub replace: bool,
+}
+
+/// `input.replay`: answer the game's controller reads from a log, read
+/// for read, from now on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayParams {
+    pub name: String,
+}
+
+/// Whether a log name is safe as a file name: letters, digits, `.`, `_`
+/// and `-`, at most 64, not starting with `.`.
+pub fn valid_log_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// What a replay has done so far (`xapi::tap::ReplayStats`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayCounts {
+    /// Reads in the log.
+    pub reads: u64,
+    /// Reads answered from the log.
+    pub replayed: u64,
+    /// Of those, reads of the same controller handle as in the recording.
+    pub matched: u64,
+    /// Reads of a different handle: the runs opened their controllers
+    /// differently, so they have already parted.
+    pub handle_mismatches: u64,
+    /// Reads after the log ran out, left live.
+    pub past_end: u64,
+}
+
+/// What the input tap is doing besides pad packets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum InputMode {
+    Live,
+    Recording {
+        name: String,
+        path: String,
+        /// Reads logged so far.
+        reads: u64,
+        /// The game tick it started at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_tick: Option<u64>,
+    },
+    Replaying {
+        name: String,
+        path: String,
+        #[serde(flatten)]
+        counts: ReplayCounts,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InputStatus {
     pub at: At,
+    #[serde(flatten)]
+    pub mode: InputMode,
     /// Pad packets queued (waiting or holding), per player.
     pub queued: BTreeMap<u32, usize>,
     /// Controller ports the game has open.
     pub open: Vec<u32>,
     /// Whether the input tap is installed (the game has XAPI input).
     pub tap: bool,
+}
+
+/// `input.stop`: what ended. A recording's file is written now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputStopped {
+    pub at: At,
+    #[serde(flatten)]
+    pub ended: InputMode,
 }
 
 // ---- features ----
@@ -923,6 +1017,33 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn log_names_stay_file_names() {
+        for ok in ["courtyard", "03a.fight-2", "A_b"] {
+            assert!(valid_log_name(ok), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", ".hidden", "sp ace", &"x".repeat(65)] {
+            assert!(!valid_log_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn input_modes_are_tagged_and_flat() {
+        let v = serde_json::to_value(InputMode::Replaying {
+            name: "a".into(),
+            path: "/c/a.input".into(),
+            counts: ReplayCounts {
+                reads: 3,
+                replayed: 2,
+                matched: 2,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(v["mode"], "replaying");
+        assert_eq!(v["matched"], 2);
     }
 
     #[test]

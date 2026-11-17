@@ -7,11 +7,13 @@
 //! queues packets and moves the clock (the game's own tick) at each tick.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use agent_proto::{AtTick, Button, PORTS, PadParams};
+use agent_proto::{AtTick, Button, InputMode, PORTS, PadParams, ReplayCounts};
 use input::gamepad::{AnalogButton, Buttons, Gamepad};
-use xapi::tap::{InputTap, PACKET};
+use xapi::tap::{InputLog, InputTap, PACKET, Recorder, ReplayStats, Replayer};
 
 /// One queued packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,11 +37,35 @@ struct Delivered {
     seen: bool,
 }
 
+/// Recording or replaying through the tap.
+#[derive(Default)]
+enum Mode {
+    #[default]
+    Live,
+    Recording {
+        name: String,
+        path: PathBuf,
+        recorder: Recorder,
+        log: Arc<Mutex<InputLog>>,
+        from_tick: u64,
+    },
+    Replaying {
+        name: String,
+        path: PathBuf,
+        reads: u64,
+        replayer: Replayer,
+        stats: Arc<Mutex<ReplayStats>>,
+    },
+}
+
 /// The queue and what the tap knows of the game's controllers.
 #[derive(Default)]
 pub struct Input {
     /// The game's tick as last stamped.
     clock: u64,
+    /// The same, for the recorder's tick stamps.
+    ticks: Arc<AtomicU64>,
+    mode: Mode,
     queue: Vec<Packet>,
     next_seq: u64,
     /// Open handles and the port each was opened on.
@@ -63,6 +89,7 @@ impl Input {
     /// are done are dropped.
     pub fn set_clock(&mut self, tick: u64) {
         self.clock = tick;
+        self.ticks.store(tick, Ordering::Relaxed);
         self.queue.retain(|p| p.until > tick);
     }
 
@@ -136,6 +163,103 @@ impl Input {
         v
     }
 
+    /// Starts logging every read to `path` (written at [`stop`](Self::stop)).
+    pub fn record(&mut self, name: &str, path: PathBuf) -> Result<(), String> {
+        self.must_be_live()?;
+        let (recorder, log) = Recorder::new();
+        self.mode = Mode::Recording {
+            name: name.to_owned(),
+            path,
+            recorder: recorder.with_ticks(Arc::clone(&self.ticks)),
+            log,
+            from_tick: self.clock,
+        };
+        Ok(())
+    }
+
+    /// Answers reads from `log`, read for read, from the next read on.
+    pub fn replay(&mut self, name: &str, path: PathBuf, log: InputLog) -> Result<(), String> {
+        self.must_be_live()?;
+        let reads = log.reads.len() as u64;
+        let (replayer, stats) = Replayer::new(log);
+        // The log's packet numbers are what the game got: the agent's own
+        // numbering starts again on top of them.
+        self.delivered.clear();
+        self.mode = Mode::Replaying {
+            name: name.to_owned(),
+            path,
+            reads,
+            replayer,
+            stats,
+        };
+        Ok(())
+    }
+
+    fn must_be_live(&self) -> Result<(), String> {
+        match &self.mode {
+            Mode::Live => Ok(()),
+            Mode::Recording { name, .. } => {
+                Err(format!("already recording {name}; input.stop first"))
+            }
+            Mode::Replaying { name, .. } => {
+                Err(format!("already replaying {name}; input.stop first"))
+            }
+        }
+    }
+
+    /// What the tap is doing, as the wire says it.
+    pub fn mode(&self) -> InputMode {
+        match &self.mode {
+            Mode::Live => InputMode::Live,
+            Mode::Recording {
+                name,
+                path,
+                log,
+                from_tick,
+                ..
+            } => InputMode::Recording {
+                name: name.clone(),
+                path: path.display().to_string(),
+                reads: log.lock().unwrap_or_else(|e| e.into_inner()).reads.len() as u64,
+                from_tick: Some(*from_tick),
+            },
+            Mode::Replaying {
+                name,
+                path,
+                reads,
+                stats,
+                ..
+            } => {
+                let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
+                InputMode::Replaying {
+                    name: name.clone(),
+                    path: path.display().to_string(),
+                    counts: ReplayCounts {
+                        reads: *reads,
+                        replayed: s.replayed,
+                        matched: s.replayed - s.handle_mismatches,
+                        handle_mismatches: s.handle_mismatches,
+                        past_end: s.past_end,
+                    },
+                }
+            }
+        }
+    }
+
+    /// Ends a recording or replay: what it was, and for a recording the
+    /// log to write. `None` when live.
+    pub fn stop(&mut self) -> Option<(InputMode, Option<(PathBuf, InputLog)>)> {
+        let ended = self.mode();
+        match std::mem::take(&mut self.mode) {
+            Mode::Live => None,
+            Mode::Recording { path, log, .. } => {
+                let log = std::mem::take(&mut *log.lock().unwrap_or_else(|e| e.into_inner()));
+                Some((ended, Some((path, log))))
+            }
+            Mode::Replaying { .. } => Some((ended, None)),
+        }
+    }
+
     fn holding(&self, port: u32) -> Option<&Packet> {
         self.queue
             .iter()
@@ -143,11 +267,22 @@ impl Input {
             .max_by_key(|p| p.seq)
     }
 
-    /// One guest read of `handle`: a holding packet for its port replaces
-    /// the pad. The packet number moves whenever what the game gets
-    /// changes, as a real pad's does; reads are left alone until the
-    /// first packet.
-    fn read(&mut self, handle: u32, packet: &mut [u8; PACKET]) {
+    /// One guest read of `handle`: a replay answers it, then a holding pad
+    /// packet replaces the pad, then a recording logs what the game gets.
+    fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+        if let Mode::Replaying { replayer, .. } = &mut self.mode {
+            replayer.read(handle, status, packet);
+        }
+        self.pad(handle, packet);
+        if let Mode::Recording { recorder, .. } = &mut self.mode {
+            recorder.read(handle, status, packet);
+        }
+    }
+
+    /// A holding packet for the handle's port replaces the pad. The packet
+    /// number moves whenever what the game gets changes, as a real pad's
+    /// does; reads are left alone until the first packet.
+    fn pad(&mut self, handle: u32, packet: &mut [u8; PACKET]) {
         let port = self.ports.get(&handle).copied();
         let pad = port.and_then(|port| self.holding(port)).map(|p| p.pad);
         let d = self.delivered.entry(handle).or_default();
@@ -262,7 +397,7 @@ impl InputTap for AgentTap {
         if let Some((t, Chain::Before)) = &mut self.inner {
             t.read(handle, status, packet);
         }
-        lock(&self.input).read(handle, packet);
+        lock(&self.input).read(handle, status, packet);
         if let Some((t, Chain::After)) = &mut self.inner {
             t.read(handle, status, packet);
         }
@@ -484,6 +619,68 @@ mod tests {
         let (n3, g) = read(&mut t, H0, live(40, 0));
         assert_eq!((n3, g.analog(AnalogButton::B)), (42, 0), "released");
         assert_eq!(read(&mut t, H0, live(43, 5)).0, 45, "live moves keep it");
+    }
+
+    #[test]
+    fn a_recording_replays_read_for_read_with_the_agent_packets_in_it() {
+        let (input, mut t) = tap();
+        lock(&input).set_clock(20);
+        lock(&input)
+            .record("fight", "/c/fight.input".into())
+            .unwrap();
+        assert!(lock(&input).record("again", "/c/x".into()).is_err());
+        lock(&input)
+            .push(&PadParams {
+                hold_ticks: Some(2),
+                buttons: vec![Button::A],
+                ..Default::default()
+            })
+            .unwrap();
+        let mut seen = Vec::new();
+        for tick in 20..24 {
+            lock(&input).set_clock(tick);
+            seen.push(read(&mut t, H0, live(3, tick as i16)));
+            seen.push(read(&mut t, H1, live(3, -1)));
+        }
+        let InputMode::Recording {
+            reads, from_tick, ..
+        } = lock(&input).mode()
+        else {
+            panic!("recording")
+        };
+        assert_eq!((reads, from_tick), (8, Some(20)));
+        let (ended, file) = lock(&input).stop().unwrap();
+        assert!(matches!(ended, InputMode::Recording { reads: 8, .. }));
+        let (path, log) = file.unwrap();
+        assert_eq!(path, PathBuf::from("/c/fight.input"));
+        assert_eq!(log.reads[0].tick, Some(20), "stamped with the game tick");
+        assert!(lock(&input).stop().is_none(), "live again");
+
+        // Replayed over a live pad that does something else entirely.
+        let log = InputLog::parse(&log.to_text()).unwrap();
+        lock(&input)
+            .replay("fight", "/c/fight.input".into(), log)
+            .unwrap();
+        let mut got = Vec::new();
+        for _ in 20..24 {
+            got.push(read(&mut t, H0, live(77, 999)));
+            got.push(read(&mut t, H1, live(77, 999)));
+        }
+        assert_eq!(got, seen);
+        read(&mut t, H0, live(77, 999));
+        let InputMode::Replaying { counts, .. } = lock(&input).mode() else {
+            panic!("replaying")
+        };
+        assert_eq!(
+            counts,
+            ReplayCounts {
+                reads: 8,
+                replayed: 8,
+                matched: 8,
+                handle_mismatches: 0,
+                past_end: 1
+            }
+        );
     }
 
     #[test]
