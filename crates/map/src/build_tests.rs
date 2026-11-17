@@ -644,3 +644,98 @@ fn an_index_past_its_region_moves_its_entries_to_the_metadata() {
     let t = check_grown(&mut map, &ids);
     assert!(t >= INDEX_VIRTUAL_BASE + map.header().index_size);
 }
+
+#[test]
+fn tag_offsets_point_into_placed_tags_and_phase_holds() {
+    let mut t = tiny();
+    // b: 0x40 bytes, a: points at b + 0x10 and at its own + 0x20.
+    let mut b = Block::new((0u8..0x40).collect());
+    b.phase = 4;
+    b.align = 16;
+    let b = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\b", TagPayload::Built(b))
+        .unwrap();
+    let a = t
+        .set
+        .add_tag(cc(b"thng"), "invented\\a", TagPayload::Empty)
+        .unwrap();
+    let mut block = Block::zeroed(0x30);
+    block
+        .fixup(
+            0,
+            FixupKind::TagOffset {
+                count: 3,
+                tag: b,
+                offset: 0x10,
+            },
+        )
+        .fixup(
+            8,
+            FixupKind::TagOffset {
+                count: 1,
+                tag: a,
+                offset: 0x20,
+            },
+        );
+    t.set.tag_mut(a).unwrap().payload = TagPayload::Built(block);
+    let mut map = read(t.set.build().unwrap().0);
+    let lb = map.tag(b).unwrap().location.unwrap();
+    let la = map.tag(a).unwrap().location.unwrap();
+    assert_eq!(lb.address % 16, 4);
+    let ba = map.read_tag_bytes(a).unwrap();
+    assert_eq!((word(&ba, 0), word(&ba, 4)), (3, lb.address + 0x10));
+    assert_eq!((word(&ba, 8), word(&ba, 12)), (1, la.address + 0x20));
+    // A target outside its tag is refused.
+    let mut t = tiny();
+    let mut bad = Block::zeroed(8);
+    bad.fixup(
+        0,
+        FixupKind::TagOffset {
+            count: 1,
+            tag: t.thing,
+            offset: 0x10_0000,
+        },
+    );
+    t.set
+        .add_tag(cc(b"thng"), "invented\\bad", TagPayload::Built(bad))
+        .unwrap();
+    assert!(t.set.build().is_err());
+}
+
+#[test]
+fn an_alias_follows_its_target() {
+    let mut t = tiny();
+    let b = t
+        .set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\target",
+            TagPayload::Built(Block::zeroed(0x20)),
+        )
+        .unwrap();
+    let a = t
+        .set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\alias",
+            TagPayload::Alias { tag: b, offset: 4 },
+        )
+        .unwrap();
+    let map = read(t.set.build().unwrap().0);
+    let lb = map.tag(b).unwrap().location.unwrap();
+    let la = map.tag(a).unwrap();
+    assert_eq!((la.index_address, la.index_size), (lb.address + 4, 0));
+    let mut t = tiny();
+    t.set
+        .add_tag(
+            cc(b"thng"),
+            "invented\\alias",
+            TagPayload::Alias {
+                tag: t.bsp,
+                offset: 0,
+            },
+        )
+        .unwrap();
+    assert!(t.set.build().is_err());
+}

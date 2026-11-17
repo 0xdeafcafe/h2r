@@ -212,8 +212,11 @@ impl Remapper for Shift {
     fn string(&mut self, v: u32) -> u32 {
         v ^ 0x0000_0100
     }
-    fn raw(&mut self, v: u32) -> u32 {
-        0x8000_0000 | (v & 0xffff)
+    fn raw(&mut self, v: u32, _: Option<u32>, _: &[u32]) -> RawRef {
+        RawRef::External {
+            file: map::ResourceFile::Shared,
+            offset: v & 0xffff,
+        }
     }
 }
 
@@ -248,4 +251,100 @@ fn remap_rewrites_ids_strings_and_raw_pointers_at_every_depth() {
     }
     // Scalars untouched.
     assert_eq!(after.bytes[..0x18], before.bytes[..0x18]);
+}
+
+#[test]
+fn tags_move_in_their_source_layout() {
+    let (mut map, ids) = invented(6, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let r = Relocator::new(&schema, &mut map).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    set.reuse_free_space = false;
+    for &id in &ids {
+        let b = r.to_built_source(id).unwrap();
+        assert_eq!(
+            b.bytes.len() as u32,
+            map.tag(id).unwrap().location.unwrap().size
+        );
+        set.tag_mut(id).unwrap().payload = TagPayload::Built(b);
+    }
+    let mut moved = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    let (old, new) = (
+        Memory::of(&mut map).unwrap(),
+        Memory::of(&mut moved).unwrap(),
+    );
+    for &id in &ids {
+        let a = map.tag(id).unwrap().location.unwrap();
+        let b = moved.tag(id).unwrap().location.unwrap();
+        assert_ne!(a.address, b.address);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.address % 16, b.address % 16);
+        assert_eq!(
+            read_tree(&expected(), a.address, &old).unwrap(),
+            read_tree(&expected(), b.address, &new).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_tag_tree_transplants_into_another_map() {
+    let (mut src, ids) = invented(3, false);
+    let (mut dst_map, _) = invented(1, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let mut dst = TagSet::from_map(&mut dst_map).unwrap();
+    let before = dst.slots.len();
+    // thing2 is new there; the globals and scenario it references exist
+    // (same names) and are reused.
+    let report = transplant::transplant(&schema, &mut src, ids[2], &mut dst)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.added, vec![ids[2]]);
+    assert_eq!(report.ids.len(), 3);
+    assert_eq!(report.raw.0, 1);
+    assert_eq!(dst.slots.len(), before + 1);
+    let mut out = Map::from_reader(Cursor::new(dst.build().unwrap().0)).unwrap();
+    let new = report.ids[&ids[2]];
+    let t = out.tag(new).unwrap().clone();
+    assert_eq!(t.name.as_deref(), Some("thing2"));
+    let b = out.read_tag_bytes(new).unwrap();
+    let w = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    // References point at the destination's globals and scenario.
+    assert_eq!(w(0x1c), out.globals().unwrap().id.0);
+    assert_eq!(w(0x24), out.scenario().unwrap().id.0);
+    // The raw resource came along: thing2 used the first one (all 1s).
+    let p = map::RawPointer::decode(w(0x20)).unwrap();
+    assert_eq!(p.file, map::ResourceFile::Local);
+    assert_eq!(
+        out.read_file_range(p.offset.into(), 0x40).unwrap(),
+        vec![1; 0x40]
+    );
+    // Same tree, address-free (string IDs here equal: both maps intern
+    // "alpha" and "beta" in the same order).
+    let mem = Memory::of(&mut out).unwrap();
+    let old = Relocator::new(&schema, &mut src).unwrap();
+    let a = read_tree(
+        &expected(),
+        src.tag(ids[2]).unwrap().location.unwrap().address,
+        old.memory(),
+    );
+    let mut y = read_tree(&expected(), t.location.unwrap().address, &mem).unwrap();
+    let mut x = a.unwrap();
+    // The datum and raw words differ by design.
+    for tr in [&mut x, &mut y] {
+        tr.bytes[0x1c..0x28].fill(0);
+    }
+    assert_eq!(x, y);
+
+    // A tree with a tag the schema cannot move is refused whole.
+    let (mut bad, ids) = invented(3, true);
+    let mut dst = TagSet::from_map(&mut dst_map).unwrap();
+    let refused = transplant::transplant(&schema, &mut bad, ids[2], &mut dst)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused[0].detail.refusal, Refusal::UnknownPointer);
+    assert_eq!(dst.slots.len(), before);
 }
