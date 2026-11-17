@@ -41,7 +41,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 3;
+pub const CONVERTER_VERSION: u32 = 4;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";
@@ -318,6 +318,8 @@ struct DiscConverter {
     data: PathBuf,
     /// Built once, for the first campaign level.
     scripting: Option<Result<Option<h1campaign::Scripting>, String>>,
+    /// Read once, for the first campaign level.
+    donors: Option<h1campaign::donor::Donors>,
 }
 
 impl DiscConverter {
@@ -349,12 +351,16 @@ impl Converter for DiscConverter {
                         h1_cmd::campaign_scripting(&self.h1_path, &self.h2).map_err(|e| format!("{e:#}")),
                     );
                 }
+                if self.donors.is_none() {
+                    self.donors = Some(h1_cmd::campaign_donors(&self.h2)?);
+                }
                 let scripting = match self.scripting.as_ref().expect("set") {
                     Ok(s) => s.as_ref(),
                     Err(e) => bail!("the scripts' tables: {e}"),
                 };
                 let mut base = h1_cmd::h2_base(&self.h2, h1campaign::base_for(level))?;
-                let done = h1campaign::convert(&h1, &mut base, &h1_cmd::campaign_options(scripting))?;
+                let opts = h1_cmd::campaign_options(scripting, self.donors.as_ref());
+                let done = h1campaign::convert(&h1, &mut base, &opts)?;
                 let dir = campaign_dir(&self.data);
                 h1_cmd::write_campaign_level(&self.out(dir.clone())?, &dir, level, &done.bytes)?;
             }
@@ -445,6 +451,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         h2: r.h2_disc.to_path_buf(),
         data: r.data.to_path_buf(),
         scripting: None,
+        donors: None,
     };
     let data = r.data.to_path_buf();
     let mut sum = run_jobs(&todo, &mut stamp, &mut conv, &mut |s| s.write(&data), say);

@@ -5,9 +5,12 @@
 //! base, [`BASE`]): its globals, HUD, shared tags and the Halo 2 characters
 //! the AI stands in with stay the base's. On top of it:
 //!
-//! - [`structure`]: each Halo 1 structure BSP (collision, MOPP, render
+//! - [`structure`]: every Halo 1 structure BSP (collision, MOPP, render
 //!   geometry, Halo 1's lightmap, generated AI pathfinding) in the base's
-//!   BSP slots, through `h1convert`'s writer;
+//!   BSP slots and new `sbsp`/`ltmp` tags past them, through `h1convert`'s
+//!   writer;
+//! - [`donor`]: the characters the base lacks, copied whole
+//!   from other retail maps, sounds included;
 //! - [`scenario`]: the base's scenario rebuilt as a built root over its own
 //!   pinned children, with Halo 1's sky, player starts, object placements,
 //!   AI and scripts written over the base's;
@@ -18,6 +21,7 @@
 //! the owner's discs at run time.
 #![forbid(unsafe_code)]
 
+pub mod donor;
 pub mod manifest;
 pub mod scenario;
 pub mod structure;
@@ -43,11 +47,11 @@ pub const BASE: &str = "05a_deltaapproach";
 /// Measured per level (`every_campaign_level_converts`): with the base
 /// scenario rebuilt from its relocated tree, built tags placed largest
 /// first and Halo 1's repeated firing positions shared, every level fits
-/// 05a's tag memory with its scenery and placed bipeds. b40 is the
-/// tightest (0xc21000 of 0xc24000). 05a is also the only campaign base
-/// with the pelican, phantom, wraith and Covenant turret templates next to
-/// the warthog, ghost, scorpion and banshee; the alternatives with more
-/// room each lack several of them (docs/game/campaigns.md §9). A level
+/// 05a's tag memory with every BSP, its scenery and placed bipeds, and the
+/// characters donors bring. b40 is the tightest (0xc24000 of 0xc24000).
+/// 05a is also the only campaign base with the pelican, phantom, wraith
+/// and Covenant turret templates next to the warthog, ghost, scorpion and
+/// banshee; the alternatives with more room each lack several of them (docs/game/campaigns.md §9). A level
 /// moves only when a measured reason says so.
 pub fn base_for(_level: &str) -> &'static str {
     BASE
@@ -136,6 +140,9 @@ pub struct Options<'a> {
     pub scripts: Option<&'a Scripting>,
     /// Sounds the scripts name (h1sounds), up to this many tags.
     pub sounds: usize,
+    /// Retail maps to copy the characters the base lacks from
+    /// ([`donor`]); none copies nothing.
+    pub donors: Option<&'a donor::Donors>,
 }
 
 impl Default for Options<'_> {
@@ -145,6 +152,7 @@ impl Default for Options<'_> {
             ai: true,
             scripts: None,
             sounds: 0,
+            donors: None,
         }
     }
 }
@@ -173,6 +181,8 @@ pub struct Report {
     pub appended: Vec<(String, u32)>,
     /// Per converted BSP.
     pub bsps: Vec<structure::BspReport>,
+    /// Tag trees copied from donor maps.
+    pub brought: Vec<donor::Brought>,
     /// The scenario's layers.
     pub scenario: scenario::ScenarioReport,
     /// Everything left out, one line each, with the reason.
@@ -207,6 +217,9 @@ impl std::fmt::Display for Report {
         )?;
         for b in &self.bsps {
             writeln!(f, "  {b}")?;
+        }
+        for b in &self.brought {
+            writeln!(f, "  brought: {b}")?;
         }
         write!(f, "{}", self.scenario)?;
         for d in &self.dropped {
@@ -252,16 +265,35 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     let slot = set.scenario.index();
     set.slots[slot].name = Some(scenario_path.clone());
 
-    let mut sections = Vec::new();
-    for (b, d) in bsps.iter().zip(&scnr.descriptors) {
-        sections.push(b.write(&mut set, d.sbsp, d.ltmp)?);
+    // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
+    // under Halo 1's names.
+    let mut slots = Vec::new();
+    for (i, b) in bsps.iter().enumerate() {
+        let (sbsp, ltmp) = match scnr.descriptors.get(i) {
+            Some(d) => (d.sbsp, d.ltmp),
+            None => (
+                set.add_tag(map::FourCC(*b"sbsp"), &b.name, TagPayload::Empty)?,
+                set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
+            ),
+        };
+        let section = b.write(&mut set, sbsp, ltmp)?;
+        slots.push(scenario::BspSlot {
+            section,
+            sbsp,
+            ltmp,
+            checksum: b.checksum,
+            centroids: b.centroids(),
+        });
     }
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
+    if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
+        donor::bring(d, &mut set, &donor::wanted(h1)?, &mut report)?;
+    }
     scenario::write(
         h1,
         &mut set,
         &scnr,
-        &sections,
+        &slots,
         objects_base.as_ref(),
         opts,
         &mut report,

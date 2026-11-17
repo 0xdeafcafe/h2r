@@ -269,6 +269,36 @@ new indices:
 H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored every_retail_sound_merges --nocapture
 ```
 
+### A whole tree with its sounds (`h1sounds::transplant`)
+
+`h1sounds::transplant(schema, src, src_gestalt, root, dst_set,
+dst_gestalt)` runs `tags::schema::transplant::transplant` and then merges
+every `snd!` the tree copied into `dst_gestalt`, which the caller installs
+once at the end (`SoundGestalt::install`). The `MergeMap` maps import
+names through the source's string table into the set's (`TagSet::intern`)
+and copies a chunk whose pointer is in the source's own file as a local
+raw resource, once per pointer; shared-cache pointers stay. Two things
+merging refuses are cut first instead: a promotion (the header's index
+set to `ff`), and an extra info whose raw is in the source file. The
+copied `snd!` is rewritten with the new indices; its extra info's owner
+is its new datum.
+
+A gestalt the set already holds as a built tag reads back through
+`SoundGestalt::from_block` (the inverse of `to_block`, local chunks
+included), so a set's gestalt can grow in more than one pass: donors
+first, then the converted script sounds (`h1campaign`).
+
+**Proof.** `a_built_gestalt_reads_back` (invented gestalt), and
+`a_transplanted_tree_takes_its_sounds` (**V**, 2026-11-17): 04b's flood
+combat elite onto 05a, built, reopened. Each of its 42 moved sounds names
+the source's playback and scale, and per permutation the same import
+name as a string and the same chunk bytes (354 chunks; this tree's are
+all in the shared caches, so the pointers stay). One promotion is cut.
+
+```sh
+H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc -- --ignored a_transplanted_tree_takes_its_sounds --nocapture
+```
+
 ## Classes
 
 Both games number classes in one list that Halo 2 extended, so most keep

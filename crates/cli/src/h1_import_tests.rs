@@ -283,6 +283,7 @@ fn real_import_is_found_by_the_game() {
             h2: h2.clone(),
             data: data.clone(),
             scripting: None,
+            donors: None,
         };
         let mut s = Stamp::default();
         run_jobs(&todo, &mut s, &mut conv, &mut |_| Ok(()), &mut |l| {

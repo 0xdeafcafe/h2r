@@ -1,5 +1,6 @@
-//! Each Halo 1 structure BSP of a level, converted into one of the base's
-//! BSP slots: `h1convert`'s collision, render geometry, materials, MOPP
+//! Each Halo 1 structure BSP of a level, in Halo 1's order, converted into
+//! the base's BSP slot of the same index or, past the base's count, new
+//! `sbsp`/`ltmp` tags under Halo 1's name: `h1convert`'s collision, render geometry, materials, MOPP
 //! and lightmap (docs/game/h1-multiplayer.md, "The converted structure
 //! BSP"), plus AI pathfinding generated from the collision
 //! (`pathfind::generate`, docs/formats/pathfinding.md) at `sbsp+0xc4`.
@@ -25,11 +26,18 @@ pub const PATHFINDING: u32 = 0xc4;
 pub struct Prepared {
     /// Halo 1 BSP index.
     pub index: usize,
+    /// Halo 1 BSP tag name, which a BSP past the base's slots takes.
+    pub name: String,
     pub collision: Bsp,
     pub collision_materials: usize,
     pub sections: Vec<Section>,
     /// Per structure material, the base material it draws with.
     pub materials: Vec<usize>,
+    /// Per structure material, its base material and Halo 1 shader name.
+    pub picks: Vec<(usize, String)>,
+    /// Halo 1's own textures on copies of the picked shaders
+    /// (`h1convert::textures`).
+    pub textures: h1convert::textures::Retexture,
     pub bounds: [f32; 6],
     pub mopp: Vec<u8>,
     pub checksum: u32,
@@ -52,6 +60,9 @@ pub struct BspReport {
     pub sectors: usize,
     pub links: usize,
     pub flipped: bool,
+    /// Shader copies drawing Halo 1's textures, Halo 1 bitmaps converted
+    /// for them, and materials left on the base's textures (with why).
+    pub textures: (usize, usize, Vec<String>),
 }
 
 impl std::fmt::Display for BspReport {
@@ -59,7 +70,8 @@ impl std::fmt::Display for BspReport {
         write!(
             f,
             "bsp {}: {} cluster(s), {} vertices, {} triangles, {} materials, {} collision surfaces, \
-             {} lightmap pages, pathfinding {} sectors / {} links{}",
+             {} lightmap pages, pathfinding {} sectors / {} links, Halo 1 textures on {} shader \
+             copies ({} bitmaps, {} notes){}",
             self.index,
             self.clusters,
             self.vertices,
@@ -69,6 +81,9 @@ impl std::fmt::Display for BspReport {
             self.lightmap_pages,
             self.sectors,
             self.links,
+            self.textures.0,
+            self.textures.1,
+            self.textures.2.len(),
             if self.flipped {
                 ", winding flipped"
             } else {
@@ -94,8 +109,9 @@ fn fnv(sections: &[Section]) -> u32 {
     h
 }
 
-/// Prepares every Halo 1 BSP that has a base slot; the rest are reported
-/// as dropped.
+/// Prepares every Halo 1 BSP, in Halo 1's order, so `switch_bsp`, zone
+/// and placement BSP indices keep their meaning. BSP `i` takes its
+/// templates from the base's BSP `i`, or the base's first past its count.
 pub fn prepare_all<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
@@ -105,14 +121,11 @@ pub fn prepare_all<R: Read + Seek>(
     let refs = h1.structure_bsps()?;
     let mut out = Vec::new();
     for (i, r) in refs.iter().enumerate() {
-        let Some(d) = scnr.descriptors.get(i) else {
-            report.dropped.push(format!(
-                "bsp {i} ({}): the base has {} BSP slots",
-                r.name,
-                scnr.descriptors.len()
-            ));
-            continue;
-        };
+        let d = scnr
+            .descriptors
+            .get(i)
+            .or(scnr.descriptors.first())
+            .ok_or_else(|| invalid("the base has no BSP"))?;
         let p = prepare(h1, r, i, base, d.sbsp)?;
         report.bsps.push(BspReport {
             index: i,
@@ -127,6 +140,11 @@ pub fn prepare_all<R: Read + Seek>(
             sectors: p.pathfinding.sectors.len(),
             links: p.pathfinding.links.len(),
             flipped: false,
+            textures: (
+                p.textures.copies.len(),
+                p.textures.bitmaps.len(),
+                p.textures.notes.clone(),
+            ),
         });
         out.push(p);
     }
@@ -207,6 +225,19 @@ fn prepare<R: Read + Seek>(
     } else {
         shaders::pick(&h1_shaders, &base_shaders)
     };
+    // Halo 1's own textures on copies of the picked shaders; a base whose
+    // shaders can't be read keeps its own (with a note saying why).
+    let picks: Vec<(usize, String)> = materials
+        .iter()
+        .copied()
+        .zip(names.iter().cloned())
+        .collect();
+    let textures = h1convert::textures::plan(h1, base, &templates, &picks).unwrap_or_else(|e| {
+        h1convert::textures::Retexture {
+            notes: vec![format!("the base's textures kept: {e}")],
+            ..Default::default()
+        }
+    });
 
     let pages = h1bitmaps::lightmap_pages(h1, &src).map_err(|e| invalid(e.to_string()))?;
     let lightmap = match &pages.tag {
@@ -223,10 +254,13 @@ fn prepare<R: Read + Seek>(
         .map_err(|e| invalid(format!("bsp {index} pathfinding: {e:?}")))?;
     Ok(Prepared {
         index,
+        name: r.name.clone(),
         collision,
         collision_materials,
         sections,
         materials,
+        picks,
+        textures,
         bounds: src.world_bounds(),
         mopp,
         checksum,
@@ -237,6 +271,25 @@ fn prepare<R: Read + Seek>(
 }
 
 impl Prepared {
+    /// Each cluster's centroid (the middle of its vertices' bounds), for
+    /// the scenario's per-cluster data; one at the origin with none.
+    pub fn centroids(&self) -> Vec<[f32; 3]> {
+        if self.sections.is_empty() {
+            return vec![[0.0; 3]];
+        }
+        self.sections
+            .iter()
+            .map(|s| {
+                let b = s.bounds();
+                [
+                    (b[0] + b[1]) / 2.0,
+                    (b[2] + b[3]) / 2.0,
+                    (b[4] + b[5]) / 2.0,
+                ]
+            })
+            .collect()
+    }
+
     /// Writes the BSP and lightmap into the base's `sbsp`/`ltmp` slots,
     /// the lightmap bitmap as a new tag, and the pathfinding into the BSP.
     /// Returns the BSP section's index.
@@ -247,15 +300,19 @@ impl Prepared {
                 .install(set, &format!("{name}_h2_{}", self.index))?,
             None => TagId::NULL,
         };
+        // Halo 1's own textures: new bitmaps and shader copies (shared with
+        // the level's other BSPs by name), and the material heads naming
+        // them.
+        let (templates, materials) = self.textures.install(set, &self.templates, &self.picks)?;
         let s = Structure {
             collision: &self.collision,
             collision_materials: self.collision_materials,
             sections: &self.sections,
-            materials: &self.materials,
+            materials: &materials,
             bounds: self.bounds,
             mopp: &self.mopp,
             checksum: self.checksum,
-            templates: &self.templates,
+            templates: &templates,
             lightmap_bitmap,
         };
         let section = s.write(set, sbsp, ltmp)?;

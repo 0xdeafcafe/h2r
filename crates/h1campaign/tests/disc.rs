@@ -34,7 +34,7 @@ fn h2_iso() -> xiso::Xiso<BufReader<File>> {
     .unwrap()
 }
 
-fn h2_map(name: &str) -> Map<Cursor<Vec<u8>>> {
+fn h2_bytes(name: &str) -> Vec<u8> {
     let mut iso = h2_iso();
     let e = iso
         .entries()
@@ -42,7 +42,20 @@ fn h2_map(name: &str) -> Map<Cursor<Vec<u8>>> {
         .into_iter()
         .find(|e| e.path.ends_with(&format!("/{name}.map")))
         .unwrap();
-    Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+    iso.read(&e).unwrap()
+}
+
+fn h2_map(name: &str) -> Map<Cursor<Vec<u8>>> {
+    Map::from_reader(Cursor::new(h2_bytes(name))).unwrap()
+}
+
+/// The donor maps (`h1campaign::donor::MAPS`) off the Halo 2 disc.
+fn donors() -> h1campaign::donor::Donors {
+    let mut d = h1campaign::donor::Donors::default();
+    for name in h1campaign::donor::MAPS {
+        d.maps.push((name.to_owned(), h2_bytes(name)));
+    }
+    d
 }
 
 fn scripting() -> Scripting {
@@ -382,6 +395,117 @@ fn placement_scales(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<(&'static str, [usize; 
 /// reports on a converted map is the converter's. With `$H1_SWEEP_MAP` (a
 /// built `.map`), that map is swept too: an existing conversion is checked
 /// without converting again.
+/// Every Halo 1 BSP has a descriptor, in order, and per-BSP scenario
+/// data; each descriptor leads to its region, the BSP validates (collision,
+/// audibility, sound clusters), and its pathfinding decodes and validates.
+/// Returns the pathfinding read back.
+fn check_bsps(
+    m: &mut Map<Cursor<Vec<u8>>>,
+    h1: &h1map::H1Map,
+    done: &h1campaign::Converted,
+) -> Vec<tags::pathfinding::PathfindingData> {
+    let scnr = m.scenario().unwrap().clone();
+    let addr = scnr.location.unwrap().address;
+    let bytes = m.read_tag_bytes(scnr.id).unwrap();
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let n = h1.structure_bsps().unwrap().len();
+    assert_eq!(done.report.bsps.len(), n, "every Halo 1 BSP converts");
+    assert_eq!(word(&bytes, 0x210) as usize, n, "one descriptor per BSP");
+    assert_eq!(word(&bytes, 0x290) as usize, n, "cluster data per BSP");
+    assert_eq!(word(&bytes, 0x388) as usize, n, "points per BSP");
+    let desc = (word(&bytes, 0x214) - addr) as usize;
+    let clusters = (word(&bytes, 0x294) - addr) as usize;
+    let mut decoded = Vec::new();
+    let mut regions = Vec::new();
+    for k in 0..n {
+        let e = desc + k * 0x44;
+        let sbsp = TagId(word(&bytes, e + 0x14));
+        let t = m.tag(sbsp).unwrap().clone();
+        assert_eq!(t.group, FourCC(*b"sbsp"));
+        let ltmp = m.tag(TagId(word(&bytes, e + 0x1c))).unwrap().clone();
+        assert_eq!(ltmp.group, FourCC(*b"ltmp"));
+        let loc = t.location.unwrap();
+        assert_eq!(
+            loc.address,
+            word(&bytes, e + 8) + 0x10,
+            "bsp {k}: region header"
+        );
+        regions.push((word(&bytes, e), word(&bytes, e + 4)));
+        let b = m.read_tag_bytes(sbsp).unwrap();
+        // The cluster data matches the BSP: one entry per cluster, its
+        // checksum.
+        let c = clusters + k * 0x34;
+        for at in [0x08, 0x10, 0x1c, 0x24, 0x2c] {
+            assert_eq!(
+                word(&bytes, c + at),
+                word(&b, 0x9c),
+                "bsp {k}: cluster data +{at:#x}"
+            );
+        }
+        assert_eq!(word(&bytes, c + 0x18), word(&b, 0x8), "bsp {k}: checksum");
+        let view = tags::geometry::TagView::new(&b, loc.address);
+        let h = view.at(0, 0x200).unwrap();
+        let coll = view
+            .block(
+                h,
+                tags::pathfinding::SBSP_COLLISION_FIELD,
+                tags::collision::Bsp::STRUCTURE_SIZE,
+            )
+            .unwrap();
+        let off = coll[0].as_ptr() as usize - b.as_ptr() as usize;
+        let col = tags::collision::Bsp::decode_structure(&b, loc.address, off).unwrap();
+        // Surfaces with no material hold 0xffff in both games.
+        let problems: Vec<String> = col
+            .validate(word(&b, 0xc) as usize)
+            .into_iter()
+            .filter(|p| !p.ends_with("material 65535 out of range"))
+            .collect();
+        assert!(problems.is_empty(), "bsp {k}: {problems:?}");
+        // The engine's unchecked reads every tick (audibility, sound
+        // clusters): the first converted Blood Gulch faulted on both.
+        h1convert::structure::check_audibility(&b, loc.address)
+            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
+        h1convert::structure::check_sound_clusters(&b, loc.address)
+            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
+        let pf = tags::pathfinding::PathfindingData::from_sbsp(&view)
+            .unwrap()
+            .expect("pathfinding present");
+        let problems = pf.validate(Some(col.surfaces.len()));
+        assert!(problems.is_empty(), "bsp {k} pathfinding: {problems:?}");
+        assert_eq!(pf.sectors.len(), done.pathfinding[k].sectors.len());
+        println!(
+            "bsp {k}: {} surfaces, {} sectors, {} links read back",
+            col.surfaces.len(),
+            pf.sectors.len(),
+            pf.links.len()
+        );
+        decoded.push(pf);
+    }
+    // BSP switch trigger volumes: Halo 1's, each on a converted volume
+    // (named as Halo 1's) between two BSPs the scenario has.
+    let h1_switches = h1campaign::scenario::h1::BSP_SWITCHES;
+    let h1_volumes = h1campaign::scenario::trigger_volumes(h1).unwrap();
+    let volumes = word(&bytes, 0x108) as usize;
+    let parked = volumes - h1_volumes.len();
+    let n_switches = word(&bytes, 0x130) as usize;
+    assert_eq!(n_switches, done.report.scenario.bsp_switches);
+    assert!(h1_switches.1 == 8 && n_switches > 0, "every level switches");
+    let sw = (word(&bytes, 0x134).wrapping_sub(addr)) as usize;
+    for k in 0..n_switches {
+        let e = &bytes[sw + k * 0xe..][..0xe];
+        let s = |o: usize| i16::from_le_bytes([e[o], e[o + 1]]);
+        let v = s(0) as usize;
+        assert!(v >= parked && v < volumes, "switch {k}: volume {v}");
+        assert!((0..n as i16).contains(&s(2)) && (0..n as i16).contains(&s(4)));
+    }
+    // No two regions share file bytes.
+    regions.sort();
+    for w in regions.windows(2) {
+        assert!(w[0].0 + w[0].1 <= w[1].0, "regions overlap: {w:x?}");
+    }
+    decoded
+}
+
 #[test]
 #[ignore = "reads disc/halo2.iso"]
 fn object_sweep_is_clean_on_the_retail_base() {
@@ -436,6 +560,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let filled = filled_profile(&mut base);
     let layers = std::env::var("H1_LAYERS").unwrap_or_else(|_| "objects,ai,scripts".into());
     let s = layers.contains("scripts").then(scripting);
+    let donors = donors();
     let opts = Options {
         objects: layers.contains("objects"),
         ai: layers.contains("ai"),
@@ -444,6 +569,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000),
+        donors: Some(&donors),
     };
     let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
     println!("{}", done.report);
@@ -495,60 +621,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     println!("scenario tag references: {} ({live} live)", refs.len());
     assert!(bad.is_empty(), "{bad:#?}");
 
-    // Each converted BSP: the descriptor leads to it, it validates, and its
-    // pathfinding decodes and validates.
-    let desc = (word(&bytes, 0x214) - addr) as usize;
-    let mut decoded = Vec::new();
-    for k in 0..done.report.bsps.len() {
-        let e = desc + k * 0x44;
-        let sbsp = TagId(word(&bytes, e + 0x14));
-        let t = m.tag(sbsp).unwrap().clone();
-        assert_eq!(t.group, FourCC(*b"sbsp"));
-        let loc = t.location.unwrap();
-        assert_eq!(
-            loc.address,
-            word(&bytes, e + 8) + 0x10,
-            "bsp {k}: region header"
-        );
-        let b = m.read_tag_bytes(sbsp).unwrap();
-        let view = tags::geometry::TagView::new(&b, loc.address);
-        let h = view.at(0, 0x200).unwrap();
-        let coll = view
-            .block(
-                h,
-                tags::pathfinding::SBSP_COLLISION_FIELD,
-                tags::collision::Bsp::STRUCTURE_SIZE,
-            )
-            .unwrap();
-        let off = coll[0].as_ptr() as usize - b.as_ptr() as usize;
-        let col = tags::collision::Bsp::decode_structure(&b, loc.address, off).unwrap();
-        // Surfaces with no material hold 0xffff in both games.
-        let problems: Vec<String> = col
-            .validate(word(&b, 0xc) as usize)
-            .into_iter()
-            .filter(|p| !p.ends_with("material 65535 out of range"))
-            .collect();
-        assert!(problems.is_empty(), "bsp {k}: {problems:?}");
-        // The engine's unchecked reads every tick (audibility, sound
-        // clusters): the first converted Blood Gulch faulted on both.
-        h1convert::structure::check_audibility(&b, loc.address)
-            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
-        h1convert::structure::check_sound_clusters(&b, loc.address)
-            .unwrap_or_else(|e| panic!("bsp {k}: {e}"));
-        let pf = tags::pathfinding::PathfindingData::from_sbsp(&view)
-            .unwrap()
-            .expect("pathfinding present");
-        let problems = pf.validate(Some(col.surfaces.len()));
-        assert!(problems.is_empty(), "bsp {k} pathfinding: {problems:?}");
-        assert_eq!(pf.sectors.len(), done.pathfinding[k].sectors.len());
-        println!(
-            "bsp {k}: {} surfaces, {} sectors, {} links read back",
-            col.surfaces.len(),
-            pf.sectors.len(),
-            pf.links.len()
-        );
-        decoded.push(pf);
-    }
+    let decoded = check_bsps(&mut m, &h1, &done);
 
     // The player starts are a30's and stand on generated pathfinding.
     let starts = h1.multiplayer().unwrap().starting_locations;
@@ -744,6 +817,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn every_level_s_scripts_run_on_the_retail_interpreter() {
     let s = scripting();
+    let donors = donors();
     let mut iso = h2_iso();
     let e = iso.find("default.xbe").unwrap();
     let xbe_bytes = iso.read(&e).unwrap();
@@ -762,6 +836,14 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
     let levels = std::env::var("H1_LEVELS")
         .unwrap_or_else(|_| "a10,a30,a50,b30,b40,c10,c20,c40,d20,d40".into());
     let mut bad = Vec::new();
+    // Halo 1's `switch_bsp` is Halo 2's, so its literal index carries over.
+    let switch = s
+        .table
+        .builtins
+        .iter()
+        .find(|t| t.name == "switch_bsp")
+        .expect("Halo 1 has switch_bsp");
+    assert_eq!(switch.kind, h1scripts::translate::Kind::Direct);
     for level in levels.split(',') {
         let h1 = h1_level(level);
         let mut base = h2_map(h1campaign::base_for(level));
@@ -770,12 +852,37 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             ai: true,
             scripts: Some(&s),
             sounds: 1000,
+            donors: Some(&donors),
         };
         let done =
             h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
         let found = sc.unrunnable(&catalog).unwrap();
+        // Every `switch_bsp` in Halo 1's scripts (whose literal the
+        // translation keeps: Halo 2's `switch_bsp` takes the same short)
+        // names a BSP the converted scenario has, the same one: the
+        // descriptors keep Halo 1's order and count.
+        let scnr = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
+        assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());
+        let t = h1scripts::layout::Tables::read(&h1).unwrap();
+        let src = h1scripts::decompile::decompile(&t, &s.catalog)
+            .unwrap()
+            .source;
+        let mut switches = std::collections::BTreeSet::new();
+        for (i, _) in src.match_indices("(switch_bsp ") {
+            let rest = &src[i + "(switch_bsp ".len()..];
+            let arg = &rest[..rest.find(')').unwrap_or(rest.len())];
+            match arg.trim().parse::<u32>() {
+                Ok(k) if k < bsps => {
+                    switches.insert(k);
+                }
+                _ => bad.push(format!("{level}: (switch_bsp {arg}) with {bsps} BSPs")),
+            }
+        }
+        println!("{level}: {bsps} BSPs, switch_bsp to {switches:?}");
         println!(
             "{level}: {} reached nodes, {} unrunnable",
             sc.reachable(sc.roots()).unwrap().len(),
@@ -794,6 +901,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn every_campaign_level_converts() {
     let s = scripting();
+    let donors = donors();
     let only = std::env::var("H1_LEVELS").ok();
     let mut failed = Vec::new();
     for level in h1map::disc::CAMPAIGN_LEVELS {
@@ -812,12 +920,14 @@ fn every_campaign_level_converts() {
             ai: true,
             scripts: Some(&s),
             sounds: 1000,
+            donors: Some(&donors),
         };
         match h1campaign::convert(&h1, &mut base, &opts) {
             Ok(done) => {
-                let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+                let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
                 m.validate_checksum().unwrap();
                 println!("{}", done.report);
+                check_bsps(&mut m, &h1, &done);
                 let (n, bad) = sweep_map(&mut m, &filled);
                 println!("  object sweep: {n} tags, {} problems", bad.len());
                 if !bad.is_empty() {

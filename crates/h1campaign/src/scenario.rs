@@ -13,10 +13,13 @@
 //! | `+0x48` object names | `0x24` | Halo 1's names; each placement index mapped to the converted placement, or -1 |
 //! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment, vehicles, scenery and bipeds from Halo 1's |
 //! | `+0x100` player starting locations | `0x34` | Halo 1's, each on the base's first element |
-//! | `+0x108` trigger volumes | `0x44` | the base's, parked out of the level (`h1convert::convert::park_trigger_volumes`) |
+//! | `+0x108` trigger volumes | `0x44` | the base's, parked out of the level (`h1convert::convert::park_trigger_volumes`), then Halo 1's |
+//! | `+0x130` BSP switch trigger volumes | `0xe` | Halo 1's (`h1::BSP_SWITCHES`), on its volumes and BSPs |
 //! | AI fields (`h1ai::convert::ScenarioBlocks`) | | Halo 1's AI, or empty |
 //! | script fields (`h1scripts::compile::field`) | | Halo 1's scripts, or empty |
-//! | `+0x210` BSP descriptors | `0x44` | the converted BSPs' regions (`FixupKind::Bsp`) |
+//! | `+0x210` BSP descriptors | `0x44` | one per Halo 1 BSP, in Halo 1's order: its region (`FixupKind::Bsp`), `sbsp` and `ltmp` |
+//! | `+0x290` cluster data | `0x34` | one per BSP: per cluster no background sound or sound environment, its centroid; the BSP's checksum |
+//! | `+0x388` per-BSP points | `0x10` | one per BSP, no points |
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -43,6 +46,64 @@ pub const TRIGGER_VOLUME: usize = 0x44;
 /// BSP descriptors.
 pub const BSPS: u32 = 0x210;
 pub const BSP: usize = 0x44;
+/// BSP switch trigger volumes: `i16` trigger volume, source BSP,
+/// destination BSP, then four shorts retail mostly leaves -1
+/// (`h2_bsp_switch_volumes`).
+pub const BSP_SWITCHES: u32 = 0x130;
+pub const BSP_SWITCH: usize = 0xe;
+/// Cluster data, one element per BSP (every retail map has one per BSP):
+/// an `sbsp` reference left null, per-cluster blocks of background sound
+/// (`+0x08`), sound environment (`+0x10`), centroid (`+0x1c`, a point)
+/// and two more indices (`+0x24`, `+0x2c`), each `0xffff` for none, and
+/// the BSP's checksum at `+0x18` (`sbsp+0x08`).
+pub const CLUSTER_DATA: u32 = 0x290;
+pub const CLUSTER_DATUM: usize = 0x34;
+/// One element per BSP too: a null `sbsp` reference and a block of
+/// points (`0xc`), often empty.
+pub const BSP_POINTS: u32 = 0x388;
+pub const BSP_POINT: usize = 0x10;
+
+/// One converted BSP, as the scenario refers to it.
+#[derive(Debug, Clone)]
+pub struct BspSlot {
+    /// Index into `TagSet::bsps`.
+    pub section: usize,
+    pub sbsp: TagId,
+    pub ltmp: TagId,
+    /// `sbsp+0x08`.
+    pub checksum: u32,
+    /// One per cluster.
+    pub centroids: Vec<[f32; 3]>,
+}
+
+/// The `+0x290` element of `b`.
+fn cluster_datum(b: &BspSlot) -> Block {
+    let n = b.centroids.len();
+    let none = || {
+        let mut c = Block::zeroed(4 * n);
+        for k in 0..n {
+            c.put_u16(4 * k, 0xffff);
+        }
+        c
+    };
+    let mut e = Block::zeroed(CLUSTER_DATUM);
+    e.put_u32(0, u32::from_be_bytes(*b"sbsp"))
+        .put_u32(4, u32::MAX);
+    let mut centroids = Block::zeroed(0xc * n);
+    for (k, p) in b.centroids.iter().enumerate() {
+        for (j, v) in p.iter().enumerate() {
+            centroids.put_f32(0xc * k + 4 * j, *v);
+        }
+    }
+    e.block(0x08, n as u32, none())
+        .block(0x10, n as u32, none())
+        .put_u32(0x18, b.checksum)
+        .block(0x1c, n as u32, centroids)
+        .block(0x24, n as u32, none())
+        .block(0x2c, n as u32, none());
+    e
+}
+
 /// Script tables: string data, scripts, globals, references, nodes.
 pub const SCRIPT_FIELDS: [u32; 5] = [0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x238];
 /// Palette element (`scenario_edit::layout`): a tag reference first.
@@ -65,6 +126,11 @@ pub mod h1 {
     pub const WEAPON_PALETTE: (usize, usize) = (0x27c, 0x30);
     pub const SCENERY: (usize, usize) = (0x210, 0x48);
     pub const SCENERY_PALETTE: (usize, usize) = (0x21c, 0x30);
+    /// BSP switch trigger volumes: `i16` trigger volume, source BSP,
+    /// destination BSP, one more. **S** (`h1_bsp_switch_volumes`): on all
+    /// ten levels the only root block whose elements read so, between
+    /// BSPs adjacent in the level.
+    pub const BSP_SWITCHES: (usize, usize) = (0x39c, 8);
 }
 
 /// The high word of the unique IDs given to converted placements
@@ -202,6 +268,13 @@ impl BaseScenario {
 /// What the scenario layers wrote.
 #[derive(Debug, Default, Clone)]
 pub struct ScenarioReport {
+    /// BSP descriptors written (Halo 1's BSP count).
+    pub bsps: usize,
+    /// Halo 1's BSP switch trigger volumes written.
+    pub bsp_switches: usize,
+    /// Halo 1 palette entries placed as a retail object a donor brought:
+    /// (Halo 1 tag name, retail datum).
+    pub stand_ins: Vec<(String, TagId)>,
     /// Skies converted (Halo 1 tag names).
     pub skies: Vec<String>,
     /// Player starting locations written.
@@ -267,7 +340,15 @@ pub struct ScriptReport {
 
 impl std::fmt::Display for ScenarioReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "  BSPs: {}, BSP switch volumes: {}",
+            self.bsps, self.bsp_switches
+        )?;
         writeln!(f, "  skies: {:?}", self.skies)?;
+        for (n, _) in &self.stand_ins {
+            writeln!(f, "  placed as the retail object a donor brought: {n}")?;
+        }
         writeln!(f, "  player starts: {}", self.starts)?;
         for (k, placed, of, pal, pals) in &self.placements {
             writeln!(
@@ -434,7 +515,10 @@ pub fn replaced_fields() -> Vec<u32> {
         OBJECT_NAMES,
         STARTING_LOCATIONS,
         TRIGGER_VOLUMES,
+        BSP_SWITCHES,
         BSPS,
+        CLUSTER_DATA,
+        BSP_POINTS,
     ];
     for t in tags::object::OBJECT_TYPES.iter() {
         if let Some((at, pal, _)) = t.placement {
@@ -456,12 +540,12 @@ pub fn replaced_fields() -> Vec<u32> {
 }
 
 /// Writes the scenario layers into `set` (built from the base).
-/// `sections[k]` is the built BSP section of Halo 1 BSP `k`.
+/// `bsps[k]` is Halo 1 BSP `k`, converted.
 pub fn write(
     h1: &H1Map,
     set: &mut TagSet,
     base: &BaseScenario,
-    sections: &[usize],
+    bsps: &[BspSlot],
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     report: &mut Report,
@@ -472,21 +556,49 @@ pub fn write(
     };
     let rep = &mut report.scenario;
 
-    // BSP descriptors: the converted regions; the base's others stay.
+    // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
+    // indices (`switch_bsp`, zones, placements) need no map. A BSP past
+    // the base's descriptors takes the base's first as its template.
+    let templates = base.elements(BSPS, BSP)?;
+    let first = templates
+        .first()
+        .ok_or_else(|| invalid("the base has no BSP descriptor"))?;
     let mut desc = Vec::new();
-    for (k, e) in base.elements(BSPS, BSP)?.into_iter().enumerate() {
-        let mut b = Block::new(e.to_vec());
-        if let Some(&section) = sections.get(k) {
-            for (at, field) in [
-                (0, BspField::FileOffset),
-                (4, BspField::Size),
-                (8, BspField::Address),
-            ] {
-                b.fixup(at, FixupKind::Bsp { section, field });
-            }
+    for (k, slot) in bsps.iter().enumerate() {
+        let mut b = Block::new(templates.get(k).unwrap_or(first).to_vec());
+        for (at, field) in [
+            (0, BspField::FileOffset),
+            (4, BspField::Size),
+            (8, BspField::Address),
+        ] {
+            b.fixup(
+                at,
+                FixupKind::Bsp {
+                    section: slot.section,
+                    field,
+                },
+            );
         }
+        b.tag_ref(0x10, slot.sbsp).tag_ref(0x18, slot.ltmp);
         desc.push(b);
     }
+    rep.bsps = bsps.len();
+    put_block(
+        &mut root,
+        CLUSTER_DATA,
+        CLUSTER_DATUM,
+        bsps.iter().map(cluster_datum).collect(),
+    );
+    let points = bsps
+        .iter()
+        .map(|_| {
+            let mut e = Block::zeroed(BSP_POINT);
+            e.put_u32(0, u32::from_be_bytes(*b"sbsp"))
+                .put_u32(4, u32::MAX);
+            e
+        })
+        .collect();
+    put_block(&mut root, BSP_POINTS, BSP_POINT, points);
     put_block(&mut root, BSPS, BSP, desc);
 
     // Skies.
@@ -600,6 +712,24 @@ pub fn write(
         volumes.push(b);
     }
     put_block(&mut root, TRIGGER_VOLUMES, TRIGGER_VOLUME, volumes);
+
+    // BSP switch trigger volumes: Halo 1's, on its volumes (after the
+    // parked ones) and BSPs (same indices); the base's go.
+    let switches: Vec<Block> = h1_block(h1, h1::BSP_SWITCHES)?
+        .iter()
+        .map(|e| {
+            let mut b = Block::zeroed(BSP_SWITCH);
+            b.put_u16(0, (i16_at(e, 0) as i32 + parked as i32) as u16);
+            b.put_u16(2, i16_at(e, 2) as u16);
+            b.put_u16(4, i16_at(e, 4) as u16);
+            for at in [6, 8, 0xa, 0xc] {
+                b.put_u16(at, 0xffff);
+            }
+            b
+        })
+        .collect();
+    rep.bsp_switches = switches.len();
+    put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
     let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
@@ -747,6 +877,23 @@ pub fn write(
     Ok(())
 }
 
+/// A palette entry: a tree tag `h1objects` converted, or a retail tag
+/// already in the set.
+#[derive(Clone, Copy)]
+enum Pal {
+    Converted(TagId),
+    Retail(TagId),
+}
+
+/// The retail object in `set` whose `h1objects` template row matches the
+/// Halo 1 object `tag` (a template the base lacks but a donor brought).
+fn retail_stand_in(set: &TagSet, tag: &h1map::Tag) -> Option<TagId> {
+    let group = tag.group.0.to_be_bytes();
+    h1objects::convert::template_candidates(&group, &tag.name)
+        .into_iter()
+        .find_map(|n| set.find(FourCC(group), n))
+}
+
 /// Converts the palettes' objects, installs them, and writes the
 /// placements. Returns, per (Halo 1 object type, Halo 1 placement), the
 /// Halo 2 placement index.
@@ -769,11 +916,23 @@ fn place_objects(
             } else {
                 let tag = h1.tag(r.id)?;
                 match conv.object(tag) {
-                    Ok(id) => Some(id),
-                    Err(e) => {
-                        dropped.push(format!("{} palette {}: {e}", k.label, tag.name));
-                        None
-                    }
+                    Ok(id) => Some(Pal::Converted(id)),
+                    // A template a donor brought (`crate::donor`): placed
+                    // as the retail object itself, since `h1objects`
+                    // builds only on the base's own templates.
+                    Err(e) => match matches!(e, h1objects::Error::NoTemplate(_))
+                        .then(|| retail_stand_in(set, tag))
+                        .flatten()
+                    {
+                        Some(id) => {
+                            rep.stand_ins.push((tag.name.clone(), id));
+                            Some(Pal::Retail(id))
+                        }
+                        None => {
+                            dropped.push(format!("{} palette {}: {e}", k.label, tag.name));
+                            None
+                        }
+                    },
                 }
             };
             pal.push(got);
@@ -800,6 +959,10 @@ fn place_objects(
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
     let real = |t: TagId| ids[(t.0 & 0xffff) as usize];
+    let palette_id = |p: &Pal| match *p {
+        Pal::Converted(t) => real(t),
+        Pal::Retail(t) => t,
+    };
     // The campaign players (globals representation 0 and 1) are the Halo 1
     // cyborg; Halo 1 health follows from the map name at boot.
     if let Some(p) = player {
@@ -816,7 +979,7 @@ fn place_objects(
             .iter()
             .map(|p| {
                 let mut b = Block::zeroed(PALETTE);
-                b.tag_ref(0, p.map_or(TagId::NULL, real));
+                b.tag_ref(0, p.as_ref().map_or(TagId::NULL, palette_id));
                 b
             })
             .collect();

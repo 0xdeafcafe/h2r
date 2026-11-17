@@ -1009,7 +1009,12 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
     if scripting.is_none() {
         println!("  scripts: left out (they need the Halo 1 disc's XBE; give the disc, not a map)");
     }
-    let done = h1campaign::convert(h1, &mut base, &campaign_options(scripting.as_ref()))?;
+    let donors = campaign_donors(&disc)?;
+    let done = h1campaign::convert(
+        h1,
+        &mut base,
+        &campaign_options(scripting.as_ref(), Some(&donors)),
+    )?;
     print!("{}", done.report);
     let map_name = h1campaign::manifest::map_file(&level);
     let manifest_name = h1campaign::manifest::file_name();
@@ -1035,12 +1040,27 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
 
 /// The campaign conversion's layers: everything, scripts when the Halo 1
 /// disc's XBE gave them, and up to 1000 sounds.
-pub(crate) fn campaign_options(scripts: Option<&h1campaign::Scripting>) -> h1campaign::Options<'_> {
+pub(crate) fn campaign_options<'a>(
+    scripts: Option<&'a h1campaign::Scripting>,
+    donors: Option<&'a h1campaign::donor::Donors>,
+) -> h1campaign::Options<'a> {
     h1campaign::Options {
         scripts,
         sounds: 1000,
+        donors,
         ..Default::default()
     }
+}
+
+/// The retail maps the characters the base lacks are copied from
+/// (`h1campaign::donor::MAPS`), off the Halo 2 disc.
+pub(crate) fn campaign_donors(disc: &Path) -> Result<h1campaign::donor::Donors> {
+    let mut donors = h1campaign::donor::Donors::default();
+    for name in h1campaign::donor::MAPS {
+        let bytes = read_h2_map(disc, name).with_context(|| format!("reading {name}.map"))?;
+        donors.maps.push((name.to_owned(), bytes));
+    }
+    Ok(donors)
 }
 
 /// Writes a converted level as `<out_dir>/<level>.map`, and
