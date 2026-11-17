@@ -162,6 +162,12 @@ impl Session {
         self.current.as_ref().map(|m| m.game_id.as_str())
     }
 
+    /// The tick the match was last sampled at.
+    #[cfg(test)]
+    pub fn current_tick(&self) -> Option<u64> {
+        self.current.as_ref().map(|m| m.tick)
+    }
+
     #[cfg(test)]
     pub fn start(&mut self, info: &GameInfo, players: Vec<PlayerState>) {
         self.start_with_teams(info, players, Vec::new());

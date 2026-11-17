@@ -30,6 +30,10 @@ pub(crate) const MAX_QUEUED: usize = 256;
 /// Damage reports a folded tick keeps (oldest dropped past it), as the
 /// damage hook keeps between ticks.
 pub(crate) const MAX_FOLDED_HITS: usize = 256;
+/// How long work queued without a wake may wait: a tick between frames
+/// does not wake the worker (on the game thread a wake is a system call),
+/// the next frame tick or anything else does, or this.
+const LAZY_WAKE: std::time::Duration = std::time::Duration::from_millis(100);
 /// Cleared snapshots kept for the game thread to reuse.
 const SPARE_SNAPSHOTS: usize = 4;
 
@@ -194,11 +198,13 @@ impl Pipeline {
 
     /// Queues `work` for the worker. A tick past [`MAX_QUEUED_TICKS`] is
     /// folded into the last queued one when that is a tick; anything else
-    /// past [`MAX_QUEUED`] is an error.
+    /// past [`MAX_QUEUED`] is an error. All but a tick between frames wake
+    /// the worker ([`LAZY_WAKE`]).
     pub(crate) fn push(&self, work: Work) -> Result<(), String> {
         if let Some(error) = self.worker_error() {
             return Err(error);
         }
+        let lazy = matches!(&work, Work::Tick(s) if !s.tick.is_multiple_of(2));
         let mut queue = self.shared.queue.lock().unwrap();
         let full = queue.work.len() >= MAX_QUEUED;
         match work {
@@ -226,7 +232,9 @@ impl Pipeline {
             work => queue.work.push_back(work),
         }
         drop(queue);
-        self.shared.wake.notify_one();
+        if !lazy {
+            self.shared.wake.notify_one();
+        }
         Ok(())
     }
 
@@ -254,6 +262,7 @@ impl Pipeline {
 
     /// Waits until the worker has done everything queued.
     pub fn settle(&self) {
+        self.shared.wake.notify_one();
         let mut queue = self.shared.queue.lock().unwrap();
         while !queue.work.is_empty() || queue.busy {
             queue = self.shared.idle.wait(queue).unwrap();
@@ -302,7 +311,7 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             queue.busy = false;
             while queue.work.is_empty() && !queue.stop {
                 shared.idle.notify_all();
-                queue = shared.wake.wait(queue).unwrap();
+                queue = shared.wake.wait_timeout(queue, LAZY_WAKE).unwrap().0;
             }
             if queue.work.is_empty() {
                 shared.idle.notify_all();
@@ -557,6 +566,29 @@ mod tests {
         // What the worker is done with comes back cleared, for reuse.
         let spare = pipeline.snapshot();
         assert!(spare.hits.is_empty() && spare.actors.is_empty());
+    }
+
+    #[test]
+    fn a_tick_between_frames_waits_at_most_the_lazy_wake() {
+        let pipeline = Pipeline::new(
+            Session::new("test", None),
+            Gate {
+                seen: Arc::default(),
+                entered: mpsc::channel().0,
+                release: mpsc::channel().1,
+                blocked: true,
+            },
+        );
+        pipeline.push(Work::Configure(Box::new(started))).unwrap();
+        pipeline.settle();
+        pipeline.push(Work::Tick(tick(3, &[], &[]))).unwrap();
+        // Nothing wakes the worker, and it still takes the tick.
+        let deadline = Instant::now() + LAZY_WAKE * 20;
+        while pipeline.shared.spare.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the tick waits");
+            std::thread::sleep(LAZY_WAKE / 10);
+        }
+        assert_eq!(pipeline.session().current_tick(), Some(3));
     }
 
     #[test]

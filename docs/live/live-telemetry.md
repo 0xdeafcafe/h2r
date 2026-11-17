@@ -223,8 +223,10 @@ settings are queued in order with them. One worker thread
 (`crates/live-telemetry/src/pipeline.rs`) runs the session over the queue
 in order: it builds the events and frames (ids, species, weapon, team and
 stance names, actor order, placements), loads the map's tag names at a
-match start, and hands everything to the sink. It sleeps until something
-is queued.
+match start, and hands everything to the sink. It sleeps until woken:
+everything queued wakes it except a tick between frames (odd), which waits
+for the next frame tick or anything else, at most 100 ms (a wake costs the
+game thread a system call).
 
 The worker hands each snapshot back cleared and the game thread fills it
 again, so a steady game allocates nothing for it: the lists keep their
