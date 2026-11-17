@@ -284,6 +284,7 @@ fn real_import_is_found_by_the_game() {
             data: data.clone(),
             scripting: None,
             donors: None,
+            card_ui: None,
         };
         let mut s = Stamp::default();
         run_jobs(&todo, &mut s, &mut conv, &mut |_| Ok(()), &mut |l| {
@@ -336,6 +337,20 @@ fn real_import_is_found_by_the_game() {
         let listed: Vec<&str> = r.installed.iter().map(|(n, ..)| n.as_str()).collect();
         for m in &mp {
             assert!(listed.contains(&m.as_str()), "{m} not in the map list: {listed:?}");
+        }
+        // Each card is Halo 1's own: its name, description and picture.
+        for m in &mp {
+            let dir = content::store::maps_dir(&data).join(m);
+            let text = std::fs::read_to_string(dir.join(content::manifest::MANIFEST_FILE)).unwrap();
+            let man = content::Manifest::from_toml(&text).unwrap();
+            assert_eq!(man.package.image.as_deref(), Some(h1_cmd::PREVIEW_FILE), "{m}");
+            assert!(man.package.description.as_ref().is_some_and(|d| !d.is_empty()), "{m}");
+            let png = std::fs::read(dir.join(h1_cmd::PREVIEW_FILE)).unwrap();
+            assert_eq!(content::manifest::image_signature(&png), Some("png"), "{m}");
+            eprintln!("  {m}: {:?}, {:?}", man.package.name, man.package.description);
+            if m == "h1_bloodgulch" {
+                assert_eq!(man.package.name, "Blood Gulch");
+            }
         }
     }
 

@@ -11,6 +11,10 @@ h1map = { path = "../h1map" }
 # The structure's lightmap pages, converted to a Halo 2 bitmap.
 h1bitmaps = { path = "../h1bitmaps" }
 h1models = { path = "../h1models" }
+# The level's own sky.
+h1sky = { path = "../h1sky" }
+# The map list's names and descriptions (ui.map).
+h1text = { path = "../h1text" }
 # The sound gestalt, rebuilt for a fresh map.
 h1sounds = { path = "../h1sounds" }
 map.workspace = true

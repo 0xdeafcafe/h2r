@@ -262,12 +262,19 @@ The base's old BSP region stays in the file, unused.
   Coagulation's ground) stage 1 of the first pass is the second blended
   base (`coag_grass`), so Halo 1's detail map lands there: a game run
   shows whether that reads well.
-- **The sky is the base's.** Cluster `+0x6e` is the cluster's sky index
-  into the scenario's skies (`scnr+0x8`, 8-byte references; E
-  `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to the first sky
-  when the scenario has one). Every cluster gets 0, so the base's first
-  sky. Halo 1's skies are models and bitmaps of their own and convert
-  with the Halo 1 sandbox work. The base per map (`convert::MAPS`):
+- **The sky is Halo 1's** (`h1convert::sky`). Cluster `+0x6e` is the
+  cluster's sky index into the scenario's skies (`scnr+0x8`, 8-byte
+  references; E `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to
+  the first sky when the scenario has one). Every cluster gets 0. Each
+  sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
+  fog colour; docs/formats/h1-sky.md) and added as a new tag, and every
+  element of the base's skies block names one (element `k` Halo 1's sky
+  `k`, or Halo 1's last), so none names the base's. Rat Race and Chiron
+  TL34 are indoors and name no sky: the base's stays, unseen. `disc_maps.rs`
+  checks every converted map's skies. The base's background sound,
+  sound environment and decorator blocks (`convert::BASE_BLOCKS`:
+  `scnr+0x250` 3 `lsnd`, `+0x258` 4 `snde`, `+0x378` 2 `DECR` on
+  Coagulation, D) are emptied: the converted clusters name none of them. The base per map (`convert::MAPS`):
   Coagulation for the maps with vehicles (below), Beaver Creek otherwise.
   Waterworks (snow, and a wraith) would suit Sidewinder and Ice Fields,
   but Sidewinder's placements grow Waterworks' metadata past the engine's
@@ -417,7 +424,8 @@ cargo h2 h1 convert disc/halo1.iso beavercreek --out ~/h2-h1maps [--sandbox h2] 
 cargo h2 h1 convert path/to/beavercreek.map --dry-run
 ```
 
-`--fresh` (multiplayer only) writes the same map with **nothing pinned**:
+Multiplayer maps are written **fresh** by default (`--pinned` for the
+old way, `--fresh` still accepted), and so does `h2 import halo1`: the same map with **nothing pinned**:
 every tag is rebuilt as a tree, and the base's raw resources, sound
 chunks and low-detail bitmaps are copied, so nothing depends on the base's
 file layout. The scenario is built from its blocks. See
@@ -425,8 +433,21 @@ file layout. The scenario is built from its blocks. See
 and manifest are the same as without it:
 
 ```sh
-cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps --fresh
+cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 ```
+
+**The map's card is Halo 1's** (`h1convert::ui`). Halo 1's `ui.map` holds
+the map select's pictures (`ui\shell\bitmaps\mp_map_grafix`, 14 images,
+256x128), names (`ui\shell\main_menu\mp_map_list`) and descriptions
+(`...\mp_map_select\map_data`), all in one list order (`ui::MP_ORDER`;
+image 9 is Blood Gulch); each picture fills the top-left 139x113 of its
+image. The converter crops it, writes it as `preview.png` in the package
+and sets the manifest's `name`, `description` and `image`, which the map
+list already shows for added maps (`boot::new_maps`). From a disc it reads
+the disc's `ui.map`; from a `.map` file, a `ui.map` beside it, else the
+card stays the base's. The campaign's (`ui\shell\bitmaps\sp_levels`,
+`ui::campaign_card`) read the same way; the campaign picker's pictures are
+bitmaps in `mainmenu.map` (content::campaign_list), not served yet.
 
 The Halo 1 map is a `.map` file or a disc and a map name; the base comes
 from the Halo 2 disc (`--disc`, else `$H2_DISC`, else `disc/halo2.iso`).
@@ -622,7 +643,12 @@ disc.
 
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
-2. **Decals, lights, decorators** of the base (above).
+2. **Decals and lights** of the base (above); decorators, background
+   sounds and sound environments are emptied (`convert::BASE_BLOCKS`).
+   The base's other tags (Coagulation's scenery, sound scenery, its
+   structure's shaders) stay in the fresh map, unplaced; dropping them
+   needs a reachability walk from `scnr` and `matg` and a game run to
+   show nothing in the engine walks a group by itself.
 3. ~~**Lightmaps**~~ and ~~**Halo 1's own textures**~~ on structure
    `senv`/`swat` shaders: done (above). Next: Halo 1's tiling scales, the
    other shader types (`soso`, `schi`, `sgla`, `smet`, `sotr`) and object
@@ -650,8 +676,11 @@ disc.
    start.
 5. **The setting and the map list** (below): built, with its row.
 6. **Halo 1 sandbox**: objects, the cyborg as the player and the health
-   model per variant are built (below). Next Halo 1's skies and a HUD
-   with the health meter.
+   model per variant are built (below), and Halo 1's skies. Next a HUD
+   with the health meter, and Halo 1's textures on the converted object
+   models (their materials name no shader yet: a copy per `soso`, base
+   `+0xa4`, detail `+0xdc`, on a base model shader, as `textures` does
+   for the structure).
 
 ## Importing (**Built**: `cli::h1_import`)
 
