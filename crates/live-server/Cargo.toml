@@ -47,3 +47,8 @@ base64 = "0.22"
 # examples/fake_game.rs
 ureq = { version = "2", default-features = false, features = ["json"] }
 tungstenite = "0.26"
+# tests/s3_server.rs: a real S3 protocol server (s3s, backed by a directory)
+# for the blob store, in process.
+s3s = "0.17"
+s3s-fs = "0.17"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }

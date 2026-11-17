@@ -16,6 +16,7 @@ share with the server (wire types, signing, the MOTD builder) is in
 h2 live serve                                   # 127.0.0.1:8074, sqlite://<data>/live.db
 h2 live serve --blobs s3://h2live               # content and saves in R2 (docs/live/live-hosting.md)
 h2 live store copy --from postgres://localhost/h2live --to sqlite://<data>/live.db
+h2 live store check --blobs s3://h2live         # try the bucket's S3 API with your credentials
 h2 live serve --db postgres://localhost/other --id live.example.net \
     --listen 0.0.0.0:443 --tls-cert cert.pem --tls-key key.pem
 h2 live account create "Sneaky Pete"            # key made and kept locally

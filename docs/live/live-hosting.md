@@ -569,6 +569,67 @@ are path-style, signed with SigV4 for region `auto`; `s3://BUCKET/PREFIX`
 keeps a server's keys under a prefix. Any S3-compatible store works the
 same way (MinIO, Backblaze B2).
 
+### Check the bucket
+
+Run this once with the real token before pointing a server at a bucket (or
+after changing the token). It needs no server and no data directory:
+
+```
+export H2_LIVE_S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
+export H2_LIVE_S3_ACCESS_KEY_ID=...        # the token's Access Key ID
+export H2_LIVE_S3_SECRET_ACCESS_KEY=...    # the token's Secret Access Key
+h2 live store check --blobs s3://h2live
+```
+
+(`h2-live-server store check --blobs s3://h2live` does the same in the
+Docker image; `H2_LIVE_S3_REGION` stays `auto` for R2, and `--blobs` falls
+back to `$H2_LIVE_BLOBS`.) For the public art bucket, with the same or a
+scoped token:
+
+```
+h2 live store check --blobs s3://h2live-public --public --public-url https://art.forbes.red
+```
+
+`--public` reads the `H2_LIVE_S3_PUBLIC_*` variables first, and
+`--public-url` also fetches the test object from that address with no
+credentials, which is what a browser will do. `--quick` skips the 12 MiB
+multipart upload (a few requests, well inside the free tier).
+
+It writes under `.h2-store-check/<random>/` in the bucket and prints one
+line per step, `[ ok ]` or `[FAIL]` with the reason, never a key or secret:
+
+```
+store check: s3://h2live (endpoint https://<id>.r2.cloudflarestorage.com, region auto)
+  [ ok ]  write                  47 bytes
+  [ ok ]  read                   47 bytes, identical
+  [ ok ]  head and content type  size 47, content type and cache control kept
+  [ ok ]  list                   1 object(s) under the scratch prefix
+  [ ok ]  range read             the first 8 bytes
+  [ ok ]  conditional write      create-only and if-match both enforced
+  [ ok ]  multipart upload       12 MiB uploaded in parts and read back identical
+  [ ok ]  delete                 scratch objects removed, prefix empty
+store check: all 8 steps passed; s3://h2live is ready for --blobs
+```
+
+The exit status is 1 if any step failed, and the scratch objects are
+deleted either way. What each step proves: *write*, *read*, *list*, *range
+read* and *delete* are what content, cloud saves and art use; *conditional
+write* is the `If-None-Match`/`If-Match` that keeps two servers from undoing
+each other's save indexes (a store that ignores them fails this step);
+*multipart upload* is how an upload over 10 MiB (a custom map) is stored;
+*public URL* shows the bucket's public address serves the object.
+
+What the token needs: **Object Read & Write** on the bucket (R2 → Manage API
+tokens), nothing else. That covers every operation above (PutObject,
+GetObject, HeadObject, DeleteObject, ListObjectsV2 and multipart). The
+server never creates buckets or changes their settings, so *Admin* tokens
+are not needed, and an *Object Read only* token fails *write* with a
+"refused" hint. A token scoped to the private bucket cannot check the
+public one: give the public bucket its own token and the
+`H2_LIVE_S3_PUBLIC_*` variables. Typical failures: *refused* is the token's
+permission or bucket scope; *no such bucket* is a wrong bucket name or
+account id in the endpoint; *signature* errors are a wrong key or secret.
+
 **Published art.** With shared art (`--share-game-art`) and a public
 bucket, the server uploads the art directory once in the background to
 `art/<stamp>/...`, where the stamp is 16 hex digits of a hash over every
@@ -796,13 +857,30 @@ UDP 3074-3080 reachable for internet play.
 - `crates/live-server/src/blobs.rs`: the blob-store conformance suite
   (put, streamed file uploads, ranged reads, list by prefix, conditional
   writes) over a directory, memory and a fake S3 endpoint that checks the
-  requests are path-style and signed for region `auto`; `copy.rs`: logs
+  requests are path-style and signed for region `auto`; `check.rs`: the
+  `store check` steps over memory and a directory, scrubbing of secrets,
+  argument errors; `copy.rs`: logs
   with position gaps, resume after growth, a different log refused, a
   broken chain refused, the file store into SQLite, blobs without the key
   or temporary files; `art.rs`: publishing (not when unshared, gzip
   copies, resumable) and the redirects with their cache policy;
   `tests/cloud_saves.rs`: saves in a bucket, and an index changed by
   another writer is not overwritten.
+- `crates/live-server/tests/s3_server.rs`: the blob store against a real S3
+  protocol server (the `s3s` library over a directory, in process, with
+  SigV4 checked): put, get, head, list, delete, a range read from the
+  middle and across a 10 MiB part boundary, a 25 MiB multipart upload,
+  create-only and `If-Match` writes refused when stale, content type,
+  encoding and cache control kept, wrong credentials and a missing bucket
+  as errors; the server's own paths over it (a small and a 12 MiB content
+  upload and download, a cloud save with its index, published art with its
+  headers, `store copy` into and out of a bucket, twice); and `store
+  check` passing, failing on a non-public URL and on a wrong secret.
+  Set `H2_S3_TEST_ENDPOINT`, `H2_S3_TEST_ACCESS_KEY`,
+  `H2_S3_TEST_SECRET_KEY` and `H2_S3_TEST_BUCKET` (an existing bucket;
+  `H2_S3_TEST_REGION` if not `auto`) to run the same tests against MinIO or
+  a scratch bucket instead; each test keeps to a random prefix and deletes
+  what it wrote.
 - `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only
