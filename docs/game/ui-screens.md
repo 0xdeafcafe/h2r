@@ -22,9 +22,9 @@ again, and so a screen can be seen and checked before anyone runs the game.
    name. The build fails if it overlaps another family, or if a family whose
    lookup compares fewer than 32 bits (`mask`) would claim one of its ids.
    Take the ids with `const IDS: Family = ids::family("my.screen");`. A
-   `KitScreen` needs `1 + 3 × rows` slots (the title, then a label, a value
-   and a description per row); `KitScreen::class` panics at install if the
-   family is too small.
+   `KitScreen` needs `2 + 3 × rows` slots (the title, a label, a value and
+   a description per row, then the footer legend); `KitScreen::class` panics
+   at install if the family is too small.
 2. **Declare it.**
 
    ```rust
@@ -51,8 +51,8 @@ again, and so a screen can be seen and checked before anyone runs the game.
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
-   page does. `.description(TextBlock)` adds the focused row's description
-   with the legend under it. `.scrolls()` says more rows than the list shows is
+   page does. `.description(TextBlock)` adds the focused row's description. The
+   prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
    meant.
 3. **Open it** from an `Open(name)` row on another screen of ours, or with
    `list_class::open(cx, chain, name)` (`0x149f1e(player mask, loader)`).
@@ -81,15 +81,17 @@ Before a game run (all of these are tests):
       id the screen shows is in a family (`Finding::Id`). `string_ids.rs`
       also checks each family's real lookup function against every other
       family's ids.
-- [ ] **Rows versus slots**: the Controls list shows `visible` rows (the tag
-      says 6, `List +6`). More rows than that needs `scrolls` (`Finding::Rows`).
-      Without the disc the check assumes 5, to be safe.
+- [ ] **Rows versus slots**: a list built on the Controls tag shows 5 rows
+      (`preview::SHOWN`, seen in game; the tag says 6, see "Open"). More
+      rows than that needs `scrolls` (`Finding::Rows`).
 - [ ] **Widths**: every label and every value a row can show (not just the
       current one) fits its skin text: 245 units for the Controls skin's label
       and value columns in conduit-13, 190 for skin 0's single text in
       conduit-12 (`Finding::Wide`).
-- [ ] **Description**: the focused row's description plus the legend fits the
-      description rectangle at the font's line height (`Finding::Description`).
+- [ ] **Description**: the focused row's description fits the description
+      rectangle at the font's line height (`Finding::Description`).
+- [ ] **Footer**: the legend fits the header layout's second rectangle in
+      the header font (`Finding::Footer`).
 - [ ] **Glyphs**: every character is drawn by the font. The icon range's
       filler record counts as missing (`Finding::Glyph`).
 - [ ] **Presses**: an action row does something, a value row has at least two
@@ -99,7 +101,7 @@ Before a game run (all of these are tests):
       from `Then::CloseThen`, never straight after `close`.
 - [ ] **Preview**: look at the PNG. Red outlines mark overflowing texts; a red
       bar under the list marks rows past the visible ones with no scroll
-      intent (blue when they're meant).
+      intent.
 
 In game, in stderr, in this order:
 
@@ -161,41 +163,77 @@ logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).
   Back 13). `input::Input::from_event` is the one place an event is read.
 - **Raw code points in prompts.** `\u{e10a}` reads as nothing in review.
   Prompts are `Glyph`s (U+E100 A, U+E101 B, U+E102 X, U+E103 Y, U+E108 to
-  U+E10B the d-pad, U+E10C Start, U+E10D Back), and `input::legend` lays them
-  out with retail's three-space gap. The skulls page's legend is checked
-  against it glyph for glyph.
+  U+E10B the d-pad, U+E10C Start, U+E10D Back). `input::footer_legend` lays
+  them out as retail's footers do (below), and the skulls page's footer is
+  checked against it glyph for glyph.
+- **A legend under the description.** On the skulls page it pushed 10 of
+  the 21 descriptions past the 5 lines their rectangle holds. Retail never
+  puts a legend there: every game shell screen has a footer text widget
+  (`screen +0x338`, made with the header at `0x22ff53`, in the `wigl`
+  header layout's second rectangle, filled from the tag's `panes[0] +2`
+  string by `0x2300cf`), and retail's footer strings read
+  `<glyph> SELECT  <glyph> BACK` (glyph, space, capitals; two spaces between
+  prompts). Kit screens and the skulls page now set the footer
+  (`ListClass::footer`, `list_class::setup_pane_footer`) and keep the
+  description to the description.
 - **Shipping blind** on row count, text width, where the description sits,
   which glyphs draw, and what's on top. The checks and the preview cover all
   but the last.
 
-## What the previews showed (2026-11-17)
+## The preview
 
-Drawn from the disc's `mainmenu.map` and fonts by
-`preview_and_check_against_the_disc`:
+`preview::Disc::render` draws a screen the way the game shell does, from
+`mainmenu.map` and the disc fonts:
 
-- **The skulls page's descriptions overrun.** With the legend under them,
-  10 of the 21 skulls' descriptions wrap to 6 or 7 lines in conduit-12, and
-  the level select's description rectangle (`[-30 39 -133 260]`, 103 units)
-  holds 5. The legend is what spills. Shorter descriptions, or a legend on one
-  line elsewhere, would fix it. Whether the game clips or overflows needs a
-  run.
-- **Every row label fits.** "Grunt Birthday Party: < Off >" is under skin 0's
-  190 units in conduit-12.
-- **The co-op host and join screens have 6 rows.** The Controls list's tag
-  shows 6 (`visible items` 6), so they fit. The "5 visible, the sixth
-  scrolls" seen in game doesn't match the tag, and needs a run to settle.
-  Until then, the fallback check (no disc) assumes 5 and flags both screens.
-- **Item spacing.** The skin's bounding box from its text blocks is 28 units
-  for skin 0 and 23 for the Controls skin. docs/formats/ui.md gives 43 for
-  skin 0, counting its bitmaps at their image size, which the preview doesn't
-  read yet. Rows in the preview sit closer together than in game.
+- the `game_shell_background` screen's bitmaps (the header and footer
+  bands of `framing_center`, the track lines), then the Controls tag's
+  frame art (left of the cut for a moved list), lowest render depth first,
+  each at its image's size with its top-left at the block's point;
+- the header text and the footer legend in the `wigl` header layout's two
+  rectangles, header font and colour;
+- each item: the skin's bitmaps, then its texts with their justification
+  (`tags::ui::justification`: 0 left, 1 right, 2 centred), focused bright,
+  others at 55%; the frame (flag bit 0) on every row, lit on the focused
+  one; text with a drop shadow, button glyphs in the font's own colours.
+
+**Font ids.** A text block's font index (`+0xa`, read at `0x2537d7`; flag
+bit 3 forces 1) becomes the widget's font id. Every text measure and draw
+maps an id through the 11-entry table at `0x4e28f4` (`0x1407d8`,
+`0x122540`) to a slot (`0x1224c0`, under 10, stride `0x1d0` from
+`0x4e2920`), and the font init (`0x121fc0`) fills those slots line by line
+from `font_table.txt`. So id N is line N: 1 conduit-12, 2 the header font,
+4 conduit-13. The widget's draw call itself was followed only as far as that
+table.
+
+**Item spacing.** An item's height is its bounding box over its texts and
+its bitmaps without flag bit 0 (`0x2bafa4`). Inside an item a bitmap covers
+its point's `y` up to `y` plus its height (Y up): the Controls skin's row
+bar (508 by 26 at 0,0) then gives 26, the spacing in the game's screenshot.
+Taking the point as the bitmap's top (as screen-level bitmaps are) would
+give 49 for the Controls skin, which the screenshot rules out. Skin 0
+(the skulls page) gives 22 by the same rule.
+
+**Side by side.** With `H2_UI_COMPARE=<png>` (a 640 by 480 frame of the game)
+and `H2_UI_PREVIEW_DIR`, the disc test also writes `coop-vs-game.png`: the
+co-op screen focused on row 4 beside the frame. Rows, bars, frame and
+header line up. What differs:
+
+- the game fills above and below `framing_center` with dark blue (we
+  leave it black), and the track lines scroll;
+- unfocused rows' dimming is a guess (55%);
+- the D-pad left and right glyphs are drawn from the header font as the
+  font has them (a white diamond each), not checked in game;
+- the skulls page's picture and the list's scroll arrows are not drawn.
 
 ## Open (needs a game run)
 
-- Which engine font slot a text block's font index names. The preview takes
-  it as that line of `font_table.txt`: index 1 is conduit-12, index 4 is
-  conduit-13.
-- Whether 5 or 6 Controls rows show before the list scrolls.
+- 5 or 6 Controls rows. `0x24bc12` lays out up to the list block's
+  visible count, which the Controls tag gives as 6, and the Controls handler
+  embeds 6 items. Yet in game our co-op screen (6 rows on the Controls tag)
+  shows 5, and the Xbox Live menu keeps room for five. The checks use the 5
+  seen; what takes one away is not found.
+- Whether the footer widget keeps our legend, or the screen's tag string
+  (`0x2300cf`) overwrites it after the pane is set up.
 - Whether an overlong description clips or runs past its rectangle.
 - Whether a screen opened from inside another call draws on top.
 - The kit's keyboard row: it opens the game keyboard for controller 0 with
