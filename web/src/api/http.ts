@@ -110,7 +110,9 @@ export function api(t: ServerTarget) {
     /** `skulls` keeps only games that had all of those skulls on (`?skulls=10,14`). */
     games: (state: "live" | "ended", limit = 100, s?: AbortSignal, skulls?: readonly number[]) =>
       getJson(u("/games", { state, limit, skulls: skulls ? formatSkullsParam(skulls) : undefined }), s).then((b) => page<GameSummary>(b)),
-    game: (id: string, s?: AbortSignal) => getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s),
+    /** One game; `bearer`, a `read` token, reads as that account (a private
+     *  co-op game answers 404 to anyone who may not see it). */
+    game: (id: string, s?: AbortSignal, bearer?: string | null) => getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer),
     /** All recorded frames in a tick range, following cursors (600 per page). */
     frames: (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>
       packedFrames(

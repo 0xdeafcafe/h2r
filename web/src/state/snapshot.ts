@@ -52,3 +52,12 @@ export async function loadSnapshot(a: Api, signal?: AbortSignal): Promise<Snapsh
   } catch { /* the log page just starts empty */ }
   return { position, accounts: accounts.items, presence: presence.items, games, tail };
 }
+
+/** The games among `ids` (held back from the stream: lib reducer
+ *  `needsConfirm`) that the reader's own `GET /v1/games/{id}` returns. One
+ *  that answers 404, or fails, is left out: it shows only if a later
+ *  filtered list has it. */
+export async function confirmGames(ids: readonly string[], read: (id: string) => Promise<GameDetail>): Promise<GameDetail[]> {
+  const got = await Promise.all(ids.map((id) => read(id).then((d) => d, () => null)));
+  return got.filter((d): d is GameDetail => d !== null);
+}

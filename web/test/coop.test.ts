@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { campaignLine, coopPlayers, difficultyName, gametype, isCoop, kind, levelName, parseSession, parseSessions, pingText, roomText, sessionRow } from "../src/lib/sessions";
 import { coopDifficulty, coopLevel, coopMinutes, coopNames, newestCoop, parseCoopGame, parseCoopGames } from "../src/lib/coop";
 import { normalizeFriends } from "../src/api/social";
-import { applyEvent, applyPresenceSnapshot, initialState } from "../src/state/reducer";
+import { applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, needsConfirm } from "../src/state/reducer";
+import { confirmGames } from "../src/state/snapshot";
+import type { GameDetail } from "../src/api/types";
 import { ev } from "./helpers";
 import { Sessions } from "../mock/sessions";
 import { World } from "../mock/world";
@@ -192,5 +194,51 @@ describe("mock co-op", () => {
     const g = parseCoopGame(s.coopGames[0])!;
     expect(g.players.length).toBeGreaterThanOrEqual(2);
     expect(g.visibility).toBe("friends");
+  });
+});
+
+describe("maybe-private games from the stream", () => {
+  const started = (id: string, over: Record<string, unknown>, position: number) =>
+    ({ ...ev("GameStarted", `game-${id}`, { game_id: id, map: "03a_oldmombasa", mode: "campaign", kind: "campaign", team_play: false, players: [{ index: 0, name: "Pete", xuid: HOST, team: 0, local: true }], ...over }, "2026-11-16T10:00:00Z"), position });
+
+  test("a Live co-op campaign game is held back, not added; anything else is added", () => {
+    const s = initialState();
+    applyEvent(s, started("live1", { online: true }, 1));
+    applyEvent(s, started("solo", { online: false }, 2));
+    applyEvent(s, started("old", {}, 3));
+    applyEvent(s, started("mp", { mode: "multiplayer", kind: "custom" }, 4));
+    // A later event on the held game adds nothing either.
+    applyEvent(s, { ...ev("GameEnded", "game-live1", { reason: "finished" }, "2026-11-16T10:40:00Z"), position: 5 });
+    expect(s.games.live1).toBeUndefined();
+    expect(s.gameOrder).not.toContain("live1");
+    expect(s.held).toEqual(["live1"]);
+    expect(Object.keys(s.games).sort()).toEqual(["mp", "old", "solo"]);
+  });
+
+  test("which games need the reader's own read", () => {
+    expect(needsConfirm({ kind: "campaign", online: true })).toBe(true);
+    expect(needsConfirm({ mode: "campaign", online: true })).toBe(true);
+    expect(needsConfirm({ kind: "campaign", online: false })).toBe(false);
+    expect(needsConfirm({ kind: "campaign" })).toBe(false);
+    expect(needsConfirm({ kind: "custom", online: true })).toBe(false);
+  });
+
+  test("only games the reader's read returns are added: 404 and failures are skipped", async () => {
+    const detail = (id: string) => ({
+      game_id: id, map: "03a_oldmombasa", mode: "campaign", kind: "campaign", online: true, team_play: false, state: "live",
+      started_at: "2026-11-16T10:00:00Z", players: [{ index: 0, name: "Pete", xuid: HOST, team: 0, local: true }],
+    }) as unknown as GameDetail;
+    const asked: string[] = [];
+    const got = await confirmGames(["mine", "private", "broken"], async (id) => {
+      asked.push(id);
+      if (id === "private") throw Object.assign(new Error("no such game"), { status: 404 });
+      if (id === "broken") throw new Error("network");
+      return detail(id);
+    });
+    expect(asked).toEqual(["mine", "private", "broken"]);
+    expect(got.map((d) => d.game_id)).toEqual(["mine"]);
+    const s = initialState();
+    for (const d of got) applyGameSnapshot(s, d);
+    expect(Object.keys(s.games)).toEqual(["mine"]);
   });
 });
