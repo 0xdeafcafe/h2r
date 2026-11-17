@@ -25,6 +25,22 @@ use crate::reader::{GameStatus, Reader};
 /// One connection.
 pub type ConnId = u64;
 
+/// Who may call a host method ([`Agent::add_method`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Any connection: it only reads.
+    Read,
+    /// Any connection while none holds control, else only the controller:
+    /// it acts on the game (pad input, the profiler), and a one-shot
+    /// `h2 agent` call should not need `session.claim` first.
+    Act,
+}
+
+/// A method the game's host answers ([`Agent::add_method`]): params in,
+/// result or error out. It runs on the game's thread with the agent's
+/// state locked, so it must be quick and must not call the [`Agent`].
+pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
+
 /// With no tick for this long the game counts as loading, and world reads
 /// are answered between slices instead of waiting for a tick.
 pub const TICK_STALE: Duration = Duration::from_millis(500);
@@ -79,6 +95,8 @@ struct State {
     shutdown: bool,
     /// The game thread is inside the pause loop, holding the tick.
     holding: bool,
+    /// Methods the host answers, by name.
+    host: BTreeMap<String, (Access, HostMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
     /// it out): nothing can pause, and world reads come between slices.
     no_tick_hook: bool,
@@ -210,6 +228,24 @@ impl Agent {
     /// world reads are answered between slices.
     pub fn set_no_tick_hook(&self) {
         self.lock().no_tick_hook = true;
+    }
+
+    /// Answers `name` with `f` (replacing an earlier one of that name).
+    /// A result that is a JSON object gets the `at` stamp unless it has
+    /// one. Core methods can't be replaced.
+    pub fn add_method(
+        &self,
+        name: &str,
+        access: Access,
+        f: impl FnMut(Value) -> Result<Value, RpcError> + Send + 'static,
+    ) {
+        assert!(
+            !method::ALL.contains(&name),
+            "{name} is a core method of the agent API"
+        );
+        self.lock()
+            .host
+            .insert(name.to_owned(), (access, Box::new(f)));
     }
 
     /// The feature plan's text, for `features.list`.
@@ -586,6 +622,22 @@ impl State {
             )));
         }
         let p = req.params;
+        if let Some((access, _)) = self.host.get(m) {
+            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
+                return Some(Err(RpcError::new(
+                    code::NOT_CONTROLLER,
+                    "another connection holds control",
+                )));
+            }
+            let at = to_value(self.at());
+            let (_, f) = self.host.get_mut(m)?;
+            return Some(f(p).map(|mut v| {
+                if let Value::Object(o) = &mut v {
+                    o.entry("at").or_insert(at);
+                }
+                v
+            }));
+        }
         Some(match m {
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
@@ -594,7 +646,13 @@ impl State {
                 controller: self.controller == Some(conn),
                 claimed: self.controller.is_some(),
             })),
-            method::METHODS => Ok(Value::from(method::ALL.to_vec())),
+            method::METHODS => Ok(Value::from(
+                method::ALL
+                    .iter()
+                    .map(|m| (*m).to_owned())
+                    .chain(self.host.keys().cloned())
+                    .collect::<Vec<String>>(),
+            )),
             method::CLAIM if self.conns.get(&conn).is_none_or(|c| c.closing) => Err(RpcError::new(
                 code::NOT_CONTROLLER,
                 "a closed connection can't take control",

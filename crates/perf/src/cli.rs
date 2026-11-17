@@ -10,6 +10,7 @@ use crate::profile::{Render, Session, SessionConfig};
 
 pub const PROFILE_USAGE: &str = "usage: h2 profile <scenario> [options]
        h2 profile budget <trace.json> [--json]   (see h2 profile budget --help)
+       h2 profile remote <dump.h2prof> [options] (see h2 profile remote --help)
 
 Run a benchmark scenario repeatedly under the sampling profiler (and,
 optionally, the timeline) and write profile.folded, profile.txt and
@@ -108,6 +109,9 @@ pub fn budget_to(args: Vec<String>, out: &mut impl std::io::Write) -> Result<i32
 pub fn profile(args: Vec<String>) -> Result<i32> {
     if args.first().is_some_and(|a| a == "budget") {
         return budget(args[1..].to_vec());
+    }
+    if args.first().is_some_and(|a| a == "remote") {
+        return remote(args[1..].to_vec());
     }
     let mut a = Args {
         it: args.into_iter(),
@@ -273,4 +277,114 @@ pub fn bench(args: Vec<String>) -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+pub const REMOTE_USAGE: &str = "usage: h2 profile remote <dump.h2prof> [options]
+
+Symbolise a profile the Xbox app took (agent `profile.sample.stop`,
+docs/runtime/xbox.md \"Profiling on the console\") against the binaries
+that were deployed, and print the top functions by self time; write
+profile.folded, profile.txt and profile.json too.
+
+  --image PE        a deployed image (h2game.dll, h2uwp.exe); repeat. The
+                    generated module's entry table names guest functions
+  --map MAP         an lld-link /map for the image of the same stem
+                    (h2uwp.map for h2uwp.exe); repeat
+  --names TSV       guest function names (disc/ghidra-functions.tsv)
+  --out DIR         output directory (default: beside the dump, <stem>/)
+  --top N           rows per table (default 40)
+  --cpu             leave out samples where the thread was not running
+  --by-category     root each folded stack at its category
+  --full-stacks     keep the thread start-up frames in folded stacks";
+
+/// `h2 profile remote`.
+pub fn remote(args: Vec<String>) -> Result<i32> {
+    use crate::remote::{Dump, Image, Symbols, guest_names, name_guest};
+    let mut a = Args {
+        it: args.into_iter(),
+    };
+    let mut dump = None;
+    let mut images: Vec<PathBuf> = Vec::new();
+    let mut maps: Vec<PathBuf> = Vec::new();
+    let mut names = None;
+    let mut out = None;
+    let mut render = Render {
+        top: 40,
+        guest_insns: false,
+        ..Render::default()
+    };
+    while let Some(f) = a.it.next() {
+        match f.as_str() {
+            "--image" => images.push(a.value(&f)?.into()),
+            "--map" => maps.push(a.value(&f)?.into()),
+            "--names" => names = Some(PathBuf::from(a.value(&f)?)),
+            "--out" => out = Some(PathBuf::from(a.value(&f)?)),
+            "--top" => render.top = a.num(&f)?,
+            "--cpu" => render.on_cpu_only = true,
+            "--by-category" => render.by_category = true,
+            "--full-stacks" => render.full_stacks = true,
+            "-h" | "--help" => {
+                println!("{REMOTE_USAGE}");
+                return Ok(0);
+            }
+            other if other.starts_with('-') => bail!("unknown option {other}\n\n{REMOTE_USAGE}"),
+            other => dump = Some(PathBuf::from(other)),
+        }
+    }
+    let Some(dump_path) = dump else {
+        bail!("{REMOTE_USAGE}")
+    };
+    let text = std::fs::read_to_string(&dump_path).with_context(|| format!("reading {}", dump_path.display()))?;
+    let d = Dump::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", dump_path.display()))?;
+    let file_name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = |p: &PathBuf| p.file_stem().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let mut syms = Symbols::default();
+    for img in &images {
+        let bytes = std::fs::read(img).with_context(|| format!("reading {}", img.display()))?;
+        let mut image = Image::from_pe(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", img.display()))?;
+        if let Some(m) = maps.iter().find(|m| stem(m) == stem(img)) {
+            let map = std::fs::read_to_string(m).with_context(|| format!("reading {}", m.display()))?;
+            image = image.with_map(&map);
+        }
+        if image.guest_functions() > 0 {
+            eprintln!("profile remote: {}: {} guest functions", file_name(img), image.guest_functions());
+        }
+        syms.add(&file_name(img), image);
+    }
+    for m in maps.iter().filter(|m| !images.iter().any(|i| stem(i) == stem(m))) {
+        let map = std::fs::read_to_string(m).with_context(|| format!("reading {}", m.display()))?;
+        syms.add(&format!("{}.exe", stem(m)), Image::default().with_map(&map));
+    }
+    for m in &d.modules {
+        if syms.image(&m.name).is_none() {
+            eprintln!("profile remote: no --image for {}: its frames stay {}+offset", m.name, m.name);
+        }
+    }
+    let profile = syms.resolve(&d);
+    let names = match &names {
+        Some(p) => guest_names(&std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?),
+        None => Default::default(),
+    };
+    let mut summary = profile.summary(&render);
+    for rows in [
+        &mut summary.self_top,
+        &mut summary.guest_total,
+        &mut summary.guest_self,
+    ] {
+        for r in rows.iter_mut() {
+            r.name = name_guest(&r.name, &names);
+        }
+    }
+    let table = summary.text();
+    let out = out.unwrap_or_else(|| {
+        let s = dump_path.file_stem().map(|s| s.to_owned()).unwrap_or_else(|| "profile".into());
+        dump_path.with_file_name(s)
+    });
+    std::fs::create_dir_all(&out)?;
+    std::fs::write(out.join("profile.folded"), profile.folded(&render))?;
+    std::fs::write(out.join("profile.txt"), &table)?;
+    std::fs::write(out.join("profile.json"), serde_json::to_vec_pretty(&summary)?)?;
+    print!("{table}");
+    eprintln!("profile remote: wrote profile.folded, profile.txt and profile.json in {}", out.display());
+    Ok(0)
 }

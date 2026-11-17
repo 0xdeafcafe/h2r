@@ -103,6 +103,12 @@ stub "$repo/platform/xbox/build.sh" "xbox/build.sh"
 printf '#!/bin/sh\necho "deploy.sh to $H2_XBOX $*"\n' >"$repo/platform/xbox/deploy.sh"
 chmod +x "$repo/platform/xbox/deploy.sh"
 expect "xbox runs build.sh once merged" "xbox/build.sh $disc/halo2.iso --no-module" -- xbox module=skip
+expect "xbox maps=all without a map pack is the disc alone" "xbox/build.sh $disc/halo2.iso --maps all" -- xbox maps=all
+: >"$repo/disc/mappack.iso"
+expect "xbox maps=all takes disc/mappack.iso" "xbox/build.sh $disc/halo2.iso --maps all --mappack $disc/mappack.iso" -- xbox maps=all
+expect "xbox warns that the map pack is copied" "copied into LocalState" -- xbox maps=all
+expect "xbox maps=demo leaves the map pack out" "xbox/build.sh $disc/halo2.iso" -- xbox maps=demo
+rm "$repo/disc/mappack.iso"
 expect "xbox-deploy passes ip= as H2_XBOX" "deploy.sh to 10.0.0.2" -- xbox-deploy ip=10.0.0.2
 expect "xbox-deploy needs an address" "no console address" -- xbox-deploy
 expect "mac builds with h2 build" "cargo h2 build $disc/halo2.iso" -- mac
