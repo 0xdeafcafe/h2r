@@ -2493,6 +2493,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1text"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "h1models",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -101,6 +101,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [h1-sounds.md](formats/h1-sounds.md): Halo 1 Xbox sounds: where the samples are, decoding to PCM, conversion to Halo 2 `snd!` plus `ugh!` gestalt entries, the whole gestalt layout, class mapping (`crates/h1sounds`, `h2 h1 sound`)
 - [h1-objects.md](formats/h1-objects.md): Halo 1 sandbox objects (`weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys`) read from Halo 1 and built as Halo 2 tags on retail templates, with the tuning carried over (`crates/h1objects`)
 - [h1-sky.md](formats/h1-sky.md): Halo 1 and Halo 2 `sky ` tags: layouts, the disc census, and conversion (`crates/h1sky`)
+- [h1-text.md](formats/h1-text.md): Halo 1 `ustr` and `hmt ` text: reading UTF-16 lists and HUD messages, converting them to Halo 2 `unic` locale rows (`crates/h1text`)
 - [haloscript.md](formats/haloscript.md): HaloScript syntax, builtins and decoding (`crates/hs`, `h2 hs`)
 - [h1-scripts.md](formats/h1-scripts.md): Halo 1 campaign scripts decoded, decompiled, translated to Halo 2 builtins and compiled to Halo 2 nodes (`crates/h1scripts`)
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
