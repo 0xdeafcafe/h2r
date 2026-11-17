@@ -380,15 +380,26 @@ pub unsafe extern "C" fn h2host_status(host: *mut H2Host) -> i32 {
         return 2;
     };
     let Some(s) = t.shell.as_mut() else { return 2 };
-    let (code, text) = match s.guest_exit() {
-        None => return 0,
-        Some(app::GuestExit::Returned) => (1, "The game ended.".to_owned()),
-        Some(e) => (2, format!("{e:?}")),
+    let Some((code, text)) = s.guest_exit().map(stopped) else {
+        return 0;
     };
     if t.message.is_empty() {
+        // The console's only word on it: the app shows it on screen, and a
+        // boot that failed before the menu otherwise looks like a hang.
+        eprintln!("h2host: {text}");
         t.message = message(&text);
     }
     code
+}
+
+/// [`h2host_status`]'s code and text for a guest that has ended.
+fn stopped(e: &app::GuestExit) -> (i32, String) {
+    match e {
+        app::GuestExit::Returned => (1, "The game ended.".to_owned()),
+        app::GuestExit::Failed(why) => (2, format!("the game failed: {why}")),
+        app::GuestExit::Panicked(why) => (2, format!("the game panicked: {why}")),
+        e => (2, format!("{e:?}")),
+    }
 }
 
 /// Why the game is not running, or empty. Valid until the next call on `host`.
@@ -663,6 +674,45 @@ mod tests {
         assert_eq!(live, boot::LiveConfig::default());
         assert!(cloud_saves(&live, &data, &store).is_none());
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// The app's first start has no Live account file; the Live client
+    /// must still come up (bb4a3f0d failed the boot here, before the menu,
+    /// with "configuring Live client").
+    #[test]
+    fn the_live_client_starts_with_no_accounts_file_yet() {
+        let data = std::env::temp_dir().join(format!("h2host-live-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).unwrap();
+        let (live, _) = live_hle::platform::config(&data, None);
+        assert!(live.enabled);
+        assert!(!live.accounts_path.as_ref().unwrap().exists());
+        let network = live_hle::NetworkConfig::new(std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            3074,
+        ));
+        let hle = live_hle::Hle::with_server_options(live, network, Default::default());
+        assert!(hle.is_ok(), "{:?}", hle.err());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// A game that ends says why on the console, not only on the screen.
+    #[test]
+    fn a_stopped_game_says_why() {
+        assert_eq!(
+            stopped(&app::GuestExit::Failed(
+                "configuring Live client: no file".into()
+            )),
+            (
+                2,
+                "the game failed: configuring Live client: no file".into()
+            )
+        );
+        assert_eq!(stopped(&app::GuestExit::Returned).0, 1);
+        assert_eq!(
+            stopped(&app::GuestExit::Panicked("boom".into())),
+            (2, "the game panicked: boom".into())
+        );
     }
 
     #[test]
