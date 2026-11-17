@@ -500,10 +500,7 @@ impl Session {
                             .map(|o| yaw(o.forward))
                             .or(fallen.map(|f| f.1))
                             .unwrap_or(0.0),
-                        vehicle: object
-                            .as_ref()
-                            .and_then(|o| o.vehicle)
-                            .map(|v| format!("{v:08x}")),
+                        vehicle: object.as_ref().and_then(|o| o.vehicle).map(hex),
                         species: object
                             .as_ref()
                             .and_then(|o| o.definition)
@@ -718,6 +715,16 @@ fn same_roster(
         })
 }
 
+/// A datum as the frame's object ids write it: eight lower-case hex
+/// digits (`format!("{d:08x}")`, without the formatter).
+fn hex(d: u32) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    (0..8)
+        .rev()
+        .map(|i| char::from(DIGITS[(d >> (i * 4)) as usize & 0xf]))
+        .collect()
+}
+
 fn finite_direction(v: [f64; 3]) -> bool {
     v.iter().all(|c| c.is_finite()) && v.iter().map(|c| c * c).sum::<f64>() > 1e-12
 }
@@ -731,12 +738,12 @@ fn team_name(team: i16, campaign: bool) -> String {
 
 /// The frame's actors, nearest to any live player first, capped; each with
 /// its object state (for vehicles).
-fn frame_actors(
-    snapshot: &Snapshot,
+fn frame_actors<'a>(
+    snapshot: &'a Snapshot,
     tags: Option<&TagNames>,
     campaign: bool,
     shots: &BTreeMap<u32, u32>,
-) -> Vec<(FrameActor, ObjectState, u32)> {
+) -> Vec<(FrameActor, &'a ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
         players
@@ -757,7 +764,7 @@ fn frame_actors(
         .map(|(_, a)| {
             let o = &a.object;
             let actor = FrameActor {
-                id: format!("{:08x}", a.datum),
+                id: hex(a.datum),
                 species: o
                     .definition
                     .zip(tags)
@@ -773,10 +780,10 @@ fn frame_actors(
                     .map(|n| (*n).min(MAX_FRAME_SHOTS))
                     .filter(|n| *n > 0),
                 team: o.team.map(|t| team_name(t, campaign)),
-                vehicle: o.vehicle.map(|v| format!("{v:08x}")),
+                vehicle: o.vehicle.map(hex),
                 ..FrameActor::default()
             };
-            (actor, o.clone(), a.datum)
+            (actor, o, a.datum)
         })
         .collect()
 }
@@ -815,7 +822,7 @@ fn frame_bodies(
         .map(|(_, b)| {
             let o = &b.object;
             FrameActor {
-                id: format!("{:08x}", b.datum),
+                id: hex(b.datum),
                 species: o
                     .definition
                     .zip(tags)
@@ -836,7 +843,7 @@ fn frame_bodies(
 /// scan's, occupied when a biped is parented to it.
 fn frame_vehicles(
     snapshot: &Snapshot,
-    actors: &[(FrameActor, ObjectState, u32)],
+    actors: &[(FrameActor, &ObjectState, u32)],
     tags: Option<&TagNames>,
 ) -> Vec<FrameVehicle> {
     let kind = |definition: Option<u32>| {
@@ -845,7 +852,6 @@ fn frame_vehicles(
             .and_then(|(d, t)| t.vehicle(d))
             .unwrap_or_else(|| UNKNOWN.into())
     };
-    let hex = |d: u32| format!("{d:08x}");
     // The world scan's word on each vehicle: what it is mounted on and
     // where it aims (a turret), also for one a rider read.
     let scanned: BTreeMap<u32, &VehicleState> =
@@ -861,7 +867,7 @@ fn frame_vehicles(
         .objects
         .iter()
         .flatten()
-        .chain(actors.iter().map(|(_, o, _)| o))
+        .chain(actors.iter().map(|(_, o, _)| *o))
         .filter_map(|o| {
             let id = o.vehicle?;
             if !finite_direction(o.forward) || !finite_direction(o.up) || !seen.insert(id) {
@@ -958,7 +964,7 @@ fn frame_machines(
                 .filter(|n| live_proto::game::valid_node(n));
             let frame = FrameMachine {
                 node,
-                id: format!("{:08x}", m.datum),
+                id: hex(m.datum),
                 kind,
                 pos: m.pos,
                 forward: m.forward,
@@ -1085,7 +1091,7 @@ fn frame_hits(
     let object = |datum: u32| {
         (datum != u32::MAX).then(|| match player_of_unit.get(&datum) {
             Some(index) => format!("p{index}"),
-            None => format!("{datum:08x}"),
+            None => hex(datum),
         })
     };
     hits.iter()
@@ -1182,6 +1188,13 @@ mod tests {
                 Output::Frame(_) => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn hex_writes_a_datum_as_the_formatter_does() {
+        for d in [0, 1, 0xa, 0xe280_0001, 0x9001_0000, u32::MAX] {
+            assert_eq!(hex(d), format!("{d:08x}"));
+        }
     }
 
     #[test]
