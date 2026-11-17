@@ -275,7 +275,12 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_ACC_ONE() (h2acc += 1u)
 #define H2_ACC_FLUSH()                                                          \
     do {                                                                        \
-        if (h2acc) { H2_GATE_DROP(); h2abi_v1_charge(ctx, h2acc); h2acc = 0; }  \
+        if (h2acc) {                                                            \
+            H2_GATE_DROP();                                                     \
+            H2_COLD_WHY(h2g_, H2C_FLUSH);                                       \
+            h2abi_v1_charge(ctx, h2acc);                                        \
+            h2acc = 0;                                                          \
+        }                                                                       \
     } while (0)
 /* The budget left after this handler's own count, cached for the polls. */
 #define H2_ACC_BUDGET_LOCALS() uint64_t h2left = h2abi_v1_budget(ctx)
@@ -373,7 +378,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 /* The handler's hold on the inline RAM gate (h2fastmem.h): dropped before
  * anything that takes the context, and on every way out. Helpers that get
  * only CpuAbi or X87Abi cannot reach guest memory and may run under it. */
-#define H2_GATE_DROP() h2_gate_drop(h2_mem_, &h2g_)
+#define H2_GATE_DROP() (h2_gate_drop(h2_mem_, &h2g_), H2_COLD_WHY(h2g_, H2C_DROP))
 
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
@@ -501,8 +506,10 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         memcpy(&dst, p_, (n));                                                  \
         goto done_;                                                             \
     slow_:                                                                      \
+        H2_COLD_NOTE(h2g_);                                                     \
         c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 0, b_);     \
         h2_gate_adopt(&h2g_, c_.held);                                          \
+        H2_COLD_NOTE_AFTER(h2g_);                                               \
         if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
         memcpy(&dst, b_, (n));                                                  \
     done_:;                                                                     \
@@ -540,8 +547,10 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         goto done_;                                                             \
     slow_:                                                                      \
         memcpy(b_, &v_, (n));                                                   \
+        H2_COLD_NOTE(h2g_);                                                     \
         c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 1, b_);     \
         h2_gate_adopt(&h2g_, c_.held);                                          \
+        H2_COLD_NOTE_AFTER(h2g_);                                               \
         if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
     done_:;                                                                     \
     } while (0)
@@ -691,10 +700,20 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
     const uint32_t *const h2_pre_ = h2_preempt_word(ctx);                       \
     H2_ACC_BUDGET_LOCALS()
 #define H2_POLLED() (__atomic_load_n(h2_pre_, __ATOMIC_RELAXED) != 0u || H2_ACC_OVER())
+#if H2_COLD_STATS
+#define H2_GATE_TICK_()                                                         \
+    do {                                                                        \
+        uint32_t h_ = h2g_.held;                                                \
+        h2_gate_tick(h2_mem_, &h2g_);                                           \
+        if (h_ && !h2g_.held) H2_COLD_WHY(h2g_, H2C_TICK);                      \
+    } while (0)
+#else
+#define H2_GATE_TICK_() h2_gate_tick(h2_mem_, &h2g_)
+#endif
 #define H2_LOOP_POLL(header)                                                    \
     do {                                                                        \
         H2_PERF_LOOP();                                                         \
-        h2_gate_tick(h2_mem_, &h2g_);                                           \
+        H2_GATE_TICK_();                                                        \
         if (__builtin_expect(H2_POLLED(), 0))                                   \
             H2_XFER(H2_JUMP, H2_RESUME, (header), 0u);                          \
     } while (0)
@@ -788,6 +807,7 @@ static inline H2FastAccess *h2_view_borrow(ExecCtxOpaque *ctx) {
     H2FastAccess *const h2_lent_ = h2_view_borrow(ctx);                         \
     H2FastAccess *h2_mem_ = h2_lent_ ? h2_lent_ : h2abi_v1_fast_acquire(ctx);   \
     H2Gate h2g_ = {0, UINT32_MAX, NULL};                                        \
+    H2_COLD_WHY(h2g_, h2_lent_ ? H2C_LENT_ENTRY : H2C_ENTRY);                   \
     (void)h2_mem_
 #define H2_LENT_() (h2_lent_ != 0)
 #define H2_LEND_(d) ((d)->view = h2_mem_)
@@ -884,6 +904,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
                 H2_SYNC_IN();                                                   \
                 reload;                                                         \
                 refresh;                                                        \
+                H2_COLD_WHY(h2g_, H2C_AFTER_DCALL);                             \
                 goto label;                                                     \
             }                                                                   \
             H2_DIRECT_HANDUP(r_);                                               \

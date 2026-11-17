@@ -156,6 +156,19 @@ fn compile_module_with(
     passes: emit::opt::Passes,
     codegen: emit::Codegen,
 ) -> (libloading::Library, Dispatch) {
+    compile_module_defines(kind, funcs, instrumented, fast, passes, codegen, "")
+}
+
+/// [`compile_module_with`] with `defines` (C lines) ahead of h2gen.h.
+fn compile_module_defines(
+    kind: &str,
+    funcs: Vec<IrFunction>,
+    instrumented: bool,
+    fast: bool,
+    passes: emit::opt::Passes,
+    codegen: emit::Codegen,
+    defines: &str,
+) -> (libloading::Library, Dispatch) {
     let owners = emit::plan_with(funcs, passes);
     let accounting = codegen.accounting;
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -171,6 +184,11 @@ fn compile_module_with(
         let header = src.join("h2gen.h");
         let content = std::fs::read_to_string(&header).unwrap();
         std::fs::write(header, format!("#define H2_PERF 1\n{content}")).unwrap();
+    }
+    if !defines.is_empty() {
+        let header = src.join("h2gen.h");
+        let content = std::fs::read_to_string(&header).unwrap();
+        std::fs::write(header, format!("{defines}{content}")).unwrap();
     }
     emit::compile::install_header(&src, &common::abi_header().unwrap()).unwrap();
     let b = emit::compile::build(&src, &dir, emit::compile::Arch::host(), 2).unwrap();
@@ -921,6 +939,61 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
             };
             assert!(run(false) == run(true), "accounting {accounting} slice {slice}: stops differ");
         }
+    }
+}
+
+/// The causes `H2_COLD_STATS` gives, in `h2gen_cold_counts` order.
+const COLD_CAUSES: [&str; 8] = ["entry", "lent-entry", "after-dcall", "flush", "drop", "tick", "miss", "no-gate"];
+
+/// Runs [`held_gate_functions`] once, start to end, with `H2_COLD_STATS`
+/// (and `defines`) and returns each cause's count of cold accesses.
+fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
+    let (lib, dispatch) = compile_module_defines(
+        kind,
+        held_gate_functions(),
+        false,
+        true,
+        emit::opt::Passes::ALL,
+        emit::Codegen { accounting, ..emit::Codegen::default() },
+        &format!("#define H2_COLD_STATS 1\n{defines}"),
+    );
+    let mut mem = Guest::new();
+    mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+    mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+    let rt = Runtime::new(mem, dispatch);
+    let mut ctx = ExecCtx::new(rt.clone(), 1);
+    ctx.enable_fast_memory(true);
+    let mut cpu = CpuAbi { esp: STACK, esi: DATA + 0x100, edi: DATA + 0x300, ecx: 40, ebp: DATA + 0xd10, ..CpuAbi::default() };
+    let t = Runner::default().run(&mut cpu, &mut ctx, A);
+    assert_eq!(t.kind, runtime::abi::STOP, "{:?}", ctx.events());
+    let counts: libloading::Symbol<*const [u64; 8]> = unsafe { lib.get(b"h2gen_cold_counts").unwrap() };
+    let counts = unsafe { **counts };
+    drop(rt);
+    counts
+}
+
+/// Why accesses take the cold path, by cause, over a run of
+/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly,
+/// a 100-trip loop with no call, a page-crossing loop, a REP and stores. A
+/// handler's first access is cold (it starts without the gate), and so is
+/// the first after a direct call returns (the caller drops the gate to
+/// charge its accesses and call); `miss` counts the cold ones taken with
+/// the gate held (a cross-page read), `no-gate` those that leave without
+/// it. `--nocapture` prints the table.
+#[test]
+fn cold_accesses_by_cause() {
+    for accounting in [false, true] {
+        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), "");
+        let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
+        println!("accounting {accounting}: {}", table.join(", "));
+        // main, then the first call (through the dispatcher: the leaf and
+        // main's return point); the other 39 calls are direct, each leaf
+        // from cold, then main's first access after it.
+        assert_eq!(c[0], 3, "{table:?}");
+        assert_eq!(c[1], 39, "{table:?}");
+        assert_eq!(c[2], 39, "{table:?}");
+        assert!(c[6] >= 1, "the cross-page read: {table:?}");
     }
 }
 
