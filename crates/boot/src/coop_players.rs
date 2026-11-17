@@ -212,7 +212,7 @@ pub fn anchor<M: GuestMemory + ?Sized>(m: &M, ps: &[Player]) -> Option<(u32, [f3
         })
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(crate) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
@@ -388,6 +388,7 @@ pub static HOOKED: &[&points::Point] = &[
     &points::BSP_SWITCH,
     &points::CINEMATIC_START,
     &points::CINEMATIC_STOP,
+    &points::SAVE_SAFE,
 ];
 
 impl feature::Feature for CoopPlayers {
@@ -502,6 +503,40 @@ impl feature::Feature for CoopPlayers {
                 .optional();
         }
 
+        // Checkpoints: players 2+ who are dead or far do not count.
+        {
+            let arm = Arc::clone(&self.arm);
+            let reentry = Arc::new(AtomicBool::new(false));
+            let last = Arc::new(Mutex::new(None));
+            b.raw().before(
+                &points::SAVE_SAFE,
+                "players 3+: only those near count for a checkpoint",
+                move |c| {
+                    if reentry.load(Ordering::SeqCst) || !arm.active() {
+                        return Ok(Flow::Continue);
+                    }
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let hidden = {
+                        let m = rt.memory();
+                        if !is_campaign(&*m) {
+                            return Ok(Flow::Continue);
+                        }
+                        save::not_counted(&*m, &players(&*m))
+                    };
+                    if hidden.is_empty() {
+                        return Ok(Flow::Continue);
+                    }
+                    if let Some(line) = save::note(&last, &hidden) {
+                        eprintln!("{line}");
+                    }
+                    let reentry = Arc::clone(&reentry);
+                    c.answer_async(move |cx| -> EntryFuture {
+                        Box::pin(save::safe_to_save(cx, hidden, reentry))
+                    })
+                },
+            );
+        }
+
         // Bring them over at the next player update, outside a cinematic.
         {
             let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
@@ -541,6 +576,8 @@ pub fn install(registry: &mut feature::Registry, arm: Arc<Arm>) -> anyhow::Resul
         .add(&CoopPlayers::new(arm))
         .map_err(|e| anyhow::anyhow!("coop-players: {e}"))
 }
+
+pub mod save;
 
 #[cfg(test)]
 mod tests;

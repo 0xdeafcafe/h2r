@@ -1624,6 +1624,10 @@ section 10.4's setup with a third account. Expect, besides 10.4's lines:
   `0x14e970` found no room: it stays on the spot);
 - after a cutscene or a script teleport, when the third player was far:
   `coop-players: 1 player(s) of index 2 or more left behind; bringing them over`.
+- with the third player dead, or far away, at a checkpoint:
+  `coop-players: checkpoint checks leave out player(s) 2 (dead, or past 8 units from the anchor)`,
+  and the checkpoint is taken (`coop-probe: checkpoint save at tick T`
+  on every console, at the same tick).
 
 Then: does the third player appear next to player 0, does a dead third
 player respawn (retail's co-op respawn, no line of ours), do all three
@@ -1640,7 +1644,7 @@ Players 3+ are the same character as player 1.
    `bridge_`/`boss_` flags (04b, 05a, 05b, 08b) get a third and fourth
    flag generated beside the first two (or the hook teleports players 3+
    to the same flag through `0x14e970`, which searches around it). The
-   checkpoint rule below. Which of the two characters each player is
+   checkpoint rule (13.5, built). Which of the two characters each player is
    (a per-player representation, `player+0x88` read by `0x14f040`).
 3. **8 to 16.** Measure the synchronous update's encoded size at 16
    (the encoder `0xb2710`); the host's upstream decides the cap. Pace:
@@ -1649,13 +1653,23 @@ Players 3+ are the same character as player 1.
 
 ### 13.5 Risks and open items
 
-- **Checkpoints get rarer with every player.** `0x226190` refuses a save
-  while any player is dead (`players_globals+5`) or any unit is in an
-  unsafe state (`0x14deb0`). At 16 a save may wait a long time. A bounded
-  rule (not built): count only players 0 and 1 and players 2+ who are
-  alive and near the anchor, or force a save after a fixed number of
-  seconds of refusals. It changes when the game saves, so it must run on
-  every console alike, as `coop-players` does.
+- **Checkpoints with more players (built, option (a)).** `0x226190`
+  (`game_safe_to_save`, point `SAVE_SAFE`) refuses a save while any
+  player is dead (`players_globals+5`) or any unit is unsafe (`0x14df40`,
+  `0x14deb0`, which walk the players' in-use bits). `coop-players` now
+  counts players 0 and 1 always, and a player of index 2 or more only
+  while alive and within the leash (8 units) of the anchor. For the
+  length of the check, the players that do not count are taken out of
+  the in-use bits (the datum iterator `0x16bc00` reads them too) and the
+  dead flag is recomputed over the rest (only ever lowered); both go
+  back when it returns. An unsafe player 3 near the anchor still blocks;
+  a player 3+ in a vehicle, or with no anchor on foot, counts as retail.
+  With two players nothing is left out: retail. Stderr, once per change
+  of who is left out:
+  `coop-players: checkpoint checks leave out player(s) 2 (dead, or past 8 units from the anchor)`.
+  Tests: `coop_players::tests` (two players unchanged; a dead player 3 no
+  longer blocks; a dead player 1 still does; a far player 3 does not
+  block, a near or driving one counts; the bits and flag are put back).
 - **The scripts know two players.** The leash covers being left behind;
   it does not put players 3+ into cutscene positions, and a script that
   checks `(volume_test_objects ... (players))` counts every player, so a
