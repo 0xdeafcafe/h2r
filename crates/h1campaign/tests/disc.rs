@@ -1145,6 +1145,9 @@ fn check_clusters(m: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], sbsp: TagId) -> Ve
 /// `+0x28..=+0x30` none, as on every retail image): a handle of 0 reads as
 /// resident in slot 0 and the pixels are never loaded. (The LOD pointers
 /// `+0x20`, `+0x24` are none on converted images but not on the base's.)
+/// And every image is a texture cache resource (flag `0x200`, as on every
+/// retail image; `h1bitmaps::convert::IMAGE_CACHED`): one without it is
+/// never loaded and its stage stays empty (the dark lightmap).
 fn check_images(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
     let ids: Vec<_> = m
         .tags()
@@ -1166,6 +1169,12 @@ fn check_images(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
                 if word(p + 0x74 * k + w) != u32::MAX {
                     bad.push(format!("bitmap {id:?} image {k} +{w:#x}"));
                 }
+            }
+            let flags = word(p + 0x74 * k + 0xc) >> 16;
+            if flags as u16 & h1bitmaps::convert::IMAGE_CACHED == 0 {
+                bad.push(format!(
+                    "bitmap {id:?} image {k} flags {flags:#x}: not a cache resource"
+                ));
             }
         }
     }

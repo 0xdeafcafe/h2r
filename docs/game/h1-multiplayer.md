@@ -358,24 +358,22 @@ The base's old BSP region stays in the file, unused.
   (`cmp word [esi+0Ch], 12h` at `0x000d309a`); otherwise the sample is the
   colour. So the pages stay as Halo 1 stored them: no quantizing.
 
-  **Open: a10 at version 14 draws dark ("no lighting").** Not yet
-  explained offline. What the engine does, so far (E): the render key's
-  lighting mode (top 3 bits, `0x0002cf29` → `0x0002d000`) is 2 for an
-  object with no lightmap bucket, 1 for a loaded bucket, 3 with no
-  usable lightmap; a cluster (`[key+4]` -1, bucket reference `0x7ff`,
-  as ours) takes the page path at `0x0004d3e2`, which stores the render
-  info page in `[0x485a60]`, and source `0x0b` then binds image
-  `[page]` of the group's bitmap (`0x00018bfe`..`0x00018d06`). With no
-  page it falls back to the global bitmap at `[0x485a80]+0x64`. Retail
-  groups also carry what ours leaves empty: a per-cluster block at
-  `+0x20`, buckets `+0x40` with per-cluster references `+0x60` (every
-  Beaver Creek cluster, 10 of Zanzibar's 55), probes `+0x38`, and P8
-  pages with palettes. Still to rule out: what the structure pass's
-  pixel shader does with stage 3 (the `spas` combiners), the incident
-  vector (stream `30`, Halo 1's lightmap vertex direction here), and
-  whether the lit permutation needs the `+0x20` block or buckets. A
-  frame capture of a10 deciding between "page bound, combiner darkens"
-  and "fallback texture bound" settles it.
+  **Every converted image is a cache resource (`0x200`); the dark
+  lightmap.** a10 at version 14 drew without light. A capture of a10
+  (frame 2806) showed why: the structure's lighting pass (pixel shader:
+  `r0 = t3 · (1 + v1.a)`, then `× t0 × 2`, `t0` the screen copy of the
+  albedo pass) had nothing bound at stage 3, and no R5G6B5 texture was
+  created in the whole run. The binding itself was right (group, checksum
+  and page all pass `0x00018bfe`); the texture cache returned null. It
+  loads an image only when its flags have `0x200` (E `0x0012cd26`,
+  `0x0012ce81`: `test byte [image+0Fh], 2`); otherwise it hands back the
+  image's runtime texture (`+0x50`), never set for these. Every retail
+  image has the bit (all 1,686 of Coagulation's and 2,231 of Delta
+  Approach's: `0x203` DXT, `0x1209` swizzled, `0x290` linear) and no Halo
+  1 image does. `h1bitmaps` now sets it on every converted image
+  (`IMAGE_CACHED`), which covers the lightmap pages, Halo 1's textures on
+  structure and objects, skies and the map card. Both disc tests check
+  every image in every converted map (`check_images`).
 
 **Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
 and a 30,000-triangle one into an invented map and reads them back with
