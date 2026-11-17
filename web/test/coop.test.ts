@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { campaignLine, coopPlayers, difficultyName, gametype, kind, levelName, parseSession, roomText, sessionRow } from "../src/lib/sessions";
+import { campaignLine, coopPlayers, difficultyName, gametype, isCoop, kind, levelName, parseSession, parseSessions, pingText, roomText, sessionRow } from "../src/lib/sessions";
 import { coopDifficulty, coopLevel, coopMinutes, coopNames, newestCoop, parseCoopGame, parseCoopGames } from "../src/lib/coop";
 import { normalizeFriends } from "../src/api/social";
-import { applyEvent, applyPresenceSnapshot, initialState } from "../src/state/reducer";
+import { applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, needsConfirm } from "../src/state/reducer";
+import { confirmGames } from "../src/state/snapshot";
+import type { GameDetail } from "../src/api/types";
 import { ev } from "./helpers";
+import { Sessions } from "../mock/sessions";
+import { World } from "../mock/world";
 
 const HOST = "0009000000000001", GUEST = "0009000000000002";
 
@@ -46,6 +50,19 @@ describe("co-op sessions", () => {
     expect(difficultyName(9)).toBe("unknown");
   });
 
+  test("the host's ping shows in the row and as text, and nothing when absent", () => {
+    const s = parseSession(wire(undefined, { advertisement: { ...wire().advertisement, ping_ms: 42 } }))!;
+    expect(s.ping_ms).toBe(42);
+    expect(pingText(s)).toBe("42 ms");
+    expect(sessionRow(s).meta).toBe("co-op Outskirts 2/2 42 ms");
+    const none = parseSession(wire())!;
+    expect(none.ping_ms).toBeNull();
+    expect(pingText(none)).toBeNull();
+    expect(sessionRow(none).meta).toBe("co-op Outskirts 2/2");
+    // 0 clears it on the server; junk reads as none.
+    for (const v of [0, -5, "42", null]) expect(parseSession(wire(undefined, { advertisement: { ...wire().advertisement, ping_ms: v } }))!.ping_ms).toBeNull();
+  });
+
   test("players are the host, then who joined, by gamertag", () => {
     const s = parseSession(wire(undefined, { players: { [GUEST]: "public", [HOST]: "public", "0009000000000003": "" } }))!;
     expect(coopPlayers(s, (x) => (x === GUEST ? "Moss" : undefined))).toEqual(["Sneaky Pete", "Moss", "guest"]);
@@ -68,6 +85,13 @@ describe("finished co-op games", () => {
     expect(coopNames(g)).toEqual(["Sneaky Pete", "Moss"]);
     expect(coopMinutes(g)).toBe(42);
     expect(g.end_reason).toBe("closed");
+  });
+
+  test("the session's visibility is read, public when a server doesn't say", () => {
+    expect(parseCoopGame(game({ visibility: "friends" }))!.visibility).toBe("friends");
+    expect(parseCoopGame(game({ visibility: "invite" }))!.visibility).toBe("invite");
+    expect(parseCoopGame(game())!.visibility).toBe("public");
+    expect(parseCoopGame(game({ visibility: "weird" }))!.visibility).toBe("public");
   });
 
   test("an account the server forgot reads as a guest; no roster is just the host", () => {
@@ -112,5 +136,109 @@ describe("presence activity", () => {
     expect(s.accounts[HOST]!.presence!.activity).toBeNull();
     applyEvent(s, ev("PresenceChanged", `presence-${HOST}`, { xuid: HOST, state: "online", activity: "Co-op: Outskirts" }, "2026-11-16T10:06:00Z"));
     expect(s.accounts[HOST]!.presence!.activity).toBe("Co-op: Outskirts");
+  });
+});
+
+describe("mock co-op", () => {
+  const get = (s: Sessions, path: string) => s.handle(new Request("http://mock" + path), new URL("http://mock" + path))!;
+  const make = () => {
+    const world = new World();
+    world.seed(5 * 60_000);
+    const s = new Sessions(world, 5);
+    s.seed();
+    return s;
+  };
+
+  test("lists open co-op sessions with a campaign, friends only, and a ping once a guest is in", () => {
+    const s = make();
+    const coop = parseSessions((get(s, "/v1/sessions?flags=coop").body as { items: unknown[] }).items);
+    expect(coop.length).toBeGreaterThanOrEqual(2);
+    for (const c of coop) {
+      expect(isCoop(c)).toBe(true);
+      expect(c.state).toBe("open");
+      expect(c.campaign?.name).toBeTruthy();
+      expect(c.visibility).toBe("friends");
+      expect(Object.keys(c.players).length > 1).toBe(c.ping_ms !== null);
+    }
+    expect(coop.some((c) => c.ping_ms !== null && pingText(c)!.endsWith(" ms"))).toBe(true);
+    // The plain list carries them too, beside other kinds.
+    const all = parseSessions((get(s, "/v1/sessions").body as { items: unknown[] }).items);
+    expect(all.filter(isCoop).length).toBe(coop.length);
+    expect(all.some((x) => !isCoop(x))).toBe(true);
+  });
+
+  test("has finished co-op games, newest first, the web reads every one, and a player's own", () => {
+    const s = make();
+    const body = get(s, "/v1/coop/games").body as { items: unknown[]; next: string | null };
+    const games = parseCoopGames(body.items);
+    expect(games.length).toBeGreaterThanOrEqual(6);
+    expect(games.length).toBe(body.items.length);
+    expect(newestCoop(games).map((g) => g.session_id)).toEqual(games.map((g) => g.session_id));
+    expect(games.some((g) => g.visibility === "friends")).toBe(true);
+    for (const g of games) expect(g.players.length).toBeGreaterThanOrEqual(2);
+    const who = games[0]!.players[1]!.gamertag!;
+    const mine = parseCoopGames((get(s, `/v1/coop/games?player=${encodeURIComponent(who.toUpperCase())}`).body as { items: unknown[] }).items);
+    expect(mine.length).toBeGreaterThanOrEqual(1);
+    for (const g of mine) expect(g.players.some((p) => p.gamertag === who)).toBe(true);
+    const page = get(s, "/v1/coop/games?limit=2").body as { items: unknown[]; next: string };
+    expect(page.items.length).toBe(2);
+    const next = get(s, `/v1/coop/games?limit=2&cursor=${page.next}`).body as { items: unknown[] };
+    expect(parseCoopGames(next.items)[0]!.session_id).toBe(games[2]!.session_id);
+  });
+
+  test("a co-op session a guest joined becomes a finished game when it closes", () => {
+    const s = make();
+    const before = s.coopGames.length;
+    for (let i = 0; i < 400 && s.coopGames.length === before; i++) s.step();
+    expect(s.coopGames.length).toBe(before + 1);
+    const g = parseCoopGame(s.coopGames[0])!;
+    expect(g.players.length).toBeGreaterThanOrEqual(2);
+    expect(g.visibility).toBe("friends");
+  });
+});
+
+describe("maybe-private games from the stream", () => {
+  const started = (id: string, over: Record<string, unknown>, position: number) =>
+    ({ ...ev("GameStarted", `game-${id}`, { game_id: id, map: "03a_oldmombasa", mode: "campaign", kind: "campaign", team_play: false, players: [{ index: 0, name: "Pete", xuid: HOST, team: 0, local: true }], ...over }, "2026-11-16T10:00:00Z"), position });
+
+  test("a Live co-op campaign game is held back, not added; anything else is added", () => {
+    const s = initialState();
+    applyEvent(s, started("live1", { online: true }, 1));
+    applyEvent(s, started("solo", { online: false }, 2));
+    applyEvent(s, started("old", {}, 3));
+    applyEvent(s, started("mp", { mode: "multiplayer", kind: "custom" }, 4));
+    // A later event on the held game adds nothing either.
+    applyEvent(s, { ...ev("GameEnded", "game-live1", { reason: "finished" }, "2026-11-16T10:40:00Z"), position: 5 });
+    expect(s.games.live1).toBeUndefined();
+    expect(s.gameOrder).not.toContain("live1");
+    expect(s.held).toEqual(["live1"]);
+    expect(Object.keys(s.games).sort()).toEqual(["mp", "old", "solo"]);
+  });
+
+  test("which games need the reader's own read", () => {
+    expect(needsConfirm({ kind: "campaign", online: true })).toBe(true);
+    expect(needsConfirm({ mode: "campaign", online: true })).toBe(true);
+    expect(needsConfirm({ kind: "campaign", online: false })).toBe(false);
+    expect(needsConfirm({ kind: "campaign" })).toBe(false);
+    expect(needsConfirm({ kind: "custom", online: true })).toBe(false);
+  });
+
+  test("only games the reader's read returns are added: 404 and failures are skipped", async () => {
+    const detail = (id: string) => ({
+      game_id: id, map: "03a_oldmombasa", mode: "campaign", kind: "campaign", online: true, team_play: false, state: "live",
+      started_at: "2026-11-16T10:00:00Z", players: [{ index: 0, name: "Pete", xuid: HOST, team: 0, local: true }],
+    }) as unknown as GameDetail;
+    const asked: string[] = [];
+    const got = await confirmGames(["mine", "private", "broken"], async (id) => {
+      asked.push(id);
+      if (id === "private") throw Object.assign(new Error("no such game"), { status: 404 });
+      if (id === "broken") throw new Error("network");
+      return detail(id);
+    });
+    expect(asked).toEqual(["mine", "private", "broken"]);
+    expect(got.map((d) => d.game_id)).toEqual(["mine"]);
+    const s = initialState();
+    for (const d of got) applyGameSnapshot(s, d);
+    expect(Object.keys(s.games)).toEqual(["mine"]);
   });
 });

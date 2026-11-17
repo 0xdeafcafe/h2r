@@ -10,7 +10,7 @@ import { fetchWellKnown, initialBase, remember, targetFor, wsUrl, type ServerTar
 import {
   addGamePositions, applyAccountsSnapshot, applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, seedTail, type LiveState,
 } from "./reducer";
-import { loadSnapshot } from "./snapshot";
+import { confirmGames, loadSnapshot } from "./snapshot";
 import { FrameHub } from "./frames";
 import { StreamClient, type StreamStatus } from "./stream";
 import { KeyCache, Verifier, authorXuid, type VerifyResult, type VerifyStatus } from "./verify";
@@ -36,6 +36,23 @@ function createLive() {
   let flushScheduled = false;
   let caughtUpAt: number | null = null;
   let rest: Api = api(server());
+  /** A one-use `read` token for the signed-in account (state/identity.ts
+   *  sets it), or null: reads that depend on the reader use it. */
+  let reader: () => Promise<string | null> = async () => null;
+  const asReader = async (id: string) => rest.game(id, undefined, await reader().catch(() => null));
+
+  /** Games the stream held back as maybe private: each is read as the
+   *  reader, and added only when the server shows it. */
+  function confirmHeld() {
+    const ids = [...state.held];
+    if (!ids.length) return;
+    setState("held", []);
+    const my = gen;
+    void confirmGames(ids, asReader).then((list) => {
+      if (my !== gen || !list.length) return;
+      setState(produce((s) => { for (const d of list) applyGameSnapshot(s, d); }));
+    });
+  }
   let gen = 0;
 
   const listeners = new Set<(ev: WireEvent) => void>();
@@ -48,6 +65,7 @@ function createLive() {
     const live = caughtUpAt !== null;
     const now = performance.now();
     setState(produce((s) => { for (const ev of evs) applyEvent(s, ev); }));
+    confirmHeld();
     if (live) {
       for (const ev of evs) {
         const gid = ev.stream.startsWith("game-") ? ev.stream.slice(5) : null;
@@ -183,7 +201,7 @@ function createLive() {
     let p = loading.get(key);
     if (!p) {
       const my = gen;
-      p = rest.game(id).then((d) => {
+      p = asReader(id).then((d) => {
         if (my !== gen) return false;
         setState(produce((s) => applyGameSnapshot(s, d)));
         return true;
@@ -257,6 +275,7 @@ function createLive() {
     useServer,
     start,
     api: () => rest,
+    setReader(fn: () => Promise<string | null>) { reader = fn; },
     verifyStatus: (position: number): VerifyStatus | null => verify[position]?.status ?? null,
     onEvent(fn: (ev: WireEvent) => void) {
       listeners.add(fn);

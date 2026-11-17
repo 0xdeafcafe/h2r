@@ -1880,6 +1880,31 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     };
     assert_eq!(read.host_gamertag, "Host");
     assert_eq!(read.advertisement.skulls, Some(vec![0, 4]));
+    // Ping: the host's QoS responder echoes the guest's pings at the
+    // session's endpoint; the guest's next ping carries its last round
+    // trip, which the host shows and advertises.
+    let fresh = Duration::from_secs(6);
+    assert_eq!(host.hle.guest_ping(fresh), None, "no guest has reported yet");
+    let to = std::net::SocketAddrV4::new(read.endpoint.addr, read.endpoint.port);
+    let timeout = Duration::from_secs(2);
+    let first = guest.hle.ping_host(to, None, timeout).expect("the host echoes");
+    assert!((1..=live_proto::session::PING_MAX_MS).contains(&first));
+    assert_eq!(host.hle.guest_ping(fresh), None, "the first ping reports nothing");
+    guest.hle.ping_host(to, Some(first), timeout).expect("the host echoes");
+    let reported = host.hle.guest_ping(fresh);
+    assert_eq!(reported, Some(first));
+    host.hle.set_coop_ping(reported);
+    assert_eq!(host.hle.local_sessions()[0].ping_ms, Some(first));
+    s.until(|| {
+        s.events().into_iter().any(|e| {
+            e.kind == "SessionUpdated"
+                && e.stream == format!("session-{session}")
+                && e.data["ping_ms"] == json!(first)
+        })
+    });
+    // Nothing answers on a port with no responder.
+    let nobody = std::net::SocketAddrV4::new(read.endpoint.addr, game_port());
+    assert_eq!(guest.hle.ping_host(nobody, None, Duration::from_millis(200)), None);
     // Presence says what the host is doing.
     s.until(|| {
         s.presence()
@@ -1896,6 +1921,7 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
         })
     });
     assert_eq!(host.hle.local_sessions()[0].campaign, None);
+    assert_eq!(host.hle.local_sessions()[0].ping_ms, None, "a custom game has no co-op ping");
     assert_eq!(host.hle.activity(), None);
     assert!(guest.hle.joined(wait).campaign().is_none());
 }

@@ -55,6 +55,7 @@ async fn session(h: &Harness, host: &User, flags: &str) -> String {
         map_id: None,
         skulls: None,
         campaign: None,
+        ping_ms: None,
     };
     let r = h
         .call(

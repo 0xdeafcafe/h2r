@@ -233,11 +233,15 @@ impl Texts {
         }
         Self::id(slot)
     }
+    /// Whether `id` is one of the slots' ids.
+    pub fn owns(id: u32) -> bool {
+        id.checked_sub(TEXT_ID_BASE)
+            .is_some_and(|slot| slot < TEXT_SLOTS)
+    }
     /// The guest address of string `id`, when it is one of ours.
     pub fn address(&self, id: u32) -> Option<u32> {
         let base = self.base.load(Ordering::SeqCst);
-        let slot = id.checked_sub(TEXT_ID_BASE)?;
-        (base != 0 && slot < TEXT_SLOTS).then(|| base + slot * TEXT_SLOT_LEN)
+        (base != 0 && Self::owns(id)).then(|| base + (id - TEXT_ID_BASE) * TEXT_SLOT_LEN)
     }
     /// Writes every changed slot.
     pub fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
@@ -323,8 +327,11 @@ pub struct Guest {
     pub session: String,
     pub host: String,
     pub campaign: Campaign,
-    /// The host's skulls, engine indices.
+    /// The host's skulls: engine indices, then ours from
+    /// [`crate::skulls::COUNT`] (the wire's numbering).
     pub skulls: Vec<u8>,
+    /// The host's XNet endpoint as the server saw it, for pings.
+    pub endpoint: Option<std::net::SocketAddrV4>,
 }
 
 /// What the host's screen checks before Start.
@@ -379,6 +386,8 @@ struct Inner {
     open_join: bool,
     /// The signed-in profiles, as the tick last read them.
     profiles: Vec<String>,
+    /// The last round trip between host and guest, in ms.
+    ping: Option<u16>,
 }
 
 /// What the HLE does for the lobby; a trait so tests run without one.
@@ -387,6 +396,12 @@ pub trait Live: Send + Sync {
     fn friends(&self) -> Vec<live_hle::Friend>;
     fn invite(&self, to: live_proto::Xuid) -> Result<String, u32>;
     fn joined(&self) -> live_hle::Joined;
+    /// Guest: one ping to the host, reporting our last round trip.
+    fn ping_host(&self, host: std::net::SocketAddrV4, report: Option<u16>) -> Option<u16>;
+    /// Host: the guest's last reported round trip (answering its pings).
+    fn guest_ping(&self) -> Option<u16>;
+    /// Host: the round trip its co-op session advertises.
+    fn set_coop_ping(&self, ms: Option<u16>);
 }
 
 impl Live for live_hle::Hle {
@@ -402,7 +417,24 @@ impl Live for live_hle::Hle {
     fn joined(&self) -> live_hle::Joined {
         live_hle::Hle::joined(self, std::time::Duration::from_millis(500))
     }
+    fn ping_host(&self, host: std::net::SocketAddrV4, report: Option<u16>) -> Option<u16> {
+        live_hle::Hle::ping_host(self, host, report, PING_TIMEOUT)
+    }
+    fn guest_ping(&self) -> Option<u16> {
+        live_hle::Hle::guest_ping(self, PING_FRESH)
+    }
+    fn set_coop_ping(&self, ms: Option<u16>) {
+        live_hle::Hle::set_coop_ping(self, ms)
+    }
 }
+
+/// Ping (docs/live/live-coop.md, "Ping"): the guest pings the host's QoS
+/// responder every [`PING_EVERY`], waiting up to [`PING_TIMEOUT`]; each
+/// ping carries its last round trip, so the host shows the same number; a
+/// report older than [`PING_FRESH`] is gone (no guest).
+pub const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+pub const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+pub const PING_FRESH: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// The co-op state of this console, shared by the screens, the hooks and
 /// the guest watcher.
@@ -649,14 +681,11 @@ impl Lobby {
                 session: session.session_id.clone(),
                 host: session.host_gamertag.clone(),
                 campaign: c.clone(),
-                skulls: session
-                    .advertisement
-                    .skulls
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|s| usize::from(*s) < crate::skulls::COUNT)
-                    .collect(),
+                skulls: session.advertisement.skulls.clone().unwrap_or_default(),
+                endpoint: Some(std::net::SocketAddrV4::new(
+                    session.endpoint.addr,
+                    session.endpoint.port,
+                )),
             },
             _ => {
                 // Not (or no longer) in a co-op session.
@@ -747,6 +776,68 @@ impl Lobby {
             _ => None,
         }
     }
+    /// One round of ping (the pinger thread, no guest memory held): a guest
+    /// pings its host; a host reads its guest's report and advertises it.
+    /// Logs when the number moves.
+    pub fn ping_once(&self) {
+        let Some(live) = &self.live else { return };
+        let ms = match self.role() {
+            Role::Idle => None,
+            Role::Host => {
+                let ms = live.guest_ping();
+                live.set_coop_ping(ms);
+                ms
+            }
+            Role::Guest(g) => {
+                let last = self.lock().ping;
+                g.endpoint.and_then(|to| live.ping_host(to, last))
+            }
+        };
+        let was = std::mem::replace(&mut self.lock().ping, ms);
+        if live_hle::ping_moved(was, ms) {
+            match ms {
+                Some(ms) => eprintln!("coop-live: ping {ms} ms"),
+                None if self.in_coop() => eprintln!("coop-live: ping: no answer"),
+                None => {}
+            }
+        }
+    }
+    pub fn ping(&self) -> Option<u16> {
+        self.lock().ping
+    }
+    /// The ping as the screens show it.
+    pub fn ping_text(&self) -> String {
+        match self.ping() {
+            Some(ms) => format!("{ms} ms"),
+            None => "-".into(),
+        }
+    }
+}
+
+/// The wire set of a host's campaign skulls: the engine's `on`, then ours
+/// (`crate::skulls_custom` indices, from [`crate::skulls::COUNT`]).
+pub fn host_campaign_skulls(on: Option<crate::skulls::Set>, ours: &[usize]) -> Vec<u8> {
+    let engine = on.into_iter().flat_map(|set| {
+        set.into_iter()
+            .enumerate()
+            .filter(|(_, on)| *on)
+            .map(|(i, _)| i)
+    });
+    live_proto::skulls::normalize(
+        engine
+            .chain(ours.iter().copied())
+            .filter_map(|i| u8::try_from(i).ok()),
+    )
+    .unwrap_or_default()
+}
+
+/// Ours among a host's skulls (wire indices from [`crate::skulls::COUNT`]),
+/// as `crate::skulls_custom` numbers them.
+pub fn ours_of(host: &[u8]) -> Vec<usize> {
+    host.iter()
+        .map(|i| usize::from(*i))
+        .filter(|i| crate::skulls::is_ours(*i))
+        .collect()
 }
 
 /// The lobby of this run, once installed.
@@ -771,8 +862,9 @@ pub const ROW_LEVEL: i16 = 0;
 pub const ROW_DIFFICULTY: i16 = 1;
 pub const ROW_INVITE: i16 = 2;
 pub const ROW_STATUS: i16 = 3;
-pub const ROW_START: i16 = 4;
-const HOST_ROWS: usize = 5;
+pub const ROW_PING: i16 = 4;
+pub const ROW_START: i16 = 5;
+const HOST_ROWS: usize = 6;
 
 impl HostRows {
     /// The `(label, value)` of row `row`.
@@ -789,6 +881,7 @@ impl HostRows {
             ),
             ROW_INVITE => ("Invite a Friend".into(), String::new()),
             ROW_STATUS => ("Status".into(), l.status()),
+            ROW_PING => ("Ping".into(), l.ping_text()),
             ROW_START => (
                 "Start".into(),
                 match l.checks().blocker() {
@@ -834,6 +927,7 @@ impl Rows for HostRows {
             ROW_DIFFICULTY => Chosen::Stepped(l.step_difficulty()),
             ROW_INVITE => Chosen::Open(FRIENDS),
             ROW_STATUS => Chosen::Stepped(format!("coop-live: {}", l.status())),
+            ROW_PING => Chosen::Stepped(format!("coop-live: ping {}", l.ping_text())),
             ROW_START => match l.checks().blocker() {
                 None => Chosen::Act,
                 Some(b) => Chosen::Stepped(format!("coop-live: not ready: {b}")),
@@ -920,7 +1014,13 @@ impl JoinRows {
         let g = self.0.guest();
         let get = |f: &dyn Fn(&Guest) -> String| g.as_ref().map_or_else(|| "-".into(), f);
         Some(match row {
-            0 => ("Host".into(), get(&|g| g.host.clone())),
+            0 => (
+                "Host".into(),
+                get(&|g| match self.0.ping() {
+                    Some(ms) => format!("{}, {ms} ms", g.host),
+                    None => g.host.clone(),
+                }),
+            ),
             1 => ("Level".into(), get(&|g| g.campaign.label().to_owned())),
             2 => (
                 "Difficulty".into(),
@@ -1158,6 +1258,15 @@ fn watch(lobby: std::sync::Weak<Lobby>, live: Arc<dyn Live>, stop: Arc<AtomicBoo
     }
 }
 
+/// The pinger: a round of [`Lobby::ping_once`] every [`PING_EVERY`].
+fn pinger(lobby: std::sync::Weak<Lobby>, stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(PING_EVERY);
+        let Some(lobby) = lobby.upgrade() else { return };
+        lobby.ping_once();
+    }
+}
+
 /// Builds the lobby (the disc's levels), its three screens and the feature,
 /// and starts the guest watcher. Live off: nothing.
 pub fn install(
@@ -1193,16 +1302,12 @@ pub fn install(
             return Vec::new();
         };
         // The host's own campaign selection: collected and on (the skulls
-        // page's rule), for the signed-in profiles as the start applies it.
-        crate::skulls::selection(store, profiles)
-            .map(|set| {
-                set.iter()
-                    .enumerate()
-                    .filter(|(_, on)| **on)
-                    .map(|(i, _)| i as u8)
-                    .collect()
-            })
-            .unwrap_or_default()
+        // page's rule), for the signed-in profiles as the start applies it;
+        // the engine's, then ours.
+        host_campaign_skulls(
+            crate::skulls::selection(store, profiles),
+            &crate::skulls::custom_selection(store, profiles),
+        )
     });
     let live: Arc<dyn Live> = hle;
     let lobby = Arc::new(Lobby::new(levels, arm, Some(Arc::clone(&live)), skulls));
@@ -1254,6 +1359,12 @@ pub fn install(
         .map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
     let weak = Arc::downgrade(&lobby);
     let stop = Arc::new(AtomicBool::new(false));
+    {
+        let (weak, stop) = (weak.clone(), Arc::clone(&stop));
+        std::thread::Builder::new()
+            .name("h2-coop-ping".into())
+            .spawn(move || pinger(weak, stop))?;
+    }
     std::thread::Builder::new()
         .name("h2-coop-watch".into())
         .spawn(move || watch(weak, live, stop))?;

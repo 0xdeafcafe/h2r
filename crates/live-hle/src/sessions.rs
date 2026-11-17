@@ -55,6 +55,8 @@ pub struct LocalSession {
     /// A co-op campaign lobby's level and difficulty (docs/live/live-coop.md,
     /// "Co-op over Live"): advertised with `flags: "coop"`.
     pub campaign: Option<live_proto::session::Campaign>,
+    /// A co-op lobby's measured round trip to its guest, in ms.
+    pub ping_ms: Option<u16>,
 }
 struct Record {
     session: LocalSession,
@@ -133,6 +135,8 @@ pub(crate) struct Sessions {
     /// The host's campaign skulls for that campaign; they replace the
     /// multiplayer ones while a co-op campaign is armed.
     coop_skulls: Option<Vec<u8>>,
+    /// A co-op host's last measured round trip ([`Sessions::set_coop_ping`]).
+    coop_ping: Option<u16>,
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
@@ -239,6 +243,9 @@ impl Sessions {
         connection: Option<&Session>,
     ) {
         self.coop_skulls = campaign.as_ref().and(skulls);
+        if campaign.is_none() {
+            self.coop_ping = None;
+        }
         self.coop = campaign;
         self.background.retain(|p| p.take().is_none());
         let visibility = self.visibility;
@@ -246,9 +253,11 @@ impl Sessions {
         let skulls = self.advertised_skulls();
         for (id, record) in &mut self.records {
             let want = coop_visibility(visibility, coop.is_some());
+            let drop_ping = coop.is_none() && record.session.ping_ms.is_some();
             if record.session.campaign == coop
                 && record.session.visibility == want
                 && record.session.skulls == skulls
+                && !drop_ping
             {
                 continue;
             }
@@ -261,6 +270,7 @@ impl Sessions {
                         visibility: (record.session.visibility != want).then_some(want),
                         skulls: (record.session.skulls != skulls)
                             .then(|| skulls.clone().unwrap_or_default()),
+                        ping_ms: drop_ping.then_some(0),
                         ..Default::default()
                     },
                 };
@@ -270,8 +280,43 @@ impl Sessions {
                 }
             }
             record.session.campaign = coop.clone();
+            if drop_ping {
+                record.session.ping_ms = None;
+            }
             record.session.visibility = want;
             record.session.skulls = skulls.clone();
+        }
+    }
+    /// A co-op host's measured round trip to its guest (None: no guest or
+    /// no answer): open co-op records are updated when it moved enough
+    /// ([`ping_moved`]).
+    pub fn set_coop_ping(
+        &mut self,
+        ms: Option<u16>,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        self.coop_ping = ms;
+        self.background.retain(|p| p.take().is_none());
+        for (id, record) in &mut self.records {
+            let want = record.session.campaign.as_ref().and(ms);
+            if !ping_moved(record.session.ping_ms, want) {
+                continue;
+            }
+            if let (Some(service), Some(connection)) = (service, connection) {
+                let request = MatchRequest::Update {
+                    id: live_proto::sign::hex(id),
+                    update: live_proto::session::Update {
+                        ping_ms: Some(want.unwrap_or(0)),
+                        ..Default::default()
+                    },
+                };
+                match service.match_request(connection, request) {
+                    Ok(p) => self.background.push(p),
+                    Err(_) => continue,
+                }
+            }
+            record.session.ping_ms = want;
         }
     }
     /// The skulls an advertisement carries: the co-op campaign's while one
@@ -415,6 +460,7 @@ impl Sessions {
                             map_id,
                             skulls: self.advertised_skulls(),
                             campaign: self.coop.clone(),
+                            ping_ms: self.coop.as_ref().and(self.coop_ping),
                         },
                     )
                 } else {
@@ -870,6 +916,19 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         map_id: s.map_id,
         skulls: s.skulls.clone(),
         campaign: s.campaign.clone(),
+        ping_ms: s.ping_ms,
+    }
+}
+/// Whether a new round trip is worth a session update: it appeared, went,
+/// or moved by at least 5 ms and a tenth (a lobby pings every two seconds;
+/// jitter alone sends nothing).
+pub fn ping_moved(old: Option<u16>, new: Option<u16>) -> bool {
+    match (old, new) {
+        (Some(a), Some(b)) => {
+            let d = a.abs_diff(b);
+            d >= 5 && u32::from(d) * 10 >= u32::from(a.min(b))
+        }
+        (a, b) => a.is_some() != b.is_some(),
     }
 }
 /// A co-op lobby is friends-only unless the host made it invite-only.
@@ -1042,4 +1101,20 @@ fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
     }
     m.write_bytes(a[3], &output, 1)?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ping_moved;
+
+    #[test]
+    fn a_ping_update_waits_for_a_real_change() {
+        assert!(ping_moved(None, Some(30)), "appeared");
+        assert!(ping_moved(Some(30), None), "went");
+        assert!(!ping_moved(None, None));
+        assert!(!ping_moved(Some(30), Some(33)), "jitter");
+        assert!(ping_moved(Some(30), Some(36)));
+        assert!(!ping_moved(Some(200), Some(215)), "under a tenth");
+        assert!(ping_moved(Some(200), Some(225)));
+    }
 }

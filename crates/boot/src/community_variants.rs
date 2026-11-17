@@ -495,10 +495,15 @@ impl Mem for Guest {
 
 // ---- strings ----
 
-/// Our string ids: a private index range (the low 24 bits) no map uses.
+/// Our string ids: a private index range no map uses, with a top byte of
+/// 0. The ids reach the lookup exactly as written: [`name_id`] into the
+/// `goof` entries (read back whole by `0x149f88` and the list) and
+/// [`description_id`] from [`description_for`]. So the claim is on the
+/// whole id: another family of ours may share the index with another top
+/// byte (`crate::string_ids` checks every family against every other).
 const ID_BASE: u32 = 0x00ff_e000;
 pub fn is_ours(id: u32) -> bool {
-    id & 0x00ff_ff00 == ID_BASE
+    id & 0xffff_ff00 == ID_BASE
 }
 pub fn name_id(i: usize) -> u32 {
     ID_BASE | i as u32

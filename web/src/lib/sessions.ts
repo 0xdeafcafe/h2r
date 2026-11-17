@@ -34,6 +34,9 @@ export interface Session {
   slots: SessionSlots;
   /** The roster the host has reported: XUID to a display slot ("" when none). */
   players: Record<string, string>;
+  /** A co-op host's measured round trip to its guest, in milliseconds; null
+   *  when the host hasn't measured one (or a server doesn't say). */
+  ping_ms: number | null;
 }
 
 /** The campaign level and difficulty a co-op session is playing. */
@@ -118,7 +121,13 @@ export function parseSession(raw: unknown): Session | null {
     visibility: visibility(ad.visibility),
     slots: { public_filled: count(s.public_filled), public_open: count(s.public_open), private_filled: count(s.private_filled), private_open: count(s.private_open) },
     players,
+    ping_ms: typeof ad.ping_ms === "number" && Number.isFinite(ad.ping_ms) && ad.ping_ms > 0 ? Math.round(ad.ping_ms) : null,
   };
+}
+
+/** "42 ms", or null when the session has no ping. */
+export function pingText(s: Pick<Session, "ping_ms">): string | null {
+  return s.ping_ms ? `${s.ping_ms} ms` : null;
 }
 
 /** Reads a list response's items, dropping any that can't be read. */
@@ -182,7 +191,10 @@ export function sortSessions(list: readonly Session[]): Session[] {
  *  `custom` is a custom map's package name, which replaces the map's. */
 export function sessionRow(s: Session, title?: (stem: string) => string, custom?: string | null): { key: string; label: string; meta: string } {
   const n = seats(s);
-  if (isCoop(s) && s.campaign) return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign)} ${n.filled}/${n.max}` };
+  if (isCoop(s) && s.campaign) {
+    const ping = pingText(s);
+    return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
+  }
   return { key: s.session_id, label: s.host_gamertag, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
 }
 

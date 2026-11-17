@@ -1046,6 +1046,7 @@ picture, our help text). It opens the co-op screen:
 | Difficulty | Easy, Normal, Heroic, Legendary | the next one |
 | Invite a Friend | | opens the friends screen |
 | Status | `Invite a friend`, `Waiting for <gamertag>`, `<gamertag> is in; ready`, `... the lobby holds the level`, or what blocks Start | logs the status |
+| Ping | the round trip to the guest, `42 ms`, or `-` with no guest (10.6) | logs it |
 | Start | Ready / Not ready | when ready: the campaign menu's setters put the level and difficulty on the session (as the probe's tick setup does) and the screen closes, back to the lobby; otherwise logs why not |
 
 Start is enabled when the squad session is in a lobby or game state with
@@ -1065,8 +1066,9 @@ this one is not its host, which session it joined; when the server says it
 is a `coop` session, the console arms (10.3), takes the host's skulls for
 the campaign start, and opens the join screen at the next tick
 (`H2_COOP_JOIN_SCREEN=0` leaves that to the Co-op Campaign row, which opens
-the join screen for a guest): Host, Level, Difficulty, Skulls (`N from the
-host`), Handshake (`OK: the lobby holds the host's campaign`, or `Waiting
+the join screen for a guest): Host (`<gamertag>, 42 ms` once a ping came
+back), Level, Difficulty, Skulls (`N from the host`, ours counted),
+Handshake (`OK: the lobby holds the host's campaign`, or `Waiting
 for the host's campaign`, `The lobby's difficulty differs`, `N consoles in
 the lobby`, `No lobby`) and Ready (closes the screen; the guest waits for
 the host's start in the lobby).
@@ -1091,8 +1093,10 @@ showed their names (a test now checks every id against every private range).
 signed-in profiles: the Skulls page's rule, so the host has them unlocked)
 is advertised on the co-op session in place of the multiplayer set, and the
 host's campaign start applies it as for any campaign. A co-op guest's
-campaign start applies exactly the host's engine skulls instead of its own
-profiles' (`skulls::coop_start`); our own skulls (from 15) are not carried.
+campaign start applies exactly the host's skulls instead of its own
+profiles': the engine's into the array (`skulls::coop_start`), and our own
+(from 15, `coop_live::ours_of`) to `skulls_custom`, which acts on them as on
+the host. The host advertises both (`coop_live::host_campaign_skulls`).
 
 ### 10.2 Session plumbing
 
@@ -1114,10 +1118,17 @@ profiles' (`skulls::coop_start`); our own skulls (from 15) are not carried.
   returns the joined session as the server last described it, asking again.
 - **Server and web.** `GET /v1/sessions?flags=coop`; finished co-op games
   at `GET /v1/coop/games` (a closed `coop` session that a guest joined: the
-  host and everyone who joined, the campaign, start and end), shown on the
-  web's Games page (Campaign) and a player's Co-op tab; co-op sessions show
-  as "Co-op campaign" with level, difficulty and players in Find a game;
+  host and everyone who joined, the campaign, start and end, the session's
+  visibility), shown on the web's Games page (Campaign) and a player's
+  Co-op tab. A friends-only game shows only to who played in it and the
+  host's friends, an invite-only one only to who played in it, admins see
+  all (live-api.md, "Co-op games"); the same holds for the game's telemetry
+  in the games list and player pages. Co-op sessions show as "Co-op
+  campaign" with level, difficulty, players and the host's ping in Find a game;
   friends' activity shows in the friends lists.
+
+- **Ping** (10.6): the host's `ping_ms` on the session (`Update { ping_ms }`,
+  0 clears it; left out until measured), shown on the web's co-op rows.
 
 ### 10.3 The hooks (the probe as a feature)
 
@@ -1180,7 +1191,8 @@ Checklist (stderr lines in brackets):
    picture and our help line. [`custom games: xbox live menu tag has 6
    panes and room for 5 rows`]
 3. Host: Co-op Campaign. The screen shows Level, Difficulty, Invite a
-   Friend, Status, Start. [`coop-live: hosting a co-op campaign`]. Step the
+   Friend, Status, Ping (`-` for now), Start. [`coop-live: hosting a co-op
+   campaign`]. Step the
    level and difficulty [`coop-live: level ...`, `coop-live: difficulty
    ...`]. On the web, Find a game shows a Co-op campaign session once the
    game advertises its lobby; the friends list shows Alpha's activity
@@ -1191,7 +1203,13 @@ Checklist (stderr lines in brackets):
 5. Guest: accept the invitation (retail invite flow). The join screen opens
    [`coop-live: guest: joined Alpha's co-op session ...`, `coop-live:
    guest: opening the join screen`]. Check its rows. Press Ready.
-6. Host: Status says `Bravo is in; ready`, Start says Ready. Press Start
+6. Both: within a few seconds of the guest joining, the host's Ping row
+   and the guest's Host row show the round trip [`coop-live: ping N ms`
+   on both; `coop-live: ping: no answer` means the guest's pings to the
+   host's port + 2 got nothing back: a firewall on UDP base+2, or the
+   session's endpoint is not the host's reachable address]. The web's co-op
+   session row shows the same number.
+   Host: Status says `Bravo is in; ready`, Start says Ready. Press Start
    [`coop-live: host: LOBBY_SET_MAP returned 1`, `... LOBBY_SET_DIFFICULTY
    returned 1`, `coop-live: host: start <level> on <difficulty>; back to the
    lobby`]. `returned 0 (refused)` is the first thing to send back: the
@@ -1205,7 +1223,9 @@ Checklist (stderr lines in brackets):
    (2)` on the guest, and the hash files. 9.4 says what each failure looks
    like. Play a few minutes: both move, a fight, a checkpoint, a cutscene.
 9. Skulls: with a skull on in the host's profile, the guest's stderr says
-   `skulls: co-op campaign start with the host's skulls: ...`.
+   `skulls: co-op campaign start with the host's skulls: ...`; with one of
+   ours on (Low Gravity, say), also `skulls: ours on this campaign: ...`,
+   and the guest feels it.
 10. Afterwards the web's Games page (Campaign) lists the co-op game with
     both players once the host's lobby closes.
 
@@ -1216,6 +1236,10 @@ each `<data>/coop-probe/`, `h2 coop-probe diff <host>.hashes
 
 ### 10.5 What is tested
 
+Since the first cut: the ping (`qos.rs` unit tests, the server test
+below pinging the host's responder and seeing `ping_ms` arrive,
+`coop_live` tests of both sides), our skulls carried, and every family
+of our string ids checked against every other (`boot/src/string_ids.rs`).
 `cargo test -p boot --lib coop_live` and the custom games tests: the
 level list (start order, Halo 2's campaign only, the level select's
 names, from synthetic globals; `#[ignore]` against `$H2_DISC`), the text
@@ -1237,3 +1261,24 @@ Not tested, because only the game can: whether our screens open over the
 Live lobby and look right, whether the join screen opens cleanly from the
 tick, whether the setters take on a Live session (10.4, step 6), and
 everything from the session start on (section 9).
+
+### 10.6 Ping
+
+**Mechanism.** The HLE's QoS side channel: every responder (the host's
+XNet base port + 2, already there for the title's QoS probes) also answers
+a co-op ping, `H2PNG001`, nonce, last round trip (u16 ms), with
+`H2PNR001` and the nonce, for any sender. The guest's pinger thread pings
+the host every 2 s (1 s timeout) at the session's endpoint as the server
+saw it; each ping carries the previous round trip, so the host learns the
+guest's number from the next ping, and both show the same one. The host
+keeps its responder up while co-op is armed (`Hle::guest_ping`), takes the
+slowest report of the last 6 s, and advertises it as `ping_ms` when it
+moved by at least 5 ms and a tenth (`live_hle::ping_moved`).
+
+Why this one: it measures the path the game's own traffic takes (the same
+host and port family, peer to peer), with no new port and no server in the
+middle. A server round trip would measure each console's way to the
+server, not to each other; the phase-0 transport (`coop::link`) is not
+running in the retail-synchronous path co-op over Live uses. The friends
+screen shows no ping: friends not in the lobby have no endpoint to ping.
+

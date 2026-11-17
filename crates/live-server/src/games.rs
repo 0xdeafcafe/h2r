@@ -456,7 +456,13 @@ impl Live {
         before: Option<u64>,
         limit: usize,
     ) -> Page<GameSummary> {
-        self.games_where(state, &GameFilter::default(), before, limit)
+        self.games_where(
+            state,
+            &GameFilter::default(),
+            crate::sessions::Viewer::Admin,
+            before,
+            limit,
+        )
     }
 
     /// [`Live::games`] narrowed to one map: by name (`?map=`, every game on
@@ -466,6 +472,7 @@ impl Live {
         &self,
         state: Option<&str>,
         filter: &GameFilter,
+        viewer: crate::sessions::Viewer,
         before: Option<u64>,
         limit: usize,
     ) -> Page<GameSummary> {
@@ -475,6 +482,7 @@ impl Live {
             .games_newest()
             .filter(|g| before.is_none_or(|b| g.position < b))
             .filter(|g| filter.matches(&g.started.game))
+            .filter(|g| g.shows_to(viewer, |a, b| s.is_friends(a, b)))
             .filter(|g| match state {
                 Some("live") => g.ended.is_none(),
                 Some("ended") => g.ended.is_some(),
@@ -489,6 +497,22 @@ impl Live {
             items: page.iter().map(|g| g.summary()).collect(),
             next,
             position,
+        }
+    }
+
+    /// `Err(not_found)` unless `viewer` may see game `id`
+    /// ([`Game::shows_to`]): a hidden co-op game reads as no game at all.
+    pub fn check_game_shows(
+        &self,
+        id: &str,
+        viewer: crate::sessions::Viewer,
+    ) -> Result<(), ApiError> {
+        let s = self.model.read();
+        match s.games.get(id) {
+            Some(g) if !g.shows_to(viewer, |a, b| s.is_friends(a, b)) => {
+                Err(not_found("no such game"))
+            }
+            _ => Ok(()),
         }
     }
 

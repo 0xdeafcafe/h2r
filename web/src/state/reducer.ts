@@ -103,6 +103,11 @@ export interface LiveState {
   tail: WireEvent[];
   typeCounts: Record<string, number>;
   eventCount: number;
+  /** Games the stream started that may be private (a Live co-op campaign
+   *  game from a friends-only or invite-only session), held back until the
+   *  reader's own `GET /v1/games/{id}` confirms it may see them
+   *  (live-api.md "Co-op games"). The live connection takes them. */
+  held: GameId[];
 }
 
 export const TAIL_LIMIT = 500;
@@ -117,7 +122,17 @@ export function initialState(): LiveState {
     tail: [],
     typeCounts: {},
     eventCount: 0,
+    held: [],
   };
+}
+
+/** Whether a started game can't be shown from the raw stream: a Live co-op
+ *  campaign game (`online: true`) may come from a friends-only or
+ *  invite-only session, which the server's filtered reads hide from some
+ *  readers. Everything else is public. */
+export function needsConfirm(d: GameKindFields & { mode?: string | null }): boolean {
+  const kind = str(d.kind)?.toLowerCase() ?? (d.mode === "campaign" ? "campaign" : null);
+  return kind === "campaign" && d.online === true;
 }
 
 function emptyScore(index: number): PlayerScore {
@@ -231,6 +246,11 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       if (!id) break;
       // Already known from a snapshot: the snapshot is newer, keep it.
       if (s.games[id]) break;
+      // Maybe private: not from the stream; the reader's own read decides.
+      if (needsConfirm(d)) {
+        if (!s.held.includes(id)) s.held.push(id);
+        break;
+      }
       const g: GameState = {
         game_id: id,
         console: d.console ?? null,

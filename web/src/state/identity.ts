@@ -4,6 +4,7 @@
 import { createRoot, createSignal, createMemo } from "solid-js";
 import { deleteAccount, loadAccounts, saveAccount, type LocalAccount } from "./account";
 import { live } from "./live";
+import { issueToken } from "../admin/token";
 
 const ACTIVE = "h2live.active";
 
@@ -49,6 +50,14 @@ export const identity = createRoot(() => {
       if (me()?.xuid === a.xuid) this.signOut();
     },
   };
+});
+
+// Reads that depend on who reads (a game that may be a private co-op one)
+// go as the signed-in account; signed out, or before the server said who it
+// is, they are anonymous.
+live.setReader(async () => {
+  const me = identity.me(), wk = live.wellKnown();
+  return me && wk ? issueToken(me, wk.id, "read") : null;
 });
 
 export function download(name: string, text: string) {

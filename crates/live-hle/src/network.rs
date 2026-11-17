@@ -179,6 +179,7 @@ pub(crate) struct Network {
     pub config: NetworkConfig,
     state: Mutex<State>,
     listeners: qos::Listeners,
+    pings: qos::Pings,
 }
 pub(crate) struct Cleanup {
     sockets: BTreeMap<u32, Arc<Socket>>,
@@ -201,6 +202,7 @@ impl Network {
                 ..State::default()
             }),
             listeners: Arc::default(),
+            pings: Arc::default(),
         }
     }
     /// Update transport references while the caller still owns the sign-in
@@ -236,6 +238,27 @@ impl Network {
         }
     }
     /// The XNKIDs registered with `XNetRegisterKey`, in key order.
+    /// Starts the QoS responder if the title has not yet (a co-op host
+    /// answers its guest's pings from the lobby on).
+    pub fn ensure_responder(&self) -> std::io::Result<()> {
+        let mut s = lock(&self.state);
+        if s.responder.is_none() {
+            s.responder = Some(qos::Responder::start(
+                self.config.address,
+                self.listeners.clone(),
+                self.pings.clone(),
+            )?);
+        }
+        Ok(())
+    }
+    /// The round trips pinging peers reported within `fresh`, by address.
+    pub fn reported_pings(&self, fresh: std::time::Duration) -> Vec<(Ipv4Addr, u16)> {
+        lock(&self.pings)
+            .iter()
+            .filter(|(_, (_, at))| at.elapsed() <= fresh)
+            .map(|(a, (ms, _))| (*a, *ms))
+            .collect()
+    }
     pub fn registered_keys(&self) -> Vec<[u8; 8]> {
         lock(&self.state).keys.keys().copied().collect()
     }
@@ -792,6 +815,7 @@ impl Network {
             s.responder = Some(host(qos::Responder::start(
                 self.config.address,
                 self.listeners.clone(),
+                self.pings.clone(),
             ))?);
         }
         let mut listeners = lock(&self.listeners);
