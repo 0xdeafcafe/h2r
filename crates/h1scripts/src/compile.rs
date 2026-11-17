@@ -73,6 +73,46 @@ pub enum Missing {
     Extension,
 }
 
+/// Halo 1 cutscenes and tutorials, which need what is not converted yet
+/// (cutscene animation, recordings, command lists, HUD help text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cutscenes {
+    /// Compile them as written.
+    Play,
+    /// Take the path Halo 1 takes when the player skips: every call of the
+    /// level's `cinematic_skip_start` script is `false`, so `(if
+    /// (cinematic_skip_start) (x10))` never runs the cinematic and the
+    /// script carries on as after a skip (its fade in, `cinematic_stop`,
+    /// control back). A wake of a tutorial script with a short path
+    /// ([`SHORT_PATHS`]) wakes the short path.
+    #[default]
+    Skip,
+}
+
+/// The user script whose call guards every skippable Halo 1 cinematic.
+pub const SKIP_GUARD: &str = "cinematic_skip_start";
+
+/// Under [`Cutscenes::Skip`], `(wake from)` becomes `(wake to)` when the
+/// level has both scripts. a10: the cryo tutorial (normal difficulty, single
+/// player) disables input and waits on look and movement tests and command
+/// lists Halo 2 lacks; the fast setup is the path Halo 1 takes in co-op
+/// and on other difficulties, and gives control back.
+pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
+
+/// What a stubbed status query returns under [`Missing::Stub`] instead of
+/// zero, where zero would hold a `sleep_until` forever. Every use in the
+/// ten levels' scripts reads the value as "done" (docs/formats/h1-scripts.md):
+/// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
+/// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
+/// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
+/// are true.
+pub const DONE_VALUES: &[(&str, i32)] = &[
+    ("ai_conversation_status", 5),
+    ("ai_command_list_status", 2),
+    ("game_all_quiet", 1),
+    ("game_safe_to_speak", 1),
+];
+
 /// A value the converter must supply: write it into node `slot`'s data word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
@@ -129,12 +169,26 @@ pub fn compile(
     policy: Missing,
     reference_names: &[String],
 ) -> Result<Compiled> {
+    compile_with(t, h1, table, h2, policy, Cutscenes::Play, reference_names)
+}
+
+/// [`compile`], with Halo 1's cutscenes and tutorials played or skipped.
+pub fn compile_with(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    reference_names: &[String],
+) -> Result<Compiled> {
     let mut c = Compiler {
         t,
         h1,
         table,
         h2,
         policy,
+        cutscenes,
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
@@ -274,6 +328,7 @@ struct Compiler<'a> {
     table: &'a Table,
     h2: &'a Target,
     policy: Missing,
+    cutscenes: Cutscenes,
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
@@ -388,6 +443,21 @@ impl Compiler<'_> {
         }
     }
 
+    /// `v` as a literal of `ty` (boolean, real, short or long).
+    fn number(&mut self, ty: u16, v: i32) -> Datum {
+        let text = v.to_string();
+        match ty {
+            h2t::BOOLEAN => {
+                let t: &[u8] = if v != 0 { b"true" } else { b"false" };
+                self.literal(ty, ty, u32::from(v != 0), t)
+            }
+            h2t::REAL => self.literal(ty, ty, (v as f32).to_bits(), text.as_bytes()),
+            h2t::SHORT => self.literal(ty, ty, u32::from(v as u16), text.as_bytes()),
+            h2t::LONG => self.literal(ty, ty, v as u32, text.as_bytes()),
+            _ => self.default(ty),
+        }
+    }
+
     fn hook(&mut self, d: Datum, h2_type: u16, h1_type: u16, token: &str) {
         self.out.hooks.push(Hook {
             slot: d.slot() as u16,
@@ -401,6 +471,14 @@ impl Compiler<'_> {
             h1_type: self.h1.type_name(h1_type).unwrap_or("?").to_owned(),
             token: token.to_owned(),
         });
+    }
+
+    /// The short path [`SHORT_PATHS`] gives for script `name`, and its
+    /// index, when the level has it.
+    fn short_path(&self, name: &[u8]) -> Option<(&'static str, u16)> {
+        let &(_, to) = SHORT_PATHS.iter().find(|p| p.0.as_bytes() == name)?;
+        let i = self.t.scripts.iter().position(|s| s.name == to)?;
+        Some((to, u16::try_from(i).ok()?))
     }
 
     /// Compiles node `d` where its parent expects Halo 2 type `expected`.
@@ -418,6 +496,9 @@ impl Compiler<'_> {
             a = self.t.node(a)?.next();
         }
         if n.script_call() {
+            if self.cutscenes == Cutscenes::Skip && token == SKIP_GUARD {
+                return Ok(self.literal(expected, h2t::BOOLEAN, 0, b"false"));
+            }
             return Ok(self.call(n.opcode(), SCRIPT_CALL, expected, token.as_bytes(), &[]));
         }
         let index = n.opcode();
@@ -432,7 +513,10 @@ impl Compiler<'_> {
                 name: f.name.clone(),
             });
             return match self.policy {
-                Missing::Stub => Ok(self.default(expected)),
+                Missing::Stub => Ok(match DONE_VALUES.iter().find(|d| d.0 == f.name) {
+                    Some(&(_, v)) => self.number(expected, v),
+                    None => self.default(expected),
+                }),
                 Missing::Extension => {
                     let fixed = self.h1.fixed_signature(index);
                     let mut out = Vec::new();
@@ -556,6 +640,13 @@ impl Compiler<'_> {
                 h2t::SCRIPT => token()?,
                 _ => crate::decompile::literal(self.t, self.h1, n)?.into_bytes(),
             };
+            if source == h2t::SCRIPT
+                && self.cutscenes == Cutscenes::Skip
+                && let Some((to, i)) = self.short_path(&text)
+            {
+                let bits = bits & 0xffff_0000 | u32::from(i);
+                return Ok(self.literal(expected, source, bits, to.as_bytes()));
+            }
             return Ok(self.literal(expected, source, bits, &text));
         }
         let token = token()?;
