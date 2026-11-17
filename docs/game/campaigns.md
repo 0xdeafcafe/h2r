@@ -312,6 +312,13 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   version 4 (Halo 2's decoder table at `0x0046fd5c` has four versions);
   unit control versions 0, 3 and 4. `recording_play`, `_and_delete`,
   `_and_hover`, `recording_kill` and `recording_time` are 138 to 142.
+  **Held (converter version 27):** played as they are, Halo 1's streams
+  fault Halo 2's player (a30's intro, headless, 18 s in: a call to pc 4
+  through a null decoder entry from `0x001fb61e`). Until the streams are
+  converted to Halo 2's encoding, the five builtins stay missing
+  (`h1scripts::identified::HELD`) and compile as stubs: the plays
+  `false`, the kill nothing, `recording_time` 0 (every wait on it reads
+  0 as done). The block is still written, unused.
 - **Camera.** `camera_set`, `camera_control`, `camera_time` map directly;
   `camera_set_relative` (451), `camera_set_first_person` (456) and
   `camera_set_dead` (457, an object in Halo 2) by position. No level
