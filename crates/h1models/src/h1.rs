@@ -569,6 +569,8 @@ pub struct Animation {
     pub frames: Vec<Vec<Transform>>,
     /// Zero quaternions replaced by identity while reading.
     pub zero_rotations: usize,
+    /// For compressed (keyframed) animations, what decoding found.
+    pub compressed: Option<crate::compressed::Stats>,
 }
 
 impl Animation {
@@ -579,7 +581,8 @@ impl Animation {
 
 impl Graph {
     /// Reads an `antr` tag whose header is at `address`. Compressed
-    /// animations are refused (none occur in the multiplayer maps read so far).
+    /// animations are decoded to per-frame transforms
+    /// ([`crate::compressed`]).
     pub fn read<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Self> {
         let h = m.read(address, ANTR_HEADER)?;
         let nodes = block(m, h, ANTR_NODES, ANTR_NODE_LEN)?
@@ -645,9 +648,6 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
             "{name}: {n} nodes, the graph has {graph_nodes}"
         )));
     }
-    if flags & 1 != 0 || u32_at(e, 0x88) != 0 {
-        return Err(Error::Unsupported(format!("{name}: compressed animation")));
-    }
     // Bits past the node count hold junk on real data; mask them.
     let mask = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
     let bits = |at: usize| (u64::from(u32_at(e, at)) | u64::from(u32_at(e, at + 4)) << 32) & mask;
@@ -657,6 +657,30 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         return Err(Error::Invalid(format!(
             "{name}: frame size {frame_size} for {r}/{t}/{s} channels"
         )));
+    }
+    if flags & 1 != 0 {
+        // Keyframed data at frame data + [+0x88]; no default data.
+        let data = data_ref(m, e, 0xa0)?;
+        let at = u32_at(e, 0x88) as usize;
+        let blob = data
+            .get(at..)
+            .ok_or_else(|| Error::Invalid(format!("{name}: compressed data offset {at:#x}")))?;
+        let (frames, stats) = crate::compressed::decode(blob, frame_count, n, animated)
+            .map_err(|err| Error::Invalid(format!("{name}: {err}")))?;
+        return Ok(Animation {
+            name,
+            kind,
+            frame_count,
+            frame_info_type: u16_at(e, 0x26),
+            node_list_checksum: u32_at(e, 0x28),
+            node_count,
+            loop_frame: u16_at(e, 0x2e),
+            flags,
+            animated,
+            frames,
+            zero_rotations: stats.zero_rotations,
+            compressed: Some(stats),
+        });
     }
     let default = data_ref(m, e, 0x8c)?;
     let want_default = 8 * (n - r) + 12 * (n - t) + 4 * (n - s);
@@ -726,5 +750,6 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         animated,
         frames,
         zero_rotations,
+        compressed: None,
     })
 }
