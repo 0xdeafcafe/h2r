@@ -12,6 +12,7 @@
 //! | `+0x08` skies | 8 | Halo 1's skies, converted (`h1sky`) |
 //! | `+0x48` object names | `0x24` | Halo 1's names; each placement index mapped to the converted placement, or -1 |
 //! | `+0x50`..`+0x330` object placements and palettes | per type (`tags::object::OBJECT_TYPES`) | emptied; weapons, equipment, vehicles, scenery and bipeds from Halo 1's |
+//! | `+0xf8` player starting profiles | `0x44` | Halo 1's, weapons the converted tags ([`crate::profiles`]) |
 //! | `+0x100` player starting locations | `0x34` | Halo 1's, each on the base's first element |
 //! | `+0x108` trigger volumes | `0x44` | the base's, parked out of the level (`h1convert::convert::park_trigger_volumes`), then Halo 1's |
 //! | `+0x130` BSP switch trigger volumes | `0xe` | Halo 1's (`h1::BSP_SWITCHES`), on its volumes and BSPs |
@@ -317,6 +318,8 @@ pub struct ScenarioReport {
     pub parked_volumes: usize,
     /// Simulation table entries (fresh levels).
     pub simulation: usize,
+    /// Halo 1 player starting profiles written.
+    pub profiles: usize,
     /// AI: squads, zones, characters (and substitutions made).
     pub ai: Option<AiReport>,
     /// Scripts: scripts, globals, nodes, hooks resolved and left.
@@ -546,6 +549,7 @@ pub fn replaced_fields() -> Vec<u32> {
         SKIES,
         OBJECT_NAMES,
         STARTING_LOCATIONS,
+        crate::profiles::H2.0,
         TRIGGER_VOLUMES,
         BSP_SWITCHES,
         BSPS,
@@ -585,8 +589,7 @@ pub const FRESH_NULL_REFS: [(u32, [u8; 4]); 4] = [
 /// null references of [`FRESH_NULL_REFS`], and every other root tag
 /// reference null. What the base's root held and a fresh level does not
 /// take (docs/game/campaigns.md, "Fresh levels"): its light volumes and
-/// their palette (`+0xe8`, `+0xf0`), player starting profiles (`+0xf8`),
-/// decals and their palette (`+0x138`, `+0x140`), AI styles (`+0x150`;
+/// their palette (`+0xe8`, `+0xf0`), decals and their palette (`+0x138`, `+0x140`), AI styles (`+0x150`;
 /// every converted order has style -1), mission scenes (`+0x170`), its
 /// chapter title, subtitles and objectives references (`+0x200`, `+0x358`,
 /// `+0x3b8`), resources (`+0x218`), kill triggers (`+0x230`, indices of
@@ -1084,6 +1087,26 @@ fn place_objects(
         }
         palettes.push(pal);
     }
+    // Starting profiles' weapons, through the same converter.
+    let profiles = crate::profiles::read(h1)?;
+    let mut profile_weapons = HashMap::new();
+    for w in profiles
+        .iter()
+        .flat_map(|p| p.weapons.iter().filter_map(|w| w.0))
+    {
+        let tag = h1.tag(w)?;
+        let got = match conv.object(tag) {
+            Ok(id) => Some(Pal::Converted(id)),
+            Err(h1objects::Error::NoTemplate(_)) => retail_stand_in(set, tag).map(Pal::Retail),
+            Err(e) => {
+                dropped.push(format!("starting profile weapon {}: {e}", tag.name));
+                None
+            }
+        };
+        if let Some(p) = got {
+            profile_weapons.insert(w, p);
+        }
+    }
     let mut player = None;
     rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
         Some(t) => match conv.object(t) {
@@ -1114,6 +1137,12 @@ fn place_objects(
         h1convert::globals::set_player_unit(set, real(p), h1convert::globals::Players::Campaign)
             .map_err(|e| invalid(format!("player unit: {e}")))?;
     }
+
+    let profile_blocks =
+        crate::profiles::elements(&profiles, |w| profile_weapons.get(&w).map(palette_id));
+    rep.profiles = profile_blocks.len();
+    let (at, stride) = crate::profiles::H2;
+    put_block(root, at, stride, profile_blocks);
 
     let mut placed = HashMap::new();
     let mut unique = 0u32;

@@ -27,6 +27,7 @@
 
 pub mod donor;
 pub mod manifest;
+pub mod profiles;
 pub mod scenario;
 pub mod structure;
 

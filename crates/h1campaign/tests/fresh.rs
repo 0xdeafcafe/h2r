@@ -327,6 +327,11 @@ fn every_level_converts_fresh() {
             let mut pm = Map::from_reader(Cursor::new(p.bytes.clone())).unwrap();
             let pmem = memory(&mut pm);
             pinned_bad = reference_sweep(&pm, &pmem).1.into_iter().collect();
+            let profiles = start_profiles(&mut pm, &h1);
+            assert!(
+                profiles.is_empty(),
+                "{level} pinned: starting profiles {profiles:#?}"
+            );
             (p.report.memory, p.bytes.len(), p.report.lean)
         });
         let done = match h1campaign::convert(&h1, &mut base, &opts) {
@@ -361,6 +366,10 @@ fn every_level_converts_fresh() {
             .filter_map(|t| t.name.clone())
             .filter(|n| n.starts_with(&base_folder) || n.starts_with("scenarios\\multi\\"))
             .collect();
+        let profile_bad = start_profiles(&mut m, &h1);
+        if !profile_bad.is_empty() {
+            failed.push(format!("{level}: starting profiles {profile_bad:#?}"));
+        }
         let (atoms, script_bad) = script_tags(&mut m, &catalog);
         println!(
             "  {}/{refs} references resolve ({} new problems); {} tags of the base level's own; \
@@ -412,4 +421,79 @@ fn every_level_converts_fresh() {
         println!("{level} | {bm:#x} | {bs} | {bl} | {mem:#x} | {size} | {lean} | {tags}");
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// Every level's starting profiles read with Halo 1's layout: each weapon
+/// reference names a `weap` or none, counts are sane.
+#[test]
+#[ignore = "reads disc/halo1.iso"]
+fn h1_starting_profiles_read() {
+    for level in h1map::disc::CAMPAIGN_LEVELS {
+        let h1 = h1_level(level);
+        let ps = h1campaign::profiles::read(&h1).unwrap();
+        assert!(!ps.is_empty(), "{level}: no starting profile");
+        for p in &ps {
+            for (w, loaded, total) in &p.weapons {
+                if let Some(w) = w {
+                    let t = h1.tag(*w).unwrap();
+                    assert_eq!(&t.group.0.to_be_bytes(), b"weap", "{level}: {}", t.name);
+                }
+                assert!((0..=2000).contains(loaded) && (0..=2000).contains(total));
+            }
+            assert!(p.frags <= 8 && p.plasmas <= 8, "{level} {p:?}");
+            println!(
+                "{level} {:?}: health {} shield {} {:?} frags {} plasmas {}",
+                p.name,
+                p.health,
+                p.shield,
+                p.weapons
+                    .iter()
+                    .map(|(w, l, t)| (w.map(|w| h1.tag(w).unwrap().name.clone()), l, t))
+                    .collect::<Vec<_>>(),
+                p.frags,
+                p.plasmas
+            );
+        }
+    }
+}
+
+/// The converted map's starting profiles: one per Halo 1 profile, each
+/// weapon Halo 1 names a `weap` of the map with data, named as Halo 1's
+/// (a converted tag keeps the Halo 1 path) or a retail stand-in.
+fn start_profiles(m: &mut M, h1: &h1map::H1Map) -> Vec<String> {
+    let ps = h1campaign::profiles::read(h1).unwrap();
+    let t = m.scenario().unwrap().clone();
+    let addr = t.location.unwrap().address;
+    let bytes = m.read_tag_bytes(t.id).unwrap();
+    let (at, stride) = h1campaign::profiles::H2;
+    let n = word(&bytes, at as usize) as usize;
+    let mut bad = Vec::new();
+    if n != ps.len() {
+        bad.push(format!("{n} profiles for Halo 1's {}", ps.len()));
+        return bad;
+    }
+    let p0 = word(&bytes, at as usize + 4).wrapping_sub(addr) as usize;
+    for (k, p) in ps.iter().enumerate() {
+        let e = &bytes[p0 + k * stride..p0 + (k + 1) * stride];
+        for (i, (w, loaded, _)) in p.weapons.iter().enumerate() {
+            let d = word(e, 0x2c + 0xc * i);
+            let Some(w) = w else {
+                if d != u32::MAX {
+                    bad.push(format!("{}: weapon {i} where Halo 1 has none", p.name));
+                }
+                continue;
+            };
+            let h1_name = h1.tag(*w).unwrap().name.clone();
+            match m.tag(map::TagId(d)) {
+                Ok(t) if t.group == FourCC(*b"weap") && t.location.is_some() => {
+                    println!(
+                        "  profile {:?} weapon {i}: {h1_name} -> {:?} ({loaded} loaded)",
+                        p.name, t.name
+                    );
+                }
+                _ => bad.push(format!("{}: weapon {i} ({h1_name}) is {d:#x}", p.name)),
+            }
+        }
+    }
+    bad
 }

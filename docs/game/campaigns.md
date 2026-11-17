@@ -207,7 +207,7 @@ convert --pinned` skip it):
    |---|---|---|
    | `+0x00`, `+0x1f8`, `+0x208`, `+0x320` null references (`sbsp`, `unic`, `hmt `, `sfx+`) | group, -1 | the same (`FRESH_NULL_REFS`) |
    | `+0xe8`/`+0xf0` light volumes and palette (28, 2) | its own | empty |
-   | `+0xf8` player starting profiles (2) | Halo 2's weapons | empty (Halo 1's profiles are not converted yet: the player starts unarmed) |
+   | `+0xf8` player starting profiles (2) | Halo 2's weapons | Halo 1's (`h1campaign::profiles`; the pinned build writes them too) |
    | `+0x100` starting locations | template element | Halo 1's, on a zeroed element (05a's bytes past the position and facing are zero) |
    | `+0x108` trigger volumes | 121, parked | Halo 1's only (no parked base volumes; hooks index from 0) |
    | `+0x138`/`+0x140` decals and palette | its own | empty |
@@ -240,26 +240,26 @@ convert --pinned` skip it):
    and the shared tables reach stays; the rest of 05a goes (its BSP
    content, scenery, its AI characters, sounds, effects, bitmaps).
 
-**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17;
+**Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17, with the starting profiles;
 pinned is the old way, lean ladder and all):
 
 | Level | Tag memory pinned | fresh | File pinned | fresh | Lean pinned | fresh | Base tags dropped | References resolving |
 |---|---|---|---|---|---|---|---|---|
-| a10 | `0xb44000` | `0x89b000` | 287,119,360 | 257,813,504 | 0 | 0 | 1,948 | 31,054/31,054 |
-| a30 | `0xb39000` | `0x8e2000` | 231,910,912 | 176,171,520 | 0 | 0 | 1,832 | 30,019/30,019 |
-| a50 | `0xbeb000` | `0x8ca000` | 241,079,296 | 189,946,368 | 0 | 0 | 1,870 | 30,533/30,533 |
-| b30 | `0xb26000` | `0x85c000` | 229,848,576 | 171,194,368 | 0 | 0 | 1,905 | 30,080/30,080 |
-| b40 | `0xc22000` | `0x923000` | 265,091,072 | 229,058,048 | 4 | 0 | 1,841 | 32,723/32,723 |
-| c10 | `0xc01000` | `0x8a1000` | 260,217,344 | 210,515,968 | 0 | 0 | 2,534 | 31,612/31,612 |
-| c20 | `0xb36000` | `0x839000` | 257,527,296 | 208,076,800 | 0 | 0 | 4,641 | 25,451/25,451 |
-| c40 | `0xbdf000` | `0x8b4000` | 272,660,480 | 231,238,144 | 0 | 0 | 3,300 | 31,058/31,058 |
-| d20 | `0xbaa000` | `0x8eb000` | 247,970,816 | 200,216,576 | 0 | 0 | 3,298 | 29,352/29,352 |
-| d40 | `0xbe9000` | `0x8ec000` | 293,087,744 | 259,801,088 | 0 | 0 | 3,393 | 31,101/31,101 |
+| a10 | `0xb44000` | `0x89b000` | 287,119,360 | 257,813,504 | 0 | 0 | 1,948 | 31,056/31,056 |
+| a30 | `0xb3c000` | `0x8e5000` | 232,101,376 | 176,360,448 | 0 | 0 | 1,832 | 30,153/30,153 |
+| a50 | `0xbeb000` | `0x8cf000` | 241,578,496 | 190,463,488 | 0 | 0 | 1,870 | 30,806/30,806 |
+| b30 | `0xb29000` | `0x85e000` | 230,040,064 | 171,379,200 | 0 | 0 | 1,905 | 30,214/30,214 |
+| b40 | `0xc22000` | `0x923000` | 265,091,072 | 229,058,048 | 4 | 0 | 1,841 | 32,727/32,727 |
+| c10 | `0xc01000` | `0x8a1000` | 260,217,344 | 210,515,968 | 0 | 0 | 2,534 | 31,616/31,616 |
+| c20 | `0xb3c000` | `0x83f000` | 257,913,344 | 208,459,264 | 0 | 0 | 4,641 | 25,721/25,721 |
+| c40 | `0xbe1000` | `0x8b7000` | 272,847,360 | 231,427,072 | 0 | 0 | 3,300 | 31,192/31,192 |
+| d20 | `0xbab000` | `0x8ed000` | 247,974,912 | 200,224,768 | 0 | 0 | 3,298 | 29,402/29,402 |
+| d40 | `0xbec000` | `0x8ee000` | 293,278,720 | 259,985,920 | 0 | 0 | 3,393 | 31,235/31,235 |
 
 The bound is `0xc24000`: every level now has 3 to 4 MB to spare, and the
 lean ladder fires nowhere (b40 keeps its level data, seat table and object
 textures; the ladder stays as a safety net). The file bound is
-`0x11800000` (293,601,280 bytes); d40 pinned is 513,536 bytes under it.
+`0x11800000` (293,601,280 bytes); d40 pinned is 322,560 bytes under it.
 On every level: no tag from `scenarios\solo\05a_deltaapproach\` or
 `scenarios\multi\`, every script atom naming an object definition,
 sound, effect, damage effect or animation graph resolves to a tag of that
@@ -268,6 +268,18 @@ group with data, and the scripts' reference block reads back
 map of the same level does not have (none on any level). If the fresh
 map would pass the file bound the pinned one is written instead
 (`Report::fresh` false, a `dropped` line).
+
+**Player starting profiles** (`h1campaign::profiles`). Halo 1's block
+`scnr +0x348` (`0x68` each; S, the editing kits' layout, checked on all
+ten levels by `h1_starting_profiles_read`: every weapon is a `weap` or
+none, a30's first is the assault rifle 60/120 and the pistol 12/64) is
+written as Halo 2's `+0xf8` (`0x44` each, V on 05a and 03a): the name,
+the health and shield modifiers, each weapon as its converted tag (the
+same `h1objects` converter as the weapon palette, a donor's retail
+weapon when only a donor has the template) with its rounds loaded and
+total, and the fragmentation and plasma grenade counts.
+`every_level_converts_fresh` checks every level's profiles: one per Halo
+1 profile, each weapon Halo 1 names a `weap` of the map with data.
 
 **Keep list** (`KEEP`, the multiplayer one, `fresh::MULTIPLAYER`):
 `matg`, `scnr`, `ugh!`, `unic`, `mulg`, `stem`, `spas`, `vrtx`, `pmov`,
