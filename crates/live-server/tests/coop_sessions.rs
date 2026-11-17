@@ -370,6 +370,15 @@ struct Seen {
     frames: bool,
     /// `GET /v1/accounts/Host`: its recent games.
     recent: usize,
+    /// `GET /v1/events` (read a few at a time) carries the game's events.
+    log_game: bool,
+    /// ... and the session's.
+    log_session: bool,
+    /// `/v1/stream` from the start carries the game's events.
+    stream_game: bool,
+    stream_session: bool,
+    /// `GET /v1/stats/summary?window=all`: games counted.
+    stats: u64,
 }
 
 const ALL: Seen = Seen {
@@ -379,6 +388,11 @@ const ALL: Seen = Seen {
     detail: true,
     frames: true,
     recent: 1,
+    log_game: true,
+    log_session: true,
+    stream_game: true,
+    stream_session: true,
+    stats: 1,
 };
 const NONE: Seen = Seen {
     coop: 0,
@@ -387,7 +401,84 @@ const NONE: Seen = Seen {
     detail: false,
     frames: false,
     recent: 0,
+    log_game: false,
+    log_session: false,
+    stream_game: false,
+    stream_session: false,
+    stats: 0,
 };
+
+/// Every stream named in `GET /v1/events`, read three at a time: hidden
+/// events leave pages short (or empty), but the cursor runs on to the head.
+async fn log_streams(h: &Harness, u: Option<&User>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0u64;
+    let head = h.live.position();
+    for _ in 0..1000 {
+        let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        let r = h
+            .call(
+                Method::GET,
+                &format!("/v1/events?limit=3&cursor={cursor}"),
+                &headers,
+                Body::empty(),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        let page = r.json();
+        for e in page["items"].as_array().unwrap() {
+            assert!(e["position"].as_u64().unwrap() > cursor);
+            out.push(e["stream"].as_str().unwrap().to_string());
+        }
+        match page["next"].as_str() {
+            Some(n) => cursor = n.parse().unwrap(),
+            None => return out,
+        }
+    }
+    panic!("the cursor never reached the head {head}");
+}
+
+/// Every stream named in `/v1/stream` from the start up to `caught_up`,
+/// signed in with `?auth=1` when `u` is set; and the caught-up position.
+async fn stream_streams(
+    addr: std::net::SocketAddr,
+    h: &Harness,
+    u: Option<&User>,
+) -> (Vec<String>, u64) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let q = if u.is_some() {
+        "?from=0&auth=1"
+    } else {
+        "?from=0"
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/stream{q}"))
+        .await
+        .unwrap();
+    if let Some(u) = u {
+        let token = h.token(&u.key, &u.author, lxm::READ);
+        ws.send(Message::Text(
+            json!({"kind": "auth", "token": token}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    }
+    let mut out = Vec::new();
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("a message in time")
+            .unwrap()
+            .unwrap();
+        let Message::Text(t) = msg else { continue };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        match v["kind"].as_str() {
+            Some("event") => out.push(v["event"]["stream"].as_str().unwrap().to_string()),
+            Some("caught_up") => return (out, v["position"].as_u64().unwrap()),
+            _ => {}
+        }
+    }
+}
 
 /// A host and a guest play one Live co-op campaign game in a session of
 /// `visibility`: the session closes after the guest joined (a finished co-op
@@ -440,6 +531,15 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
             }),
         )
         .await;
+    let end = h.batch(
+        &a,
+        &game,
+        &[("GameEnded", json!({"tick": 2, "reason": "finished"}))],
+    );
+    assert_eq!(
+        h.post_batch(&a, &game, end).await.status,
+        StatusCode::CREATED
+    );
     send(
         &h,
         &a,
@@ -466,6 +566,11 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
         assert_eq!(r.status, StatusCode::OK, "{}", r.error());
         r.json()[key].as_array().unwrap().len()
     };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+    let game_stream = format!("game-{game}");
+    let session_stream = format!("session-{sid}");
     let mut out = Vec::new();
     for (name, u) in [
         ("anonymous", None),
@@ -477,6 +582,13 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
         let detail = read(u, format!("/v1/games/{game}")).await.status;
         assert!(matches!(detail, StatusCode::OK | StatusCode::NOT_FOUND));
         let frames = read(u, format!("/v1/games/{game}/frames")).await.status;
+        let log = log_streams(&h, u).await;
+        let (stream, caught_up) = stream_streams(addr, &h, u).await;
+        // Hidden events or not, the reader catches up to the head.
+        assert_eq!(caught_up, h.live.position(), "{name}");
+        let stats = read(u, "/v1/stats/summary?window=all".into()).await.json()["totals"]["games"]
+            .as_u64()
+            .unwrap();
         out.push((
             name,
             Seen {
@@ -486,6 +598,11 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
                 detail: detail == StatusCode::OK,
                 frames: frames == StatusCode::OK,
                 recent: len(read(u, "/v1/accounts/Host".into()).await, "recent_games"),
+                log_game: log.contains(&game_stream),
+                log_session: log.contains(&session_stream),
+                stream_game: stream.contains(&game_stream),
+                stream_session: stream.contains(&session_stream),
+                stats,
             },
         ));
     }
@@ -530,8 +647,8 @@ async fn friends_only_coop_games_show_to_players_friends_and_admins() {
         [
             ("anonymous", NONE),
             ("stranger", NONE),
-            ("friend", ALL),
-            ("guest", ALL),
+            ("friend", Seen { stats: 0, ..ALL }),
+            ("guest", Seen { stats: 0, ..ALL }),
             ("admin", ALL),
         ]
     );
@@ -546,7 +663,7 @@ async fn invite_only_coop_games_show_to_players_and_admins() {
             ("anonymous", NONE),
             ("stranger", NONE),
             ("friend", NONE),
-            ("guest", ALL),
+            ("guest", Seen { stats: 0, ..ALL }),
             ("admin", ALL),
         ]
     );
@@ -574,4 +691,82 @@ async fn campaign_games_without_a_session_stay_public() {
             .len(),
         1
     );
+}
+
+/// A running co-op game follows its session's visibility; once ended it
+/// keeps the last one.
+#[tokio::test]
+async fn a_running_coop_game_follows_its_session_visibility() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let b = h.create("Guest").await;
+    let c = h.create("Stranger").await;
+    let sid = create(&h, &a, &coop(session::Visibility::Public))
+        .await
+        .json()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    send(&h, &a, &sid, &[(session::JOINED, json!({"xuid": b.xuid}))]).await;
+    let game = h
+        .start_game(
+            &a,
+            json!({
+                "map": "03a_oldmombasa", "mode": "campaign", "kind": "campaign",
+                "online": true, "team_play": false,
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": a.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": b.xuid, "team": 0, "local": false}
+                ]
+            }),
+        )
+        .await;
+    let seen = |u: &User| {
+        let headers = vec![h.bearer(u, lxm::READ)];
+        let h = &h;
+        let uri = format!("/v1/games/{game}");
+        async move {
+            h.call(Method::GET, &uri, &headers, Body::empty())
+                .await
+                .status
+                == StatusCode::OK
+        }
+    };
+    let set = |v: session::Visibility| {
+        let up = serde_json::to_value(Update {
+            visibility: Some(v),
+            ..Default::default()
+        })
+        .unwrap();
+        let (h, a, sid) = (&h, &a, sid.clone());
+        async move {
+            let r = send(h, a, &sid, &[(session::UPDATED, up)]).await;
+            assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+        }
+    };
+    assert!(seen(&c).await);
+    set(session::Visibility::Invite).await;
+    assert!(!seen(&c).await, "hidden once the host made it invite-only");
+    assert!(seen(&b).await);
+    set(session::Visibility::Friends).await;
+    // The game ends while friends-only; a later change does not move it.
+    let end = h.batch(
+        &a,
+        &game,
+        &[("GameEnded", json!({"tick": 2, "reason": "quit"}))],
+    );
+    assert_eq!(
+        h.post_batch(&a, &game, end).await.status,
+        StatusCode::CREATED
+    );
+    set(session::Visibility::Public).await;
+    assert!(!seen(&c).await, "the ended game keeps friends-only");
+    assert!(seen(&b).await);
+    // Anonymous stats leave it out; the log hides its events from the stranger.
+    assert_eq!(
+        h.get("/v1/stats/summary?window=all").await.json()["totals"]["games"],
+        0
+    );
+    let log = log_streams(&h, Some(&c)).await;
+    assert!(!log.contains(&format!("game-{game}")));
 }

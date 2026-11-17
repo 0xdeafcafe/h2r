@@ -271,14 +271,87 @@ impl Live {
             return Ok(Viewer::Anonymous);
         }
         let author = self.authenticate(bearer, lxm::READ)?;
-        if self.admins.is_admin(&author, &self.model.read()) {
-            return Ok(Viewer::Admin);
-        }
-        Ok(match author {
-            Author::Account { xuid, .. } => Viewer::Account(xuid),
-            Author::Server(_) => Viewer::Admin,
-        })
+        Ok(self.viewer_of(&author))
     }
+
+    /// The reader behind a `read` token sent on a stream, and the token's
+    /// expiry. The token is checked (and its `jti` spent) once.
+    pub fn read_viewer_until(&self, token: &str) -> Result<(Viewer, i64), ApiError> {
+        let author = self.authenticate(Some(token), lxm::READ)?;
+        let exp = live_proto::sign::Token::parse(token)
+            .map(|t| t.claims.exp)
+            .unwrap_or(0);
+        Ok((self.viewer_of(&author), exp))
+    }
+
+    /// [`event_shows_to`] against the current read model.
+    pub fn event_shows(&self, e: &RecordedEvent, viewer: Viewer) -> bool {
+        viewer == Viewer::Admin || event_shows_to(&self.model.read(), &e.body.stream, viewer)
+    }
+
+    /// Whether a live frame's game shows to `viewer`.
+    pub fn frame_shows(&self, f: &crate::games::LiveFrame, viewer: Viewer) -> bool {
+        viewer == Viewer::Admin || game_shows_to(&self.model.read(), &f.frame.game_id, viewer)
+    }
+
+    fn viewer_of(&self, author: &Author) -> Viewer {
+        if self.admins.is_admin(author, &self.model.read()) {
+            return Viewer::Admin;
+        }
+        match author {
+            Author::Account { xuid, .. } => Viewer::Account(*xuid),
+            Author::Server(_) => Viewer::Admin,
+        }
+    }
+}
+
+/// Whether `viewer` may read a log event (`GET /v1/events`, `/v1/stream`):
+/// a game's events follow [`crate::model::Game::shows_to`], a session's
+/// follow its current visibility with [`finished_shows_to`]'s rule (who was
+/// in it counts), and every other event is public.
+pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
+    if viewer == Viewer::Admin {
+        return true;
+    }
+    if let Some(id) = stream.strip_prefix("game-") {
+        return game_shows_to(s, id, viewer);
+    }
+    if let Some(id) = stream.strip_prefix("session-") {
+        return session_shows_to(s, id, viewer);
+    }
+    true
+}
+
+/// [`crate::model::Game::shows_to`] by id; an unknown game is public.
+pub fn game_shows_to(s: &State, id: &str, viewer: Viewer) -> bool {
+    s.games
+        .get(id)
+        .is_none_or(|g| g.shows_to(viewer, |a, b| s.is_friends(a, b)))
+}
+
+/// A session's events: public ones to everyone; a friends-only or
+/// invite-only one to its host, whoever is or was in it, the host's
+/// friends (friends-only) and admins.
+pub fn session_shows_to(s: &State, id: &str, viewer: Viewer) -> bool {
+    let Some(item) = s.sessions.get(id) else {
+        return true;
+    };
+    let played = |x: live_proto::Xuid| {
+        item.players.contains_key(&x)
+            || s.coop_joined
+                .get(id)
+                .is_some_and(|j| j.iter().any(|(y, _)| *y == x))
+            || s.coop_games
+                .values()
+                .any(|g| g.session_id == id && g.guests.contains(&x))
+    };
+    finished_shows_to(
+        item.advertisement.visibility,
+        item.host_xuid,
+        played,
+        viewer,
+        |a, b| s.is_friends(a, b),
+    )
 }
 
 /// Whether a finished game from a co-op session with this `visibility`,
@@ -360,9 +433,23 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent, at: i64) {
         }
     } else if let Some(item) = s.sessions.get_mut(id) {
         let open = item.state == "open";
+        let was = item.advertisement.visibility;
         if item.apply(&b.kind, &b.data, &b.at, at).is_err() || !open {
             return;
         }
+        // A running co-op game follows its session's visibility; one that
+        // ended keeps what it had.
+        let now = item.advertisement.visibility;
+        if now != was {
+            for g in s.games.values_mut().filter(|g| g.ended.is_none()) {
+                if let Some(c) = g.coop.as_mut().filter(|c| c.session_id == id) {
+                    c.visibility = now;
+                }
+            }
+        }
+        let Some(item) = s.sessions.get(id) else {
+            return;
+        };
         let coop = item.advertisement.flags == session::COOP;
         if coop {
             let joined = s.coop_joined.entry(id.into()).or_default();

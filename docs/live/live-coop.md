@@ -1123,7 +1123,12 @@ the host. The host advertises both (`coop_live::host_campaign_skulls`).
   Co-op tab. A friends-only game shows only to who played in it and the
   host's friends, an invite-only one only to who played in it, admins see
   all (live-api.md, "Co-op games"); the same holds for the game's telemetry
-  in the games list and player pages. Co-op sessions show as "Co-op
+  in the games list and player pages, for the log (`/v1/events`,
+  `/v1/stream`: a hidden game's and session's events go only to who may
+  see them) and for the stats summary (non-admins get the public one). A
+  running game follows its session's visibility when the host changes it,
+  and keeps the last one once it ends. The web reads all of these as the
+  signed-in account (a `read` token, and `?auth=1` on the stream). Co-op sessions show as "Co-op
   campaign" with level, difficulty, players and the host's ping in Find a game;
   friends' activity shows in the friends lists.
 

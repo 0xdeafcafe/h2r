@@ -239,7 +239,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
-| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
+| `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next` |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
@@ -569,9 +569,28 @@ when it starts, the server links it to the open `coop` session its host
 visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames` and
 an account's `recent_games` leave it out for readers who may not see it
 (those who were in it are its players). A campaign game with no such
-session stays public. The stats summary still counts every game: its
-totals name no game. The raw log (`GET /v1/events`, `/v1/stream`) is not
-filtered.
+session stays public. While the game runs it follows its session: when the
+host changes the session's visibility, the game's changes with it. Once
+the game ends it keeps the visibility it had then.
+
+**The log.** `GET /v1/events` and `/v1/stream` apply the same rule per
+reader: a hidden game's events (its `GameStarted`, players, kills,
+recorded `GameFrame`s and `GameEnded`) and its live frames go only to
+readers who may see the game, and a friends-only or invite-only session's
+events only to its host, whoever is or was in it, the host's friends
+(friends-only) and admins. Positions are the log's own, so a filtered
+reader sees gaps. `GET /v1/events` reads `limit` events of the log and
+leaves out the hidden ones, so a page can be short or empty with a
+`next`: read on until `next` is null. `/v1/stream` skips hidden events
+but its place still moves past them, and `caught_up` names the log's
+head. A stream reader says who it is with `?auth=1` and a first message
+`{"kind": "auth", "token": "<read token>"}` (see Streams); without it, a
+public server's stream is anonymous.
+
+**Stats.** `GET /v1/stats/summary` counts every game for admins. Everyone
+else gets the public summary: a Live co-op game linked to a session is
+left out while it runs and counted when it ends if it ended public. A
+friend who may see a friends-only game still gets the public summary.
 
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
@@ -769,6 +788,14 @@ as they are appended, then interleaves live frames:
 
 `?games=<id>,<id>` limits frames to those games (events are always sent; they
 are small). Without it, frames for every live game are sent.
+
+`?auth=1` makes the first client message `{ "kind": "auth", "token":
+"<read token>" }` on a public server too (a `--private` server always asks
+for it), and the stream then sends what that account may see: the events
+and frames of a friends-only or invite-only co-op game or session go only to
+readers allowed to see it ([Co-op games](#co-op-games)). On a public server
+the token's expiry does not close the socket. Without `auth`, a public
+stream is anonymous and leaves those events out.
 
 `?frames=packed` sends frames as binary messages instead: each a container
 of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
