@@ -228,10 +228,66 @@ first game run faulted on the clobbered header of the next item
 (lower case, spaces to underscores), each region permutation holding the
 BSP of every node of that region for that permutation, each BSP the same
 narrowing copy as the structure's (`h1convert::collision::convert`) with
-the node index in the BSP's leading word (D: retail values 0..=7 fit a
-node index; not established). Pathfinding spheres and nodes copy across.
+the node index in the BSP's leading word (V: on retail objects the word
+is a node index in range, `0, 2, 3` on a five-node weapon; the engine's
+use is not established). Pathfinding spheres and nodes copy across.
+Halo 1's and Halo 2's collision BSPs hold the same tree; the difference
+is the strides (Halo 1 `12, 16, 8, 8, 20, 12, 24, 16` per element of
+the eight blocks, Halo 2 `8, 16, 4, 4, 16, 8, 12, 16`: 32-bit indices
+narrowed to 24-bit 3D children and 16-bit flagged indices), and Halo 2's
+`0x44`-byte element puts a word before the eight blocks. Proof:
+`campaign_collision_converts_and_answers_as_halo1` (below).
 
-**Physics.** No `phmo` is built from Halo 1's `phys`: Halo 2's physics
+**Collision for Havok: BSP physics** (2026-11-17, converter version 18).
+Until version 18 every converted object had its `coll` (BSPs, regions,
+nodes) but scenery, whose template has no `phmo`, had no BSP physics
+slots either, so Havok could not see it and the player walked through
+a10's props (the round oxygen tanks, barricades, computer banks: a10 has
+no tag named crate; its scenery with collision is ten tags). Havok moves the player's biped, vehicles and loose
+items, and it sees an object through the `hlmt`'s `phmo` or, with none,
+through the `coll` permutation's BSP physics slots: one `0x70`-byte slot
+per BSP, a Havok shape over the BSP inside a MOPP tree whose code keys
+the BSP's surfaces by index ([collision.md](collision.md), "BSP
+physics"). Retail writes the slots exactly for the `coll`s of scenery
+with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
+not weapons, equipment, devices, bipeds or crates). So:
+
+- a scenery object (every converted one: the template has no `phmo`)
+  gets its `coll` with one slot per BSP: the box of the BSP's vertices at
+  `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
+  `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
+  at `+0x64`;
+- every other object gets its `coll` without slots, as retail. A Halo 1
+  `coll` that both kinds use is built twice (the second named with
+  `_bsp_physics` or `_phmo`).
+
+**Shared blocks and b40.** A BSP's eight child blocks and a slot's MOPP
+code are shared by content (`Block::shared`, a hash of the bytes): Halo 1
+levels carry identical collision under several names (b40's three
+granite boulders), and the slots alone add 37,280 bytes on b40 (38
+slots; a10 13,152 for 15), which put b40 0x8000 over the tag memory
+bound even at the last lean step. With sharing b40 converts at lean 1
+(as before: the empty squads dropped) with tag memory `0xc22000` of
+`0xc24000`. A shared block can lie outside its tag's payload, so
+`tags::collision::Collision::read` decodes against the whole metadata
+when a block is out of the tag's range (`Collision::decode_at`).
+
+No `phmo` is built: Halo 2's own static scenery (the statue the scenery
+template is) has none, and blocks through these slots.
+
+**`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
+region it uses (`i8` at `+4`) and which physics region (`+5`); each
+permutation (`8`) its `coll` permutation (`+5`) and physics permutation
+(`+6`); -1 is none (V, retail; [collision.md](collision.md)). Until
+version 18 these were all 0. Now (`convert::region_map`): the `coll`
+region of the same name (string ID form), else the one at the same
+index, else -1; the permutation likewise, then the region's first.
+Physics bytes stay 0 (retail never holds -1 there on an object with no
+`phmo`). A `coll` region no render region selects is listed in
+the report.
+
+**Physics.** No `phmo` is built from Halo 1's `phys` (BSP physics, above,
+covers objects without one): Halo 2's physics
 models are Havok shapes with runtime post-processing ([collision.md](collision.md)),
 and a faithful one from mass-point spheres is a separate job. The
 borrowed `phmo` binds rigid bodies to Halo 2's node layout, which the
@@ -325,7 +381,11 @@ let ids = tree.install_over(&mut set, &donor_slots)?;      // or tree.install(&m
 
 - `h1::{Weapon, Projectile, Equipment, Unit, Collision, Physics}::read(map,
   tag)`, `h1::H1Object::read` for any object tag, `refs::scan` for any tag.
-- `coll::convert_collision(&Collision) -> (Converted, CollisionReport)`.
+- `coll::convert_collision(&Collision, bsp_physics) -> (Converted,
+  CollisionReport)`; `coll::bsp_mopp`, `coll::bsp_box` for one BSP.
+- `query::{locate, ray}`: the 3D tree's answer for a point (leaf or
+  solid) and the first solid point along a segment, on either game's BSP
+  (`query::Tree` for `tags::collision::Bsp` and `h1map::bsp::CollisionBsp`).
 - `Converter::object(tag)` converts an object (and its projectiles, model,
   collision and animations, each once) into `Converter::tree`, a `Tree` of
   `(name, h1models::Converted)` whose cross references are placeholders
@@ -344,6 +404,23 @@ let ids = tree.install_over(&mut set, &donor_slots)?;      // or tree.install(&m
 cargo test -p h1objects                       # synthetic: templates, coll, tree install
 H1_ISO=<halo1 iso> H2_DISC=disc/halo2.iso cargo test -p h1objects --test disc -- --ignored --nocapture
 ```
+
+`tests/collision_disc.rs` (`H2_MAPS=` limits the Halo 2 maps,
+`H1_LEVELS=` the Halo 1 levels, default a10 and b40):
+
+- `retail_static_scenery_carries_bsp_physics`: the slot rule, each
+  slot's code keying `0..surfaces` and its box holding the BSP, on every
+  object of every Halo 2 map; prints the `hlmt` region bytes seen.
+- `campaign_collision_converts_and_answers_as_halo1`: every `coll` on the
+  level converted with BSP physics, built, read back and validated; on
+  every BSP, 64 rays and 64 points through its box (a quarter wider) give
+  the same answer from the read-back Halo 2 tree as from Halo 1's, and
+  every surface within a centimetre of a ray's entry point is a key the
+  slot's code emits there. A crate's level walk through its middle stops.
+- `level_objects_select_collision_with_bsp_physics` (`H1_LEVEL=`,
+  default a10): the level's objects through the converter on 05a: slots
+  on scenery `coll`s, region 0 of every `hlmt` with a `coll` selects a
+  collision region; prints the bytes the slots add.
 
 `bloodgulch_sandbox_converts_and_reads_back` converts the twelve tags of
 the proof set (52 Halo 2 tags with their models, collisions, animations,
@@ -368,5 +445,7 @@ the new tags (136) names a tag of that group in the built map.
   have gravity scale 1, Halo 2's 0), maximum range 0 on the plasma bolt.
 - The `coll` BSP leading word as a node index, and Halo 1 material names
   as Halo 2 materials (the global material table will not know them).
+- That the player stops at a converted crate (BSP physics slots, version
+  18), and that Havok bodies (grenades, vehicles) bounce off scenery.
 - Template seats, turrets (Halo 2's warthog gunner is a separate turret
   vehicle) and animation names against the converted `jmad`.
