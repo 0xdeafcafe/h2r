@@ -336,10 +336,85 @@ picks the first map of the source's cache type that lacks the tag.
 `jmad`, one of the 4 `jmad` tags with an undescribed pointer
 (`[b4]+0x4`).
 
-**Not yet right for the game:** `snd!` tags index the map's sound
-gestalt (`ugh!`), which is per map. A transplanted sound keeps its source
-indices, so it would play the wrong data until the gestalt entries are
-merged. Nothing has been loaded in game.
+**Sounds.** `snd!` tags index the map's sound gestalt (`ugh!`), which is
+per map. `transplant` copies a `snd!` with its source indices. The
+caller must then merge its gestalt entries with
+`h1sounds::merge_sound` (see [h1-sounds.md](h1-sounds.md), "Merging a
+moved sound"); `transplant` does not call it yet.
+
+## Fresh maps (`h1convert::fresh`, `h2 h1 convert --fresh`)
+
+A fresh map has nothing pinned: no file prefix, no fixed metadata base,
+every tag a built tree. `Prepared::build_fresh` makes one from the pinned
+conversion:
+
+1. Run the pinned pipeline (`Prepared::assemble`): the base map with the
+   converted structure, objects and sky added, as a `TagSet` and its bytes.
+2. Copy that set's index (groups, slots, datums, string table, globals,
+   scenario, BSP sections) into a new set with no `PinnedImage`. Datums
+   and string IDs keep their values, so nothing needs remapping. The base
+   header is the `header_template`.
+3. Replace every pinned payload:
+   - ordinary tags: `Unpinner::unpin`, a depth-first tree per tag with
+     every local raw resource copied out of the file (`add_raw`) and
+     shared-cache pointers kept. Size-0 tags become aliases of their owner;
+   - `ugh!`: decoded with `SoundGestalt::decode`, each local chunk copied;
+   - `scnr`: built from scratch (below);
+   - the low-detail bitmap region (header `+0x158`/`+0x15c`): copied as
+     one raw blob, `TagSet::low_detail`.
+4. Build. The builder lays out everything from zero.
+
+**The scenario from scratch.** The root is the base `scnr` root (`0x3e0`
+bytes) with every schema block field zeroed. Each block is then attached
+from `Relocator::block_field`, a depth-first copy of that one field,
+checked on its own. The scenario editor grew some blocks into metadata
+that belongs to no tag. Those come back `OutOfBounds`. When their layout
+has no block or raw fields, they are copied flat from the file (Blood
+Gulch: the netgame flags at `0x118`). The BSP descriptor block (`0x210`,
+one element) points at the converted section through `FixupKind::Bsp`.
+
+`Unpinner` (`tags::schema::transplant`) is the in-place half of
+`transplant`. `new(schema, src)`, `add_starts` (more raw starts, e.g.
+gestalt chunks), `extent(v)`, `copy_raw`, `localise(struct, block,
+count)` and `unpin(src, ids, dst)`. `unpin` checks every tag first and
+leaves the set unchanged if one is refused.
+
+**Proof** (`a_multiplayer_map_converts_fresh_with_nothing_pinned`, **V**,
+2026-11-17):
+
+```sh
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso [H1_MAPS=bloodgulch,beavercreek] \
+  cargo test --release -p h1convert --test fresh -- --ignored --nocapture
+```
+
+Each fresh map reads back with a valid checksum and the same index as the
+pinned conversion. Every tag and datum reference resolves to a tag of the
+named group. Each tag is then compared with its pinned counterpart:
+
+- every ordinary tag's canonical, address-free form, with raw compared by
+  bytes;
+- every `scnr` block, and the root's non-block words;
+- the gestalt (flat and nested), and every chunk's bytes;
+- every bitmap's levels of detail and the low-detail range, through the
+  decoder;
+- all nine languages' text, and the `sbsp` size.
+
+All 13 Xbox multiplayer maps pass. The six PC-only maps are not on the
+disc and are skipped. Blood Gulch:
+
+| | |
+|---|---|
+| File | 56.3 MB (pinned conversion 42.8 MB) |
+| Tags | 4,565 built (29 aliases), 4,564 identical, 22,225 references resolve |
+| Raw | 688 local copied (49 MB), 3,885 external kept |
+| Gestalt | identical, 5,254 chunks (239 copied local) |
+| `scnr` | 22 blocks (1 flat), none left empty |
+| Bitmaps | 709 identical |
+
+The file is larger because resources the retail compiler overlapped are
+copied once per pointer. Fixing that needs a raw reference with an
+interior offset. It also carries every base tag, not only the closure the
+scenario reaches. Nothing has been run in game yet.
 
 ## Load test
 
@@ -349,26 +424,32 @@ H2_MAP_DIR=~/h2-testmaps/relocated cargo h2 play disc/halo2.iso --level lockout
 ```
 
 The first writes `relocated/lockout.map`: every `movable()` tag but slot 0
-rebuilt from the schema with sharing kept, in reverse slot order (slot
-order if that overflows), checked to read back. On lockout: 3,744 of 4,512
+rebuilt from the schema in its **source layout** (`to_built_source`,
+children in the retail order) with sharing kept, in reverse slot order
+(slot order if that overflows), checked to read back. On lockout: 3,744 of 4,512
 tags rebuilt, all 3,744 at new addresses. **Success:** `map override:
 maps\lockout from …` and `level boot: lockout loaded`, and the level looks
 and plays like the disc's. A crash or wrong objects means a field the
 schema gets wrong (a pointer the check missed, or a layout the engine needs
 in its original order); bisect by building with fewer groups.
 
+**Game result** (user run, 2026-11-17, depth-first layout before the
+switch): 4,177 of 4,512 tags at new addresses, with the moved index
+table. The map loaded headless and ran 2,000+ ticks of gameplay with no
+fault.
+
 ## Open
 
-- `ugh!` merging for transplanted sounds (above); `scnr` (per-map
-  undiscovered arrays); the last 0.2 % of `coll`, `prt3`, `spas`, `stem`,
+- `transplant` does not yet call `merge_sound` for the `snd!` tags it
+  copies. Sounds with promotions are refused by the merge. The rest of
+  `scnr`: blocks grown outside every tag that hold pointers; the last 0.2 % of `coll`, `prt3`, `spas`, `stem`,
   `jmad`; BSP-region tags (`sbsp`, `ltmp`, which need the builder's BSP
   sections).
 - Raw sizes: `bitm` level 0 unpaired, noisy pairs in one-instance groups.
 - The 8 maps at the bound move only in place (slot order). Real movement
   there needs a placement that does not fragment the freed space.
-- Whether the engine accepts moved tags, either child order, and the
-  relaxed padding rule is untested in game (the `--relocate-all` load
-  test).
+- Moved tags load in game in depth-first order (above). The source
+  layout, the relaxed padding rule and fresh maps have not been run.
 - Ambiguous fields are not marked unknown in the file. The per-tag check
   stands in for that. A new map whose tags put an address in such a field
   will be refused, not mis-relocated.

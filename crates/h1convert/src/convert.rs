@@ -533,6 +533,23 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
+        let (_, bytes, _) = self.assemble(base, mopp)?;
+        let manifest = self.manifest(&bytes);
+        Ok(Converted {
+            name: map_name(&self.h1_name),
+            bytes,
+            manifest,
+        })
+    }
+
+    /// The pinned map: the set it was built from (the base decomposed,
+    /// with everything converted added), its bytes, and the converted
+    /// structure's BSP section.
+    pub(crate) fn assemble<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+        mopp: &[u8],
+    ) -> Result<(TagSet, Vec<u8>, usize)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
@@ -546,8 +563,7 @@ impl Prepared {
 
         self.add_collections(base, &mut set)?;
 
-        let name = map_name(&self.h1_name);
-        set.name = name.clone();
+        set.name = map_name(&self.h1_name);
         set.scenario_path = scenario_path(&self.h1_name);
         let slot = (set.scenario.0 & 0xffff) as usize;
         set.slots[slot].name = Some(set.scenario_path.clone());
@@ -606,12 +622,7 @@ impl Prepared {
         if again.bsps[section] != (file_offset, size) {
             return Err(Error::Invalid("the BSP region moved between builds"));
         }
-        let manifest = self.manifest(&bytes);
-        Ok(Converted {
-            name,
-            bytes,
-            manifest,
-        })
+        Ok((set, bytes, section))
     }
 }
 

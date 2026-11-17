@@ -11,6 +11,8 @@ h1map = { path = "../h1map" }
 # The structure's lightmap pages, converted to a Halo 2 bitmap.
 h1bitmaps = { path = "../h1bitmaps" }
 h1models = { path = "../h1models" }
+# The sound gestalt, rebuilt for a fresh map.
+h1sounds = { path = "../h1sounds" }
 map.workspace = true
 # The structure's Havok MOPP code.
 mopp = { path = "../mopp" }
