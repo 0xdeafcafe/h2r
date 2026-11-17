@@ -45,7 +45,15 @@ export class BitReader {
   constructor(private readonly bytes: Uint8Array) {}
 
   bits(n: number): number {
-    if (this.pos + n > this.bytes.length * 8) throw new PackError("packed frame ends early");
+    const pos = this.pos, b = this.bytes;
+    if (pos + n > b.length * 8) throw new PackError("packed frame ends early");
+    // Up to 24 bits lie in the four bytes from the first one: one word, shifted.
+    if (n <= 24) {
+      const i = pos >> 3;
+      const w = (b[i]! | ((b[i + 1] ?? 0) << 8) | ((b[i + 2] ?? 0) << 16) | ((b[i + 3] ?? 0) << 24)) >>> 0;
+      this.pos = pos + n;
+      return (w >>> (pos & 7)) & ((1 << n) - 1);
+    }
     let v = 0;
     let got = 0;
     while (got < n) {
@@ -129,13 +137,15 @@ const listsOf = (version: number) => (version === PACK_VERSION ? LISTS : version
 
 type Entity = Val[];
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
 function readStrLiteral(r: BitReader): string {
   const len = r.eg(3);
   if (len > MAX_STRING) throw new PackError("string too long");
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) bytes[i] = r.bits(8);
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return UTF8.decode(bytes);
   } catch {
     throw new PackError("string is not UTF-8");
   }
@@ -197,7 +207,9 @@ function readField(r: BitReader, field: Field, prev: Val | undefined, strings: r
 }
 
 function readEntity(r: BitReader, schema: Field[], strings: readonly string[]): Entity {
-  return schema.map((field) => readField(r, field, undefined, strings));
+  const e: Entity = new Array(schema.length);
+  for (let i = 0; i < schema.length; i++) e[i] = readField(r, schema[i]!, undefined, strings);
+  return e;
 }
 
 function readCount(r: BitReader, max: number): number {
@@ -229,11 +241,11 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly En
       const j = cursor + r.seg(0);
       const before = prev[j];
       if (j < 0 || !before) throw new PackError("entity refers past the list");
-      const mask = schema.map((field) => (field.key ? false : r.bit()));
+      // The changed fields' mask (keys never change), then their values.
+      let mask = 0;
+      for (let i = 0; i < schema.length; i++) if (!schema[i]!.key && r.bit()) mask |= 1 << i;
       const e = before.slice();
-      schema.forEach((field, i) => {
-        if (mask[i]) e[i] = readField(r, field, before[i], strings);
-      });
+      for (let i = 0; i < schema.length; i++) if (mask & (1 << i)) e[i] = readField(r, schema[i]!, before[i], strings);
       out.push(e);
       cursor = j + 1;
     } else {
@@ -327,6 +339,29 @@ function objectOf(e: Entity): FrameObject {
   return x;
 }
 
+/** Each entity's frame object, kept on the entity: a delta keeps the
+ *  entities that did not change, so their objects are made once (and go
+ *  with the entity). Frames are not changed after decoding, so sharing
+ *  them is safe. */
+const MADE = Symbol("frame object");
+type Made<T> = Entity & { [MADE]?: T };
+function cached<T>(convert: (e: Entity) => T): (e: Entity) => T {
+  return (e) => {
+    const m = e as Made<T>;
+    let v = m[MADE];
+    if (v === undefined) {
+      v = convert(e);
+      m[MADE] = v;
+    }
+    return v;
+  };
+}
+const playerFrom = cached(playerOf);
+const vehicleFrom = cached(vehicleOf);
+const actorFrom = cached(actorOf);
+const machineFrom = cached(machineOf);
+const objectFrom = cached(objectOf);
+
 interface StreamState {
   seq: number;
   /** The format version its frames were in. */
@@ -366,7 +401,7 @@ export class FrameDecoder {
       if (!s || s.seq + 1 !== seq || s.version !== version) throw new PackError(`delta frame ${seq} of stream ${sid} needs a keyframe first`, true);
       prev = s;
     }
-    const state: StreamState = { seq, version, gameId: prev.gameId, tick: prev.tick, bsp: prev.bsp, strings: prev.strings.slice(), lists: [] };
+    const state: StreamState = { seq, version, gameId: prev.gameId, tick: prev.tick, bsp: prev.bsp, strings: prev.strings, lists: [] };
     if (keyframe) {
       state.gameId = readStrLiteral(r);
       state.tick = r.eg(20);
@@ -377,18 +412,20 @@ export class FrameDecoder {
     }
     const fresh = r.eg(1);
     if (fresh > MAX_NEW_STRINGS || state.strings.length + fresh > MAX_STRINGS) throw new PackError("too many strings");
+    // The table is shared with the frame before until it grows.
+    if (fresh > 0) state.strings = state.strings.slice();
     for (let i = 0; i < fresh; i++) state.strings.push(readStrLiteral(r));
     let hits: Entity[] = [];
     lists.forEach(([schema, max], n) => {
       if (n === 3) hits = readFull(r, HIT, 64, state.strings);
       state.lists[n] = keyframe ? readFull(r, schema, max, state.strings) : readDelta(r, schema, max, prev.lists[n]!, state.strings);
     });
-    const frame: Frame = { game_id: state.gameId, tick: state.tick, players: state.lists[0]!.map(playerOf) };
-    const vehicles = state.lists[1]!.map(vehicleOf);
-    const actors = state.lists[2]!.map(actorOf);
+    const frame: Frame = { game_id: state.gameId, tick: state.tick, players: state.lists[0]!.map(playerFrom) };
+    const vehicles = state.lists[1]!.map(vehicleFrom);
+    const actors = state.lists[2]!.map(actorFrom);
     const hitList = hits.map(hitOf);
-    const machines = state.lists[3]!.map(machineOf);
-    const objects = state.lists[4]!.map(objectOf);
+    const machines = state.lists[3]!.map(machineFrom);
+    const objects = state.lists[4]!.map(objectFrom);
     if (vehicles.length) frame.vehicles = vehicles;
     if (actors.length) frame.actors = actors;
     if (hitList.length) frame.hits = hitList;
