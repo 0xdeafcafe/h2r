@@ -35,6 +35,8 @@ pub struct Telemetry {
     hits: Mutex<Vec<crate::event::HitRecord>>,
     /// The world scan's buffers and lists, kept between frame ticks.
     scan: Mutex<(memory::ScanBuffers, World)>,
+    /// The last tick's roster, whose names the next read reuses.
+    roster: Mutex<Vec<crate::event::PlayerState>>,
     /// Finds the loaded map's file for tag names; set by the boot once its
     /// VFS exists.
     maps: Mutex<Option<MapLocator>>,
@@ -52,6 +54,7 @@ impl Telemetry {
             shots: Mutex::new(BTreeMap::new()),
             hits: Mutex::new(Vec::new()),
             scan: Mutex::default(),
+            roster: Mutex::default(),
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
         }
@@ -246,11 +249,13 @@ impl Telemetry {
     /// The tick's observation, into the session's output; false when the
     /// game tick has not changed since the last one.
     pub(crate) fn observe_tick(&self, guest: &runtime::Guest) -> Result<bool, String> {
-        let mut snapshot =
-            memory::snapshot(guest).map_err(|e| format!("read tick snapshot: {e:?}"))?;
+        let mut roster = self.roster.lock().unwrap();
+        let mut snapshot = memory::snapshot_after(guest, &mut roster)
+            .map_err(|e| format!("read tick snapshot: {e:?}"))?;
         {
             let mut last = self.last_tick.lock().unwrap();
             if *last == Some(snapshot.tick) {
+                *roster = snapshot.players;
                 return Ok(false);
             }
             *last = Some(snapshot.tick);
@@ -280,6 +285,7 @@ impl Telemetry {
             world.placed = snapshot.placed;
             world.bodies = snapshot.bodies;
         }
+        *roster = snapshot.players;
         Ok(true)
     }
 

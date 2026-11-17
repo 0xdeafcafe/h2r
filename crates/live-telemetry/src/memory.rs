@@ -169,6 +169,13 @@ fn fault(f: engine::MemFault) -> GuestFault {
 }
 
 pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
+    players_after(guest, &mut [])
+}
+
+/// [`players`], taking each name from `previous` (the last read's roster)
+/// when the player's datum and name are unchanged, so a steady roster
+/// decodes no names.
+pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Vec<PlayerState>> {
     let array = ptr(guest, layout::PLAYERS_PTR)?;
     // A null data pointer is an error, as a null array is.
     ptr(guest, array + layout::DATUM_DATA)?;
@@ -176,7 +183,8 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(previous.len());
+    let mut units = [0; players::NAME_UNITS];
     for (handle, player) in players.live(guest, 16).map_err(fault)? {
         if !player.listed(guest).map_err(fault)? {
             continue;
@@ -195,11 +203,20 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
             PlayerStats::ZERO
         };
         let local_user = player.local_user(guest).map_err(fault)?;
+        let len = player.name_units(guest, &mut units).map_err(fault)?;
+        let units = &units[..len];
+        let name = previous
+            .iter_mut()
+            .find(|p| {
+                p.datum == handle.raw() && p.player.name.encode_utf16().eq(units.iter().copied())
+            })
+            .map(|p| std::mem::take(&mut p.player.name))
+            .unwrap_or_else(|| String::from_utf16_lossy(units));
         out.push(PlayerState {
             datum: handle.raw(),
             player: Player {
                 index: slot,
-                name: player.name(guest).map_err(fault)?,
+                name,
                 xuid: None,
                 team: i32::from(player.team(guest).map_err(fault)?),
                 local: Some(local_user != -1),
@@ -814,7 +831,13 @@ pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
 }
 
 pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
-    let players = players(guest)?;
+    snapshot_after(guest, &mut [])
+}
+
+/// [`snapshot`], its roster read by [`players_after`] (names from
+/// `previous` while they are unchanged).
+pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Snapshot> {
+    let players = players_after(guest, previous)?;
     let teams = team_scores(guest, &players)?;
     let lookups = Objects::new(guest);
     let objects = players
@@ -1284,6 +1307,29 @@ mod tests {
         assert_eq!(object.vehicle, Some(vehicle));
         assert_eq!(yaw(object.forward), std::f64::consts::PI);
         assert!(snapshot.objects[1].is_none());
+    }
+
+    #[test]
+    fn a_roster_read_after_another_keeps_unchanged_names_and_reads_new_ones() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Sneaky Pete", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "B", 0, false, u32::MAX);
+        let mut previous = players(&guest).unwrap();
+        let kept = previous[0].player.name.as_ptr();
+        // Slot 1 is renamed (one unit longer), slot 0 is not.
+        fixture::put_player(&mut guest, 1, "Bo", 0, false, u32::MAX);
+        let after = players_after(&guest, &mut previous).unwrap();
+        assert_eq!(after, players(&guest).unwrap());
+        assert_eq!(after[0].player.name, "Sneaky Pete");
+        assert_eq!(after[0].player.name.as_ptr(), kept, "reused, not decoded");
+        assert_eq!(after[1].player.name, "Bo");
+        // A name another datum held is not taken for a new one.
+        let mut stranger = after.clone();
+        stranger[0].datum ^= 0x0001_0000;
+        let renamed = players_after(&guest, &mut stranger).unwrap();
+        assert_eq!(renamed[0].player.name, "Sneaky Pete");
+        assert_eq!(stranger[0].player.name, "Sneaky Pete", "left where it was");
+        assert_eq!(renamed, after);
     }
 
     #[test]
