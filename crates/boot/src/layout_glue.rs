@@ -237,7 +237,7 @@ pub fn row_listed<M: Gm>(m: &M, handler: u32, row: i16) -> bool {
 }
 
 /// Our strings. Ids live in an index range no real string uses.
-pub const ID_BASE: u32 = 0x20ff_f000;
+pub const ID_BASE: u32 = crate::ui_kit::ids::TABLE;
 pub fn is_ours(id: u32) -> bool {
     id & 0x00ff_ff00 == 0x00ff_f000
 }

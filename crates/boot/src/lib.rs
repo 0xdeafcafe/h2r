@@ -57,6 +57,7 @@ pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod steam_speaker;
 pub mod ui;
+pub mod ui_kit;
 pub mod video_screen;
 pub mod sse;
 pub mod sweep_diag;

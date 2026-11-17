@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use settings::Store;
 
-use crate::layout_glue::{Gm, ID_BASE};
+use crate::layout_glue::Gm;
 use crate::setting_defs::{
     FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
     TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
@@ -60,7 +60,8 @@ pub const LIST: List = List::Screen(SCREEN);
 /// The string ids the model's texts take: past the layouts' (`0x00` to
 /// `0x1f`) and the small Controls list's (`0x30`, `0x31`), short of the list
 /// name (`0xff`).
-pub const MODEL_IDS: Range<u32> = ID_BASE + 0x40..ID_BASE + 0xff;
+pub const MODEL_IDS: Range<u32> = MODEL.base..MODEL.base + MODEL.len;
+const MODEL: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("ui model");
 
 /// Which of our rows are on: `H2_NO_SPEAKER_ROW`, `H2_NO_STEAM_ROWS`,
 /// `H2_NO_TOUCH_ROWS`, `H2_NO_FOV_ROW` and `H2_NO_VIDEO_SCREEN` take theirs

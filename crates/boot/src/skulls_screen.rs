@@ -45,6 +45,8 @@ use crate::layout_glue::chosen_row;
 use crate::list_class::{self, Action, ListClass, ListLayout, OnFree, PictureSpec, TextBlock};
 use crate::skulls;
 use crate::skulls_menu::{self, SkullsScreen};
+use crate::ui_kit::input::OpenerGuard;
+use crate::ui_kit::lifecycle;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::MemFault;
 use feature::{BuildError, Builder, Call, Flow, Manifest};
@@ -63,9 +65,9 @@ pub const DIFFICULTY_LIST_MODE: u32 = 0x2a0;
 /// window, as the generic back handler `0x2300ea` calls it with the
 /// screen's `+0x78` and `+0x74`). Retail's close starts the screen's out
 /// transition; the screen is freed when it ends.
-pub const SCREEN_CLOSE: u32 = 0x0014_800c;
-const SCREEN_WINDOW: u32 = 0x74;
-const SCREEN_SLOT: u32 = 0x78;
+pub const SCREEN_CLOSE: u32 = lifecycle::SCREEN_CLOSE;
+#[cfg(test)]
+use lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
 /// The difficulty rows: Easy, Normal, Heroic, Legendary.
 pub const DIFFICULTIES: std::ops::RangeInclusive<i16> = 0..=3;
 const DIFFICULTY_NAMES: [&str; 4] = ["Easy", "Normal", "Heroic", "Legendary"];
@@ -80,7 +82,7 @@ fn difficulty_name(row: i16) -> &'static str {
 /// A continue this soon after the page opened is the press that opened it
 /// seen again, not a new one: under two frames at 30 fps, and well under
 /// the gap between two presses of a thumb.
-pub const GUARD: Duration = Duration::from_millis(50);
+pub const GUARD: Duration = crate::ui_kit::input::OPENER_GUARD;
 
 /// `H2_SKULLS_GUARD_MS`: the guard in milliseconds, else [`GUARD`].
 pub fn guard_from(v: Option<&str>) -> Duration {
@@ -210,7 +212,7 @@ pub enum Freed {
 /// has run, so A, X or Start always finds it while the page is up.
 pub struct PageFlow {
     kept: Mutex<(Option<Pending>, Phase)>,
-    opened: Mutex<Option<Instant>>,
+    opened: OpenerGuard,
     guard: Duration,
     on: AtomicBool,
     scratch: OnceLock<u32>,
@@ -220,7 +222,7 @@ impl Default for PageFlow {
     fn default() -> Self {
         PageFlow {
             kept: Mutex::new((None, Phase::Shown)),
-            opened: Mutex::new(None),
+            opened: OpenerGuard::new(GUARD),
             guard: GUARD,
             on: AtomicBool::new(true),
             scratch: OnceLock::new(),
@@ -245,9 +247,6 @@ impl PageFlow {
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, (Option<Pending>, Phase)> {
         self.kept.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    fn opened(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
-        self.opened.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Whether the page is shown at all (its class is on the plan).
     pub fn set_on(&self, on: bool) {
@@ -283,18 +282,17 @@ impl PageFlow {
             from_select: p.from_select,
         };
         *kept = (Some(pending.clone()), Phase::Shown);
-        *self.opened() = Some(Instant::now());
+        self.opened.opened();
         Decision::Page(pending)
     }
     /// When the page was last opened for a kept press.
     pub fn opened_at(&self) -> Option<Instant> {
-        *self.opened()
+        self.opened.last()
     }
     /// How long after the page opened `now` is, when that is within the
     /// guard: a continue then is the press that opened the page.
     pub fn too_soon(&self, now: Instant) -> Option<Duration> {
-        let since = now.saturating_duration_since(self.opened_at()?);
-        (since < self.guard).then_some(since)
+        self.opened.too_soon_by(now, self.guard)
     }
     /// A, X or Start on `page`, now.
     pub fn start(&self, page: u32) -> Step {
@@ -392,13 +390,9 @@ impl Continue {
 
 /// Ask the stack to close `page`, as B does.
 async fn close(cx: &Cx, page: u32) -> Result<(), EntryError> {
-    let (window, slot) = cx.read(|m| -> Result<_, MemFault> {
-        Ok((m.u32(page + SCREEN_WINDOW)?, m.u32(page + SCREEN_SLOT)?))
-    })?;
+    let (window, slot) = lifecycle::window_slot(cx, page)?;
     eprintln!("skulls page: close requested for the page {page:#x} (window {window}, slot {slot})");
-    cx.call(GuestCall::new(SCREEN_CLOSE).eax(slot).ecx(window))
-        .await?;
-    Ok(())
+    lifecycle::close_slot(cx, window, slot).await
 }
 
 fn too_soon_line(since: Duration) -> String {

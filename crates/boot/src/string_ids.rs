@@ -121,3 +121,70 @@ fn the_old_co_op_base_is_no_longer_swallowed_by_the_community_variants() {
     }
     assert!(community_variants::is_ours(0x00ff_e000));
 }
+
+/// Every id a module serves is inside the registry family named for it
+/// (`crate::ui_kit::ids`), so the registry's compile-time check covers it.
+#[test]
+fn every_served_id_is_in_its_registered_family() {
+    use crate::ui_kit::ids::family;
+    let ids = |v: Vec<(u32, &str)>| v.into_iter().map(|(i, _)| i).collect::<Vec<_>>();
+    let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+    let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
+    let skulls = skulls_menu::strings()
+        .into_iter()
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    let checks: Vec<(&str, Vec<u32>)> = vec![
+        ("layouts", ids(layout_glue::strings())),
+        (
+            "speaker",
+            vec![
+                crate::speaker_row::SMALL_ON_ID,
+                crate::speaker_row::SMALL_OFF_ID,
+            ],
+        ),
+        ("live menu rows", ids(custom_games::strings())),
+        ("ui model", model.strings().iter().map(|(i, _)| *i).collect()),
+        (
+            "campaign picker",
+            (0..=campaign_menu::MAX_ROWS as u32)
+                .map(|i| campaign_menu::ID_BASE + i)
+                .collect(),
+        ),
+        (
+            "co-op texts",
+            (0..coop_live::TEXT_SLOTS)
+                .map(coop_live::Texts::id)
+                .collect(),
+        ),
+        (
+            "community variants",
+            (0..community_variants::VARIANTS.len())
+                .flat_map(|i| {
+                    [
+                        community_variants::name_id(i),
+                        community_variants::description_id(i),
+                    ]
+                })
+                .collect(),
+        ),
+        (
+            "signin",
+            std::iter::once(crate::signin_screen::TITLE_ID)
+                .chain(crate::signin_screen::TEXT_IDS)
+                .collect(),
+        ),
+    ];
+    for (name, ids) in checks {
+        let f = family(name);
+        for id in ids {
+            assert!(f.owns(id), "{id:#x} is outside the {name} family");
+        }
+    }
+    for id in skulls {
+        assert!(
+            family("skulls").owns(id) || family("skull row labels").owns(id),
+            "{id:#x} of the skulls pages is outside both skulls families"
+        );
+    }
+}

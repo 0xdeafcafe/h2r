@@ -20,9 +20,12 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--focus N] [--disc disc.iso] [--out file.png]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) == Some("preview") {
+        return preview(args[1..].to_vec());
+    }
     let mut args = args.into_iter();
     let (mut positional, mut disc, mut all) = (Vec::new(), None, false);
     while let Some(a) = args.next() {
@@ -431,6 +434,51 @@ impl<'a> Printer<'a> {
     }
 }
 
+const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--focus N] [--disc disc.iso] [--out file.png]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES, a sample state)\nwith the disc's Controls list geometry and fonts, prints the kit's\nchecks, and writes a PNG (default $TMPDIR/<screen>.png). Nothing is\nwritten into the repository. docs/game/ui-screens.md.";
+
+/// `h2 ui preview`: a screen of ours drawn offline (docs/game/ui-screens.md).
+fn preview(args: Vec<String>) -> Result<()> {
+    use boot::ui_kit::{preview::Disc, screens};
+    let mut args = args.into_iter();
+    let (mut name, mut focus, mut disc, mut out) = (None, None, None, None);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--focus" => focus = Some(args.next().context("--focus needs a row")?.parse::<usize>()?),
+            "--disc" => disc = Some(PathBuf::from(args.next().context("--disc needs an ISO path")?)),
+            "--out" => out = Some(PathBuf::from(args.next().context("--out needs a path")?)),
+            "-h" | "--help" => {
+                println!("{PREVIEW_USAGE}");
+                return Ok(());
+            }
+            s if s.starts_with('-') => bail!("unknown option {s}\n{PREVIEW_USAGE}"),
+            _ => name = Some(a),
+        }
+    }
+    let name = name.context(PREVIEW_USAGE)?;
+    if name == "list" {
+        for n in screens::NAMES {
+            println!("{n}");
+        }
+        return Ok(());
+    }
+    let mut spec = screens::sample(&name)
+        .with_context(|| format!("no screen {name:?}; one of {:?}", screens::NAMES))?;
+    if let Some(f) = focus {
+        spec.focus = f;
+    }
+    let iso = disc.map(Ok).unwrap_or_else(super::default_disc)?;
+    let d = Disc::open(&iso)?;
+    println!("{}", spec.log_line());
+    let findings = d.check(&spec)?;
+    for f in &findings {
+        println!("check: {f}");
+    }
+    let out = out.unwrap_or_else(|| std::env::temp_dir().join(format!("{name}.png")));
+    d.render(&spec)?.write_png(&out)?;
+    println!("wrote {} ({} findings)", out.display(), findings.len());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,3 +544,4 @@ mod tests {
         assert_eq!(ui::SCREEN, FourCC(*b"wgit"));
     }
 }
+

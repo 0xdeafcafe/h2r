@@ -41,7 +41,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use settings::Store;
 
-use crate::layout_glue::{Gm, ID_BASE};
+use crate::layout_glue::Gm;
+#[cfg(test)]
+use crate::layout_glue::ID_BASE;
 use crate::list_class::{ListLayout, PictureSpec, Rows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::ui::{Chosen, LABEL_SLOT};
@@ -60,7 +62,7 @@ pub const FEATURE: &str = "skulls-screen";
 /// the middle bytes only, so a base one higher in the top byte than
 /// [`ID_BASE`] is ours too and clear of every id the model and the other
 /// rows take (`ID_BASE + 0x00..0xff`).
-pub const SKULLS_ID_BASE: u32 = ID_BASE + 0x0100_0000;
+pub const SKULLS_ID_BASE: u32 = crate::ui_kit::ids::family("skulls").base;
 pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
 pub const LOCKED_ID: u32 = SKULLS_ID_BASE + 0x11;
 /// The multiplayer screen's title.
@@ -79,7 +81,7 @@ const FOUND: Range<u32> = SKULLS_ID_BASE + 0xc0..SKULLS_ID_BASE + 0x100;
 /// skull, then the campaign page's stepped forms ([`ARROW_LABELS`]). The
 /// top byte is clear of the campaign picker's (`campaign_menu::ID_BASE`,
 /// `ID_BASE + 0x0200_0000`).
-const ROW_LABEL_BASE: u32 = ID_BASE + 0x0300_0000;
+const ROW_LABEL_BASE: u32 = crate::ui_kit::ids::family("skull row labels").base;
 /// The campaign page's On and Off labels, two per skull: "Mythic: < On >",
 /// a value left and right step.
 const ARROW_LABELS: u32 = ROW_LABEL_BASE + 0x80;
