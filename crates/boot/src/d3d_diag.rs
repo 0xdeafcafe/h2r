@@ -26,7 +26,7 @@
 //!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -82,9 +82,9 @@ pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -
 pub struct DrawStats {
     pub presents: u64,
     /// (outcome, target) -> draws; the outcome is `None` for drawn.
-    by_outcome: HashMap<(Option<String>, Target), u64>,
+    by_outcome: rustc_hash::FxHashMap<(Option<String>, Target), u64>,
     /// Texture (format, kind) bound to drawn draws -> draws.
-    textures: HashMap<(D3DFormat, TextureKind), u64>,
+    textures: rustc_hash::FxHashMap<(D3DFormat, TextureKind), u64>,
     /// Frames (numbered as `frame-N.png`) with a drawn draw that samples
     /// a depth texture: Halo's shadow apply (layer 11) reading a shadow
     /// map. In order, each once.

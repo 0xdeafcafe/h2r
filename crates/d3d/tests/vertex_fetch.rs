@@ -244,7 +244,7 @@ impl Gpu {
         let w = psdef_words(&copy_v0());
         words.render[..57].copy_from_slice(&w[..57]);
         words.render[136] = w[54];
-        let mut constants = Box::new([[0.0f32; 4]; CONSTANTS]);
+        let mut constants = [[0.0f32; 4]; CONSTANTS];
         constants[0] = [scale(t); 4];
         constants[1] = [0.5; 4];
         let draw = ResolvedDraw {
@@ -273,11 +273,11 @@ impl Gpu {
                 },
                 provided_inputs: 1 | 1 << 3,
                 vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],
-                constants,
+                constants: std::sync::Arc::new(constants),
                 final_combiner_latch: w[8] | w[9] != 0,
                 affine_projection: false,
-                pixel_shader: Some(Box::new(w)),
-                combiner_state: Box::new(words.render[..57].try_into().unwrap()),
+                pixel_shader: Some(std::sync::Arc::new(w)),
+                combiner_state: std::sync::Arc::new(words.render[..57].try_into().unwrap()),
             },
             raw: std::sync::Arc::new(words.clone()),
             viewport: Viewport {
