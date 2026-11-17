@@ -102,7 +102,9 @@ use tags::schema::{Relocator, Schema, to_built};
 let r = Relocator::new(Schema::builtin(), &mut map)?; // reads the metadata once
 let tree: Result<map::build::Block, tags::schema::Refusal> = r.to_built(id);
 let ids = r.movable(); // tags that can all move together
+r.relocate(&mut set, &ids)?; // set = TagSet::from_map(&mut map)
 // one-off: tags::schema::to_built(&mut map, id)?
+// load-test map: tags::schema::relocated_variant(&mut map, reverse)?
 ```
 
 `Relocator::check(id)` walks the tag with its group's layout and refuses
@@ -121,11 +123,16 @@ let ids = r.movable(); // tags that can all move together
   their region, which this lane does not do).
 
 `to_built` turns the tag into a `map::build::Block` tree: block and data
-reference fields become `Block`/`Data` fixups, and shared arrays are
-**copied** into the tag that uses them. The tree is self-contained, though
-larger than the original. Tag references, datums and string IDs keep their
-bytes, which stay valid in the same tag set. `schema::remap` rewrites them
-for a tree moved between maps.
+reference fields become `Block`/`Data` fixups. **Sharing is kept**: every
+array gets a sharing key (`Block::share`: a hash of the source map, the
+array's address and length, and its layout), and the builder places each
+key once and points every reference at that copy. So an array shared
+between tags (or twice in one tag) stays shared after relocation.
+`to_built_among(id, moving)` (what `relocate` uses) goes further: an array
+in a tag that is not moving is not copied at all, and its pointer stays.
+Tag references, datums, string IDs and raw pointers keep their bytes,
+which stay valid in the same tag set. `schema::remap` (with a `Remapper`)
+rewrites all four for a tree moved between maps.
 
 `movable()` returns the accepted tags, minus any tag that a staying tag
 points into: every aligned word of every unaccepted tag is scanned for
@@ -159,11 +166,13 @@ decoding to the same `Debug` text once addresses are masked (or failing
 to decode in both maps). Results on
 2026-11-17:
 
+With shared blocks kept shared (2026-11-17, round 2), and the tag-memory
+check on:
+
 | Maps | Tags rebuilt | Notes |
 |---|---|---|
-| 19 (`00a`, `01a`, `03a`, `04a`, `05a`, `05b`, `07b`, `08a`, `ascension`, `beavercreek`, `burial_mounds`, `coagulation`, `colossus`, `cyclotron`, `foundation`, `lockout`, `midship`, `dune`, `elongation`) | every movable tag | e.g. lockout 3,744/4,512, 05a 7,092/8,274 |
-| 12 (`01b`, `03b`, `04b`, `06a`, `06b`, `07a`, `headlong`, `zanzibar`, `containment`, `warlock`, `deltatap`, `backwash`) | movable tags without shared arrays | copying shared arrays overflows the tag-memory bound in reverse order; e.g. headlong 2,817/4,913 |
-| 8 (`08b`, `mainmenu`, `shared`, `single_player_shared`, `waterworks`, `turf`, `gemini`, `triplicate`) | every movable tag, with `TagSet::check_tag_memory = false` | these sit at the bound (the bound is the largest retail map of the type), so any padding overflows; checked offline only |
+| 31 (every campaign map but `08b`, and every MP and map-pack map but `waterworks`, `turf`, `gemini`, `triplicate`) | every movable tag, in reverse slot order | e.g. lockout 3,744/4,512, headlong 3,975/4,913 |
+| 8 (`08b`, `mainmenu`, `shared`, `single_player_shared`, `waterworks`, `turf`, `gemini`, `triplicate`) | none: over the bound | the test reports them and does not fail. Relayout adds a few KiB of alignment padding (`08b`: moved tags 0x1ab47c to 0x1abb5e bytes, memory 0x6ea000 to 0x6ed000), and these maps have no page to spare in either order. With the check off they pass (round 1) |
 
 Across all maps, 0 to 4 rebuilt tags per map landed back at their old
 address by chance. No tree and no decoder result differed on any map.
@@ -192,29 +201,58 @@ nothing), so bytes past it are not reached. These cases are listed per
 place by `H2_SCHEMA_WHY=1`.
 
 Unit tests (`cargo test -p tags schema`), on an invented map: blocks, data
-references, tag references, datums and string IDs are inferred; the text
-form round-trips; tags move and read back identical; an undescribed
-pointer and a missing block field each keep a tag pinned.
+references, tag references, datums, string IDs and raw pointers are
+inferred; the text form round-trips; tags move and read back identical; an
+undescribed pointer and a missing block field each keep a tag pinned;
+`remap` rewrites tag references (nulling dropped ones), datums, string IDs
+and raw pointers at every depth and leaves scalars alone.
+`cargo test -p map build` covers shared blocks placed once.
+
+## Raw-resource pointers (round 2, candidates)
+
+After the other fields, a 4-byte offset is a **raw pointer** when every
+instance is `0xffffffff`, 0, or a selector plus offset past the header and
+before the selected file's tag index (`mainmenu`, `shared` and
+`single_player_shared` sizes come from the corpus), with at least two
+distinct values, all 4-aligned and not all multiples of 64 KiB (round
+floats and flag words are; bitmap pixels are 0x200-aligned). 60 fields
+qualify, among them the bitmap LOD pointers (`bitm` `0x44/0x1c..0x24`),
+the `matg` locale-table offsets, `mode` section offsets and `ugh!`
+permutations. The rule cannot tell an offset from a **size** with the same
+properties: `scnr 0x210/0x4` (BSP region size) and probably some `sbsp`,
+`vehi` and `weat` fields are sizes. Raw fields get no fixup, so relocation
+inside a map is unaffected (and a raw field holding an address still makes
+the tag refused). They matter only to `remap` when moving tags between
+maps; check them before trusting a transplant.
 
 ## Load test
 
-Not built yet: `h2 map testbuild --relocate-all` should write a retail map
-with every `movable()` tag rebuilt and moved (as the shuffle does), for the
-game to load. Until then the shuffle is offline evidence only.
+```sh
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout --relocate-all
+H2_MAP_DIR=~/h2-testmaps/relocated cargo h2 play disc/halo2.iso --level lockout
+```
+
+The first writes `relocated/lockout.map`: every `movable()` tag but slot 0
+rebuilt from the schema with sharing kept, in reverse slot order (slot
+order if that overflows), checked to read back. On lockout: 3,744 of 4,512
+tags rebuilt, all 3,744 at new addresses. **Success:** `map override:
+maps\lockout from …` and `level boot: lockout loaded`, and the level looks
+and plays like the disc's. A crash or wrong objects means a field the
+schema gets wrong (a pointer the check missed, or a layout the engine needs
+in its original order); bisect by building with fewer groups.
 
 ## Open
 
-- **Transplant** (copying a tag graph between maps) is not done. `remap`
-  is written but untested. Raw-resource pointers are not inferred yet, so
-  a transplanted tag's local raw data (geometry, sound, pixels) would point
-  at the wrong file offsets. Shared-map pointers (`shared.map`,
-  `single_player_shared.map`) stay valid.
-- **Deduplicating shared arrays** in the builder would stop built trees
-  growing. Today they are copied into each tag that uses them.
-- The remaining groups above, raw pointers, and BSP-region tags (`sbsp`,
-  `ltmp`, which need the builder's BSP sections).
-- Whether the engine accepts moved tags, depth-first child order and
-  copied shared blocks is untested in game.
+- **Transplant** (copying a tag graph between maps) has no retail test
+  yet. `remap` is unit-tested; raw pointers are candidates (above), and
+  copying local raw data needs each resource's size, which the schema
+  does not pair with its pointer.
+- The 8 maps at the tag-memory bound need a relayout without padding
+  growth (e.g. emitting children in their source order).
+- The remaining groups above and BSP-region tags (`sbsp`, `ltmp`, which
+  need the builder's BSP sections).
+- Whether the engine accepts moved tags and depth-first child order is
+  untested in game (the `--relocate-all` load test).
 - Ambiguous fields are not marked unknown in the file. The per-tag check
   stands in for that. A new map whose tags put an address in such a field
   will be refused, not mis-relocated.

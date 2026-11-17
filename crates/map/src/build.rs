@@ -56,6 +56,11 @@ pub struct Block {
     pub align: u32,
     /// Layout-dependent fields, by offset into `bytes`.
     pub fixups: Vec<Fixup>,
+    /// Sharing key: every block with the same key is placed once (in the
+    /// same region), and each reference points at that one copy. The caller
+    /// promises blocks with one key are identical. Retail caches share
+    /// identical blocks between tags this way.
+    pub share: Option<u64>,
 }
 
 /// One layout-dependent field of a [`Block`].
@@ -142,11 +147,17 @@ impl Block {
             bytes,
             align: 4,
             fixups: Vec::new(),
+            share: None,
         }
     }
     /// A zero-filled block.
     pub fn zeroed(size: usize) -> Self {
         Self::new(vec![0; size])
+    }
+    /// Set the sharing key (see [`Block::share`]).
+    pub fn shared(mut self, key: u64) -> Self {
+        self.share = Some(key);
+        self
     }
     /// Set the address alignment (a power of two).
     pub fn aligned(mut self, align: u32) -> Self {
@@ -579,9 +590,16 @@ impl TagSet {
         }
         let index = map.read_file_range(h.index_offset.into(), h.index_size.into())?;
         let index_word = |at: usize| u32::from_le_bytes(index[at..at + 4].try_into().expect("4"));
-        let index_entries_end = (index_word(8) - INDEX_VIRTUAL_BASE)
-            .checked_add(16 * map.index_slots())
-            .ok_or(Error::Invalid("tag entry table"))?;
+        let tags_rel = index_word(8).wrapping_sub(INDEX_VIRTUAL_BASE);
+        let index_entries_end = if tags_rel < h.index_size {
+            tags_rel
+                .checked_add(16 * map.index_slots())
+                .ok_or(Error::Invalid("tag entry table"))?
+        } else {
+            // The entry table sits in the metadata (a grown index): the
+            // index region holds only its header and groups.
+            0x20 + 12 * map.groups().len() as u32
+        };
         let metadata = {
             let mut m = Vec::new();
             let mut at = space.file_offset;
@@ -772,6 +790,8 @@ struct Region {
     bytes: Vec<u8>,
     /// Where the next allocation starts, relative to `base`.
     cursor: usize,
+    /// Addresses of shared blocks placed so far, by key.
+    shared: HashMap<u64, u32>,
 }
 impl Region {
     fn new(base: u32, bytes: Vec<u8>) -> Self {
@@ -780,6 +800,7 @@ impl Region {
             base,
             bytes,
             cursor,
+            shared: HashMap::new(),
         }
     }
     fn alloc(&mut self, len: usize, align: u32) -> Result<u32> {
@@ -809,7 +830,28 @@ impl Region {
         Ok(())
     }
     fn emit(&mut self, block: &Block, r: &Resolve) -> Result<u32> {
+        self.emit_in(block, r, None)
+    }
+    /// Emit `block`; a shared block already placed here or in `outer` (a
+    /// dry run's view of the real region) is not placed again.
+    fn emit_in(
+        &mut self,
+        block: &Block,
+        r: &Resolve,
+        outer: Option<&HashMap<u64, u32>>,
+    ) -> Result<u32> {
+        if let Some(k) = block.share
+            && let Some(&a) = self
+                .shared
+                .get(&k)
+                .or_else(|| outer.and_then(|o| o.get(&k)))
+        {
+            return Ok(a);
+        }
         let addr = self.alloc(block.bytes.len(), block.align)?;
+        if let Some(k) = block.share {
+            self.shared.insert(k, addr);
+        }
         let start = (addr - self.base) as usize;
         self.bytes[start..start + block.bytes.len()].copy_from_slice(&block.bytes);
         let mut spans: Vec<_> = block
@@ -835,17 +877,21 @@ impl Region {
                         return Err(Error::Invalid("block count does not match its bytes"));
                     }
                     words[0] = *count;
-                    words[1] = if *count == 0 { 0 } else { self.emit(child, r)? };
+                    words[1] = if *count == 0 {
+                        0
+                    } else {
+                        self.emit_in(child, r, outer)?
+                    };
                 }
                 FixupKind::Data(child) => {
                     words[0] = u32::try_from(child.bytes.len()).map_err(|_| Error::Limit)?;
                     words[1] = if child.bytes.is_empty() {
                         0
                     } else {
-                        self.emit(child, r)?
+                        self.emit_in(child, r, outer)?
                     };
                 }
-                FixupKind::Pointer(child) => words[0] = self.emit(child, r)?,
+                FixupKind::Pointer(child) => words[0] = self.emit_in(child, r, outer)?,
                 FixupKind::TagRef(id) | FixupKind::TagId(id) => {
                     let group = if *id == TagId::NULL {
                         u32::MAX
@@ -1008,7 +1054,30 @@ impl<'a> Builder<'a> {
             .collect();
 
         // Index: header, groups, tag entries.
-        let index_bytes = 0x20 + 12 * set.groups.len() as u64 + 16 * set.slots.len() as u64;
+        let groups_end = 0x20 + 12 * set.groups.len() as u64;
+        let entries_bytes = 16 * set.slots.len() as u64;
+        let mut index_bytes = groups_end + entries_bytes;
+        // A pinned map's index region has uninterpreted bytes after its
+        // entries (the "tail"). Entries that outgrow the old ones go into
+        // the tail where it is zero (e.g. after `clear_index_tail`);
+        // otherwise the entry table moves to the end of the ordinary
+        // metadata (the index header points at it), and the tail stays.
+        let entries_in_meta = pin.is_some_and(|p| {
+            let old = u64::from(p.index_entries_end);
+            index_bytes > old
+                && (index_bytes > p.index.len() as u64
+                    || p.index[old as usize..index_bytes as usize]
+                        .iter()
+                        .any(|b| *b != 0))
+        });
+        if entries_in_meta {
+            if groups_end > pin.map_or(0, |p| u64::from(p.index_entries_end)) {
+                return Err(Error::Invalid(
+                    "a pinned map's group table cannot grow over its index tail",
+                ));
+            }
+            index_bytes = groups_end;
+        }
         let mut index_size = round_up(index_bytes, PAGE.into());
         if let Some(p) = pin {
             if index_size > u64::from(p.index_size) {
@@ -1167,7 +1236,7 @@ impl<'a> Builder<'a> {
                 let align = root.max_align();
                 let size = {
                     let mut dry = Region::new(0, Vec::new());
-                    dry.emit(root, &resolve)?;
+                    dry.emit_in(root, &resolve, Some(&meta.shared))?;
                     dry.bytes.len()
                 };
                 let fit = holes.iter().enumerate().find_map(|(h, &(lo, hi))| {
@@ -1209,6 +1278,30 @@ impl<'a> Builder<'a> {
                 ));
             }
             None => {}
+        }
+        let groups_addr = INDEX_VIRTUAL_BASE + 0x20;
+        let mut tags_addr = groups_addr + 12 * set.groups.len() as u32;
+        let entry = |i: usize, slot: &Slot| -> [u32; 4] {
+            let (class, id) = slot
+                .tag
+                .as_ref()
+                .map_or((u32::MAX, u32::MAX), |t| (t.group.as_u32(), t.id.0));
+            [class, id, tag_layout[i].0, tag_layout[i].1]
+        };
+        if entries_in_meta {
+            // After every tag (and the old region's length), 16-aligned.
+            let end = meta
+                .bytes
+                .len()
+                .max(pin.map_or(0, |p| p.metadata_size as usize));
+            let at = round_up(end as u64, 16) as usize;
+            meta.bytes.resize(at + entries_bytes as usize, 0);
+            tags_addr = metadata_base + u32::try_from(at).map_err(|_| Error::Limit)?;
+            for (i, slot) in set.slots.iter().enumerate() {
+                for (k, v) in entry(i, slot).into_iter().enumerate() {
+                    put(&mut meta.bytes, at + i * 16 + k * 4, v);
+                }
+            }
         }
         let mut metadata_size = round_up(meta.bytes.len() as u64, PAGE.into());
         if let Some(p) = pin {
@@ -1285,19 +1378,14 @@ impl<'a> Builder<'a> {
         // Tag index.
         let index_at = round_up(file.len() as u64, SECTOR) as usize;
         file.resize(index_at, 0);
-        let groups_addr = INDEX_VIRTUAL_BASE + 0x20;
-        let tags_addr = groups_addr + 12 * set.groups.len() as u32;
         let mut index = match pin {
             Some(p) => {
-                // The bytes after the entries are uninterpreted; never
-                // overwrite them.
-                if index_bytes > u64::from(p.index_entries_end) {
-                    return Err(Error::Invalid(
-                        "a pinned map's tag index cannot grow (uninterpreted bytes follow it)",
-                    ));
-                }
+                // Clear the old header, groups and entries; nonzero tail
+                // bytes past them are never overwritten (checked above).
                 let mut index = p.index.clone();
-                index[..index_bytes as usize].fill(0);
+                let clear = index_bytes.max(p.index_entries_end.into()) as usize;
+                let clear = clear.min(index.len());
+                index[..clear].fill(0);
                 index
             }
             None => vec![0u8; index_size as usize],
@@ -1324,16 +1412,13 @@ impl<'a> Builder<'a> {
                 g.grandparent.map_or(u32::MAX, FourCC::as_u32),
             );
         }
-        for (i, slot) in set.slots.iter().enumerate() {
-            let at = (tags_addr - INDEX_VIRTUAL_BASE) as usize + i * 16;
-            let (class, id) = slot
-                .tag
-                .as_ref()
-                .map_or((u32::MAX, u32::MAX), |t| (t.group.as_u32(), t.id.0));
-            put(&mut index, at, class);
-            put(&mut index, at + 4, id);
-            put(&mut index, at + 8, tag_layout[i].0);
-            put(&mut index, at + 12, tag_layout[i].1);
+        if !entries_in_meta {
+            for (i, slot) in set.slots.iter().enumerate() {
+                let at = (tags_addr - INDEX_VIRTUAL_BASE) as usize + i * 16;
+                for (k, v) in entry(i, slot).into_iter().enumerate() {
+                    put(&mut index, at + k * 4, v);
+                }
+            }
         }
         file.extend_from_slice(&index);
         let metadata_at = file.len();

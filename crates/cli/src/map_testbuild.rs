@@ -9,10 +9,12 @@ use map::Map;
 
 use crate::safe_out::{self, OutDir};
 
-const USAGE: &str = "usage: h2 map testbuild [disc.iso] --out DIR [--map NAME] [--keep-tail] [--keep-header] [--force]
+const USAGE: &str = "usage: h2 map testbuild [disc.iso] --out DIR [--map NAME] [--keep-tail] [--keep-header] [--relocate-all] [--force]
   writes DIR/moved/NAME.map (every bitmap and its pixels moved) and
   DIR/<fresh variant>/NAME.map (index tail cleared, header from scratch);
   with --keep-tail or --keep-header only the fresh variant is written;
+  with --relocate-all only DIR/relocated/NAME.map (every tag the inferred
+  schema can relocate rebuilt at a new address, docs/formats/tag-schema.md);
   load one with H2_MAP_DIR=DIR/<variant> h2 play <disc> --level NAME";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,6 +24,7 @@ pub(crate) struct Args {
     pub map: String,
     pub keep_tail: bool,
     pub keep_header: bool,
+    pub relocate_all: bool,
     pub force: bool,
 }
 
@@ -52,6 +55,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Args>> {
     let mut out = None;
     let mut map = None;
     let (mut keep_tail, mut keep_header, mut force) = (false, false, false);
+    let mut relocate_all = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--out" => {
@@ -70,6 +74,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Args>> {
             }
             "--keep-tail" => keep_tail = true,
             "--keep-header" => keep_header = true,
+            "--relocate-all" => relocate_all = true,
             "--force" => force = true,
             "-h" | "--help" => return Ok(None),
             a if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
@@ -80,6 +85,9 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Args>> {
                 disc = Some(PathBuf::from(a));
             }
         }
+    }
+    if relocate_all && (keep_tail || keep_header) {
+        bail!("--relocate-all writes its own variant; drop --keep-tail/--keep-header");
     }
     let map = map.unwrap_or_else(|| "lockout".into());
     let map = map.strip_suffix(".map").unwrap_or(&map).to_owned();
@@ -92,6 +100,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Args>> {
         map,
         keep_tail,
         keep_header,
+        relocate_all,
         force,
     }))
 }
@@ -126,6 +135,10 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     map.validate_checksum()
         .context("the disc map's checksum does not match")?;
     let out = OutDir::new(&args.out, args.force)?.protecting(&disc);
+
+    if args.relocate_all {
+        return relocated(&args, &disc, &out, &wanted, &mut map);
+    }
 
     // The keep flags only bisect the fresh variant; moved doesn't change.
     if !(args.keep_tail || args.keep_header) {
@@ -177,6 +190,68 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// `--relocate-all`: every movable tag rebuilt from the inferred schema and
+/// placed in reverse slot order (so each lands elsewhere), or in slot order
+/// if fragmentation would overflow the tag memory.
+fn relocated<R: std::io::Read + std::io::Seek>(
+    args: &Args,
+    disc: &std::path::Path,
+    out: &OutDir,
+    wanted: &str,
+    map: &mut Map<R>,
+) -> Result<()> {
+    let mut order = "reverse slot";
+    let (ids, bytes, layout) = match tags::schema::relocated_variant(map, true)
+        .map_err(anyhow::Error::from)
+        .and_then(|(set, ids)| Ok((ids, set.build()?)))
+    {
+        Ok((ids, (bytes, layout))) => (ids, bytes, layout),
+        Err(e) => {
+            println!("reverse order failed ({e}); trying slot order");
+            order = "slot";
+            let (set, ids) = tags::schema::relocated_variant(map, false)?;
+            let (bytes, layout) = set
+                .build()
+                .context("building the relocated variant (this map is at the tag-memory bound)")?;
+            (ids, bytes, layout)
+        }
+    };
+    check(&bytes, map)?;
+    let built = Map::from_reader(Cursor::new(&bytes))?;
+    let moved = ids
+        .iter()
+        .filter(|id| {
+            let a = map
+                .tag(**id)
+                .ok()
+                .and_then(|t| t.location)
+                .map(|l| l.address);
+            let b = built
+                .tag(**id)
+                .ok()
+                .and_then(|t| t.location)
+                .map(|l| l.address);
+            a != b
+        })
+        .count();
+    let path = out.write(&["relocated".into(), wanted.to_owned()], &bytes)?;
+    println!(
+        "relocated: {} ({} bytes): {}/{} tags rebuilt from the schema ({order} order), {moved} at new addresses, metadata {:#x}",
+        path.display(),
+        layout.file_size,
+        ids.len(),
+        map.tags().len(),
+        layout.memory_size,
+    );
+    println!(
+        "load with: H2_MAP_DIR={}/relocated h2 play {} --level {}",
+        args.out.display(),
+        disc.display(),
+        args.map
+    );
+    Ok(())
+}
+
 /// The built map must read back with the same tags and a valid checksum.
 fn check<R: std::io::Read + std::io::Seek>(bytes: &[u8], source: &Map<R>) -> Result<()> {
     let mut built = Map::from_reader(Cursor::new(bytes))?;
@@ -212,9 +287,15 @@ mod tests {
                 map: "lockout".into(),
                 keep_tail: false,
                 keep_header: false,
+                relocate_all: false,
                 force: false,
             }
         );
+        let a = args("testbuild --out o --relocate-all --map zanzibar")
+            .unwrap()
+            .unwrap();
+        assert!(a.relocate_all);
+        assert_eq!(a.map, "zanzibar");
         assert_eq!(a.fresh_dir(), "fresh");
         let a = args("testbuild disc/halo2.iso --map 01a_tutorial.map --keep-header --out o --keep-tail --force")
             .unwrap()
@@ -242,6 +323,7 @@ mod tests {
         assert!(args("testbuild --out a --map").is_err());
         assert!(args("testbuild --out a --map ../x").is_err());
         assert!(args("testbuild --out a --bogus").is_err());
+        assert!(args("testbuild --out a --relocate-all --keep-tail").is_err());
         assert!(args("testbuild a.iso b.iso --out o").is_err());
         assert!(args("--help").unwrap().is_none());
         assert!(args("testbuild --help").unwrap().is_none());

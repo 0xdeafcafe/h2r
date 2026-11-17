@@ -1,6 +1,6 @@
 use super::infer::{MapSample, infer};
 use super::*;
-use map::build::{Block, TagPayload, TagSet};
+use map::build::{Block, RawRef, TagPayload, TagSet};
 use map::{CacheType, FourCC, Map};
 use std::io::Cursor;
 
@@ -9,7 +9,7 @@ const THNG: FourCC = FourCC(*b"thng");
 /// An invented map: globals, scenario and `n` tags of an invented group.
 /// Each `thng` root (0x30 bytes) has a block at 0x8 of `k` elements (0x14
 /// bytes, a data reference at 0x4 and a string ID at 0x10), a tag reference
-/// to the globals at 0x18, a bare datum (the scenario) at 0x24 and a float
+/// to the globals at 0x18, a raw pointer at 0x20, a bare datum (the scenario) at 0x24 and a float
 /// at 0x2c. With `stray`, the last tag gets an undescribed pointer at 0x28.
 fn invented(n: u32, stray: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
     let mut set = TagSet::new(CacheType::Multiplayer, "schema", "invented\\schema");
@@ -30,6 +30,10 @@ fn invented(n: u32, stray: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
             TagPayload::Built(Block::zeroed(0x3e0)),
         )
         .unwrap();
+    let raws = [
+        set.add_raw(vec![1; 0x40], 0x200),
+        set.add_raw(vec![2; 0x40], 0x200),
+    ];
     let mut ids = Vec::new();
     for t in 0..n {
         let k = t % 3 + 1;
@@ -46,6 +50,7 @@ fn invented(n: u32, stray: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
         root.put_u32(0, t)
             .block(8, k, elems)
             .tag_ref(0x18, set.globals)
+            .raw(0x20, RawRef::Local(raws[t as usize % 2]))
             .tag_id(0x24, set.scenario)
             .put_f32(0x2c, 1.5);
         ids.push(
@@ -85,6 +90,7 @@ fn expected() -> Struct {
         fields: BTreeMap::from([
             (8, Field::Block(Box::new(elem))),
             (0x18, Field::TagRef),
+            (0x20, Field::Raw),
             (0x24, Field::TagId),
         ]),
     }
@@ -195,4 +201,51 @@ fn a_too_small_layout_leaves_bytes_uncovered() {
         to_built_with(&Schema::default(), &mut map, ids[0]).unwrap(),
         Err(Refusal::NoSchema)
     );
+}
+
+struct Shift;
+impl Remapper for Shift {
+    fn datum(&mut self, d: u32) -> Option<u32> {
+        // Keep even slots (shifted), drop odd ones.
+        (d & 1 == 0).then_some(d + 0x10)
+    }
+    fn string(&mut self, v: u32) -> u32 {
+        v ^ 0x0000_0100
+    }
+    fn raw(&mut self, v: u32) -> u32 {
+        0x8000_0000 | (v & 0xffff)
+    }
+}
+
+#[test]
+fn remap_rewrites_ids_strings_and_raw_pointers_at_every_depth() {
+    let (mut map, ids) = invented(3, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let r = Relocator::new(&schema, &mut map).unwrap();
+    let tag = ids[2]; // three elements
+    let before = r.to_built(tag).unwrap();
+    let mut after = before.clone();
+    remap(&expected(), &mut after, 1, &mut Shift);
+    let w = |b: &Block, at: usize| u32::from_le_bytes(b.bytes[at..at + 4].try_into().unwrap());
+    // Root: the tag reference to the globals (slot 0, even) is shifted,
+    // the scenario datum (slot 1, odd) dropped, the raw pointer rewritten.
+    assert_eq!(w(&after, 0x1c), w(&before, 0x1c) + 0x10);
+    assert_eq!(w(&after, 0x18), w(&before, 0x18));
+    assert_eq!(w(&after, 0x24), u32::MAX);
+    assert_eq!(w(&after, 0x20), 0x8000_0000 | (w(&before, 0x20) & 0xffff));
+    // Nested: every element's string ID.
+    let child = |b: &Block| match &b.fixups.iter().find(|f| f.offset == 8).unwrap().kind {
+        map::build::FixupKind::Block { child, .. } => child.clone(),
+        _ => unreachable!(),
+    };
+    let (cb, ca) = (child(&before), child(&after));
+    for e in 0..3 {
+        let at = e * 0x14 + 0x10;
+        assert_ne!(w(&cb, at), 0);
+        assert_eq!(w(&ca, at), w(&cb, at) ^ 0x100);
+    }
+    // Scalars untouched.
+    assert_eq!(after.bytes[..0x18], before.bytes[..0x18]);
 }

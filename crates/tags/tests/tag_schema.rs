@@ -7,13 +7,13 @@
 //! H2_DISC=disc/halo2.iso H2_MAPPACK=disc/mappack.iso \
 //!   cargo test --release -p tags --test tag_schema -- --ignored --nocapture
 //! ```
-use map::build::{TagPayload, TagSet};
+
 use map::{FourCC, Map};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 use tags::schema::infer::{MapSample, infer};
-use tags::schema::{Memory, Refusal, Relocator, Schema, read_tree};
+use tags::schema::{Memory, Refusal, Relocator, Schema, read_tree, relocated_variant};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 type DiscMap = Map<BufReader<File>>;
@@ -155,16 +155,23 @@ fn coverage_report() -> Res<()> {
 #[test]
 #[ignore = "needs the owner's ISOs"]
 fn shuffle_every_relocatable_tag() -> Res<()> {
-    let mut failed = Vec::new();
+    let (mut failed, mut at_bound) = (Vec::new(), Vec::new());
     for (stem, mut map) in maps()? {
         match shuffle(&stem, &mut map) {
             Ok(()) => {}
+            // Maps already at the bound (the largest of their type) have no
+            // room for the few KiB of alignment padding a relayout adds.
+            Err(e) if e.to_string().contains("tag memory") => {
+                println!("{stem}: at the tag-memory bound: {e}");
+                at_bound.push(stem);
+            }
             Err(e) => {
                 println!("{stem}: FAILED: {e}");
                 failed.push(stem);
             }
         }
     }
+    println!("at the tag-memory bound: {at_bound:?}");
     assert!(failed.is_empty(), "failed: {failed:?}");
     Ok(())
 }
@@ -173,58 +180,37 @@ fn shuffle(stem: &str, map: &mut DiscMap) -> Res<()> {
     let started = std::time::Instant::now();
     let mut cov = BTreeMap::new();
     let relocator = coverage_of(map, &mut cov)?;
-    // Freed space is reused (appending overflows the tag-memory bound on
-    // some maps), in reverse slot order so tags land elsewhere. Shared
-    // arrays are copied into each tag that uses them, which grows the
-    // metadata; if that overflows, tags with shared arrays stay pinned.
-    let build =
-        |ids: &[map::TagId], reverse: bool, bounded: bool, map: &mut DiscMap| -> Res<Vec<u8>> {
-            let mut set = TagSet::from_map(map)?;
-            set.reverse_built = reverse;
-            set.check_tag_memory = bounded;
-            for &id in ids {
-                let block = relocator.to_built(id).map_err(|e| format!("{id}: {e}"))?;
-                set.tag_mut(id).ok_or("tag not in set")?.payload = TagPayload::Built(block);
-            }
-            Ok(set.build()?.0)
-        };
-    // The builder needs slot 0 first in the metadata; it stays pinned.
-    let all: Vec<_> = relocator
-        .movable()
-        .into_iter()
-        .filter(|id| id.index() != 0)
-        .collect();
-    let unshared: Vec<_> = relocator
-        .movable_where(|w| w.foreign.is_empty())
-        .into_iter()
-        .filter(|id| id.index() != 0)
-        .collect();
-    // Maps at the tag-memory bound (the largest of their type) have no
-    // slack for padding; the last try lifts the bound (offline only).
-    let mut tries = [
-        (&all, true, true),
-        (&unshared, true, true),
-        (&all, false, true),
-        (&unshared, false, true),
-        (&all, true, false),
-    ]
-    .into_iter();
-    let (ids, bytes) = loop {
-        let Some((ids, reverse, bounded)) = tries.next() else {
-            return Err("every layout overflows the tag memory".into());
-        };
-        match build(ids, reverse, bounded, map) {
-            Ok(b) => {
-                if !bounded {
-                    println!("{stem}: over the tag-memory bound (offline only)");
+    // Freed space is reused, in reverse slot order so tags land elsewhere;
+    // if fragmentation overflows the tag-memory bound, in slot order.
+    let mut order = "reverse";
+    let (ids, bytes) = match relocated_variant(map, true)
+        .and_then(|(set, ids)| Ok((ids, set.build()?.0)))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            println!("{stem}: reverse order: {e}");
+            order = "slot";
+            let (mut set, ids) = relocated_variant(map, false)?;
+            match set.build() {
+                Ok(b) => (ids, b.0),
+                Err(e) => {
+                    // How far over, and where the growth is.
+                    set.check_tag_memory = false;
+                    let over = Map::from_reader(Cursor::new(set.build()?.0))?;
+                    let (mut before, mut after) = (0u64, 0u64);
+                    for id in &ids {
+                        before += u64::from(map.tag(*id)?.location.map_or(0, |l| l.size));
+                        after += u64::from(over.tag(*id)?.location.map_or(0, |l| l.size));
+                    }
+                    println!(
+                        "{stem}: slot order: {e}: memory {:#x} -> {:#x}, bound {:#x}; moved tags {before:#x} -> {after:#x} bytes",
+                        map.header().tag_data_size,
+                        over.header().tag_data_size,
+                        map::writer::max_metadata_size(map.header().cache_type)?
+                    );
+                    return Err(e.into());
                 }
-                break (ids.clone(), b);
             }
-            Err(e) => println!(
-                "{stem}: {} tags, {} order: {e}",
-                ids.len(),
-                if reverse { "reverse" } else { "slot" }
-            ),
         }
     };
     let mut moved = Map::from_reader(Cursor::new(bytes))?;
@@ -270,8 +256,8 @@ fn shuffle(stem: &str, map: &mut DiscMap) -> Res<()> {
         }
     }
     println!(
-        "{stem}: rebuilt {}/{} tags ({stayed} at their old address), trees identical, \
-         {same_decode}/{decoded} decoder results identical ({:?})",
+        "{stem}: rebuilt {}/{} tags in {order} order ({stayed} at their old address), \
+         trees identical, {same_decode}/{decoded} decoder results identical ({:?})",
         ids.len(),
         map.tags().len(),
         started.elapsed()

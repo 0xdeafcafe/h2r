@@ -50,6 +50,9 @@ pub enum Field {
     TagId,
     /// 4 bytes: a string ID (`index | length << 24`).
     StringId,
+    /// 4 bytes: a raw-resource pointer (selector in the top two bits, file
+    /// offset below; `0xffffffff` is null).
+    Raw,
 }
 
 impl Field {
@@ -57,7 +60,7 @@ impl Field {
     pub fn width(&self) -> u32 {
         match self {
             Field::Block(_) | Field::TagRef => 8,
-            Field::TagId | Field::StringId => 4,
+            Field::TagId | Field::StringId | Field::Raw => 4,
         }
     }
 }
@@ -134,6 +137,9 @@ impl Schema {
                     }
                     Field::StringId => {
                         let _ = writeln!(out, "{pad}{offset:#x} string");
+                    }
+                    Field::Raw => {
+                        let _ = writeln!(out, "{pad}{offset:#x} raw");
                     }
                 }
             }
@@ -220,6 +226,7 @@ impl Schema {
                 Some("tagref") => Field::TagRef,
                 Some("datum") => Field::TagId,
                 Some("string") => Field::StringId,
+                Some("raw") => Field::Raw,
                 _ => return Err(err("bad field")),
             };
             if offset + field.width() > parent.size {
@@ -386,7 +393,9 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
             let e = (i * s.size) as usize;
             let elem = &bytes[e..e + s.size as usize];
             let mut covered = vec![false; elem.len()];
-            for (&o, f) in &s.fields {
+            // Raw fields are checked too: one holding an address is a
+            // misclassified pointer.
+            for (&o, f) in s.fields.iter().filter(|(_, f)| !matches!(f, Field::Raw)) {
                 covered[o as usize..(o + f.width()) as usize].fill(true);
             }
             for k in (0..elem.len().saturating_sub(3)).step_by(4) {
@@ -436,12 +445,56 @@ pub fn walk(root: &Struct, address: u32, mem: &Memory) -> Result<Walk, Detail> {
     Ok(out)
 }
 
-/// Build the block tree for `count` elements of `s` at `at`. Tag references,
-/// datums and string IDs keep their bytes: in the same tag set they stay
-/// valid. Moving tags between maps rewrites them (see [`remap`]).
-fn tree(s: &Struct, mem: &Memory, at: u32, count: u32) -> Block {
-    let bytes = mem.slice(at, s.size * count).expect("walked");
-    let mut block = Block::new(bytes.to_vec()).aligned(s.align);
+/// Structural hash of a layout, so equal layouts reached from different
+/// groups share blocks.
+fn layout_hash(s: &Struct, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    (s.size, s.align, s.fields.len()).hash(h);
+    for (o, f) in &s.fields {
+        o.hash(h);
+        match f {
+            Field::Block(c) => {
+                0u8.hash(h);
+                layout_hash(c, h);
+            }
+            Field::TagRef => 1u8.hash(h),
+            Field::TagId => 2u8.hash(h),
+            Field::StringId => 3u8.hash(h),
+            Field::Raw => 4u8.hash(h),
+        }
+    }
+}
+
+/// What [`tree`] needs besides the layout.
+struct TreeCtx<'a> {
+    mem: &'a Memory,
+    /// Distinguishes maps, so keys from two maps never meet in one set.
+    salt: u64,
+    /// The tag being built: (address, end).
+    own: (u32, u32),
+    /// Whether the tag holding an array outside `own` keeps its address
+    /// (then the pointer stays as it is, with no copy).
+    stays: &'a dyn Fn(u32) -> bool,
+}
+
+/// Build the block tree for `count` elements of `s` at `at`. Every array is
+/// keyed by its source address, length and layout, so the builder places an
+/// array shared between tags (or within one) once. An array in another tag
+/// that keeps its address is not copied: the pointer bytes stay. Tag
+/// references, datums and string IDs keep their bytes: in the same tag set
+/// they stay valid. Moving tags between maps rewrites them (see [`remap`]).
+fn tree(s: &Struct, cx: &TreeCtx, at: u32, count: u32) -> Block {
+    use std::hash::Hasher;
+    let n = s.size * count;
+    let bytes = cx.mem.slice(at, n).expect("walked");
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write_u64(cx.salt);
+    h.write_u32(at);
+    h.write_u32(n);
+    layout_hash(s, &mut h);
+    let mut block = Block::new(bytes.to_vec())
+        .aligned(s.align)
+        .shared(h.finish());
     for i in 0..count {
         let e = (i * s.size) as usize;
         for (&o, f) in &s.fields {
@@ -452,10 +505,14 @@ fn tree(s: &Struct, mem: &Memory, at: u32, count: u32) -> Block {
                     // A count with a null address: no child, bytes kept.
                     continue;
                 }
+                let foreign = !(cx.own.0..cx.own.1).contains(&a);
+                if c != 0 && foreign && (cx.stays)(a) {
+                    continue;
+                }
                 let sub = if c == 0 {
                     Block::zeroed(0).aligned(child.align)
                 } else {
-                    tree(child, mem, a, c)
+                    tree(child, cx, a, c)
                 };
                 let off = i * s.size + o;
                 if child.size == 1 && child.fields.is_empty() {
@@ -474,17 +531,34 @@ pub struct Relocator<'s> {
     schema: &'s Schema,
     memory: Memory,
     tags: Vec<map::Tag>,
+    by_id: std::collections::HashMap<TagId, usize>,
+    /// Ordinary-metadata tag by its address.
+    by_address: std::collections::HashMap<u32, TagId>,
     metadata: Option<map::AddressSpace>,
+    salt: u64,
 }
 
 impl<'s> Relocator<'s> {
     /// Read `map`'s metadata once.
     pub fn new<R: Read + Seek>(schema: &'s Schema, map: &mut Map<R>) -> crate::Result<Self> {
+        let tags = map.tags().to_vec();
+        let metadata = map.metadata_space();
+        let h = map.header();
+        let salt = u64::from(h.checksum) << 32 | u64::from(h.file_size);
         Ok(Relocator {
             schema,
             memory: Memory::of(map)?,
-            tags: map.tags().to_vec(),
-            metadata: map.metadata_space(),
+            by_id: tags.iter().enumerate().map(|(i, t)| (t.id, i)).collect(),
+            by_address: tags
+                .iter()
+                .filter_map(|t| {
+                    let l = t.location?;
+                    (Some(l.space) == metadata && l.size > 0).then_some((l.address, t.id))
+                })
+                .collect(),
+            tags,
+            metadata,
+            salt,
         })
     }
 
@@ -494,7 +568,13 @@ impl<'s> Relocator<'s> {
     }
 
     fn tag(&self, id: TagId) -> Option<&map::Tag> {
-        self.tags.iter().find(|t| t.id == id)
+        self.by_id.get(&id).map(|&i| &self.tags[i])
+    }
+
+    /// The tag whose bytes hold `address`.
+    pub fn owner(&self, address: u32) -> Option<TagId> {
+        let (start, _) = self.memory.region(address)?;
+        self.by_address.get(&start).copied()
     }
 
     /// Check one tag; `Ok` means [`Relocator::to_built`] will succeed.
@@ -516,17 +596,55 @@ impl<'s> Relocator<'s> {
         }
     }
 
-    /// The tag as a relocatable tree, or why not.
+    /// The tag as a relocatable tree, or why not. Arrays it shares with
+    /// other tags are copied into the tree (keyed, so the builder still
+    /// places each once). When the set of moving tags is known, use
+    /// [`Relocator::to_built_among`].
     pub fn to_built(&self, id: TagId) -> Result<Block, Refusal> {
+        self.build(id, &|_| false)
+    }
+
+    /// [`Relocator::to_built`] when exactly the tags in `moving` become
+    /// built: arrays in any other tag stay where they are and are not copied.
+    pub fn to_built_among(
+        &self,
+        id: TagId,
+        moving: &std::collections::HashSet<TagId>,
+    ) -> Result<Block, Refusal> {
+        self.build(id, &|a| self.owner(a).is_none_or(|o| !moving.contains(&o)))
+    }
+
+    fn build(&self, id: TagId, stays: &dyn Fn(u32) -> bool) -> Result<Block, Refusal> {
         self.check(id).map_err(|d| d.refusal)?;
         let tag = self.tag(id).expect("checked");
         let root = &self.schema.groups[&tag.group];
-        Ok(tree(
-            root,
-            &self.memory,
-            tag.location.expect("checked").address,
-            1,
-        ))
+        let l = tag.location.expect("checked");
+        let cx = TreeCtx {
+            mem: &self.memory,
+            salt: self.salt,
+            own: (l.address, l.address + l.size),
+            stays,
+        };
+        let mut block = tree(root, &cx, l.address, 1);
+        // Roots are never shared.
+        block.share = None;
+        Ok(block)
+    }
+
+    /// Replace each tag of `ids` in `set` (decomposed from this map) with
+    /// its built tree, sharing what the source shares. `ids` should come
+    /// from [`Relocator::movable`].
+    pub fn relocate(&self, set: &mut map::build::TagSet, ids: &[TagId]) -> crate::Result<()> {
+        let moving: std::collections::HashSet<TagId> = ids.iter().copied().collect();
+        for &id in ids {
+            let block = self
+                .to_built_among(id, &moving)
+                .map_err(|_| crate::Error::Invalid("tag is not relocatable"))?;
+            set.tag_mut(id)
+                .ok_or(crate::Error::Invalid("tag not in the set"))?
+                .payload = map::build::TagPayload::Built(block);
+        }
+        Ok(())
     }
 
     /// Tags that can move together: every tag [`Relocator::check`] accepts,
@@ -578,6 +696,28 @@ impl<'s> Relocator<'s> {
             .map(|t| t.id)
             .collect()
     }
+}
+
+/// Load-test variant "relocated": `map` decomposed, and every tag
+/// [`Relocator::movable`] allows (except slot 0, which the builder needs
+/// first in the metadata) rebuilt from the checked-in schema, sharing what
+/// the source shares. With `reverse`, built tags are placed in reverse slot
+/// order so they land away from their old addresses. Returns the set and the
+/// rebuilt tags.
+pub fn relocated_variant<R: Read + Seek>(
+    map: &mut Map<R>,
+    reverse: bool,
+) -> crate::Result<(map::build::TagSet, Vec<TagId>)> {
+    let relocator = Relocator::new(Schema::builtin(), map)?;
+    let ids: Vec<TagId> = relocator
+        .movable()
+        .into_iter()
+        .filter(|id| id.index() != 0)
+        .collect();
+    let mut set = map::build::TagSet::from_map(map)?;
+    set.reverse_built = reverse;
+    relocator.relocate(&mut set, &ids)?;
+    Ok((set, ids))
 }
 
 /// Turn the tag `id` of `map` into a relocatable block tree with `schema`.
@@ -644,18 +784,24 @@ pub fn read_tree(root: &Struct, address: u32, mem: &Memory) -> Option<Tree> {
     go(root, mem, address, 1, 0)
 }
 
-/// Rewrite the tag references, datums and string IDs of a tree built from
-/// one map so it is valid in another. `datum` maps a source datum to the
-/// destination's (`None` for a datum outside the copied graph: the field is
-/// nulled); `string` maps a source string ID to the destination's.
-pub fn remap(
-    s: &Struct,
-    block: &mut Block,
-    count: u32,
-    datum: &mut dyn FnMut(u32) -> Option<u32>,
-    string: &mut dyn FnMut(u32) -> u32,
-    group_of: &mut dyn FnMut(u32) -> Option<u32>,
-) {
+/// How [`remap`] translates IDs from a source map into a destination set.
+pub trait Remapper {
+    /// The destination datum for a source datum, or `None` to null it.
+    fn datum(&mut self, source: u32) -> Option<u32>;
+    /// The destination string ID for a non-zero source string ID.
+    fn string(&mut self, source: u32) -> u32;
+    /// The destination raw pointer for a non-null source raw pointer.
+    fn raw(&mut self, source: u32) -> u32;
+}
+
+/// Rewrite the tag references, datums, string IDs and raw pointers of a
+/// tree built from one map (`count` elements of `s`) so it is valid in
+/// another. A tag reference whose datum maps to `None` becomes null (group
+/// and datum `0xffffffff`). Shared blocks are rewritten wherever they
+/// appear, identically, so their sharing keys stay truthful.
+pub fn remap(s: &Struct, block: &mut Block, count: u32, r: &mut dyn Remapper) {
+    let put =
+        |b: &mut Block, at: usize, v: u32| b.bytes[at..at + 4].copy_from_slice(&v.to_le_bytes());
     for i in 0..count {
         for (&o, f) in &s.fields {
             let at = (i * s.size + o) as usize;
@@ -663,32 +809,34 @@ pub fn remap(
                 Field::TagRef => {
                     let d = u32_at(&block.bytes, at + 4);
                     if d != u32::MAX {
-                        let (g, nd) = match datum(d) {
-                            Some(nd) => (u32_at(&block.bytes, at), nd),
-                            None => (u32::MAX, u32::MAX),
-                        };
-                        let g = if g == u32::MAX {
-                            group_of(d).unwrap_or(g)
-                        } else {
-                            g
-                        };
-                        let g = if nd == u32::MAX { u32::MAX } else { g };
-                        block.bytes[at..at + 4].copy_from_slice(&g.to_le_bytes());
-                        block.bytes[at + 4..at + 8].copy_from_slice(&nd.to_le_bytes());
+                        match r.datum(d) {
+                            Some(nd) => put(block, at + 4, nd),
+                            None => {
+                                put(block, at, u32::MAX);
+                                put(block, at + 4, u32::MAX);
+                            }
+                        }
                     }
                 }
                 Field::TagId => {
                     let d = u32_at(&block.bytes, at);
                     if d != u32::MAX {
-                        let nd = datum(d).unwrap_or(u32::MAX);
-                        block.bytes[at..at + 4].copy_from_slice(&nd.to_le_bytes());
+                        let nd = r.datum(d).unwrap_or(u32::MAX);
+                        put(block, at, nd);
                     }
                 }
                 Field::StringId => {
                     let v = u32_at(&block.bytes, at);
                     if v != 0 {
-                        let nv = string(v);
-                        block.bytes[at..at + 4].copy_from_slice(&nv.to_le_bytes());
+                        let nv = r.string(v);
+                        put(block, at, nv);
+                    }
+                }
+                Field::Raw => {
+                    let v = u32_at(&block.bytes, at);
+                    if v != 0 && v != u32::MAX {
+                        let nv = r.raw(v);
+                        put(block, at, nv);
                     }
                 }
                 Field::Block(child) => {
@@ -697,7 +845,7 @@ pub fn remap(
                     if let Some(fx) = block.fixups.iter_mut().find(|x| x.offset == off) {
                         match &mut fx.kind {
                             FixupKind::Block { child: sub, .. } | FixupKind::Data(sub) => {
-                                remap(child, sub, c, datum, string, group_of);
+                                remap(child, sub, c, r);
                             }
                             _ => {}
                         }

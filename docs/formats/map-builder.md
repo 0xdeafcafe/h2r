@@ -165,8 +165,8 @@ To keep opaque bytes valid, a decomposed map keeps:
   low-detail bitmaps, locale text and the old tables. File offsets inside
   pinned tags stay right because this prefix does not move;
 - the whole index region, including the uninterpreted tail. The builder
-  rewrites only the header, groups and entries, and refuses to grow them
-  past the original entries;
+  rewrites only the header, groups and entries, and never overwrites a
+  nonzero tail byte (see "Adding tags to a pinned map");
 - `D`, the largest BSP region and the metadata base and size, so BSP and
   metadata addresses do not move;
 - nonzero metadata bytes that no tag owns (one range per retail map).
@@ -180,6 +180,37 @@ built, padding, slack up to the old size), then after it. With
 move retail tags away from their old addresses while reusing freed space).
 `check_tag_memory = false` skips the tag-memory bound below; only for
 offline round trips of maps already at the bound.
+
+A `Block` with a sharing key (`Block::shared(key)`) is placed once per
+region: every later block with the same key gets the first one's address
+and is not written again. The relocator keys every array this way so
+blocks the retail compiler shared stay shared.
+
+### Adding tags to a pinned map
+
+`add_tag` on a set from `TagSet::from_map` works; the index grows at build
+time (Design, **V** offline):
+
+- where the tail bytes the new entries need are zero (always after
+  `PinnedImage::clear_index_tail`), the entries grow in place, up to the
+  index region's size;
+- otherwise, the whole entry table moves to the end of the ordinary
+  metadata, 16-aligned, and the index header's entry pointer (`+8`) points
+  there. The header and groups stay in the index region, the tail stays
+  untouched, and the old entries are zeroed. The reader follows the
+  pointer into the metadata (base from header `+0x1c - +0x18`), and
+  `from_map` of such a map works (the old table becomes unowned bytes).
+  Groups may grow only into the old entries' space.
+
+Neither has been loaded by the game. Clearing the tail risks whatever the
+tail is for; moving the table risks an engine that expects the entries in
+the index region (the index header's explicit pointer suggests it reads
+them through the pointer). Retail proof, nothing written:
+`H2_DISC=disc/halo2.iso cargo test --release -p tags --test map_build retail_maps_gain_tags -- --ignored --nocapture`
+adds 500 tags (a new group, string IDs) to lockout and 01a_tutorial, with
+the tail kept and cleared: every old tag reads back byte-identical at its
+address and every new tag reads back. Maps at the tag-memory bound
+(`shared`, `mainmenu`, ...) cannot grow at all.
 
 ## What is verified
 
