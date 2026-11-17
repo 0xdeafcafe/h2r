@@ -955,6 +955,17 @@ impl<B: Backend> Device<B> {
         std::array::from_fn(|c| f32::from_bits(self.constants[4 * r + c]))
     }
 
+    /// Every constant register, boxed for a draw: filled in place in the
+    /// heap (a 3 KiB array built on the stack and then moved into its box
+    /// was a second copy per draw).
+    fn constants_box(&self) -> Box<[[f32; 4]; CONSTANTS]> {
+        let mut b = Box::new([[0f32; 4]; CONSTANTS]);
+        for (reg, words) in b.iter_mut().zip(self.constants.as_chunks::<4>().0) {
+            *reg = words.map(f32::from_bits);
+        }
+        b
+    }
+
     fn live(&self, entry: &'static str) -> Result<(), D3dError> {
         if self.created {
             Ok(())
@@ -3260,16 +3271,16 @@ impl<B: Backend> Device<B> {
         ))
     }
 
+    /// The program from `program_start` up to and including its FINAL
+    /// instruction (or the last slot). Found first, then copied in one
+    /// allocation: every draw makes one, and growing it a slot at a time
+    /// reallocated several times per draw.
     fn microcode(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        for s in self.program_start as usize..PROGRAM_SLOTS {
-            let insn = &self.program[4 * s..4 * s + 4];
-            out.extend_from_slice(insn);
-            if insn[3] & 1 != 0 {
-                break; // FINAL
-            }
-        }
-        out
+        let start = (self.program_start as usize).min(PROGRAM_SLOTS);
+        let end = (start..PROGRAM_SLOTS)
+            .find(|&s| self.program[4 * s + 3] & 1 != 0) // FINAL
+            .map_or(PROGRAM_SLOTS, |s| s + 1);
+        self.program[4 * start..4 * end].to_vec()
     }
 
     fn shader_inputs(
@@ -3294,7 +3305,7 @@ impl<B: Backend> Device<B> {
             vertex,
             provided_inputs: provided,
             vertex_defaults: *self.immediate.registers(),
-            constants: Box::new(std::array::from_fn(|r| self.constant(r))),
+            constants: self.constants_box(),
             pixel_shader,
             combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
             final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,
