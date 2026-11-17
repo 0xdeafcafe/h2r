@@ -1382,3 +1382,122 @@ guest, plus the level and difficulty screens, with
 `H2_UI_PREVIEW_DIR`; never into git. The texts the game fills at run time
 (gamertags, status, level) are stand-ins, and the level screen's list is
 not drawn.
+
+## 12. One command on one Mac: `h2 coop test`
+
+Section 10.4 takes three terminals and a list of variables. `h2 coop test`
+(`crates/cli/src/coop_test_cmd.rs`) does all of it and reads the logs back:
+
+```sh
+h2 coop test --disc disc/halo2.iso --auto
+```
+
+It:
+
+1. Starts a Live server in its own process on `127.0.0.1:8075`
+   (`--server-port`), with the file store under `--root` (by default
+   `~/Library/Application Support/h2recomp/coop-test`), so accounts,
+   friends and profiles last between runs. The web app is served there
+   too when it is built.
+2. Makes an account per game: Alpha hosts, Bravo joins (`--players 3` or
+   `4` adds Charlie and Delta). Each game's key goes in its own Live
+   directory (`<root>/<gamertag>/live`, given to the game as
+   `H2_LIVE_DIR`), never in your own `accounts.json`. Every guest is made
+   the host's friend. A second run reuses them; `--fresh` forgets the
+   server and the accounts (not the game data).
+3. Opens the host's window with `h2 play <disc> --data <root>/alpha/data
+   --live-server http://127.0.0.1:8075 --gamertag Alpha`, and once it says
+   `live: playing as Alpha` (after any build into `--out`) the guests'
+   windows, the same way with their own data. `--dry-run` prints these
+   lines, variables included, and starts nothing.
+4. Writes every line of each game to `<root>/logs/<time>/<gamertag>.log`
+   and its co-op lines (`coop-live`, `coop-probe`, `coop-auto`, `skulls`,
+   `session`, `game start`, `live: playing as`, `custom games`, panics) to
+   `coop.log` there, as `[+SECONDS] GAMERTAG | line`, also shown on the
+   terminal as they come.
+5. When the last window closes (Ctrl-C closes them; twice exits at once),
+   prints the checklist and the log's path.
+
+### 12.1 What `--auto` does
+
+The host's Live code invites the guests to its advertised lobby as soon as
+it has one and they are online, and each guest's Live code accepts the
+host's invitation as soon as it arrives, through the same requests as the
+friends list's Invite and Accept (`crates/live-hle/src/auto.rs`; switched
+on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
+`H2_COOP_AUTO_ACCEPT=<host>` on a guest). Once per lobby and per
+invitation. They print `coop-auto: invited Bravo to session <id>` and
+`coop-auto: accepting Alpha's invitation to session <id>`.
+
+Menus are still yours: there is no input over the agent API yet, and
+pressing through screens by timing would break with any change to load
+times. With `--auto`, on each window: sign in to Xbox Live; on the host,
+Co-op Campaign, a level and difficulty; on both, Ready; on the host, Start.
+Without `--auto`, invite from the lobby's Y (friends list) and accept on
+the guest, as on a console.
+
+Not established without a game run: that the title reads an invitation
+accepted this way (`XOnlineFriendsGetAcceptedGameInvite`, which the
+retail flow reads after its own Accept) and joins at that moment, rather
+than only when its friends list is open. The test
+`coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself`
+(`crates/live-hle/tests/server.rs`) shows the accepted record is there,
+naming the host's lobby, without a press.
+
+### 12.2 Two games on one Mac
+
+Checked in the code, not by a run:
+
+| Shared thing | How the games keep apart |
+|---|---|
+| XNet ports | Base 31000 and 31010 (`--port`, 10 up per game) on `--ip` (this Mac's LAN address, else loopback). Each game binds base to base+6 (title channels +0, +1, +5, +6; QoS and the co-op ping +2; the co-op channel +4); `NetworkConfig::validate` wants bases 7 apart on one IP. `H2_XNET_LOOPBACK_PEERS` names the others for discovery. |
+| Data | `--data <root>/<gamertag>/data` each: profiles, settings, saves. |
+| Live account | `H2_LIVE_DIR` each: `accounts.json` and `play-accounts.json` (the one account handed to the game). Without it two games on one Mac write the same `play-accounts.json`, and the one that reads last may sign in as the other. |
+| The game image | One `--out` (default `$TMPDIR/h2boot`), read by both. Only the host may build it: the guests open after the host's `live: playing as`, which `h2 play` prints after its build. Set `H2_OPT` as you do for `h2 play`, or the image rebuilds. |
+| Agent socket | `H2_AGENT` each: `~/Library/Caches/h2recomp/coop-<gamertag>.sock`. A live socket at a path is an error, so one each is required. `h2 agent --socket <path> status` (or `watch phase map`) reads each game. |
+| Pipeline cache | `~/Library/Caches/h2recomp`'s pipeline store is made for several processes (`d3d::pipeline_store`). |
+| Input | Each window takes the keyboard while focused. Pads go to the host (`--pad guest`: to the first guest); the other games get `--no-gamepads`. |
+| Sound | The guests run `--no-audio`. |
+| Map pack, Halo 1 | Not installed into the games' data (`--no-mappack --no-halo1`) unless `--extras`. |
+
+The windows open on top of each other; move one aside.
+
+### 12.3 The checklist
+
+`h2 coop verdict <coop.log> [--auto]` prints it again
+(`crates/cli/src/coop_verdict.rs`). Each step is seen when every game it
+is for printed its line:
+
+| # | Step | Game | Line |
+|---|---|---|---|
+| 1 | signed in to Live | each | `live: playing as <tag>` |
+| 2 | the disc's campaign levels read | each | `coop-live: N campaign levels (` |
+| 3 | Co-op Campaign opens the game's own lobby | host | `coop-live: Live menu row ... in co-op mode` |
+| 4 | hosting in that lobby | host | `coop-live: hosting a co-op campaign in the game's own lobby` |
+| 5 | the lobby is in co-op mode | host | `... lobby: mode 2 (custom game) set as 0 (co-op campaign)` |
+| 6 | level and difficulty advertised | host | `coop-live: the lobby holds ... ; advertised` |
+| 7 | the host invited the guest | host | `coop-auto: invited` (only with `--auto`) |
+| 8 | the guest accepted | guests | `coop-auto: accepting` (only with `--auto`) |
+| 9 | the guest is in the host's session | guests | `coop-live: guest: joined` |
+| 10 | ping | each | `coop-live: ping N ms` |
+| 11 | the co-op check passed for two consoles | host | `coop-live: lobby start state 7 ... answered` |
+| 12 | the session start counted the peers | host | `session start: campaign with` |
+| 13 | the session started | host | `session start returned 1` |
+| 14 | the host simulates | host | `simulation mode sync-server` |
+| 15 | the guest follows | guests | `simulation mode sync-client` |
+
+It ends with the first step not seen ("stopped at step 9: ...") and lines
+that look like trouble (`ping: no answer`, `returned 0 (refused)`,
+`could not invite`, `could not accept`, `did not open`, panics). What to
+send back: `coop.log`, and the two whole logs if it stopped early.
+
+### 12.4 What is tested
+
+Without the game (`cargo test -p cli --bin h2 coop`, `cargo test -p
+live-hle`): the arguments; each game's ports, data, Live directory, socket,
+pads and `--auto` variables; the shell lines; accounts and friendships made
+against an embedded server, reused on a second run, and a lost key saying
+`--fresh`; two stand-in games (shell scripts) through the log merger with
+the host's sign-in starting the next; the checklist from canned logs (a
+whole run, a run that stopped, a run without `--auto`); `H2_LIVE_DIR`; and
+the automatic invite and acceptance between two HLEs and a server.
