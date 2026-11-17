@@ -544,10 +544,35 @@ tag path per entity, and frame objects match placements in one pass. The
 remaining allocations are the frame itself (an id, species, weapon and
 team string per entity).
 
-Wire, packed with a keyframe every 150 frames: `mp16` 316 B a frame (278
+Wire on that lane's fixture, packed with a keyframe every 150 frames: `mp16` 316 B a frame (278
 KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 397 B (349 KiB),
 `campaign100` 1251 B (1.1 MiB a minute; JSON 31 MiB). The worker packs a
 frame in 13, 20 and 65 µs.
+
+The second lane (same day) moved the scenes' fixture off `sin`/`cos`
+(release builds fuse them into `sincos`, a ulp apart from debug, so the
+golden hash differed between profiles), which shifts every number a
+little; its before is measured on the new fixture, at a load average of
+10 to 25:
+
+| scene | frame tick before | after | allocs before | after | other tick before | after | allocs before | after | µs per second at 30 Hz before | after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| mp16 | 26.3 | 22.0 | 284 | 219 | 9.1 | 5.7 | 85 | 20 | 531 | 416 |
+| mp16_1000 | 51.7 | 46.0 | 344 | 279 | 9.5 | 5.9 | 85 | 20 | 918 | 779 |
+| campaign100 | 92.2 | 77.7 | 891 | 883 | 1.5 | 1.2 | 21 | 13 | 1406 | 1184 |
+
+What changed: object lookups read the objects array's header once per
+observation, not once per datum; the session compares the roster in place
+and copies it only when it changed; the roster read keeps each name from
+the last tick while the player's datum and name units are unchanged; frame
+ids are written without the formatter and actors lend their object state
+instead of copying it. The remaining allocations are the frame itself (an
+id, species, weapon, stance and team string per entity).
+
+Wire, packed with a keyframe every 150 frames: `mp16` 325 B a frame (286
+KiB a minute; JSON would be 7.4 MiB), `mp16_1000` 407 B (357 KiB),
+`campaign100` 1330 B (1.2 MiB a minute; JSON 30 MiB). The worker packs a
+frame in 13, 20 and 63 µs.
 
 ## Runtime validation needed first
 

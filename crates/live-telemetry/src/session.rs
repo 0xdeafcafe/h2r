@@ -118,10 +118,7 @@ impl Session {
     /// Sets the signed-in account's XUID on the player who plays from local
     /// slot 0. Other players keep whatever the game said (nothing, today).
     fn link(&self, players: &mut [PlayerState]) {
-        let Some(xuid) = self.signed_in else { return };
-        for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
-            p.player.xuid = Some(xuid);
-        }
+        link(self.signed_in, players);
     }
 
     /// The matchmaking playlist (name, id) multiplayer games start from;
@@ -333,8 +330,7 @@ impl Session {
     }
 
     pub fn sample(&mut self, snapshot: &Snapshot) {
-        let mut linked = snapshot.players.clone();
-        self.link(&mut linked);
+        let signed_in = self.signed_in;
         let Some(current) = &mut self.current else {
             return;
         };
@@ -342,45 +338,13 @@ impl Session {
             return;
         }
         current.tick = snapshot.tick;
-        let before: BTreeMap<u32, u32> = current
-            .players
-            .iter()
-            .map(|p| (p.player.index, p.datum))
-            .collect();
-        let after: BTreeMap<u32, u32> = snapshot
-            .players
-            .iter()
-            .map(|p| (p.player.index, p.datum))
-            .collect();
-        let left: Vec<u32> = before
-            .iter()
-            .filter(|(index, datum)| after.get(index) != Some(datum))
-            .map(|(index, _)| *index)
-            .collect();
-        let joined: Vec<PlayerState> = linked
-            .iter()
-            .filter(|p| before.get(&p.player.index) != Some(&p.datum))
-            .cloned()
-            .collect();
-        for index in left {
-            Self::event_to(
-                &mut self.output,
-                current.game_id.clone(),
-                live_proto::game::PLAYER_LEFT,
-                PlayerLeft { index },
-            );
+        // Most ticks the roster is as it was: nothing joined or left, and
+        // nothing to copy.
+        if !same_roster(signed_in, &current.players, &snapshot.players) {
+            let mut linked = snapshot.players.clone();
+            link(signed_in, &mut linked);
+            Self::roster_changed(&mut self.output, current, &snapshot.players, linked);
         }
-        for player in joined {
-            Self::event_to(
-                &mut self.output,
-                current.game_id.clone(),
-                live_proto::game::PLAYER_JOINED,
-                live_proto::game::PlayerJoined {
-                    player: player.wire_player(),
-                },
-            );
-        }
-        current.players = linked;
         for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
             if let Some(o) = object.as_ref().filter(|_| player.unit != u32::MAX) {
                 current
@@ -536,10 +500,7 @@ impl Session {
                             .map(|o| yaw(o.forward))
                             .or(fallen.map(|f| f.1))
                             .unwrap_or(0.0),
-                        vehicle: object
-                            .as_ref()
-                            .and_then(|o| o.vehicle)
-                            .map(|v| format!("{v:08x}")),
+                        vehicle: object.as_ref().and_then(|o| o.vehicle).map(hex),
                         species: object
                             .as_ref()
                             .and_then(|o| o.definition)
@@ -594,6 +555,51 @@ impl Session {
                 objects,
             }));
         }
+    }
+
+    /// Joins and leaves between the current roster and `linked` (the
+    /// fresh one, XUIDs linked), which then becomes the current one.
+    fn roster_changed(
+        output: &mut Vec<Output>,
+        current: &mut Match,
+        fresh: &[PlayerState],
+        linked: Vec<PlayerState>,
+    ) {
+        let before: BTreeMap<u32, u32> = current
+            .players
+            .iter()
+            .map(|p| (p.player.index, p.datum))
+            .collect();
+        let after: BTreeMap<u32, u32> = fresh.iter().map(|p| (p.player.index, p.datum)).collect();
+        let left: Vec<u32> = before
+            .iter()
+            .filter(|(index, datum)| after.get(index) != Some(datum))
+            .map(|(index, _)| *index)
+            .collect();
+        let joined: Vec<PlayerState> = linked
+            .iter()
+            .filter(|p| before.get(&p.player.index) != Some(&p.datum))
+            .cloned()
+            .collect();
+        for index in left {
+            Self::event_to(
+                output,
+                current.game_id.clone(),
+                live_proto::game::PLAYER_LEFT,
+                PlayerLeft { index },
+            );
+        }
+        for player in joined {
+            Self::event_to(
+                output,
+                current.game_id.clone(),
+                live_proto::game::PLAYER_JOINED,
+                live_proto::game::PlayerJoined {
+                    player: player.wire_player(),
+                },
+            );
+        }
+        current.players = linked;
     }
 
     #[cfg(test)]
@@ -658,6 +664,67 @@ impl Session {
     }
 }
 
+/// Gives local player 0 the signed-in account's XUID.
+fn link(signed_in: Option<live_proto::Xuid>, players: &mut [PlayerState]) {
+    let Some(xuid) = signed_in else { return };
+    for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
+        p.player.xuid = Some(xuid);
+    }
+}
+
+/// Whether `current` is `fresh` once [`link`]ed, without copying it.
+fn same_roster(
+    signed_in: Option<live_proto::Xuid>,
+    current: &[PlayerState],
+    fresh: &[PlayerState],
+) -> bool {
+    current.len() == fresh.len()
+        && current.iter().zip(fresh).all(|(c, f)| {
+            // Every field named, so a new one cannot be missed.
+            let PlayerState {
+                datum,
+                player,
+                appearance,
+                local_user,
+                unit,
+                stats,
+            } = f;
+            let live_proto::game::Player {
+                index,
+                name,
+                xuid,
+                team,
+                local,
+                appearance: wire_appearance,
+            } = player;
+            let xuid = match signed_in {
+                Some(x) if *local_user == Some(0) => Some(x),
+                _ => *xuid,
+            };
+            c.datum == *datum
+                && c.appearance == *appearance
+                && c.local_user == *local_user
+                && c.unit == *unit
+                && c.stats == *stats
+                && c.player.index == *index
+                && c.player.name == *name
+                && c.player.xuid == xuid
+                && c.player.team == *team
+                && c.player.local == *local
+                && c.player.appearance == *wire_appearance
+        })
+}
+
+/// A datum as the frame's object ids write it: eight lower-case hex
+/// digits (`format!("{d:08x}")`, without the formatter).
+fn hex(d: u32) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    (0..8)
+        .rev()
+        .map(|i| char::from(DIGITS[(d >> (i * 4)) as usize & 0xf]))
+        .collect()
+}
+
 fn finite_direction(v: [f64; 3]) -> bool {
     v.iter().all(|c| c.is_finite()) && v.iter().map(|c| c * c).sum::<f64>() > 1e-12
 }
@@ -671,12 +738,12 @@ fn team_name(team: i16, campaign: bool) -> String {
 
 /// The frame's actors, nearest to any live player first, capped; each with
 /// its object state (for vehicles).
-fn frame_actors(
-    snapshot: &Snapshot,
+fn frame_actors<'a>(
+    snapshot: &'a Snapshot,
     tags: Option<&TagNames>,
     campaign: bool,
     shots: &BTreeMap<u32, u32>,
-) -> Vec<(FrameActor, ObjectState, u32)> {
+) -> Vec<(FrameActor, &'a ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
         players
@@ -697,7 +764,7 @@ fn frame_actors(
         .map(|(_, a)| {
             let o = &a.object;
             let actor = FrameActor {
-                id: format!("{:08x}", a.datum),
+                id: hex(a.datum),
                 species: o
                     .definition
                     .zip(tags)
@@ -713,10 +780,10 @@ fn frame_actors(
                     .map(|n| (*n).min(MAX_FRAME_SHOTS))
                     .filter(|n| *n > 0),
                 team: o.team.map(|t| team_name(t, campaign)),
-                vehicle: o.vehicle.map(|v| format!("{v:08x}")),
+                vehicle: o.vehicle.map(hex),
                 ..FrameActor::default()
             };
-            (actor, o.clone(), a.datum)
+            (actor, o, a.datum)
         })
         .collect()
 }
@@ -755,7 +822,7 @@ fn frame_bodies(
         .map(|(_, b)| {
             let o = &b.object;
             FrameActor {
-                id: format!("{:08x}", b.datum),
+                id: hex(b.datum),
                 species: o
                     .definition
                     .zip(tags)
@@ -776,7 +843,7 @@ fn frame_bodies(
 /// scan's, occupied when a biped is parented to it.
 fn frame_vehicles(
     snapshot: &Snapshot,
-    actors: &[(FrameActor, ObjectState, u32)],
+    actors: &[(FrameActor, &ObjectState, u32)],
     tags: Option<&TagNames>,
 ) -> Vec<FrameVehicle> {
     let kind = |definition: Option<u32>| {
@@ -785,7 +852,6 @@ fn frame_vehicles(
             .and_then(|(d, t)| t.vehicle(d))
             .unwrap_or_else(|| UNKNOWN.into())
     };
-    let hex = |d: u32| format!("{d:08x}");
     // The world scan's word on each vehicle: what it is mounted on and
     // where it aims (a turret), also for one a rider read.
     let scanned: BTreeMap<u32, &VehicleState> =
@@ -801,7 +867,7 @@ fn frame_vehicles(
         .objects
         .iter()
         .flatten()
-        .chain(actors.iter().map(|(_, o, _)| o))
+        .chain(actors.iter().map(|(_, o, _)| *o))
         .filter_map(|o| {
             let id = o.vehicle?;
             if !finite_direction(o.forward) || !finite_direction(o.up) || !seen.insert(id) {
@@ -898,7 +964,7 @@ fn frame_machines(
                 .filter(|n| live_proto::game::valid_node(n));
             let frame = FrameMachine {
                 node,
-                id: format!("{:08x}", m.datum),
+                id: hex(m.datum),
                 kind,
                 pos: m.pos,
                 forward: m.forward,
@@ -1025,7 +1091,7 @@ fn frame_hits(
     let object = |datum: u32| {
         (datum != u32::MAX).then(|| match player_of_unit.get(&datum) {
             Some(index) => format!("p{index}"),
-            None => format!("{datum:08x}"),
+            None => hex(datum),
         })
     };
     hits.iter()
@@ -1122,6 +1188,13 @@ mod tests {
                 Output::Frame(_) => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn hex_writes_a_datum_as_the_formatter_does() {
+        for d in [0, 1, 0xa, 0xe280_0001, 0x9001_0000, u32::MAX] {
+            assert_eq!(hex(d), format!("{d:08x}"));
+        }
     }
 
     #[test]
@@ -1870,6 +1943,35 @@ mod tests {
         );
         state.teams[1].score = 7;
         assert_eq!(state.winner(true), None);
+    }
+
+    #[test]
+    fn an_unchanged_roster_is_the_same_once_linked() {
+        let xuid = live_proto::Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let fresh = vec![player(0, 1), player(1, 2)];
+        let mut current = fresh.clone();
+        link(Some(xuid), &mut current);
+        assert!(same_roster(Some(xuid), &current, &fresh));
+        assert!(
+            !same_roster(None, &current, &fresh),
+            "the link is part of it"
+        );
+        let mut renamed = fresh.clone();
+        renamed[1].player.name = "Q".into();
+        assert!(!same_roster(Some(xuid), &current, &renamed));
+        let mut scored = fresh.clone();
+        scored[0].stats.kills = 1;
+        assert!(!same_roster(Some(xuid), &current, &scored));
+        assert!(!same_roster(Some(xuid), &current, &fresh[..1]));
+    }
+
+    #[test]
+    fn a_stats_change_reaches_the_roster_the_end_reports() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0)]);
+        session.take_output();
+        session.sample(&snapshot(2, vec![player(0, 5)]));
+        assert_eq!(session.current.as_ref().unwrap().players[0].stats.score, 5);
     }
 
     #[test]

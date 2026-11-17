@@ -9,7 +9,7 @@ use crate::event::{
 };
 use crate::layout;
 use engine::DatumHandle;
-use engine::view::{Datums, objects, players};
+use engine::view::{Datums, players};
 use live_proto::game::ObjectKind;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -169,6 +169,13 @@ fn fault(f: engine::MemFault) -> GuestFault {
 }
 
 pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
+    players_after(guest, &mut [])
+}
+
+/// [`players`], taking each name from `previous` (the last read's roster)
+/// when the player's datum and name are unchanged, so a steady roster
+/// decodes no names.
+pub fn players_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Vec<PlayerState>> {
     let array = ptr(guest, layout::PLAYERS_PTR)?;
     // A null data pointer is an error, as a null array is.
     ptr(guest, array + layout::DATUM_DATA)?;
@@ -176,7 +183,8 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(previous.len());
+    let mut units = [0; players::NAME_UNITS];
     for (handle, player) in players.live(guest, 16).map_err(fault)? {
         if !player.listed(guest).map_err(fault)? {
             continue;
@@ -195,11 +203,20 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
             PlayerStats::ZERO
         };
         let local_user = player.local_user(guest).map_err(fault)?;
+        let len = player.name_units(guest, &mut units).map_err(fault)?;
+        let units = &units[..len];
+        let name = previous
+            .iter_mut()
+            .find(|p| {
+                p.datum == handle.raw() && p.player.name.encode_utf16().eq(units.iter().copied())
+            })
+            .map(|p| std::mem::take(&mut p.player.name))
+            .unwrap_or_else(|| String::from_utf16_lossy(units));
         out.push(PlayerState {
             datum: handle.raw(),
             player: Player {
                 index: slot,
-                name: player.name(guest).map_err(fault)?,
+                name,
                 xuid: None,
                 team: i32::from(player.team(guest).map_err(fault)?),
                 local: Some(local_user != -1),
@@ -239,19 +256,71 @@ pub fn team_scores(guest: &Guest, players: &[PlayerState]) -> ReadResult<Vec<Tea
         .collect()
 }
 
-/// An object's concrete type and body address, if `datum` names a live
-/// object (high-water, salt and non-null body checks of `0x000badc0`, as
-/// the objects view makes them).
-fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
-    let Some(handle) = DatumHandle::from_raw(datum) else {
-        return Ok(None);
-    };
-    // A null array or data pointer is an error, not "no object".
-    let array = ptr(guest, layout::OBJECTS_PTR)?;
-    ptr(guest, array + layout::DATUM_DATA)?;
-    Ok(objects::get(guest, handle)
-        .map_err(fault)?
-        .map(|(kind, body)| (kind, body.addr)))
+/// Object lookups for one observation: the objects array's data pointer,
+/// high-water mark and element size are read on the first lookup and kept
+/// (the guest does not run while telemetry observes it), so each further
+/// datum costs its own header's salt, type and body reads only.
+pub(crate) struct Objects<'g> {
+    guest: &'g Guest,
+    table: std::cell::Cell<Option<Table>>,
+}
+
+#[derive(Clone, Copy)]
+struct Table {
+    data: u32,
+    high_water: i32,
+    element_size: i32,
+}
+
+impl<'g> Objects<'g> {
+    pub(crate) fn new(guest: &'g Guest) -> Self {
+        Self {
+            guest,
+            table: std::cell::Cell::new(None),
+        }
+    }
+
+    fn table(&self) -> ReadResult<Table> {
+        if let Some(table) = self.table.get() {
+            return Ok(table);
+        }
+        // A null array or data pointer is an error, not "no object".
+        let array = ptr(self.guest, layout::OBJECTS_PTR)?;
+        let data = ptr(self.guest, array + layout::DATUM_DATA)?;
+        let table = Table {
+            data,
+            high_water: self.guest.u32(array + layout::DATUM_HIGH_WATER)? as i32,
+            element_size: self
+                .guest
+                .u32(array + engine::datum::layout::ELEMENT_SIZE)? as i32,
+        };
+        self.table.set(Some(table));
+        Ok(table)
+    }
+
+    /// An object's concrete type and body address, if `datum` names a live
+    /// object: the high-water, salt and non-null body checks of
+    /// `0x000badc0`, as `engine::view::objects::get` makes them.
+    fn body(&self, datum: u32) -> ReadResult<Option<(u8, u32)>> {
+        let Some(handle) = DatumHandle::from_raw(datum) else {
+            return Ok(None);
+        };
+        let table = self.table()?;
+        let index = i32::from(handle.index());
+        if index >= table.high_water {
+            return Ok(None);
+        }
+        let header = (table.element_size.wrapping_mul(index) as u32).wrapping_add(table.data);
+        let salt = self.guest.u16(header)?;
+        if salt == 0 || salt != handle.salt() {
+            return Ok(None);
+        }
+        let body = self.guest.u32(header + layout::OBJECT_BODY)?;
+        if body == 0 {
+            return Ok(None);
+        }
+        Ok(Some((self.guest.u8(header + layout::OBJECT_TYPE)?, body)))
+    }
 }
 
 /// Three `f32`s in one guest read: the same bytes as three reads, and a
@@ -278,13 +347,14 @@ fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
 /// parented to this unit (`0x00101fb0` finds a weapon's owner through its
 /// parent).
 /// With the weapon, its body (for the magazine).
-fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<(Weapon, u32)>> {
+fn held_weapon(objects: &Objects, unit: u32, body: u32) -> ReadResult<Option<(Weapon, u32)>> {
+    let guest = objects.guest;
     let index = guest.u8(body + layout::UNIT_WEAPON_INDEX)? as i8;
     if !(0..layout::UNIT_WEAPON_SLOTS).contains(&index) {
         return Ok(None);
     }
     let datum = guest.u32(body + layout::UNIT_WEAPONS + 4 * index as u32)?;
-    let Some((kind, weapon)) = object_body(guest, datum)? else {
+    let Some((kind, weapon)) = objects.body(datum)? else {
         return Ok(None);
     };
     if kind != layout::OBJECT_TYPE_WEAPON || guest.u32(weapon + layout::BODY_PARENT)? != unit {
@@ -295,7 +365,13 @@ fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<(Weapon
 }
 
 pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
-    let Some((kind, body)) = object_body(guest, datum)? else {
+    object_in(&Objects::new(guest), datum)
+}
+
+/// [`object`], its lookups through `objects`.
+pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<ObjectState>> {
+    let guest = objects.guest;
+    let Some((kind, body)) = objects.body(datum)? else {
         return Ok(None);
     };
     if kind > 1 {
@@ -306,7 +382,7 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     // (a stale weapon datum, a "likely" offset) drops the field, not the
     // snapshot.
     let aim = aim(guest, body).ok().flatten();
-    let held = held_weapon(guest, datum, body).ok().flatten();
+    let held = held_weapon(objects, datum, body).ok().flatten();
     let weapon = held.map(|(w, _)| w);
     let motion = motion(guest, kind, body, held.map(|(_, b)| b));
     let team = guest
@@ -320,14 +396,14 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     let mut vehicle_definition = None;
     let mut mount = None;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
-    let vehicle = match object_body(guest, parent)? {
+    let vehicle = match objects.body(parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
             vehicle_definition =
                 Some(guest.u32(parent_body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
             // A gunner rides a turret, itself parented to the vehicle it is
             // mounted on, its transform relative to that one: the mount's is
             // where the gunner is in the world.
-            let mounted = vehicle_mount(guest, parent_body)?;
+            let mounted = vehicle_mount(objects, parent_body)?;
             let at = mounted.map_or(parent_body, |(_, b)| b);
             mount = mounted.map(|(m, _)| m);
             pos = vector(guest, at + layout::BODY_POSITION)?;
@@ -357,9 +433,9 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
 
 /// The vehicle a vehicle (body at `body`) is mounted on, and that one's
 /// body: a turret's parent, when the parent is a vehicle.
-fn vehicle_mount(guest: &Guest, body: u32) -> ReadResult<Option<(u32, u32)>> {
-    let parent = guest.u32(body + layout::BODY_PARENT)?;
-    Ok(match object_body(guest, parent)? {
+fn vehicle_mount(objects: &Objects, body: u32) -> ReadResult<Option<(u32, u32)>> {
+    let parent = objects.guest.u32(body + layout::BODY_PARENT)?;
+    Ok(match objects.body(parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => Some((parent, parent_body)),
         _ => None,
     })
@@ -473,6 +549,7 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
         .min(layout::OBJECT_CAPACITY);
     let data = ptr(guest, array + layout::DATUM_DATA)?;
     let ScanBuffers { headers, ridden } = buffers;
+    let objects = Objects::new(guest);
     headers.clear();
     headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
     guest.read_bytes(data, headers, 1)?;
@@ -507,7 +584,7 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
                 // A dead biped stays in the world as a body until the game
                 // clears it away; whose it was is the session's business.
                 if depleted {
-                    if let Ok(Some(object)) = object(guest, datum) {
+                    if let Ok(Some(object)) = object_in(&objects, datum) {
                         out.bodies.push(ActorState { datum, object });
                     }
                     continue;
@@ -519,14 +596,14 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
                 if !ai().unwrap_or(false) {
                     continue;
                 }
-                if let Ok(Some(object)) = object(guest, datum) {
+                if let Ok(Some(object)) = object_in(&objects, datum) {
                     out.actors.push(ActorState { datum, object });
                 }
             }
             layout::OBJECT_TYPE_VEHICLE => {
                 if let Ok((definition, [pos, forward, up])) = transform(guest, body) {
                     // Turret detail only adds: a fault drops it, not the vehicle.
-                    let parent = vehicle_mount(guest, body).ok().flatten().map(|(p, _)| p);
+                    let parent = vehicle_mount(&objects, body).ok().flatten().map(|(p, _)| p);
                     out.vehicles.push(VehicleState {
                         datum,
                         definition,
@@ -736,7 +813,7 @@ pub fn active_bsp(guest: &Guest) -> ReadResult<Option<u32>> {
 /// What the damage hook records: the report at `report` for `victim`, with
 /// the victim's position (its own `+0x64`) when it is a live object.
 pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
-    let pos = match object_body(guest, victim)? {
+    let pos = match Objects::new(guest).body(victim)? {
         Some((_, body)) => Some(vector(guest, body + layout::BODY_POSITION)?)
             .filter(|p| p.iter().all(|c| c.is_finite())),
         None => None,
@@ -754,11 +831,18 @@ pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
 }
 
 pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
-    let players = players(guest)?;
+    snapshot_after(guest, &mut [])
+}
+
+/// [`snapshot`], its roster read by [`players_after`] (names from
+/// `previous` while they are unchanged).
+pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult<Snapshot> {
+    let players = players_after(guest, previous)?;
     let teams = team_scores(guest, &players)?;
+    let lookups = Objects::new(guest);
     let objects = players
         .iter()
-        .map(|p| object(guest, p.unit))
+        .map(|p| object_in(&lookups, p.unit))
         .collect::<ReadResult<Vec<_>>>()?;
     let engine = ptr(guest, layout::ENGINE_GLOBALS_PTR)?;
     Ok(Snapshot {
@@ -1223,6 +1307,29 @@ mod tests {
         assert_eq!(object.vehicle, Some(vehicle));
         assert_eq!(yaw(object.forward), std::f64::consts::PI);
         assert!(snapshot.objects[1].is_none());
+    }
+
+    #[test]
+    fn a_roster_read_after_another_keeps_unchanged_names_and_reads_new_ones() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Sneaky Pete", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "B", 0, false, u32::MAX);
+        let mut previous = players(&guest).unwrap();
+        let kept = previous[0].player.name.as_ptr();
+        // Slot 1 is renamed (one unit longer), slot 0 is not.
+        fixture::put_player(&mut guest, 1, "Bo", 0, false, u32::MAX);
+        let after = players_after(&guest, &mut previous).unwrap();
+        assert_eq!(after, players(&guest).unwrap());
+        assert_eq!(after[0].player.name, "Sneaky Pete");
+        assert_eq!(after[0].player.name.as_ptr(), kept, "reused, not decoded");
+        assert_eq!(after[1].player.name, "Bo");
+        // A name another datum held is not taken for a new one.
+        let mut stranger = after.clone();
+        stranger[0].datum ^= 0x0001_0000;
+        let renamed = players_after(&guest, &mut stranger).unwrap();
+        assert_eq!(renamed[0].player.name, "Sneaky Pete");
+        assert_eq!(stranger[0].player.name, "Sneaky Pete", "left where it was");
+        assert_eq!(renamed, after);
     }
 
     #[test]
