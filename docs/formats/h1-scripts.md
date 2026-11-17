@@ -262,6 +262,62 @@ squad group's `0x40000000 | index`, a squad's starting location
 `<builtin>:<value>` tokens. Counts for a30 are in
 [campaigns.md](../game/campaigns.md) §9.
 
+## Level data the scripts name
+
+Script atoms of these types index scenario blocks, so the converter writes
+Halo 1's blocks into Halo 2's in Halo 1's order and each atom keeps its
+index. `h1scripts::level` reads and writes them; `h1scripts::seats` builds
+the seat-mapping table. Offsets come from the surveys in
+`crates/h1scripts/tests/survey.rs` (they print offsets, strides and counts
+only): for every script atom of a type, the block whose element at the
+atom's index holds the atom's token as its name.
+
+| Data | Halo 1 `scnr` (stride, name) | Halo 2 `scnr` (stride, name) | Atom value (Halo 2) |
+|---|---|---|---|
+| cutscene flags | `0x4e4` (`0x5c`, `+4`); position `+0x24`, facing `+0x30` | `0x1e0` (`0x38`, `+4`); position `+0x24`, facing `+0x30` | index |
+| camera points | `0x4f0` (`0x68`, `+4`); position `+0x28`, orientation `+0x34` | `0x1e8` (`0x40`, `+4`); position `+0x28`, orientation `+0x34` | index |
+| titles | `0x4fc` (`0x60`, `+4`) | `0x1f0` (`0x24`, string ID `+0`) | index |
+| device groups | `0x288` (`0x34`, `+0`); initial value `+0x20`, flags `+0x24` | `0xa0` (`0x28`, `+0`); same fields | datum `(0xe564 + i) << 16 \| i` |
+| seat mappings | (seat text in the script) | `0x228` (8: unit `vehi` datum, seat mask) | `count << 16 \| first` |
+
+Evidence: Halo 1, a30 (every flag, camera point, title and device group
+token at its index). Halo 2, 01b, 03a and 05a (the same, with the schema's
+strides). Two of 03a's six camera points put the position at `+0x24`
+instead; the two its scripts use (`e8_prediction`, `e1_prediction`) have it
+at `+0x28` and the orientation after it, the layout written here. Titles:
+the name string ID is the key into the level's text, which is not converted,
+so a title shows nothing yet; bounds, colour and timing are this crate's own
+defaults.
+
+**Seats.** A unit's seats block is `vehi +0x1c8`, `0xb0` each, the label
+string ID at `+4` (V: every `vehi` on 05a). A mapping element is a unit
+definition and a mask of its seats; retail matches a seat when its label
+starts with the script text (05a: `pelican_p` is the pelican's bits 1–10,
+`pelican_p_l01` to `pelican_p_r05`). Halo 1 names roles on Halo 1's vehicles
+(`driver`, `gunner`, `passenger`, `p-riderlf`), and the converted level
+drives Halo 2's vehicles, so `seats::h2_label_matches` maps roles to Halo
+2's label suffixes: driver `_d`, gunner `_g`, passenger `_p`, rider or
+passenger with a side `_p_l…`/`_p_r…`, cargo `_lc`; boarding seats (`_b_`)
+never; other text by retail's prefix rule. One run of elements per text,
+over every `vehi` in the converted set.
+
+**Navpoints** take Halo 2's `default` (0): Halo 1's navpoint types
+(`default_red`, ...) are not mapped to Halo 2's. **Tags** (looping sounds,
+effects, damage, animation graphs) resolve by the Halo 1 tag's name among
+the converted tags of the Halo 2 group; `lsnd` is not converted yet, so
+looping sounds stay `none`.
+
+**AI.** Most `ai` hooks left were squads `h1ai` dropped for having no
+starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;
+`h1campaign`'s `squad_flag_bits` survey), so `h1ai` now keeps them, with no
+locations, no actors and no order, and `h1campaign` keeps only those the
+scripts name. A level that then overflows tag memory is converted again
+without them, and if still over, without the level data and seat table
+above too (`h1campaign::convert`). b40, which sat at the bound, takes the
+second step, so its hooks are as before.
+Most `ai` hooks still left name Halo 1 platoons (`…_toon`) or encounters
+used as squads; Halo 2 has no platoons.
+
 ## Open questions
 
 - The `unit_exit_vehicle` mode 1 default is not checked against Halo 2's

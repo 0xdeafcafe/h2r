@@ -18,6 +18,8 @@ pub mod catalog;
 pub mod compile;
 pub mod decompile;
 pub mod layout;
+pub mod level;
+pub mod seats;
 pub mod translate;
 
 pub use catalog::Catalog;

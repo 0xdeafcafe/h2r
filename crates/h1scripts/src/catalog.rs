@@ -47,6 +47,8 @@ pub mod types {
     pub const STRING: u16 = 9;
     /// `script`.
     pub const SCRIPT: u16 = 10;
+    /// `ai`: an encounter, squad or platoon name.
+    pub const AI: u16 = 17;
 }
 
 /// One builtin: `hs_function_definition`, `0x1a` bytes plus parameters.

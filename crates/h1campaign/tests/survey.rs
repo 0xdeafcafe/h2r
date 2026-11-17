@@ -425,7 +425,18 @@ fn squad_flag_bits() {
         for q in &ai.squads {
             bits(&mut v, q.flags);
         }
-        println!("{f}: {} squads; {}", ai.squads.len(), show(&v));
+        // Squads with no starting locations: spawned into by vehicles,
+        // migrations and command scripts, never placed themselves.
+        let empty = ai
+            .squads
+            .iter()
+            .filter(|q| q.starting_locations.is_empty())
+            .count();
+        println!(
+            "{f}: {} squads ({empty} with no starting locations); {}",
+            ai.squads.len(),
+            show(&v)
+        );
     }
     let h1p = disc("H1_ISO", "halo1.iso");
     let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();

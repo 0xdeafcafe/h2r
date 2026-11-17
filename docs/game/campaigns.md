@@ -251,7 +251,7 @@ What each layer writes, from the base map up:
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
-| Scripts | `h1scripts` with `Missing::Stub`; `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Script references resolved by tag name | Cutscene flags and camera points, navpoints, device groups, looping sounds, damage effects, animation graphs, titles; AI names of squads left out (no starting locations): `none` |
+| Scripts | `h1scripts` with `Missing::Stub`; `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([h1-scripts.md](../formats/h1-scripts.md), "Level data the scripts name") | Looping sounds (`lsnd` is not converted), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
 | Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit | Every other sound; `lsnd` (looping) |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
@@ -310,6 +310,12 @@ c20, c40, d20, d40 (by what each level's AI uses):
 | d40 | 918 | `0xbd1000` | 10 (13) | 74/74 | 106/107 | 20/20 | 293/293 | 81/81 | 169 | 298 (641 of 1,790; `ai` 34) | 1 |
 
 The bound is `0xc24000`; the base alone is `0xaed000`.
+
+Hooks left `none` after the level data, seat table and kept squads
+(2026-11-17, `h1scripts` round 2; the table's columns are from round 3,
+before them): a10 262, a30 152, a50 76, b30 153, b40 274 (converted
+without them: at the bound), c10 65, c20 46, c40 87, d20 64, d40 194; 0
+unrunnable on every level.
 
 **Needs a game run:**
 

@@ -642,3 +642,224 @@ fn startup_placements_decode_as_a_startup_script() {
     crate::compile::add_startup_placements(&mut out, &h2_target(), "x", &[]).unwrap();
     assert_eq!(out.scripts.len(), n);
 }
+
+mod level_and_seats {
+    use crate::compile::Hook;
+    use crate::level::{Level, h1, h2};
+    use crate::seats::{self, Table, Unit, h2_label_matches};
+    use map::TagId;
+    use map::build::FixupKind;
+
+    const BASE: u32 = 0x8000_0000;
+
+    fn hook(ty: &str, token: &str) -> Hook {
+        Hook {
+            slot: 0,
+            h2_type: 0,
+            type_name: ty.into(),
+            h1_type: String::new(),
+            token: token.into(),
+        }
+    }
+
+    /// An invented scenario with two flags, a camera point, a title and two
+    /// device groups.
+    fn level() -> Level {
+        let mut space = vec![0u8; 0x600];
+        let add = |space: &mut Vec<u8>, (field, len): (usize, usize), els: Vec<Vec<u8>>| {
+            let at = BASE + space.len() as u32;
+            space[field..field + 4].copy_from_slice(&(els.len() as u32).to_le_bytes());
+            space[field + 4..field + 8].copy_from_slice(&at.to_le_bytes());
+            for mut e in els {
+                e.resize(len, 0);
+                space.extend(e);
+            }
+        };
+        let named = |at: usize, n: &str, floats: &[(usize, f32)]| {
+            let mut e = vec![0u8; 0x100];
+            e[at..at + n.len()].copy_from_slice(n.as_bytes());
+            for &(o, v) in floats {
+                e[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            e
+        };
+        add(
+            &mut space,
+            h1::FLAGS,
+            vec![
+                named(4, "first_flag", &[(0x24, 1.0), (0x30, 0.5)]),
+                named(4, "second_flag", &[(0x28, 2.0)]),
+            ],
+        );
+        add(
+            &mut space,
+            h1::CAMERA_POINTS,
+            vec![named(4, "cam", &[(0x28, 3.0), (0x34, 0.25)])],
+        );
+        add(&mut space, h1::TITLES, vec![named(4, "arrival", &[])]);
+        add(
+            &mut space,
+            h1::DEVICE_GROUPS,
+            vec![
+                named(0, "door", &[(0x20, 1.0)]),
+                named(0, "bridge_control_position", &[]),
+            ],
+        );
+        let scnr = space[..0x600].to_vec();
+        Level::decode(&scnr, &h1map::Space::new(&space, BASE)).unwrap()
+    }
+
+    #[test]
+    fn halo1_level_data_reads_and_resolves() {
+        let l = level();
+        assert_eq!(l.flags[0].position, [1.0, 0.0, 0.0]);
+        assert_eq!(l.flags[0].facing, [0.5, 0.0]);
+        assert_eq!(l.flags[1].position, [0.0, 2.0, 0.0]);
+        assert_eq!(l.camera_points[0].position, [3.0, 0.0, 0.0]);
+        assert_eq!(l.camera_points[0].orientation, [0.25, 0.0, 0.0]);
+        assert_eq!(l.titles, ["arrival"]);
+        assert_eq!(l.device_groups[0].initial, 1.0);
+        assert_eq!(l.resolve(&hook("cutscene_flag", "second_flag")), Some(1));
+        assert_eq!(l.resolve(&hook("cutscene_camera_point", "cam")), Some(0));
+        assert_eq!(l.resolve(&hook("cutscene_title", "arrival")), Some(0));
+        // A device group atom is the runtime datum (retail: 0xe5650001 for
+        // group 1).
+        assert_eq!(
+            l.resolve(&hook("device_group", "bridge_control_position")),
+            Some(0xe565_0001)
+        );
+        assert_eq!(l.resolve(&hook("navpoint", "default_red")), Some(0));
+        assert_eq!(l.resolve(&hook("cutscene_flag", "nope")), None);
+        assert_eq!(l.resolve(&hook("ai", "first_flag")), None);
+    }
+
+    #[test]
+    fn halo2_blocks_take_halo2_layouts() {
+        let blocks = level().blocks();
+        let field = |at: u32| blocks.iter().find(|b| b.0 == at).unwrap();
+        let (_, stride, flags) = field(h2::FLAGS.0);
+        assert_eq!(*stride, 0x38);
+        assert_eq!(&flags[1].bytes[4..15], b"second_flag");
+        assert_eq!(
+            f32::from_le_bytes(flags[1].bytes[0x28..0x2c].try_into().unwrap()),
+            2.0
+        );
+        let (_, _, cams) = field(h2::CAMERA_POINTS.0);
+        assert_eq!(
+            f32::from_le_bytes(cams[0].bytes[0x28..0x2c].try_into().unwrap()),
+            3.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(cams[0].bytes[0x34..0x38].try_into().unwrap()),
+            0.25
+        );
+        let (_, _, titles) = field(h2::TITLES.0);
+        assert!(matches!(&titles[0].fixups[0].kind, FixupKind::StringId(s) if s == "arrival"));
+        let (_, stride, groups) = field(h2::DEVICE_GROUPS.0);
+        assert_eq!(*stride, 0x28);
+        assert_eq!(&groups[0].bytes[..4], b"door");
+        assert_eq!(
+            f32::from_le_bytes(groups[0].bytes[0x20..0x24].try_into().unwrap()),
+            1.0
+        );
+        for (_, stride, els) in &blocks {
+            assert!(els.iter().all(|e| e.bytes.len() == *stride));
+        }
+    }
+
+    #[test]
+    fn halo1_seat_roles_match_halo2_labels() {
+        assert!(h2_label_matches("driver", "warthog_d"));
+        assert!(h2_label_matches("W-driver", "scorpion_d"));
+        assert!(!h2_label_matches("driver", "warthog_b_d"));
+        assert!(h2_label_matches("gunner", "warthog_g"));
+        assert!(h2_label_matches("gunner", "pelican_g_rear"));
+        assert!(h2_label_matches("passenger", "warthog_p"));
+        assert!(h2_label_matches("passenger", "scorpion_p_lf"));
+        assert!(!h2_label_matches("passenger", "warthog_b_p"));
+        assert!(h2_label_matches("p-riderlf", "pelican_p_l01"));
+        assert!(!h2_label_matches("p-riderlf", "pelican_p_r01"));
+        assert!(!h2_label_matches("p-riderlf", "warthog_p"));
+        assert!(h2_label_matches("cargo", "pelican_lc"));
+        // Retail's own rule for anything else: the label starts with it.
+        assert!(h2_label_matches("pelican_p", "pelican_p_l03"));
+        assert!(!h2_label_matches("pelican_p", "pelican_g"));
+    }
+
+    #[test]
+    fn seat_table_is_runs_of_unit_and_mask() {
+        let hog = TagId(0xe000_0001);
+        let pelican = TagId(0xe001_0002);
+        let units = [
+            Unit {
+                id: hog,
+                labels: vec!["warthog_d".into(), "warthog_p".into(), "warthog_b_d".into()],
+            },
+            Unit {
+                id: pelican,
+                labels: vec![
+                    "pelican_d".into(),
+                    "pelican_p_l01".into(),
+                    "pelican_p_r01".into(),
+                ],
+            },
+        ];
+        let t = Table::build(["driver", "p-riderlf", "driver", "nothing"], &units);
+        assert_eq!(t.entries, [(hog, 1), (pelican, 1), (pelican, 2)]);
+        assert_eq!(t.values["driver"], 2 << 16);
+        assert_eq!(t.values["p-riderlf"], 1 << 16 | 2);
+        assert!(!t.values.contains_key("nothing"));
+        let els = t.elements();
+        assert_eq!(els[2].bytes.len(), seats::MAPPINGS.1);
+        assert_eq!(&els[2].bytes[4..8], &2u32.to_le_bytes());
+        assert!(matches!(els[2].fixups[0].kind, FixupKind::TagId(id) if id == pelican));
+    }
+
+    #[test]
+    fn seat_labels_read_from_pinned_and_built_vehicles() {
+        use map::build::{Block, TagPayload, TagSet};
+        let mut set = TagSet::new(map::CacheType::Campaign, "t", "s\\t");
+        set.strings = vec![None, Some("warthog_d".into()), Some("warthog_p".into())];
+        let (field, stride, label) = seats::UNIT_SEATS;
+        // Pinned: the seats block inside the tag's own bytes.
+        let address: u32 = 0x8010_0000;
+        let mut bytes = vec![0u8; 0x200 + 2 * stride];
+        bytes[field..field + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes[field + 4..field + 8].copy_from_slice(&(address + 0x200).to_le_bytes());
+        for (i, sid) in [1u32 | 9 << 24, 2 | 9 << 24].iter().enumerate() {
+            let at = 0x200 + i * stride + label;
+            bytes[at..at + 4].copy_from_slice(&sid.to_le_bytes());
+        }
+        set.add_group(map::FourCC(*b"vehi"), None, None);
+        let pinned = set
+            .add_tag(
+                map::FourCC(*b"vehi"),
+                "hog",
+                TagPayload::Pinned { address, bytes },
+            )
+            .unwrap();
+        // Built: a seats block child with a string ID fixup.
+        let mut root = Block::zeroed(0x200);
+        let mut child = Block::zeroed(stride);
+        child.string_id(label as u32, "pelican_d");
+        root.block(field as u32, 1, child);
+        let built = set
+            .add_tag(map::FourCC(*b"vehi"), "pelican", TagPayload::Built(root))
+            .unwrap();
+        let u = seats::units(&set);
+        assert_eq!(
+            u[0],
+            Unit {
+                id: pinned,
+                labels: vec!["warthog_d".into(), "warthog_p".into()]
+            }
+        );
+        assert_eq!(
+            u[1],
+            Unit {
+                id: built,
+                labels: vec!["pelican_d".into()]
+            }
+        );
+    }
+}

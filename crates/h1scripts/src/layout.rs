@@ -194,6 +194,15 @@ impl Tables {
         Ok(&tail[..end])
     }
 
+    /// The tokens of every live literal atom whose source type is `ty`.
+    pub fn atom_tokens(&self, ty: u16) -> std::collections::BTreeSet<String> {
+        self.nodes
+            .iter()
+            .filter(|n| n.live() && n.atom() && !n.global() && n.opcode() == ty)
+            .filter_map(|n| self.string(n.string_offset()).ok().map(str::to_owned))
+            .collect()
+    }
+
     /// Every definition root: globals, then scripts.
     pub fn roots(&self) -> impl Iterator<Item = Datum> + '_ {
         self.globals
