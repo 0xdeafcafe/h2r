@@ -712,14 +712,16 @@ struct FanoutRun {
     received: u64,
 }
 
-/// `games` consoles at 15 Hz with `readers` stream readers attached; the
-/// process CPU time over the window.
+/// `games` consoles at 15 Hz with `readers` stream readers attached (each
+/// of every game, or with `split` each of one, round robin); the process
+/// CPU time over the window.
 async fn fanout_run(
     s: &Server,
     addr: std::net::SocketAddr,
     consoles: &mut [Console],
     readers: usize,
     packed: bool,
+    split: bool,
     window: Duration,
 ) -> FanoutRun {
     let query = if packed {
@@ -729,7 +731,12 @@ async fn fanout_run(
     };
     let count = Arc::new(AtomicU64::new(0));
     let mut tasks = Vec::new();
-    for _ in 0..readers {
+    for i in 0..readers {
+        let query = if split {
+            format!("{query}&games={}", consoles[i % consoles.len()].game_id)
+        } else {
+            query.to_string()
+        };
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/stream{query}"))
             .await
             .unwrap();
@@ -824,7 +831,7 @@ async fn bench_fanout(s: &Server) -> Value {
     let mut base = Vec::new();
     for _ in 0..runs() {
         base.push(cpu_per_frame(
-            &fanout_run(s, addr, &mut consoles, 0, true, secs()).await,
+            &fanout_run(s, addr, &mut consoles, 0, true, false, secs()).await,
         ));
     }
     let base_us = median(base);
@@ -835,7 +842,7 @@ async fn bench_fanout(s: &Server) -> Value {
             let mut cpu = Vec::new();
             let mut delivered = Vec::new();
             for _ in 0..runs() {
-                let r = fanout_run(s, addr, &mut consoles, readers, packed, secs()).await;
+                let r = fanout_run(s, addr, &mut consoles, readers, packed, false, secs()).await;
                 cpu.push(cpu_per_frame(&r));
                 delivered.push(r.received as f64 / (r.frames * readers as u64) as f64);
             }
@@ -860,6 +867,27 @@ async fn bench_fanout(s: &Server) -> Value {
         }
         out.insert(readers.to_string(), entry);
     }
+    // Readers split across the games, each following one: packed.
+    let mut split = serde_json::Map::new();
+    for readers in [8usize, 80] {
+        let mut cpu = Vec::new();
+        let mut delivered = Vec::new();
+        for _ in 0..runs() {
+            let r = fanout_run(s, addr, &mut consoles, readers, true, true, secs()).await;
+            cpu.push(cpu_per_frame(&r));
+            delivered.push(r.received as f64 * GAMES as f64 / (r.frames * readers as u64) as f64);
+        }
+        let total = median(cpu) - base_us;
+        split.insert(
+            readers.to_string(),
+            json!({
+                "us_per_frame_total": total,
+                "us_per_frame_per_reader": total / readers as f64,
+                "delivered": median(delivered),
+            }),
+        );
+    }
+    out.insert("split".into(), Value::Object(split));
     out.insert("baseline_cpu_us_per_frame".into(), json!(base_us));
     out.insert("games".into(), json!(GAMES));
     out.insert("per_reader_parts".into(), parts);
@@ -975,6 +1003,15 @@ fn print_summary(out: &Value) {
             f(&e["json"]["us_per_frame_per_reader"]),
             f(&e["json"]["us_per_frame_total"]),
             f(&e["json"]["delivered"]),
+        );
+    }
+    for n in ["8", "80"] {
+        let e = &fo["split"][n];
+        println!(
+            "  {n:>3} readers, one game each: packed {:.1} us/frame/reader ({:.1} total, delivered {:.2})",
+            f(&e["us_per_frame_per_reader"]),
+            f(&e["us_per_frame_total"]),
+            f(&e["delivered"]),
         );
     }
     let pr = &fo["per_reader_parts"];
